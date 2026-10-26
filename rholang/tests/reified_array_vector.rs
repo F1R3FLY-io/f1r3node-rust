@@ -30,7 +30,6 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{CostAuthority, CostRegion, CostSignature, Expr, ListParWithRandom, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::new_gbool_par;
@@ -39,8 +38,8 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
-    native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
-    NativePhloExecutionContract, NativePhloRegionLimits,
+    native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
+    NativePhloDimension, NativePhloExecutionContract, NativePhloRegionLimits,
 };
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
@@ -50,9 +49,7 @@ use rholang::rust::interpreter::accounting::{
 };
 use rholang::rust::interpreter::deterministic_reduction::{root, ReductionCoordinator};
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::route::{classify_channel, ChannelClass};
 use rholang::rust::interpreter::reified::runtime;
 use rholang::rust::interpreter::rho_runtime::RhoISpace;
@@ -81,7 +78,6 @@ use rholang::rust::interpreter::spaces::outer::vector::VectorOuter;
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
@@ -95,8 +91,8 @@ use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 use shared::rust::hashable_set::HashableSet;
 use support::agent::{
     any, budget, create, creation, data_channel, env_over, exactly, fired, int, play,
-    play_and_replay, receive_on, records_on, run, send_on, string, unbounded_host_work, waiters_on,
-    ParRSpace, ParReplay,
+    play_and_replay, receive_on, records_on, run, send_on, string, waiters_on, ParRSpace,
+    ParReplay,
 };
 use support::legacy::{charging_host, host_consume, host_produce};
 use support::props::{check, pure_config, tokio_runtime};
@@ -124,13 +120,6 @@ const OTHER: NativeSpace = NativeSpace {
     sid: [0x5E; SID_LEN],
     durability: Durability::Durable,
 };
-
-/// The dimensions that a space job charges (decision 42).
-const CHARGED: [HostWorkDimension; 3] = [
-    HostWorkDimension::VerificationOperations,
-    HostWorkDimension::VerificationBytes,
-    HostWorkDimension::SearchStateBytes,
-];
 
 /// The store of a test space: a fixed or a cyclic Array space with its size, or a Vector space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1118,9 +1107,8 @@ impl OuterStore for NearFullVector {
         config: &SpaceConfig,
         channel: &Par,
         key: &CollectionKey,
-        meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
-        VectorOuter.check_key(config, channel, key, meter)
+        VectorOuter.check_key(config, channel, key)
     }
 
     fn data_channel(&self, space: NativeSpace, key: &CollectionKey) -> Par {
@@ -1136,7 +1124,6 @@ impl OuterStore for NearFullVector {
         space: NativeSpace,
         random: &Blake2b512Random,
         _authority: &CostAuthority,
-        _meter: &ScanMeter,
     ) -> Result<Vec<(Par, ListParWithRandom)>, SpaceError> {
         Ok(vec![(
             allocator::allocator_channel(space),
@@ -1496,19 +1483,16 @@ fn native_config() -> NativeRuntimeConfig {
     )
     .expect("the test controls check");
     let contract =
-        NativePhloExecutionContract::new(controls, &binding).expect("the test contract builds");
-    NativeRuntimeConfig::new(
-        contract,
-        NativeBudgetTraceLimits {
-            attempts: 100_000,
-            path_segments: 4096,
-            regions: NativePhloRegionLimits {
-                regions: 1000,
-                encoded_authority_bytes: 10_000_000,
-            },
+        NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+            .expect("the test contract builds");
+    NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+        attempts: 100_000,
+        path_segments: 4096,
+        regions: NativePhloRegionLimits {
+            regions: 1000,
+            encoded_authority_bytes: 10_000_000,
         },
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000))),
-    )
+    })
 }
 
 // Disabled by decision 47: native execution runs the allocation job, so it does not fail with
@@ -1676,122 +1660,6 @@ async fn allocation_legacy_charges_equal_host() {
     }
 }
 
-/// One metered allocation: its result, its log, and the allocator values before and after it.
-struct Metered {
-    result: Result<Vec<u64>, SpaceError>,
-    log: Vec<Event>,
-    before: Vec<i64>,
-    after: Vec<i64>,
-}
-
-/// Runs the allocation of `count` names after the prefix `prefix`, with the meter `meter` for
-/// that allocation only.
-async fn metered_allocation(store: Store, prefix: &[u64], count: u64, meter: ScanMeter) -> Metered {
-    let fixture = fixture(store).await;
-    for (job, prefix_count) in (100u64..).zip(prefix) {
-        // The prefix sets up the allocator. An allocation that does not fit changes nothing.
-        let _ = fixture.allocate(job, *prefix_count).await;
-    }
-    fixture.space.take_event_log().await;
-    let before = fixture.allocator().await;
-    let env = SpaceEnv {
-        meter,
-        ..fixture.env.clone()
-    };
-    let result = allocate_with(store.agent(), &env, alloc_op(1, count)).await;
-    let log = fixture.space.take_event_log().await;
-    let after = fixture.allocator().await;
-    Metered {
-        result,
-        log,
-        before,
-        after,
-    }
-}
-
-/// Checks that an allocation reserves its work before it makes it (`alloc_trace_covered`): the
-/// measured usage suffices, and a budget one unit short in any charged dimension rejects the
-/// allocation with no event and no change of the allocator.
-async fn reservation_cut_case(
-    store: Store,
-    prefix: &[u64],
-    count: u64,
-) -> Result<(), TestCaseError> {
-    let measured = unbounded_host_work();
-    let run =
-        metered_allocation(store, prefix, count, ScanMeter::new(Some(measured.clone()))).await;
-    prop_assert!(run.result.is_ok(), "{store:?}: {:?}", run.result);
-    prop_assert_eq!(allocator_labels(&run.log), vec![
-        "consume A",
-        "comm A",
-        "produce A"
-    ]);
-    for dimension in CHARGED {
-        prop_assert!(
-            measured.usage(dimension) > HostWorkUsage::ZERO,
-            "{:?}",
-            dimension
-        );
-    }
-    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for dimension in CHARGED {
-        exact.set(
-            dimension,
-            HostWorkLimit::new(measured.usage(dimension).get()),
-        );
-    }
-    let accepted = metered_allocation(
-        store,
-        prefix,
-        count,
-        ScanMeter::new(Some(HostWorkBudget::new(exact))),
-    )
-    .await;
-    prop_assert_eq!(&accepted.result, &run.result, "the exact usage suffices");
-    prop_assert_eq!(&accepted.after, &run.after);
-    for dimension in CHARGED {
-        let mut cut = exact;
-        cut.set(
-            dimension,
-            HostWorkLimit::new(measured.usage(dimension).get() - 1),
-        );
-        let rejected = metered_allocation(
-            store,
-            prefix,
-            count,
-            ScanMeter::new(Some(HostWorkBudget::new(cut))),
-        )
-        .await;
-        prop_assert_eq!(
-            rejected.result,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            "{:?}",
-            dimension
-        );
-        prop_assert!(
-            rejected.log.is_empty(),
-            "{:?}: a rejected allocation stages nothing",
-            dimension
-        );
-        prop_assert_eq!(&rejected.after, &rejected.before, "{:?}", dimension);
-        prop_assert_eq!(&rejected.before, &run.before, "{:?}", dimension);
-    }
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_allocation_reservation_cut_rejects_without_effect() {
-    for (store, prefix, count) in [
-        (Store::Fixed(5), vec![2], 3),
-        (Store::Cyclic(3), vec![2, 2], 4),
-        (Store::Vector, vec![1], 2),
-    ] {
-        reservation_cut_case(store, &prefix, count)
-            .await
-            .unwrap_or_else(|failure| panic!("{store:?}: {failure}"));
-    }
-}
-
 // ── The merge of allocations (CounterConflict.tla, NoDuplicateIndex) ────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1939,7 +1807,7 @@ fn prop_fixed_array_allocates_at_most_size() {
                         let channel = name(index);
                         let key = ArrayOuter.key(&channel).expect("a key");
                         prop_assert_eq!(
-                            ArrayOuter.check_key(&config, &channel, &key, &ScanMeter::new(None)),
+                            ArrayOuter.check_key(&config, &channel, &key),
                             Ok(()),
                             "an allocated name passes the key check of its space"
                         );
@@ -2100,20 +1968,6 @@ fn prop_allocator_identities_unique() {
             })
         },
     );
-}
-
-#[test]
-fn prop_alloc_trace_covered() {
-    let case = arb_store().prop_flat_map(|store| {
-        let count = match store {
-            Store::Fixed(size) => (1u64..=u64::try_from(size).expect("a size")).boxed(),
-            Store::Cyclic(_) | Store::Vector => (1u64..5).boxed(),
-        };
-        (Just(store), count)
-    });
-    check(pure_config(), case, |(store, count)| {
-        tokio_runtime().block_on(reservation_cut_case(store, &[], count))
-    });
 }
 
 // ── Properties: VectorStore.v ──────────────────────────────────────────────────────────────────
@@ -2409,7 +2263,7 @@ fn space_array_params_and_rules_are_pinned() {
             for count in 0..5 {
                 let planned = store
                     .rule()
-                    .plan(value, count, &ScanMeter::new(None))
+                    .plan(value, count)
                     .map(|plan| (plan.indices, plan.next));
                 match model(store, value, count) {
                     Some(expected) => assert_eq!(planned, Ok(expected), "{store:?}"),

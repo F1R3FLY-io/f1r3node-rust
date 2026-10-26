@@ -43,12 +43,8 @@
 //! bincode writes `locally_free` as empty bytes, and `Par` equality also ignores it. A failed
 //! sort or encode is a typed error before any staging, never an empty key.
 //!
-//! **Metering (decision 42).** A metered job sorts each element with the metered sorter of
-//! `feature/cost-accounted-rho`. It encodes each element with the metered writer of the host. So
-//! every read and copy is reserved before it is made. The buffers of the encodings and of the
-//! key are reserved before they are allocated. A job without a budget sorts as the host does, and
-//! both sorters give the same term. The driver compares two keys by their metered hashes first.
-//! It compares the full keys only on equal hashes (DR-90, `scan::same_class`).
+//! **Key comparison.** The driver compares two keys by their hashes first. It compares the full
+//! keys only on equal hashes (DR-90, `scan::same_class`).
 //!
 //! The legacy set removed duplicates at write time by a 64-bit `DefaultHasher` of the debug text
 //! of a value. Its consume removed one member. Both are replaced: the store keeps every record,
@@ -57,15 +53,12 @@
 use std::mem::size_of;
 
 use models::rhoapi::{ListParWithRandom, Par};
-use models::rust::rholang::sorter::metered::SorterMeter;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use serde::Serialize;
 
 use super::queue::QueueDiscipline;
 use super::scan::{self, ScanDiscipline};
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::{ConsumeOp, ProduceOp, SpaceReissue};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{Cx, Discipline, JoinWindow, Ordered, Side};
@@ -87,29 +80,22 @@ impl Discipline for SetDiscipline {
     /// The entry with the least `(ord, bincode bytes)`, as for the queue and the bag. Every
     /// entry of a set has the `ord` 0. Only the head driver uses a head. A set does not use the
     /// head driver, because its plans are the scan driver.
-    fn head_metered<T: Serialize>(
+    fn head<T: Serialize>(
         &self,
         side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        QueueDiscipline.head_metered(side, entries, meter)
+        QueueDiscipline.head(side, entries)
     }
 
     /// Every entry of a set can meet an incoming element. Only the head driver asks, and a set
     /// does not use it.
     fn reaches_head(&self, _side: Side, _queued: usize) -> bool { true }
 
-    /// The lesser order interacts first, as for the queue. The comparison is reserved first.
-    /// Only the re-entry check of the head driver asks, and a set does not use it.
-    fn precedes(
-        &self,
-        side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        QueueDiscipline.precedes(side, ord, head, meter)
+    /// The lesser order interacts first, as for the queue. Only the re-entry check of the head
+    /// driver asks, and a set does not use it.
+    fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+        QueueDiscipline.precedes(side, ord, head)
     }
 
     /// OFFER-SCAN of the scan driver ([`scan::offer`]). RETIRE-CLASS follows a fire of a waiter
@@ -147,20 +133,16 @@ impl Discipline for SetDiscipline {
 
     /// The class of a payload in a join window: its F5 set key, as for the scan driver
     /// ([`ScanDiscipline::class_key`]).
-    fn join_class_key(
-        &self,
-        payload: &[Par],
-        meter: &ScanMeter,
-    ) -> Result<Option<Vec<u8>>, SpaceError> {
-        ScanDiscipline::class_key(self, payload, meter)
+    fn join_class_key(&self, payload: &[Par]) -> Result<Option<Vec<u8>>, SpaceError> {
+        ScanDiscipline::class_key(self, payload)
     }
 }
 
 /// Every payload of a set has a class: the payloads with equal set keys.
 impl ScanDiscipline for SetDiscipline {
     /// The F5 set key of the payload ([`set_key`]).
-    fn class_key(&self, payload: &[Par], meter: &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError> {
-        Ok(Some(set_key(payload, meter)?))
+    fn class_key(&self, payload: &[Par]) -> Result<Option<Vec<u8>>, SpaceError> {
+        Ok(Some(set_key(payload)?))
     }
 }
 
@@ -170,21 +152,17 @@ impl ScanDiscipline for SetDiscipline {
 ///
 /// The key covers the payload without its envelope. The random state, the cost authority and the
 /// cost stack of a record lie outside its payload, so they play no part. The canonical bytes of
-/// each element are computed first ([`canonical_bytes`]), with their buffer reserved. Then the
-/// key buffer of the exact length is reserved and filled. A length that does not fit the
-/// arithmetic is `HostWorkRejected`, never a wrap.
-pub fn set_key(payload: &[Par], meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    let mut elements = meter.buffer::<Vec<u8>>(payload.len())?;
+/// each element are computed first ([`canonical_bytes`]). Then the key buffer of the exact
+/// length is allocated and filled.
+pub fn set_key(payload: &[Par]) -> Result<Vec<u8>, SpaceError> {
+    let mut elements = Vec::<Vec<u8>>::with_capacity(payload.len());
     let mut length = LENGTH_BYTES;
     for element in payload {
-        let bytes = canonical_bytes(element, meter)?;
-        length = length
-            .checked_add(LENGTH_BYTES)
-            .and_then(|framed| framed.checked_add(bytes.len()))
-            .ok_or(RSpaceError::HostWorkRejected)?;
+        let bytes = canonical_bytes(element)?;
+        length += LENGTH_BYTES + bytes.len();
         elements.push(bytes);
     }
-    let mut key = meter.buffer::<u8>(length)?;
+    let mut key = Vec::<u8>::with_capacity(length);
     key.extend_from_slice(&u64_be(payload.len())?);
     for bytes in &elements {
         key.extend_from_slice(&u64_be(bytes.len())?);
@@ -194,35 +172,20 @@ pub fn set_key(payload: &[Par], meter: &ScanMeter) -> Result<Vec<u8>, SpaceError
 }
 
 /// The canonical bytes of one element `element` of a payload: the bincode bytes of its sorted
-/// `Par`. A metered job reserves the sort and each write of the encode before it makes them. An
-/// encode that fails for another reason than the budget is `Inconsistent`, as for the tie-break
-/// encode of the queue.
-pub fn canonical_bytes(element: &Par, meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    let sorted = sorted_par(element, meter)?;
-    meter.encode(&sorted).map_err(|error| match error {
-        RSpaceError::HostWorkRejected => SpaceError::Host(RSpaceError::HostWorkRejected),
-        _ => SpaceError::Inconsistent("a payload element of a set does not encode"),
-    })
+/// `Par`. An encode that fails is `Inconsistent`, as for the tie-break encode of the queue.
+pub fn canonical_bytes(element: &Par) -> Result<Vec<u8>, SpaceError> {
+    let sorted = sorted_par(element);
+    bincode::serialize(&sorted)
+        .map_err(|_| SpaceError::Inconsistent("a payload element of a set does not encode"))
 }
 
-/// The sorted `Par` of `element`. A metered job sorts with the metered sorter, which reserves its
-/// reads and copies and rejects a term deeper than its depth limit. A job without a budget sorts
-/// as the host does. Both sorters give the same term.
-fn sorted_par(element: &Par, meter: &ScanMeter) -> Result<Par, SpaceError> {
-    match meter.is_metered() {
-        true => Ok(
-            ParSortMatcher::sort_match_metered(element, &SorterMeter::new(meter))
-                .map_err(|_| RSpaceError::HostWorkRejected)?
-                .term,
-        ),
-        false => Ok(ParSortMatcher::sort_match(element).term),
-    }
-}
+/// The sorted `Par` of `element`, sorted as the host sorts.
+fn sorted_par(element: &Par) -> Par { ParSortMatcher::sort_match(element).term }
 
-/// The big-endian bytes of `length` as a `u64`. A length above `u64::MAX` is `HostWorkRejected`.
+/// The big-endian bytes of `length` as a `u64`. A length above `u64::MAX` is `Inconsistent`.
 fn u64_be(length: usize) -> Result<[u8; LENGTH_BYTES], SpaceError> {
     Ok(u64::try_from(length)
-        .map_err(|_| RSpaceError::HostWorkRejected)?
+        .map_err(|_| SpaceError::Inconsistent("a length of a set key exceeds u64"))?
         .to_be_bytes())
 }
 
@@ -234,7 +197,6 @@ mod tests {
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{BindPattern, CostAuthority, EList, Expr, TaggedContinuation};
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
     use models::rust::utils::{new_freevar_par, new_gint_par, new_gstring_par};
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -247,7 +209,6 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::RuntimeBudget;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::spaces::agent::{
         run_op, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
@@ -269,13 +230,6 @@ mod tests {
         sid: [17; SID_LEN],
         durability: Durability::Durable,
     };
-
-    /// The dimensions that a space job charges.
-    const CHARGED: [HostWorkDimension; 3] = [
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::VerificationBytes,
-        HostWorkDimension::SearchStateBytes,
-    ];
 
     fn int(value: i64) -> Par { new_gint_par(value, Vec::new(), false) }
 
@@ -316,10 +270,6 @@ mod tests {
         par
     }
 
-    fn budget(limit: u64) -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(limit)))
-    }
-
     #[test]
     fn space_set_discipline_has_no_counter_params_query_or_capacity() {
         assert_eq!(SetDiscipline::NAME, "set");
@@ -327,7 +277,6 @@ mod tests {
         assert!(SetDiscipline::SEND_PARAMS.is_empty());
         assert!(SetDiscipline::QUERY_PARAMS.is_empty());
         assert_eq!(SetDiscipline::CAPACITY, None);
-        let meter = ScanMeter::new(None);
         let entries = [(0, "b".to_string()), (0, "a".to_string())];
         let ordered: Vec<Ordered<'_, String>> = entries
             .iter()
@@ -342,14 +291,13 @@ mod tests {
             for queued in [0, 1, usize::MAX] {
                 assert!(SetDiscipline.reaches_head(side, queued));
             }
-            assert_eq!(SetDiscipline.precedes(side, 0, 1, &meter), Ok(true));
-            assert_eq!(SetDiscipline.precedes(side, 1, 0, &meter), Ok(false));
+            assert_eq!(SetDiscipline.precedes(side, 0, 1), Ok(true));
+            assert_eq!(SetDiscipline.precedes(side, 1, 0), Ok(false));
         }
     }
 
     #[test]
     fn space_set_key_frames_the_count_and_each_length() {
-        let meter = ScanMeter::new(None);
         let payload = [int(7), string("seven")];
         let first = sorted_bytes(&payload[0]);
         let second = sorted_bytes(&payload[1]);
@@ -359,100 +307,65 @@ mod tests {
         expected.extend_from_slice(&first);
         expected.extend_from_slice(&(second.len() as u64).to_be_bytes());
         expected.extend_from_slice(&second);
-        assert_eq!(set_key(&payload, &meter), Ok(expected));
+        assert_eq!(set_key(&payload), Ok(expected));
         assert_eq!(
-            set_key(&[], &meter),
+            set_key(&[]),
             Ok(0u64.to_be_bytes().to_vec()),
             "an empty payload has the key of the count 0"
         );
         assert_eq!(
-            SetDiscipline.class_key(&payload, &meter),
-            set_key(&payload, &meter).map(Some),
+            SetDiscipline.class_key(&payload),
+            set_key(&payload).map(Some),
             "every payload of a set has a class"
         );
     }
 
     #[test]
     fn space_set_key_sorts_each_element_and_keeps_the_element_order() {
-        let meter = ScanMeter::new(None);
         assert_ne!(exprs(&[1, 2]), exprs(&[2, 1]), "two orders of one Par");
         assert_eq!(
-            set_key(&[exprs(&[1, 2])], &meter),
-            set_key(&[exprs(&[2, 1])], &meter),
+            set_key(&[exprs(&[1, 2])]),
+            set_key(&[exprs(&[2, 1])]),
             "the key of an element is the key of its sorted Par"
         );
         assert_ne!(
-            set_key(&[int(1), int(2)], &meter),
-            set_key(&[int(2), int(1)], &meter),
+            set_key(&[int(1), int(2)]),
+            set_key(&[int(2), int(1)]),
             "the elements of a payload keep their positions"
         );
         assert_ne!(
-            set_key(&[int(1)], &meter),
-            set_key(&[int(1), int(1)], &meter),
+            set_key(&[int(1)]),
+            set_key(&[int(1), int(1)]),
             "the count separates the arities"
         );
         let mut free = int(3);
         free.locally_free = vec![0b101];
         assert_eq!(
-            set_key(&[free], &meter),
-            set_key(&[int(3)], &meter),
+            set_key(&[free]),
+            set_key(&[int(3)]),
             "bincode writes locally_free as empty bytes"
         );
     }
 
+    /// The encode and the drop of a deep term recurse once for each level. So the test runs on a
+    /// thread with a large stack, as the reducer runs on a large stack.
     #[test]
-    fn space_set_key_metered_equals_unmetered_and_a_cut_rejects() {
-        let payload = [int(7), string("seven"), exprs(&[3, 1, 2])];
-        let unmetered = set_key(&payload, &ScanMeter::new(None)).expect("an unmetered key");
-        let measured = budget(u64::MAX);
-        let metered =
-            set_key(&payload, &ScanMeter::new(Some(measured.clone()))).expect("a metered key");
-        assert_eq!(metered, unmetered, "the metered key has the same bytes");
-        let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        for dimension in CHARGED {
-            let usage = measured.usage(dimension).get();
-            assert!(usage > 0, "the key charges {dimension}");
-            exact.set(dimension, HostWorkLimit::new(usage));
-        }
-        assert_eq!(
-            set_key(&payload, &ScanMeter::new(Some(HostWorkBudget::new(exact)))),
-            Ok(unmetered),
-            "the exact budget suffices"
-        );
-        for dimension in CHARGED {
-            let mut cut = exact;
-            cut.set(
-                dimension,
-                HostWorkLimit::new(measured.usage(dimension).get() - 1),
-            );
-            assert_eq!(
-                set_key(&payload, &ScanMeter::new(Some(HostWorkBudget::new(cut)))),
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                "{dimension}"
-            );
-        }
-    }
-
-    /// The sort, the encode and the drop of a deep term recurse once for each level. So the test
-    /// runs on a thread with a large stack, as the reducer runs on a large stack.
-    #[test]
-    fn space_set_key_metered_sort_rejects_a_term_deeper_than_its_limit() {
+    fn space_set_key_sorts_a_deep_term() {
         std::thread::Builder::new()
             .stack_size(256 * 1024 * 1024)
             .spawn(|| {
                 let deep = [nested(260)];
-                let unmetered =
-                    set_key(&deep, &ScanMeter::new(None)).expect("the host sorts any depth");
-                assert_eq!(&unmetered[..LENGTH_BYTES], &1u64.to_be_bytes());
+                let key = set_key(&deep).expect("the host sorts any depth");
+                assert_eq!(&key[..LENGTH_BYTES], &1u64.to_be_bytes());
                 assert_eq!(
-                    set_key(&deep, &ScanMeter::new(Some(budget(u64::MAX)))),
-                    Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                    "the metered sorter of the branch rejects a term deeper than its limit"
+                    set_key(&deep).as_ref(),
+                    Ok(&key),
+                    "the key of a deep term is deterministic"
                 );
-                let shallow = [nested(8)];
-                assert_eq!(
-                    set_key(&shallow, &ScanMeter::new(Some(budget(u64::MAX)))),
-                    set_key(&shallow, &ScanMeter::new(None))
+                assert_ne!(
+                    set_key(&[nested(8)]).as_ref(),
+                    Ok(&key),
+                    "two depths give two keys"
                 );
             })
             .expect("a test thread starts")
@@ -476,7 +389,6 @@ mod tests {
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000_000, "set discipline test")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };

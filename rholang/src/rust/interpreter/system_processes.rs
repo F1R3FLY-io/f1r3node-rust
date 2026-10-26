@@ -282,6 +282,163 @@ impl FixedChannels {
     /// future cleanup may hide it behind the byte_name once eval_new
     /// stops needing to resolve URNs through `urn_map` itself.
     pub fn registry_lookup() -> Par { byte_name(37) }
+
+    // -----------------------------------------------------------
+    // Fileio handlers — `rho:io:fs:native:*` URN space.
+    //
+    // Byte-name identifiers match fileio's assignment (see Wave 4
+    // triage plan).  Numbering has intentional gaps so sibling
+    // fs_* handlers land at their fileio-canonical slots as later
+    // slices port them (fs_open at 38, fs_close at 39, ...,
+    // fs_lock_range at 62, etc.).
+    // -----------------------------------------------------------
+
+    /// `rho:io:fs:native:1.0.0/quarantine` — safe_descend_verified
+    /// echo of the caller-supplied joined path.  Non-verifying
+    /// lifecycle helper (slice 4.12).
+    pub fn fs_quarantine() -> Par { byte_name(61) }
+
+    /// `rho:io:fs:native:1.0.0/close` — fd release + Phase-2
+    /// shadow-remove on replay.  Non-verifying lifecycle
+    /// (slice 4.13).
+    pub fn fs_close() -> Par { byte_name(39) }
+
+    /// `rho:io:fs:native:1.0.0/flush` — fsync (data + metadata) on
+    /// an open fd.  Non-verifying observation (slice 4.14).
+    pub fn fs_flush() -> Par { byte_name(50) }
+
+    /// `rho:io:fs:native:1.0.0/tell` — current fd position
+    /// (`lseek(SEEK_CUR, 0)`).  Non-verifying observation
+    /// (slice 4.15).
+    pub fn fs_tell() -> Par { byte_name(47) }
+
+    /// `rho:io:fs:native:1.0.0/seek` — move fd position
+    /// (`lseek(off, whence)`).  Verifying observation; advances
+    /// shadow position via the `journal` hook (slice 4.16).
+    pub fn fs_seek() -> Par { byte_name(46) }
+
+    /// `rho:io:fs:native:1.0.0/size` — fd-based size via
+    /// `fstat`.  Verifying observation (slice 4.17).
+    pub fn fs_size() -> Par { byte_name(48) }
+
+    /// `rho:io:fs:native:1.0.0/exists` — path-based existence check
+    /// via `openat(O_NOFOLLOW)` + metadata.  Verifying observation
+    /// (slice 4.18).
+    pub fn fs_exists() -> Par { byte_name(52) }
+
+    /// `rho:io:fs:native:1.0.0/stat` — path-based file/dir metadata
+    /// via `openat(O_NOFOLLOW)` + metadata.  Returns a stat record
+    /// with cmode-gated host-transient field stripping.  Verifying
+    /// observation (slice 4.19).
+    pub fn fs_stat() -> Par { byte_name(51) }
+
+    /// `rho:io:fs:native:1.0.0/read` — sequential fd-based read via
+    /// `libc::read`.  Verifying observation with
+    /// length-parameterized cost; advances shadow position by
+    /// bytes returned on all paths (slice 4.20).
+    pub fn fs_read() -> Par { byte_name(42) }
+
+    /// `rho:io:fs:native:1.0.0/readAt` — positional fd-based read
+    /// via `libc::pread`.  Verifying observation with
+    /// length-parameterized cost; does NOT advance shadow
+    /// position per POSIX pread semantics (slice 4.21).
+    pub fn fs_read_at() -> Par { byte_name(43) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` — release a
+    /// directory-entries stream fd + Phase-2 shadow-remove on
+    /// replay.  Non-verifying stream lifecycle (slice 4.22).
+    pub fn fs_entries_stream_close() -> Par { byte_name(68) }
+
+    /// `rho:io:fs:native:1.0.0/truncate` — fd-based truncate via
+    /// `libc::ftruncate`.  Verifying mutation; constant cost.
+    /// First Mutation-family handler on dev (slice 4.24).
+    pub fn fs_truncate() -> Par { byte_name(49) }
+
+    /// `rho:io:fs:native:1.0.0/chmod` — path-based chmod via
+    /// `safe_descend_verified` + `fchmodat` (AT_SYMLINK_NOFOLLOW).
+    /// Verifying mutation; constant cost.  First path-mutation
+    /// handler on dev (slice 4.25).
+    pub fn fs_chmod() -> Par { byte_name(59) }
+
+    /// `rho:io:fs:native:1.0.0/rename` — two-endpoint path rename
+    /// via `safe_descend_verified` × 2 + `renameat`.  Verifying
+    /// mutation; cross-device moves surface as FSERR_CROSS_DEVICE.
+    /// First two-endpoint mutation handler on dev (slice 4.26).
+    pub fn fs_rename() -> Par { byte_name(55) }
+
+    /// `rho:io:fs:native:1.0.0/chown` — path-based chown via
+    /// `safe_descend_verified` + `fchownat` (AT_SYMLINK_NOFOLLOW).
+    /// NON-verifying mutation; Consensus caps rejected at
+    /// parse_content (NSS mapping host-local).  Added by slice 4.27.
+    pub fn fs_chown() -> Par { byte_name(60) }
+
+    /// `rho:io:fs:native:1.0.0/removeFile` — path-based unlink via
+    /// `safe_descend_verified` + `unlinkat` under the LockRegistry
+    /// unlink gate.  Verifying mutation; Consensus + locked
+    /// returns `FSERR_BUSY`.  Added by slice 4.28.
+    pub fn fs_remove_file() -> Par { byte_name(57) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamOpen` — allocate a
+    /// stream fd, `openat` + `fdopendir` under
+    /// `safe_descend_verified`.  Non-verifying stream lifecycle;
+    /// Consensus caps rejected at parse_content (Phase-2 ban:
+    /// readdir order fs-dependent).  Added by slice 4.29.
+    pub fn fs_entries_stream_open() -> Par { byte_name(66) }
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamNext` — advance a
+    /// stream fd one entry via `readdir`; two-event cost (setup
+    /// + per-entry supplement).  First handler on dev to
+    /// activate `post_reply_supplement`.  Added by slice 4.30.
+    pub fn fs_entries_stream_next() -> Par { byte_name(67) }
+
+    /// `rho:io:fs:native:1.0.0/entries` — bulk directory
+    /// enumeration (sorted, deterministic).  Verifying
+    /// observation with two-event cost (setup + per-entry).
+    /// Added by slice 4.31.
+    pub fn fs_entries() -> Par { byte_name(53) }
+
+    /// `rho:io:fs:native:1.0.0/open` — allocate a FileHandle via
+    /// `safe_open_verified` + Phase-2 real-open on Consensus
+    /// caps.  Non-verifying lifecycle.  Shadow-insert on replay
+    /// at leader's cached fd (load-bearing for Phase-2 fd-based
+    /// re-execute ops).  Added by slice 4.32.
+    pub fn fs_open() -> Par { byte_name(40) }
+
+    /// `rho:io:fs:native:1.0.0/copyFile` — two-endpoint byte-count
+    /// copy via `safe_open_verified` + `std::io::copy`.  Verifying
+    /// mutation; reply carries bytes-copied via `ok_u64`.  Added
+    /// by slice 4.33.
+    pub fn fs_copy_file() -> Par { byte_name(56) }
+
+    /// `rho:io:fs:native:1.0.0/lockRange` — range-based advisory
+    /// lock acquire via `LockRegistry::try_acquire_range_wait`.
+    /// Non-verifying lock lifecycle; minted LockId is consensus-
+    /// observable.  First Lock-family handler on dev (slice 4.34).
+    pub fn fs_lock_range() -> Par { byte_name(62) }
+
+    /// `rho:io:fs:native:1.0.0/lockSequential` — whole-file
+    /// sequential (exclusive) lock acquire via
+    /// `LockRegistry::try_acquire_sequential_wait`.  Non-verifying;
+    /// LockId consensus-observable.  Added by slice 4.35.
+    pub fn fs_lock_sequential() -> Par { byte_name(63) }
+
+    /// `rho:io:fs:native:1.0.0/releaseLock` — release a held
+    /// lock by `LockId` with holder-identity check.  Non-
+    /// verifying; pure LockRegistry op.  Added by slice 4.36.
+    pub fn fs_release_lock() -> Par { byte_name(64) }
+
+    /// `rho:io:fs:native:1.0.0/releaseAllForHolder` — deploy-end
+    /// sweep: cancel all parked waiters for this holder, then
+    /// release all held locks.  Non-verifying.  Added by slice
+    /// 4.37.
+    pub fn fs_release_all_for_holder() -> Par { byte_name(65) }
+
+    /// `rho:io:fs:native:1.0.0/write` — fd + ByteArray; libc::write
+    /// to the shadow fd under spawn_blocking.  Verifying length-
+    /// parameterized mutation (single-event incremental cost +
+    /// H-6 reserve-then-finalize with partial-write patch).  Added
+    /// by slice 4.38.
+    pub fn fs_write() -> Par { byte_name(44) }
 }
 
 pub struct BodyRefs;
@@ -319,6 +476,96 @@ impl BodyRefs {
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
     pub const REGISTRY_LOOKUP: i64 = 30;
+
+    // Fileio handlers — see `FixedChannels` above for the URN
+    // space.  Numbering matches fileio's BodyRefs assignment; gaps
+    // reserve slots for sibling fs_* handlers landing in future
+    // slices (fs_open = 38, fs_close = 39, ..., fs_lock_range = 62,
+    // etc.).
+
+    /// `rho:io:fs:native:1.0.0/quarantine` body-ref (slice 4.12).
+    pub const FS_QUARANTINE: i64 = 61;
+
+    /// `rho:io:fs:native:1.0.0/close` body-ref (slice 4.13).
+    pub const FS_CLOSE: i64 = 39;
+
+    /// `rho:io:fs:native:1.0.0/flush` body-ref (slice 4.14).
+    pub const FS_FLUSH: i64 = 50;
+
+    /// `rho:io:fs:native:1.0.0/tell` body-ref (slice 4.15).
+    pub const FS_TELL: i64 = 47;
+
+    /// `rho:io:fs:native:1.0.0/seek` body-ref (slice 4.16).
+    pub const FS_SEEK: i64 = 46;
+
+    /// `rho:io:fs:native:1.0.0/size` body-ref (slice 4.17).
+    pub const FS_SIZE: i64 = 48;
+
+    /// `rho:io:fs:native:1.0.0/exists` body-ref (slice 4.18).
+    pub const FS_EXISTS: i64 = 52;
+
+    /// `rho:io:fs:native:1.0.0/stat` body-ref (slice 4.19).
+    pub const FS_STAT: i64 = 51;
+
+    /// `rho:io:fs:native:1.0.0/read` body-ref (slice 4.20).
+    pub const FS_READ: i64 = 42;
+
+    /// `rho:io:fs:native:1.0.0/readAt` body-ref (slice 4.21).
+    pub const FS_READ_AT: i64 = 43;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamClose` body-ref
+    /// (slice 4.22).
+    pub const FS_ENTRIES_STREAM_CLOSE: i64 = 68;
+
+    /// `rho:io:fs:native:1.0.0/truncate` body-ref (slice 4.24).
+    pub const FS_TRUNCATE: i64 = 49;
+
+    /// `rho:io:fs:native:1.0.0/chmod` body-ref (slice 4.25).
+    pub const FS_CHMOD: i64 = 59;
+
+    /// `rho:io:fs:native:1.0.0/rename` body-ref (slice 4.26).
+    pub const FS_RENAME: i64 = 55;
+
+    /// `rho:io:fs:native:1.0.0/chown` body-ref (slice 4.27).
+    pub const FS_CHOWN: i64 = 60;
+
+    /// `rho:io:fs:native:1.0.0/removeFile` body-ref (slice 4.28).
+    pub const FS_REMOVE_FILE: i64 = 57;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamOpen` body-ref
+    /// (slice 4.29).
+    pub const FS_ENTRIES_STREAM_OPEN: i64 = 66;
+
+    /// `rho:io:fs:native:1.0.0/entriesStreamNext` body-ref
+    /// (slice 4.30).
+    pub const FS_ENTRIES_STREAM_NEXT: i64 = 67;
+
+    /// `rho:io:fs:native:1.0.0/entries` body-ref (slice 4.31).
+    pub const FS_ENTRIES: i64 = 53;
+
+    /// `rho:io:fs:native:1.0.0/open` body-ref (slice 4.32).
+    pub const FS_OPEN: i64 = 40;
+
+    /// `rho:io:fs:native:1.0.0/copyFile` body-ref (slice 4.33).
+    pub const FS_COPY_FILE: i64 = 56;
+
+    /// `rho:io:fs:native:1.0.0/lockRange` body-ref (slice 4.34).
+    pub const FS_LOCK_RANGE: i64 = 62;
+
+    /// `rho:io:fs:native:1.0.0/lockSequential` body-ref
+    /// (slice 4.35).
+    pub const FS_LOCK_SEQUENTIAL: i64 = 63;
+
+    /// `rho:io:fs:native:1.0.0/releaseLock` body-ref
+    /// (slice 4.36).
+    pub const FS_RELEASE_LOCK: i64 = 64;
+
+    /// `rho:io:fs:native:1.0.0/releaseAllForHolder` body-ref
+    /// (slice 4.37).
+    pub const FS_RELEASE_ALL_FOR_HOLDER: i64 = 65;
+
+    /// `rho:io:fs:native:1.0.0/write` body-ref (slice 4.38).
+    pub const FS_WRITE: i64 = 44;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -334,6 +581,96 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         crate::rust::interpreter::reified::system_channels::EMBED_BODY_REF,
         crate::rust::interpreter::reified::system_channels::ANN_BODY_REF,
     ])
+}
+
+/// Added by DR-114: the processes that native funded execution records and
+/// replays. It extends dev's `non_deterministic_ops` with the four Chroma
+/// processes that dev also runs in replay (U5, oracle mode). The legacy path
+/// keeps calling `non_deterministic_ops`.
+pub fn is_native_recorded_op(body_ref: BodyRef) -> bool {
+    matches!(
+        body_ref,
+        BodyRefs::GPT4
+            | BodyRefs::DALLE3
+            | BodyRefs::TEXT_TO_AUDIO
+            | BodyRefs::OLLAMA_CHAT
+            | BodyRefs::OLLAMA_GENERATE
+            | BodyRefs::OLLAMA_MODELS
+            | BodyRefs::GRPC_TELL
+            | BodyRefs::CHROMA_QUERY
+            | BodyRefs::CHROMA_GET_COLLECTION_META
+            | BodyRefs::CHROMA_CREATE_COLLECTION
+            | BodyRefs::CHROMA_UPSERT_ENTRIES
+            | BodyRefs::CHROMA_DELETE_DOCUMENTS
+    )
+        // Added by Reified RSpaces decision 89 (decision 68): `embed` and `ann`,
+        // the recorded processes of Reified RSpaces in `non_deterministic_ops`,
+        // are recorded and replayed by native funded execution too.
+        || non_deterministic_ops().contains(&body_ref)
+}
+
+/// Added by DR-114: the processes that take the native path: the recorded
+/// set and the four print processes.
+fn is_native_external_process(body_ref: BodyRef) -> bool {
+    // Changed by Reified RSpaces decision 89 (decision 68): `embed` and `ann`
+    // keep their own handlers, which record and replay their replies, because
+    // `ann` checks consensus state in replay too.
+    // is_native_recorded_op(body_ref)
+    (is_native_recorded_op(body_ref)
+        && !crate::rust::interpreter::reified::system_channels::is_recorded_process(body_ref))
+        || matches!(
+            body_ref,
+            BodyRefs::STDOUT | BodyRefs::STDOUT_ACK | BodyRefs::STDERR | BodyRefs::STDERR_ACK
+        )
+}
+
+// Added by DR-114: the codes of a native external-service failure reply. The
+// message is fixed text that names the process. It never carries the
+// provider's text, because provider errors can echo masked keys.
+const EXT_BAD_ARG: super::io::errors::FserrCode = super::io::errors::FserrCode("EXT_BAD_ARG");
+const EXT_FAILED: super::io::errors::FserrCode = super::io::errors::FserrCode("EXT_FAILED");
+const EXT_OUTPUT_TOO_LARGE: super::io::errors::FserrCode =
+    super::io::errors::FserrCode("EXT_OUTPUT_TOO_LARGE");
+
+/// Added by DR-114: the outcome of one external-service call in native play.
+enum NativeCallOutcome {
+    /// The service answered. The reply is dev's bare value.
+    Reply(Vec<Par>),
+    /// The call is well shaped, but an argument has the wrong content.
+    BadArgument,
+    /// The service failed or is disabled.
+    Failed,
+}
+
+/// Added by DR-114: the name, the arity and the acknowledgement of each
+/// recorded process. `grpcTell` is fire-and-forget and has no ack.
+fn native_recorded_signature(
+    body_ref: BodyRef,
+) -> Result<(&'static str, usize, bool), InterpreterError> {
+    Ok(match body_ref {
+        BodyRefs::GPT4 => ("gpt4", 2, true),
+        BodyRefs::DALLE3 => ("dalle3", 2, true),
+        BodyRefs::TEXT_TO_AUDIO => ("text_to_audio", 2, true),
+        BodyRefs::OLLAMA_CHAT => ("ollama_chat", 3, true),
+        BodyRefs::OLLAMA_GENERATE => ("ollama_generate", 3, true),
+        BodyRefs::OLLAMA_MODELS => ("ollama_models", 1, true),
+        BodyRefs::GRPC_TELL => ("grpc_tell", 3, false),
+        BodyRefs::CHROMA_QUERY => ("chroma_query", 3, true),
+        BodyRefs::CHROMA_GET_COLLECTION_META => ("chroma_get_collection_meta", 2, true),
+        BodyRefs::CHROMA_CREATE_COLLECTION => ("chroma_create_collection", 4, true),
+        BodyRefs::CHROMA_UPSERT_ENTRIES => ("chroma_upsert_entries", 3, true),
+        BodyRefs::CHROMA_DELETE_DOCUMENTS => ("chroma_delete_documents", 3, true),
+        other => {
+            return Err(InterpreterError::BugFoundError(format!(
+                "native recorded call: unknown process {other}"
+            )))
+        }
+    })
+}
+
+/// Added by DR-114: a `[false, code, message]` failure reply.
+fn native_failure_reply(name: &str, code: super::io::errors::FserrCode, text: &str) -> Par {
+    super::io::response::err(code, format!("{name}: {text}"))
 }
 
 #[derive(Clone)]
@@ -453,36 +790,52 @@ impl Definition {
                 + Sync,
         >,
     ) {
-        let forbidden = matches!(
-            self.body_ref,
-            BodyRefs::STDOUT
-                | BodyRefs::STDOUT_ACK
-                | BodyRefs::STDERR
-                | BodyRefs::STDERR_ACK
-                | BodyRefs::GPT4
-                | BodyRefs::DALLE3
-                | BodyRefs::TEXT_TO_AUDIO
-                | BodyRefs::GRPC_TELL
-                | BodyRefs::OLLAMA_CHAT
-                | BodyRefs::OLLAMA_GENERATE
-                | BodyRefs::OLLAMA_MODELS
-                | BodyRefs::CHROMA_CREATE_COLLECTION
-                | BodyRefs::CHROMA_GET_COLLECTION_META
-                | BodyRefs::CHROMA_UPSERT_ENTRIES
-                | BodyRefs::CHROMA_QUERY
-                | BodyRefs::CHROMA_DELETE_DOCUMENTS
-        );
+        // Changed by DR-114: native funded execution records and replays
+        // external outputs instead of banning them (U1-U3, PM:354-389, File I/O
+        // oracle mode). The legacy path still runs dev's handlers.
+        // let forbidden = matches!(
+        //     self.body_ref,
+        //     BodyRefs::STDOUT
+        //         | BodyRefs::STDOUT_ACK
+        //         | BodyRefs::STDERR
+        //         | BodyRefs::STDERR_ACK
+        //         | BodyRefs::GPT4
+        //         | BodyRefs::DALLE3
+        //         | BodyRefs::TEXT_TO_AUDIO
+        //         | BodyRefs::GRPC_TELL
+        //         | BodyRefs::OLLAMA_CHAT
+        //         | BodyRefs::OLLAMA_GENERATE
+        //         | BodyRefs::OLLAMA_MODELS
+        //         | BodyRefs::CHROMA_CREATE_COLLECTION
+        //         | BodyRefs::CHROMA_GET_COLLECTION_META
+        //         | BodyRefs::CHROMA_UPSERT_ENTRIES
+        //         | BodyRefs::CHROMA_QUERY
+        //         | BodyRefs::CHROMA_DELETE_DOCUMENTS
+        // );
+        let native = is_native_external_process(self.body_ref);
+        let body_ref = self.body_ref;
         let cost = context.cost.clone();
+        let native_processes = context.system_processes.clone();
         let handler = (self.handler)(context);
         (
             self.body_ref,
             Box::new(move |args| {
-                if forbidden && cost.native_execution_active() {
-                    Box::pin(async {
-                        Err(InterpreterError::ReduceError(
-                            "native funded execution forbids external service calls".to_string(),
-                        ))
-                    })
+                // Changed by DR-114: see above.
+                // if forbidden && cost.native_execution_active() {
+                //     Box::pin(async {
+                //         Err(InterpreterError::ReduceError(
+                //             "native funded execution forbids external service calls".to_string(),
+                //         ))
+                //     })
+                // } else {
+                //     handler(args)
+                // }
+                if native && cost.native_execution_active() {
+                    let processes = native_processes.clone();
+                    let cost = cost.clone();
+                    Box::pin(
+                        async move { processes.native_external_call(body_ref, args, &cost).await },
+                    )
                 } else {
                     handler(args)
                 }
@@ -824,6 +1177,336 @@ impl SystemProcesses {
         Ok(ret)
     }
 
+    // DR-114 native section start
+
+    /// Added by DR-114: an external-service or print call in native funded
+    /// execution.
+    pub async fn native_external_call(
+        &self,
+        body_ref: BodyRef,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+        cost: &RuntimeBudget,
+    ) -> Result<Vec<Par>, InterpreterError> {
+        match body_ref {
+            BodyRefs::STDOUT | BodyRefs::STDOUT_ACK | BodyRefs::STDERR | BodyRefs::STDERR_ACK => {
+                self.native_print(body_ref, contract_args).await
+            }
+            _ => {
+                self.native_recorded_call(body_ref, contract_args, cost)
+                    .await
+            }
+        }
+    }
+
+    /// Added by DR-114: stdout and stderr in native funded execution. Play
+    /// formats and prints. Replay neither formats nor prints. The
+    /// acknowledged forms reply `Nil` in both.
+    async fn native_print(
+        &self,
+        body_ref: BodyRef,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let (name, acknowledged, to_stderr) = match body_ref {
+            BodyRefs::STDOUT => ("std_out", false, false),
+            BodyRefs::STDOUT_ACK => ("std_out_ack", true, false),
+            BodyRefs::STDERR => ("std_err", false, true),
+            _ => ("std_err_ack", true, true),
+        };
+        let Some((produce, is_replay, _, args)) = self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error(name));
+        };
+        let (message, ack) = match (acknowledged, args.as_slice()) {
+            (false, [message]) => (message, None),
+            (true, [message, ack]) => (message, Some(ack)),
+            _ => return Err(illegal_argument_error(name)),
+        };
+        if !is_replay {
+            let text = stacker::maybe_grow(1 << 20, 2 << 20, || {
+                PrettyPrinter::new().build_string_from_message(message)
+            });
+            if to_stderr {
+                eprintln!("{text}");
+            } else {
+                println!("{text}");
+            }
+        }
+        match ack {
+            Some(ack) => {
+                let output = vec![Par::default()];
+                produce(&output, ack).await?;
+                Ok(output)
+            }
+            None => Ok(vec![]),
+        }
+    }
+
+    /// Added by DR-114: one recorded external-service call. Play calls the
+    /// service once, and the dispatcher records the reply on the triggering
+    /// produce. Replay produces the record and never calls the service. A
+    /// failure is a paid `[false, code, message]` reply, so it is recorded and
+    /// replayed like a success.
+    async fn native_recorded_call(
+        &self,
+        body_ref: BodyRef,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+        cost: &RuntimeBudget,
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let (name, arity, acknowledged) = native_recorded_signature(body_ref)?;
+        let Some((produce, is_replay, previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error(name));
+        };
+        if args.len() != arity {
+            return Err(illegal_argument_error(name));
+        }
+        let (request, ack) = if acknowledged {
+            (&args[..arity - 1], args.last())
+        } else {
+            (&args[..], None)
+        };
+        let reply = if is_replay {
+            if previous_output.is_empty() {
+                return Err(InterpreterError::BugFoundError(format!(
+                    "native replay of {name} has no recorded output"
+                )));
+            }
+            previous_output
+        } else {
+            match self.native_service_call(body_ref, request).await {
+                NativeCallOutcome::Reply(reply) => {
+                    let bytes = reply.iter().try_fold(0_u64, |total, par| {
+                        u64::try_from(par.encoded_len())
+                            .ok()
+                            .and_then(|bytes| bytes.checked_add(64))
+                            .and_then(|bytes| total.checked_add(bytes))
+                    });
+                    match bytes {
+                        Some(bytes) if cost.take_native_record_room(bytes) => reply,
+                        _ => vec![native_failure_reply(
+                            name,
+                            EXT_OUTPUT_TOO_LARGE,
+                            "external output exceeds the record room",
+                        )],
+                    }
+                }
+                NativeCallOutcome::BadArgument => {
+                    vec![native_failure_reply(name, EXT_BAD_ARG, "invalid argument")]
+                }
+                NativeCallOutcome::Failed => vec![native_failure_reply(
+                    name,
+                    EXT_FAILED,
+                    "external service failed",
+                )],
+            }
+        };
+        if let Some(ack) = ack {
+            if let Err(cause) = produce(&reply, ack).await {
+                return Err(InterpreterError::ProduceFailureWithOutput {
+                    cause: Box::new(cause),
+                    output_not_produced: reply.iter().map(|par| par.encode_to_vec()).collect(),
+                });
+            }
+        }
+        Ok(reply)
+    }
+
+    /// Added by DR-114: the service call of one recorded process in native
+    /// play. It parses the request as dev's handler does, and keeps dev's
+    /// bare reply on success.
+    async fn native_service_call(&self, body_ref: BodyRef, request: &[Par]) -> NativeCallOutcome {
+        use NativeCallOutcome::{BadArgument, Failed, Reply};
+        match body_ref {
+            BodyRefs::GPT4 | BodyRefs::DALLE3 => {
+                let [prompt] = request else {
+                    return BadArgument;
+                };
+                let Some(prompt) = RhoString::unapply(prompt) else {
+                    return BadArgument;
+                };
+                let service = self.openai_service.lock().await.clone();
+                let response = if body_ref == BodyRefs::GPT4 {
+                    service.gpt4_chat_completion(&prompt).await
+                } else {
+                    service.dalle3_create_image(&prompt).await
+                };
+                match response {
+                    Ok(response) => Reply(vec![RhoString::create_par(response)]),
+                    Err(_) => Failed,
+                }
+            }
+            BodyRefs::TEXT_TO_AUDIO => {
+                let [input] = request else { return BadArgument };
+                let Some(input) = RhoString::unapply(input) else {
+                    return BadArgument;
+                };
+                let service = self.openai_service.lock().await.clone();
+                let audio_path = format!("audio_{}.mp3", uuid::Uuid::new_v4());
+                match service.create_audio_speech(&input, &audio_path).await {
+                    Ok(bytes) => Reply(vec![RhoByteArray::create_par(bytes)]),
+                    Err(_) => Failed,
+                }
+            }
+            BodyRefs::OLLAMA_CHAT | BodyRefs::OLLAMA_GENERATE => {
+                let [model, prompt] = request else {
+                    return BadArgument;
+                };
+                let (Some(model), Some(prompt)) =
+                    (RhoString::unapply(model), RhoString::unapply(prompt))
+                else {
+                    return BadArgument;
+                };
+                let service = self.ollama_service.lock().await.clone();
+                let response = if body_ref == BodyRefs::OLLAMA_CHAT {
+                    let messages = vec![ChatMessage {
+                        role: "user".to_string(),
+                        content: prompt,
+                    }];
+                    service.chat(Some(&model), messages).await
+                } else {
+                    service.generate(Some(&model), &prompt).await
+                };
+                match response {
+                    Ok(response) => Reply(vec![RhoString::create_par(response)]),
+                    Err(_) => Failed,
+                }
+            }
+            BodyRefs::OLLAMA_MODELS => {
+                let service = self.ollama_service.lock().await.clone();
+                match service.list_models().await {
+                    Ok(models) => {
+                        let list_expr = Expr {
+                            expr_instance: Some(ExprInstance::EListBody(models::rhoapi::EList {
+                                ps: models.into_iter().map(RhoString::create_par).collect(),
+                                locally_free: BitSet::default(),
+                                connective_used: false,
+                                remainder: None,
+                            })),
+                        };
+                        Reply(vec![Par::default().with_exprs(vec![list_expr])])
+                    }
+                    Err(_) => Failed,
+                }
+            }
+            BodyRefs::GRPC_TELL => {
+                let [host, port, payload] = request else {
+                    return BadArgument;
+                };
+                let (Some(host), Some(port), Some(payload)) = (
+                    RhoString::unapply(host),
+                    RhoNumber::unapply(port),
+                    RhoString::unapply(payload),
+                ) else {
+                    return BadArgument;
+                };
+                let Ok(port) = u64::try_from(port) else {
+                    return BadArgument;
+                };
+                match self.grpc_client_service.tell(&host, port, &payload).await {
+                    Ok(_) => Reply(vec![Par::default()]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_CREATE_COLLECTION => {
+                let [name, ignore_or_update, metadata] = request else {
+                    return BadArgument;
+                };
+                let (Some(name), Some(ignore_or_update), Some(metadata)) = (
+                    RhoString::unapply(name),
+                    RhoBoolean::unapply(ignore_or_update),
+                    if metadata.is_nil() {
+                        Some(None)
+                    } else {
+                        <Metadata as Extractor>::unapply(metadata).map(Some)
+                    },
+                ) else {
+                    return BadArgument;
+                };
+                match self
+                    .chromadb_service
+                    .create_collection(&name, ignore_or_update, metadata)
+                    .await
+                {
+                    Ok(_) => Reply(vec![Par::default()]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_GET_COLLECTION_META => {
+                let [name] = request else { return BadArgument };
+                let Some(name) = RhoString::unapply(name) else {
+                    return BadArgument;
+                };
+                match self.chromadb_service.get_collection_meta(&name).await {
+                    Ok(None) => Reply(vec![RhoNil::create_par()]),
+                    Ok(Some(meta)) => Reply(vec![meta.into()]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_UPSERT_ENTRIES => {
+                let [name, entries] = request else {
+                    return BadArgument;
+                };
+                let (Some(name), Some(entries)) = (
+                    RhoString::unapply(name),
+                    <CollectionEntries as Extractor>::unapply(entries),
+                ) else {
+                    return BadArgument;
+                };
+                match self.chromadb_service.upsert_entries(&name, entries).await {
+                    Ok(_) => Reply(vec![RhoString::create_par(name)]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_QUERY => {
+                let [name, doc_texts] = request else {
+                    return BadArgument;
+                };
+                let (Some(name), Some(doc_texts)) = (
+                    RhoString::unapply(name),
+                    <Vec<RhoString> as Extractor>::unapply(doc_texts),
+                ) else {
+                    return BadArgument;
+                };
+                match self
+                    .chromadb_service
+                    .query(&name, doc_texts.iter().map(|text| text.as_ref()).collect())
+                    .await
+                {
+                    Ok(results) => Reply(vec![RhoList::create_par(
+                        results.into_iter().map(Into::into).collect(),
+                    )]),
+                    Err(_) => Failed,
+                }
+            }
+            #[cfg(feature = "chromadb")]
+            BodyRefs::CHROMA_DELETE_DOCUMENTS => {
+                let [name, doc_ids] = request else {
+                    return BadArgument;
+                };
+                let (Some(name), Some(doc_ids)) = (
+                    RhoString::unapply(name),
+                    <Vec<RhoString> as Extractor>::unapply(doc_ids),
+                ) else {
+                    return BadArgument;
+                };
+                match self.chromadb_service.delete_documents(&name, doc_ids).await {
+                    Ok(_) => Reply(vec![RhoString::create_par(name)]),
+                    Err(_) => Failed,
+                }
+            }
+            // The signature check admits only the recorded set, and a Chroma
+            // process exists only in a chromadb build.
+            _ => Failed,
+        }
+    }
+
+    // DR-114 native section end
+
     pub async fn vault_address(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -1054,7 +1737,11 @@ impl SystemProcesses {
         }
 
         // 3. Unknown URN.
-        Err(InterpreterError::ReduceError(format!(
+        // Changed by DR-128 (bug 11414): an unknown URN is an illegal argument,
+        // as the other argument checks of this process are. Native execution
+        // makes it the user failure `SystemProcessShapeError` (DR-114).
+        // Err(InterpreterError::ReduceError(format!(
+        Err(InterpreterError::IllegalArgumentError(format!(
             "registry_lookup: unknown URN: {}",
             urn_str
         )))

@@ -1,4 +1,3 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_controls::PhloControlsV1;
 use models::rust::phlo_intent::PhloFundingIntentV1;
 use models::rust::phlo_source::{PhloSourceLimits, PhloSourcePolicyV1};
@@ -10,10 +9,6 @@ fn limits() -> PhloWireLimits {
         total_bytes: 2048,
         field_bytes: 2048,
     }
-}
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)))
 }
 
 fn quote_bytes(id: u8, use_policy: PhloQuoteUseV2) -> Vec<u8> {
@@ -157,12 +152,8 @@ fn atomic_quote_plan_keeps_original_asset_releases_and_exact_fee() {
     let bytes = quote_bytes(1, PhloQuoteUseV2::Once);
     let intent = intent(&bytes);
     let (input, provider) = snapshots(&bytes, 17, 10);
-    let plans = plan_atomic_quote_uses(
-        context(),
-        &[request(&intent, &input, &provider, 8, 10, 3)],
-        &budget(),
-    )
-    .unwrap();
+    let plans = plan_atomic_quote_uses(context(), &[request(&intent, &input, &provider, 8, 10, 3)])
+        .unwrap();
     let [plan] = plans.as_slice() else {
         panic!("one plan")
     };
@@ -187,28 +178,20 @@ fn atomic_quote_rejects_stale_root_wrong_authority_and_expiry() {
     input.root = [4; 32];
     let use_ = request(&intent, &input, &provider, 8, 10, 3);
     assert_eq!(
-        plan_atomic_quote_uses(context(), &[use_], &budget()),
+        plan_atomic_quote_uses(context(), &[use_]),
         Err(ConversionPlanError::Root)
     );
     input.root = [3; 32];
     provider.provider_authority = b"other".to_vec();
     assert_eq!(
-        plan_atomic_quote_uses(
-            context(),
-            &[request(&intent, &input, &provider, 8, 10, 3)],
-            &budget(),
-        ),
+        plan_atomic_quote_uses(context(), &[request(&intent, &input, &provider, 8, 10, 3)],),
         Err(ConversionPlanError::Provenance)
     );
     provider.provider_authority = b"provider-owner".to_vec();
     let mut expired = context();
     expired.accepted_height = 11;
     assert_eq!(
-        plan_atomic_quote_uses(
-            expired,
-            &[request(&intent, &input, &provider, 8, 10, 3)],
-            &budget(),
-        ),
+        plan_atomic_quote_uses(expired, &[request(&intent, &input, &provider, 8, 10, 3)],),
         Err(ConversionPlanError::Context)
     );
 }
@@ -224,21 +207,19 @@ fn atomic_quote_rejects_duplicate_and_shared_physical_overclaim() {
     let a = request(&intent_a, &input_a, &provider_a, 8, 10, 3);
     let b = request(&intent_b, &input_b, &provider_b, 9, 10, 3);
     assert_eq!(
-        plan_atomic_quote_uses(context(), &[a.clone(), b.clone()], &budget()),
+        plan_atomic_quote_uses(context(), &[a.clone(), b.clone()]),
         Err(ConversionPlanError::PhysicalCapacity)
     );
     assert_eq!(
-        plan_atomic_quote_uses(context(), &[a.clone(), a], &budget()),
+        plan_atomic_quote_uses(context(), &[a.clone(), a]),
         Err(ConversionPlanError::Duplicate)
     );
     let mut accepted = provider_a.clone();
     accepted.accepted_operations.insert([8; 32]);
     assert_eq!(
-        plan_atomic_quote_uses(
-            context(),
-            &[request(&intent_a, &input_a, &accepted, 8, 10, 3)],
-            &budget(),
-        ),
+        plan_atomic_quote_uses(context(), &[request(
+            &intent_a, &input_a, &accepted, 8, 10, 3
+        )],),
         Err(ConversionPlanError::Duplicate)
     );
 }
@@ -251,32 +232,27 @@ fn cumulative_quote_use_respects_prior_and_new_exposure() {
     provider.prior_output_used = 5;
     let a = request(&intent, &input, &provider, 8, 5, 3);
     let b = request(&intent, &input, &provider, 9, 5, 2);
-    assert!(plan_atomic_quote_uses(context(), &[a.clone(), b], &budget()).is_ok());
+    assert!(plan_atomic_quote_uses(context(), &[a.clone(), b]).is_ok());
     assert_eq!(
-        plan_atomic_quote_uses(
-            context(),
-            &[a, request(&intent, &input, &provider, 9, 6, 2)],
-            &budget(),
-        ),
+        plan_atomic_quote_uses(context(), &[
+            a,
+            request(&intent, &input, &provider, 9, 6, 2)
+        ],),
         Err(ConversionPlanError::QuoteCapacity)
     );
 }
 
+/// Changed by DR-131: the exhaustion half went with host work. The test keeps
+/// its check of the protocol cap.
 #[test]
-fn conversion_exhaustion_and_protocol_cap_reject_before_plan_publication() {
+fn conversion_protocol_cap_rejects_before_plan_publication() {
     let bytes = quote_bytes(1, PhloQuoteUseV2::Once);
     let intent = intent(&bytes);
     let (input, provider) = snapshots(&bytes, 17, 10);
     let request = request(&intent, &input, &provider, 8, 10, 3);
-    let exhausted = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(matches!(
-        plan_atomic_quote_uses(context(), &[request.clone()], &exhausted),
-        Err(ConversionPlanError::HostBudget(_))
-    ));
-    assert!(exhausted.is_rejected());
     let oversized = vec![request; offered_conversion_plan_limits().uses + 1];
     assert_eq!(
-        plan_atomic_quote_uses(context(), &oversized, &budget()),
+        plan_atomic_quote_uses(context(), &oversized),
         Err(ConversionPlanError::ProtocolLimit)
     );
 }
@@ -287,14 +263,10 @@ fn same_quote_cannot_reopen_once_use_or_change_physical_source_identity() {
     let intent_a = intent(&bytes);
     let (input, provider) = snapshots(&bytes, 30, 20);
     assert_eq!(
-        plan_atomic_quote_uses(
-            context(),
-            &[
-                request(&intent_a, &input, &provider, 8, 3, 1),
-                request(&intent_a, &input, &provider, 9, 3, 1),
-            ],
-            &budget(),
-        ),
+        plan_atomic_quote_uses(context(), &[
+            request(&intent_a, &input, &provider, 8, 3, 1),
+            request(&intent_a, &input, &provider, 9, 3, 1),
+        ],),
         Err(ConversionPlanError::QuoteCapacity)
     );
     let bytes_b = quote_bytes(2, PhloQuoteUseV2::Once);
@@ -302,14 +274,10 @@ fn same_quote_cannot_reopen_once_use_or_change_physical_source_identity() {
     let (input_b, mut provider_b) = snapshots(&bytes_b, 30, 20);
     provider_b.source.source_identity = [99; 32];
     assert_eq!(
-        plan_atomic_quote_uses(
-            context(),
-            &[
-                request(&intent_a, &input, &provider, 8, 3, 1),
-                request(&intent_b, &input_b, &provider_b, 9, 3, 1),
-            ],
-            &budget(),
-        ),
+        plan_atomic_quote_uses(context(), &[
+            request(&intent_a, &input, &provider, 8, 3, 1),
+            request(&intent_b, &input_b, &provider_b, 9, 3, 1),
+        ],),
         Err(ConversionPlanError::Provenance)
     );
 }
@@ -339,23 +307,23 @@ fn separate_prior_requires_rooted_receipt_and_current_output_backing() {
         available: 3,
     };
     assert_eq!(
-        check_separate_prior([3; 32], &intent, &trade, &output, 3, &budget()),
+        check_separate_prior([3; 32], &intent, &trade, &output, 3),
         Ok(())
     );
     assert_eq!(
-        check_separate_prior([3; 32], &intent, &trade, &output, 4, &budget()),
+        check_separate_prior([3; 32], &intent, &trade, &output, 4),
         Err(ConversionPlanError::PhysicalCapacity)
     );
     let mut forged = trade.clone();
     forged.trade_id = [10; 32];
     assert_eq!(
-        check_separate_prior([3; 32], &intent, &forged, &output, 3, &budget()),
+        check_separate_prior([3; 32], &intent, &forged, &output, 3),
         Err(ConversionPlanError::Provenance)
     );
     forged = trade;
     forged.root = [4; 32];
     assert_eq!(
-        check_separate_prior([3; 32], &intent, &forged, &output, 3, &budget()),
+        check_separate_prior([3; 32], &intent, &forged, &output, 3),
         Err(ConversionPlanError::Root)
     );
 }

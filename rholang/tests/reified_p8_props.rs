@@ -41,7 +41,6 @@ use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::metering::MeteredMachine;
-use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::errors::ReifiedReduceError;
 use rholang::rust::interpreter::reified::execution::r7_route;
 use rholang::rust::interpreter::reified::route::{route, Route};
@@ -308,7 +307,6 @@ fn translate(
     counts: &[u32],
     guard: Option<Par>,
 ) -> Result<(ReceiveTranslation, Vec<MatcherState>), TestCaseError> {
-    let meter = ScanMeter::new(None);
     let binds = counts
         .iter()
         .enumerate()
@@ -332,14 +330,13 @@ fn translate(
         false,
         guard,
         &CostAuthority::default(),
-        &meter,
     )
     .map_err(|error| TestCaseError::fail(format!("the translation fails: {error:?}")))?;
     let states = translation
         .matchers
         .iter()
         .map(|matcher| {
-            matcher_state_of(&matcher.channel, &meter)
+            matcher_state_of(&matcher.channel)
                 .map_err(|error| TestCaseError::fail(format!("{error:?}")))?
                 .ok_or_else(|| TestCaseError::fail("a matcher id decodes to its state"))
         })
@@ -485,10 +482,9 @@ fn prop_guard_placement() {
         pure_config(),
         (arb_counts(), prop::collection::vec(0u32..12, 0..4)),
         |(counts, indices)| {
-            let meter = ScanMeter::new(None);
             let guard = guard_over(&indices);
-            let found = guard_indices(&guard, &meter)
-                .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+            let found =
+                guard_indices(&guard).map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
             prop_assert_eq!(
                 found.iter().copied().collect::<Vec<_>>(),
                 indices
@@ -517,7 +513,7 @@ fn prop_guard_placement() {
                 1 => Ok(*owners.iter().next().expect("one owner")),
                 _ => Err("AgentGuardSpansJoin".to_string()),
             };
-            let placed = place_guard(&found, &counts, &meter).map_err(|error| match error {
+            let placed = place_guard(&found, &counts).map_err(|error| match error {
                 InterpreterError::ReduceError(message) => message
                     .strip_prefix("reified:")
                     .and_then(|rest| rest.split(':').next())
@@ -578,26 +574,24 @@ fn prop_matcher_state_roundtrip() {
             1u8..=255,
         ),
         |(state, other, at, flip)| {
-            let meter = ScanMeter::new(None);
-            let bytes = state.encode(&meter).expect("a state encodes");
+            let bytes = state.encode().expect("a state encodes");
             prop_assert_eq!(
-                MatcherState::decode(&bytes, &meter).expect("the decode runs"),
+                MatcherState::decode(&bytes).expect("the decode runs"),
                 Some(state.clone())
             );
             let id =
                 gprivate(rholang::rust::interpreter::spaces::namespace::matcher_channel(&bytes));
             prop_assert_eq!(
-                matcher_state_of(&id, &meter).expect("the decode runs"),
+                matcher_state_of(&id).expect("the decode runs"),
                 Some(state.clone())
             );
             let mut mutated = bytes.clone();
             let position = at.index(mutated.len());
             mutated[position] ^= flip;
-            if let Some(decoded) = MatcherState::decode(&mutated, &meter).expect("the decode runs")
-            {
-                prop_assert_eq!(decoded.encode(&meter).expect("a state encodes"), mutated);
+            if let Some(decoded) = MatcherState::decode(&mutated).expect("the decode runs") {
+                prop_assert_eq!(decoded.encode().expect("a state encodes"), mutated);
             }
-            let other_bytes = other.encode(&meter).expect("a state encodes");
+            let other_bytes = other.encode().expect("a state encodes");
             prop_assert_eq!(state == other, bytes == other_bytes);
             Ok(())
         },
@@ -797,16 +791,8 @@ fn prop_resume_binds_innermost() {
         );
         let base =
             RandomPurpose::Xlate.derive(&Blake2b512Random::create_from_bytes(b"rrs-p8-resume"));
-        let translation = translate_new(
-            &bound_env,
-            outer.level,
-            bind_count,
-            &binders,
-            body,
-            &base,
-            &ScanMeter::new(None),
-        )
-        .expect("the translation builds");
+        let translation = translate_new(&bound_env, outer.level, bind_count, &binders, body, &base)
+            .expect("the translation builds");
         let replies: Vec<Par> = binders
             .iter()
             .map(|binder| reply_name(&base, i16::try_from(binder.index).expect("a small new")))

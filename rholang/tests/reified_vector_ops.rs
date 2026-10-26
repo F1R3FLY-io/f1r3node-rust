@@ -33,7 +33,6 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
-use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::tensor::ops::{evaluate, OpFailure, ReplyCode};
 use support::native::{assert_reproduces, certify, native_play, AMPLE_LIMIT, OUT as NATIVE_OUT};
 use support::props::{check, pure_config};
@@ -495,9 +494,9 @@ fn call(name: &str, operands: Vec<Par>) -> Par {
     list(values)
 }
 
-/// The value of the call, unmetered.
+/// The value of the call.
 fn value_of(name: &str, operands: Vec<Par>) -> Result<Par, OpFailure> {
-    evaluate(&call(name, operands), &ScanMeter::new(None))
+    evaluate(&call(name, operands))
 }
 
 fn pars(numbers: &[Number]) -> Par {

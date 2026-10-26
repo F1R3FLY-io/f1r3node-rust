@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "status": "preparation-tasks-complete",
+  "recorded_at": "2026-09-19T01:40:14Z",
+  "base_revision": "8870a74d3a0416233210738cd85b88f697277080",
+  "observed_final_revision": "6adeb7d38cee6d6e0c580e6b3ea1af3720d2b16a",
+  "tasks": [
+    "TASK-017-1",
+    "TASK-017-2",
+    "TASK-017-3"
+  ],
+  "scope": "planning-contracts-selected-prerequisites-and-initial-identities",
+  "integrity": [
+    {
+      "target": "TASK-017-1",
+      "kind": "task",
+      "grade": "full",
+      "gaps": [],
+      "details": []
+    },
+    {
+      "target": "TASK-017-2",
+      "kind": "task",
+      "grade": "full",
+      "gaps": [],
+      "details": []
+    },
+    {
+      "target": "TASK-017-3",
+      "kind": "task",
+      "grade": "full",
+      "gaps": [],
+      "details": []
+    }
+  ],
+  "checks": {
+    "decision_rows": 12,
+    "claims": 8,
+    "lifecycle_controls": 10,
+    "profile_negative_controls": 21,
+    "profile_positive_generation_obligations": 21,
+    "clean_document_fixtures": 1,
+    "refusal_document_fixtures": 5,
+    "historical_file_records": 407,
+    "historical_embedded_records": 132,
+    "selected_stack_ancestry": true,
+    "candidate_identity_records": 2,
+    "strict_claim_001_exit": 0,
+    "strict_bundle_exit": 4,
+    "accepted_source_files_unchanged": 67,
+    "accepted_canonical_ledgers_unchanged": 39,
+    "unrelated_tasks_unchanged": true,
+    "existing_tracker_backup_unchanged": true,
+    "ste_check": "passed",
+    "lsp": {
+      "files": 3,
+      "diagnostics": 0
+    }
+  },
+  "helper": {
+    "sha256": "924a1cde6ae61d15a72dda276687b0d63d9df0dd75d7b7f1aba4e8300f502d2e",
+    "cli_task_id_exit": 2,
+    "mode": "unchanged-functions-on-temporary-tracker",
+    "strict": true,
+    "force": false,
+    "stamp_gaps": true,
+    "accepted_task_017_4_adapter_changed": false
+  },
+  "source_archive": {
+    "path": "source.tar.gz",
+    "sha256": "ef5e58a2d982da3970169d6113973c37250cae9fbaef6520477672417c7a1c6c",
+    "files": 13
+  },
+  "evidence_archive": {
+    "path": "evidence.tar.gz",
+    "sha256": "3ad8c11f43e4e2ce5d65a3955cedf9a440895f8c4f65dc68c970b3f6b7073168",
+    "files": 104
+  },
+  "retained_failures": [
+    "The first evidence checker assumed a file array for embedded stack records.",
+    "The first completion invocation and traced retry stopped at an optional parser field under errexit."
+  ],
+  "source_snapshot_limits": "The failed checker and completion sources are retained. The trace records parser inputs. The fresh complete source archive describes the successful closure.",
+  "external_changes": {
+    "merge_revision": "6adeb7d38cee6d6e0c580e6b3ea1af3720d2b16a",
+    "node_files": 3,
+    "performed_by_this_completion": false,
+    "node_changes_verified": false
+  },
+  "boundaries": {
+    "profile_claims": "pending",
+    "soaks": "pending",
+    "workload_pins": "null",
+    "matrix": "not-dispatchable",
+    "pr216": "open-unselected",
+    "profile_workflow_tags": "unratified",
+    "waiver": null,
+    "node_launch_count": 0,
+    "external_repin": false,
+    "new_model_execution": false,
+    "new_process_fixture_execution": false
+  },
+  "retention": {
+    "archive_owners": "numeric-zero",
+    "original_modes_asserted": false,
+    "redactions": [
+      "exact workspace and home paths",
+      "exact temporary-directory prefix"
+    ],
+    "historical_packages_modified": false
+  }
+}

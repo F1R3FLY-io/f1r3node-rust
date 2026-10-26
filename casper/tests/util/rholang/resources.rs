@@ -463,7 +463,19 @@ pub async fn key_value_rejected_deploy_buffer_from_dyn(
     let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
         KeyValueTypedStoreImpl::new(buffer_kv_store);
 
-    Ok(KeyValueRejectedDeployBuffer { store: buffer_db })
+    let envelope_kv_store = kvm
+        .store("rejected_envelope_buffer".to_string())
+        .await
+        .map_err(|e| {
+            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+                "Failed to get rejected_envelope_buffer store: {:?}",
+                e
+            ))
+        })?;
+    Ok(KeyValueRejectedDeployBuffer {
+        store: buffer_db,
+        envelope_store: KeyValueTypedStoreImpl::new(envelope_kv_store),
+    })
 }
 
 pub async fn casper_buffer_storage_from_dyn(

@@ -10,22 +10,21 @@
 //! | `space_temp_swept_at_deploy_end` | The program of each family with `default` leaves durable space channels with records or waiters before the checkpoint, and with `temp` leaves no space channel at all. |
 //! | `space_temp_join_swept` | A parked join of a `temp` space and its join entries are swept. |
 //! | `space_temp_failed_deploy_reverts` | A `temp` deploy that aborts (`CellOccupied`) is swept on the `Err` path, and native replay reproduces the failure. |
-//! | `space_temp_many_volatile_keys_export` | A deploy with forty volatile collections certifies: the swept keys are root-neutral deletes that the native export meters (VR-10). |
+//! | `space_temp_many_volatile_keys_export` | A deploy with forty volatile collections certifies: the swept keys are root-neutral deletes of the native export (VR-10). |
 //! | `reified_ephemeral_dangling_next_deploy` | A handle and a name of a `temp` space that an earlier deploy stored fail in a later deploy at every entry point of DG-1: a send and a receive on the name (`DanglingName`), a handle call, `use` and `new x : h` (`DanglingHandle`), `getSpaceAgent` (typed reply with the space id), and a parked continuation that fires into the dead space. Each error names the space id, and native replay reproduces each deploy. |
 //! | `reified_ephemeral_dangling_charge_is_fixed` | The failing deploy costs the same phlo whatever the dead space held (DG-4). |
 //! | `reified_ephemeral_cost_charged` | A `temp` program pays phlo, and it emits as many produce, consume and COMM events as the same program with `default` (QT-3). |
-//! | `reified_sweep_runs_at_each_entry_point_native` | Native play, native replay and the exploratory entry `RhoRuntime::inj` sweep. The unit tests `reified_sweep_runs_at_each_entry_point_*` of the reducer hooks cover `inj`, `inj_with_observation` and `inj_with_host_work` directly. |
+//! | `reified_sweep_runs_at_each_entry_point_native` | Native play, native replay and the exploratory entry `RhoRuntime::inj` sweep. The unit tests `reified_sweep_runs_at_each_entry_point_*` of the reducer hooks cover `inj` and `inj_with_observation` directly. |
 //! | `reducer_qualifier_matrix` | In native execution the factories accept `default`, `temp` and `seq` on every family with a schema but HashSet. A HashSet factory takes only `seq` and refuses `default` and `temp` with `BadConstructorArgument` (HS-6). Legacy execution refuses `seq` with `QualifierUnavailable` (QT-5). A `temp` or `seq` space takes no `mirror` (`InvalidParam`). |
 //! | `reified_handle_qualifier_method_temp_seq` | The handle method `qualifier` of a `temp` space replies `"temp"`, and of a `seq` space `"seq"`. |
 //! | `reified_fips_example_temp_pathmap` | The example code of the FIPS with a `temp` PathMap space: names of both spaces in one `new`, a forged name in `use`, a same-space join and a sequential receive, `getSpaceAgent` and `assertEqual`. The handles name the same spaces inside and outside the `new` block, the deploy certifies, and the sweep removes the `temp` space. |
-//! | `prop_sweep_complete` | For generated `temp` programs of every family with extra stores and waiters, the hot store holds no volatile channel after the deploy, on the `Ok` and the `Err` path, and native replay reproduces the play. The property runs with a host-work budget above the v6 limits (`sweep_host_work`). |
+//! | `prop_sweep_complete` | For generated `temp` programs of every family with extra stores and waiters, the hot store holds no volatile channel after the deploy, on the `Ok` and the `Err` path, and native replay reproduces the play. |
 
 #[path = "support/mod.rs"]
 mod support;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::reified::builders;
 use models::rust::reified::params::SendParam;
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter, SpaceQualifier};
@@ -33,7 +32,6 @@ use models::rust::utils::{new_elist_par, new_gbool_par, new_gint_par, new_gstrin
 use proptest::prelude::{prop_oneof, Just, Strategy};
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
 use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
 use rholang::rust::interpreter::spaces::factory::defaults::constructor_schema;
@@ -41,8 +39,7 @@ use rholang::rust::interpreter::spaces::namespace::{self, Durability, ReifiedId,
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 use support::family_programs::{program_with, space_program, Inner, Outer, JOIN};
 use support::native::{
-    assert_reproduces, certify, certify_with, native_play, native_play_with, NativeChain, Played,
-    AMPLE_LIMIT, OUT,
+    assert_reproduces, certify, native_play, NativeChain, Played, AMPLE_LIMIT, OUT,
 };
 use support::props::{check, runtime_config, tokio_runtime};
 
@@ -222,8 +219,8 @@ async fn space_temp_failed_deploy_reverts() {
     assert_eq!(error_codes(&played.result.errors), vec!["CellOccupied"]);
 }
 
-/// Forty collections of one `temp` space in one deploy: the native export of the certification
-/// meters every swept key (VR-10), and the play certifies.
+/// Forty collections of one `temp` space in one deploy: every swept key is a root-neutral delete
+/// of the native export of the certification (VR-10), and the play certifies.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_temp_many_volatile_keys_export() {
     let names: Vec<String> = (0..40).map(|i| format!("f{i}")).collect();
@@ -754,28 +751,19 @@ fn sweep_cases() -> impl Strategy<Value = SweepCase> {
     })
 }
 
-/// The host-work budget of the property: 2^40 units in each dimension. Native replay also pays
-/// the journal check, the trace binding and the export, so a PathMap program with extra records
-/// and waiters exceeds the v6 `VerificationBytes` limit of 2^28 in replay with either qualifier.
-/// Measured for `pathmap:set` with two records and one waiter: 281,191,770 bytes with `temp` and
-/// 284,583,181 with `default`. The property checks the sweep, not the v6 limits.
-fn sweep_host_work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)))
-}
-
 #[test]
 fn prop_sweep_complete() {
     check(runtime_config(), sweep_cases(), |case| {
         let term = case.term();
         tokio_runtime().block_on(async {
-            let played = native_play_with(&term, AMPLE_LIMIT, sweep_host_work()).await;
+            let played = native_play(&term, AMPLE_LIMIT).await;
             if !played.residue.is_empty() {
                 return Err(TestCaseError::fail(format!(
                     "{case:?}: volatile residue {:?}",
                     played.residue
                 )));
             }
-            let certification = certify_with(&played, &term, AMPLE_LIMIT, sweep_host_work()).await;
+            let certification = certify(&played, &term, AMPLE_LIMIT).await;
             assert_reproduces(&format!("{case:?}"), &played, &certification);
             Ok(())
         })

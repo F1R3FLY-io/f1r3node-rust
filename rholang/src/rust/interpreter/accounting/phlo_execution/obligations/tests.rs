@@ -99,11 +99,6 @@ fn projection_groups_identical_fresh_resources_without_rebilling_prepaid_resourc
     );
 }
 
-fn funding_work() -> HostWorkBudget {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
-
 fn selection_limits() -> PhloObligationFundingLimits {
     use crate::rust::interpreter::accounting::monetary_allocation::FundingSearchLimits;
     PhloObligationFundingLimits {
@@ -138,7 +133,7 @@ fn checked_obligations_use_joint_fee_policy_and_feed_native_family_settlement() 
         canonical_fee_cursor: 1,
     };
     let selected = obligations
-        .select_funding(input, selection_limits(), &funding_work())
+        .select_funding(input, selection_limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.assignment(), &[vec![0, 2], vec![1, 0]]);
@@ -150,7 +145,7 @@ fn checked_obligations_use_joint_fee_policy_and_feed_native_family_settlement() 
         fee_next_cursor: selected.fee_next_cursor(),
     };
     assert!(obligations
-        .verify_funding(input, proposal, selection_limits(), &funding_work())
+        .verify_funding(input, proposal, selection_limits())
         .unwrap());
     assert!(!obligations
         .verify_funding(
@@ -159,8 +154,7 @@ fn checked_obligations_use_joint_fee_policy_and_feed_native_family_settlement() 
                 resource_next_cursor: None,
                 ..proposal
             },
-            selection_limits(),
-            &funding_work()
+            selection_limits()
         )
         .unwrap());
     assert!(!obligations
@@ -170,8 +164,7 @@ fn checked_obligations_use_joint_fee_policy_and_feed_native_family_settlement() 
                 fee_next_cursor: None,
                 ..proposal
             },
-            selection_limits(),
-            &funding_work()
+            selection_limits()
         )
         .unwrap());
     assert!(!obligations
@@ -181,8 +174,7 @@ fn checked_obligations_use_joint_fee_policy_and_feed_native_family_settlement() 
                 assignment: &[vec![1, 1], vec![0, 1]],
                 ..proposal
             },
-            selection_limits(),
-            &funding_work()
+            selection_limits()
         )
         .unwrap());
     let sources = [
@@ -237,8 +229,7 @@ fn checked_obligations_use_joint_fee_policy_and_feed_native_family_settlement() 
                 capacities: &[1, 1],
                 ..input
             },
-            selection_limits(),
-            &funding_work()
+            selection_limits()
         )
         .unwrap()
         .is_none());
@@ -248,8 +239,7 @@ fn checked_obligations_use_joint_fee_policy_and_feed_native_family_settlement() 
                 source_keys: &[b"A", b"A"],
                 ..input
             },
-            selection_limits(),
-            &funding_work()
+            selection_limits()
         )
         .is_err());
 }
@@ -277,7 +267,7 @@ fn uncharged_outcomes_preserve_both_cursors_and_prepaid_success_charges_only_fee
         )
         .unwrap();
         let selected = obligations
-            .select_funding(input, selection_limits(), &funding_work())
+            .select_funding(input, selection_limits())
             .unwrap()
             .unwrap();
         assert_eq!(selected.assignment(), &[vec![0, 0], vec![0, 0]]);
@@ -298,7 +288,6 @@ fn uncharged_outcomes_preserve_both_cursors_and_prepaid_success_charges_only_fee
                 ..input
             },
             selection_limits(),
-            &funding_work(),
         )
         .unwrap()
         .unwrap();
@@ -329,13 +318,13 @@ proptest! {
             canonical_resource_cursor: resource_seed % capacities.len(),
             canonical_fee_cursor: fee_seed % capacities.len(),
         };
-        let selected = obligations.select_funding(input, selection_limits(), &funding_work()).unwrap();
+        let selected = obligations.select_funding(input, selection_limits()).unwrap();
         prop_assert_eq!(selected.is_some(), capacities.iter().sum::<u64>() >= obligations.total());
         let reversed_keys: Vec<_> = source_keys.iter().copied().rev().collect();
         let reversed_capacities: Vec<_> = capacities.iter().copied().rev().collect();
         let reversed = obligations.select_funding(PhloObligationFundingInput {
             source_keys: &reversed_keys, capacities: &reversed_capacities, ..input
-        }, selection_limits(), &funding_work()).unwrap();
+        }, selection_limits()).unwrap();
         match (selected, reversed) {
             (Some(selected), Some(reversed)) => {
                 prop_assert_eq!(selected.totals().total(), obligations.total());
@@ -362,12 +351,9 @@ fn wire_limits() -> PhloObligationKeyLimits {
 
 #[test]
 fn phlo_obligation_keys_bind_checked_resources_to_canonical_graphs() {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-
     use crate::rust::interpreter::accounting::monetary_allocation::{
         canonicalize_funding_problem, FundingMinimaxProblem, FundingSearchLimits,
     };
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     let authority = Sig::Ground(vec![1]);
     let resources = [
         resource(&authority),
@@ -397,7 +383,6 @@ fn phlo_obligation_keys_bind_checked_resources_to_canonical_graphs() {
     assert_eq!(obligations.amounts(), &[1, 4, 2]);
     assert_ne!(keys[1], keys[2]);
     let references: Vec<_> = keys.iter().map(Vec::as_slice).collect();
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
     let canonical = canonicalize_funding_problem(
         FundingMinimaxProblem {
             capacities: &[4, 4],
@@ -410,7 +395,6 @@ fn phlo_obligation_keys_bind_checked_resources_to_canonical_graphs() {
             source_cap: cap(2),
             obligation_cap: cap(4),
         },
-        &budget,
     )
     .unwrap();
     assert_eq!(canonical.obligation_keys()[0], keys[0]);
@@ -445,86 +429,6 @@ fn phlo_obligation_key_encoding_enforces_aggregate_limits_even_when_unbilled() {
         );
         nodes.authority_nodes = 1;
         assert_eq!(obligations.encoded_keys(nodes, 65_536).unwrap(), expected);
-    }
-}
-
-#[test]
-fn metered_phlo_keys_charge_actual_structure_not_configured_byte_ceilings() {
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-    let authority = Sig::And(
-        Box::new(Sig::Ground(vec![1])),
-        Box::new(Sig::Quote(vec![2])),
-    );
-    let resources = [resource(&authority); 2];
-    let checked = execution(&SCHEDULES, &[], &resources, &resources);
-    let obligations =
-        project_phlo_obligations(checked, PhloOutcome::Accepted(&[]), cap(3)).unwrap();
-    let expected = obligations.encoded_keys(wire_limits(), 65_536).unwrap();
-    let actual_bytes = expected.iter().map(Vec::len).sum::<usize>();
-    let generous = || HostWorkLimits::uniform(HostWorkLimit::new(1_000_000));
-    let baseline = HostWorkBudget::new(generous());
-    assert_eq!(
-        obligations
-            .encoded_keys_with_budget(wire_limits(), actual_bytes, &baseline)
-            .unwrap(),
-        expected
-    );
-    let enlarged = HostWorkBudget::new(generous());
-    assert_eq!(
-        obligations
-            .encoded_keys_with_budget(wire_limits(), usize::MAX, &enlarged)
-            .unwrap(),
-        expected
-    );
-    assert_eq!(baseline.usages(), enlarged.usages());
-    assert!(baseline.usage(HostWorkDimension::SearchStateBytes).get() > actual_bytes as u64);
-    for dimension in [
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let measured = baseline.usage(dimension).get();
-        for allowed in 0..=measured {
-            let mut limits = generous();
-            limits.set(dimension, HostWorkLimit::new(allowed));
-            let budget = HostWorkBudget::new(limits);
-            let result = obligations.encoded_keys_with_budget(wire_limits(), actual_bytes, &budget);
-            if allowed == measured {
-                assert_eq!(result.unwrap(), expected);
-            } else {
-                assert!(matches!(
-                    result,
-                    Err(PhloObligationError::Execution(
-                        PhloExecutionError::HostWork(_)
-                    ))
-                ));
-                assert!(budget.is_rejected());
-            }
-            assert!(budget.usage(dimension).get() <= allowed);
-        }
-    }
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
-    #[test]
-    fn metered_phlo_keys_preserve_encoding_for_generated_compound_occurrences(
-        owners in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..16), 1..24),
-        count in 0usize..8, unbilled in any::<bool>(),
-    ) {
-        use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-        let mut authority = Sig::Ground(owners[0].clone());
-        for owner in &owners[1..] {
-            authority = Sig::And(Box::new(authority), Box::new(Sig::Quote(owner.clone())));
-        }
-        let resources = vec![resource(&authority); count];
-        let checked = execution(&SCHEDULES, &[], &resources, &resources);
-        let outcome = if unbilled { PhloOutcome::AdmissionRejected } else { PhloOutcome::Accepted(&[]) };
-        let obligations = project_phlo_obligations(checked, outcome, cap(count + 1)).unwrap();
-        let limits = PhloObligationKeyLimits { authority_nodes: 1024, ..wire_limits() };
-        let expected = obligations.encoded_keys(limits, 1_048_576).unwrap();
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)));
-        let encoded = obligations.encoded_keys_with_budget(limits, 1_048_576, &budget).unwrap();
-        prop_assert_eq!(encoded, expected);
     }
 }
 
@@ -759,7 +663,7 @@ proptest! {
             source_keys: &source_keys, capacities: &capacities, eligible: &compact_edges,
             canonical_resource_cursor: resource_cursor % capacities.len(),
             canonical_fee_cursor: fee_cursor % capacities.len(),
-        }, selection_limits(), &funding_work()).unwrap();
+        }, selection_limits()).unwrap();
         let encoded: Vec<_> = expanded.iter().map(|r| PhloObligationKeyV1::Resource(
             r.wire_key(reference.limits).unwrap()).encode(wire_limits()).unwrap()).collect();
         let keys: Vec<_> = encoded.iter().map(Vec::as_slice).collect();
@@ -769,9 +673,9 @@ proptest! {
         let fee_edges: Vec<_> = permissions[..capacities.len()].iter().map(|bits| bits[0]).collect();
         let old = canonicalize_funding_problem(FundingMinimaxProblem {
             capacities: &capacities, obligations: &amounts, eligible: &edges,
-        }, &source_keys, &keys, selection_limits().search, &funding_work()).unwrap();
+        }, &source_keys, &keys, selection_limits().search).unwrap();
         let selected = old.select_with_unit_fee(&fee_edges, resource_cursor % capacities.len(),
-            fee_cursor % capacities.len(), selection_limits().search, &funding_work()).unwrap();
+            fee_cursor % capacities.len(), selection_limits().search).unwrap();
         prop_assert_eq!(new.is_some(), selected.is_some());
         if let (Some(new), Some(old)) = (new, selected) {
             prop_assert_eq!(new.resource_next_cursor(), old.resource_next_cursor());

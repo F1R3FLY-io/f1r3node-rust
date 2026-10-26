@@ -24,13 +24,11 @@ use models::rust::rholang::implicits::single_bundle;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
-use super::costs::ScanMeter;
 use super::errors::ReifiedReduceError;
 use super::route::{agent_parts, route, Route};
 use super::runtime::ReifiedRuntime;
 use super::system_processes::native_agent;
 use super::{seq, user_agent};
-use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::execution_space::{
     ConsumeResult, ExecutionBackend, ExecutionSpace, ProduceResult,
@@ -110,13 +108,10 @@ impl RoutingExecution {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<ProduceResult, RSpaceError> {
-        let meter = ScanMeter::new(
-            deterministic_reduction::current().and_then(|context| context.host_work_budget()),
-        );
         let seq = self.runtime.seq_spaces();
         if !seq.is_empty() {
-            seq::check_send(channel, &data.pars, &seq, &meter)
-                .and_then(|()| seq::check_send(channel, std::slice::from_ref(&raw), &seq, &meter))
+            seq::check_send(channel, &data.pars, &seq)
+                .and_then(|()| seq::check_send(channel, std::slice::from_ref(&raw), &seq))
                 .map_err(|error| backend_error(error.into()))?;
         }
         if persistent {
@@ -125,7 +120,7 @@ impl RoutingExecution {
             ));
         }
         let (call, call_data) =
-            user_agent::produce_call(&agent, raw, data, &meter).map_err(backend_error)?;
+            user_agent::produce_call(&agent, raw, data).map_err(backend_error)?;
         self.produce(call, call_data, false).await
     }
 }
@@ -153,8 +148,8 @@ pub fn r7_route(channel: &Par) -> Result<Route, SpaceError> {
     }
 }
 
-/// The error of a routed produce as the backend returns it. A phlo failure and a host-work
-/// failure keep their class, and every other failure keeps its `reified:<Code>:` text.
+/// The error of a routed produce as the backend returns it. A phlo failure keeps its class, and
+/// every other failure keeps its `reified:<Code>:` text.
 fn backend_error(error: InterpreterError) -> RSpaceError { RSpaceError::from(error) }
 
 #[async_trait]
@@ -510,6 +505,7 @@ mod tests {
                     None,
                     CostAuthority::default(),
                     CostAuthority::default(),
+                    None,
                 )
                 .await?;
                 let reply = fixture
@@ -664,16 +660,12 @@ mod tests {
         assert!(fixture.host.get_data(&collection).await.is_empty());
     }
 
-    /// A phlo or host-work failure keeps its class, and every other failure keeps its code.
+    /// A phlo failure keeps its class, and every other failure keeps its code.
     #[test]
     fn reducer_space_routing_r7_errors_keep_their_class() {
         assert_eq!(
             backend_error(InterpreterError::OutOfPhlogistonsError),
             RSpaceError::OutOfPhlogistons
-        );
-        assert_eq!(
-            backend_error(InterpreterError::HostWorkRejected),
-            RSpaceError::HostWorkRejected
         );
         // Changed by P8 step 4: `AgentSpacesUnavailable` is retired, so another code of the
         // hooks shows the rule.

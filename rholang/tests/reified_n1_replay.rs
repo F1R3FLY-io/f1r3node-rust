@@ -15,12 +15,11 @@
 //! | `n1_k_comm_replay_equal` | COMMs with more than one produce replay: a same-space join, a set retirement over `[D; n]` and a VectorDB list delivery. |
 //! | `n1_trace_binding_rejects_swapped_events` | Negative control: the committed log with two adjacent events swapped fails the trace binding. |
 //! | `n1_trace_binding_rejects_permuted_comm` | Negative control: the committed log with the produce list of a COMM permuted fails the trace binding. |
-//! | `n9_run_twice_assert_canonical_equal` | Two fresh native runtimes give the same roots, outputs, logs, evidence bytes, phlo and host work for the 24 family programs and for the conformance kit of the reference agent. |
+//! | `n9_run_twice_assert_canonical_equal` | Two fresh native runtimes give the same roots, outputs, logs, evidence bytes and phlo for the 24 family programs and for the conformance kit of the reference agent. |
 //!
 //! Each program forwards each delivery to the public channel `rrs-native-out`, so the post-state
 //! root witnesses the order of the deliveries. The costs of N1 are the phlo usage, the budget
-//! usage, the authority events and the byte observations. N9 also compares the host work, play
-//! against play, because native replay charges more host work than play (decision 79).
+//! usage, the authority events and the byte observations.
 //!
 //! The other rows of N1 are existing tests: the 24 family programs
 //! (`reified_native_spaces.rs`, `space_native_replay_equal_*`), every VectorDB query shape
@@ -38,7 +37,7 @@ use support::family_programs::{
     JOIN, KIT_NAMES,
 };
 use support::native::{
-    assert_reproduces, certify, committed_evidence, host_work, replay_environment_from,
+    assert_reproduces, certify, committed_evidence, replay_environment_from,
     run_twice_assert_canonical_equal, NativeChain, Played, AMPLE_LIMIT, OUT,
 };
 use support::session::error_codes;
@@ -268,16 +267,9 @@ async fn n1_k_comm_replay_equal() {
 /// The trace binding of `played` over the log `log`: `Ok` when the binding accepts it.
 async fn bind(played: &Played, log: Vec<Event>) -> Result<(), String> {
     let (recording, journal) = committed_evidence(played);
-    replay_environment_from(
-        played.history.clone(),
-        log,
-        LIMIT,
-        &recording,
-        journal,
-        host_work(),
-    )
-    .await
-    .map(|_| ())
+    replay_environment_from(played.history.clone(), log, LIMIT, &recording, journal)
+        .await
+        .map(|_| ())
 }
 
 /// The play of the join program, whose log holds a COMM with two produces.
@@ -339,8 +331,8 @@ async fn n1_trace_binding_rejects_permuted_comm() {
 // ─── N9 ────────────────────────────────────────────────────────────────────────────────────────
 
 /// Two fresh native runtimes give the same canonical run: the roots, the outputs, the event
-/// logs, the evidence bytes, the phlo usage and the host work of each deploy. The deploy sets
-/// are the 24 family programs on one chain, and the conformance kit of the reference agent.
+/// logs, the evidence bytes and the phlo usage of each deploy. The deploy sets are the 24 family
+/// programs on one chain, and the conformance kit of the reference agent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn n9_run_twice_assert_canonical_equal() {
     let families: Vec<String> = Outer::ALL

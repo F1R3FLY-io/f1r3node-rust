@@ -1,16 +1,12 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_obligation::PhloObligationKeyLimits;
 use thiserror::Error;
 
 use super::{CheckedPhloFundingIntent, PhloFundingSource, PhloObligationError, PhloObligationKey};
 use crate::rust::interpreter::accounting::monetary_allocation::{
-    canonicalize_funding_problem, check_funding_assignment, filled_vec, reserve_work,
-    FundingAssignmentError, FundingIdentityError, FundingMinimaxProblem, FundingReservationError,
-    FundingSearchError, FundingSearchLimits,
+    canonicalize_funding_problem, check_funding_assignment, filled_vec, FundingAssignmentError,
+    FundingIdentityError, FundingMinimaxProblem, FundingReservationError, FundingSearchError,
+    FundingSearchLimits,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PhloCaptureLimits {
@@ -120,7 +116,6 @@ impl<'a> CheckedPhloFundingIntent<'a> {
         self,
         branch: usize,
         limits: PhloCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<CanonicalPhloFundingCapture<'a>, PhloCaptureError> {
         let family = self.bound().consent().family();
         let case = family
@@ -137,24 +132,9 @@ impl<'a> CheckedPhloFundingIntent<'a> {
                 FundingSearchError::from(FundingAssignmentError::TooManyObligations).into(),
             );
         }
-        let cells = n.checked_mul(m).ok_or(FundingSearchError::Overflow)?;
-        let preparation = n
-            .checked_add(m)
-            .and_then(|x| x.checked_add(cells))
-            .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(budget, HostWorkDimension::SearchCandidates, preparation)?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            preparation
-                .checked_mul(size_of::<u64>() + size_of::<&[u8]>())
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-        let keys = case.obligations.encoded_keys_with_budget(
-            limits.key,
-            limits.aggregate_key_bytes,
-            budget,
-        )?;
+        let keys = case
+            .obligations
+            .encoded_keys(limits.key, limits.aggregate_key_bytes)?;
         let mut source_keys = filled_vec(n, &[][..])?;
         let mut capacity = filled_vec(n, 0_u64)?;
         let mut key_refs = filled_vec(m, &[][..])?;
@@ -174,34 +154,6 @@ impl<'a> CheckedPhloFundingIntent<'a> {
             &source_keys,
             &key_refs,
             limits.funding,
-            budget,
-        )?;
-        let total_keys = keys
-            .iter()
-            .try_fold(0_usize, |sum, key| sum.checked_add(key.len()))
-            .ok_or(FundingSearchError::Overflow)?;
-        let bytes = n
-            .checked_mul(
-                size_of::<CapturedPhloSource>() + size_of::<Vec<bool>>() + size_of::<Vec<u64>>(),
-            )
-            .and_then(|x| {
-                m.checked_mul(size_of::<Vec<u8>>() + size_of::<u64>() + size_of::<usize>())
-                    .and_then(|y| x.checked_add(y))
-            })
-            .and_then(|x| {
-                cells
-                    .checked_mul(size_of::<u64>() + size_of::<bool>())
-                    .and_then(|y| x.checked_add(y))
-            })
-            .and_then(|x| x.checked_add(total_keys))
-            .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchCandidates,
-            preparation
-                .checked_add(total_keys)
-                .ok_or(FundingSearchError::Overflow)?,
         )?;
         let mut sources = Vec::new();
         sources
@@ -258,18 +210,6 @@ impl<'a> CheckedPhloFundingIntent<'a> {
             amounts[j] = case.obligations.amounts()[original];
             original_obligation_positions[j] = original;
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            preparation,
-        )?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            n.checked_add(m)
-                .and_then(|x| x.checked_mul(size_of::<u64>()))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         let checked = check_funding_assignment(
             canonical.problem().capacities,
             &amounts,
@@ -286,12 +226,6 @@ impl<'a> CheckedPhloFundingIntent<'a> {
         {
             return Err(FundingSearchError::InvalidResult.into());
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            n.checked_mul(size_of::<usize>())
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         let mut original_source_positions = Vec::new();
         original_source_positions
             .try_reserve_exact(n)

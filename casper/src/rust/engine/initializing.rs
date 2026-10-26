@@ -17,7 +17,6 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use dashmap::DashSet;
 use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
@@ -36,6 +35,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 use crate::rust::block_status::ValidBlock;
+use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
@@ -83,9 +83,8 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
 
     // Block processing queue - matches Scala's blockProcessingQueue: Queue[F, (Casper[F], BlockMessage)]
     // Using trait object to support different MultiParentCasper implementations
-    block_processing_queue_tx:
-        mpsc::Sender<(Arc<dyn MultiParentCasper + Send + Sync>, BlockMessage)>,
-    blocks_in_processing: Arc<DashSet<BlockHash>>,
+    block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+    blocks_in_processing: Arc<InFlightBlocks>,
     casper_shard_conf: CasperShardConf,
     validator_id: Option<ValidatorIdentity>,
     the_init: Arc<
@@ -265,11 +264,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         casper_buffer_storage: CasperBufferKeyValueStorage,
         rspace_state_manager: RSpaceStateManager,
-        block_processing_queue_tx: mpsc::Sender<(
-            Arc<dyn MultiParentCasper + Send + Sync>,
-            BlockMessage,
-        )>,
-        blocks_in_processing: Arc<DashSet<BlockHash>>,
+        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
+        blocks_in_processing: Arc<InFlightBlocks>,
         casper_shard_conf: CasperShardConf,
         validator_id: Option<ValidatorIdentity>,
         the_init: Arc<

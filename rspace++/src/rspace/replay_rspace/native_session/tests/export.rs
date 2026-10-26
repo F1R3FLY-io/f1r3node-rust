@@ -2,7 +2,6 @@ use std::panic::AssertUnwindSafe;
 
 use super::*;
 use crate::rspace::errors::HistoryError;
-use crate::rspace::history::native_reader::measure_allocations;
 use crate::rspace::hot_store_action::{
     DeleteAction, DeleteContinuations, DeleteData, DeleteJoins, HotStoreAction, InsertAction,
     InsertContinuations, InsertData, InsertJoins,
@@ -48,163 +47,40 @@ fn checkpoint_actions() -> Vec<HotStoreAction<String, String, String, String>> {
     ]
 }
 
+/// Changed by DR-131 S6: the test was
+/// `empty_native_checkpoint_prepays_repository_clone`. The allocation and
+/// cut checks went with host work. The test keeps its check that an empty
+/// checkpoint keeps the root.
 #[tokio::test]
-async fn native_checkpoint_preparation_prepays_requested_allocation() {
-    let session = session().await;
-    let history = session.space.get_history_repository();
-    for factor in [0, 1, 64, 256] {
-        let actions = if factor == 0 {
-            vec![HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData {
-                channel: "absent".to_owned(),
-            }))]
-        } else {
-            let mut actions = checkpoint_actions();
-            let channel = format!("payload-{factor}");
-            actions.push(HotStoreAction::Insert(InsertAction::InsertData(InsertData {
-                channel: channel.clone(),
-                data: vec![Datum::create(&channel, "value".repeat(factor), false)],
-            })));
-            actions
-        };
-        let backing = std::cell::Cell::new(0usize);
-        let (prepared, allocated) = measure_allocations(|| {
-            history.prepare_native_checkpoint(actions, &|_, _, bytes| {
-                backing.set(
-                    backing
-                        .get()
-                        .checked_add(bytes)
-                        .ok_or(RSpaceError::HostWorkRejected)?,
-                );
-                Ok(())
-            })
-        });
-        prepared.unwrap();
-        assert!(
-            allocated <= backing.get(),
-            "factor={factor}, allocated={allocated}, paid={}",
-            backing.get()
-        );
-    }
-}
-
-#[tokio::test]
-async fn native_checkpoint_prepays_commit_allocation() {
-    for factor in [0, 1, 64, 256] {
-        let session = session().await;
-        let history = session.space.get_history_repository();
-        let mut actions = checkpoint_actions();
-        let channel = format!("commit-payload-{factor}");
-        actions.push(HotStoreAction::Insert(InsertAction::InsertData(InsertData {
-            channel: channel.clone(),
-            data: vec![Datum::create(&channel, "value".repeat(factor), false)],
-        })));
-        let backing = std::cell::Cell::new(0usize);
-        let (committed, allocated) = measure_allocations(|| {
-            let prepared = history.prepare_native_checkpoint(actions, &|_, _, bytes| {
-                backing.set(
-                    backing
-                        .get()
-                        .checked_add(bytes)
-                        .ok_or(RSpaceError::HostWorkRejected)?,
-                );
-                Ok(())
-            })?;
-            history.commit_native_checkpoint(prepared)
-        });
-        committed.unwrap();
-        assert!(
-            allocated <= backing.get(),
-            "factor={factor}, allocated={allocated}, paid={}",
-            backing.get()
-        );
-    }
-}
-
-#[tokio::test]
-async fn empty_native_checkpoint_prepays_repository_clone() {
+async fn empty_native_checkpoint_keeps_the_root() {
     let session = session().await;
     let history = session.space.get_history_repository();
     let original = history.root();
-    let calls = std::cell::Cell::new(0usize);
-    let reserved = std::cell::Cell::new(0usize);
-    let final_backing = std::cell::Cell::new(0usize);
-    let (committed, allocated) = measure_allocations(|| {
-        let prepared = history.prepare_native_checkpoint(Vec::new(), &|_, _, backing| {
-            calls.set(calls.get() + 1);
-            reserved.set(
-                reserved
-                    .get()
-                    .checked_add(backing)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-            );
-            final_backing.set(backing);
-            Ok(())
-        })?;
-        history.commit_native_checkpoint(prepared)
-    });
-    assert_eq!(committed.unwrap().root(), original);
-    assert!(allocated <= reserved.get());
-    assert!(
-        final_backing.get() >=
-            std::mem::size_of::<
-                crate::rspace::history::history_repository_impl::HistoryRepositoryImpl<
-                    String,
-                    String,
-                    String,
-                    String,
-                >,
-            >()
-    );
-    let remaining = std::cell::Cell::new(calls.get() - 1);
-    assert!(matches!(
-        history.prepare_native_checkpoint(Vec::new(), &|_, _, _| {
-            if remaining.get() == 0 {
-                return Err(RSpaceError::HostWorkRejected);
-            }
-            remaining.set(remaining.get() - 1);
-            Ok(())
-        }),
-        Err(RSpaceError::HostWorkRejected)
-    ));
+    let prepared = history
+        .prepare_native_checkpoint(Vec::new())
+        .expect("an empty preparation");
+    assert_eq!(history.commit_native_checkpoint(prepared).unwrap().root(), original);
     assert_eq!(history.root(), original);
 }
 
+/// Changed by DR-131 S6: the test was
+/// `native_checkpoint_preparation_matches_legacy_and_rejects_every_short_cut`.
+/// The cut checks went with host work. The test keeps its checks that the
+/// preparation publishes nothing and that the commit equals the legacy
+/// checkpoint.
 #[tokio::test]
-async fn native_checkpoint_preparation_matches_legacy_and_rejects_every_short_cut() {
+async fn native_checkpoint_preparation_matches_legacy() {
     let native_session = session().await;
     let history = native_session.space.get_history_repository();
     let legacy_session = session().await;
     let legacy_history = legacy_session.space.get_history_repository();
     let actions = checkpoint_actions();
     let original = history.root();
-    let calls = std::cell::Cell::new(0);
-    let prepared = history
-        .prepare_native_checkpoint(actions.clone(), &|_, _, _| {
-            calls.set(calls.get() + 1);
-            Ok(())
-        })
-        .unwrap();
+    let prepared = history.prepare_native_checkpoint(actions.clone()).unwrap();
     assert_eq!(prepared.cold_actions.len(), 3);
     let staged_root = prepared.prepared_history.as_ref().unwrap().next.root();
     assert_ne!(staged_root, original);
     assert_eq!(history.root(), original);
-    assert!(calls.get() > actions.len());
-    for accepted in 0..calls.get() {
-        let remaining = std::cell::Cell::new(accepted);
-        assert!(
-            history
-                .prepare_native_checkpoint(actions.clone(), &|_, _, _| {
-                    if remaining.get() == 0 {
-                        return Err(RSpaceError::HostWorkRejected);
-                    }
-                    remaining.set(remaining.get() - 1);
-                    Ok(())
-                })
-                .is_err(),
-            "accepted={accepted}"
-        );
-        assert_eq!(history.root(), original);
-    }
     let legacy = legacy_history.checkpoint(actions);
     let native = history.commit_native_checkpoint(prepared).unwrap();
     assert_eq!(native.root(), staged_root);
@@ -226,83 +102,22 @@ async fn native_checkpoint_preparation_matches_legacy_and_rejects_every_short_cu
     );
 }
 
+/// Changed by DR-131 S6: the test was
+/// `no_op_native_checkpoint_reserves_root_copies_before_publication`. The
+/// charge and cut checks went with host work. The test keeps its checks that
+/// a no-op checkpoint stages and commits the original root.
 #[tokio::test]
-async fn no_op_native_checkpoint_reserves_root_copies_before_publication() {
+async fn no_op_native_checkpoint_keeps_the_root() {
     let session = session().await;
     let history = session.space.get_history_repository();
     let original = history.root();
     let actions = vec![HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData {
         channel: "absent".to_owned(),
     }))];
-    let calls = std::cell::Cell::new(0);
-    let prepared = history
-        .prepare_native_checkpoint(actions.clone(), &|_, _, _| {
-            calls.set(calls.get() + 1);
-            Ok(())
-        })
-        .unwrap();
+    let prepared = history.prepare_native_checkpoint(actions).unwrap();
     assert_eq!(prepared.prepared_history.as_ref().unwrap().next.root(), original);
-    assert!(calls.get() > 256);
-    for accepted in 0..calls.get() {
-        let remaining = std::cell::Cell::new(accepted);
-        assert!(
-            history
-                .prepare_native_checkpoint(actions.clone(), &|_, _, _| {
-                    if remaining.get() == 0 {
-                        return Err(RSpaceError::HostWorkRejected);
-                    }
-                    remaining.set(remaining.get() - 1);
-                    Ok(())
-                })
-                .is_err(),
-            "accepted={accepted}"
-        );
-        assert_eq!(history.root(), original);
-    }
+    assert_eq!(history.root(), original);
     assert_eq!(history.commit_native_checkpoint(prepared).unwrap().root(), original);
-}
-
-#[tokio::test]
-async fn every_prepublication_export_cut_preserves_the_live_session() {
-    let baseline = session().await;
-    put(&baseline, "retained").await;
-    let before = baseline.epoch.calls.load(Ordering::Relaxed);
-    baseline.export().await.unwrap();
-    let calls = baseline.epoch.calls.load(Ordering::Relaxed) - before;
-    assert!(calls > 0);
-    for accepted in 0..calls {
-        let session = session().await;
-        put(&session, "retained").await;
-        let root = session.space.get_history_repository().root();
-        *session.epoch.remaining_calls.lock().unwrap() = Some(accepted);
-        assert!(session.export().await.is_err(), "accepted={accepted}");
-        *session.epoch.remaining_calls.lock().unwrap() = None;
-        assert_eq!(session.space.get_history_repository().root(), root);
-        assert!(!session.unavailable.load(Ordering::Acquire));
-        assert!(!session.epoch.state.lock().unwrap().3);
-        assert_eq!(values(&session).await, ["retained"]);
-        session.export().await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn every_empty_export_cut_preserves_the_live_session() {
-    let baseline = session().await;
-    let before = baseline.epoch.calls.load(Ordering::Relaxed);
-    baseline.export().await.unwrap();
-    let calls = baseline.epoch.calls.load(Ordering::Relaxed) - before;
-    assert!(calls > 0);
-    for accepted in 0..calls {
-        let session = session().await;
-        let root = session.space.get_history_repository().root();
-        *session.epoch.remaining_calls.lock().unwrap() = Some(accepted);
-        assert!(session.export().await.is_err(), "accepted={accepted}");
-        *session.epoch.remaining_calls.lock().unwrap() = None;
-        assert_eq!(session.space.get_history_repository().root(), root);
-        assert!(!session.unavailable.load(Ordering::Acquire));
-        assert!(!session.epoch.state.lock().unwrap().3);
-        assert_eq!(session.export().await.unwrap().root(), &root);
-    }
 }
 
 #[tokio::test]
@@ -313,8 +128,7 @@ async fn duplicate_history_keys_reject_before_publication() {
     let duplicate = HotStoreAction::Delete(DeleteAction::DeleteData(DeleteData {
         channel: "same".to_owned(),
     }));
-    let result =
-        history.prepare_native_checkpoint(vec![duplicate.clone(), duplicate], &|_, _, _| Ok(()));
+    let result = history.prepare_native_checkpoint(vec![duplicate.clone(), duplicate]);
     assert!(matches!(result, Err(RSpaceError::HistoryError(HistoryError::ActionError(_)))));
     assert_eq!(history.root(), original);
 }
@@ -328,7 +142,7 @@ async fn prepared_history_rejects_a_foreign_repository_before_writes() {
     let original = source_history.root();
     let actions = checkpoint_actions();
     let prepared = source_history
-        .prepare_native_checkpoint(actions.clone(), &|_, _, _| Ok(()))
+        .prepare_native_checkpoint(actions.clone())
         .unwrap();
     assert!(matches!(
         target_history.commit_native_checkpoint(prepared),
@@ -337,23 +151,21 @@ async fn prepared_history_rejects_a_foreign_repository_before_writes() {
     assert_eq!(source_history.root(), original);
     assert_eq!(target_history.root(), original);
     let empty = source_history
-        .prepare_native_checkpoint(Vec::new(), &|_, _, _| Ok(()))
+        .prepare_native_checkpoint(Vec::new())
         .unwrap();
     assert!(matches!(
         target_history.commit_native_checkpoint(empty),
         Err(RSpaceError::InterpreterError(_))
     ));
     let prepared = source_history
-        .prepare_native_checkpoint(actions.clone(), &|_, _, _| Ok(()))
+        .prepare_native_checkpoint(actions.clone())
         .unwrap();
     let reset = source_history.reset(&original).unwrap();
     assert!(matches!(
         reset.commit_native_checkpoint(prepared),
         Err(RSpaceError::InterpreterError(_))
     ));
-    let prepared = source_history
-        .prepare_native_checkpoint(actions, &|_, _, _| Ok(()))
-        .unwrap();
+    let prepared = source_history.prepare_native_checkpoint(actions).unwrap();
     assert_ne!(
         source_history
             .commit_native_checkpoint(prepared)
@@ -369,7 +181,7 @@ async fn native_checkpoint_rejects_a_changed_prepared_root_before_publication() 
     let history = session.space.get_history_repository();
     let original = history.root();
     let mut prepared = history
-        .prepare_native_checkpoint(checkpoint_actions(), &|_, _, _| Ok(()))
+        .prepare_native_checkpoint(checkpoint_actions())
         .unwrap();
     let correct = prepared.root.clone().unwrap();
     let forged = Blake2b256Hash::new(b"different prepared root");
@@ -426,8 +238,12 @@ async fn empty_export_returns_the_original_root_and_closes_the_session() {
     assert!(session.close().await.is_err());
 }
 
+/// Changed by DR-131 S6: the test was
+/// `incomplete_or_host_rejected_export_preserves_the_live_session`. The
+/// host-work rejection went with host work. The test keeps its checks that
+/// an incomplete export preserves the live session.
 #[tokio::test]
-async fn incomplete_or_host_rejected_export_preserves_the_live_session() {
+async fn incomplete_export_preserves_the_live_session() {
     let session = session().await;
     put(&session, "first").await;
     let before = session.space.get_history_repository().root();
@@ -439,10 +255,6 @@ async fn incomplete_or_host_rejected_export_preserves_the_live_session() {
         .epoch
         .reject_complete
         .store(false, Ordering::Release);
-    session.epoch.reject_work.store(true, Ordering::Release);
-    assert!(session.export().await.is_err());
-    assert!(session.get_data(&"c".into()).await.is_err());
-    session.epoch.reject_work.store(false, Ordering::Release);
     assert_eq!(values(&session).await, ["first"]);
     assert_eq!(session.space.get_history_repository().root(), before);
     assert!(!session.epoch.state.lock().unwrap().3);

@@ -1975,44 +1975,50 @@ async fn replay_should_match_in_case_of_out_of_phlo_error() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn replay_should_match_in_case_of_user_execution_error() {
-    let ctx = TestContext::new().await;
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
-
-    let deploy = construct_deploy::source_deploy(
-        MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR.to_string(),
-        timestamp,
-        Some(300000), //Enough phlo
-        None,
-        None,
-        None,
-        Some(ctx.genesis_context.genesis_block.shard_id.clone()),
-    )
-    .expect("Failed to create deploy");
-
-    let mut node = TestNode::standalone(ctx.genesis_context)
-        .await
-        .expect("Failed to create standalone node");
-
-    let b = node
-        .add_block_from_deploys(&[deploy])
-        .await
-        .expect("Failed to add block");
-
-    assert_eq!(
-        b.body.deploys.len(),
-        1,
-        "Block should have exactly 1 deploy"
-    );
-
-    let deploy_cost = b.body.deploys[0].cost().cost;
-    assert_eq!(
-        deploy_cost, 300000,
-        "Deploy should consume all phlos (300000)"
-    );
-}
+// Disabled by I6 (epic 8946, D3): legacy accounting is forbidden under v6.
+// This test asserted the legacy charge of all phlo for a user error in a
+// legacy body-only deploy. The offered form is
+// `a_user_error_in_one_branch_is_published_as_a_charged_user_failure` in
+// `casper/tests/api/offered_funded_api_test.rs`. It checks the adopted policy
+// (economic-failure-policy-decisions.md:84) and one equal receipt on every node.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn replay_should_match_in_case_of_user_execution_error() {
+//     let ctx = TestContext::new().await;
+//
+//     let timestamp = std::time::SystemTime::now()
+//         .duration_since(std::time::UNIX_EPOCH)
+//         .unwrap()
+//         .as_millis() as i64;
+//
+//     let deploy = construct_deploy::source_deploy(
+//         MULTI_BRANCH_SAMPLE_TERM_WITH_ERROR.to_string(),
+//         timestamp,
+//         Some(300000), //Enough phlo
+//         None,
+//         None,
+//         None,
+//         Some(ctx.genesis_context.genesis_block.shard_id.clone()),
+//     )
+//     .expect("Failed to create deploy");
+//
+//     let mut node = TestNode::standalone(ctx.genesis_context)
+//         .await
+//         .expect("Failed to create standalone node");
+//
+//     let b = node
+//         .add_block_from_deploys(&[deploy])
+//         .await
+//         .expect("Failed to add block");
+//
+//     assert_eq!(
+//         b.body.deploys.len(),
+//         1,
+//         "Block should have exactly 1 deploy"
+//     );
+//
+//     let deploy_cost = b.body.deploys[0].cost().cost;
+//     assert_eq!(
+//         deploy_cost, 300000,
+//         "Deploy should consume all phlos (300000)"
+//     );
+// }

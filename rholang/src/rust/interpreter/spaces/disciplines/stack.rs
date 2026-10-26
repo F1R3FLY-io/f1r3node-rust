@@ -38,22 +38,18 @@
 //! The order comes from the `ord` of the envelopes, never from the list order of the store: the
 //! hot store inserts at the front, and a restart can load a list in another order. Two entries
 //! with one `ord` order by their bincode bytes, the greater bytes on top, so the head is a
-//! function of the entry set. The scan reserves each comparison of two orders, and on an equal
-//! order it encodes each entry at most once and reserves the comparison of the bytes
-//! (decision 42). Equal orders do not occur in a well-formed collection (`StackDiscipline.v`),
-//! but the path stays metered.
+//! function of the entry set. On an equal order the scan encodes each entry at most once and
+//! compares the bytes. Equal orders do not occur in a well-formed collection
+//! (`StackDiscipline.v`), but the scan still gives one head for them.
 //!
 //! The legacy stack (`spaces/collections/basic.rs` and `continuations.rs` of the legacy branch)
 //! popped the top of a vector and scanned every waiter, with no settle. Both are replaced.
 
 use std::cmp::Ordering;
-use std::mem::size_of;
 
 use models::rhoapi::Par;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use serde::Serialize;
 
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::{SettleOp, SpaceReissue};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{Cx, Discipline, Held, OpView, Ordered, Side};
@@ -72,11 +68,10 @@ impl Discipline for StackDiscipline {
     const SEND_PARAMS: &'static [&'static str] = &[];
 
     /// The entry with the greatest `(ord, bincode bytes)`, on both sides.
-    fn head_metered<T: Serialize>(
+    fn head<T: Serialize>(
         &self,
         _side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
         let mut top: Option<Top<'_, '_, T>> = None;
         for (index, entry) in entries.iter().enumerate() {
@@ -86,7 +81,7 @@ impl Discipline for StackDiscipline {
                     entry,
                     bytes: None,
                 },
-                Some(best) => best.challenge(index, entry, meter)?,
+                Some(best) => best.challenge(index, entry)?,
             });
         }
         Ok(top.map(|best| best.index))
@@ -95,15 +90,8 @@ impl Discipline for StackDiscipline {
     /// A fresh element has the greatest order of its side, so it always reaches the top.
     fn reaches_head(&self, _side: Side, _queued: usize) -> bool { true }
 
-    /// The greater order is on top, on both sides. The comparison is reserved first.
-    fn precedes(
-        &self,
-        _side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        meter.compare(size_of::<i64>(), size_of::<i64>())?;
+    /// The greater order is on top, on both sides.
+    fn precedes(&self, _side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
         Ok(ord > head)
     }
 
@@ -154,8 +142,7 @@ impl SettleView for StackView<'_> {
     /// record and its guard admits the match (decision 37: a head-only collection tests only its
     /// top). A record in flight was the top record when the settle lifted it, and a settle stores
     /// no record while one is in flight, so the record in flight is still the top record. An
-    /// empty side plans nothing and reads nothing. The scans reserve their buffers and envelope
-    /// decodes, the copies of the two tops, the payload decode and the match.
+    /// empty side plans nothing and reads nothing.
     fn next_fire(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -167,7 +154,6 @@ impl SettleView for StackView<'_> {
         if !in_flight.is_some() && cx.side_len(Side::Data)? == 0 {
             return Ok(None);
         }
-        let meter = cx.meter();
         let Some(waiter) = cx.head_waiter(self.discipline)? else {
             return Ok(None);
         };
@@ -179,7 +165,7 @@ impl SettleView for StackView<'_> {
         let (record, payload) = match in_flight.record() {
             Some(lifted) => (
                 BoundRecord::InFlight,
-                record::unwrap_datum_metered(&lifted.datum.a, meter)?.datum,
+                record::unwrap_datum(&lifted.datum.a)?.datum,
             ),
             None => {
                 let Some((index, top)) = cx.head_datum(self.discipline)? else {
@@ -187,7 +173,7 @@ impl SettleView for StackView<'_> {
                 };
                 let view_index = i32::try_from(index)
                     .map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))?;
-                let payload = record::unwrap_datum_metered(&top.a, meter)?.datum;
+                let payload = record::unwrap_datum(&top.a)?.datum;
                 (
                     BoundRecord::Stored {
                         datum: top,
@@ -206,9 +192,9 @@ impl SettleView for StackView<'_> {
         let Some(matched) = cx.matches(pattern, &payload, &waiter.continuation, held)? else {
             return Ok(None);
         };
-        let mut group = meter.buffer::<Par>(1)?;
-        group.push(meter.copy(cx.data_channel())?);
-        let mut bound = meter.buffer::<Bound>(1)?;
+        let mut group = Vec::<Par>::with_capacity(1);
+        group.push(cx.data_channel().clone());
+        let mut bound = Vec::<Bound>::with_capacity(1);
         bound.push(Bound { record, matched });
         Ok(Some(FirePlan {
             group,
@@ -226,17 +212,10 @@ struct Top<'e, 'a, T> {
 }
 
 impl<'e, 'a, T: Serialize> Top<'e, 'a, T> {
-    // The higher of `self` and `entry`: a greater `ord`, or an equal `ord` and greater bytes. The
-    // comparison of the two orders is reserved first. A tie encodes `entry` and, once per scan,
-    // the top entry, and reserves the comparison of the bytes. On equal bytes the earlier entry
-    // stays on top.
-    fn challenge(
-        self,
-        index: usize,
-        entry: &'e Ordered<'a, T>,
-        meter: &ScanMeter,
-    ) -> Result<Self, SpaceError> {
-        meter.compare(size_of::<i64>(), size_of::<i64>())?;
+    // The higher of `self` and `entry`: a greater `ord`, or an equal `ord` and greater bytes. A
+    // tie encodes `entry` and, once per scan, the top entry, and compares the bytes. On equal
+    // bytes the earlier entry stays on top.
+    fn challenge(self, index: usize, entry: &'e Ordered<'a, T>) -> Result<Self, SpaceError> {
         match entry.ord.cmp(&self.entry.ord) {
             Ordering::Greater => Ok(Top {
                 index,
@@ -247,10 +226,9 @@ impl<'e, 'a, T: Serialize> Top<'e, 'a, T> {
             Ordering::Equal => {
                 let top_bytes = match self.bytes {
                     Some(bytes) => bytes,
-                    None => bytes(self.entry.entry, meter)?,
+                    None => bytes(self.entry.entry)?,
                 };
-                let entry_bytes = bytes(entry.entry, meter)?;
-                meter.compare(entry_bytes.len(), top_bytes.len())?;
+                let entry_bytes = bytes(entry.entry)?;
                 match entry_bytes > top_bytes {
                     true => Ok(Top {
                         index,
@@ -268,12 +246,10 @@ impl<'e, 'a, T: Serialize> Top<'e, 'a, T> {
     }
 }
 
-// The bincode bytes of a tie-break, encoded with the meter of the job.
-fn bytes<T: Serialize>(entry: &T, meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    meter.encode(entry).map_err(|error| match error {
-        RSpaceError::HostWorkRejected => SpaceError::Host(RSpaceError::HostWorkRejected),
-        _ => SpaceError::Inconsistent("a collection entry is not serializable"),
-    })
+// The bincode bytes of a tie-break.
+fn bytes<T: Serialize>(entry: &T) -> Result<Vec<u8>, SpaceError> {
+    bincode::serialize(entry)
+        .map_err(|_| SpaceError::Inconsistent("a collection entry is not serializable"))
 }
 
 #[cfg(test)]
@@ -286,7 +262,6 @@ mod tests {
     use models::rhoapi::{
         BindPattern, CostAuthority, ListParWithRandom, ParWithRandom, TaggedContinuation,
     };
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
     use models::rust::utils::{new_freevar_var, new_gint_par, new_gstring_par};
     use rspace_plus_plus::rspace::hashing::stable_hash_provider;
@@ -300,7 +275,6 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::RuntimeBudget;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::spaces::agent::{
         run_op, ConsumeOp, ProduceOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
@@ -422,73 +396,13 @@ mod tests {
         }
     }
 
-    fn metered() -> (HostWorkBudget, ScanMeter) {
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let meter = ScanMeter::new(Some(budget.clone()));
-        (budget, meter)
-    }
-
     #[test]
-    fn space_stack_precedes_is_a_greater_ord_and_reserves_one_comparison() {
+    fn space_stack_precedes_is_a_greater_ord() {
         for side in [Side::Data, Side::Waiters] {
-            let (budget, meter) = metered();
-            assert_eq!(StackDiscipline.precedes(side, 5, 3, &meter), Ok(true));
-            assert_eq!(StackDiscipline.precedes(side, 3, 5, &meter), Ok(false));
-            assert_eq!(
-                budget
-                    .usage(HostWorkDimension::VerificationOperations)
-                    .get(),
-                2
-            );
-            assert_eq!(
-                budget.usage(HostWorkDimension::VerificationBytes).get(),
-                2 * 2 * size_of::<i64>() as u64
-            );
+            assert_eq!(StackDiscipline.precedes(side, 5, 3), Ok(true));
+            assert_eq!(StackDiscipline.precedes(side, 3, 5), Ok(false));
+            assert_eq!(StackDiscipline.precedes(side, 4, 4), Ok(false));
         }
-    }
-
-    #[test]
-    fn space_stack_head_scan_reserves_its_comparisons_and_tie_encodes() {
-        // Distinct orders: one comparison of two orders for each entry after the first.
-        let entries = vec![
-            (4, "d".to_string()),
-            (1, "a".to_string()),
-            (7, "g".to_string()),
-        ];
-        let (budget, meter) = metered();
-        StackDiscipline
-            .head_metered(Side::Data, &ordered(&entries), &meter)
-            .expect("a head");
-        assert_eq!(
-            budget
-                .usage(HostWorkDimension::VerificationOperations)
-                .get(),
-            2
-        );
-        // A tie encodes both entries and reserves the comparison of their bytes too.
-        let tied = vec![(4, "d".to_string()), (4, "e".to_string())];
-        let (budget, meter) = metered();
-        StackDiscipline
-            .head_metered(Side::Data, &ordered(&tied), &meter)
-            .expect("a head");
-        assert!(
-            budget
-                .usage(HostWorkDimension::VerificationOperations)
-                .get()
-                > 2,
-            "the tie-break encodes and compares bytes"
-        );
-        // A budget that cannot pay the comparison rejects the scan.
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        limits.set(
-            HostWorkDimension::VerificationOperations,
-            HostWorkLimit::new(1),
-        );
-        let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
-        assert_eq!(
-            StackDiscipline.head_metered(Side::Data, &ordered(&entries), &cut),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        );
     }
 
     #[test]
@@ -536,7 +450,6 @@ mod tests {
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(space.clone()),
             budget: budget(),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };

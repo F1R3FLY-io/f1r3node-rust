@@ -1,0 +1,120 @@
+{
+ "acceptance": null,
+ "change": {
+  "task": "TASK-020-4 (mirror TASK-017-17)",
+  "design": "docs/casper/design/soak-log-budget-guardian.md",
+  "commit": "83a41b56479643f084dadd7f0f21dfa65958cf9b",
+  "driver": [
+   "SOAK_CONTAINER_LOG_BUDGET_MB (default 400) and SOAK_NODE_LOG_BUDGET_MB (default 2560) are parsed and range-checked like the disk floor. A value of 0 disables a probe.",
+   "For each owned node container the guardian samples the container json-file log (docker inspect LogPath, stat, sudo -n stat fallback) and the node log directory (docker exec du, a missing directory counts as 0) under a deadline.",
+   "Three consecutive samples over a budget, or one sample at two times a budget, is a breach that writes the guardian record, stops the owned writers, and stamps the health tag.",
+   "An unreadable probe refuses iteration and benchmark admission and is a breach during work. The guardian also starts when only a log budget is set."
+  ],
+  "fixture": "Ten log-* scenarios in scripts/bench/test-soak-disk-admission.sh. The 42 disk scenarios run with both log budgets at 0.",
+  "unchanged": "The disk floor, the memory floor, the hygiene band, the emergency deadline, the stop path, and the summary contract are unchanged."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+  "docs/claims/soak-disk-protection.md": "6fd5f24de61adef63bc88e37c5e04abcd34db28330180627e7ff9625309d64b0"
+ },
+ "claim_discharge": "pending",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "related_claims": {
+  "CLAIM-SOAK-001": "proposed-unratified. This change records the node log caps as enforced checks in docs/claims/soak-disk-protection.md."
+ },
+ "evidence_before_change": {
+  "scripts/run-merge-recovery-soak.sh": {
+   "path": "docs/casper/cbc-evidence/runs/casper-soak-driver-evidence-scope-acceptance-20261004-02/report.json",
+   "sha256": "5943def5a8f7dee8de9b75a8f68e642a03068484140cbd4e815f184192df832f"
+  },
+  "scripts/bench/test-soak-disk-admission.sh": {
+   "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/report.json",
+   "sha256": "a7397d9c2fa35436452872d3112bdaae755bc0de0f947955e847d1bf9e4b8831"
+  }
+ },
+ "source_digests_before_change": {
+  "scripts/bench/test-soak-disk-admission.sh": "c11c1bb9d13a4c334e2e46862e45de849dbe8ff76491209bc7d01e07c873dcc1",
+  "scripts/run-merge-recovery-soak.sh": "8135af2bf0a704f2d79af74392110387b0be0f2ef7939a542a203b4860bec44f"
+ },
+ "source_digests": {
+  "scripts/bench/test-soak-disk-admission.sh": "1f1ee72479dad526f91badfb4a2091af69a4773b10a9601b4ba8b77e9ca4c7bb",
+  "scripts/run-merge-recovery-soak.sh": "7ea92dac03cb2b69d9dd88abcbf9f8b83dcea6a36fa403409bcba9127feb8d74"
+ },
+ "verification": {
+  "fixture_local": {
+   "command": "bash scripts/bench/test-soak-disk-admission.sh",
+   "environment": "Disposable unprivileged container, no network, no Docker socket, with the casper-soak harness binary built from the same tree",
+   "exit": 0,
+   "scenarios_passed": 52
+  },
+  "regression_controls": {
+   "description": "The seven breach and refusal log scenarios with the driver before this change",
+   "behavioral_failures": [
+    "log-container-soft",
+    "log-container-hard",
+    "log-node-soft",
+    "log-probe-missing-boundary",
+    "log-budget-range"
+   ],
+   "not_exercised": {
+    "log-probe-missing-active": "The previous driver runs no log probe.",
+    "log-descriptor-exhaustion": "With no guardian, the unbounded writer outlives the driver timeout."
+   },
+   "passed": 0
+  },
+  "driver_suite_local": {
+   "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+   "environment": "Linux container",
+   "exit": 0
+  },
+  "harness_models": {
+   "command": "scripts/ci/check-casper-soak-models.sh",
+   "exit": 0,
+   "clean_no_error": 1,
+   "negative_controls_violated_as_expected": 10,
+   "tla_tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+  },
+  "claims_audit_local": {
+   "command": "check-casper-claims",
+   "exit": 0
+  }
+ },
+ "hosted": {
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tested_sha": "eb44c160c35f9bfdebbf191bdfd0522d8d49b72c",
+  "note": "eb44c160c merges dev into the change commit 83a41b564. The driver and fixture bytes equal the source digests.",
+  "full_suite": {
+   "run_id": 37215028007,
+   "conclusion": "success",
+   "job_summary": "All jobs passed with ci-heavy, including the Heavy Pipeline integration matrix.",
+   "steps": {
+    "Verify soak fail-closed driver": "success",
+    "Verify isolated disk admission and emergency scenarios": "success"
+   }
+  },
+  "claims_and_bindings": {
+   "run_id": 37215027620,
+   "conclusion": "success",
+   "jobs": [
+    "Casper driver binding fixtures",
+    "Formal verification gate"
+   ]
+  }
+ },
+ "expected_gate_state": "check-casper-claims passes because docs/claims/casper-soak-harness.md has status pending. The two ledger records keep their previous digests until the maintainer accepts this package.",
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-node-log-budgets",
+ "soak": "pending",
+ "status": "change-verified-pending-acceptance",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-04",
+ "waiver": null
+}

@@ -1,3 +1,7 @@
+(* DR-131: host work is removed, so the charge results of this file describe
+   deleted code. The node-count bounds still hold for a B-tree. The file
+   stays because IncrementalTreeBacking requires it. *)
+
 From Stdlib Require Import Lists.List Arith.PeanoNat Lia.
 Import ListNotations.
 

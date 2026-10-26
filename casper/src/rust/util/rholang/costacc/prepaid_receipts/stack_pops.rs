@@ -4,7 +4,6 @@ use std::sync::Arc;
 use models::rhoapi::{CostSignature, CostStack};
 use prost::Message;
 use rholang::rust::interpreter::accounting::authority::cost_signature_to_sig;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rspace_plus_plus::rspace::internal::Datum;
 
 use super::*;
@@ -62,13 +61,8 @@ async fn physical_counts(
     runtime: &RuntimeOps,
     channel: &Par,
     head: &CostSignature,
-    budget: Option<&HostWorkBudget>,
 ) -> Result<BTreeMap<[u8; 32], usize>, CasperError> {
-    let data = if let Some(budget) = budget {
-        read_live_data_metered(runtime, channel, budget).await?
-    } else {
-        runtime.runtime.reducer.space.get_data(channel).await
-    };
+    let data = runtime.runtime.reducer.space.get_data(channel).await;
     let inventory = supply::decode_purse_inventory(&data, head)?;
     let mut counts = BTreeMap::new();
     for stack in inventory.stacks {
@@ -85,7 +79,6 @@ async fn load_bucket(
     head: &CostSignature,
     limits: PrepaidStackPopLimits,
     remaining_bytes: &mut usize,
-    budget: Option<&HostWorkBudget>,
 ) -> Result<(), CasperError> {
     if states.contains_key(&source) {
         return Ok(());
@@ -95,20 +88,14 @@ async fn load_bucket(
     }
     let counts = match states.values().find(|state| state.channel == *channel) {
         Some(state) => Arc::clone(&state.physical_counts),
-        None => Arc::new(physical_counts(runtime, channel, head, budget).await?),
+        None => Arc::new(physical_counts(runtime, channel, head).await?),
     };
     let count = counts.get(&source).copied().unwrap_or(0);
     let receipt_id = PrepaidReceiptBucket::key_for_source(&source);
     let maximum_bytes = limits.receipts.value_bytes.min(*remaining_bytes);
-    let original = if let Some(budget) = budget {
-        runtime
-            .read_prepaid_receipt_metered(&receipt_id, maximum_bytes, budget)
-            .await?
-    } else {
-        runtime
-            .read_prepaid_receipt(&receipt_id, maximum_bytes)
-            .await?
-    };
+    let original = runtime
+        .read_prepaid_receipt(&receipt_id, maximum_bytes)
+        .await?;
     let mut records = Vec::new();
     match original.as_deref() {
         None if count != 0 => return Err(invalid("live stack source has no prepaid provenance")),
@@ -147,7 +134,7 @@ impl RuntimeOps {
         draws: &[PrepaidStackPop],
         limits: PrepaidStackPopLimits,
     ) -> Result<Log, CasperError> {
-        self.apply_prepaid_stack_pops_internal(stacks, draws, limits, None)
+        self.apply_prepaid_stack_pops_internal(stacks, draws, limits)
             .await
             .map(NativePrepaidPopResult::into_log)
     }
@@ -157,9 +144,8 @@ impl RuntimeOps {
         stacks: &[PurseStack],
         draws: &[PrepaidStackPop],
         limits: PrepaidStackPopLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativePrepaidPopResult, CasperError> {
-        self.apply_prepaid_stack_pops_internal(stacks, draws, limits, Some(budget))
+        self.apply_prepaid_stack_pops_internal(stacks, draws, limits)
             .await
     }
 
@@ -168,7 +154,6 @@ impl RuntimeOps {
         stacks: &[PurseStack],
         draws: &[PrepaidStackPop],
         limits: PrepaidStackPopLimits,
-        budget: Option<&HostWorkBudget>,
     ) -> Result<NativePrepaidPopResult, CasperError> {
         if draws.len() > limits.draws || stacks.len() > limits.draws {
             return Err(invalid("stack migration draw limit exceeded"));
@@ -219,7 +204,6 @@ impl RuntimeOps {
                 head,
                 limits,
                 &mut remaining_bytes,
-                budget,
             )
             .await?;
             let state = states
@@ -282,7 +266,6 @@ impl RuntimeOps {
                 &tail.head,
                 limits,
                 &mut remaining_bytes,
-                budget,
             )
             .await?;
         }
@@ -335,31 +318,22 @@ impl RuntimeOps {
             .collect::<Vec<_>>();
         ordered_changes(&changes, limits.receipts)?;
         let mut owned_changes = Vec::new();
-        if budget.is_some() {
-            owned_changes
-                .try_reserve_exact(changes.len())
-                .map_err(|_| invalid("owned stack-pop change allocation failed"))?;
-            for change in &changes {
-                owned_changes.push(OwnedPrepaidReceiptChange::copy_from(
-                    *change,
-                    budget.unwrap(),
-                )?);
-            }
+        owned_changes
+            .try_reserve_exact(changes.len())
+            .map_err(|_| invalid("owned stack-pop change allocation failed"))?;
+        for change in &changes {
+            owned_changes.push(OwnedPrepaidReceiptChange::copy_from(*change)?);
         }
         let checkpoint = self.runtime.create_soft_checkpoint().await;
         let result = async {
-            if let Some(budget) = budget {
-                supply::apply_stack_pops_metered(self, stacks, &pops, budget).await?;
-            } else {
-                supply::apply_stack_pops(self, stacks, &pops).await?;
-            }
+            supply::apply_stack_pops(self, stacks, &pops).await?;
             let mut live_counts = BTreeMap::new();
             for (source, state) in &states {
                 let key = state.channel.encode_to_vec();
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     live_counts.entry(key.clone())
                 {
-                    entry.insert(physical_counts(self, &state.channel, &state.head, budget).await?);
+                    entry.insert(physical_counts(self, &state.channel, &state.head).await?);
                 }
                 let count = live_counts
                     .get(&key)
@@ -372,13 +346,9 @@ impl RuntimeOps {
                     ));
                 }
             }
-            let mut log = if let Some(budget) = budget {
-                self.replace_prepaid_receipts_metered(&changes, limits.receipts, budget)
-                    .await?
-            } else {
-                self.replace_prepaid_receipts(&changes, limits.receipts)
-                    .await?
-            };
+            let mut log = self
+                .replace_prepaid_receipts(&changes, limits.receipts)
+                .await?;
             log.extend(self.runtime.take_event_log().await);
             Ok::<_, CasperError>(log)
         }

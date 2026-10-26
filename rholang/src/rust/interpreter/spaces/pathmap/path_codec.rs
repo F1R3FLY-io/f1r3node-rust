@@ -68,14 +68,11 @@
 //! of a PathMap payload is not a channel, so [`entry_key`] has no depth bound. A re-rooted entry
 //! can be deeper than the bound.
 //!
-//! # Metering
+//! # The encode of an element
 //!
-//! Each function reserves every read and every allocation on the meter of the job before it
-//! makes it (decision 42). The encode of an element reserves two reads of the element. The scan
-//! classifies the element and looks for a PathMap, and the write makes its structural segment.
-//! The escape arm reserves the sort, the length computation and the prost encode, as the
-//! metered authority lanes of `feature/cost-accounted-rho` do. Each key comparison reserves the
-//! bytes of both keys. The worklists of the walks reserve each growth.
+//! The encode of an element reads the element twice. The scan classifies the element and looks for
+//! a PathMap. Then the write makes its structural segment, or the escape arm sorts the element and
+//! encodes it with prost.
 
 use std::cmp::Ordering;
 use std::mem::size_of;
@@ -91,14 +88,10 @@ use models::rhoapi::{
     ETuple, Expr, GBigRational, GFixedPoint, GPrivate, GUnforgeable, If, KeyValuePair, Match,
     MatchCase, New, Par, Receive, ReceiveBind, Send,
 };
-use models::rust::rholang::sorter::metered::SorterMeter;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::Message;
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use shared::rust::clone_backing;
 
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 
 /// The most elements of a channel path or of a prefix of a PathMap space (F9, vetoable). A datum
@@ -140,11 +133,7 @@ pub mod tag {
     pub const ESCAPE: u8 = 0x0F;
 }
 
-/// The bytes that [`channel_path`] reads from the spine of a channel: the `Par`, its `Expr` and
-/// the `EList`. The encodes of the elements reserve the reads of the elements.
-const CHANNEL_SPINE_BYTES: usize = size_of::<Par>() + size_of::<Expr>() + size_of::<EList>();
-
-/// The first capacity of the worklist of a walk. A worklist reserves each growth after it.
+/// The first capacity of the worklist of a walk.
 const WORKLIST_CAPACITY: usize = 8;
 
 /// The elements of `par` when `par` is a plain list, else `None`. A plain list is one `EList`
@@ -204,9 +193,9 @@ pub fn path_elements(par: &Par) -> &[Par] {
     }
 }
 
-/// [`path_elements`] of an owned `par`. It moves the elements out of a plain list, and it reserves
-/// the one-element list of every other `par`.
-pub fn into_path_elements(par: Par, meter: &ScanMeter) -> Result<Vec<Par>, SpaceError> {
+/// [`path_elements`] of an owned `par`. It moves the elements out of a plain list, and it makes a
+/// list of one element from every other `par`.
+pub fn into_path_elements(par: Par) -> Result<Vec<Par>, SpaceError> {
     match plain_list_elements(&par).is_some() {
         true => {
             let Par { mut exprs, .. } = par;
@@ -218,7 +207,7 @@ pub fn into_path_elements(par: Par, meter: &ScanMeter) -> Result<Vec<Par>, Space
             }
         }
         false => {
-            let mut elements = meter.buffer::<Par>(1)?;
+            let mut elements = Vec::<Par>::with_capacity(1);
             elements.push(par);
             Ok(elements)
         }
@@ -226,20 +215,13 @@ pub fn into_path_elements(par: Par, meter: &ScanMeter) -> Result<Vec<Par>, Space
 }
 
 /// The union of the `locally_free` bit sets and the disjunction of the `connective_used` flags of
-/// `parts`, as the normalizer computes them for a collection. The reads of the bit sets and the
-/// allocation of the union are reserved first.
-pub fn bit_sets(parts: &[Par], meter: &ScanMeter) -> Result<(Vec<u8>, bool), SpaceError> {
-    let mut scanned = 0usize;
+/// `parts`, as the normalizer computes them for a collection.
+pub fn bit_sets(parts: &[Par]) -> (Vec<u8>, bool) {
     let mut widest = 0usize;
     for part in parts {
-        scanned = scanned
-            .checked_add(part.locally_free.len())
-            .ok_or(RSpaceError::HostWorkRejected)?;
         widest = widest.max(part.locally_free.len());
     }
-    meter.charge(parts.len(), scanned, 0)?;
-    let mut union = meter.buffer::<u8>(widest)?;
-    union.resize(widest, 0);
+    let mut union = vec![0u8; widest];
     let mut connective_used = false;
     for part in parts {
         for (bits, other) in union.iter_mut().zip(&part.locally_free) {
@@ -247,18 +229,17 @@ pub fn bit_sets(parts: &[Par], meter: &ScanMeter) -> Result<(Vec<u8>, bool), Spa
         }
         connective_used = connective_used || part.connective_used;
     }
-    Ok((union, connective_used))
+    (union, connective_used)
 }
 
 /// The plain list of `elements`, with the bit sets of the normalizer. Its `locally_free` set is
 /// the union of the sets of the elements, and its flag is the disjunction of their flags. It
 /// restates `list_par` of `record.rs`. The list of closed elements is a plain list, so
-/// [`path_elements`] gives `elements` back. The bit sets and the list allocations are reserved
-/// first, and the elements move into the list.
-pub fn plain_list(elements: Vec<Par>, meter: &ScanMeter) -> Result<Par, SpaceError> {
-    let (locally_free, connective_used) = bit_sets(&elements, meter)?;
-    let list_bits = meter.copy(&locally_free)?;
-    let mut exprs = meter.buffer::<Expr>(1)?;
+/// [`path_elements`] gives `elements` back. The elements move into the list.
+pub fn plain_list(elements: Vec<Par>) -> Par {
+    let (locally_free, connective_used) = bit_sets(&elements);
+    let list_bits = locally_free.clone();
+    let mut exprs = Vec::<Expr>::with_capacity(1);
     exprs.push(Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
             ps: elements,
@@ -267,28 +248,25 @@ pub fn plain_list(elements: Vec<Par>, meter: &ScanMeter) -> Result<Par, SpaceErr
             remainder: None,
         })),
     });
-    Ok(Par {
+    Par {
         exprs,
         locally_free,
         connective_used,
         ..Par::default()
-    })
+    }
 }
 
-/// The path of the channel `channel` of a PathMap space ([`path_elements`]). It reserves the read
-/// of the spine of the channel. A path of more than [`PATH_DEPTH_CAP`] elements fails with
-/// `PathTooDeep`.
-pub fn channel_path<'c>(channel: &'c Par, meter: &ScanMeter) -> Result<&'c [Par], SpaceError> {
-    meter.charge(1, CHANNEL_SPINE_BYTES, 0)?;
+/// The path of the channel `channel` of a PathMap space ([`path_elements`]). A path of more than
+/// [`PATH_DEPTH_CAP`] elements fails with `PathTooDeep`.
+pub fn channel_path(channel: &Par) -> Result<&[Par], SpaceError> {
     let path = path_elements(channel);
-    check_depth(path.len(), meter)?;
+    check_depth(path.len())?;
     Ok(path)
 }
 
 /// Fails with `PathTooDeep` when a channel path or a prefix has more than [`PATH_DEPTH_CAP`]
-/// elements. The comparison is reserved first.
-fn check_depth(depth: usize, meter: &ScanMeter) -> Result<(), SpaceError> {
-    meter.compare(size_of::<usize>(), size_of::<usize>())?;
+/// elements.
+fn check_depth(depth: usize) -> Result<(), SpaceError> {
     match depth > PATH_DEPTH_CAP {
         true => Err(SpaceError::PathTooDeep),
         false => Ok(()),
@@ -340,51 +318,43 @@ impl EncodedPath {
 /// The keys of the channel path or the prefix `path` ([`EncodedPath`]). A path of more than
 /// [`PATH_DEPTH_CAP`] elements fails with `PathTooDeep`, and an element that holds a PathMap or a
 /// zipper fails with `UnsupportedPathElement`.
-pub fn encode_path(path: &[Par], meter: &ScanMeter) -> Result<EncodedPath, SpaceError> {
-    check_depth(path.len(), meter)?;
-    let (key, ends) = encode_elements(path, true, true, meter)?;
+pub fn encode_path(path: &[Par]) -> Result<EncodedPath, SpaceError> {
+    check_depth(path.len())?;
+    let (key, ends) = encode_elements(path, true, true)?;
     Ok(EncodedPath { key, ends })
 }
 
 /// `path_key(path)` of a channel path. The rules of [`encode_path`] apply.
-pub fn path_key(path: &[Par], meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    check_depth(path.len(), meter)?;
-    Ok(encode_elements(path, true, false, meter)?.0)
+pub fn path_key(path: &[Par]) -> Result<Vec<u8>, SpaceError> {
+    check_depth(path.len())?;
+    Ok(encode_elements(path, true, false)?.0)
 }
 
 /// `prefix_key(prefix)` of the prefix of a receive. The rules of [`encode_path`] apply.
-pub fn prefix_key(prefix: &[Par], meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    check_depth(prefix.len(), meter)?;
-    Ok(encode_elements(prefix, false, false, meter)?.0)
+pub fn prefix_key(prefix: &[Par]) -> Result<Vec<u8>, SpaceError> {
+    check_depth(prefix.len())?;
+    Ok(encode_elements(prefix, false, false)?.0)
 }
 
 /// The key of the path of an entry of a PathMap payload. It has the bytes of `path_key`, but no
 /// depth bound, because an entry is not a channel. An element that holds a PathMap or a zipper
 /// fails with `UnsupportedPathElement`.
-pub fn entry_key(path: &[Par], meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    Ok(encode_elements(path, true, false, meter)?.0)
+pub fn entry_key(path: &[Par]) -> Result<Vec<u8>, SpaceError> {
+    Ok(encode_elements(path, true, false)?.0)
 }
 
 /// The segment `seg(element)` of one path element.
-pub fn segment(element: &Par, meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    Ok(encode_elements(std::slice::from_ref(element), false, false, meter)?.0)
+pub fn segment(element: &Par) -> Result<Vec<u8>, SpaceError> {
+    Ok(encode_elements(std::slice::from_ref(element), false, false)?.0)
 }
 
 /// True when `prefix` is a byte prefix of `key`. With a prefix key and a path key, this holds
-/// exactly when the prefix is a prefix of the path (`prefix_key_iff_prefix`). The comparison is
-/// reserved first.
-pub fn is_prefix_key(prefix: &[u8], key: &[u8], meter: &ScanMeter) -> Result<bool, SpaceError> {
-    meter.compare(prefix.len(), prefix.len().min(key.len()))?;
-    Ok(key.starts_with(prefix))
-}
+/// exactly when the prefix is a prefix of the path (`prefix_key_iff_prefix`).
+pub fn is_prefix_key(prefix: &[u8], key: &[u8]) -> bool { key.starts_with(prefix) }
 
 /// The byte order of two keys. Across paths, the candidates of a receive follow the byte order
-/// of their path keys, so the exact path comes first (`candidate_order_total`). The comparison is
-/// reserved first.
-pub fn compare_keys(left: &[u8], right: &[u8], meter: &ScanMeter) -> Result<Ordering, SpaceError> {
-    meter.compare(left.len(), right.len())?;
-    Ok(left.cmp(right))
-}
+/// of their path keys, so the exact path comes first (`candidate_order_total`).
+pub fn compare_keys(left: &[u8], right: &[u8]) -> Ordering { left.cmp(right) }
 
 /// The plan of one segment: the length of a structural segment, or the payload of an escape.
 enum SegmentPlan {
@@ -396,13 +366,10 @@ enum SegmentPlan {
 
 impl SegmentPlan {
     /// The bytes of the segment.
-    fn length(&self) -> Result<usize, SpaceError> {
+    fn length(&self) -> usize {
         match self {
-            SegmentPlan::Structural(length) => Ok(*length),
-            SegmentPlan::Escape(payload) => Ok(1usize
-                .checked_add(uv_len(payload.len() as u64))
-                .and_then(|length| length.checked_add(payload.len()))
-                .ok_or(RSpaceError::HostWorkRejected)?),
+            SegmentPlan::Structural(length) => *length,
+            SegmentPlan::Escape(payload) => 1usize + uv_len(payload.len() as u64) + payload.len(),
         }
     }
 }
@@ -414,32 +381,26 @@ fn encode_elements(
     path: &[Par],
     terminated: bool,
     ends: bool,
-    meter: &ScanMeter,
 ) -> Result<(Vec<u8>, Vec<usize>), SpaceError> {
-    let mut plans = meter.buffer::<SegmentPlan>(path.len())?;
+    let mut plans = Vec::<SegmentPlan>::with_capacity(path.len());
     let mut total = usize::from(terminated);
     for element in path {
-        let plan = plan_segment(element, meter)?;
-        total = total
-            .checked_add(plan.length()?)
-            .ok_or(RSpaceError::HostWorkRejected)?;
+        let plan = plan_segment(element)?;
+        total += plan.length();
         plans.push(plan);
     }
-    let mut key = meter.buffer::<u8>(total)?;
+    let mut key = Vec::<u8>::with_capacity(total);
     let mut boundaries = match ends {
         true => {
-            let count = path
-                .len()
-                .checked_add(1)
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            let mut boundaries = meter.buffer::<usize>(count)?;
+            let count = path.len() + 1;
+            let mut boundaries = Vec::<usize>::with_capacity(count);
             boundaries.push(0);
             boundaries
         }
         false => Vec::new(),
     };
     for (element, plan) in path.iter().zip(plans) {
-        write_segment(element, plan, &mut key, meter)?;
+        write_segment(element, plan, &mut key)?;
         if ends {
             boundaries.push(key.len());
         }
@@ -457,24 +418,19 @@ fn encode_elements(
 
 /// Plans the segment of `element`: the scan, and the escape payload when the element is outside
 /// the structural grammar.
-fn plan_segment(element: &Par, meter: &ScanMeter) -> Result<SegmentPlan, SpaceError> {
-    match scan_element(element, meter)? {
+fn plan_segment(element: &Par) -> Result<SegmentPlan, SpaceError> {
+    match scan_element(element)? {
         Some(length) => Ok(SegmentPlan::Structural(length)),
-        None => Ok(SegmentPlan::Escape(escape_payload(element, meter)?)),
+        None => Ok(SegmentPlan::Escape(escape_payload(element)?)),
     }
 }
 
 /// Appends the planned segment of `element` to `out`, whose room the caller reserved.
-fn write_segment(
-    element: &Par,
-    plan: SegmentPlan,
-    out: &mut Vec<u8>,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
+fn write_segment(element: &Par, plan: SegmentPlan, out: &mut Vec<u8>) -> Result<(), SpaceError> {
     match plan {
         SegmentPlan::Structural(length) => {
             let start = out.len();
-            write_structural(element, out, meter)?;
+            write_structural(element, out)?;
             match out.len().checked_sub(start) == Some(length) {
                 true => Ok(()),
                 false => Err(SpaceError::Inconsistent(
@@ -483,7 +439,6 @@ fn write_segment(
             }
         }
         SegmentPlan::Escape(payload) => {
-            meter.charge(1, payload.len(), 0)?;
             out.push(tag::ESCAPE);
             write_uv(out, payload.len() as u64);
             out.extend_from_slice(&payload);
@@ -507,13 +462,12 @@ struct Visit<'p> {
     spine: bool,
 }
 
-/// Scans every part of `element` once, after the read is reserved. It fails with
-/// `UnsupportedPathElement` when a part is an `EPathMap` or an `EZipper`. It returns the length of
-/// the structural segment of `element`. It returns `None` when a node of the spine takes no
-/// structural arm, and the element then takes the escape arm.
-fn scan_element(element: &Par, meter: &ScanMeter) -> Result<Option<usize>, SpaceError> {
-    meter.inspect(element)?;
-    let mut work = meter.buffer::<Visit<'_>>(WORKLIST_CAPACITY)?;
+/// Scans every part of `element` once. It fails with `UnsupportedPathElement` when a part is an
+/// `EPathMap` or an `EZipper`. It returns the length of the structural segment of `element`. It
+/// returns `None` when a node of the spine takes no structural arm, and the element then takes the
+/// escape arm.
+fn scan_element(element: &Par) -> Result<Option<usize>, SpaceError> {
+    let mut work = Vec::<Visit<'_>>::with_capacity(WORKLIST_CAPACITY);
     work.push(Visit {
         node: Node::Par(element),
         spine: true,
@@ -527,100 +481,47 @@ fn scan_element(element: &Par, meter: &ScanMeter) -> Result<Option<usize>, Space
                     false => None,
                 };
                 length = match (length, &arm, spine) {
-                    (Some(total), Some(arm), _) => Some(
-                        total
-                            .checked_add(arm.header_length()?)
-                            .ok_or(RSpaceError::HostWorkRejected)?,
-                    ),
+                    (Some(total), Some(arm), _) => Some(total + arm.header_length()),
                     (Some(_), None, true) => None,
                     (other, _, _) => other,
                 };
-                push_par_children(par, arm.is_some(), &mut work, meter)?;
+                push_par_children(par, arm.is_some(), &mut work)?;
             }
-            Node::Signature(signature) => push_signature_children(signature, &mut work, meter)?,
+            Node::Signature(signature) => push_signature_children(signature, &mut work),
         }
     }
     Ok(length)
 }
 
-/// Appends `value` to `values`. A list at its capacity reserves its growth on `meter` before it
-/// grows, as `Vec` doubles its buffer (decision 42). It restates the private `push_reserved` of
-/// `generic.rs`.
-fn push_reserved<T>(values: &mut Vec<T>, value: T, meter: &ScanMeter) -> Result<(), SpaceError> {
-    if values.len() == values.capacity() {
-        let grown = values
-            .capacity()
-            .checked_mul(2)
-            .ok_or(RSpaceError::HostWorkRejected)?
-            .max(1);
-        meter.reserve_buffer::<T>(grown)?;
-        values
-            .try_reserve_exact(grown - values.len())
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-    }
-    values.push(value);
-    Ok(())
-}
-
 /// Pushes the `Par` `child` on the worklist, on the spine when `spine` holds.
-fn push_par<'p>(
-    child: &'p Par,
-    spine: bool,
-    work: &mut Vec<Visit<'p>>,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    push_reserved(
-        work,
-        Visit {
-            node: Node::Par(child),
-            spine,
-        },
-        meter,
-    )
+fn push_par<'p>(child: &'p Par, spine: bool, work: &mut Vec<Visit<'p>>) {
+    work.push(Visit {
+        node: Node::Par(child),
+        spine,
+    });
 }
 
 /// Pushes the `Par` of `child`, when it holds one.
-fn push_option<'p>(
-    child: &'p Option<Par>,
-    spine: bool,
-    work: &mut Vec<Visit<'p>>,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    match child {
-        Some(par) => push_par(par, spine, work, meter),
-        None => Ok(()),
+fn push_option<'p>(child: &'p Option<Par>, spine: bool, work: &mut Vec<Visit<'p>>) {
+    if let Some(par) = child {
+        push_par(par, spine, work);
     }
 }
 
 /// Pushes every `Par` of `children`.
-fn push_all<'p>(
-    children: &'p [Par],
-    spine: bool,
-    work: &mut Vec<Visit<'p>>,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
+fn push_all<'p>(children: &'p [Par], spine: bool, work: &mut Vec<Visit<'p>>) {
     for child in children {
-        push_par(child, spine, work, meter)?;
+        push_par(child, spine, work);
     }
-    Ok(())
 }
 
 /// Pushes the cost signature of `child`, when it holds one. A signature is never on the spine.
-fn push_signature<'p>(
-    child: &'p Option<CostSignature>,
-    work: &mut Vec<Visit<'p>>,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    match child {
-        Some(signature) => push_reserved(
-            work,
-            Visit {
-                node: Node::Signature(signature),
-                spine: false,
-            },
-            meter,
-        ),
-        None => Ok(()),
+fn push_signature<'p>(child: &'p Option<CostSignature>, work: &mut Vec<Visit<'p>>) {
+    if let Some(signature) = child {
+        work.push(Visit {
+            node: Node::Signature(signature),
+            spine: false,
+        });
     }
 }
 
@@ -631,7 +532,6 @@ fn push_par_children<'p>(
     par: &'p Par,
     spine: bool,
     work: &mut Vec<Visit<'p>>,
-    meter: &ScanMeter,
 ) -> Result<(), SpaceError> {
     let Par {
         sends,
@@ -649,7 +549,7 @@ fn push_par_children<'p>(
         cost_stacks,
     } = par;
     for expr in exprs {
-        push_expr_children(expr, spine, work, meter)?;
+        push_expr_children(expr, spine, work)?;
     }
     for send in sends {
         let Send {
@@ -659,8 +559,8 @@ fn push_par_children<'p>(
             locally_free: _,
             connective_used: _,
         } = send;
-        push_option(chan, false, work, meter)?;
-        push_all(data, false, work, meter)?;
+        push_option(chan, false, work);
+        push_all(data, false, work);
     }
     for receive in receives {
         let Receive {
@@ -681,12 +581,12 @@ fn push_par_children<'p>(
                 free_count: _,
                 cost_signature,
             } = bind;
-            push_all(patterns, false, work, meter)?;
-            push_option(source, false, work, meter)?;
-            push_signature(cost_signature, work, meter)?;
+            push_all(patterns, false, work);
+            push_option(source, false, work);
+            push_signature(cost_signature, work);
         }
-        push_option(body, false, work, meter)?;
-        push_option(condition, false, work, meter)?;
+        push_option(body, false, work);
+        push_option(condition, false, work);
     }
     for new in news {
         let New {
@@ -696,9 +596,9 @@ fn push_par_children<'p>(
             injections,
             locally_free: _,
         } = new;
-        push_option(p, false, work, meter)?;
+        push_option(p, false, work);
         for injection in injections.values() {
-            push_par(injection, false, work, meter)?;
+            push_par(injection, false, work);
         }
     }
     for matched in matches {
@@ -708,7 +608,7 @@ fn push_par_children<'p>(
             locally_free: _,
             connective_used: _,
         } = matched;
-        push_option(target, false, work, meter)?;
+        push_option(target, false, work);
         for case in cases {
             let MatchCase {
                 pattern,
@@ -716,9 +616,9 @@ fn push_par_children<'p>(
                 free_count: _,
                 guard,
             } = case;
-            push_option(pattern, false, work, meter)?;
-            push_option(source, false, work, meter)?;
-            push_option(guard, false, work, meter)?;
+            push_option(pattern, false, work);
+            push_option(source, false, work);
+            push_option(guard, false, work);
         }
     }
     for bundle in bundles {
@@ -727,7 +627,7 @@ fn push_par_children<'p>(
             write_flag: _,
             read_flag: _,
         } = bundle;
-        push_option(body, false, work, meter)?;
+        push_option(body, false, work);
     }
     for connective in connectives {
         let Connective {
@@ -736,9 +636,9 @@ fn push_par_children<'p>(
         match connective_instance {
             Some(ConnectiveInstance::ConnAndBody(ConnectiveBody { ps }))
             | Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps })) => {
-                push_all(ps, false, work, meter)?;
+                push_all(ps, false, work);
             }
-            Some(ConnectiveInstance::ConnNotBody(body)) => push_par(body, false, work, meter)?,
+            Some(ConnectiveInstance::ConnNotBody(body)) => push_par(body, false, work),
             Some(ConnectiveInstance::VarRefBody(_))
             | Some(ConnectiveInstance::ConnBool(_))
             | Some(ConnectiveInstance::ConnInt(_))
@@ -756,26 +656,22 @@ fn push_par_children<'p>(
             locally_free: _,
             connective_used: _,
         } = conditional;
-        push_option(condition, false, work, meter)?;
-        push_option(if_true, false, work, meter)?;
-        push_option(if_false, false, work, meter)?;
+        push_option(condition, false, work);
+        push_option(if_true, false, work);
+        push_option(if_false, false, work);
     }
     for signed in cost_signed_terms {
         let CostSignedTerm { body, signature } = signed;
-        push_option(body, false, work, meter)?;
-        push_signature(signature, work, meter)?;
+        push_option(body, false, work);
+        push_signature(signature, work);
     }
     for stack in cost_stacks {
         let CostStack { cells } = stack;
         for cell in cells {
-            push_reserved(
-                work,
-                Visit {
-                    node: Node::Signature(cell),
-                    spine: false,
-                },
-                meter,
-            )?;
+            work.push(Visit {
+                node: Node::Signature(cell),
+                spine: false,
+            });
         }
     }
     Ok(())
@@ -787,7 +683,6 @@ fn push_expr_children<'p>(
     expr: &'p Expr,
     spine: bool,
     work: &mut Vec<Visit<'p>>,
-    meter: &ScanMeter,
 ) -> Result<(), SpaceError> {
     let Some(instance) = &expr.expr_instance else {
         return Ok(());
@@ -803,9 +698,15 @@ fn push_expr_children<'p>(
         | ExprInstance::GBigRat(_)
         | ExprInstance::GFixedPoint(_)
         | ExprInstance::GFloat32(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_)
         | ExprInstance::EVarBody(_) => Ok(()),
         ExprInstance::ENotBody(ENot { p }) | ExprInstance::ENegBody(ENeg { p }) => {
-            push_option(p, false, work, meter)
+            push_option(p, false, work);
+            Ok(())
         }
         ExprInstance::EMultBody(EMult { p1, p2 })
         | ExprInstance::EDivBody(EDiv { p1, p2 })
@@ -823,29 +724,36 @@ fn push_expr_children<'p>(
         | ExprInstance::EPercentPercentBody(EPercentPercent { p1, p2 })
         | ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 })
         | ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
-            push_option(p1, false, work, meter)?;
-            push_option(p2, false, work, meter)
+            push_option(p1, false, work);
+            push_option(p2, false, work);
+            Ok(())
         }
         ExprInstance::EListBody(EList { ps, .. }) | ExprInstance::ETupleBody(ETuple { ps, .. }) => {
-            push_all(ps, spine, work, meter)
+            push_all(ps, spine, work);
+            Ok(())
         }
-        ExprInstance::ESetBody(ESet { ps, .. }) => push_all(ps, false, work, meter),
+        ExprInstance::ESetBody(ESet { ps, .. }) => {
+            push_all(ps, false, work);
+            Ok(())
+        }
         ExprInstance::EMapBody(EMap { kvs, .. }) => {
             for KeyValuePair { key, value } in kvs {
-                push_option(key, false, work, meter)?;
-                push_option(value, false, work, meter)?;
+                push_option(key, false, work);
+                push_option(value, false, work);
             }
             Ok(())
         }
         ExprInstance::EMethodBody(EMethod {
             target, arguments, ..
         }) => {
-            push_option(target, false, work, meter)?;
-            push_all(arguments, false, work, meter)
+            push_option(target, false, work);
+            push_all(arguments, false, work);
+            Ok(())
         }
         ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
-            push_option(target, false, work, meter)?;
-            push_option(pattern, false, work, meter)
+            push_option(target, false, work);
+            push_option(pattern, false, work);
+            Ok(())
         }
         ExprInstance::EPathmapBody(_) | ExprInstance::EZipperBody(_) => {
             Err(SpaceError::UnsupportedPathElement)
@@ -854,32 +762,23 @@ fn push_expr_children<'p>(
 }
 
 /// Pushes every `Par` of the cost signature `signature`.
-fn push_signature_children<'p>(
-    signature: &'p CostSignature,
-    work: &mut Vec<Visit<'p>>,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
+fn push_signature_children<'p>(signature: &'p CostSignature, work: &mut Vec<Visit<'p>>) {
     match &signature.value {
         Some(SignatureValue::Quote(par)) | Some(SignatureValue::Name(par)) => {
-            push_par(par, false, work, meter)
+            push_par(par, false, work);
         }
         Some(SignatureValue::Compound(CostSignatureCompound { elements })) => {
             for element in elements {
-                push_reserved(
-                    work,
-                    Visit {
-                        node: Node::Signature(element),
-                        spine: false,
-                    },
-                    meter,
-                )?;
+                work.push(Visit {
+                    node: Node::Signature(element),
+                    spine: false,
+                });
             }
-            Ok(())
         }
         Some(SignatureValue::Ground(_))
         | Some(SignatureValue::BoundLevel(_))
         | Some(SignatureValue::Unit(_))
-        | None => Ok(()),
+        | None => (),
     }
 }
 
@@ -897,24 +796,23 @@ enum Arm<'p> {
 
 impl<'p> Arm<'p> {
     /// The bytes of this node of the segment, without the segments of its elements.
-    fn header_length(&self) -> Result<usize, SpaceError> {
-        let length = match self {
-            Arm::Bool(_) => Some(1),
-            Arm::Int(value) => 1usize.checked_add(uv_len(zigzag(*value))),
+    fn header_length(&self) -> usize {
+        match self {
+            Arm::Bool(_) => 1,
+            Arm::Int(value) => 1 + uv_len(zigzag(*value)),
             Arm::Text(_, text) => counted_length(text.len()),
             Arm::Bytes(_, bytes) => counted_length(bytes.len()),
-            Arm::Double(_) => Some(1 + size_of::<u64>()),
+            Arm::Double(_) => 1 + size_of::<u64>(),
             Arm::BigRat(numerator, denominator) => {
-                counted_length(numerator.len()).and_then(|head| {
-                    head.checked_add(uv_len(denominator.len() as u64))
-                        .and_then(|length| length.checked_add(denominator.len()))
-                })
+                counted_length(numerator.len())
+                    + uv_len(denominator.len() as u64)
+                    + denominator.len()
             }
-            Arm::Fixed(unscaled, scale) => counted_length(unscaled.len())
-                .and_then(|head| head.checked_add(uv_len(u64::from(*scale)))),
-            Arm::Collection(_, elements) => 1usize.checked_add(uv_len(elements.len() as u64)),
-        };
-        Ok(length.ok_or(RSpaceError::HostWorkRejected)?)
+            Arm::Fixed(unscaled, scale) => {
+                counted_length(unscaled.len()) + uv_len(u64::from(*scale))
+            }
+            Arm::Collection(_, elements) => 1 + uv_len(elements.len() as u64),
+        }
     }
 
     /// Writes this node of the segment, without the segments of its elements.
@@ -976,11 +874,7 @@ impl<'p> Arm<'p> {
 }
 
 /// The bytes of a tag, a length and a payload of `length` bytes.
-fn counted_length(length: usize) -> Option<usize> {
-    1usize
-        .checked_add(uv_len(length as u64))
-        .and_then(|head| head.checked_add(length))
-}
+fn counted_length(length: usize) -> usize { 1 + uv_len(length as u64) + length }
 
 /// The structural arm of `par`, or `None` when `par` is outside the structural grammar of the
 /// EPM1 codec (`eval_stable_par` of `feature/mettail`). A list or a tuple returns its arm here,
@@ -1062,6 +956,11 @@ fn expression_arm(instance: &ExprInstance) -> Option<Arm<'_>> {
         ExprInstance::EListBody(_)
         | ExprInstance::ETupleBody(_)
         | ExprInstance::GFloat32(_)
+        | ExprInstance::GUint64(_)
+        | ExprInstance::GInt32(_)
+        | ExprInstance::GUint32(_)
+        | ExprInstance::GUint16(_)
+        | ExprInstance::GUint8(_)
         | ExprInstance::ENotBody(_)
         | ExprInstance::ENegBody(_)
         | ExprInstance::EMultBody(_)
@@ -1091,10 +990,9 @@ fn expression_arm(instance: &ExprInstance) -> Option<Arm<'_>> {
 }
 
 /// Writes the structural segment of `element` into `out`, whose room the caller reserved. The
-/// write reads the element a second time, so it reserves the read first.
-fn write_structural(element: &Par, out: &mut Vec<u8>, meter: &ScanMeter) -> Result<(), SpaceError> {
-    meter.inspect(element)?;
-    let mut work = meter.buffer::<&Par>(WORKLIST_CAPACITY)?;
+/// write reads the element a second time.
+fn write_structural(element: &Par, out: &mut Vec<u8>) -> Result<(), SpaceError> {
+    let mut work = Vec::<&Par>::with_capacity(WORKLIST_CAPACITY);
     work.push(element);
     while let Some(par) = work.pop() {
         let arm = structural_arm(par).ok_or(SpaceError::Inconsistent(
@@ -1102,42 +1000,25 @@ fn write_structural(element: &Par, out: &mut Vec<u8>, meter: &ScanMeter) -> Resu
         ))?;
         arm.write(out);
         for child in arm.elements().iter().rev() {
-            push_reserved(&mut work, child, meter)?;
+            work.push(child);
         }
     }
     Ok(())
 }
 
-/// The prost bytes of the sorted `Par` of `element`, the payload of its escape arm. The sort, the
-/// read of the length computation, the buffer and the encode are reserved first. The metered
-/// authority lanes of `feature/cost-accounted-rho` reserve a prost encode in the same way.
-fn escape_payload(element: &Par, meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    let sorted = sorted_par(element, meter)?;
-    meter.inspect(&sorted)?;
+/// The prost bytes of the sorted `Par` of `element`, the payload of its escape arm.
+fn escape_payload(element: &Par) -> Result<Vec<u8>, SpaceError> {
+    let sorted = sorted_par(element);
     let length = sorted.encoded_len();
-    let mut bytes = meter.buffer::<u8>(length)?;
-    if meter.is_metered() {
-        clone_backing::reserve_nested_encode(&sorted, length, meter)
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-    }
+    let mut bytes = Vec::<u8>::with_capacity(length);
     sorted
         .encode(&mut bytes)
         .map_err(|_| SpaceError::Inconsistent("a path element does not encode"))?;
     Ok(bytes)
 }
 
-/// The sorted `Par` of `par`. A metered job sorts with the metered sorter, and a job without a
-/// budget sorts as the host does. Both sorters give the same term.
-fn sorted_par(par: &Par, meter: &ScanMeter) -> Result<Par, SpaceError> {
-    match meter.is_metered() {
-        true => Ok(
-            ParSortMatcher::sort_match_metered(par, &SorterMeter::new(meter))
-                .map_err(|_| RSpaceError::HostWorkRejected)?
-                .term,
-        ),
-        false => Ok(ParSortMatcher::sort_match(par).term),
-    }
-}
+/// The sorted `Par` of `par`, sorted as the host sorts.
+fn sorted_par(par: &Par) -> Par { ParSortMatcher::sort_match(par).term }
 
 /// `zigzag64` of the EPM1 codec: a signed integer as an unsigned one, with small magnitudes small.
 fn zigzag(value: i64) -> u64 { ((value << 1) ^ (value >> 63)) as u64 }
@@ -1183,13 +1064,11 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::spaces::pathmap::test_support::*;
 
-    fn seg(par: &Par) -> Vec<u8> { segment(par, &unmetered()).expect("the element encodes") }
+    fn seg(par: &Par) -> Vec<u8> { segment(par).expect("the element encodes") }
 
-    fn key(path: &[Par]) -> Vec<u8> { path_key(path, &unmetered()).expect("the path encodes") }
+    fn key(path: &[Par]) -> Vec<u8> { path_key(path).expect("the path encodes") }
 
-    fn pkey(prefix: &[Par]) -> Vec<u8> {
-        prefix_key(prefix, &unmetered()).expect("the prefix encodes")
-    }
+    fn pkey(prefix: &[Par]) -> Vec<u8> { prefix_key(prefix).expect("the prefix encodes") }
 
     fn uv(value: u64) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1460,67 +1339,41 @@ mod tests {
             in_bundle,
         ] {
             assert_eq!(
-                segment(&element, &unmetered()),
+                segment(&element),
                 Err(SpaceError::UnsupportedPathElement),
                 "{element:?}"
             );
             let path = [gint(0), element.clone()];
-            assert_eq!(
-                path_key(&path, &unmetered()),
-                Err(SpaceError::UnsupportedPathElement)
-            );
-            assert_eq!(
-                prefix_key(&path, &unmetered()),
-                Err(SpaceError::UnsupportedPathElement)
-            );
-            assert_eq!(
-                entry_key(&path, &unmetered()),
-                Err(SpaceError::UnsupportedPathElement)
-            );
-            assert_eq!(
-                encode_path(&path, &unmetered()),
-                Err(SpaceError::UnsupportedPathElement)
-            );
+            assert_eq!(path_key(&path), Err(SpaceError::UnsupportedPathElement));
+            assert_eq!(prefix_key(&path), Err(SpaceError::UnsupportedPathElement));
+            assert_eq!(entry_key(&path), Err(SpaceError::UnsupportedPathElement));
+            assert_eq!(encode_path(&path), Err(SpaceError::UnsupportedPathElement));
         }
         // A PathMap channel is a path of one element, which fails at its encode.
-        let channel = channel_path(&map, &unmetered()).expect("a channel has a path");
+        let channel = channel_path(&map).expect("a channel has a path");
         assert_eq!(channel, std::slice::from_ref(&map));
-        assert_eq!(
-            path_key(channel, &unmetered()),
-            Err(SpaceError::UnsupportedPathElement)
-        );
+        assert_eq!(path_key(channel), Err(SpaceError::UnsupportedPathElement));
     }
 
     #[test]
     fn the_depth_cap_bounds_channel_paths_and_prefixes() {
         let deepest: Vec<Par> = (0..PATH_DEPTH_CAP as i64).map(gint).collect();
         let too_deep: Vec<Par> = (0..=PATH_DEPTH_CAP as i64).map(gint).collect();
-        let meter = unmetered();
         assert_eq!(PATH_DEPTH_CAP, 64);
-        assert!(path_key(&deepest, &meter).is_ok());
-        assert!(prefix_key(&deepest, &meter).is_ok());
-        assert_eq!(
-            encode_path(&deepest, &meter)
-                .expect("64 elements fit")
-                .depth(),
-            64
-        );
+        assert!(path_key(&deepest).is_ok());
+        assert!(prefix_key(&deepest).is_ok());
+        assert_eq!(encode_path(&deepest).expect("64 elements fit").depth(), 64);
         let channel = glist(deepest.clone());
+        assert_eq!(channel_path(&channel).expect("64 elements fit").len(), 64);
+        assert_eq!(path_key(&too_deep), Err(SpaceError::PathTooDeep));
+        assert_eq!(prefix_key(&too_deep), Err(SpaceError::PathTooDeep));
+        assert_eq!(encode_path(&too_deep), Err(SpaceError::PathTooDeep));
         assert_eq!(
-            channel_path(&channel, &meter)
-                .expect("64 elements fit")
-                .len(),
-            64
-        );
-        assert_eq!(path_key(&too_deep, &meter), Err(SpaceError::PathTooDeep));
-        assert_eq!(prefix_key(&too_deep, &meter), Err(SpaceError::PathTooDeep));
-        assert_eq!(encode_path(&too_deep, &meter), Err(SpaceError::PathTooDeep));
-        assert_eq!(
-            channel_path(&glist(too_deep.clone()), &meter),
+            channel_path(&glist(too_deep.clone())),
             Err(SpaceError::PathTooDeep)
         );
         // An entry of a payload is not a channel, so its key has no depth bound.
-        let entry = entry_key(&too_deep, &meter).expect("an entry has no depth bound");
+        let entry = entry_key(&too_deep).expect("an entry has no depth bound");
         assert_eq!(
             entry,
             [
@@ -1534,25 +1387,18 @@ mod tests {
 
     #[test]
     fn channel_paths_split_plain_lists_only() {
-        let meter = unmetered();
         let five = gint(5);
         let singleton = glist(vec![five.clone()]);
-        assert_eq!(channel_path(&five, &meter), Ok(std::slice::from_ref(&five)));
+        assert_eq!(channel_path(&five), Ok(std::slice::from_ref(&five)));
+        assert_eq!(channel_path(&singleton), Ok(std::slice::from_ref(&five)));
         assert_eq!(
-            channel_path(&singleton, &meter),
-            Ok(std::slice::from_ref(&five))
-        );
-        assert_eq!(
-            key(channel_path(&five, &meter).expect("a path")),
-            key(channel_path(&singleton, &meter).expect("a path")),
+            key(channel_path(&five).expect("a path")),
+            key(channel_path(&singleton).expect("a path")),
             "@c and @[c] name one path"
         );
         let nested = glist(vec![singleton.clone()]);
-        assert_eq!(
-            channel_path(&nested, &meter),
-            Ok(std::slice::from_ref(&singleton))
-        );
-        assert_eq!(channel_path(&glist(Vec::new()), &meter), Ok(&[][..]));
+        assert_eq!(channel_path(&nested), Ok(std::slice::from_ref(&singleton)));
+        assert_eq!(channel_path(&glist(Vec::new())), Ok(&[][..]));
         let remainder = list_with_remainder();
         let with_send = Par {
             sends: send(gint(0), Vec::new()).sends,
@@ -1568,7 +1414,7 @@ mod tests {
         };
         for unsplit in [remainder, with_send, with_bits, two_exprs] {
             assert_eq!(
-                channel_path(&unsplit, &meter),
+                channel_path(&unsplit),
                 Ok(std::slice::from_ref(&unsplit)),
                 "{unsplit:?}"
             );
@@ -1579,7 +1425,7 @@ mod tests {
     #[test]
     fn encoded_paths_hold_every_prefix_key() {
         let path = ints(&[0, 1, 2]);
-        let encoded = encode_path(&path, &unmetered()).expect("the path encodes");
+        let encoded = encode_path(&path).expect("the path encodes");
         assert_eq!(encoded.depth(), 3);
         assert_eq!(encoded.path_key(), key(&path).as_slice());
         assert_eq!(encoded.path_key(), &[3, 0, 3, 2, 3, 4, 0]);
@@ -1601,7 +1447,7 @@ mod tests {
         }
         assert_eq!(encoded.prefix_key(4), None);
         assert_eq!(encoded.clone().into_path_key(), key(&path));
-        let root = encode_path(&[], &unmetered()).expect("the root encodes");
+        let root = encode_path(&[]).expect("the root encodes");
         assert_eq!(root.depth(), 0);
         assert_eq!(root.path_key(), &[tag::TERM]);
         let no_bytes: &[u8] = &[];
@@ -1615,40 +1461,34 @@ mod tests {
 
     #[test]
     fn the_fips_paths_contain_and_order() {
-        let meter = unmetered();
         let at_01 = pkey(&ints(&[0, 1]));
-        assert!(is_prefix_key(&at_01, &key(&ints(&[0, 1, 2])), &meter).expect("a test"));
-        assert!(is_prefix_key(&at_01, &key(&ints(&[0, 1, 3])), &meter).expect("a test"));
-        assert!(is_prefix_key(&at_01, &key(&ints(&[0, 1])), &meter).expect("a test"));
-        assert!(!is_prefix_key(&at_01, &key(&ints(&[0])), &meter).expect("a test"));
-        assert!(!is_prefix_key(&at_01, &key(&ints(&[0, 2, 1])), &meter).expect("a test"));
-        assert!(is_prefix_key(&[], &key(&ints(&[7])), &meter).expect("a test"));
+        assert!(is_prefix_key(&at_01, &key(&ints(&[0, 1, 2]))));
+        assert!(is_prefix_key(&at_01, &key(&ints(&[0, 1, 3]))));
+        assert!(is_prefix_key(&at_01, &key(&ints(&[0, 1]))));
+        assert!(!is_prefix_key(&at_01, &key(&ints(&[0]))));
+        assert!(!is_prefix_key(&at_01, &key(&ints(&[0, 2, 1]))));
+        assert!(is_prefix_key(&[], &key(&ints(&[7]))));
         assert_eq!(
-            compare_keys(&key(&ints(&[0, 1, 2])), &key(&ints(&[0, 1, 3])), &meter),
-            Ok(Ordering::Less)
+            compare_keys(&key(&ints(&[0, 1, 2])), &key(&ints(&[0, 1, 3]))),
+            Ordering::Less
         );
         assert_eq!(
-            compare_keys(&key(&ints(&[0, 1])), &key(&ints(&[0, 1, 2])), &meter),
-            Ok(Ordering::Less),
+            compare_keys(&key(&ints(&[0, 1])), &key(&ints(&[0, 1, 2]))),
+            Ordering::Less,
             "the exact path comes first"
         );
     }
 
     #[test]
     fn plain_lists_and_path_elements_invert_each_other() {
-        let meter = unmetered();
         let elements = vec![gint(2), gstring("hi"), glist(vec![gint(3)])];
-        let list = plain_list(elements.clone(), &meter).expect("the list builds");
+        let list = plain_list(elements.clone());
         assert_eq!(list, glist(elements.clone()));
         assert_eq!(path_elements(&list), elements.as_slice());
-        assert_eq!(
-            into_path_elements(list, &meter).expect("the list moves"),
-            elements
-        );
-        assert_eq!(
-            into_path_elements(gint(5), &meter).expect("one element"),
-            vec![gint(5)]
-        );
+        assert_eq!(into_path_elements(list).expect("the list moves"), elements);
+        assert_eq!(into_path_elements(gint(5)).expect("one element"), vec![
+            gint(5)
+        ]);
         let bits = Par {
             locally_free: vec![0b001],
             ..gint(1)
@@ -1660,58 +1500,21 @@ mod tests {
         };
         let parts = vec![bits.clone(), more_bits.clone(), gint(3)];
         assert_eq!(
-            bit_sets(&parts, &meter).expect("the sets fold"),
+            bit_sets(&parts),
             (
                 union(bits.locally_free.clone(), more_bits.locally_free.clone()),
                 true
             )
         );
-        let flagged = plain_list(parts, &meter).expect("the list builds");
+        let flagged = plain_list(parts);
         assert_eq!(flagged.locally_free, vec![0b101, 0b010]);
         assert!(flagged.connective_used);
         assert_eq!(plain_list_elements(&flagged), None);
     }
 
-    #[test]
-    fn every_metered_function_rejects_a_cut_budget() {
-        let structural = vec![
-            gint(0),
-            glist(vec![gstring("hi"), gtuple(vec![gbool(true)])]),
-        ];
-        let escaping = vec![gint(1), send(gint(0), vec![eset(vec![gint(2)])])];
-        let channel = glist(structural.clone());
-        for path in [&structural, &escaping] {
-            assert_cut(|meter| path_key(path, meter));
-            assert_cut(|meter| prefix_key(path, meter));
-            assert_cut(|meter| entry_key(path, meter));
-            assert_cut(|meter| encode_path(path, meter));
-            for element in path.iter() {
-                assert_cut(|meter| segment(element, meter));
-            }
-        }
-        assert_cut(|meter| channel_path(&channel, meter).map(|path| path.to_vec()));
-        let key = key(&structural);
-        let prefix = pkey(&structural[..1]);
-        assert_cut(|meter| is_prefix_key(&prefix, &key, meter));
-        assert_cut(|meter| compare_keys(&prefix, &key, meter));
-        assert_cut(|meter| plain_list(structural.clone(), meter));
-        assert_cut(|meter| bit_sets(&structural, meter));
-        assert_cut(|meter| into_path_elements(gint(5), meter));
-        // A plain list moves its elements out, which reserves nothing.
-        let (_, moved) = usage_of(|meter| into_path_elements(channel.clone(), meter));
-        assert_eq!(moved, [0, 0, 0]);
-        // A rejected encode of an element with a PathMap fails before it allocates the key.
-        assert_cut(|meter| match segment(&pathmap(Vec::new()), meter) {
-            Err(SpaceError::UnsupportedPathElement) => Ok(()),
-            other => other.map(|_| ()),
-        });
-    }
-
     fn check_prefix_law(prefix: &[Par], path: &[Par]) -> Result<(), TestCaseError> {
-        let meter = unmetered();
         let expected = path.len() >= prefix.len() && same_elements(&path[..prefix.len()], prefix);
-        let actual =
-            is_prefix_key(&pkey(prefix), &key(path), &meter).expect("the test is reserved");
+        let actual = is_prefix_key(&pkey(prefix), &key(path));
         ensure(
             actual == expected,
             "a prefix key is a prefix of a path key exactly when the prefix is a prefix",
@@ -1728,8 +1531,7 @@ mod tests {
                 let extension = [prefix.clone(), suffix].concat();
                 check_prefix_law(&prefix, &extension)?;
                 ensure(
-                    is_prefix_key(&pkey(&prefix), &key(&extension), &unmetered())
-                        .expect("the test is reserved"),
+                    is_prefix_key(&pkey(&prefix), &key(&extension)),
                     "every extension of a prefix holds its key",
                 )?;
                 check_prefix_law(&prefix, &other)?;
@@ -1780,11 +1582,8 @@ mod tests {
             pure_config(),
             (candidate(), candidate(), candidate(), path(), path()),
             |(first, second, third, prefix, suffix)| {
-                let meter = unmetered();
                 let order = |left: &(Vec<Par>, u8), right: &(Vec<Par>, u8)| {
-                    compare_keys(&key(&left.0), &key(&right.0), &meter)
-                        .expect("the comparison is reserved")
-                        .then(left.1.cmp(&right.1))
+                    compare_keys(&key(&left.0), &key(&right.0)).then(left.1.cmp(&right.1))
                 };
                 for (left, right) in [(&first, &second), (&second, &third), (&first, &third)] {
                     ensure(
@@ -1812,29 +1611,12 @@ mod tests {
                     false => {
                         let extension = [prefix.clone(), suffix].concat();
                         ensure(
-                            compare_keys(&key(&prefix), &key(&extension), &meter)
-                                .expect("the comparison is reserved")
-                                == Ordering::Less,
+                            compare_keys(&key(&prefix), &key(&extension)) == Ordering::Less,
                             "the exact path comes before its extensions",
                         )
                     }
                 }
             },
         );
-    }
-
-    // Decision 42: a metered encode gives the bytes of an encode without a budget, with a
-    // usage that does not change between two runs.
-    #[test]
-    fn prop_metered_keys_equal_unmetered_keys() {
-        check(pure_config(), path(), |path| {
-            let (first, first_usage) = usage_of(|meter| path_key(&path, meter));
-            let (second, second_usage) = usage_of(|meter| path_key(&path, meter));
-            ensure(first == key(&path), "the metered key equals the key")?;
-            ensure(
-                first == second && first_usage == second_usage,
-                "the usage is a function of the path",
-            )
-        });
     }
 }

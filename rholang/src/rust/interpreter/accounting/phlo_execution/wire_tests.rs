@@ -26,11 +26,6 @@ fn resource(authority: &Sig) -> PhloResource<'_> {
     }
 }
 
-fn restore_budget() -> HostWorkBudget {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
-
 #[test]
 fn phlo_wire_key_uses_the_same_authority_nodes_as_native_permissions() {
     let signature = Sig::And(
@@ -61,8 +56,7 @@ fn phlo_wire_key_uses_the_same_authority_nodes_as_native_permissions() {
     assert_eq!(internal.location, decoded.location);
     assert_eq!(internal.class, decoded.class as usize);
     assert_eq!(internal.acquisition_terms, decoded.acquisition_terms);
-    let restored =
-        RestoredPhloResource::from_wire_key(&decoded, LIMITS, &restore_budget()).unwrap();
+    let restored = RestoredPhloResource::from_wire_key(&decoded, LIMITS).unwrap();
     assert_eq!(restored.resource(), native);
 }
 
@@ -140,7 +134,7 @@ fn phlo_wire_key_does_not_limit_compound_authorities_to_two_wallets() {
         let wire = key.encode(WIRE).unwrap();
         assert_eq!(PhloResourceKeyV1::decode(&wire, WIRE).unwrap(), key);
         assert_eq!(
-            RestoredPhloResource::from_wire_key(&key, LIMITS, &restore_budget())
+            RestoredPhloResource::from_wire_key(&key, LIMITS)
                 .unwrap()
                 .resource(),
             resource(&signature)
@@ -160,30 +154,21 @@ fn signature() -> impl Strategy<Value = Sig> {
 }
 
 #[test]
-fn key_stack_pop_and_push_reuse_reserved_storage_and_charge_only_insertions() {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-    let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
+fn key_stack_pop_and_push_reuse_reserved_storage() {
     let mut stack = Vec::new();
     let mut reserved = 0;
     for value in 0..128u64 {
-        push_key_entry(&mut stack, &mut reserved, value, Some(&host)).unwrap();
+        push_key_entry(&mut stack, &mut reserved, value).unwrap();
         assert!(stack.len() <= reserved);
         assert!(stack.capacity() >= reserved);
     }
-    let bytes = host.usage(HostWorkDimension::SearchStateBytes);
-    let operations = host.usage(HostWorkDimension::VerificationOperations).get();
     let pointer = stack.as_ptr();
     for _ in 0..1024 {
         let value = stack.pop().unwrap();
-        push_key_entry(&mut stack, &mut reserved, value, Some(&host)).unwrap();
+        push_key_entry(&mut stack, &mut reserved, value).unwrap();
         assert_eq!(reserved, 128);
         assert_eq!(stack.as_ptr(), pointer);
-        assert_eq!(host.usage(HostWorkDimension::SearchStateBytes), bytes);
     }
-    assert_eq!(
-        host.usage(HostWorkDimension::VerificationOperations).get(),
-        operations + 1024
-    );
 }
 
 proptest! {
@@ -192,24 +177,17 @@ proptest! {
     fn key_stack_generated_operations_preserve_capacity_and_reservation_accounting(
         operations in prop::collection::vec(any::<bool>(), 0..512),
     ) {
-        use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-        let host = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
         let mut stack = Vec::new();
         let mut reserved = 0;
         let mut model = Vec::new();
         let mut capacity = 0usize;
-        let mut bytes = 0u64;
-        let mut work = 0u64;
         for (index, push) in operations.into_iter().enumerate() {
             if push {
                 if model.len() == capacity {
                     capacity = (capacity * 2).max(1);
-                    bytes += (capacity * std::mem::size_of::<u64>()) as u64;
-                    work += model.len() as u64;
                 }
-                work += 1;
                 model.push(index as u64);
-                push_key_entry(&mut stack, &mut reserved, index as u64, Some(&host)).unwrap();
+                push_key_entry(&mut stack, &mut reserved, index as u64).unwrap();
             } else {
                 prop_assert_eq!(stack.pop(), model.pop());
             }
@@ -217,8 +195,6 @@ proptest! {
             prop_assert_eq!(reserved, capacity);
             prop_assert!(stack.len() <= reserved);
             prop_assert!(stack.capacity() >= reserved);
-            prop_assert_eq!(host.usage(HostWorkDimension::SearchStateBytes).get(), bytes);
-            prop_assert_eq!(host.usage(HostWorkDimension::VerificationOperations).get(), work);
         }
     }
 }
@@ -240,14 +216,13 @@ proptest! {
         prop_assert_eq!(lhs == rhs, lhs_wire == rhs_wire);
         prop_assert_eq!(PhloResourceKeyV1::decode(&lhs_wire, WIRE).unwrap(), first.wire_key(LIMITS).unwrap());
         let decoded = PhloResourceKeyV1::decode(&lhs_wire, WIRE).unwrap();
-        let restored = RestoredPhloResource::from_wire_key(&decoded, LIMITS, &restore_budget()).unwrap();
+        let restored = RestoredPhloResource::from_wire_key(&decoded, LIMITS).unwrap();
         prop_assert_eq!(restored.resource(), first);
     }
 }
 
 #[test]
-fn phlo_resource_restoration_enforces_exact_limits_and_host_work() {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+fn phlo_resource_restoration_enforces_exact_limits() {
     let authority = Sig::And(
         Box::new(Sig::Ground(vec![1])),
         Box::new(Sig::Quote(vec![2, 3])),
@@ -259,7 +234,7 @@ fn phlo_resource_restoration_enforces_exact_limits_and_host_work() {
         key_bytes: 16,
     };
     assert_eq!(
-        RestoredPhloResource::from_wire_key(&key, exact, &restore_budget())
+        RestoredPhloResource::from_wire_key(&key, exact)
             .unwrap()
             .resource(),
         resource(&authority)
@@ -288,23 +263,9 @@ fn phlo_resource_restoration_enforces_exact_limits_and_host_work() {
         ),
     ] {
         assert_eq!(
-            RestoredPhloResource::from_wire_key(&key, limits, &restore_budget()).unwrap_err(),
+            RestoredPhloResource::from_wire_key(&key, limits).unwrap_err(),
             error
         );
-    }
-    for dimension in [
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::VerificationBytes,
-    ] {
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-        limits.set(dimension, HostWorkLimit::new(0));
-        let budget = HostWorkBudget::new(limits);
-        assert!(matches!(
-            RestoredPhloResource::from_wire_key(&key, exact, &budget),
-            Err(PhloExecutionError::HostWork(_))
-        ));
-        assert!(budget.is_rejected());
     }
 }
 
@@ -336,7 +297,7 @@ proptest! {
         let original = key.clone();
         let mut index = 0;
         let expected = reference_restore(&key.authority, &mut index).filter(|_| index == key.authority.len());
-        let actual = RestoredPhloResource::from_wire_key(&key, LIMITS, &restore_budget());
+        let actual = RestoredPhloResource::from_wire_key(&key, LIMITS);
         match expected {
             Some(authority) => {
                 let restored = actual.unwrap();

@@ -1,0 +1,56 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-04T13:41:54Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/580#issuecomment-5980616375",
+  "revision": "3d384bc9ed4c38738c88bf84dd6f570ef5fc78e0",
+  "note": "The comment was pasted from rendered terminal output, so it has no markdown formatting. Every accepted value matches the review package."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+  "docs/claims/soak-disk-protection.md": "4591986996cb979eb8bb6f17ab71000fbd6d87c82cf4b64ad77f525ba199ed1d"
+ },
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "hosted_runs": {
+  "tested_sha": "3ec0561fcad7c140db958d1708db654e3ddab178",
+  "full_suite": {
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37201812923,
+   "job_result": "All 40 test, lint, coverage, and integration jobs passed.",
+   "run_state_at_acceptance": "completed/cancelled"
+  },
+  "claims_and_bindings": {
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37200929278,
+   "conclusion": "success"
+  }
+ },
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "previous_acceptance": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-driver-evidence-scope-acceptance-20261004-01/report.json",
+  "sha256": "7ce7d34b7fe5f8233cb764d6b80211625c6677f73acebff27690ba88869d1af2"
+ },
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-driver-evidence-scope-20261004-02/report.json",
+  "sha256": "60e05c21df25ca78443b643e6e5d9214f188b8080c217041cbd711a4e1ad5646"
+ },
+ "schema_version": 1,
+ "scope": "bounded-harness-driver-evidence-scope",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "2baf7e1925f5ff56361cc5f9c0242ba8075da9d99358d83594be6b6c4345815a",
+  "scripts/run-merge-recovery-soak.sh": "8135af2bf0a704f2d79af74392110387b0be0f2ef7939a542a203b4860bec44f"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-04",
+ "waiver": null
+}

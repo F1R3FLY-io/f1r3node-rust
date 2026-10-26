@@ -55,7 +55,7 @@
 //! SETTLE(view, cx, origin, x):                      ▷ x: the element in flight, or none
 //!   rounds ← cx.rounds                              ▷ the fires of the transaction (I-21)
 //!   loop
-//!     F ← view.next_fire(cx, x)                     ▷ every read reserved (decision 42)
+//!     F ← view.next_fire(cx, x)                     ▷ the next fire that the collection owes
 //!     if F = none:
 //!       land x                                      ▷ store it at its ord, same identity
 //!       return Quiescent
@@ -115,11 +115,8 @@
 //!
 //! # Metering
 //!
-//! A settle reserves each read and copy before it makes it (decision 42): the scans of the view,
-//! the payload decode of each tested record, the metered match, the copies of the staged
-//! operations, the random bytes of each `K_lift`, and the prepaid decode of each fired
-//! continuation. The legacy charges of decision 45 (Option P) apply to each staged operation,
-//! because a settle stages only through `Cx`.
+//! The legacy charges of decision 45 (Option P) apply to each staged operation, because a settle
+//! stages only through `Cx`.
 
 use std::sync::LazyLock;
 
@@ -131,12 +128,12 @@ use models::rhoapi::{
 use models::rust::utils::{new_elist_par, new_freevar_var, new_gint_par};
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
 
-use super::agent::{ConsumeOp, ProduceOp, QueryParams, SettleOp, SpaceOp, SpaceReissue};
+use super::agent::{ConsumeOp, ProduceOp, SettleOp, SpaceOp, SpaceReissue};
 use super::errors::SpaceError;
 use super::generic::{Cx, OfferFire, OpView, ParCandidate, ParDatum, ParWaiter};
-use super::namespace::{CollectionKey, RandomPurpose};
+use super::namespace::RandomPurpose;
 use super::record;
-use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, FIRE_ROUND_CAP};
 
 // Disabled by I-21 (one fire count for each transaction): the step of a lift is the fire count
 // of the transaction (`Cx::rounds`), which the settles before and after the plan share. So the
@@ -198,18 +195,6 @@ pub fn lift_continuation(
 
 /// The template of the lift pattern.
 static LIFT_PATTERN: LazyLock<BindPattern> = LazyLock::new(lift_pattern);
-
-/// The template of a `K_lift` continuation: its body, without random state bytes and without a
-/// cost authority. The counter value and the step are inline integers, so every `K_lift` has the
-/// shape of this template, and a reserved copy of it covers the allocations of a new one.
-static LIFT_CONTINUATION: LazyLock<TaggedContinuation> = LazyLock::new(|| TaggedContinuation {
-    tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
-        body: Some(lift_body(0, 0)),
-        random_state: Vec::new(),
-    })),
-    guard: None,
-    cost_authority: None,
-});
 
 /// The operation that runs a settle: what each `K_lift` of the settle takes from it.
 #[derive(Clone, Copy, Debug)]
@@ -371,10 +356,8 @@ impl FirePlan {
 /// The canonical order in which a collection settles: the next fire that it owes.
 pub trait SettleView {
     /// The next fire that the collection owes, or `None` when no pair of heads matches. When a
-    /// record is in flight (`in_flight`), the view treats it as an entry of its side, at its
-    /// order. A plan that binds that record marks it [`BoundRecord::InFlight`]. The view
-    /// reserves each of its reads and copies on the meter of `cx` before it makes it
-    /// (decision 42), and it stages nothing.
+    /// record is in flight (`in_flight`), the view treats it as an entry of its side, at its order.
+    /// A plan that binds that record marks it [`BoundRecord::InFlight`]. The view stages nothing.
     fn next_fire(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -407,7 +390,6 @@ pub fn settle<V: SettleView>(
     origin: &SettleOrigin<'_>,
     mut in_flight: InFlight,
 ) -> Result<SettleEnd, SpaceError> {
-    let meter = cx.meter();
     // Disabled by I-21 (one fire count for each transaction, `Cx::rounds`):
     // let mut rounds = FireRounds::new();
     let mut lift_random: Option<Blake2b512Random> = None;
@@ -464,8 +446,7 @@ pub fn settle<V: SettleView>(
         let Incoming { datum, lifted } = incoming;
         let spent = !datum.persist && waiter.peeks.is_empty();
         let stays = waiter.persist;
-        record::prepay_continuation_unwrap(&waiter.continuation, meter)?;
-        let introduction = cx.introduction().for_record(&datum.a, meter)?;
+        let introduction = cx.introduction().for_record(&datum.a)?;
         let step = cx.rounds().after_fire(spent, stays);
         let fire = OfferFire {
             persistent: datum.persist,
@@ -475,14 +456,14 @@ pub fn settle<V: SettleView>(
         match lifted && !spent {
             true => {
                 // The lifted record stays in flight after this fire, so the fire takes copies.
-                let data = meter.copy(&datum.a)?;
-                let removed = meter.copy(&datum.a)?;
-                let source = meter.copy(&datum.source)?;
+                let data = datum.a.clone();
+                let removed = datum.a.clone();
+                let source = datum.source.clone();
                 cx.fire_offer_on(&channel, fire, data, removed, source, &introduction)?;
                 in_flight = InFlight::lifted(Lifted { channel, datum });
             }
             false => {
-                let removed = meter.copy(&datum.a)?;
+                let removed = datum.a.clone();
                 let Datum { a, source, .. } = datum;
                 cx.fire_offer_on(&channel, fire, a, removed, source, &introduction)?;
             }
@@ -515,7 +496,7 @@ fn land(cx: &mut Cx<'_, '_>, mut in_flight: InFlight) -> Result<(), SpaceError> 
 /// Stages the lift of the stored record `datum` at the index `view_index` of the staged view of
 /// `channel`: a consume fire of `K_lift` with the step `step`, which removes the record and is
 /// never dispatched. The random state of `K_lift` is derived once for a settle and kept in
-/// `lift_random`. Each copy and the random bytes are reserved first.
+/// `lift_random`.
 fn lift(
     cx: &mut Cx<'_, '_>,
     channel: &Par,
@@ -525,38 +506,32 @@ fn lift(
     step: i64,
     lift_random: &mut Option<Blake2b512Random>,
 ) -> Result<(), SpaceError> {
-    let meter = cx.meter();
     let counter = cx.bumped().ok_or(SpaceError::Inconsistent(
         "a settle runs in a round without a collection counter",
     ))?;
     let matched = cx
-        .bind(&LIFT_PATTERN, &datum.a)?
+        .bind(&LIFT_PATTERN, &datum.a)
         .ok_or(SpaceError::Inconsistent(
             "a stored record does not match the lift pattern",
         ))?;
     let random = lift_random.get_or_insert_with(|| {
         RandomPurpose::Lift.derive(&Blake2b512Random::from_bytes(origin.random_state))
     });
-    meter.reserve_copy(&*LIFT_CONTINUATION)?;
-    meter.random_bytes(random)?;
-    let cost_authority = origin
-        .authority
-        .map(|authority| meter.copy(authority))
-        .transpose()?;
+    let cost_authority = origin.authority.cloned();
     let continuation = lift_continuation(counter, step, random, cost_authority);
-    let mut channels = meter.buffer::<Par>(1)?;
-    channels.push(meter.copy(channel)?);
-    let mut patterns = meter.buffer::<BindPattern>(1)?;
-    patterns.push(meter.copy(&*LIFT_PATTERN)?);
-    let mut candidates = meter.buffer::<ParCandidate>(1)?;
+    let mut channels = Vec::<Par>::with_capacity(1);
+    channels.push(channel.clone());
+    let mut patterns = Vec::<BindPattern>::with_capacity(1);
+    patterns.push((*LIFT_PATTERN).clone());
+    let mut candidates = Vec::<ParCandidate>::with_capacity(1);
     candidates.push(ConsumeCandidate {
-        channel: meter.copy(channel)?,
+        channel: channel.clone(),
         datum: Datum {
             a: matched,
             persist: datum.persist,
-            source: meter.copy(&datum.source)?,
+            source: datum.source.clone(),
         },
-        removed_datum: meter.copy(&datum.a)?,
+        removed_datum: datum.a.clone(),
         datum_index: view_index,
     });
     cx.lift(channels, patterns, continuation, candidates)
@@ -575,7 +550,7 @@ pub fn settle_before_plan<V: SettleView>(
     match settle(view, cx, &origin, InFlight::none())? {
         SettleEnd::Quiescent => Ok(None),
         SettleEnd::Reissue(cause) => {
-            let reissued = reissued_operation(op, cx.bumped(), cx.meter())?;
+            let reissued = reissued_operation(op, cx.bumped());
             Ok(Some(cx.reissue(reissued, cause)))
         }
     }
@@ -594,7 +569,7 @@ pub fn settle_after_plan<V: SettleView>(
     match settle(view, cx, &origin, InFlight::none())? {
         SettleEnd::Quiescent => Ok(None),
         SettleEnd::Reissue(cause) => {
-            let settle_op = settle_operation(op, cx.meter())?;
+            let settle_op = settle_operation(op);
             Ok(Some(cx.reissue(SpaceOp::Settle(settle_op), cause)))
         }
     }
@@ -615,92 +590,68 @@ pub fn settle_job<V: SettleView>(
     }
 }
 
-/// The key `key` copied, with the copy of its bytes reserved.
-fn copy_key(key: &CollectionKey, meter: &ScanMeter) -> Result<CollectionKey, SpaceError> {
-    meter.reserve_copy_slice(key.as_bytes())?;
-    Ok(key.clone())
-}
-
-/// The query `query` copied, with the copies of its parts reserved.
-fn copy_query(
-    query: &Option<QueryParams>,
-    meter: &ScanMeter,
-) -> Result<Option<QueryParams>, SpaceError> {
-    match query {
-        Some(QueryParams { payload, named }) => Ok(Some(QueryParams {
-            payload: meter.copy(payload)?,
-            named: meter.copy(named)?,
-        })),
-        None => Ok(None),
-    }
-}
-
 /// The re-issue of the operation `op`, whose round bumped the counter from `bumped`, when a
 /// settle before its plan cannot complete. The operation re-issues as the program issued it,
 /// with the order rule of decision 43: a persistent operation carries the order of its first
 /// round, which is its carried order or else `bumped`, and an operation that is not persistent
-/// carries none. Each copy of a field is reserved first.
-pub fn reissued_operation(
-    op: OpView<'_>,
-    bumped: Option<i64>,
-    meter: &ScanMeter,
-) -> Result<SpaceOp, SpaceError> {
+/// carries none.
+pub fn reissued_operation(op: OpView<'_>, bumped: Option<i64>) -> SpaceOp {
     let first_round = |reissued: Option<i64>| reissued.or(bumped).unwrap_or(0);
     match op {
-        OpView::Produce(op) => Ok(SpaceOp::Produce(ProduceOp {
+        OpView::Produce(op) => SpaceOp::Produce(ProduceOp {
             space: op.space,
-            key: copy_key(&op.key, meter)?,
-            channel: meter.copy(&op.channel)?,
-            data: meter.copy(&op.data)?,
+            key: op.key.clone(),
+            channel: op.channel.clone(),
+            data: op.data.clone(),
             persistent: op.persistent,
-            params: meter.copy(&op.params)?,
-            authority: meter.copy(&op.authority)?,
+            params: op.params.clone(),
+            authority: op.authority.clone(),
             reissued_ord: op.persistent.then(|| first_round(op.reissued_ord)),
-        })),
-        OpView::Consume(op) => Ok(SpaceOp::Consume(ConsumeOp {
+        }),
+        OpView::Consume(op) => SpaceOp::Consume(ConsumeOp {
             space: op.space,
-            key: copy_key(&op.key, meter)?,
-            channel: meter.copy(&op.channel)?,
-            pattern: meter.copy(&op.pattern)?,
-            body: meter.copy(&op.body)?,
+            key: op.key.clone(),
+            channel: op.channel.clone(),
+            pattern: op.pattern.clone(),
+            body: op.body.clone(),
             persistent: op.persistent,
             peek: op.peek,
-            guard: meter.copy(&op.guard)?,
-            query: copy_query(&op.query, meter)?,
-            authority: meter.copy(&op.authority)?,
-            introduction_authority: meter.copy(&op.introduction_authority)?,
+            guard: op.guard.clone(),
+            query: op.query.clone(),
+            authority: op.authority.clone(),
+            introduction_authority: op.introduction_authority.clone(),
             reissued_ord: op.persistent.then(|| first_round(op.reissued_ord)),
-        })),
+        }),
     }
 }
 
 /// The settle job that continues the settle after the operation `op`: the space, the key and
 /// the channel of the operation, its random state, its cost authority and its introduction
 /// authority. The settle job bumps the counter with this random state and these authorities,
-/// as a round of the operation does. Each copy is reserved first.
-pub fn settle_operation(op: OpView<'_>, meter: &ScanMeter) -> Result<SettleOp, SpaceError> {
+/// as a round of the operation does.
+pub fn settle_operation(op: OpView<'_>) -> SettleOp {
     match op {
-        OpView::Produce(op) => Ok(SettleOp {
+        OpView::Produce(op) => SettleOp {
             space: op.space,
-            key: copy_key(&op.key, meter)?,
-            channel: meter.copy(&op.channel)?,
-            random_state: meter.copy(&op.data.random_state)?,
+            key: op.key.clone(),
+            channel: op.channel.clone(),
+            random_state: op.data.random_state.clone(),
             authority: match &op.data.cost_authority {
-                Some(authority) => meter.copy(authority)?,
+                Some(authority) => authority.clone(),
                 None => CostAuthority::default(),
             },
-            introduction_authority: meter.copy(&op.authority)?,
+            introduction_authority: op.authority.clone(),
             cascade: None,
-        }),
-        OpView::Consume(op) => Ok(SettleOp {
+        },
+        OpView::Consume(op) => SettleOp {
             space: op.space,
-            key: copy_key(&op.key, meter)?,
-            channel: meter.copy(&op.channel)?,
-            random_state: meter.copy(&op.body.random_state)?,
-            authority: meter.copy(&op.authority)?,
-            introduction_authority: meter.copy(&op.introduction_authority)?,
+            key: op.key.clone(),
+            channel: op.channel.clone(),
+            random_state: op.body.random_state.clone(),
+            authority: op.authority.clone(),
+            introduction_authority: op.introduction_authority.clone(),
             cascade: None,
-        }),
+        },
     }
 }
 
@@ -710,16 +661,16 @@ mod tests {
 
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{CostRegion, EList, Expr};
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use models::rust::utils::{new_freevar_par, new_gstring_par};
-    use rspace_plus_plus::rspace::errors::RSpaceError;
     use rspace_plus_plus::rspace::r#match::Match;
     use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
-    use crate::rust::interpreter::spaces::namespace::{Durability, NativeSpace, SID_LEN};
+    use crate::rust::interpreter::spaces::agent::QueryParams;
+    use crate::rust::interpreter::spaces::namespace::{
+        CollectionKey, Durability, NativeSpace, SID_LEN,
+    };
 
     const SPACE: NativeSpace = NativeSpace {
         sid: [9; SID_LEN],
@@ -859,10 +810,6 @@ mod tests {
             }
             other => panic!("K_lift has a body: {other:?}"),
         }
-        // The template has the shape of every K_lift.
-        let template = &*LIFT_CONTINUATION;
-        assert_eq!(template.guard, None);
-        assert_eq!(template.cost_authority, None);
     }
 
     #[test]
@@ -889,8 +836,7 @@ mod tests {
             None,
             "an empty authority is not stamped"
         );
-        let settle_op = settle_operation(OpView::Produce(&produce), &ScanMeter::new(None))
-            .expect("a settle operation");
+        let settle_op = settle_operation(OpView::Produce(&produce));
         let origin = SettleOrigin::of_settle(&settle_op);
         assert_eq!(origin.random_state, produce.data.random_state.as_slice());
         assert_eq!(origin.authority, Some(&region(2)));
@@ -903,7 +849,6 @@ mod tests {
 
     #[test]
     fn space_settle_reissued_operation_keeps_the_first_round_ord_of_a_persistent_operation() {
-        let meter = ScanMeter::new(None);
         // Decision 43: a persistent operation carries its first-round order: its carried order,
         // or else the order of its bump. An operation that is not persistent carries none.
         let cases = [
@@ -915,50 +860,46 @@ mod tests {
         for (persistent, carried, expected) in cases {
             let produce = produce_op(persistent, carried);
             assert_eq!(
-                reissued_operation(OpView::Produce(&produce), Some(4), &meter),
-                Ok(SpaceOp::Produce(ProduceOp {
+                reissued_operation(OpView::Produce(&produce), Some(4)),
+                SpaceOp::Produce(ProduceOp {
                     reissued_ord: expected,
                     ..produce.clone()
-                })),
+                }),
                 "produce, persistent {persistent}, carried {carried:?}"
             );
             let consume = consume_op(persistent, carried);
             assert_eq!(
-                reissued_operation(OpView::Consume(&consume), Some(4), &meter),
-                Ok(SpaceOp::Consume(ConsumeOp {
+                reissued_operation(OpView::Consume(&consume), Some(4)),
+                SpaceOp::Consume(ConsumeOp {
                     reissued_ord: expected,
                     ..consume.clone()
-                })),
+                }),
                 "consume, persistent {persistent}, carried {carried:?}"
             );
         }
         // Without a counter every order is 0.
         let produce = produce_op(true, None);
         assert_eq!(
-            reissued_operation(OpView::Produce(&produce), None, &meter),
-            Ok(SpaceOp::Produce(ProduceOp {
+            reissued_operation(OpView::Produce(&produce), None),
+            SpaceOp::Produce(ProduceOp {
                 reissued_ord: Some(0),
                 ..produce.clone()
-            }))
+            })
         );
     }
 
     #[test]
     fn space_settle_operation_carries_the_settle_inputs_of_its_operation() {
-        let meter = ScanMeter::new(None);
         let produce = produce_op(true, Some(1));
-        assert_eq!(
-            settle_operation(OpView::Produce(&produce), &meter),
-            Ok(SettleOp {
-                space: SPACE,
-                key: key(),
-                channel: channel(),
-                random_state: produce.data.random_state.clone(),
-                authority: region(2),
-                introduction_authority: region(3),
-                cascade: None,
-            })
-        );
+        assert_eq!(settle_operation(OpView::Produce(&produce)), SettleOp {
+            space: SPACE,
+            key: key(),
+            channel: channel(),
+            random_state: produce.data.random_state.clone(),
+            authority: region(2),
+            introduction_authority: region(3),
+            cascade: None,
+        });
         let unsigned = ProduceOp {
             data: ListParWithRandom {
                 cost_authority: None,
@@ -967,22 +908,19 @@ mod tests {
             ..produce
         };
         assert_eq!(
-            settle_operation(OpView::Produce(&unsigned), &meter).map(|op| op.authority),
-            Ok(CostAuthority::default())
+            settle_operation(OpView::Produce(&unsigned)).authority,
+            CostAuthority::default()
         );
         let consume = consume_op(false, None);
-        assert_eq!(
-            settle_operation(OpView::Consume(&consume), &meter),
-            Ok(SettleOp {
-                space: SPACE,
-                key: key(),
-                channel: channel(),
-                random_state: consume.body.random_state.clone(),
-                authority: region(4),
-                introduction_authority: region(5),
-                cascade: None,
-            })
-        );
+        assert_eq!(settle_operation(OpView::Consume(&consume)), SettleOp {
+            space: SPACE,
+            key: key(),
+            channel: channel(),
+            random_state: consume.body.random_state.clone(),
+            authority: region(4),
+            introduction_authority: region(5),
+            cascade: None,
+        });
     }
 
     fn waiter_of(binds: usize) -> ParWaiter {
@@ -1046,41 +984,5 @@ mod tests {
         assert_eq!(taken.datum.source, datum.source);
         assert!(!in_flight.is_some(), "taking leaves nothing in flight");
         assert!(!InFlight::default().is_some());
-    }
-
-    #[test]
-    fn space_settle_reissue_copies_are_reserved_first() {
-        // Measure the reservations of both builders without a limit.
-        let measure = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let produce = produce_op(true, None);
-        let consume = consume_op(true, None);
-        let operations = HostWorkDimension::VerificationOperations;
-        let meter = ScanMeter::new(Some(measure.clone()));
-        reissued_operation(OpView::Produce(&produce), Some(3), &meter).expect("a re-issue");
-        let reissue_usage = measure.usage(operations).get();
-        assert!(reissue_usage > 0, "the copies of a re-issue are reserved");
-        settle_operation(OpView::Consume(&consume), &meter).expect("a settle operation");
-        let settle_usage = measure.usage(operations).get() - reissue_usage;
-        assert!(
-            settle_usage > 0,
-            "the copies of a settle operation are reserved"
-        );
-        // One operation short of the need, each builder fails before it returns a value.
-        let cut = |limit: u64| {
-            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-            limits.set(operations, HostWorkLimit::new(limit));
-            ScanMeter::new(Some(HostWorkBudget::new(limits)))
-        };
-        assert_eq!(
-            reissued_operation(OpView::Produce(&produce), Some(3), &cut(reissue_usage - 1)),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        );
-        assert_eq!(
-            settle_operation(OpView::Consume(&consume), &cut(settle_usage - 1)),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        );
-        assert!(
-            reissued_operation(OpView::Produce(&produce), Some(3), &cut(reissue_usage)).is_ok()
-        );
     }
 }

@@ -28,17 +28,14 @@ use super::{
 };
 use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::interpreter::spaces::namespace::{SpaceId, SID_LEN};
 
 /// The footprint tag of a space key. Host channel keys use 0 and authority keys use 1.
 pub(crate) const SPACE_FOOTPRINT_TAG: u8 = 2;
 
-/// The work of a space job. It gets the host-work budget of the deploy, which the scheduler
-/// captured before it submitted the job (readiness review S5).
-pub(crate) type SpaceJob<T> = Box<
-    dyn FnOnce(Option<HostWorkBudget>) -> BoxFuture<'static, Result<T, InterpreterError>> + Send,
->;
+/// The work of a space job.
+pub(crate) type SpaceJob<T> =
+    Box<dyn FnOnce() -> BoxFuture<'static, Result<T, InterpreterError>> + Send>;
 
 /// A space job to schedule.
 pub(crate) struct SpaceRequest<T> {
@@ -199,12 +196,9 @@ pub(crate) async fn submit_space<T: Send + 'static>(
         job,
     } = request;
     let context = current();
-    let host_work = context
-        .as_ref()
-        .and_then(ReductionContext::host_work_budget);
     let erased: ErasedJob = Box::new(move || {
         Box::pin(async move {
-            let output = job(host_work).await?;
+            let output = job().await?;
             Ok(Box::new(output) as ErasedOutput)
         })
     });
@@ -231,9 +225,6 @@ mod tests {
 
     use async_trait::async_trait;
     use models::rhoapi::{BindPattern, CostRegion, ListParWithRandom, TaggedContinuation};
-    use models::rust::host_work::{
-        HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUnits, HostWorkUsage,
-    };
     use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
     use models::rust::utils::new_gint_par;
     use prost::Message;
@@ -248,14 +239,14 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::super::{
-        conflict_components, root, root_with_host_work, scope, ParticipantGuard, PreparedIntent,
-        ReductionCoordinator, ScopedJoinHandle,
+        conflict_components, root, scope, ParticipantGuard, PreparedIntent, ReductionCoordinator,
+        ScopedJoinHandle,
     };
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::native_phlo_rules::{
-        native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
-        NativePhloExecutionContract, NativePhloRegionLimits,
+        native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
+        NativePhloDimension, NativePhloExecutionContract, NativePhloRegionLimits,
     };
     use crate::rust::interpreter::accounting::phlo_controls::{
         check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
@@ -363,7 +354,7 @@ mod tests {
         wait: Option<Arc<Notify>>,
         signal: Option<Arc<Notify>>,
     ) -> SpaceJob<Result<usize, SpaceTxnError>> {
-        Box::new(move |_host_work| {
+        Box::new(move || {
             Box::pin(async move {
                 if let Some(wait) = wait {
                     wait.notified().await;
@@ -463,59 +454,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_space_moves_the_deploy_host_work_budget_into_the_job() {
-        let space = rspace().await;
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(16)));
-        let observed = root_with_host_work(
-            session_space(&space),
-            budget("host work capture"),
-            ReductionCoordinator::default(),
-            Some(host_work.clone()),
-            async {
-                submit_space(SpaceRequest {
-                    sid: sid(3),
-                    authority: None,
-                    channels: Vec::new(),
-                    job: Box::new(|captured: Option<HostWorkBudget>| {
-                        Box::pin(async move {
-                            let inside_reduction = current().is_some();
-                            let ordered = operation_context::current().is_some();
-                            let captured = captured.ok_or_else(|| {
-                                InterpreterError::BugFoundError("no captured budget".to_string())
-                            })?;
-                            captured.reserve(
-                                HostWorkDimension::SearchCandidates,
-                                HostWorkUnits::new(2),
-                            )?;
-                            Ok((inside_reduction, ordered))
-                        })
-                    }),
-                })
-                .await
-            },
-        )
-        .await;
-        assert_eq!(observed, Ok((false, true)));
-        assert_eq!(
-            host_work.usage(HostWorkDimension::SearchCandidates),
-            HostWorkUsage::new(2)
-        );
-    }
-
-    #[tokio::test]
     async fn submit_space_outside_a_reduction_runs_the_job_at_once() {
         let output = submit_space(SpaceRequest {
             sid: sid(4),
             authority: None,
             channels: Vec::new(),
-            job: Box::new(|captured: Option<HostWorkBudget>| {
-                Box::pin(
-                    async move { Ok((captured.is_none(), operation_context::current().is_none())) },
-                )
-            }),
+            job: Box::new(|| Box::pin(async move { Ok(operation_context::current().is_none()) })),
         })
         .await;
-        assert_eq!(output, Ok((true, true)));
+        assert_eq!(output, Ok(true));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -534,7 +481,7 @@ mod tests {
                         child.clone(),
                         async move {
                             let _guard = ParticipantGuard::for_context(&child);
-                            let job: SpaceJob<()> = Box::new(move |_host_work| {
+                            let job: SpaceJob<()> = Box::new(move || {
                                 Box::pin(async move {
                                     if index == 0 {
                                         panic!("an injected failure of a space job");
@@ -666,19 +613,16 @@ mod tests {
         )
         .expect("the test controls check");
         let contract =
-            NativePhloExecutionContract::new(controls, &binding).expect("the test contract builds");
-        let config = NativeRuntimeConfig::new(
-            contract,
-            NativeBudgetTraceLimits {
-                attempts: 4,
-                path_segments: 4,
-                regions: NativePhloRegionLimits {
-                    regions: 4,
-                    encoded_authority_bytes: 4096,
-                },
+            NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+                .expect("the test contract builds");
+        let config = NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+            attempts: 4,
+            path_segments: 4,
+            regions: NativePhloRegionLimits {
+                regions: 4,
+                encoded_authority_bytes: 4096,
             },
-            HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000))),
-        );
+        });
         let budget = RuntimeBudget::new(Cost::create(1, "native space schedule"));
         budget
             .reset_for_native_execution(config)

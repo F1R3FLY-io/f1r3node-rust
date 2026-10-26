@@ -53,7 +53,7 @@ use rholang::rust::interpreter::spaces::namespace::{
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
-use support::native::{assert_reproduces, certify, host_work, NativeChain, Played, AMPLE_LIMIT};
+use support::native::{assert_reproduces, certify, NativeChain, Played, AMPLE_LIMIT};
 use support::props::{check, runtime_config, tokio_runtime};
 use support::session::{error_codes, injected, Injections};
 
@@ -90,9 +90,7 @@ fn forwarding_agent(name: &str) -> String {
 /// volatile channel after it, and certifies it. Returns the play and the chain.
 async fn play_and_certify(label: &str, term: &str) -> (Played, NativeChain) {
     let mut chain = NativeChain::new().await;
-    let played = chain
-        .play_with(term, label, LIMIT, host_work(), injections())
-        .await;
+    let played = chain.play_with(term, label, LIMIT, injections()).await;
     assert!(
         played.result.native_budget_recording.is_some(),
         "{label}: the deploy evaluated: {:?}",

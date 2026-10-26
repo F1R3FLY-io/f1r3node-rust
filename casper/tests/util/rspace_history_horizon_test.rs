@@ -445,7 +445,7 @@ async fn single_parent_pre_state_dedupes_against_parent_post_state() {
 /// `replay_blocks_for_mergeable_channels(_, min_block_number_for_deploy_lifespan)`,
 /// which topo-sorts from `lfs_min_block_number` upward and replays each block;
 /// `replay_single_block` resets rspace history to that block's pre-state. A
-/// root absent from the synced set fails `validate_and_set_current_root`, so
+/// root absent from the synced set fails `validate_root`, so
 /// Casper never initialises and the node hangs below Running.
 ///
 /// The two bounds disagree whenever `deploy_lifespan` exceeds

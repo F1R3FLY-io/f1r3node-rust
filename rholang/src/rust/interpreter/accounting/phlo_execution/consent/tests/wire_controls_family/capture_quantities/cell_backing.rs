@@ -12,8 +12,6 @@ fn cells(
 ) -> Vec<Vec<Vec<(Vec<u8>, u64)>>> {
     let mut result = Vec::new();
     with_capture(wallets, price, quantity, rotation, reverse, |capture| {
-        let budget =
-            || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)));
         let limits = RetainedCellBackingLimits {
             cells: 4096,
             contributions: 8192,
@@ -21,12 +19,12 @@ fn cells(
         for column in capture.obligations() {
             if !matches!(column.key(), PhloObligationKey::RetainedResource(_)) {
                 assert!(matches!(
-                    column.split_retained_cells(limits, &budget()),
+                    column.split_retained_cells(limits),
                     Err(RetainedCellBackingError::NotRetained)
                 ));
                 continue;
             }
-            let split = column.split_retained_cells(limits, &budget()).unwrap();
+            let split = column.split_retained_cells(limits).unwrap();
             assert_eq!(split.obligation().encoded_key(), column.encoded_key());
             assert_eq!(split.cells().len() as u64, column.quantity());
             assert_eq!(split.unit_value(), 7 * price);

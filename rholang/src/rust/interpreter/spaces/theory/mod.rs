@@ -14,10 +14,9 @@
 //! theory onto this trait.
 //!
 //! This build resolves only the structural builtins `Nat`, `Int`, `String`, `Bool` and `Any`
-//! ([`builtin`]). Each check of a builtin reserves its one work unit as one
-//! `VerificationOperations` unit on the meter of the job before it reads the value, the same on
-//! a hit and a miss and in play and replay (TH-8). Admission adds no phlo: the introduction
-//! bytes of the send already pay for the value.
+//! ([`builtin`]). Each check of a builtin reports one work unit, the same on a hit and a miss and
+//! in play and replay (TH-8). Admission adds no phlo: the introduction bytes of the send already
+//! pay for the value.
 
 pub mod builtin;
 pub mod identity;
@@ -28,7 +27,6 @@ use models::rhoapi::{ListParWithRandom, Par};
 
 use self::builtin::BuiltinTheory;
 use self::identity::TheoryIdentity;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 
 /// The logical work and the evidence of one check, or the limits of a checker (the limit
@@ -99,14 +97,13 @@ impl TheoryVerdict {
 pub trait TheoryCommitLease: Send + Sync + std::fmt::Debug {}
 
 /// A checker of a theory (TH-1, TH-6, TH-9). Each method is a deterministic function of its
-/// inputs and the limit profile of the identity, and it reserves its work on `meter` before it
-/// reads.
+/// inputs and the limit profile of the identity.
 pub trait SpaceTheory: Send + Sync + std::fmt::Debug {
     /// The identity that the config of the space persists.
     fn identity(&self) -> &TheoryIdentity;
 
     /// The admission of one value of a send (TH-5).
-    fn admit(&self, value: &Par, meter: &ScanMeter) -> Result<TheoryVerdict, SpaceError>;
+    fn admit(&self, value: &Par) -> Result<TheoryVerdict, SpaceError>;
 
     /// The check of the stored datum `stored`, whose payload a receive matched with the
     /// captures `captures` (TH-6).
@@ -114,7 +111,6 @@ pub trait SpaceTheory: Send + Sync + std::fmt::Debug {
         &self,
         stored: &ListParWithRandom,
         captures: &ListParWithRandom,
-        meter: &ScanMeter,
     ) -> Result<TheoryVerdict, SpaceError>;
 
     /// The lease of a `Proven` verdict, or `None` (TH-9).
@@ -144,11 +140,10 @@ pub fn theory_name(theory: &dyn SpaceTheory) -> String { theory.identity().theor
 pub fn admit_values(
     theory: &dyn SpaceTheory,
     values: &[Par],
-    meter: &ScanMeter,
 ) -> Result<Vec<Box<dyn TheoryCommitLease>>, SpaceError> {
     let mut leases = Vec::new();
     for (index, value) in values.iter().enumerate() {
-        match theory.admit(value, meter)? {
+        match theory.admit(value)? {
             TheoryVerdict::Proven(_) => leases.extend(theory.commit_lease()),
             TheoryVerdict::Refuted { .. } => {
                 return Err(SpaceError::TheoryRefuted {
@@ -178,7 +173,6 @@ pub mod test_theories {
 
     use super::identity::TheoryIdentity;
     use super::{SpaceTheory, TheoryCommitLease, TheoryReason, TheoryUsage, TheoryVerdict};
-    use crate::rust::interpreter::reified::costs::ScanMeter;
     use crate::rust::interpreter::spaces::errors::SpaceError;
 
     /// The checker ABI of the test checkers.
@@ -240,8 +234,7 @@ pub mod test_theories {
     impl SpaceTheory for TestTheory {
         fn identity(&self) -> &TheoryIdentity { &self.identity }
 
-        fn admit(&self, _value: &Par, meter: &ScanMeter) -> Result<TheoryVerdict, SpaceError> {
-            meter.charge(1, 0, 0)?;
+        fn admit(&self, _value: &Par) -> Result<TheoryVerdict, SpaceError> {
             let usage = TheoryUsage::new(1, 0);
             Ok(match self.behavior {
                 TestBehavior::Leasing | TestBehavior::RefuteMatch => TheoryVerdict::Proven(usage),
@@ -256,9 +249,7 @@ pub mod test_theories {
             &self,
             _stored: &ListParWithRandom,
             _captures: &ListParWithRandom,
-            meter: &ScanMeter,
         ) -> Result<TheoryVerdict, SpaceError> {
-            meter.charge(1, 0, 0)?;
             let usage = TheoryUsage::new(1, 0);
             Ok(match self.behavior {
                 TestBehavior::Leasing | TestBehavior::RefuteValue => TheoryVerdict::Proven(usage),

@@ -15,6 +15,21 @@ pub const COMM_CONSUME_TIME_METRIC: &str = "comm.consume-time";
 pub const COMM_PRODUCE_TIME_METRIC: &str = "comm.produce-time";
 pub const INSTALL_TIME_METRIC: &str = "install-time";
 pub const LOCK_ACQUIRE_TIME_METRIC: &str = "lock.acquire";
+pub const HISTORY_CHECKPOINT_TIME_METRIC: &str = "history.checkpoint.time";
+pub const HISTORY_CHECKPOINT_STORAGE_ACTIONS_TIME_METRIC: &str =
+    "history.checkpoint.storage-actions.time";
+pub const HISTORY_CHECKPOINT_PARTITION_TIME_METRIC: &str = "history.checkpoint.partition.time";
+pub const HISTORY_CHECKPOINT_SERIALIZE_TIME_METRIC: &str = "history.checkpoint.serialize.time";
+pub const HISTORY_CHECKPOINT_LEAF_WRITE_TIME_METRIC: &str = "history.checkpoint.leaf-write.time";
+pub const HISTORY_CHECKPOINT_HISTORY_LOCK_WAIT_TIME_METRIC: &str =
+    "history.checkpoint.history-lock-wait.time";
+pub const HISTORY_CHECKPOINT_HISTORY_PROCESS_TIME_METRIC: &str =
+    "history.checkpoint.history-process.time";
+pub const HISTORY_CHECKPOINT_ROOTS_LOCK_WAIT_TIME_METRIC: &str =
+    "history.checkpoint.roots-lock-wait.time";
+pub const HISTORY_CHECKPOINT_ROOT_COMMIT_TIME_METRIC: &str = "history.checkpoint.root-commit.time";
+pub const HISTORY_CHECKPOINT_ACTIONS_METRIC: &str = "history.checkpoint.actions";
+pub const HISTORY_CHECKPOINT_SERIALIZED_BYTES_METRIC: &str = "history.checkpoint.serialized-bytes";
 
 // RSpace gauge metrics
 pub const LOCK_QUEUE_METRIC: &str = "lock.queue";
@@ -112,6 +127,36 @@ pub const HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC: &str =
     "history.repository.roots_repository.lock_wait_ns";
 pub const HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC: &str =
     "history.repository.roots_repository.lock_calls";
+
+pub struct LockSiteMetrics {
+    pub wait_ns: &'static str,
+    pub hold_ns: &'static str,
+    pub calls: &'static str,
+}
+
+macro_rules! lock_site_metrics {
+    ($name:ident, $lock:literal, $site:literal) => {
+        pub const $name: LockSiteMetrics = LockSiteMetrics {
+            wait_ns: concat!("history.repository.", $lock, ".", $site, ".wait_ns"),
+            hold_ns: concat!("history.repository.", $lock, ".", $site, ".hold_ns"),
+            calls: concat!("history.repository.", $lock, ".", $site, ".calls"),
+        };
+    };
+}
+
+lock_site_metrics!(ROOTS_LOCK_RESET_SITE, "roots_repository", "reset");
+lock_site_metrics!(ROOTS_LOCK_CHECKPOINT_SITE, "roots_repository", "checkpoint");
+lock_site_metrics!(ROOTS_LOCK_RECORD_ROOT_SITE, "roots_repository", "record_root");
+lock_site_metrics!(ROOTS_LOCK_CONTAINS_ROOT_SITE, "roots_repository", "contains_root");
+lock_site_metrics!(HISTORY_LOCK_RESET_SITE, "current_history", "reset");
+lock_site_metrics!(HISTORY_LOCK_CHECKPOINT_SITE, "current_history", "checkpoint");
+lock_site_metrics!(HISTORY_LOCK_READER_SITE, "current_history", "history_reader");
+lock_site_metrics!(HISTORY_LOCK_ROOT_SITE, "current_history", "root");
+
+pub const HISTORY_ROOTS_STORE_READ_NS_METRIC: &str = "history.roots_store.read_ns";
+pub const HISTORY_ROOTS_STORE_READS_METRIC: &str = "history.roots_store.reads";
+pub const HISTORY_ROOTS_STORE_WRITE_NS_METRIC: &str = "history.roots_store.write_ns";
+pub const HISTORY_ROOTS_STORE_WRITES_METRIC: &str = "history.roots_store.writes";
 
 // Cold-path history reader — bottleneck #2 backing-store instrumentation.
 pub const HISTORY_FETCH_DATA_CALLS_METRIC: &str = "history.fetch_data.calls";

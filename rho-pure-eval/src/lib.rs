@@ -26,7 +26,7 @@ mod eval;
 
 pub use env::Env;
 pub use error::EvalError;
-pub use eval::{eval, eval_metered};
+pub use eval::eval;
 
 #[cfg(test)]
 mod tests;

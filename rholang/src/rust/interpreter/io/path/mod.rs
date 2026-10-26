@@ -125,6 +125,53 @@ impl SafeParent {
 /// silently leak a stdlib-derived string.
 pub fn io_msg_scrub(e: &std::io::Error) -> String { io_kind_wire(e.kind()).to_string() }
 
+/// Open the leaf under `parent` via `openat(O_NOFOLLOW)` + read
+/// metadata.  Symlink leaf → ELOOP (caller folds into their own
+/// semantic — fs_exists folds into `ok_bool(false)`; fs_stat
+/// surfaces as `FSERR_IO`).
+///
+/// Centralized here so every leaf-metadata call site in the
+/// handlers/ tree uses the same openat flags
+/// (`O_RDONLY | O_NOFOLLOW | O_CLOEXEC`).  A regression that
+/// dropped `O_NOFOLLOW` on one call site would silently open
+/// through symlinks on that site — a TOCTOU surface.
+pub fn fstatat_meta(parent: &SafeParent) -> std::io::Result<std::fs::Metadata> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: `parent` (a `SafeParent`) owns an open dirfd for its
+    // lifetime, and `parent.leaf_ptr()` is a NUL-terminated
+    // CString ptr owned by the same `SafeParent`.  On openat
+    // success, `File::from_raw_fd` takes ownership of the fresh
+    // fd so Drop closes it on every exit path.
+    unsafe {
+        let fd = libc::openat(
+            parent.as_raw_fd(),
+            parent.leaf_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        );
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let file = std::fs::File::from_raw_fd(fd);
+        file.metadata()
+    }
+}
+
+/// Extract the final component of a relative path as a string.
+/// Returns the full `rel` if `Path::file_name()` returns `None`
+/// (e.g., a trailing slash that `Path` strips) — matches
+/// pre-trait fallback discipline.
+///
+/// Used by fs_stat for the `name` field of the `stat_record`.
+/// `to_string_lossy` is acceptable here because the `name` is a
+/// debugging/display surface, not a path we re-open — the actual
+/// descent uses the original `rel` bytes.
+pub fn leaf_of(rel: &str) -> String {
+    std::path::Path::new(rel)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| rel.to_string())
+}
+
 /// The consensus-observable string for each `ErrorKind`.  See
 /// [`io_msg_scrub`] for why this is hardcoded rather than deferring
 /// to stdlib `Display`.
@@ -192,6 +239,27 @@ pub fn canonicalize_lexical(root: &str, rel: &str) -> Result<PathBuf, Quarantine
 /// `[false, code, msg]` reply shape.  `code` is a `FserrCode` (the
 /// newtype from `errors`) so the compiler rejects raw-string misuse
 /// at every call site — see `errors::FserrCode`.
+///
+/// # Cross-handler consumption patterns (consensus-observable)
+///
+/// Different handlers consume the `IoError` variant's reply
+/// differently:
+///
+///   - `fs_stat`, `fs_quarantine`: surface `(FSERR_IO, msg)` via
+///     `response::err(code, msg)` as a reply error.  Callers need
+///     to know about missing / permission-denied conditions.
+///   - `fs_exists`: discards this call's reply and folds the
+///     IoError variant into `ok_bool(false)` instead — "file
+///     doesn't exist" is a legitimate exists-check observation,
+///     not an error worth surfacing.
+///
+/// If `io_err_code`'s mapping ever changes (e.g., a new
+/// `FSERR_UNREADABLE` for `PermissionDenied`), fs_stat +
+/// fs_quarantine silently inherit the change while fs_exists's
+/// explicit arm continues folding into `false`.  Cross-handler
+/// consistency on the ok/err boundary is handler-specific by
+/// design; any shift to this helper's IoError mapping should
+/// audit each consumer separately.
 pub fn quarantine_err_reply(e: &QuarantineError) -> (FserrCode, String) {
     match e {
         QuarantineError::Empty => (FSERR_BAD_ARG, "empty relative path".into()),

@@ -1,7 +1,6 @@
 use std::num::NonZeroUsize;
 
 use super::deploy_envelope::DeployEnvelopeLimits;
-use super::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use super::native_cost_evidence::{NativeFundingCaseLimits, NativePrepaidDeltaLimits};
 use super::phlo_controls::PhloControlsLimits;
 use super::phlo_intent::PhloFundingIntentLimits;
@@ -82,23 +81,6 @@ pub fn offered_funded_v6_limits() -> OfferedFundedProtocolLimits {
     }
 }
 
-pub fn offered_funded_v6_host_work_limits() -> HostWorkLimits {
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(268_435_456));
-    limits.set(
-        HostWorkDimension::SearchStateBytes,
-        HostWorkLimit::new(134_217_728),
-    );
-    limits.set(
-        HostWorkDimension::AuthorityDepth,
-        HostWorkLimit::new(1_048_576),
-    );
-    limits.set(
-        HostWorkDimension::VerificationOperations,
-        HostWorkLimit::new(1_073_741_824),
-    );
-    limits
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,27 +102,6 @@ mod tests {
         assert!(
             limits.funding_case.cells
                 <= limits.funding_case.sources * limits.funding_case.obligations
-        );
-    }
-
-    #[test]
-    fn offered_host_work_profile_is_finite_and_stricter_for_state_and_depth() {
-        let limits = offered_funded_v6_host_work_limits();
-        assert!(limits
-            .into_array()
-            .iter()
-            .all(|limit| limit.get() > 0 && limit.get() < u64::MAX));
-        assert!(
-            limits.get(HostWorkDimension::SearchStateBytes).get()
-                < limits.get(HostWorkDimension::VerificationOperations).get()
-        );
-        assert!(
-            limits.get(HostWorkDimension::AuthorityDepth).get()
-                > offered_funded_v6_limits()
-                    .envelope
-                    .payload
-                    .funding
-                    .authority_nodes as u64
         );
     }
 }

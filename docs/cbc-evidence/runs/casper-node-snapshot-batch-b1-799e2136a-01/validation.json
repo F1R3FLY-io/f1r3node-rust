@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source_entries_checked": 9,
+  "tags_added": 4,
+  "native_test_exit": 0,
+  "clippy_exit": 0,
+  "fmt_exit": 0,
+  "isolated_exit": null,
+  "production_bytes_unchanged_tests": true,
+  "environment_change_tests": true,
+  "live_adapter_qualified": false,
+  "claim_acceptance": false,
+  "task_complete": false
+}

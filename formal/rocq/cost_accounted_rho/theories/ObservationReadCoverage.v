@@ -37,6 +37,10 @@
    are in rholang/src/rust/interpreter/accounting/native_runtime/tests/
    observation_construction.rs. *)
 
+(* DR-131: host work is removed, so the reservation and coverage results of
+   this file describe deleted charges. The file stays because
+   IntroductionMeasurementReuse requires it. *)
+
 From Stdlib Require Import Lists.List Arith.PeanoNat Lia.
 Import ListNotations.
 

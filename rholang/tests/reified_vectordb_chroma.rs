@@ -17,14 +17,17 @@
 //! |---|---|
 //! | `vectordb_embed_replies_and_codes` | One text, a list, the quota boundaries and each reply code, that only checked calls reach the model, and native replay of each reply. |
 //! | `vectordb_embed_replay_equal` | Native replay with another embedder produces the reply of play and calls no embedder. |
-//! | `vectordb_embed_out_of_phlo_rejects_output` | One phlo below the usage of a call, the reply does not appear, the call is marked failed, and two plays agree. |
+//! | `vectordb_embed_out_of_phlo_rejects_output` | One phlo below the usage of a call, the reply does not appear, the trigger keeps the record and no produce is marked failed (DR-114, G-A), two plays agree, and native replay meets the same denial. |
+//! | `vectordb_record_room_bounds_embed_replies` | The record room bounds the successes of `embed`: a second success past the room, or a first one a byte past it, becomes `OutputTooLarge`, and a failure takes no room (decision 68). |
+//! | `vectordb_record_room_bounds_ann_replies` | With no room, the answer of `ann` becomes `OutputTooLarge`, and a failure keeps its code (decision 68). |
+//! | `vectordb_replay_rejects_a_call_without_its_record` | Native replay of a log without the record of an `embed` call fails closed (decision 68). |
 //! | `vectordb_ann_replies_and_codes` | A numeric query, a text query, every reply code, the collection and the channel digest that the mirror receives, the drop of a malformed id, and native replay. |
 //! | `vectordb_ann_replay_equal` | Native replay with another mirror reproduces the advisory answers and a recorded outage, and asks no mirror and no embedder. |
 //! | `vectordb_ann_ids_feed_the_exact_query` | Across two deploys, the advisory ids, with a stale id among them, restrict an exact query, and the exact order decides. |
 //! | `vectordb_embed_and_ann_reject_params_and_persistent_sends` | A call with params aborts with `ParamsUnsupported`, and a persistent call with `PersistentOpCall`, before any service call. |
 //! | `vectordb_config_reports_the_mirror` | The `config` reply of a mirrored space names its backend and its collection, and an unmirrored space has no such entry. |
 //! | `mirror_publishes_a_successful_deploy` | A successful deploy publishes one upsert for each record with a vector, with its id, embedding, channel digest, persistence and document. A record without a vector and an unmirrored space are not mirrored. |
-//! | `mirror_journal_drops_failed_deploy` | A space error, an out-of-phlo deploy and a host-work rejection publish nothing, also after a transaction of the space has committed. |
+//! | `mirror_journal_drops_failed_deploy` | A space error and an out-of-phlo deploy publish nothing, also after a transaction of the space has committed. |
 //! | `mirror_rule_e_coalesces` | A peek writes nothing (Rule E), a consume of a non-persistent record deletes it, and a persistent record stays. |
 //! | `mirror_temp_never_mirrored` | The factory refuses `mirror` with `temp` and with `seq` (`InvalidParam`, gate 9), so nothing reaches the mirror. |
 //! | `mirror_never_blocks_deploy` | With a stalled mirror and a full queue, or a mirror that refuses every write, deploys succeed at once and the collection is dirty. |
@@ -39,7 +42,7 @@
 //! | `mirror_replay_publishes_its_own_journal` | Native replay certification publishes the journal of each replayed deploy to the mirror of the replaying node. |
 //! | `prop_mirror_tracks_the_published_deploys` | After each step of a generated chain of stores, takes, peeks, failing deploys and exploratory evaluations, the mirror holds the records of the state that a published deploy stored (ChromaMirror.tla, PublishOnlyOnSuccess and NetWritesExact). |
 //! | `prop_mirror_reconcile_repairs_the_finalized_view` | After a generated chain and a mirror with missing records and orphans, a pass that fails keeps the mirror and the watermark, and a pass that finishes holds the finalized view (ReconciledEqualsFinalizedView). |
-//! | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` | Generated `embed` and `ann` calls replay with other services: replay reproduces play with a complete journal, so it makes each check of play, and it asks no service (ConsensusIndependentOfMirror, AdvisoryRecorded, EqualHostWork). |
+//! | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` | Generated `embed` and `ann` calls replay with other services: replay reproduces play with a complete journal, so it makes each check of play, and it asks no service (ConsensusIndependentOfMirror, AdvisoryRecorded). |
 //!
 //! Plan decision 67 needs no test of its own here: the config read of an `ann` call is a
 //! journaled native operation, so native replay that skips it fails the completeness check
@@ -54,11 +57,9 @@ use std::time::Duration;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, Par};
-use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit};
 use proptest::prelude::*;
+use prost::Message;
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::reified::handle::MIRROR_ENTRY;
 use rholang::rust::interpreter::reified::mirror_reconciler::{self, reconcile, Finalized};
 use rholang::rust::interpreter::reified::vectordb_services::{
@@ -70,15 +71,16 @@ use rholang::rust::interpreter::spaces::namespace::NativeSpace;
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
+use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use support::backends::{
     self, services, EmbedMode, FakeMirror, MirrorCall, MockEmbedder, WriteMode,
 };
 use support::native::{
-    assert_reproduces, certify, certify_with, host_work, native_play, native_play_result,
-    native_play_with, Certification, NativeChain, Played, AMPLE_LIMIT, OUT,
+    assert_reproduces, certify, committed_evidence, finish_injected, native_play,
+    native_play_with_room, replay_environment_from, Certification, NativeChain, Played,
+    AMPLE_LIMIT, OUT,
 };
 use support::props::{check, runtime_config, tokio_runtime};
 use support::session::{config_channel, data_channel, error_codes, key, native};
@@ -485,27 +487,76 @@ async fn vectordb_embed_replay_equal() {
     assert_eq!(replayed_with.calls(), 0, "native replay asks no embedder");
 }
 
-/// One phlo below the usage of a call, the reply does not appear: the produce of the reply
-/// fails, the deploy fails with the output that it did not produce, and the event log marks the
-/// call failed. Two plays agree.
-///
-/// Native replay of this play is the work of the record-and-replay mechanism of external service
-/// calls, which the cost-accounting owner implements (plan decision 68, task 10904): replay
-/// refuses to dispatch a call whose recorded produce is marked failed (`reduce.rs:704-706`), so
-/// the journaled reply attempt of play stays unconsumed ("native replay has incomplete
-/// operations"). When the mechanism merges, `embed` and `ann` move to it and this test certifies
-/// the rejection by native replay.
+/// The records of the produce events of `log`: the decoded `output_value` of each produce that
+/// carries one, in log order.
+fn produce_records(log: &[Event]) -> Vec<Vec<Par>> {
+    log.iter()
+        .filter_map(|event| match event {
+            Event::IoEvent(IOEvent::Produce(produce)) if !produce.output_value.is_empty() => Some(
+                produce
+                    .output_value
+                    .iter()
+                    .map(|bytes| Par::decode(bytes.as_slice()).expect("a record decodes"))
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One phlo below the usage of a call, the reply does not appear. Native funded execution keeps
+/// the record of the reply on the produce that triggered the call and raises the cause (DR-114
+/// of `feature/cost-accounted-rho`, gap G-A), so the deploy fails with `OutOfPhlogistonsError`
+/// and no produce copy is marked failed. Two plays agree, and native replay with another
+/// embedder, which it never asks, meets the same denial (decision 68).
+// Changed by decision 89 (DR-114, decision 68): the record-and-replay mechanism of external
+// service calls reached this branch, so `embed` moved to it. The old test expected the error
+// `ProduceFailureWithOutput` and a produce marked failed, and it could not certify the play:
+//
+// let mut runs = Vec::with_capacity(2);
+// for _ in 0..2 {
+//     let played = native_play(&term, used - 1).await;
+//     match played.result.errors.as_slice() {
+//         [InterpreterError::ProduceFailureWithOutput {
+//             cause,
+//             output_not_produced,
+//         }] => {
+//             assert!(
+//                 matches!(cause.as_ref(), InterpreterError::OutOfPhlogistonsError),
+//                 "the cause: {cause:?}"
+//             );
+//             assert_eq!(output_not_produced.len(), 1, "the reply is the output");
+//         }
+//         errors => panic!("unexpected errors: {errors:?}"),
+//     }
+//     assert!(played.out.is_empty(), "the reply does not appear");
+//     let failed_calls: Vec<_> = played
+//         .log
+//         .iter()
+//         .filter_map(|event| match event {
+//             Event::IoEvent(IOEvent::Produce(produce)) if produce.failed => Some(produce),
+//             _ => None,
+//         })
+//         .collect();
+//     assert_eq!(failed_calls.len(), 1, "the call is marked failed");
+//     assert!(failed_calls[0].output_value.is_empty());
+//     runs.push((
+//         format!("{:?}", played.result.errors),
+//         played.root.clone(),
+//         played.log.clone(),
+//     ));
+// }
+// assert_eq!(runs[0], runs[1], "the rejection is deterministic");
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn vectordb_embed_out_of_phlo_rejects_output() {
     let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let replayed_with = MockEmbedder::new("mock-b", 2, 9.0, EmbedMode::Vectors);
     let lock = backends::install(services(&embedder, &FakeMirror::down())).await;
     let term = format!(r#"new embed(`rho:vectordb:embed`) in {{ embed!("{OUT}", "hello") }}"#);
+    let reply = ok(vec![vector32(&embedder.vector("hello")), string("mock-a")]);
     let full = native_play(&term, AMPLE_LIMIT).await;
     assert_played("embed full", &full);
-    assert_eq!(full.out, vec![vec![ok(vec![
-        vector32(&embedder.vector("hello")),
-        string("mock-a")
-    ])]]);
+    assert_eq!(full.out, vec![vec![reply.clone()]]);
     let used = full
         .result
         .native_budget_recording
@@ -515,37 +566,217 @@ async fn vectordb_embed_out_of_phlo_rejects_output() {
     let mut runs = Vec::with_capacity(2);
     for _ in 0..2 {
         let played = native_play(&term, used - 1).await;
-        match played.result.errors.as_slice() {
-            [InterpreterError::ProduceFailureWithOutput {
-                cause,
-                output_not_produced,
-            }] => {
-                assert!(
-                    matches!(cause.as_ref(), InterpreterError::OutOfPhlogistonsError),
-                    "the cause: {cause:?}"
-                );
-                assert_eq!(output_not_produced.len(), 1, "the reply is the output");
-            }
-            errors => panic!("unexpected errors: {errors:?}"),
-        }
+        assert_eq!(
+            played.result.errors,
+            vec![InterpreterError::OutOfPhlogistonsError],
+            "the deploy fails with the cause"
+        );
         assert!(played.out.is_empty(), "the reply does not appear");
-        let failed_calls: Vec<_> = played
-            .log
-            .iter()
-            .filter_map(|event| match event {
-                Event::IoEvent(IOEvent::Produce(produce)) if produce.failed => Some(produce),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(failed_calls.len(), 1, "the call is marked failed");
-        assert!(failed_calls[0].output_value.is_empty());
-        runs.push((
-            format!("{:?}", played.result.errors),
-            played.root.clone(),
-            played.log.clone(),
-        ));
+        assert!(
+            played.log.iter().all(|event| !matches!(
+                event,
+                Event::IoEvent(IOEvent::Produce(produce)) if produce.failed
+            )),
+            "no produce copy is marked failed"
+        );
+        assert_eq!(
+            produce_records(&played.log),
+            vec![vec![reply.clone()]],
+            "the trigger of the call keeps the record"
+        );
+        runs.push(played);
     }
-    assert_eq!(runs[0], runs[1], "the rejection is deterministic");
+    assert_eq!(
+        (&runs[0].root, &runs[0].log),
+        (&runs[1].root, &runs[1].log),
+        "the rejection is deterministic"
+    );
+    lock.replace(services(&replayed_with, &FakeMirror::down()));
+    assert_certifies("embed out of phlo", &runs[1], &term, used - 1).await;
+    assert_eq!(replayed_with.calls(), 0, "native replay asks no embedder");
+    drop(lock);
+}
+
+/// The record room of a deploy bounds the successes of `embed` (decision 68, DR-114 decision 5).
+/// A success takes the encoded length of its reply and 64 bytes, and a failure takes nothing.
+/// With the room of one reply, the first of two sequential calls succeeds and the second fails
+/// with `OutputTooLarge`. One byte less, and the first call fails already. A failure before a
+/// success leaves the room of the success. Native replay with another embedder, which it never
+/// asks, reproduces each play.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vectordb_record_room_bounds_embed_replies() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let replayed_with = MockEmbedder::new("mock-b", 2, 9.0, EmbedMode::Vectors);
+    let lock = backends::install(services(&embedder, &FakeMirror::down())).await;
+    let reply = ok(vec![vector32(&embedder.vector("hello")), string("mock-a")]);
+    let room = u64::try_from(reply.encoded_len()).expect("a small reply") + 64;
+    let sequential = |first: &str| {
+        format!(
+            r#"new embed(`rho:vectordb:embed`) in {{
+  for (@r <- embed!?({first})) {{
+    @"{OUT}"!(["first", r]) |
+    for (@s <- embed!?("hello")) {{ @"{OUT}"!(["second", s]) }}
+  }}
+}}"#
+        )
+    };
+    let too_large = failed(ServiceReplyCode::OutputTooLarge);
+    let cases = [
+        (
+            "one reply",
+            sequential(r#""hello""#),
+            room,
+            reply.clone(),
+            too_large.clone(),
+        ),
+        (
+            "one byte less",
+            sequential(r#""hello""#),
+            room - 1,
+            too_large.clone(),
+            too_large,
+        ),
+        (
+            "a failure first",
+            sequential("42"),
+            room,
+            failed(ServiceReplyCode::BadArgument),
+            reply,
+        ),
+    ];
+    let mut played_runs = Vec::with_capacity(cases.len());
+    for (label, term, room, first, second) in cases {
+        let played = native_play_with_room(&term, AMPLE_LIMIT, room).await;
+        assert_played(label, &played);
+        let expected: BTreeMap<String, Par> =
+            [("first".to_string(), first), ("second".to_string(), second)].into();
+        assert_eq!(replies(&played), expected, "{label}");
+        played_runs.push((label, term, played));
+    }
+    let asked = embedder.calls();
+    lock.replace(services(&replayed_with, &FakeMirror::down()));
+    for (label, term, played) in &played_runs {
+        assert_certifies(label, played, term, AMPLE_LIMIT).await;
+    }
+    assert_eq!(replayed_with.calls(), 0, "native replay asks no embedder");
+    assert_eq!(
+        embedder.calls(),
+        asked,
+        "native replay asks no embedder of play"
+    );
+    drop(lock);
+}
+
+/// The record room bounds the successes of `ann` too (decision 68). With no room, the advisory
+/// answer of the mirror becomes `OutputTooLarge`, and a call on a space that is not a VectorDB
+/// space keeps its own failure. Native replay with a mirror that is down, which it never asks,
+/// reproduces the play.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vectordb_record_room_bounds_ann_replies() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let mirror = FakeMirror::new(vec![neighbour(&[1; 32], 0.25)], 7);
+    let lock = backends::install(services(&embedder, &mirror)).await;
+    let term = ann_program(&[
+        ("vector", r#"*m, *mn, [1.0, 0.0], {"k": 1}"#.to_string()),
+        ("nil", r#"Nil, *mn, [1.0, 0.0], {"k": 1}"#.to_string()),
+    ]);
+    let full = native_play(&term, AMPLE_LIMIT).await;
+    assert_played("ann with the room of production", &full);
+    assert_eq!(
+        ann_replies(&full).get("vector"),
+        Some(&answer(&[neighbour(&[1; 32], 0.25)], 7)),
+        "the room of production holds the answer"
+    );
+    let played = native_play_with_room(&term, AMPLE_LIMIT, 0).await;
+    assert_played("ann without room", &played);
+    let expected: BTreeMap<String, Par> = [
+        (
+            "vector".to_string(),
+            failed(ServiceReplyCode::OutputTooLarge),
+        ),
+        (
+            "nil".to_string(),
+            failed(ServiceReplyCode::NotAVectorDbSpace),
+        ),
+    ]
+    .into();
+    assert_eq!(ann_replies(&played), expected);
+    let replay_mirror = FakeMirror::down();
+    lock.replace(services(&embedder, &replay_mirror));
+    assert_certifies("ann without room", &played, &term, AMPLE_LIMIT).await;
+    assert!(
+        replay_mirror.queries().is_empty(),
+        "native replay asks no mirror"
+    );
+    drop(lock);
+}
+
+/// Removes every record from `log`, on all copies: the produce events, the produces of each COMM
+/// and the keys of its repetition counts. The copies stay equal, so the record placement check
+/// of the trace binding accepts the log (DR-114, E1).
+fn strip_records(log: &mut [Event]) {
+    let clear = |produce: &mut Produce| {
+        produce.output_value.clear();
+        produce.is_deterministic = true;
+    };
+    for event in log.iter_mut() {
+        match event {
+            Event::IoEvent(IOEvent::Produce(produce)) => clear(produce),
+            Event::Comm(comm) => {
+                comm.produces.iter_mut().for_each(clear);
+                comm.times_repeated = std::mem::take(&mut comm.times_repeated)
+                    .into_iter()
+                    .map(|(mut key, count)| {
+                        clear(&mut key);
+                        (key, count)
+                    })
+                    .collect();
+            }
+            Event::IoEvent(IOEvent::Consume(_)) => {}
+        }
+    }
+}
+
+/// Native replay of a block that holds a call of `embed` without its record fails closed. The
+/// handler stops before it reads anything (`record_present`, as the driver of DR-114 does for its
+/// recorded processes, decision 68), so the operations of play stay incomplete, and the
+/// certification rejects the block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vectordb_replay_rejects_a_call_without_its_record() {
+    let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
+    let lock = backends::install(services(&embedder, &FakeMirror::down())).await;
+    let term = embed_program(&[("one", quoted("hello"))]);
+    let played = native_play(&term, AMPLE_LIMIT).await;
+    assert_played("embed", &played);
+    assert_eq!(
+        produce_records(&played.log).len(),
+        1,
+        "play records the reply"
+    );
+    let (recording, journal) = committed_evidence(&played);
+    let mut log = played.log.clone();
+    strip_records(&mut log);
+    let environment = replay_environment_from(
+        played.history.clone(),
+        log,
+        AMPLE_LIMIT,
+        &recording,
+        journal,
+    )
+    .await
+    .expect("the log without its records binds");
+    let certification = finish_injected(
+        environment,
+        &term,
+        played.random.clone(),
+        played.injections.clone(),
+    )
+    .await;
+    let outcome = format!("{:?}", certification.evaluation);
+    assert!(
+        outcome.contains("native replay has incomplete operations"),
+        "{outcome}"
+    );
     drop(lock);
 }
 
@@ -1137,17 +1368,16 @@ fn store_then_collection(played: &Played) -> String {
 }
 
 /// A deploy that fails drops its journal, also after a transaction of a mirrored space has
-/// committed: a space error, an out-of-phlo deploy and a host-work rejection publish nothing.
-/// The same program with an ample budget publishes its upsert. Each budget is one unit below
-/// the usage of the control, so each failure comes after the store has committed.
+/// committed: a space error and an out-of-phlo deploy publish nothing. The same program with an
+/// ample budget publishes its upsert. The phlo limit of the out-of-phlo deploy is one unit below
+/// the usage of the control, so its failure comes after the store has committed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mirror_journal_drops_failed_deploy() {
     let embedder = MockEmbedder::new("mock-a", 2, 0.5, EmbedMode::Vectors);
     let control_mirror = FakeMirror::new(Vec::new(), 0);
     let lock = backends::install(services(&embedder, &control_mirror)).await;
     let term = store_then(&send_peeked());
-    let host = host_work();
-    let control = native_play_with(&term, AMPLE_LIMIT, host.clone()).await;
+    let control = native_play(&term, AMPLE_LIMIT).await;
     assert_played("mirror control", &control);
     backends::writer().flush().await;
     let collection = store_then_collection(&control);
@@ -1166,7 +1396,6 @@ async fn mirror_journal_drops_failed_deploy() {
         .as_ref()
         .expect("native play records its budget")
         .used;
-    let verification = host.usage(HostWorkDimension::VerificationBytes).get();
 
     let mirror = FakeMirror::new(Vec::new(), 0);
     lock.replace(services(&embedder, &mirror));
@@ -1183,18 +1412,6 @@ async fn mirror_journal_drops_failed_deploy() {
             .any(|error| matches!(error, InterpreterError::OutOfPhlogistonsError)),
         "out of phlo: {:?}",
         out_of_phlo.result.errors
-    );
-    let mut limits = offered_funded_v6_host_work_limits();
-    limits.set(
-        HostWorkDimension::VerificationBytes,
-        HostWorkLimit::new(verification - 1),
-    );
-    // The last reservation of `VerificationBytes` comes after the last operation, so every
-    // transaction has committed and the journal is complete when the check rejects the deploy.
-    let rejected = native_play_result(&term, AMPLE_LIMIT, HostWorkBudget::new(limits)).await;
-    assert!(
-        matches!(rejected, Err(InterpreterError::HostWorkRejected)),
-        "the host-work check rejects the deploy: {rejected:?}"
     );
     backends::writer().flush().await;
     assert_eq!(
@@ -2264,13 +2481,12 @@ fn played_services(answer: &[u8], down: bool) -> (Arc<MockEmbedder>, Arc<FakeMir
 }
 
 /// The recorded outputs of `embed` and `ann` make consensus independent of the services of a
-/// node (ChromaMirror.tla, ConsensusIndependentOfMirror, AdvisoryRecorded and EqualHostWork).
+/// node (ChromaMirror.tla, ConsensusIndependentOfMirror and AdvisoryRecorded).
 /// Generated calls play with one embedder and one mirror (or a mirror that is down), and native
 /// replay certifies the play with another embedder and another mirror: replay reproduces the
 /// result, the phlo and the root of play, and asks no service. The checks of an `ann` call are
 /// journaled native operations, so replay makes each check of play: otherwise the journal of
-/// play is incomplete (decision 67). The total host work differs by design, because replay
-/// certification also verifies the committed evidence.
+/// play is incomplete (decision 67).
 #[test]
 fn prop_vectordb_services_replay_reproduces_the_recorded_outputs() {
     let strategy = (
@@ -2286,16 +2502,14 @@ fn prop_vectordb_services_replay_reproduces_the_recorded_outputs() {
                 let term = services_program(&service_calls);
                 let (embedder, mirror) = played_services(&answer, down);
                 let lock = backends::install(services(&embedder, &mirror)).await;
-                let played = native_play_with(&term, LARGE_LIMIT, host_work()).await;
+                let played = native_play(&term, LARGE_LIMIT).await;
                 let replayed_embedder = MockEmbedder::new("mock-b", 2, 9.0, EmbedMode::Vectors);
                 let replayed_with = FakeMirror::new(vec![neighbour(&[0xAA; 32], 0.5)], 99);
                 lock.replace(services(&replayed_embedder, &replayed_with));
-                let certification = tokio::time::timeout(
-                    CERTIFY_TIMEOUT,
-                    certify_with(&played, &term, LARGE_LIMIT, host_work()),
-                )
-                .await
-                .map_err(|_| TestCaseError::fail("native replay does not finish"))?;
+                let certification =
+                    tokio::time::timeout(CERTIFY_TIMEOUT, certify(&played, &term, LARGE_LIMIT))
+                        .await
+                        .map_err(|_| TestCaseError::fail("native replay does not finish"))?;
                 assert_reproduces("services replay", &played, &certification);
                 prop_assert!(
                     replayed_with.queries().is_empty(),

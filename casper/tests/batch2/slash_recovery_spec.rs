@@ -14,13 +14,15 @@ use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::casper::Casper;
 use casper::rust::merging::rejected_slash::RejectedSlash;
 use casper::rust::slashing_authorization::checked_base_seq;
-use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::ParentsPostStateCacheKey;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::equivocation_record::EquivocationRecord;
 
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -81,7 +83,9 @@ impl TestContext {
         }
         let parameters =
             GenesisBuilder::build_genesis_parameters_with_defaults(Some(bonds_function), None);
-        let genesis = GenesisBuilder::new()
+        // Changed by DR-116 (gap G6): an offered-funded genesis.
+        // let genesis = GenesisBuilder::new()
+        let genesis = GenesisBuilder::offered_v6()
             .build_genesis_with_parameters(Some(parameters))
             .await
             .expect("Failed to build genesis");
@@ -116,7 +120,8 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
         .expect("build deploy");
     nodes[0]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_data)
         .expect("validator 0 deploy");
     let signed_block = nodes[0]
@@ -136,7 +141,8 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
     nodes[1]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_data_a)
         .expect("validator 1 deploy");
     let block_1 = nodes[1]
@@ -151,7 +157,8 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let deploy_data_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone()))
         .expect("build deploy b");
     nodes[2]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_data_b)
         .expect("validator 2 deploy");
     let block_2 = nodes[2]
@@ -206,7 +213,8 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
     let marker_deploy = construct_deploy::basic_deploy_data(3, None, Some(ctx.shard_id.clone()))
         .expect("build marker deploy");
     nodes[1]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(marker_deploy)
         .expect("validator 1 deploys marker");
     let merge_block = nodes[1]
@@ -308,7 +316,8 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
         .expect("build deploy");
     nodes[0]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_data)
         .expect("validator 0 deploy");
     let signed_block = nodes[0]
@@ -328,7 +337,8 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
     nodes[1]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_data_a)
         .expect("validator 1 deploy");
     let slash_block = nodes[1]
@@ -345,7 +355,8 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     let deploy_data_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone()))
         .expect("build deploy b");
     nodes[2]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_data_b)
         .expect("validator 2 deploy");
     let pre_slash_block = nodes[2]
@@ -388,7 +399,8 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
     let marker_deploy = construct_deploy::basic_deploy_data(3, None, Some(ctx.shard_id.clone()))
         .expect("build marker deploy");
     nodes[1]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(marker_deploy)
         .expect("validator 1 deploys marker");
     let merge_block = nodes[1]
@@ -465,7 +477,8 @@ async fn e1c_re_issues_merge_rejected_slash() {
     let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
         .expect("build deploy");
     nodes[0]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_data)
         .expect("validator 0 deploy");
     let signed_block = nodes[0]
@@ -487,7 +500,8 @@ async fn e1c_re_issues_merge_rejected_slash() {
     let deploy_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
     nodes[1]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_a)
         .expect("validator 1 deploy a");
     let block_a = nodes[1]
@@ -502,7 +516,8 @@ async fn e1c_re_issues_merge_rejected_slash() {
     let deploy_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone()))
         .expect("build deploy b");
     nodes[2]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_b)
         .expect("validator 2 deploy b");
     let block_b = nodes[2]
@@ -580,7 +595,8 @@ async fn e1c_re_issues_merge_rejected_slash() {
     let user_deploy = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build user deploy");
     nodes[1]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(user_deploy)
         .expect("validator 1 deploys");
     let block = nodes[1]
@@ -650,7 +666,8 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
     let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
         .expect("build deploy");
     nodes[0]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_data)
         .expect("validator 0 deploy");
     let signed_block = nodes[0]
@@ -668,7 +685,8 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
     let deploy_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
         .expect("build deploy a");
     nodes[1]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_a)
         .expect("validator 1 deploy a");
     let block_a = nodes[1]
@@ -683,7 +701,8 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
     let deploy_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone()))
         .expect("build deploy b");
     nodes[2]
-        .casper
+        // Changed by DR-116 (gap G6): TestNode::deploy submits both deploy formats.
+        // .casper
         .deploy(deploy_b)
         .expect("validator 2 deploy b");
     let block_b = nodes[2]

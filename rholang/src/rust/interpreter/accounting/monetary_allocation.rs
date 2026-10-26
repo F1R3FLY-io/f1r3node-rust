@@ -76,7 +76,7 @@ pub use funding_family_optimizer::{
     FundingOutcomeProblem, FundingOutcomeProposal,
 };
 pub use funding_family_priority::FundingFamilyResourcePriority;
-pub(super) use funding_feasibility::{filled_vec, reserve_work};
+pub(super) use funding_feasibility::filled_vec;
 pub use funding_feasibility::{
     solve_funding_feasibility, FundingFeasibility, FundingSearchError, FundingSearchLimits,
 };

@@ -5,8 +5,9 @@
 //! The example tests are the set tests of the P5 design v2 (section 2.8.4) with the changes of
 //! v3 A.12. `peek_retires_nothing` became `space_set_discipline_peek_restores_representative`.
 //! The suite adds `peek_restore_reoffer_retires_class`, `members_in_canonical_order`,
-//! `legacy_charges_equal_host`, `reservation_cut_rejects_without_effect` and
-//! `persistent_reissue_keeps_identity`.
+//! `legacy_charges_equal_host`, `persistent_reissue_keeps_identity` and
+//! `deep_term_is_a_member`. Decision 89 adds `persistent_twin_peek_binds_the_canonical_record`
+//! and `persistent_twin_retire_binds_the_member`.
 //!
 //! The property tests check the headlines of `SetDiscipline.v` and the invariant V6 of
 //! `GenericRSpace.tla` on the agent:
@@ -20,7 +21,6 @@
 //! | F10 `set_produce_fire_retires_stored_class` | `prop_set_produce_fire_retires_stored_class` |
 //! | `set_peek_restores_representative_only` | `prop_set_peek_restores_representative_only` |
 //! | `set_membership_full_compare_on_equal_hash` | `prop_set_membership_full_compare_on_equal_hash` |
-//! | `set_key_trace_covered` | `prop_set_key_trace_covered` |
 //! | V6 `SetClassRetired` | `prop_set_class_retired_any_schedule` |
 //! | Option P (decision 45) | `prop_set_legacy_charges_equal_host` |
 //!
@@ -31,7 +31,12 @@
 //! K_retire is the host consume of the retire continuation over `[D]`. The host matcher matches
 //! the payload of a record without its envelope, as the agent does. No host program chooses a
 //! class, so the test pins the host matcher to the records that the set semantics binds. The
-//! charges of each call are then the charges of `ChargingRSpace` for that call.
+//! charges of each call are then the charges of `ChargingRSpace` for that call. Host play picks
+//! at random among candidates since DR-129. So before each host call, the program also pins
+//! the matcher to the choice of the canonical order of decision 41 on the host records. A send
+//! fires only the first waiter that takes its record, and a parked receive meets only the
+//! record that the agent meets. A pin names a record by its bytes only. So the program makes a
+//! consume again until it binds records with the canonical persist flags (decision 89).
 
 #[path = "support/mod.rs"]
 mod support;
@@ -49,7 +54,6 @@ use models::rhoapi::{
     BindPattern, CostAuthority, CostRegion, CostSignature, CostStack, EEq, EList, EVar, Expr,
     ListParWithRandom, Par, TaggedContinuation, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
@@ -63,14 +67,12 @@ use rholang::rust::interpreter::accounting::byte_accounting::{
 };
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::rho_runtime::RhoISpace;
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, ProduceOp, SpaceEnv, SpaceOp, SpaceOutcome, SpaceReissue,
 };
-use rholang::rust::interpreter::spaces::disciplines::bag::BagDiscipline;
 use rholang::rust::interpreter::spaces::disciplines::scan::{retire_continuation, retire_pattern};
 use rholang::rust::interpreter::spaces::disciplines::set::{set_key, SetDiscipline, LENGTH_BYTES};
 use rholang::rust::interpreter::spaces::errors::SpaceError;
@@ -83,7 +85,6 @@ use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rholang::rust::interpreter::storage::charging_rspace::ChargingRSpace;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::internal::Datum;
@@ -91,23 +92,23 @@ use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::space_store_handle::{canonical_data_order, metered_hash};
+use rspace_plus_plus::rspace::space_store_handle::canonical_data_order;
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, COMM};
 use support::agent::{
     any, body_name, budget, config_of, counter, counter_channel, create, creation, data_channel,
     env_over, exactly, fired, int, play, play_and_replay, receive_on, run, send_on,
-    space_counter_channel, string, unbounded_host_work, ParRSpace,
+    space_counter_channel, string, ParRSpace,
 };
-use support::legacy::{host_consume, host_produce, ParResult};
+use support::legacy::{
+    drawn_consume, host_consume, host_produce, open_waiter, set_waiter, waiter_choice, ParResult,
+    WaiterPin, WaiterSlot, TWIN_RUNS,
+};
 use support::props::{check, pure_config, tokio_runtime};
 
 // ─── The rig ─────────────────────────────────────────────────────────────────────────────
 
 /// The set agent.
 type Set = GenericSpace<HashMapOuter, SetDiscipline>;
-
-/// The bag agent, for the negative control of the class key.
-type Bag = GenericSpace<HashMapOuter, BagDiscipline>;
 
 /// The space of every rig.
 const SPACE: NativeSpace = NativeSpace {
@@ -117,13 +118,6 @@ const SPACE: NativeSpace = NativeSpace {
 
 /// The phlo of a legacy differential: far above every program of the suite.
 const LEGACY_PHLO: i64 = 1_000_000_000_000;
-
-/// The dimensions that a space agent charges.
-const AGENT_DIMENSIONS: [HostWorkDimension; 3] = [
-    HostWorkDimension::VerificationOperations,
-    HostWorkDimension::VerificationBytes,
-    HostWorkDimension::SearchStateBytes,
-];
 
 /// The family `hashmap:set`.
 fn set_family() -> SpaceFactoryUrn {
@@ -159,17 +153,6 @@ impl Rig {
         create(&Set::default(), &env, creation(SPACE, config, set_family())).await;
         host.take_event_log().await;
         Rig { host, env }
-    }
-
-    /// The same rig with a meter that charges `host_work`.
-    fn metered(self, host_work: &HostWorkBudget) -> Rig {
-        Rig {
-            host: self.host,
-            env: SpaceEnv {
-                meter: ScanMeter::new(Some(host_work.clone())),
-                ..self.env
-            },
-        }
     }
 
     async fn run(&self, op: SpaceOp) -> Result<SpaceOutcome, SpaceError> {
@@ -553,7 +536,6 @@ fn key_of_record(record: &ListParWithRandom) -> Vec<u8> {
             .expect("a datum record")
             .datum
             .pars,
-        &ScanMeter::new(None),
     )
     .expect("a key")
 }
@@ -563,8 +545,7 @@ async fn canonical_records(
     space: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
 ) -> Vec<Datum<ListParWithRandom>> {
     let records = space.get_data(&data()).await;
-    canonical_data_order(&records, &ScanMeter::new(None))
-        .expect("an order")
+    canonical_data_order(&records)
         .into_iter()
         .map(|index| records[index].clone())
         .collect()
@@ -1058,6 +1039,9 @@ type Pin = Arc<Mutex<Option<Vec<ListParWithRandom>>>>;
 #[derive(Clone)]
 struct PinnedMatcher {
     pin: Pin,
+    // Added by decision 89 (DR-129): host play picks a waiter at random, so a produce fires only
+    // the waiter of the canonical choice.
+    waiter: WaiterSlot,
 }
 
 impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for PinnedMatcher {
@@ -1078,20 +1062,49 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for PinnedMatcher
         continuation: &TaggedContinuation,
         matched: &[ListParWithRandom],
     ) -> bool {
-        Matcher.check_commit(continuation, matched)
+        // Changed by decision 89 (DR-129): the waiter pin admits the fire first.
+        // Matcher.check_commit(continuation, matched)
+        let allowed = self
+            .waiter
+            .lock()
+            .expect("the waiter lock")
+            .admits(continuation);
+        allowed && Matcher.check_commit(continuation, matched)
     }
 }
 
-/// A `ChargingRSpace` over a fresh in-memory space with the [`PinnedMatcher`] of `pin`, which
-/// charges `budget`.
+// Changed by decision 89 (DR-129): the matcher of the host also holds the waiter pin.
+//
+// /// A `ChargingRSpace` over a fresh in-memory space with the [`PinnedMatcher`] of `pin`, which
+// /// charges `budget`.
+// async fn pinned_host(
+//     budget: &RuntimeBudget,
+//     pin: &Pin,
+// ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+//     let mut stores = InMemoryStoreManager::new();
+//     let space = ParRSpace::create(
+//         stores.r_space_stores().await.expect("in-memory stores"),
+//         Arc::new(Box::new(PinnedMatcher { pin: pin.clone() })),
+//     )
+//     .expect("an in-memory space");
+//     let host: RhoISpace = Arc::new(Box::new(space));
+//     ChargingRSpace::charging_rspace(host, budget.clone())
+// }
+
+/// A `ChargingRSpace` over a fresh in-memory space with the [`PinnedMatcher`] of `pin` and
+/// `waiter`, which charges `budget`.
 async fn pinned_host(
     budget: &RuntimeBudget,
     pin: &Pin,
+    waiter: &WaiterSlot,
 ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
     let mut stores = InMemoryStoreManager::new();
     let space = ParRSpace::create(
         stores.r_space_stores().await.expect("in-memory stores"),
-        Arc::new(Box::new(PinnedMatcher { pin: pin.clone() })),
+        Arc::new(Box::new(PinnedMatcher {
+            pin: pin.clone(),
+            waiter: waiter.clone(),
+        })),
     )
     .expect("an in-memory space");
     let host: RhoISpace = Arc::new(Box::new(space));
@@ -1130,13 +1143,14 @@ fn host_fire(continuation: &TaggedContinuation, results: &[ParResult]) -> (Strin
 
 /// The host program of RETIRE-CLASS after a fire of the element `element`. It makes one host
 /// consume of the retire continuation over `[D]` for each stored non-persistent member of the
-/// class, in canonical order. Each consume is pinned to its member.
+/// class, in canonical order. Each consume is pinned to its member. It returns the legacy log
+/// entries of the consumes, in order.
 async fn host_retire(
     host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     budget: &RuntimeBudget,
     pin: &Pin,
     element: &ListParWithRandom,
-) -> Result<(), TestCaseError> {
+) -> Result<Vec<Cost>, TestCaseError> {
     let key = key_of_record(element);
     let random = RandomPurpose::Retire.derive(&Blake2b512Random::from_bytes(&element.random_state));
     let members: Vec<Datum<ListParWithRandom>> = canonical_records(host)
@@ -1144,34 +1158,62 @@ async fn host_retire(
         .into_iter()
         .filter(|stored| !stored.persist && key_of_record(&stored.a) == key)
         .collect();
+    let mut entries = Vec::new();
     for member in members {
         set_pin(pin, Some(vec![member.a.clone()]));
         let continuation =
             retire_continuation(&member.source.hash, &random, element.cost_authority.clone());
-        let run = host_consume(
-            host,
-            budget,
-            vec![data()],
-            vec![retire_pattern()],
-            continuation,
-            false,
-            false,
-        )
-        .await;
+        // Changed by decision 89 (DR-129): a persistent record with the bytes of the member can
+        // take the retire, so the consume is drawn until it binds a non-persistent record.
+        // let run = host_consume(
+        //     host,
+        //     budget,
+        //     vec![data()],
+        //     vec![retire_pattern()],
+        //     continuation,
+        //     false,
+        //     false,
+        // )
+        // .await;
+        let run = drawn_consume(host, &[false], || {
+            host_consume(
+                host,
+                budget,
+                vec![data()],
+                vec![retire_pattern()],
+                continuation.clone(),
+                false,
+                false,
+            )
+        })
+        .await
+        .map_err(TestCaseError::fail)?;
         set_pin(pin, None);
         prop_assert!(run.fired.is_some(), "the host retire binds its member");
+        entries.extend(run.entries);
     }
-    Ok(())
+    Ok(entries)
 }
 
 /// What a receive does on the host records under the set semantics.
 enum HostClass {
-    /// The receive parks: no record binds its pattern, or its guard refuses the first one.
-    Park,
-    /// The receive fires over these records. The first is the first record in canonical order
-    /// that the pattern binds and the guard admits. The other members of its class follow in
-    /// canonical order, unless the receive peeks.
-    Fire(Vec<ListParWithRandom>),
+    // Changed by decision 89 (DR-129): host play picks at random among the records that the
+    // pattern binds, so a parked receive is pinned to the record that the agent meets.
+    // /// The receive parks: no record binds its pattern, or its guard refuses the first one.
+    // Park,
+    /// The receive parks: no record binds its pattern (`None`), or its guard refuses the first
+    /// one, which is the record of the pin.
+    Park(Option<ListParWithRandom>),
+    // Changed by decision 89 (DR-129): a fire names its stored records, so the host program can
+    // check the persist flag of each bound record.
+    // /// The receive fires over these records. The first is the first record in canonical order
+    // /// that the pattern binds and the guard admits. The other members of its class follow in
+    // /// canonical order, unless the receive peeks.
+    // Fire(Vec<ListParWithRandom>),
+    /// The receive fires over these stored records. The first is the first record in canonical
+    /// order that the pattern binds and the guard admits. The other members of its class follow
+    /// in canonical order, unless the receive peeks.
+    Fire(Vec<Datum<ListParWithRandom>>),
     /// No host consume binds these members. The host binds a persistent record again for each
     /// later occurrence of its channel, because a persistent record stays a candidate. So a
     /// host consume over `[D; n]` binds the members of the agent only in one case. At most one
@@ -1193,13 +1235,19 @@ async fn host_class(
             .get(&receive.pattern, &payload)
             .map(|matched| (stored.clone(), matched))
     }) else {
-        return HostClass::Park;
+        // Changed by decision 89 (DR-129): see `HostClass::Park`.
+        // return HostClass::Park;
+        return HostClass::Park(None);
     };
     if !Matcher.check_commit(&parked(receive), std::slice::from_ref(&matched)) {
-        return HostClass::Park;
+        // Changed by decision 89 (DR-129): see `HostClass::Park`.
+        // return HostClass::Park;
+        return HostClass::Park(Some(first.a));
     }
     if receive.peek {
-        return HostClass::Fire(vec![first.a]);
+        // Changed by decision 89 (DR-129): see `HostClass::Fire`.
+        // return HostClass::Fire(vec![first.a]);
+        return HostClass::Fire(vec![first]);
     }
     let key = key_of_record(&first.a);
     let members: Vec<Datum<ListParWithRandom>> = records
@@ -1212,11 +1260,17 @@ async fn host_class(
         .filter(|(_, member)| member.persist)
         .map(|(index, _)| index)
         .collect();
+    // Changed by decision 89 (DR-129): see `HostClass::Fire`.
+    // match persistent.as_slice() {
+    //     [] => HostClass::Fire(members.into_iter().map(|member| member.a).collect()),
+    //     [index] if *index + 1 == members.len() => {
+    //         HostClass::Fire(members.into_iter().map(|member| member.a).collect())
+    //     }
+    //     _ => HostClass::Inexpressible,
+    // }
     match persistent.as_slice() {
-        [] => HostClass::Fire(members.into_iter().map(|member| member.a).collect()),
-        [index] if *index + 1 == members.len() => {
-            HostClass::Fire(members.into_iter().map(|member| member.a).collect())
-        }
+        [] => HostClass::Fire(members),
+        [index] if *index + 1 == members.len() => HostClass::Fire(members),
         _ => HostClass::Inexpressible,
     }
 }
@@ -1225,14 +1279,17 @@ async fn host_class(
 /// semantics, then the calls of the reducer after each fire. A class fire is a consume over
 /// `[D; n]`. The K_retire consumes of its class follow a fire of a waiter that does not peek. A
 /// persistent send produces again, and a persistent receive consumes again. A fire of a peek
-/// sends each removed non-persistent record again (`produce_peeks`). The program returns the
-/// fires in order, or `None` when a class fire has no host consume ([`HostClass`]).
+/// sends each removed non-persistent record again (`produce_peeks`). Each call is pinned first
+/// to the canonical choice on the host records (decision 89, DR-129). The program returns the
+/// legacy log entries of the calls and the fires, in order. It returns `None` when a class
+/// fire has no host consume ([`HostClass`]).
 async fn host_program(
     host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     budget: &RuntimeBudget,
     pin: &Pin,
+    waiter: &WaiterSlot,
     op: &SpaceOp,
-) -> Result<Option<Vec<(String, Vec<Par>)>>, TestCaseError> {
+) -> Result<Option<(Vec<Cost>, Vec<(String, Vec<Par>)>)>, TestCaseError> {
     let mut calls = VecDeque::from([match op {
         SpaceOp::Produce(send) => HostCall::Send {
             record: record::wrap_datum(0, &send.data),
@@ -1242,17 +1299,26 @@ async fn host_program(
         SpaceOp::Settle(_) => panic!("a set issues no settle"),
         SpaceOp::Join(_) => panic!("the set programs of this suite issue no join"),
     }]);
+    let mut entries = Vec::new();
     let mut fires = Vec::new();
     while let Some(call) = calls.pop_front() {
         let (again, reproduced) = match call {
             HostCall::Send { record, persist } => {
                 set_pin(pin, None);
+                // Added by decision 89 (DR-129): the produce fires the waiter of the canonical
+                // choice.
+                let choice = waiter_choice(host, &data(), &record).await;
+                set_waiter(waiter, choice);
                 let run = host_produce(host, budget, data(), record.clone(), persist).await;
+                set_waiter(waiter, WaiterPin::Any);
+                entries.extend(run.entries);
                 let mut again = None;
                 if let Some((continuation, results)) = &run.fired {
                     fires.push(host_fire(&continuation.continuation, results));
                     if !continuation.peek {
-                        host_retire(host, budget, pin, &record).await?;
+                        // Changed by decision 89 (DR-129): the retire returns its entries.
+                        // host_retire(host, budget, pin, &record).await?;
+                        entries.extend(host_retire(host, budget, pin, &record).await?);
                     }
                     if persist {
                         again = Some(HostCall::Send { record, persist });
@@ -1262,8 +1328,12 @@ async fn host_program(
             }
             HostCall::Receive(receive) => match host_class(host, &receive).await {
                 HostClass::Inexpressible => return Ok(None),
-                HostClass::Park => {
-                    set_pin(pin, None);
+                // Changed by decision 89 (DR-129): the parked receive meets the record of the
+                // agent.
+                // HostClass::Park => {
+                //     set_pin(pin, None);
+                HostClass::Park(first) => {
+                    set_pin(pin, Some(first.into_iter().collect()));
                     let run = host_consume(
                         host,
                         budget,
@@ -1274,27 +1344,50 @@ async fn host_program(
                         receive.peek,
                     )
                     .await;
+                    set_pin(pin, None);
                     prop_assert!(run.fired.is_none(), "the host receive parks");
+                    entries.extend(run.entries);
                     (None, Vec::new())
                 }
                 HostClass::Fire(class) => {
                     let width = class.len();
-                    set_pin(pin, Some(class));
-                    let run = host_consume(
-                        host,
-                        budget,
-                        vec![data(); width],
-                        vec![receive.pattern.clone(); width],
-                        parked(&receive),
-                        receive.persistent,
-                        receive.peek,
-                    )
-                    .await;
+                    // Changed by decision 89 (DR-129): the class fire is drawn until it binds
+                    // the persist flags of the class.
+                    // set_pin(pin, Some(class));
+                    // let run = host_consume(
+                    //     host,
+                    //     budget,
+                    //     vec![data(); width],
+                    //     vec![receive.pattern.clone(); width],
+                    //     parked(&receive),
+                    //     receive.persistent,
+                    //     receive.peek,
+                    // )
+                    // .await;
+                    let expected: Vec<bool> = class.iter().map(|member| member.persist).collect();
+                    set_pin(
+                        pin,
+                        Some(class.into_iter().map(|member| member.a).collect()),
+                    );
+                    let run = drawn_consume(host, &expected, || {
+                        host_consume(
+                            host,
+                            budget,
+                            vec![data(); width],
+                            vec![receive.pattern.clone(); width],
+                            parked(&receive),
+                            receive.persistent,
+                            receive.peek,
+                        )
+                    })
+                    .await
+                    .map_err(TestCaseError::fail)?;
                     set_pin(pin, None);
                     let Some((continuation, results)) = &run.fired else {
                         return Err(TestCaseError::fail("the host class fire binds its class"));
                     };
                     fires.push(host_fire(&continuation.continuation, results));
+                    entries.extend(run.entries);
                     let again = match receive.persistent {
                         true => Some(HostCall::Receive(receive)),
                         false => None,
@@ -1315,7 +1408,10 @@ async fn host_program(
             calls.push_front(call);
         }
     }
-    Ok(Some(fires))
+    // Changed by decision 89 (DR-129): the program returns the entries of the calls that it
+    // keeps, because a reverted draw leaves its charges in the log of the budget.
+    // Ok(Some(fires))
+    Ok(Some((entries, fires)))
 }
 
 /// The records and the waiting continuations on the data channel of `space`, each as its
@@ -1344,7 +1440,8 @@ async fn store_bytes(
 /// the new legacy log entries (value and label), the fires, and at the end the stores. Each side
 /// runs inside the legacy scope of its own budget. It returns `false` when it stops at a class
 /// fire that no host consume makes ([`HostClass::Inexpressible`]). It returns `true` when it
-/// compares every operation.
+/// compares every operation. The host program pins each call to the canonical choice (decision
+/// 89, DR-129), so the comparison stays exact.
 async fn compare_with_host(ops: &[SpaceOp]) -> Result<bool, TestCaseError> {
     let agent_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs set agent"));
     let _agent_scope = agent_budget.enter_legacy_scope();
@@ -1352,7 +1449,10 @@ async fn compare_with_host(ops: &[SpaceOp]) -> Result<bool, TestCaseError> {
     let host_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs set host"));
     let _host_scope = host_budget.enter_legacy_scope();
     let pin: Pin = Arc::new(Mutex::new(None));
-    let host = pinned_host(&host_budget, &pin).await;
+    // Changed by decision 89 (DR-129): the matcher of the host also holds the waiter pin.
+    // let host = pinned_host(&host_budget, &pin).await;
+    let waiter = open_waiter();
+    let host = pinned_host(&host_budget, &pin, &waiter).await;
     for (index, op) in ops.iter().enumerate() {
         let agent_before = agent_budget.get_log().len();
         let outcome = rig
@@ -1360,11 +1460,18 @@ async fn compare_with_host(ops: &[SpaceOp]) -> Result<bool, TestCaseError> {
             .await
             .map_err(|error| TestCaseError::fail(format!("operation {index} fails: {error}")))?;
         let agent_entries = agent_budget.get_log()[agent_before..].to_vec();
-        let host_before = host_budget.get_log().len();
-        let Some(host_fires) = host_program(&host, &host_budget, &pin, op).await? else {
+        // Changed by decision 89 (DR-129): a reverted draw leaves its charges in the log of the
+        // budget, so the host program returns the entries of the calls that it keeps.
+        // let host_before = host_budget.get_log().len();
+        // let Some(host_fires) = host_program(&host, &host_budget, &pin, op).await? else {
+        //     return Ok(false);
+        // };
+        // let host_entries = host_budget.get_log()[host_before..].to_vec();
+        let Some((host_entries, host_fires)) =
+            host_program(&host, &host_budget, &pin, &waiter, op).await?
+        else {
             return Ok(false);
         };
-        let host_entries = host_budget.get_log()[host_before..].to_vec();
         prop_assert!(!agent_entries.is_empty(), "operation {} charges", index);
         prop_assert_eq!(
             &agent_entries,
@@ -1713,10 +1820,7 @@ async fn space_set_discipline_key_ignores_random_state_and_authority() {
     second.authority = region(2);
     second.data.cost_authority = Some(region(2));
     assert_ne!(first.data, second.data, "two different records");
-    assert_eq!(
-        set_key(&first.data.pars, &ScanMeter::new(None)),
-        set_key(&second.data.pars, &ScanMeter::new(None))
-    );
+    assert_eq!(set_key(&first.data.pars), set_key(&second.data.pars));
     rig.send(first).await;
     rig.send(second).await;
     rig.log().await;
@@ -1766,9 +1870,8 @@ async fn space_set_discipline_key_ignores_random_state_and_authority() {
 /// classes.
 #[tokio::test]
 async fn space_set_discipline_key_length_prefix_no_collision() {
-    let meter = ScanMeter::new(None);
     let pair = vec![int(1), int(2)];
-    let key = set_key(&pair, &meter).expect("a key");
+    let key = set_key(&pair).expect("a key");
     let mut expected = 2u64.to_be_bytes().to_vec();
     for element in &pair {
         let bytes = bincode::serialize(&ParSortMatcher::sort_match(element).term)
@@ -1796,7 +1899,7 @@ async fn space_set_discipline_key_length_prefix_no_collision() {
     ];
     let keys: BTreeSet<Vec<u8>> = payloads
         .iter()
-        .map(|payload| set_key(payload, &meter).expect("a key"))
+        .map(|payload| set_key(payload).expect("a key"))
         .collect();
     assert_eq!(
         keys.len(),
@@ -1830,21 +1933,19 @@ async fn space_set_discipline_key_length_prefix_no_collision() {
     assert_eq!(left, expected_left, "only the class of (1, 2) leaves");
 }
 
-/// A term deeper than the depth limit of the metered sorter has no key under a host-work
-/// budget (decision 42, v3 C.1 item 7). A receive that must compute that key fails with
-/// `HostWorkRejected` before it stages anything. A send whose fire must retire its class fails
-/// in the same way, and so does a metered send that would store the record: a metered job
-/// stores no record without a key. Nothing happens: no event, no record change and no legacy
-/// charge. This holds in play, in a rigged replay and after a checkpoint reset. Without a budget
-/// the key exists, as the host sorts any depth, so an unmetered job stores the record.
+/// A term deeper than the old depth limit of the metered sorter is a member like any other,
+/// because the host sorts any depth (DR-131 removed the limit with host work). Each path that
+/// computes a set key takes the deep payload: the store of a send, the retire of a fire, the
+/// class receive and the fire of a send of the deep payload. The encode and the drop of a deep
+/// term recurse once for each level, so the test runs on a thread with a large stack.
 #[test]
-fn space_set_discipline_failed_canonicalization_rejects_before_staging() {
+fn space_set_discipline_deep_term_is_a_member() {
     std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024)
-        .spawn(|| tokio_runtime().block_on(failed_canonicalization()))
+        .spawn(|| tokio_runtime().block_on(deep_term_member()))
         .expect("a test thread starts")
         .join()
-        .expect("the canonicalization test passes");
+        .expect("the deep-term test passes");
 }
 
 /// A list nested `depth` levels deep around the integer 0.
@@ -1864,62 +1965,35 @@ fn nested_list(depth: usize) -> Par {
     par
 }
 
-/// The body of [`space_set_discipline_failed_canonicalization_rejects_before_staging`].
-async fn failed_canonicalization() {
+/// The body of [`space_set_discipline_deep_term_is_a_member`].
+async fn deep_term_member() {
     let deep = send_pars(vec![nested_list(260)], 1);
-    let legacy = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs set canonicalization"));
-    let _scope = legacy.enter_legacy_scope();
-    let (play, replay) = play_and_replay().await;
-    let rig = Rig::over(play.clone(), &legacy).await;
+    let rig = Rig::new().await;
     rig.send(deep.clone()).await;
-    let start = play
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint with the deep record")
-        .root;
-    let metered = Rig {
-        host: rig.host.clone(),
-        env: rig.env.clone(),
-    }
-    .metered(&unbounded_host_work());
-    let expect_rejected = |result: Result<SpaceOutcome, SpaceError>, what: &str| {
-        assert_eq!(
-            result,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            "{what}: the key of the deep payload is rejected"
-        );
-    };
-    let charges = legacy.get_log().len();
-    let before = store_bytes(&play).await;
-    expect_rejected(
-        metered.run(SpaceOp::Consume(receiving("k", any()))).await,
-        "the class receive",
+    assert_eq!(
+        rig.records().await.len(),
+        1,
+        "the set stores the deep record"
     );
-    assert!(play.take_event_log().await.is_empty(), "nothing is staged");
-    assert_eq!(store_bytes(&play).await, before, "no record changes");
-    assert_eq!(legacy.get_log().len(), charges, "no observer call charges");
     // A send of 5 fires the waiter for 5, which does not peek, so RETIRE-CLASS reads the key of
-    // every stored member candidate. The key of the deep record fails there, before the commit,
-    // so the dropped transaction applies nothing: under a budget, a stored deep record blocks
-    // every retire of the collection.
+    // every stored member candidate, the deep record among them.
     rig.receive(receiving("w", exactly(5))).await;
-    play.take_event_log().await;
-    let parked_before = store_bytes(&play).await;
-    expect_rejected(
-        metered
-            .run(SpaceOp::Produce(send_pars(vec![int(5)], 2)))
-            .await,
-        "the retire of a send of 5",
+    let fired = rig.send(send_pars(vec![int(5)], 2)).await;
+    assert_eq!(fired.fires.len(), 1, "the send of 5 fires its waiter");
+    // The class receive computes the key of the deep record and takes its class.
+    let taken = rig.receive(receiving("u", any())).await;
+    assert_eq!(
+        taken.fires.len(),
+        1,
+        "the receive takes the class of the deep record"
     );
-    assert!(play.take_event_log().await.is_empty(), "nothing is staged");
-    assert_eq!(store_bytes(&play).await, parked_before);
-    // Without a budget the host sorts any depth, so the receive takes the class.
-    let unmetered = rig.receive(receiving("u", any())).await;
-    assert_eq!(unmetered.fires.len(), 1);
-    // The send of the deep payload fires a waiter that does not peek, so it must compute the
-    // key of its own class first: the key fails before the fire stages. The waiter parks on
-    // the empty set first.
-    let empty = Rig::with_budget(&legacy).await;
+    assert!(
+        rig.records().await.is_empty(),
+        "the class of the deep record leaves the set"
+    );
+    // The send of the deep payload computes the key of its own class before it fires the waiter
+    // that parks on the empty set.
+    let empty = Rig::new().await;
     empty
         .receive(ConsumeOp {
             pattern: literal(deep.data.pars.clone()),
@@ -1927,102 +2001,12 @@ async fn failed_canonicalization() {
         })
         .await;
     assert_eq!(empty.waiters().await, vec!["d".to_string()]);
-    empty.log().await;
-    let parked_before = store_bytes(&empty.host).await;
-    let metered_empty = Rig {
-        host: empty.host.clone(),
-        env: empty.env.clone(),
-    }
-    .metered(&unbounded_host_work());
-    expect_rejected(
-        metered_empty
-            .run(SpaceOp::Produce(send_pars(deep.data.pars.clone(), 3)))
-            .await,
-        "the send of the deep payload",
-    );
-    assert!(empty.log().await.is_empty(), "nothing is staged");
-    assert_eq!(store_bytes(&empty.host).await, parked_before);
-    // A metered send of the deep payload into a set without a waiter fails at the store, so a
-    // metered job never stores a record that would block the later class operations.
-    let fresh = Rig::with_budget(&legacy).await;
-    fresh.log().await;
-    let fresh_before = store_bytes(&fresh.host).await;
-    let metered_fresh = Rig {
-        host: fresh.host.clone(),
-        env: fresh.env.clone(),
-    }
-    .metered(&unbounded_host_work());
-    expect_rejected(
-        metered_fresh
-            .run(SpaceOp::Produce(send_pars(deep.data.pars.clone(), 4)))
-            .await,
-        "the store of the deep payload",
-    );
-    assert!(fresh.log().await.is_empty(), "nothing is staged");
+    let delivered = empty.send(send_pars(deep.data.pars.clone(), 3)).await;
     assert_eq!(
-        store_bytes(&fresh.host).await,
-        fresh_before,
-        "no record is stored"
+        delivered.fires.len(),
+        1,
+        "the send of the deep payload fires the waiter"
     );
-    // Negative control: a bag has no class key, so the same metered receive of the deep record
-    // fires. The failure of the set is the failure of its key, not of the matcher.
-    let bag_host = support::agent::play().await;
-    let bag_env = env_over(bag_host.clone(), &budget());
-    let bag_config = config_of(SPACE, "hashmap", "bag", SpaceQualifier::Default);
-    let bag_family = SpaceFactoryUrn {
-        outer: SpaceOuter::HashMap,
-        inner: SpaceInner::Bag,
-    };
-    create(
-        &Bag::default(),
-        &bag_env,
-        creation(SPACE, bag_config, bag_family),
-    )
-    .await;
-    run(&Bag::default(), &bag_env, SpaceOp::Produce(deep.clone()))
-        .await
-        .expect("the bag stores the deep record");
-    let metered_bag = SpaceEnv {
-        meter: ScanMeter::new(Some(unbounded_host_work())),
-        ..bag_env
-    };
-    let bag_outcome = run(
-        &Bag::default(),
-        &metered_bag,
-        SpaceOp::Consume(receiving("k", any())),
-    )
-    .await
-    .expect("the metered bag receive fires");
-    assert_eq!(bag_outcome.fires.len(), 1);
-    // A rigged replay and a reset fail at the same point with the same effect.
-    let Checkpoint { log, .. } = play.create_checkpoint().await.expect("a checkpoint");
-    replay
-        .rig_and_reset(start.clone(), log)
-        .await
-        .expect("the replay rigs the log");
-    let replay_rig = Rig {
-        host: play.clone(),
-        env: SpaceEnv {
-            meter: ScanMeter::new(Some(unbounded_host_work())),
-            ..env_over(replay.clone(), &legacy)
-        },
-    };
-    let replay_before = store_bytes(&replay).await;
-    expect_rejected(
-        replay_rig
-            .run(SpaceOp::Consume(receiving("k", any())))
-            .await,
-        "the replayed class receive",
-    );
-    assert_eq!(store_bytes(&replay).await, replay_before);
-    play.reset(&start).await.expect("the reset to the start");
-    let reset_before = store_bytes(&play).await;
-    expect_rejected(
-        metered.run(SpaceOp::Consume(receiving("k", any()))).await,
-        "the class receive after the reset",
-    );
-    assert!(play.take_event_log().await.is_empty());
-    assert_eq!(store_bytes(&play).await, reset_before);
 }
 
 /// The case of readiness review S3 (decision 37). A guarded waiter parks while a stored member
@@ -2521,61 +2505,64 @@ async fn space_set_discipline_legacy_charges_equal_host() {
     );
 }
 
-/// A budget one unit below the usage of a set operation in any dimension rejects the operation
-/// before the commit, so it has no effect. The exact budget gives the outcome of an unlimited
-/// one. The operations are a send that fires a guarded waiter and retires a class of two, and a
-/// class fire over `[D; 3]` (decision 42).
-#[tokio::test]
-async fn space_set_discipline_reservation_cut_rejects_without_effect() {
-    let setup = || async {
-        let rig = Rig::new().await;
-        for send in ordered_sends(&[(1, false), (8, false), (8, false)]) {
-            rig.send(send).await;
-        }
-        for salt in 1..=3 {
-            rig.send(salted(4, salt, false)).await;
-        }
-        rig.receive(guarded(receiving("g", any()), equals(8))).await;
-        rig.log().await;
-        rig
-    };
-    let operations = [
-        SpaceOp::Produce(salted(8, 50, false)),
-        SpaceOp::Consume(receiving("k", exactly(4))),
+/// A persistent record and a non-persistent record with equal bytes are two members of one
+/// class with two source hashes. A peek binds the first of them in canonical order (decision 41).
+/// The pin of the host program names a record only by its bytes, and host play picks between
+/// the two at random (DR-129). So the program makes its consume again until it binds the
+/// record with the canonical persist flag (decision 89). The test runs the program `TWIN_RUNS`
+/// times.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_set_discipline_persistent_twin_peek_binds_the_canonical_record() {
+    let twin = salted(1, 0, true);
+    let member = salted(1, 0, false);
+    assert_eq!(twin.data, member.data, "the two members have equal bytes");
+    let ops = vec![
+        SpaceOp::Produce(twin),
+        SpaceOp::Produce(member),
+        SpaceOp::Consume(peeking(receiving("p", exactly(1)))),
     ];
-    for op in operations {
-        let measured = unbounded_host_work();
-        let unlimited = setup().await.metered(&measured);
-        let expected = unlimited
-            .run(op.clone())
-            .await
-            .expect("the operation commits");
-        assert_eq!(expected.fires.len(), 1);
-        let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        for dimension in AGENT_DIMENSIONS {
-            exact.set(
-                dimension,
-                HostWorkLimit::new(measured.usage(dimension).get()),
-            );
-        }
-        let fitting = setup().await.metered(&HostWorkBudget::new(exact));
-        assert_eq!(fitting.run(op.clone()).await, Ok(expected));
-        for dimension in AGENT_DIMENSIONS {
-            let usage = measured.usage(dimension).get();
-            assert!(usage > 0, "the operation charges {dimension}");
-            let mut cut = exact;
-            cut.set(dimension, HostWorkLimit::new(usage - 1));
-            let rig = setup().await.metered(&HostWorkBudget::new(cut));
-            let (values, waiters) = (rig.values().await, rig.waiters().await);
-            assert_eq!(
-                rig.run(op.clone()).await,
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                "{dimension}"
-            );
-            assert!(rig.log().await.is_empty(), "{dimension}");
-            assert_eq!(rig.values().await, values, "{dimension}");
-            assert_eq!(rig.waiters().await, waiters, "{dimension}");
-        }
+    for _ in 0..TWIN_RUNS {
+        assert!(
+            compare_with_host(&ops)
+                .await
+                .unwrap_or_else(|failure| panic!("{failure}")),
+            "every operation has its host program"
+        );
+    }
+}
+
+/// A send fires a guarded waiter, and K_retire retires the stored non-persistent member of its
+/// class (decision 37). A persistent twin of the member has the bytes of the member, so the pin
+/// of the retire admits both. The host program makes the retire again until it binds the
+/// non-persistent member, and the persistent twin stays (decision 89). The first record comes
+/// before the class in canonical order, so the waiter parks on it. The test runs the program
+/// `TWIN_RUNS` times.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_set_discipline_persistent_twin_retire_binds_the_member() {
+    let member = salted(2, 1, false);
+    let twin = salted(2, 1, true);
+    assert_eq!(twin.data, member.data, "the two members have equal bytes");
+    let first = (1..)
+        .map(|salt| salted(1, salt, false))
+        .find(|candidate| {
+            record_hash(candidate) < record_hash(&member)
+                && record_hash(candidate) < record_hash(&twin)
+        })
+        .expect("a record before the class {2}");
+    let ops = vec![
+        SpaceOp::Produce(first),
+        SpaceOp::Produce(member),
+        SpaceOp::Produce(twin),
+        SpaceOp::Consume(guarded(receiving("w", any()), equals(2))),
+        SpaceOp::Produce(salted(2, 1_000, false)),
+    ];
+    for _ in 0..TWIN_RUNS {
+        assert!(
+            compare_with_host(&ops)
+                .await
+                .unwrap_or_else(|failure| panic!("{failure}")),
+            "every operation has its host program"
+        );
     }
 }
 
@@ -2771,8 +2758,7 @@ fn parse_key(key: &[u8]) -> Option<Vec<Vec<u8>>> {
 }
 
 /// F6 `set_key_injective`: two payloads have equal keys exactly when their sorted elements are
-/// equal. The key frames the count and each length around the bincode of each sorted element,
-/// and the metered key has the same bytes.
+/// equal. The key frames the count and each length around the bincode of each sorted element.
 #[test]
 fn prop_set_key_injective() {
     let equal = Hits::new();
@@ -2792,8 +2778,7 @@ fn prop_set_key_injective() {
         },
     );
     check(pure_config(), strategy, |(first, second)| {
-        let meter = ScanMeter::new(None);
-        let key = |payload: &[Par]| set_key(payload, &meter).expect("a key");
+        let key = |payload: &[Par]| set_key(payload).expect("a key");
         let (first_key, second_key) = (key(&first), key(&second));
         let sorted_first: Vec<Par> = first.iter().map(sorted).collect();
         let sorted_second: Vec<Par> = second.iter().map(sorted).collect();
@@ -2809,8 +2794,6 @@ fn prop_set_key_injective() {
                 .map(|element| bincode::serialize(&sorted(element)).expect("a Par serializes"))
                 .collect();
             prop_assert_eq!(elements.expect("checked above"), expected);
-            let metered = set_key(payload, &ScanMeter::new(Some(unbounded_host_work())));
-            prop_assert_eq!(metered.as_ref(), Ok(key));
         }
         Ok(())
     });
@@ -3353,7 +3336,7 @@ async fn peek_case(
 }
 
 /// `set_membership_full_compare_on_equal_hash` (DR-90): two keys are one class exactly when
-/// they are equal, and their metered hashes are equal exactly then. A class fire binds exactly
+/// they are equal, and the hashes of their keys are equal exactly then. A class fire binds exactly
 /// the records whose sorted payloads equal the sorted payload of the representative, also when
 /// their expressions come in other orders.
 #[test]
@@ -3380,17 +3363,15 @@ async fn membership_case(
     records: Vec<(usize, Vec<i64>, u64)>,
     permuted: &Hits,
 ) -> Result<(), TestCaseError> {
-    let meter = ScanMeter::new(None);
-    let metered = ScanMeter::new(Some(unbounded_host_work()));
     let payload = |values: &[i64]| vec![exprs_par(values)];
     for (first_class, first, _) in &records {
         for (second_class, second, _) in &records {
-            let first_key = set_key(&payload(first), &meter).expect("a key");
-            let second_key = set_key(&payload(second), &meter).expect("a key");
+            let first_key = set_key(&payload(first)).expect("a key");
+            let second_key = set_key(&payload(second)).expect("a key");
             let same = first_class == second_class;
             prop_assert_eq!(first_key == second_key, same);
-            let first_hash = metered_hash(&first_key, &metered).expect("a metered hash");
-            let second_hash = metered_hash(&second_key, &metered).expect("a metered hash");
+            let first_hash = record::bincode_digest(&first_key).expect("the hash of a key");
+            let second_hash = record::bincode_digest(&second_key).expect("the hash of a key");
             prop_assert_eq!(first_hash == second_hash, same);
             if same && first != second {
                 permuted.hit();
@@ -3422,78 +3403,6 @@ async fn membership_case(
             .collect::<Vec<_>>(),
         members
     );
-    Ok(())
-}
-
-/// `set_key_trace_covered` (decision 42): a generated program runs first. Then a budget one
-/// unit below the usage of the next operation in any dimension rejects that operation before the
-/// commit, with no effect. The exact budget gives the outcome of an unlimited one. The programs
-/// make class fires, K_retire consumes and peeks.
-#[test]
-fn prop_set_key_trace_covered() {
-    let strategy = (arb_class_program(), arb_program(1));
-    check(pure_config(), strategy, |(setup, last)| {
-        tokio_runtime().block_on(cut_case(setup, last))
-    });
-}
-
-async fn cut_case(setup: Vec<SetOp>, last: Vec<SetOp>) -> Result<(), TestCaseError> {
-    let op = match last.into_iter().next() {
-        Some(SetOp::Receive {
-            pat,
-            guard,
-            persistent,
-            peek,
-            ..
-        }) => SetOp::Receive {
-            name: 100,
-            pat,
-            guard,
-            persistent,
-            peek,
-        },
-        Some(send) => send,
-        None => return Err(failure("a program of one operation")),
-    };
-    let prepare = || async {
-        let rig = Rig::new().await;
-        for step in &setup {
-            rig.run(step.space_op())
-                .await
-                .expect("the setup operation commits");
-        }
-        rig.log().await;
-        rig
-    };
-    let measured = unbounded_host_work();
-    let expected = prepare().await.metered(&measured).run(op.space_op()).await;
-    prop_assert!(expected.is_ok(), "the operation commits: {:?}", expected);
-    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for dimension in AGENT_DIMENSIONS {
-        exact.set(
-            dimension,
-            HostWorkLimit::new(measured.usage(dimension).get()),
-        );
-    }
-    let fitting = prepare().await.metered(&HostWorkBudget::new(exact));
-    prop_assert_eq!(&fitting.run(op.space_op()).await, &expected);
-    for dimension in AGENT_DIMENSIONS {
-        let usage = measured.usage(dimension).get();
-        prop_assert!(usage > 0, "the operation charges {}", dimension);
-        let mut cut = exact;
-        cut.set(dimension, HostWorkLimit::new(usage - 1));
-        let rig = prepare().await.metered(&HostWorkBudget::new(cut));
-        let (values, waiters) = (rig.values().await, rig.waiters().await);
-        prop_assert_eq!(
-            rig.run(op.space_op()).await,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            "{}",
-            dimension
-        );
-        prop_assert!(rig.log().await.is_empty(), "{}", dimension);
-        prop_assert_eq!(rig.values().await, values, "{}", dimension);
-        prop_assert_eq!(rig.waiters().await, waiters, "{}", dimension);
-    }
     Ok(())
 }
 

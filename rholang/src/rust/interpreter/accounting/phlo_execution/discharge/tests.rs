@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_wire::PhloWireLimits;
 use proptest::prelude::*;
 
@@ -12,10 +11,6 @@ use crate::rust::interpreter::accounting::phlo_execution::{
     check_counted_phlo_execution, PhloOutcome, PhloResource,
 };
 use crate::rust::interpreter::accounting::Sig;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn limits() -> PhloDischargeLimits {
     PhloDischargeLimits {
@@ -126,8 +121,7 @@ fn partial_prepaid_supply_derives_the_unique_partition() {
     let authorities = authorities();
     let available = rows(&[(0, 2), (1, 7)], &authorities);
     let required = rows(&[(0, 5), (2, 3)], &authorities);
-    let prepared =
-        prepare_counted_phlo_discharge(&available, &required, limits(), &work()).unwrap();
+    let prepared = prepare_counted_phlo_discharge(&available, &required, limits()).unwrap();
     let witness = prepared.witness();
     assert_eq!(counts(witness.used, &authorities), BTreeMap::from([(0, 2)]));
     assert_eq!(
@@ -147,8 +141,7 @@ fn every_complete_key_dimension_prevents_incompatible_credit() {
     let available = rows(&[(0, 5)], &authorities);
     for changed in [1, 2, 4, 8] {
         let required = rows(&[(changed, 5)], &authorities);
-        let prepared =
-            prepare_counted_phlo_discharge(&available, &required, limits(), &work()).unwrap();
+        let prepared = prepare_counted_phlo_discharge(&available, &required, limits()).unwrap();
         let witness = prepared.witness();
         assert!(witness.used.is_empty());
         assert_eq!(witness.unused, available);
@@ -162,8 +155,7 @@ fn maximum_quantities_are_counted_without_expansion_and_overflow_rejects() {
     let authorities = authorities();
     let available = rows(&[(0, u64::MAX)], &authorities);
     let required = rows(&[(0, u64::MAX - 1)], &authorities);
-    let prepared =
-        prepare_counted_phlo_discharge(&available, &required, limits(), &work()).unwrap();
+    let prepared = prepare_counted_phlo_discharge(&available, &required, limits()).unwrap();
     let witness = prepared.witness();
     assert_eq!(witness.used.len(), 1);
     assert_eq!(witness.used[0].quantity, u64::MAX - 1);
@@ -172,7 +164,7 @@ fn maximum_quantities_are_counted_without_expansion_and_overflow_rejects() {
     assert!(witness.fresh.is_empty());
     let overflowing = rows(&[(0, u64::MAX), (0, 1)], &authorities);
     assert!(matches!(
-        prepare_counted_phlo_discharge(&overflowing, &required, limits(), &work()),
+        prepare_counted_phlo_discharge(&overflowing, &required, limits()),
         Err(PhloPartitionError::Execution(
             PhloExecutionError::ArithmeticOverflow
         ))
@@ -180,7 +172,7 @@ fn maximum_quantities_are_counted_without_expansion_and_overflow_rejects() {
 }
 
 #[test]
-fn all_representation_and_work_bounds_apply_before_a_result_is_exposed() {
+fn all_representation_bounds_apply_before_a_result_is_exposed() {
     let authorities = authorities();
     let available = rows(&[(0, 1)], &authorities);
     for dimension in 0..6 {
@@ -195,15 +187,13 @@ fn all_representation_and_work_bounds_apply_before_a_result_is_exposed() {
             _ => unreachable!(),
         }
         assert!(
-            prepare_counted_phlo_discharge(&available, &available, bounded, &work()).is_err(),
+            prepare_counted_phlo_discharge(&available, &available, bounded).is_err(),
             "dimension {dimension}"
         );
     }
-    let zero_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(prepare_counted_phlo_discharge(&available, &available, limits(), &zero_work).is_err());
     let zero = rows(&[(0, 0)], &authorities);
     assert!(matches!(
-        prepare_counted_phlo_discharge(&zero, &available, limits(), &work()),
+        prepare_counted_phlo_discharge(&zero, &available, limits()),
         Err(PhloPartitionError::Execution(
             PhloExecutionError::ZeroQuantity
         ))
@@ -233,7 +223,7 @@ proptest! {
         for key in remaining { *unused.entry(key).or_insert(0_u64) += 1; }
         let a = rows(&available, &authorities);
         let r = rows(&required, &authorities);
-        let prepared = prepare_counted_phlo_discharge(&a, &r, limits(), &work()).unwrap();
+        let prepared = prepare_counted_phlo_discharge(&a, &r, limits()).unwrap();
         let witness = prepared.witness();
         prop_assert_eq!(counts(witness.used, &authorities), used);
         prop_assert_eq!(counts(witness.unused, &authorities), unused);
@@ -241,14 +231,14 @@ proptest! {
         assert_checked(&prepared);
         let mut reversed_a = a.clone(); reversed_a.reverse();
         let mut reversed_r = r.clone(); reversed_r.reverse();
-        let reversed = prepare_counted_phlo_discharge(&reversed_a, &reversed_r, limits(), &work()).unwrap();
+        let reversed = prepare_counted_phlo_discharge(&reversed_a, &reversed_r, limits()).unwrap();
         let other = reversed.witness();
         prop_assert_eq!((witness.used, witness.unused, witness.fresh), (other.used, other.unused, other.fresh));
         let mut split_a = Vec::new();
         for amount in &a {
             split_a.extend(std::iter::repeat_n(PhloResourceAmount {quantity: 1, ..*amount}, amount.quantity as usize));
         }
-        let split = prepare_counted_phlo_discharge(&split_a, &r, limits(), &work()).unwrap();
+        let split = prepare_counted_phlo_discharge(&split_a, &r, limits()).unwrap();
         let other = split.witness();
         prop_assert_eq!((witness.used, witness.unused, witness.fresh), (other.used, other.unused, other.fresh));
     }

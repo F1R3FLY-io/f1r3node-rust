@@ -1,15 +1,10 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
 use crate::rust::interpreter::accounting::monetary_allocation::FundingSearchLimits;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn limits() -> FundingFamilyLimits {
     FundingFamilyLimits {
@@ -22,33 +17,29 @@ fn limits() -> FundingFamilyLimits {
 }
 
 fn key(rows: &[&[u64]], cursor: usize) -> FundingFamilyResourcePriority {
-    FundingFamilyResourcePriority::from_canonical_resource_draws(rows, cursor, limits(), &work())
-        .unwrap()
+    FundingFamilyResourcePriority::from_canonical_resource_draws(rows, cursor, limits()).unwrap()
 }
 
 #[test]
 fn family_priority_later_rank_wins_over_earlier_residual_tie() {
     let fair = key(&[&[0, 1], &[1, 1]], 0);
     let early_tie = key(&[&[1, 0], &[2, 0]], 0);
-    assert_eq!(fair.compare(&early_tie, &work()).unwrap(), Ordering::Less);
-    assert_eq!(
-        early_tie.compare(&fair, &work()).unwrap(),
-        Ordering::Greater
-    );
+    assert_eq!(fair.compare(&early_tie).unwrap(), Ordering::Less);
+    assert_eq!(early_tie.compare(&fair).unwrap(), Ordering::Greater);
 }
 
 #[test]
 fn family_priority_selects_alpha_tie_after_all_fairness_ranks() {
     let alpha = key(&[&[0, 1, 1, 0, 0], &[0, 1, 1, 1, 0]], 0);
     let beta = key(&[&[0, 0, 1, 1, 0], &[1, 0, 1, 1, 0]], 0);
-    assert_eq!(alpha.compare(&beta, &work()).unwrap(), Ordering::Less);
+    assert_eq!(alpha.compare(&beta).unwrap(), Ordering::Less);
 }
 
 #[test]
 fn family_priority_is_not_worst_case_liability_minimization() {
     let x = key(&[&[2, 0], &[2, 2]], 0);
     let y = key(&[&[1, 1], &[3, 1]], 0);
-    assert_eq!(y.compare(&x, &work()).unwrap(), Ordering::Less);
+    assert_eq!(y.compare(&x).unwrap(), Ordering::Less);
 }
 
 #[test]
@@ -61,7 +52,7 @@ fn family_priority_rejects_incompatible_and_unbounded_inputs() {
         key(&[&[1, 0], &[0, 0]], 0),
     ] {
         assert_eq!(
-            base.compare(&other, &work()),
+            base.compare(&other),
             Err(FundingFamilyError::IncompatiblePriorityContext)
         );
     }
@@ -69,25 +60,14 @@ fn family_priority_rejects_incompatible_and_unbounded_inputs() {
         FundingFamilyResourcePriority::from_canonical_resource_draws(
             &[&[u64::MAX, 1]],
             0,
-            limits(),
-            &work()
+            limits()
         )
         .is_err()
     );
     assert!(
-        FundingFamilyResourcePriority::from_canonical_resource_draws(
-            &[&[1, 0], &[1]],
-            0,
-            limits(),
-            &work()
-        )
-        .is_err()
+        FundingFamilyResourcePriority::from_canonical_resource_draws(&[&[1, 0], &[1]], 0, limits())
+            .is_err()
     );
-    let empty = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(matches!(
-        base.compare(&base, &empty),
-        Err(FundingFamilyError::Search(FundingSearchError::HostWork(_)))
-    ));
 }
 
 #[test]
@@ -97,7 +77,7 @@ fn family_priority_supports_large_source_counts_without_amount_iteration() {
         amounts[n - 1] = u64::MAX;
         for cursor in [0, n - 1] {
             let value = key(&[&amounts], cursor);
-            assert_eq!(value.compare(&value, &work()).unwrap(), Ordering::Equal);
+            assert_eq!(value.compare(&value).unwrap(), Ordering::Equal);
         }
     }
 }
@@ -147,13 +127,13 @@ proptest! {
         let keys: Vec<_> = candidates.iter().map(|rows| key(&rows.iter().map(Vec::as_slice).collect::<Vec<_>>(), cursor)).collect();
         for a in 0..3 {
             for b in 0..3 {
-                let comparison = keys[a].compare(&keys[b], &work()).unwrap();
+                let comparison = keys[a].compare(&keys[b]).unwrap();
                 prop_assert_eq!(comparison, oracle(&candidates[a], &candidates[b], cursor));
-                prop_assert_eq!(comparison.reverse(), keys[b].compare(&keys[a], &work()).unwrap());
+                prop_assert_eq!(comparison.reverse(), keys[b].compare(&keys[a]).unwrap());
                 if comparison == Ordering::Equal { prop_assert_eq!(&candidates[a], &candidates[b]); }
                 for c in 0..3 {
-                    if comparison != Ordering::Greater && keys[b].compare(&keys[c], &work()).unwrap() != Ordering::Greater {
-                        prop_assert_ne!(keys[a].compare(&keys[c], &work()).unwrap(), Ordering::Greater);
+                    if comparison != Ordering::Greater && keys[b].compare(&keys[c]).unwrap() != Ordering::Greater {
+                        prop_assert_ne!(keys[a].compare(&keys[c]).unwrap(), Ordering::Greater);
                     }
                 }
             }

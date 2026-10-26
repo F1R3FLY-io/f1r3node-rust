@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
@@ -20,10 +19,6 @@ fn limits() -> FundingFamilyLimits {
         },
         case_cap: NonZeroUsize::new(16).unwrap(),
     }
-}
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
 }
 
 fn outcome_candidates(problem: FundingOutcomeProblem<'_>, common: &[u64]) -> Vec<Candidate> {
@@ -190,7 +185,7 @@ fn capped_cursor(capacities: &[u64], total: u64, cursor: usize) -> usize {
 fn assert_projection_oracle(problem: FundingFamilyOptimizationProblem<'_>) {
     let groups: Vec<_> = (0..problem.outcomes.len()).collect();
     let families = feasible_families(problem);
-    let actual = select_funding_family_policy(problem, &groups, limits(), &work()).unwrap();
+    let actual = select_funding_family_policy(problem, &groups, limits()).unwrap();
     assert_eq!(actual.is_some(), !families.is_empty());
     let Some(actual) = actual else {
         return;
@@ -304,7 +299,7 @@ fn single_feasible_fee_payer_preserves_the_captured_cursor() {
         fee_cursor: 0,
     };
     assert_projection_oracle(problem);
-    let selected = select_funding_family_policy(problem, &[0], limits(), &work())
+    let selected = select_funding_family_policy(problem, &[0], limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.transitions()[0].possible_fee_payers(), &[
@@ -345,7 +340,7 @@ fn family_cursor_uses_complete_marginals_instead_of_temporary_optimizer_caps() {
         fee_cursor: 0,
     };
     assert_projection_oracle(problem);
-    let selected = select_funding_family_policy(problem, &[0, 1], limits(), &work())
+    let selected = select_funding_family_policy(problem, &[0, 1], limits())
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -356,16 +351,10 @@ fn family_cursor_uses_complete_marginals_instead_of_temporary_optimizer_caps() {
     );
     assert!(!selected.transitions()[0].resource_unrestricted());
     assert_eq!(selected.transitions()[0].resource_next_cursor(), Some(1));
-    let standalone = select_funding_with_unit_fee(
-        outcomes[0].resources,
-        &first_fee,
-        0,
-        0,
-        limits().search,
-        &work(),
-    )
-    .unwrap()
-    .unwrap();
+    let standalone =
+        select_funding_with_unit_fee(outcomes[0].resources, &first_fee, 0, 0, limits().search)
+            .unwrap()
+            .unwrap();
     assert_eq!(standalone.resource_next_cursor(), Some(2));
 }
 
@@ -390,7 +379,7 @@ fn duplicate_semantic_outcomes_reuse_one_projection_and_cursor_transition() {
         resource_cursor: 1,
         fee_cursor: 2,
     };
-    let once = select_funding_family_policy(problem, &[0], limits(), &work())
+    let once = select_funding_family_policy(problem, &[0], limits())
         .unwrap()
         .unwrap();
     let repeated = select_funding_family_policy(
@@ -400,7 +389,6 @@ fn duplicate_semantic_outcomes_reuse_one_projection_and_cursor_transition() {
         },
         &[0, 0, 0],
         limits(),
-        &work(),
     )
     .unwrap()
     .unwrap();
@@ -427,7 +415,7 @@ fn duplicate_semantic_outcomes_reuse_one_projection_and_cursor_transition() {
 }
 
 #[test]
-fn malformed_semantic_groups_and_exhausted_host_work_are_errors() {
+fn malformed_semantic_groups_are_errors() {
     let capacities = [2, 2];
     let edges = vec![vec![true]; 2];
     let outcomes = [
@@ -456,10 +444,8 @@ fn malformed_semantic_groups_and_exhausted_host_work_are_errors() {
         fee_cursor: 0,
     };
     for groups in [&[0][..], &[0, 0][..], &[1, 2][..], &[0, 2][..], &[1, 0][..]] {
-        assert!(select_funding_family_policy(problem, groups, limits(), &work()).is_err());
+        assert!(select_funding_family_policy(problem, groups, limits()).is_err());
     }
-    let zero = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(select_funding_family_policy(problem, &[0, 1], limits(), &zero).is_err());
 }
 
 proptest! {
@@ -503,8 +489,8 @@ proptest! {
         let fee_cursor = fee_seed % capacities.len();
         let family = select_funding_family_policy(FundingFamilyOptimizationProblem {
             capacities: &capacities, outcomes: &outcomes, exposure_limit: capacities.iter().map(|v| u128::from(*v)).sum(), resource_cursor, fee_cursor,
-        }, &[0], limits(), &work()).unwrap();
-        let standalone = select_funding_with_unit_fee(resources, &fees, resource_cursor, fee_cursor, limits().search, &work()).unwrap();
+        }, &[0], limits()).unwrap();
+        let standalone = select_funding_with_unit_fee(resources, &fees, resource_cursor, fee_cursor, limits().search).unwrap();
         prop_assert_eq!(family.is_some(), standalone.is_some());
         if let (Some(family), Some(standalone)) = (family, standalone) {
             prop_assert_eq!(family.transitions()[0].resource_next_cursor(), standalone.resource_next_cursor());

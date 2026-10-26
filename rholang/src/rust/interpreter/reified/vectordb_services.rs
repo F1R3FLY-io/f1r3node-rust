@@ -9,9 +9,9 @@
 //!   a VectorDB space (with the `chromadb` feature).
 //!
 //! A service never reaches consensus state. In play, a process records its whole reply on the
-//! produce event of the call (`non_deterministic_ops`), and in replay it produces the recorded
-//! reply without a service call. So two nodes with different services, or with none, compute the
-//! same state.
+//! produce event of the call (`non_deterministic_ops`, and in native funded execution the recorded
+//! set of DR-114, decision 68), and in replay it produces the recorded reply without a service
+//! call. So two nodes with different services, or with none, compute the same state.
 //!
 //! The services of a node live in one registry: [`install`] sets them, and [`current`] reads them
 //! when a process runs. Before an install, [`current`] gives the unavailable services, so `embed`
@@ -43,7 +43,7 @@ use tokio::sync::Notify;
 use crate::rust::interpreter::spaces::disciplines::vectordb::ID_LEN;
 use crate::rust::interpreter::spaces::mirror::{MirrorBatch, MirrorMetric, MirrorRecord};
 use crate::rust::interpreter::spaces::namespace::{CollectionKey, SpaceId, SID_LEN};
-use crate::rust::interpreter::spaces::record::expr_par;
+use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
 
 /// The name of the embedding model that the replies of `embed` name.
 pub const MODEL: &str = "all-MiniLM-L6-v2";
@@ -83,11 +83,14 @@ pub enum ServiceReplyCode {
     DimensionMismatch,
     /// The options are not a map with the one key `k`, an `Int` in `[1, capacity]`.
     InvalidOption,
+    /// A success that does not fit the record room of the deploy (decision 68, DR-114 of
+    /// `feature/cost-accounted-rho`).
+    OutputTooLarge,
 }
 
 impl ServiceReplyCode {
     /// Every reply code.
-    pub const ALL: [ServiceReplyCode; 9] = [
+    pub const ALL: [ServiceReplyCode; 10] = [
         ServiceReplyCode::BadArgument,
         ServiceReplyCode::EmbeddingUnavailable,
         ServiceReplyCode::EmbeddingRateLimited,
@@ -97,6 +100,7 @@ impl ServiceReplyCode {
         ServiceReplyCode::MirrorUnavailable,
         ServiceReplyCode::DimensionMismatch,
         ServiceReplyCode::InvalidOption,
+        ServiceReplyCode::OutputTooLarge,
     ];
 
     /// The code string of the reply.
@@ -111,6 +115,7 @@ impl ServiceReplyCode {
             ServiceReplyCode::MirrorUnavailable => "MirrorUnavailable",
             ServiceReplyCode::DimensionMismatch => "DimensionMismatch",
             ServiceReplyCode::InvalidOption => "InvalidOption",
+            ServiceReplyCode::OutputTooLarge => "OutputTooLarge",
         }
     }
 
@@ -128,6 +133,7 @@ impl ServiceReplyCode {
             ServiceReplyCode::InvalidOption => {
                 "the options are a map of k, an Int in [1, capacity]"
             }
+            ServiceReplyCode::OutputTooLarge => "the reply exceeds the record room of the deploy",
         }
     }
 }
@@ -138,6 +144,20 @@ pub fn ok_reply(values: Vec<Par>) -> Par {
     parts.push(expr_par(ExprInstance::GBool(true)));
     parts.extend(values);
     list_par(parts)
+}
+
+/// True when `reply` is a success `[true, values…]` of [`ok_reply`]. Every reply of `embed` and
+/// `ann` comes from [`ok_reply`] or [`failed_reply`], so the head of the list decides.
+pub fn is_ok_reply(reply: &Par) -> bool {
+    match sole_expr(reply) {
+        Some(ExprInstance::EListBody(EList { ps, .. })) => {
+            matches!(
+                ps.first().and_then(sole_expr),
+                Some(ExprInstance::GBool(true))
+            )
+        }
+        _ => false,
+    }
 }
 
 /// The reply `[false, code, detail]` of `code`.

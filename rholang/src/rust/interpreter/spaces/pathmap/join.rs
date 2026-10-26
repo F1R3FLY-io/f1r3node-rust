@@ -19,7 +19,7 @@
 //! | the counter | the token `S(sid)`, one counter for every prefix |
 //!
 //! ```text
-//! PREFIX-SCOPE(op):                                 ▷ every read and copy reserved first
+//! PREFIX-SCOPE(op):
 //!   own ← the prefix of each channel of op (a send also adds every prefix of its path)
 //!   repeat until no prefix is added:
 //!     each channel of each join group of I(q), q in the scope
@@ -47,19 +47,12 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::mem::size_of;
 use std::sync::LazyLock;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{
-    BindPattern, CostAuthority, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
-};
-use models::rust::utils::new_gbytearray_par;
-use rspace_plus_plus::rspace::errors::RSpaceError;
+use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
-use rspace_plus_plus::rspace::space_store_handle::metered_hash;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
 use super::adapter::HeadEPathMapAdapter;
@@ -67,10 +60,9 @@ use super::delivery::{
     consume_candidates_excluding, datum_marker, datum_markers, is_excluded, rerooted, retire_plan,
     PathCandidates, PrefixView, Retired,
 };
-use super::markers::{decode_marker_metered, vehicle_metered};
+use super::markers::{decode_marker, vehicle};
 use super::path_codec::{channel_path, compare_keys, encode_path, is_prefix_key, path_key};
 use super::EncodedPath;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::{
     ConsumeOp, JoinOp, Prepared, ProduceOp, SettleOp, SpaceEnv, SpaceOp, SpaceOutcome,
 };
@@ -81,8 +73,8 @@ use crate::rust::interpreter::spaces::disciplines::scan::{
 };
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{
-    self, CollectionTxn, Cx, Discipline, GenericSpace, JoinWindow, Ordered, OuterStore,
-    ParCandidate, ParDatum, ParWaiter, Side, SideBound,
+    CollectionTxn, Cx, Discipline, GenericSpace, JoinWindow, Ordered, OuterStore, ParCandidate,
+    ParDatum, ParWaiter, Side, SideBound,
 };
 use crate::rust::interpreter::spaces::join::{
     self, Bound, Claim, Entry, EntryAt, FireSite, Incoming, JoinRoute, JoinScope, JoinSource,
@@ -92,27 +84,16 @@ use crate::rust::interpreter::spaces::namespace::{
     self, CollectionKey, NativeSpace, RandomPurpose, ReifiedId,
 };
 use crate::rust::interpreter::spaces::outer::pathmap::PathMapOuter;
-use crate::rust::interpreter::spaces::record::{self, JoinSlot, OperationAuthority, WaiterPolicy};
+use crate::rust::interpreter::spaces::record::{
+    self, bincode_digest, JoinSlot, OperationAuthority, WaiterPolicy,
+};
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
 
 /// The terminator byte of a path key.
 const TERMINATOR: u8 = 0x00;
 
-/// The template of the retire pattern. A reserved copy of it covers its allocations.
+/// The template of the retire pattern.
 static RETIRE_PATTERN: LazyLock<BindPattern> = LazyLock::new(retire_pattern);
-
-/// The template of a `K_retire` continuation: an empty body, no random state bytes and no cost
-/// authority. A reserved copy of it, the reserved buffer of the hash bytes, the reserved random
-/// bytes and the reserved copy of the authority cover the allocations of a new continuation, as
-/// for the retire of a set class (`disciplines::scan`).
-static RETIRE_TEMPLATE: LazyLock<TaggedContinuation> = LazyLock::new(|| TaggedContinuation {
-    tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
-        body: Some(new_gbytearray_par(Vec::new(), Vec::new(), false)),
-        random_state: Vec::new(),
-    })),
-    guard: None,
-    cost_authority: None,
-});
 
 // ── Routing ─────────────────────────────────────────────────────────────────────────────────
 
@@ -122,13 +103,11 @@ static RETIRE_TEMPLATE: LazyLock<TaggedContinuation> = LazyLock::new(|| TaggedCo
 /// of the scope, because the first transaction locks only the channels of the routed key.
 pub(crate) fn classify<D: Discipline>(
     agent: &GenericSpace<PathMapOuter, D>,
-    env: &SpaceEnv,
     opened: &mut CollectionTxn,
     op: &SpaceOp,
 ) -> Result<JoinRoute, SpaceError> {
-    let meter = &env.meter;
-    validate(agent, &opened.config, op, meter)?;
-    prefix_scope(opened, op, meter).map(JoinRoute::Join)
+    validate(agent, &opened.config, op)?;
+    prefix_scope(opened, op).map(JoinRoute::Join)
 }
 
 /// RUN-JOIN of a PathMap operation (joins plan section 9): the key of each channel of `op`
@@ -140,9 +119,8 @@ pub(crate) fn run_join<D: Discipline>(
     scope: JoinScope,
     op: SpaceOp,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
-    let meter = &env.meter;
-    let op = scoped_op(op, meter)?;
-    let source = PrefixSource::new(agent.discipline(), &scope, &op, meter)?;
+    let op = scoped_op(op)?;
+    let source = PrefixSource::new(agent.discipline(), &scope, &op)?;
     join::run_join_with(env, opened, scope, op, &source)
 }
 
@@ -155,29 +133,22 @@ fn validate<D: Discipline>(
     agent: &GenericSpace<PathMapOuter, D>,
     config: &SpaceConfig,
     op: &SpaceOp,
-    meter: &ScanMeter,
 ) -> Result<(), SpaceError> {
     let no_params = BTreeMap::new();
     match op {
         SpaceOp::Produce(op) => {
-            agent
-                .outer()
-                .check_key(config, &op.channel, &op.key, meter)?;
-            agent.outer().check_payload(&op.data, meter)?;
-            agent.check_params(config, &op.params, None, meter)
+            agent.outer().check_key(config, &op.channel, &op.key)?;
+            agent.outer().check_payload(&op.data)?;
+            agent.check_params(config, &op.params, None)
         }
         SpaceOp::Consume(op) => {
-            agent
-                .outer()
-                .check_key(config, &op.channel, &op.key, meter)?;
-            agent.outer().check_patterns(&op.pattern, meter)?;
-            agent.check_params(config, &no_params, op.query.as_ref(), meter)
+            agent.outer().check_key(config, &op.channel, &op.key)?;
+            agent.outer().check_patterns(&op.pattern)?;
+            agent.check_params(config, &no_params, op.query.as_ref())
         }
         SpaceOp::Settle(op) => {
-            agent
-                .outer()
-                .check_key(config, &op.channel, &op.key, meter)?;
-            agent.check_params(config, &no_params, None, meter)
+            agent.outer().check_key(config, &op.channel, &op.key)?;
+            agent.check_params(config, &no_params, None)
         }
         SpaceOp::Join(op) => {
             if op.binds.len() < 2 {
@@ -194,11 +165,9 @@ fn validate<D: Discipline>(
                 }
             }
             for bind in &op.binds {
-                agent
-                    .outer()
-                    .check_key(config, &bind.channel, &bind.key, meter)?;
-                agent.outer().check_patterns(&bind.pattern, meter)?;
-                agent.check_params(config, &no_params, bind.query.as_ref(), meter)?;
+                agent.outer().check_key(config, &bind.channel, &bind.key)?;
+                agent.outer().check_patterns(&bind.pattern)?;
+                agent.check_params(config, &no_params, bind.query.as_ref())?;
             }
             Ok(())
         }
@@ -209,24 +178,24 @@ fn validate<D: Discipline>(
 /// engine finds the own collections of the operation in the scope by these keys (seams
 /// arbitration, section 2). A re-issue carries them, and the classification computes them again
 /// from the channels.
-fn scoped_op(op: SpaceOp, meter: &ScanMeter) -> Result<SpaceOp, SpaceError> {
+fn scoped_op(op: SpaceOp) -> Result<SpaceOp, SpaceError> {
     Ok(match op {
         SpaceOp::Produce(produce) => {
-            let key = channel_key(&produce.channel, meter)?;
+            let key = channel_key(&produce.channel)?;
             SpaceOp::Produce(ProduceOp { key, ..produce })
         }
         SpaceOp::Consume(consume) => {
-            let key = channel_key(&consume.channel, meter)?;
+            let key = channel_key(&consume.channel)?;
             SpaceOp::Consume(ConsumeOp { key, ..consume })
         }
         SpaceOp::Settle(settle) => {
-            let key = channel_key(&settle.channel, meter)?;
+            let key = channel_key(&settle.channel)?;
             SpaceOp::Settle(SettleOp { key, ..settle })
         }
         SpaceOp::Join(join) => {
             let mut binds = join.binds;
             for bind in binds.iter_mut() {
-                bind.key = channel_key(&bind.channel, meter)?;
+                bind.key = channel_key(&bind.channel)?;
             }
             SpaceOp::Join(JoinOp { binds, ..join })
         }
@@ -235,11 +204,10 @@ fn scoped_op(op: SpaceOp, meter: &ScanMeter) -> Result<SpaceOp, SpaceError> {
 
 // ── Keys ────────────────────────────────────────────────────────────────────────────────────
 
-/// The scope key `[0x49] ‖ prefix_key(path)` of the path of `channel`. The read of the channel and
-/// the encode of the path are reserved first.
-fn channel_key(channel: &Par, meter: &ScanMeter) -> Result<CollectionKey, SpaceError> {
-    let encoded = encode_path(channel_path(channel, meter)?, meter)?;
-    scope_key(full_prefix(&encoded)?, meter)
+/// The scope key `[0x49] ‖ prefix_key(path)` of the path of `channel`.
+fn channel_key(channel: &Par) -> Result<CollectionKey, SpaceError> {
+    let encoded = encode_path(channel_path(channel)?)?;
+    scope_key(full_prefix(&encoded)?)
 }
 
 /// The prefix key of the whole path that `encoded` holds: the path key without its terminator.
@@ -251,15 +219,11 @@ fn full_prefix(encoded: &EncodedPath) -> Result<&[u8], SpaceError> {
         ))
 }
 
-/// The scope key `[0x49] ‖ prefix_key` of a prefix, with its buffer and the copy reserved first.
-/// The key of the prefix `ε` is `[0x49]`, so no scope key is empty.
-fn scope_key(prefix_key: &[u8], meter: &ScanMeter) -> Result<CollectionKey, SpaceError> {
-    let length = prefix_key
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut bytes = meter.buffer::<u8>(length)?;
-    meter.reserve_copy_slice(prefix_key)?;
+/// The scope key `[0x49] ‖ prefix_key` of a prefix. The key of the prefix `ε` is `[0x49]`, so no
+/// scope key is empty.
+fn scope_key(prefix_key: &[u8]) -> Result<CollectionKey, SpaceError> {
+    let length = prefix_key.len() + 1;
+    let mut bytes = Vec::<u8>::with_capacity(length);
     bytes.push(PREFIX_KEY_TAG);
     bytes.extend_from_slice(prefix_key);
     CollectionKey::from_bytes(bytes).ok_or(SpaceError::Inconsistent("a scope key is empty"))
@@ -289,13 +253,8 @@ fn prefix_at(scope: &JoinScope, coll: usize) -> Result<&[u8], SpaceError> {
 }
 
 /// The index in the scope of the prefix whose prefix key is `prefix_key`. The collections are in
-/// ascending key order, so the lookup is a binary search, and it is reserved first.
-fn coll_of(scope: &JoinScope, prefix_key: &[u8], meter: &ScanMeter) -> Result<usize, SpaceError> {
-    let length = prefix_key
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.ordered_lookup(scope.collections.len(), length)?;
+/// ascending key order, so the lookup is a binary search.
+fn coll_of(scope: &JoinScope, prefix_key: &[u8]) -> Result<usize, SpaceError> {
     scope
         .collections
         .binary_search_by(|collection| match collection.key.as_bytes().split_first() {
@@ -306,47 +265,32 @@ fn coll_of(scope: &JoinScope, prefix_key: &[u8], meter: &ScanMeter) -> Result<us
         .map_err(|_| SpaceError::Inconsistent("a prefix is outside its join scope"))
 }
 
-/// The path key `prefix_key ‖ 0x00` of the path whose prefix key is `prefix_key`, with its buffer
-/// and the copy reserved first.
-fn terminated(prefix_key: &[u8], meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    let length = prefix_key
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut key = meter.buffer::<u8>(length)?;
-    meter.reserve_copy_slice(prefix_key)?;
+/// The path key `prefix_key ‖ 0x00` of the path whose prefix key is `prefix_key`.
+fn terminated(prefix_key: &[u8]) -> Vec<u8> {
+    let length = prefix_key.len() + 1;
+    let mut key = Vec::<u8>::with_capacity(length);
     key.extend_from_slice(prefix_key);
     key.push(TERMINATOR);
-    Ok(key)
+    key
 }
 
-/// The key `left ‖ right` in one reserved buffer: the path key of `p = q ++ s` from the prefix key
+/// The key `left ‖ right` in one buffer: the path key of `p = q ++ s` from the prefix key
 /// of `q` and the path key of `s` (`PathMapPrefix.v`, `path_key_app`).
-fn joined(left: &[u8], right: &[u8], meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    let length = left
-        .len()
-        .checked_add(right.len())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut key = meter.buffer::<u8>(length)?;
-    meter.charge(1, length, 0)?;
+fn joined(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let length = left.len() + right.len();
+    let mut key = Vec::<u8>::with_capacity(length);
     key.extend_from_slice(left);
     key.extend_from_slice(right);
-    Ok(key)
+    key
 }
 
 /// The depth of the prefix of the path that `encoded` holds whose prefix key is `prefix_key`.
-/// Each comparison is reserved first. A key that is not a prefix key of the path is
-/// `Inconsistent`.
-fn depth_of(
-    encoded: &EncodedPath,
-    prefix_key: &[u8],
-    meter: &ScanMeter,
-) -> Result<usize, SpaceError> {
+/// A key that is not a prefix key of the path is `Inconsistent`.
+fn depth_of(encoded: &EncodedPath, prefix_key: &[u8]) -> Result<usize, SpaceError> {
     for depth in 0..=encoded.depth() {
         let key = encoded.prefix_key(depth).ok_or(SpaceError::Inconsistent(
             "an encoded path has no prefix key of a depth",
         ))?;
-        meter.compare(key.len(), prefix_key.len())?;
         if key == prefix_key {
             return Ok(depth);
         }
@@ -356,19 +300,14 @@ fn depth_of(
     ))
 }
 
-/// The suffix `p∖q` of the path `path` under its prefix whose key is `prefix_key`. The encode of
-/// the path and the copy of the suffix are reserved first.
-fn suffix_under(
-    path: &[Par],
-    prefix_key: &[u8],
-    meter: &ScanMeter,
-) -> Result<Vec<Par>, SpaceError> {
-    let encoded = encode_path(path, meter)?;
-    let depth = depth_of(&encoded, prefix_key, meter)?;
+/// The suffix `p∖q` of the path `path` under its prefix whose key is `prefix_key`.
+fn suffix_under(path: &[Par], prefix_key: &[u8]) -> Result<Vec<Par>, SpaceError> {
+    let encoded = encode_path(path)?;
+    let depth = depth_of(&encoded, prefix_key)?;
     let suffix = path
         .get(depth..)
         .ok_or(SpaceError::Inconsistent("a prefix is deeper than its path"))?;
-    Ok(meter.copy_slice(suffix)?)
+    Ok(suffix.to_vec())
 }
 
 /// The depth `depth` as the `restore` slot of a second send. A prefix is at most
@@ -382,15 +321,10 @@ fn view_index(index: usize) -> Result<i32, SpaceError> {
     i32::try_from(index).map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))
 }
 
-/// The index of the record whose source hash is `source` among `records`. Each comparison is
-/// reserved first. A missing record is `Inconsistent`.
-fn locate(
-    records: &[ParDatum],
-    source: &Blake2b256Hash,
-    meter: &ScanMeter,
-) -> Result<usize, SpaceError> {
+/// The index of the record whose source hash is `source` among `records`. A missing record is
+/// `Inconsistent`.
+fn locate(records: &[ParDatum], source: &Blake2b256Hash) -> Result<usize, SpaceError> {
     for (index, record) in records.iter().enumerate() {
-        meter.compare(source.0.len(), record.source.hash.0.len())?;
         if record.source.hash == *source {
             return Ok(index);
         }
@@ -401,16 +335,10 @@ fn locate(
 }
 
 /// The index of the marker of the datum `source` among the records `markers` of one index
-/// channel. Each decode and each comparison is reserved first. A missing marker breaks the marker
-/// invariant and is `Inconsistent`.
-fn locate_marker(
-    markers: &[ParDatum],
-    source: &Blake2b256Hash,
-    meter: &ScanMeter,
-) -> Result<usize, SpaceError> {
+/// channel. A missing marker breaks the marker invariant and is `Inconsistent`.
+fn locate_marker(markers: &[ParDatum], source: &Blake2b256Hash) -> Result<usize, SpaceError> {
     for (index, record) in markers.iter().enumerate() {
-        let view = decode_marker_metered(&record.a, meter)?;
-        meter.compare(source.0.len(), source.0.len())?;
+        let view = decode_marker(&record.a)?;
         if view.is_of(source) {
             return Ok(index);
         }
@@ -418,30 +346,6 @@ fn locate_marker(
     Err(SpaceError::Inconsistent(
         "a stored datum has no marker on a prefix of its path",
     ))
-}
-
-/// Sorts `values` ascending with a reserved comparison for each comparison that the sort makes:
-/// an insertion sort, whose comparisons and moves depend on the values only, as the keyed engine
-/// sorts.
-fn sort_reserved<T: Ord>(
-    values: &mut [T],
-    bytes: impl Fn(&T) -> usize,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    for next in 1..values.len() {
-        let mut at = next;
-        while at > 0 {
-            meter.compare(bytes(&values[at - 1]), bytes(&values[at]))?;
-            match values[at - 1] > values[at] {
-                true => {
-                    values.swap(at - 1, at);
-                    at -= 1;
-                }
-                false => break,
-            }
-        }
-    }
-    Ok(())
 }
 
 // ── The prefix scope ────────────────────────────────────────────────────────────────────────
@@ -468,103 +372,90 @@ impl Closure {
         }
     }
 
-    /// Adds the prefix `prefix_key`, and marks it as a data path when `data` is true. Each
-    /// lookup, growth and copy is reserved first.
-    fn add_prefix(
-        &mut self,
-        prefix_key: &[u8],
-        data: bool,
-        meter: &ScanMeter,
-    ) -> Result<(), SpaceError> {
-        meter.ordered_lookup(self.prefixes.len(), prefix_key.len())?;
+    /// Adds the prefix `prefix_key`, and marks it as a data path when `data` is true.
+    fn add_prefix(&mut self, prefix_key: &[u8], data: bool) {
         match self.prefixes.get_mut(prefix_key) {
             Some(flag) => {
                 *flag = *flag || data;
             }
             None => {
-                meter.tree_growth::<Vec<u8>, bool>(self.prefixes.len(), 1)?;
-                let key = meter.copy_slice(prefix_key)?;
-                generic::push_reserved(&mut self.todo, meter.copy_slice(prefix_key)?, meter)?;
+                let key = prefix_key.to_vec();
+                self.todo.push(prefix_key.to_vec());
                 self.prefixes.insert(key, data);
             }
         }
-        Ok(())
     }
 
     /// Adds every prefix of the path `path`, and marks the whole path as a data path.
-    fn add_path(&mut self, path: &[Par], meter: &ScanMeter) -> Result<(), SpaceError> {
-        let encoded = encode_path(path, meter)?;
+    fn add_path(&mut self, path: &[Par]) -> Result<(), SpaceError> {
+        let encoded = encode_path(path)?;
         for prefix_key in encoded.prefix_keys() {
-            self.add_prefix(prefix_key?, false, meter)?;
+            self.add_prefix(prefix_key?, false);
         }
-        self.add_prefix(full_prefix(&encoded)?, true, meter)
+        self.add_prefix(full_prefix(&encoded)?, true);
+        Ok(())
     }
 
     /// The own prefixes of `op` in canonical group order, each once, and the positions of its
     /// binds in canonical group order (FR-1'): ascending by the stable hash of the index channel
     /// of each bind, then by bind index. A produce adds every prefix of its path, and a settle job
     /// adds its seeds and the paths of its owed second sends.
-    fn own(
-        &mut self,
-        op: &SpaceOp,
-        meter: &ScanMeter,
-    ) -> Result<(Vec<Vec<u8>>, Vec<usize>), SpaceError> {
-        let mut single = meter.buffer::<usize>(1)?;
+    fn own(&mut self, op: &SpaceOp) -> Result<(Vec<Vec<u8>>, Vec<usize>), SpaceError> {
+        let mut single = Vec::<usize>::with_capacity(1);
         single.push(0);
         match op {
             SpaceOp::Produce(produce) => {
-                let path = channel_path(&produce.channel, meter)?;
-                let encoded = encode_path(path, meter)?;
-                self.add_path(path, meter)?;
-                let mut own = meter.buffer::<Vec<u8>>(1)?;
-                own.push(meter.copy_slice(full_prefix(&encoded)?)?);
+                let path = channel_path(&produce.channel)?;
+                let encoded = encode_path(path)?;
+                self.add_path(path)?;
+                let mut own = Vec::<Vec<u8>>::with_capacity(1);
+                own.push(full_prefix(&encoded)?.to_vec());
                 Ok((own, single))
             }
             SpaceOp::Consume(consume) => {
-                let own = self.own_channel(&consume.channel, meter)?;
+                let own = self.own_channel(&consume.channel)?;
                 Ok((own, single))
             }
             SpaceOp::Settle(settle) => {
-                let own = self.own_channel(&settle.channel, meter)?;
+                let own = self.own_channel(&settle.channel)?;
                 if let Some(cascade) = &settle.cascade {
                     for seed in &cascade.seeds {
-                        self.add_prefix(prefix_of_key(seed)?, false, meter)?;
+                        self.add_prefix(prefix_of_key(seed)?, false);
                     }
                     for pending in &cascade.pending {
-                        self.add_prefix(prefix_of_key(&pending.key)?, true, meter)?;
+                        self.add_prefix(prefix_of_key(&pending.key)?, true);
                     }
                 }
                 Ok((own, single))
             }
             SpaceOp::Join(join) => {
-                let mut prefixes = meter.buffer::<Vec<u8>>(join.binds.len())?;
-                let mut hashed = meter.buffer::<(Blake2b256Hash, usize)>(join.binds.len())?;
+                let mut prefixes = Vec::<Vec<u8>>::with_capacity(join.binds.len());
+                let mut hashed = Vec::<(Blake2b256Hash, usize)>::with_capacity(join.binds.len());
                 for (index, bind) in join.binds.iter().enumerate() {
-                    let encoded = encode_path(channel_path(&bind.channel, meter)?, meter)?;
+                    let encoded = encode_path(channel_path(&bind.channel)?)?;
                     let prefix_key = full_prefix(&encoded)?;
-                    self.add_prefix(prefix_key, false, meter)?;
-                    let channel = PathMapOuter::index_metered(self.space, prefix_key, meter)?;
-                    hashed.push((metered_hash(&channel, meter)?, index));
-                    prefixes.push(meter.copy_slice(prefix_key)?);
+                    self.add_prefix(prefix_key, false);
+                    let channel = PathMapOuter::index(self.space, prefix_key);
+                    hashed.push((bincode_digest(&channel)?, index));
+                    prefixes.push(prefix_key.to_vec());
                 }
-                sort_reserved(&mut hashed, |(hash, _)| hash.0.len(), meter)?;
-                let mut group = meter.buffer::<usize>(hashed.len())?;
+                hashed.sort();
+                let mut group = Vec::<usize>::with_capacity(hashed.len());
                 group.extend(hashed.into_iter().map(|(_, index)| index));
-                let mut own = meter.buffer::<Vec<u8>>(group.len())?;
+                let mut own = Vec::<Vec<u8>>::with_capacity(group.len());
                 for &position in &group {
                     let prefix_key = prefixes
                         .get(position)
                         .ok_or(SpaceError::Inconsistent("a group position names no bind"))?;
                     let mut seen = false;
                     for known in own.iter() {
-                        meter.compare(known.len(), prefix_key.len())?;
                         if known == prefix_key {
                             seen = true;
                             break;
                         }
                     }
                     if !seen {
-                        own.push(meter.copy_slice(prefix_key)?);
+                        own.push(prefix_key.to_vec());
                     }
                 }
                 Ok((own, group))
@@ -574,40 +465,33 @@ impl Closure {
 
     /// The own prefix of the channel `channel` of a receive or a settle: the prefix of its whole
     /// path.
-    fn own_channel(
-        &mut self,
-        channel: &Par,
-        meter: &ScanMeter,
-    ) -> Result<Vec<Vec<u8>>, SpaceError> {
-        let encoded = encode_path(channel_path(channel, meter)?, meter)?;
+    fn own_channel(&mut self, channel: &Par) -> Result<Vec<Vec<u8>>, SpaceError> {
+        let encoded = encode_path(channel_path(channel)?)?;
         let prefix_key = full_prefix(&encoded)?;
-        self.add_prefix(prefix_key, false, meter)?;
-        let mut own = meter.buffer::<Vec<u8>>(1)?;
-        own.push(meter.copy_slice(prefix_key)?);
+        self.add_prefix(prefix_key, false);
+        let mut own = Vec::<Vec<u8>>::with_capacity(1);
+        own.push(prefix_key.to_vec());
         Ok(own)
     }
 
     /// The closure: each channel of each join group of each prefix, and, once a prefix of the
     /// closure holds a marker, every prefix of every stored datum. The root `I(ε)` holds one
     /// marker for each stored datum with its whole path (the marker invariant), so one read of
-    /// the root gives every datum. Each read of a group, a channel and a record is reserved
-    /// first.
-    fn close(&mut self, opened: &mut CollectionTxn, meter: &ScanMeter) -> Result<(), SpaceError> {
+    /// the root gives every datum.
+    fn close(&mut self, opened: &mut CollectionTxn) -> Result<(), SpaceError> {
         loop {
             while let Some(prefix_key) = self.todo.pop() {
-                let channel = PathMapOuter::index_metered(self.space, &prefix_key, meter)?;
+                let channel = PathMapOuter::index(self.space, &prefix_key);
                 let groups: Vec<Vec<Par>> = {
                     let joins = opened.txn.joins(&channel)?;
-                    meter.copy_slice(joins)?
+                    joins.to_vec()
                 };
                 for group in &groups {
-                    meter.inspect(group)?;
                     for member in group {
-                        meter.inspect(member)?;
                         match namespace::reified_id_of(member) {
                             Some(ReifiedId::PathIndex(owner, tail)) if owner == self.space => {
-                                let tail = meter.copy_slice(tail)?;
-                                self.add_prefix(&tail, false, meter)?;
+                                let tail = tail.to_vec();
+                                self.add_prefix(&tail, false);
                             }
                             _ => {
                                 return Err(SpaceError::Inconsistent(
@@ -617,7 +501,6 @@ impl Closure {
                         }
                     }
                 }
-                meter.charge(1, 0, 0)?;
                 if !opened.txn.data(&channel)?.is_empty() {
                     self.marked = true;
                 }
@@ -625,19 +508,19 @@ impl Closure {
             match self.marked && !self.rooted {
                 true => {
                     self.rooted = true;
-                    let root = PathMapOuter::index_metered(self.space, &[], meter)?;
+                    let root = PathMapOuter::index(self.space, &[]);
                     let paths: Vec<Vec<Par>> = {
                         let markers = opened.txn.data(&root)?;
-                        let mut paths = meter.buffer::<Vec<Par>>(markers.len())?;
+                        let mut paths = Vec::<Vec<Par>>::with_capacity(markers.len());
                         for marker in markers {
-                            let view = decode_marker_metered(&marker.a, meter)?;
-                            paths.push(meter.copy_slice(view.suffix)?);
+                            let view = decode_marker(&marker.a)?;
+                            paths.push(view.suffix.to_vec());
                         }
                         paths
                     };
-                    self.add_prefix(&[], false, meter)?;
+                    self.add_prefix(&[], false);
                     for path in &paths {
-                        self.add_path(path, meter)?;
+                        self.add_path(path)?;
                     }
                 }
                 false => return Ok(()),
@@ -647,45 +530,36 @@ impl Closure {
 
     /// The scope of the closure: one collection for each prefix in ascending key order, with its
     /// index channel and the token, and the lock keys `C(sid)`, `S(sid)`, then for each prefix
-    /// its data channel when it is a data path and its index channel. Each name and each copy is
-    /// reserved first.
+    /// its data channel when it is a data path and its index channel.
     fn scope(
         self,
         opened: &CollectionTxn,
         own: Vec<Vec<u8>>,
         group: Vec<usize>,
-        meter: &ScanMeter,
     ) -> Result<JoinScope, SpaceError> {
         let data_paths = self.prefixes.values().filter(|data| **data).count();
-        let length = self
-            .prefixes
-            .len()
-            .checked_add(data_paths)
-            .and_then(|length| length.checked_add(2))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let mut lock_keys = meter.buffer::<Par>(length)?;
-        lock_keys.push(meter.copy(opened.channels.config())?);
-        lock_keys.push(meter.copy(opened.channels.space_counter())?);
-        let token = PathMapOuter::token_metered(self.space, meter)?;
-        let mut collections = meter.buffer::<ScopedCollection>(self.prefixes.len())?;
+        let length = self.prefixes.len() + data_paths + 2;
+        let mut lock_keys = Vec::<Par>::with_capacity(length);
+        lock_keys.push(opened.channels.config().clone());
+        lock_keys.push(opened.channels.space_counter().clone());
+        let token = PathMapOuter::token(self.space);
+        let mut collections = Vec::<ScopedCollection>::with_capacity(self.prefixes.len());
         for (prefix_key, data) in &self.prefixes {
             if *data {
-                let path_key = terminated(prefix_key, meter)?;
-                lock_keys.push(PathMapOuter::path_data_metered(
-                    self.space, &path_key, meter,
-                )?);
+                let path_key = terminated(prefix_key);
+                lock_keys.push(PathMapOuter::path_data(self.space, &path_key));
             }
-            let index = PathMapOuter::index_metered(self.space, prefix_key, meter)?;
-            lock_keys.push(meter.copy(&index)?);
+            let index = PathMapOuter::index(self.space, prefix_key);
+            lock_keys.push(index.clone());
             collections.push(ScopedCollection {
-                key: scope_key(prefix_key, meter)?,
+                key: scope_key(prefix_key)?,
                 data: index,
-                counter: meter.copy(&token)?,
+                counter: token.clone(),
             });
         }
-        let mut own_keys = meter.buffer::<CollectionKey>(own.len())?;
+        let mut own_keys = Vec::<CollectionKey>::with_capacity(own.len());
         for prefix_key in &own {
-            own_keys.push(scope_key(prefix_key, meter)?);
+            own_keys.push(scope_key(prefix_key)?);
         }
         Ok(JoinScope::new(
             self.space,
@@ -701,15 +575,11 @@ impl Closure {
 
 /// PREFIX-SCOPE (seams design, section 4): the own prefixes of `op`, the closure of their join
 /// groups and of the stored datums, and the lock keys of the closure.
-fn prefix_scope(
-    opened: &mut CollectionTxn,
-    op: &SpaceOp,
-    meter: &ScanMeter,
-) -> Result<JoinScope, SpaceError> {
+fn prefix_scope(opened: &mut CollectionTxn, op: &SpaceOp) -> Result<JoinScope, SpaceError> {
     let mut closure = Closure::new(op.space());
-    let (own, group) = closure.own(op, meter)?;
-    closure.close(opened, meter)?;
-    closure.scope(opened, own, group, meter)
+    let (own, group) = closure.own(op)?;
+    closure.close(opened)?;
+    closure.scope(opened, own, group)
 }
 
 // ── The prefix source ───────────────────────────────────────────────────────────────────────
@@ -804,7 +674,6 @@ struct Seats {
 }
 
 /// The staged view of the transaction as the pure planner reads it (`delivery::PrefixView`).
-/// Each name of a channel is reserved before it is made.
 struct CxView<'v, 'c, 'p> {
     cx: &'v mut Cx<'c, 'p>,
     space: NativeSpace,
@@ -812,45 +681,38 @@ struct CxView<'v, 'c, 'p> {
 
 impl PrefixView for CxView<'_, '_, '_> {
     fn markers(&mut self, prefix_key: &[u8]) -> Result<&[ParDatum], SpaceError> {
-        let channel = PathMapOuter::index_metered(self.space, prefix_key, self.cx.meter())?;
+        let channel = PathMapOuter::index(self.space, prefix_key);
         self.cx.data_on(&channel)
     }
 
     fn records(&mut self, path_key: &[u8]) -> Result<&[ParDatum], SpaceError> {
-        let channel = PathMapOuter::path_data_metered(self.space, path_key, self.cx.meter())?;
+        let channel = PathMapOuter::path_data(self.space, path_key);
         self.cx.data_on(&channel)
     }
 
     fn waiters(&mut self, prefix_key: &[u8]) -> Result<&[ParWaiter], SpaceError> {
-        let channel = PathMapOuter::index_metered(self.space, prefix_key, self.cx.meter())?;
+        let channel = PathMapOuter::index(self.space, prefix_key);
         self.cx.waiters_on(&channel)
     }
 }
 
 impl<'a, D: Discipline> PrefixSource<'a, D> {
-    /// The source of `op` over the scope `scope`. The names of the token, of the root and of the
-    /// data channel of each scoped prefix are reserved first.
-    fn new(
-        discipline: &'a D,
-        scope: &JoinScope,
-        op: &SpaceOp,
-        meter: &ScanMeter,
-    ) -> Result<Self, SpaceError> {
+    /// The source of `op` over the scope `scope`, with the names of the token, of the root and of
+    /// the data channel of each scoped prefix.
+    fn new(discipline: &'a D, scope: &JoinScope, op: &SpaceOp) -> Result<Self, SpaceError> {
         if D::JOIN_WINDOW == JoinWindow::Similarity {
             return Err(SpaceError::Inconsistent(NO_VECTORDB));
         }
         let space = scope.space;
-        let token = PathMapOuter::token_metered(space, meter)?;
-        let root = PathMapOuter::index_metered(space, &[], meter)?;
-        let mut homes = meter.buffer::<Par>(scope.collections.len())?;
+        let token = PathMapOuter::token(space);
+        let root = PathMapOuter::index(space, &[]);
+        let mut homes = Vec::<Par>::with_capacity(scope.collections.len());
         for scoped in &scope.collections {
-            let path_key = terminated(prefix_of_key(&scoped.key)?, meter)?;
-            homes.push(PathMapOuter::path_data_metered(space, &path_key, meter)?);
+            let path_key = terminated(prefix_of_key(&scoped.key)?);
+            homes.push(PathMapOuter::path_data(space, &path_key));
         }
         let own_path = match op {
-            SpaceOp::Produce(produce) => {
-                Some(meter.copy_slice(channel_path(&produce.channel, meter)?)?)
-            }
+            SpaceOp::Produce(produce) => Some(channel_path(&produce.channel)?.to_vec()),
             SpaceOp::Consume(_) | SpaceOp::Settle(_) | SpaceOp::Join(_) => None,
         };
         Ok(PrefixSource {
@@ -883,35 +745,19 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     // ── Paths ──
 
     /// The whole path of the datum `source` from the paths that the transaction knows, copied.
-    fn known_path(
-        &self,
-        source: &Blake2b256Hash,
-        meter: &ScanMeter,
-    ) -> Result<Option<Vec<Par>>, SpaceError> {
+    fn known_path(&self, source: &Blake2b256Hash) -> Option<Vec<Par>> {
         let state = self.state.borrow();
-        meter.ordered_lookup(state.paths.len(), source.0.len())?;
-        match state.paths.get(source) {
-            Some(path) => Ok(Some(meter.copy_slice(path)?)),
-            None => Ok(None),
-        }
+        state.paths.get(source).map(|path| path.to_vec())
     }
 
     /// Records the whole path `path` of the datum `source`.
-    fn remember(
-        &self,
-        source: &Blake2b256Hash,
-        path: &[Par],
-        meter: &ScanMeter,
-    ) -> Result<(), SpaceError> {
+    fn remember(&self, source: &Blake2b256Hash, path: &[Par]) {
         let mut state = self.state.borrow_mut();
-        meter.ordered_lookup(state.paths.len(), source.0.len())?;
         if !state.paths.contains_key(source) {
-            meter.tree_growth::<Blake2b256Hash, Vec<Par>>(state.paths.len(), 1)?;
-            let source = meter.copy(source)?;
-            let path = meter.copy_slice(path)?;
+            let source = source.clone();
+            let path = path.to_vec();
             state.paths.insert(source, path);
         }
-        Ok(())
     }
 
     /// The whole path of the stored datum `source`. The root `I(ε)` holds one marker for each
@@ -922,27 +768,25 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         cx: &mut Cx<'_, '_>,
         source: &Blake2b256Hash,
     ) -> Result<Vec<Par>, SpaceError> {
-        let meter = cx.meter();
-        if let Some(path) = self.known_path(source, meter)? {
+        if let Some(path) = self.known_path(source) {
             return Ok(path);
         }
         let rooted = self.state.borrow().rooted;
         if !rooted {
             let entries: Vec<(Blake2b256Hash, Vec<Par>)> = {
                 let markers = cx.data_on(&self.root)?;
-                let mut entries = meter.buffer::<(Blake2b256Hash, Vec<Par>)>(markers.len())?;
+                let mut entries = Vec::<(Blake2b256Hash, Vec<Par>)>::with_capacity(markers.len());
                 for marker in markers {
-                    let view = decode_marker_metered(&marker.a, meter)?;
-                    meter.reserve_copy_slice(view.source)?;
-                    entries.push((view.source_hash(), meter.copy_slice(view.suffix)?));
+                    let view = decode_marker(&marker.a)?;
+                    entries.push((view.source_hash(), view.suffix.to_vec()));
                 }
                 entries
             };
             for (known, path) in &entries {
-                self.remember(known, path, meter)?;
+                self.remember(known, path);
             }
             self.state.borrow_mut().rooted = true;
-            if let Some(path) = self.known_path(source, meter)? {
+            if let Some(path) = self.known_path(source) {
                 return Ok(path);
             }
         }
@@ -955,7 +799,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     /// the path of its datum for a stored element.
     fn element_path(&self, cx: &mut Cx<'_, '_>, x: &Incoming) -> Result<Vec<Par>, SpaceError> {
         match (x.own, &self.own_path) {
-            (true, Some(path)) => Ok(cx.meter().copy_slice(path)?),
+            (true, Some(path)) => Ok(path.to_vec()),
             (true, None) => Err(SpaceError::Inconsistent(
                 "the element of an operation has no path",
             )),
@@ -965,14 +809,14 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
 
     /// [`PrefixSource::element_path`] without the staged view: the path of a stored element must
     /// be known already. A window of the element learns it before the engine asks.
-    fn known_element_path(&self, x: &Incoming, meter: &ScanMeter) -> Result<Vec<Par>, SpaceError> {
+    fn known_element_path(&self, x: &Incoming) -> Result<Vec<Par>, SpaceError> {
         match (x.own, &self.own_path) {
-            (true, Some(path)) => Ok(meter.copy_slice(path)?),
+            (true, Some(path)) => Ok(path.to_vec()),
             (true, None) => Err(SpaceError::Inconsistent(
                 "the element of an operation has no path",
             )),
             (false, _) => self
-                .known_path(&x.source.hash, meter)?
+                .known_path(&x.source.hash)
                 .ok_or(SpaceError::Inconsistent(
                     "the path of an element in flight is not known",
                 )),
@@ -982,8 +826,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     // ── Markers and datums ──
 
     /// The marker at `index` of the index channel of `coll` with its datum on `D(p)`. `missing` is
-    /// the error of an index outside the staged view. Each decode, key, name and comparison is
-    /// reserved first.
+    /// the error of an index outside the staged view.
     fn marker_datum(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -992,26 +835,24 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         index: usize,
         missing: &'static str,
     ) -> Result<MarkerDatum, SpaceError> {
-        let meter = cx.meter();
         let (source, suffix) = {
             let markers = cx.data_on(&collection(scope, coll)?.data)?;
             let marker = markers
                 .get(index)
                 .ok_or(SpaceError::Inconsistent(missing))?;
-            let view = decode_marker_metered(&marker.a, meter)?;
-            meter.reserve_copy_slice(view.source)?;
-            (view.source_hash(), meter.copy_slice(view.suffix)?)
+            let view = decode_marker(&marker.a)?;
+            (view.source_hash(), view.suffix.to_vec())
         };
-        let suffix_bytes = path_key(&suffix, meter)?;
-        let path_key = joined(prefix_at(scope, coll)?, &suffix_bytes, meter)?;
+        let suffix_bytes = path_key(&suffix)?;
+        let path_key = joined(prefix_at(scope, coll)?, &suffix_bytes);
         let prefix_key = path_key
             .split_last()
             .map(|(_, rest)| rest)
             .ok_or(SpaceError::Inconsistent("a path key is empty"))?;
-        let home = coll_of(scope, prefix_key, meter)?;
+        let home = coll_of(scope, prefix_key)?;
         let (record_index, persist) = {
             let records = cx.data_on(self.home_at(home)?)?;
-            let record_index = locate(records, &source, meter)?;
+            let record_index = locate(records, &source)?;
             let persist = records
                 .get(record_index)
                 .map(|record| record.persist)
@@ -1039,9 +880,8 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         coll: usize,
         found: &MarkerDatum,
     ) -> Result<usize, SpaceError> {
-        let meter = cx.meter();
         if prefix_at(scope, coll)?.is_empty() {
-            self.remember(&found.source, &found.suffix, meter)?;
+            self.remember(&found.source, &found.suffix);
             return Ok(0);
         }
         let path = self.datum_path(cx, &found.source)?;
@@ -1059,13 +899,12 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         home: usize,
         source: &Blake2b256Hash,
     ) -> Result<ParDatum, SpaceError> {
-        let meter = cx.meter();
         let records = cx.data_on(self.home_at(home)?)?;
-        let index = locate(records, source, meter)?;
+        let index = locate(records, source)?;
         let record = records.get(index).ok_or(SpaceError::Inconsistent(
             "a record index is outside its path",
         ))?;
-        Ok(meter.copy(record)?)
+        Ok(record.clone())
     }
 
     /// The claim of the datum at `record_index` of the path `home` with the payload `payload`:
@@ -1075,13 +914,12 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         home: usize,
         at: EntryAt,
         payload: &ListParWithRandom,
-        meter: &ScanMeter,
     ) -> Result<Claim, SpaceError> {
         match D::JOIN_WINDOW {
             JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
-            JoinWindow::Classes => match self.discipline.join_class_key(&payload.pars, meter)? {
+            JoinWindow::Classes => match self.discipline.join_class_key(&payload.pars)? {
                 Some(key) => {
-                    let hash = metered_hash(&key, meter)?;
+                    let hash = bincode_digest(&key)?;
                     Ok(Claim::Class {
                         coll: home,
                         key,
@@ -1105,44 +943,31 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         x: &Incoming,
         coll: usize,
     ) -> Result<ListParWithRandom, SpaceError> {
-        let meter = cx.meter();
         let path = self.element_path(cx, x)?;
-        let suffix = suffix_under(&path, prefix_at(scope, coll)?, meter)?;
-        vehicle_metered(&x.source.hash, suffix, &x.payload, meter)
+        let suffix = suffix_under(&path, prefix_at(scope, coll)?)?;
+        Ok(vehicle(&x.source.hash, suffix, &x.payload))
     }
 
     // ── In flight ──
 
     /// Records the second send of the datum `source` whose marker of depth `depth` a peek COMM or
     /// a lift removes.
-    fn owe(
-        &self,
-        source: &Blake2b256Hash,
-        depth: usize,
-        home: usize,
-        meter: &ScanMeter,
-    ) -> Result<(), SpaceError> {
+    fn owe(&self, source: &Blake2b256Hash, depth: usize, home: usize) {
         let mut state = self.state.borrow_mut();
         let owed = Owed {
-            source: meter.copy(source)?,
+            source: source.clone(),
             depth,
             home,
         };
-        generic::push_reserved(&mut state.owed, owed, meter)
+        state.owed.push(owed);
     }
 
     /// True when this transaction owes the marker of depth `depth` of the datum `source`, and
-    /// forgets it. Each comparison is reserved first.
-    fn settle_owed(
-        &self,
-        source: &Blake2b256Hash,
-        depth: Option<usize>,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
+    /// forgets it.
+    fn settle_owed(&self, source: &Blake2b256Hash, depth: Option<usize>) -> bool {
         let mut state = self.state.borrow_mut();
         let mut found = None;
         for (position, owed) in state.owed.iter().enumerate() {
-            meter.compare(owed.source.0.len(), source.0.len())?;
             if owed.source == *source && depth.is_none_or(|depth| owed.depth == depth) {
                 found = Some(position);
                 break;
@@ -1151,57 +976,44 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         match found {
             Some(position) => {
                 state.owed.remove(position);
-                Ok(true)
+                true
             }
-            None => Ok(false),
+            None => false,
         }
     }
 
-    /// True when this transaction owes a marker of depth `depth` of the datum `source`. Each
-    /// comparison is reserved first.
-    fn owes(
-        &self,
-        source: &Blake2b256Hash,
-        depth: usize,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
+    /// True when this transaction owes a marker of depth `depth` of the datum `source`.
+    fn owes(&self, source: &Blake2b256Hash, depth: usize) -> bool {
         let state = self.state.borrow();
         for owed in &state.owed {
-            meter.compare(owed.source.0.len(), source.0.len())?;
             if owed.source == *source && owed.depth == depth {
-                return Ok(true);
+                return true;
             }
         }
-        Ok(false)
+        false
     }
 
     /// The source hashes of the datums in flight: the second sends that this transaction owes,
     /// the element `incoming` when it is a stored datum, and each owed second send of `pending`
-    /// with a `restore` depth. Each hash and each copy is reserved first.
+    /// with a `restore` depth.
     fn in_flight(
         &self,
         incoming: Option<&Incoming>,
         pending: &[Work],
-        meter: &ScanMeter,
     ) -> Result<Vec<Blake2b256Hash>, SpaceError> {
         let mut excluded = Vec::new();
         {
             let state = self.state.borrow();
             for owed in &state.owed {
-                generic::push_reserved(&mut excluded, meter.copy(&owed.source)?, meter)?;
+                excluded.push(owed.source.clone());
             }
         }
         if let Some(x) = incoming.filter(|x| x.restore.is_some()) {
-            generic::push_reserved(&mut excluded, meter.copy(&x.source.hash)?, meter)?;
+            excluded.push(x.source.hash.clone());
         }
         for work in pending.iter().filter(|work| work.restore.is_some()) {
-            let source = Produce::create_metered(
-                self.home_at(work.coll)?,
-                &work.record,
-                work.persist,
-                meter,
-            )?;
-            generic::push_reserved(&mut excluded, source.hash, meter)?;
+            let source = Produce::create(self.home_at(work.coll)?, &work.record, work.persist);
+            excluded.push(source.hash);
         }
         Ok(excluded)
     }
@@ -1209,10 +1021,8 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     /// True when the data channel of the element `x` still holds its record. A second send that
     /// a settle job carries can find its datum spent by another job of the deploy.
     fn is_stored(&self, cx: &mut Cx<'_, '_>, x: &Incoming) -> Result<bool, SpaceError> {
-        let meter = cx.meter();
         let records = cx.data_on(self.home_at(x.coll)?)?;
         for record in records {
-            meter.compare(record.source.hash.0.len(), x.source.hash.0.len())?;
             if record.source.hash == x.source.hash {
                 return Ok(true);
             }
@@ -1231,8 +1041,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         coll: usize,
         excluded: &[Blake2b256Hash],
     ) -> Result<Vec<PathCandidates>, SpaceError> {
-        let meter = cx.meter();
-        let prefix_key = meter.copy_slice(prefix_at(scope, coll)?)?;
+        let prefix_key = prefix_at(scope, coll)?.to_vec();
         let mut view = CxView {
             cx,
             space: self.space,
@@ -1241,12 +1050,11 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
             &mut view,
             &prefix_key,
             excluded,
-            &mut |records: &[ParDatum], meter: &ScanMeter| -> Result<Vec<usize>, SpaceError> {
-                let mut order = meter.buffer::<usize>(records.len())?;
+            &mut |records: &[ParDatum]| -> Result<Vec<usize>, SpaceError> {
+                let mut order = Vec::<usize>::with_capacity(records.len());
                 order.extend(0..records.len());
                 Ok(order)
             },
-            meter,
         )
     }
 
@@ -1256,9 +1064,8 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         &self,
         path: &PathCandidates,
         records: usize,
-        meter: &ScanMeter,
     ) -> Result<Vec<Option<usize>>, SpaceError> {
-        let mut markers = meter.buffer::<Option<usize>>(records)?;
+        let mut markers = Vec::<Option<usize>>::with_capacity(records);
         markers.resize(records, None);
         for entry in &path.entries {
             let slot = markers
@@ -1285,14 +1092,13 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         x: Option<&Incoming>,
         window: &mut Vec<Entry>,
     ) -> Result<(), SpaceError> {
-        let meter = cx.meter();
-        let data = PathMapOuter::path_data_metered(self.space, path_key, meter)?;
+        let data = PathMapOuter::path_data(self.space, path_key);
         let count = match path {
             Some(_) => cx.data_on(&data)?.len(),
             None => 0,
         };
         let markers = match path {
-            Some(path) => self.markers_by_record(path, count, meter)?,
+            Some(path) => self.markers_by_record(path, count)?,
             None => Vec::new(),
         };
         match D::JOIN_WINDOW {
@@ -1301,31 +1107,23 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                 if path.is_some() {
                     for record in cx.canonical_data_order(&data)? {
                         if let Some(Some(marker)) = markers.get(record) {
-                            generic::push_reserved(
-                                window,
-                                Entry {
-                                    at: EntryAt::Stored(*marker),
-                                    level: None,
-                                },
-                                meter,
-                            )?;
+                            window.push(Entry {
+                                at: EntryAt::Stored(*marker),
+                                level: None,
+                            });
                         }
                     }
                 }
                 if x.is_some() {
-                    generic::push_reserved(
-                        window,
-                        Entry {
-                            at: EntryAt::Incoming,
-                            level: None,
-                        },
-                        meter,
-                    )?;
+                    window.push(Entry {
+                        at: EntryAt::Incoming,
+                        level: None,
+                    });
                 }
                 Ok(())
             }
             JoinWindow::Head => {
-                let mut records = meter.buffer::<(i64, usize)>(count)?;
+                let mut records = Vec::<(i64, usize)>::with_capacity(count);
                 for (record, marker) in markers.iter().enumerate() {
                     let Some(marker) = marker else {
                         continue;
@@ -1335,12 +1133,12 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                         let datum = stored.get(record).ok_or(SpaceError::Inconsistent(
                             "a record index is outside its path",
                         ))?;
-                        self.record_slots(&datum.a, meter)?.0
+                        self.record_slots(&datum.a)?.0
                     };
                     records.push((ord, *marker));
                 }
-                for entry in self.head_window(&records, need, x, meter)? {
-                    generic::push_reserved(window, entry, meter)?;
+                for entry in self.head_window(&records, need, x)? {
+                    window.push(entry);
                 }
                 Ok(())
             }
@@ -1355,42 +1153,28 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                         let datum = stored.get(record).ok_or(SpaceError::Inconsistent(
                             "a record index is outside its path",
                         ))?;
-                        self.record_slots(&datum.a, meter)?
+                        self.record_slots(&datum.a)?
                     };
                     let level = level.ok_or(SpaceError::Inconsistent(
                         "a record of a priority queue has no level",
                     ))?;
-                    meter.ordered_lookup(levels.len(), size_of::<Level>())?;
-                    if !levels.contains_key(&level) {
-                        meter.tree_growth::<Level, Vec<(i64, usize)>>(levels.len(), 1)?;
-                    }
-                    generic::push_reserved(
-                        levels.entry(level).or_default(),
-                        (ord, *marker),
-                        meter,
-                    )?;
+                    levels.entry(level).or_default().push((ord, *marker));
                 }
                 if let Some(x) = x {
                     let level = x.level.ok_or(SpaceError::Inconsistent(
                         "an element of a priority queue has no level",
                     ))?;
-                    meter.ordered_lookup(levels.len(), size_of::<Level>())?;
                     if !levels.contains_key(&level) {
-                        meter.tree_growth::<Level, Vec<(i64, usize)>>(levels.len(), 1)?;
                         levels.insert(level, Vec::new());
                     }
                 }
                 for (level, records) in &levels {
                     let in_level = x.filter(|x| x.level == Some(*level));
-                    for entry in self.head_window(records, need, in_level, meter)? {
-                        generic::push_reserved(
-                            window,
-                            Entry {
-                                at: entry.at,
-                                level: Some(*level),
-                            },
-                            meter,
-                        )?;
+                    for entry in self.head_window(records, need, in_level)? {
+                        window.push(Entry {
+                            at: entry.at,
+                            level: Some(*level),
+                        });
                     }
                 }
                 Ok(())
@@ -1400,14 +1184,13 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
 
     /// The order of the place of an element with the order `ord` in a side whose stored orders
     /// are `stored` (joins plan section 3.1), as the keyed source places it. An equal order is
-    /// `Inconsistent`. Each comparison is reserved.
+    /// `Inconsistent`.
     fn place(
         &self,
         side: Side,
         placement: Placement,
         ord: i64,
         stored: &[i64],
-        meter: &ScanMeter,
     ) -> Result<usize, SpaceError> {
         match placement {
             Placement::Fresh => Ok(match self.discipline.reaches_head(side, stored.len()) {
@@ -1417,13 +1200,12 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
             Placement::Carried => {
                 let mut ahead = 0;
                 for &other in stored {
-                    meter.compare(size_of::<i64>(), size_of::<i64>())?;
                     if other == ord {
                         return Err(SpaceError::Inconsistent(
                             "an element in flight shares its order with a stored entry",
                         ));
                     }
-                    if !self.discipline.precedes(side, ord, other, meter)? {
+                    if !self.discipline.precedes(side, ord, other)? {
                         ahead += 1;
                     }
                 }
@@ -1433,24 +1215,19 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     }
 
     /// The first `need` entries of `entries` (order, marker index) in the head order of the
-    /// discipline: the head, then the head of the rest, and so on. Each scan is reserved.
-    fn head_order(
-        &self,
-        entries: &[(i64, usize)],
-        need: usize,
-        meter: &ScanMeter,
-    ) -> Result<Vec<usize>, SpaceError> {
+    /// discipline: the head, then the head of the rest, and so on.
+    fn head_order(&self, entries: &[(i64, usize)], need: usize) -> Result<Vec<usize>, SpaceError> {
         let rounds = need.min(entries.len());
-        let mut taken = meter.buffer::<bool>(entries.len())?;
+        let mut taken = Vec::<bool>::with_capacity(entries.len());
         taken.resize(entries.len(), false);
-        let mut order = meter.buffer::<usize>(rounds)?;
+        let mut order = Vec::<usize>::with_capacity(rounds);
         for _ in 0..rounds {
-            let mut remaining = meter.buffer::<usize>(entries.len())?;
+            let mut remaining = Vec::<usize>::with_capacity(entries.len());
             remaining.extend(
                 (0..entries.len())
                     .filter(|&position| !taken.get(position).copied().unwrap_or(true)),
             );
-            let mut ordered = meter.buffer::<Ordered<'_, usize>>(remaining.len())?;
+            let mut ordered = Vec::<Ordered<'_, usize>>::with_capacity(remaining.len());
             for position in &remaining {
                 let (ord, index) = entries.get(*position).ok_or(SpaceError::Inconsistent(
                     "an entry index is outside its list",
@@ -1460,7 +1237,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                     entry: index,
                 });
             }
-            let Some(head) = self.discipline.head_metered(Side::Data, &ordered, meter)? else {
+            let Some(head) = self.discipline.head(Side::Data, &ordered)? else {
                 break;
             };
             let position = *remaining
@@ -1484,22 +1261,18 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         records: &[(i64, usize)],
         need: usize,
         incoming: Option<&Incoming>,
-        meter: &ScanMeter,
     ) -> Result<Vec<Entry>, SpaceError> {
-        let order = self.head_order(records, need, meter)?;
-        let length = order
-            .len()
-            .checked_add(1)
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let mut window = meter.buffer::<Entry>(length)?;
+        let order = self.head_order(records, need)?;
+        let length = order.len() + 1;
+        let mut window = Vec::<Entry>::with_capacity(length);
         window.extend(order.into_iter().map(|index| Entry {
             at: EntryAt::Stored(index),
             level: None,
         }));
         if let Some(x) = incoming {
-            let mut ords = meter.buffer::<i64>(records.len())?;
+            let mut ords = Vec::<i64>::with_capacity(records.len());
             ords.extend(records.iter().map(|(ord, _)| *ord));
-            let place = self.place(Side::Data, x.placement, x.ord, &ords, meter)?;
+            let place = self.place(Side::Data, x.placement, x.ord, &ords)?;
             if place < need && place <= window.len() {
                 window.insert(place, Entry {
                     at: EntryAt::Incoming,
@@ -1514,18 +1287,12 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     // ── Waiters ──
 
     /// The collection of each channel of `group`: each channel is an index channel of the space.
-    fn group_colls(
-        &self,
-        scope: &JoinScope,
-        group: &[Par],
-        meter: &ScanMeter,
-    ) -> Result<Vec<usize>, SpaceError> {
-        let mut colls = meter.buffer::<usize>(group.len())?;
+    fn group_colls(&self, scope: &JoinScope, group: &[Par]) -> Result<Vec<usize>, SpaceError> {
+        let mut colls = Vec::<usize>::with_capacity(group.len());
         for channel in group {
-            meter.inspect(channel)?;
             match namespace::reified_id_of(channel) {
                 Some(ReifiedId::PathIndex(owner, tail)) if owner == self.space => {
-                    colls.push(coll_of(scope, tail, meter)?);
+                    colls.push(coll_of(scope, tail)?);
                 }
                 _ => {
                     return Err(SpaceError::Inconsistent(
@@ -1538,23 +1305,22 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     }
 
     /// The seats of the waiters of the index channel of `coll`: each waiter of each join group,
-    /// with its order and its lanes there. Each copy, decode and comparison is reserved.
+    /// with its order and its lanes there.
     fn seats(
         &self,
         cx: &mut Cx<'_, '_>,
         scope: &JoinScope,
         coll: usize,
     ) -> Result<Seats, SpaceError> {
-        let meter = cx.meter();
         let channel = &collection(scope, coll)?.data;
         let groups: Vec<Vec<Par>> = {
             let joins = cx.joins_on(channel)?;
-            meter.copy_slice(joins)?
+            joins.to_vec()
         };
         let mut seats: Vec<Seat> = Vec::new();
         for (group_index, group) in groups.iter().enumerate() {
-            let colls = self.group_colls(scope, group, meter)?;
-            let mut positions = meter.buffer::<usize>(colls.len())?;
+            let colls = self.group_colls(scope, group)?;
+            let mut positions = Vec::<usize>::with_capacity(colls.len());
             positions.extend(
                 colls
                     .iter()
@@ -1574,8 +1340,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                     let waiter = waiters.get(index).ok_or(SpaceError::Inconsistent(
                         "a waiter index is outside the staged view",
                     ))?;
-                    let slots = self.waiter_slots(waiter, group.len(), meter)?;
-                    meter.reserve_copy(&waiter.source.hash)?;
+                    let slots = self.waiter_slots(waiter, group.len())?;
                     (slots, waiter.source.hash.clone())
                 };
                 let ord = slots
@@ -1589,7 +1354,6 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                     let slot = slots.get(position).ok_or(SpaceError::Inconsistent(
                         "a waiter has not one slot for each position",
                     ))?;
-                    meter.compare(size_of::<i64>(), size_of::<i64>())?;
                     if slot.ord != ord {
                         return Err(SpaceError::Inconsistent(
                             "a waiter has two orders in one collection",
@@ -1597,20 +1361,16 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                     }
                     let lane = self.lane_of(slot);
                     if !lanes.contains(&lane) {
-                        generic::push_reserved(&mut lanes, lane, meter)?;
+                        lanes.push(lane);
                     }
                 }
-                generic::push_reserved(
-                    &mut seats,
-                    Seat {
-                        group: group_index,
-                        index,
-                        source,
-                        ord,
-                        lanes,
-                    },
-                    meter,
-                )?;
+                seats.push(Seat {
+                    group: group_index,
+                    index,
+                    source,
+                    ord,
+                    lanes,
+                });
             }
         }
         Ok(Seats { groups, seats })
@@ -1618,13 +1378,8 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
 
     /// The head of the seats in the lane `lane` (every seat for `None`) by the head rule of the
     /// discipline.
-    fn head_seat(
-        &self,
-        seats: &[Seat],
-        lane: Option<Lane>,
-        meter: &ScanMeter,
-    ) -> Result<Option<usize>, SpaceError> {
-        let mut members = meter.buffer::<usize>(seats.len())?;
+    fn head_seat(&self, seats: &[Seat], lane: Option<Lane>) -> Result<Option<usize>, SpaceError> {
+        let mut members = Vec::<usize>::with_capacity(seats.len());
         members.extend(
             seats
                 .iter()
@@ -1632,7 +1387,7 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                 .filter(|(_, seat)| lane.is_none() || seat.lanes.contains(&lane))
                 .map(|(index, _)| index),
         );
-        let mut ordered = meter.buffer::<Ordered<'_, usize>>(members.len())?;
+        let mut ordered = Vec::<Ordered<'_, usize>>::with_capacity(members.len());
         for member in &members {
             let seat = seats
                 .get(*member)
@@ -1642,19 +1397,12 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                 entry: member,
             });
         }
-        let head = self
-            .discipline
-            .head_metered(Side::Waiters, &ordered, meter)?;
+        let head = self.discipline.head(Side::Waiters, &ordered)?;
         Ok(head.and_then(|position| members.get(position).copied()))
     }
 
     /// The reference of the seat `seat`.
-    fn reference(
-        &self,
-        seats: &Seats,
-        seat: usize,
-        meter: &ScanMeter,
-    ) -> Result<WaiterRef, SpaceError> {
+    fn reference(&self, seats: &Seats, seat: usize) -> Result<WaiterRef, SpaceError> {
         let seat = seats
             .seats
             .get(seat)
@@ -1664,20 +1412,14 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
             .get(seat.group)
             .ok_or(SpaceError::Inconsistent("a seat names no group"))?;
         Ok(WaiterRef {
-            group: meter.copy(group)?,
+            group: group.clone(),
             index: seat.index,
-            source: meter.copy(&seat.source)?,
+            source: seat.source.clone(),
         })
     }
 
     /// The lanes of the slots `slots` on the collection `coll` of the positions `colls`, each once.
-    fn lanes_on(
-        &self,
-        slots: &[JoinSlot],
-        colls: &[usize],
-        coll: usize,
-        meter: &ScanMeter,
-    ) -> Result<Vec<Option<Lane>>, SpaceError> {
+    fn lanes_on(&self, slots: &[JoinSlot], colls: &[usize], coll: usize) -> Vec<Option<Lane>> {
         let mut lanes: Vec<Option<Lane>> = Vec::new();
         for (slot, &other) in slots.iter().zip(colls) {
             if other != coll {
@@ -1685,10 +1427,10 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
             }
             let lane = self.lane_of(slot);
             if !lanes.contains(&lane) {
-                generic::push_reserved(&mut lanes, lane, meter)?;
+                lanes.push(lane);
             }
         }
-        Ok(lanes)
+        lanes
     }
 
     /// The references of the seats `heads` in ascending order of the seats, the older first.
@@ -1696,9 +1438,8 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         &self,
         seats: &Seats,
         mut heads: Vec<usize>,
-        meter: &ScanMeter,
     ) -> Result<Vec<WaiterRef>, SpaceError> {
-        let mut keyed = meter.buffer::<(i64, usize)>(heads.len())?;
+        let mut keyed = Vec::<(i64, usize)>::with_capacity(heads.len());
         for head in heads.drain(..) {
             let seat = seats
                 .seats
@@ -1706,10 +1447,10 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                 .ok_or(SpaceError::Inconsistent("a seat index is outside its list"))?;
             keyed.push((seat.ord, head));
         }
-        sort_reserved(&mut keyed, |_| size_of::<i64>(), meter)?;
-        let mut references = meter.buffer::<WaiterRef>(keyed.len())?;
+        keyed.sort();
+        let mut references = Vec::<WaiterRef>::with_capacity(keyed.len());
         for (_, head) in keyed {
-            references.push(self.reference(seats, head, meter)?);
+            references.push(self.reference(seats, head)?);
         }
         Ok(references)
     }
@@ -1723,30 +1464,27 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         scope: &JoinScope,
         coll: usize,
     ) -> Result<Vec<WaiterRef>, SpaceError> {
-        let meter = cx.meter();
         let channel = &collection(scope, coll)?.data;
         let groups: Vec<Vec<Par>> = {
             let joins = cx.joins_on(channel)?;
-            meter.copy_slice(joins)?
+            joins.to_vec()
         };
-        let mut sequences: Vec<Vec<(Blake2b256Hash, usize)>> = meter.buffer(groups.len())?;
+        let mut sequences: Vec<Vec<(Blake2b256Hash, usize)>> = Vec::with_capacity(groups.len());
         for group in &groups {
             let order = cx.canonical_group_order(group)?;
             let waiters = cx.group_waiters(group)?;
-            let mut sequence = meter.buffer::<(Blake2b256Hash, usize)>(order.len())?;
+            let mut sequence = Vec::<(Blake2b256Hash, usize)>::with_capacity(order.len());
             for index in order {
                 let waiter = waiters.get(index).ok_or(SpaceError::Inconsistent(
                     "a canonical index is outside the staged view",
                 ))?;
-                meter.reserve_copy(&waiter.source.hash)?;
                 sequence.push((waiter.source.hash.clone(), index));
             }
             sequences.push(sequence);
         }
         let total: usize = sequences.iter().map(Vec::len).sum();
-        let mut merged = meter.buffer::<WaiterRef>(total)?;
-        let mut cursors = meter.buffer::<usize>(sequences.len())?;
-        cursors.resize(sequences.len(), 0);
+        let mut merged = Vec::<WaiterRef>::with_capacity(total);
+        let mut cursors = vec![0usize; sequences.len()];
         for _ in 0..total {
             let mut least: Option<(usize, &Blake2b256Hash)> = None;
             for (group, sequence) in sequences.iter().enumerate() {
@@ -1756,18 +1494,15 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                 };
                 least = match least {
                     None => Some((group, hash)),
-                    Some((best, best_hash)) => {
-                        meter.compare(best_hash.0.len(), hash.0.len())?;
-                        match hash.cmp(best_hash) {
-                            Ordering::Less => Some((group, hash)),
-                            Ordering::Greater => Some((best, best_hash)),
-                            Ordering::Equal => {
-                                return Err(SpaceError::Inconsistent(
-                                    "two waiters of distinct groups share a consume",
-                                ))
-                            }
+                    Some((best, best_hash)) => match hash.cmp(best_hash) {
+                        Ordering::Less => Some((group, hash)),
+                        Ordering::Greater => Some((best, best_hash)),
+                        Ordering::Equal => {
+                            return Err(SpaceError::Inconsistent(
+                                "two waiters of distinct groups share a consume",
+                            ))
                         }
-                    }
+                    },
                 };
             }
             let (group, _) = least.ok_or(SpaceError::Inconsistent(
@@ -1787,9 +1522,9 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                 .get(group)
                 .ok_or(SpaceError::Inconsistent("a merge names no group"))?;
             merged.push(WaiterRef {
-                group: meter.copy(channels)?,
+                group: channels.clone(),
                 index: *index,
-                source: meter.copy(hash)?,
+                source: hash.clone(),
             });
         }
         Ok(merged)
@@ -1805,13 +1540,12 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         coll: usize,
         level: Option<Level>,
     ) -> Result<Vec<WaiterRef>, SpaceError> {
-        let meter = cx.meter();
         match D::JOIN_WINDOW {
             JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Head => {
                 let seats = self.seats(cx, scope, coll)?;
-                match self.head_seat(&seats.seats, None, meter)? {
-                    Some(head) => Ok(vec![self.reference(&seats, head, meter)?]),
+                match self.head_seat(&seats.seats, None)? {
+                    Some(head) => Ok(vec![self.reference(&seats, head)?]),
                     None => Ok(Vec::new()),
                 }
             }
@@ -1822,13 +1556,13 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                 let seats = self.seats(cx, scope, coll)?;
                 let mut heads: Vec<usize> = Vec::new();
                 for lane in level.candidate_lanes().into_iter().flatten() {
-                    if let Some(head) = self.head_seat(&seats.seats, Some(lane), meter)? {
+                    if let Some(head) = self.head_seat(&seats.seats, Some(lane))? {
                         if !heads.contains(&head) {
-                            generic::push_reserved(&mut heads, head, meter)?;
+                            heads.push(head);
                         }
                     }
                 }
-                self.oldest_first(&seats, heads, meter)
+                self.oldest_first(&seats, heads)
             }
             JoinWindow::Scan | JoinWindow::Classes => self.union_order(cx, scope, coll),
         }
@@ -1848,23 +1582,22 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         depth: usize,
         home: usize,
     ) -> Result<usize, SpaceError> {
-        let meter = cx.meter();
         let path = self.datum_path(cx, source)?;
         let record = self.datum_record(cx, home, source)?;
-        let marker = datum_marker(&path, source, &record.a, depth, meter)?;
-        let encoded = encode_path(&path, meter)?;
+        let marker = datum_marker(&path, source, &record.a, depth)?;
+        let encoded = encode_path(&path)?;
         let prefix_key = encoded.prefix_key(depth).ok_or(SpaceError::Inconsistent(
             "an encoded path has no prefix key of a depth",
         ))?;
-        let channel = PathMapOuter::index_metered(self.space, prefix_key, meter)?;
+        let channel = PathMapOuter::index(self.space, prefix_key);
         cx.restore_on(&channel, marker)?;
-        coll_of(scope, prefix_key, meter)
+        coll_of(scope, prefix_key)
     }
 
     /// The `K_retire` of the record of the datum `source` on `channel`: the datum record on its
     /// data channel, or one of its markers on an index channel. The continuation carries the
     /// random state `random` and the authority `authority`, and its body is the source hash of the
-    /// retired record, so each retire has an identity of its own. Each copy and decode is reserved.
+    /// retired record, so each retire has an identity of its own.
     #[allow(clippy::too_many_arguments)]
     fn retire_record(
         &self,
@@ -1875,46 +1608,40 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         random: &Blake2b512Random,
         authority: Option<&CostAuthority>,
     ) -> Result<(), SpaceError> {
-        let meter = cx.meter();
         let (index, stored) = {
             let records = cx.data_on(channel)?;
             let index = match datum {
-                true => locate(records, source, meter)?,
-                false => locate_marker(records, source, meter)?,
+                true => locate(records, source)?,
+                false => locate_marker(records, source)?,
             };
             let stored = records.get(index).ok_or(SpaceError::Inconsistent(
                 "a retired index is outside its channel",
             ))?;
-            (index, meter.copy(stored)?)
+            (index, stored.clone())
         };
         let payload = match datum {
-            true => self.payload_of(&stored.a, meter)?,
-            false => meter.copy(&stored.a)?,
+            true => self.payload_of(&stored.a)?,
+            false => stored.a.clone(),
         };
         let matched = cx
-            .bind(&RETIRE_PATTERN, &payload)?
+            .bind(&RETIRE_PATTERN, &payload)
             .ok_or(SpaceError::Inconsistent(
                 "a retired record does not bind the retire pattern",
             ))?;
-        meter.reserve_copy(&*RETIRE_TEMPLATE)?;
-        meter.reserve_buffer::<u8>(stored.source.hash.0.len())?;
-        meter.random_bytes(random)?;
-        let authority = authority
-            .map(|authority| meter.copy(authority))
-            .transpose()?;
+        let authority = authority.cloned();
         let continuation = retire_continuation(&stored.source.hash, random, authority);
-        let mut channels = meter.buffer::<Par>(1)?;
-        channels.push(meter.copy(channel)?);
-        let mut patterns = meter.buffer::<BindPattern>(1)?;
-        patterns.push(meter.copy(&*RETIRE_PATTERN)?);
-        let mut candidates = meter.buffer::<ParCandidate>(1)?;
+        let mut channels = Vec::<Par>::with_capacity(1);
+        channels.push(channel.clone());
+        let mut patterns = Vec::<BindPattern>::with_capacity(1);
+        patterns.push((*RETIRE_PATTERN).clone());
+        let mut candidates = Vec::<ParCandidate>::with_capacity(1);
         let Datum {
             a,
             persist,
             source: produce,
         } = stored;
         candidates.push(ConsumeCandidate {
-            channel: meter.copy(channel)?,
+            channel: channel.clone(),
             datum: Datum {
                 a: matched,
                 persist,
@@ -1940,29 +1667,28 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         authority: Option<&CostAuthority>,
         dirty: &mut [bool],
     ) -> Result<(), SpaceError> {
-        let meter = cx.meter();
         let path = self.datum_path(cx, &spent.source)?;
-        let encoded = encode_path(&path, meter)?;
+        let encoded = encode_path(&path)?;
         for step in retire_plan(path.len(), spent.delivered) {
             match step {
                 Retired::Datum => {
-                    let channel = meter.copy(self.home_at(spent.home)?)?;
+                    let channel = self.home_at(spent.home)?.clone();
                     self.retire_record(cx, &channel, &spent.source, true, random, authority)?;
                 }
                 Retired::Marker(depth) => {
                     let prefix_key = encoded.prefix_key(depth).ok_or(SpaceError::Inconsistent(
                         "an encoded path has no prefix key of a depth",
                     ))?;
-                    let channel = PathMapOuter::index_metered(self.space, prefix_key, meter)?;
+                    let channel = PathMapOuter::index(self.space, prefix_key);
                     self.retire_record(cx, &channel, &spent.source, false, random, authority)?;
                 }
             }
         }
         for prefix_key in encoded.prefix_keys() {
-            let coll = coll_of(scope, prefix_key?, meter)?;
+            let coll = coll_of(scope, prefix_key?)?;
             join::mark(dirty, &[coll]);
         }
-        self.settle_owed(&spent.source, None, meter)?;
+        self.settle_owed(&spent.source, None);
         Ok(())
     }
 
@@ -1974,9 +1700,8 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
         class: &SpentClass,
         retired: &[Blake2b256Hash],
     ) -> Result<Vec<Blake2b256Hash>, SpaceError> {
-        let meter = cx.meter();
-        let excluded = self.in_flight(None, &[], meter)?;
-        let channel = meter.copy(self.home_at(class.home)?)?;
+        let excluded = self.in_flight(None, &[])?;
+        let channel = self.home_at(class.home)?.clone();
         let order = cx.canonical_data_order(&channel)?;
         let mut members = Vec::new();
         for index in order {
@@ -1987,23 +1712,20 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
                 ))?;
                 match record.persist {
                     true => None,
-                    false => Some((
-                        meter.copy(&record.source.hash)?,
-                        self.payload_of(&record.a, meter)?,
-                    )),
+                    false => Some((record.source.hash.clone(), self.payload_of(&record.a)?)),
                 }
             };
             let Some((source, payload)) = candidate else {
                 continue;
             };
-            if is_excluded(&source, retired, meter)? || is_excluded(&source, &excluded, meter)? {
+            if is_excluded(&source, retired) || is_excluded(&source, &excluded) {
                 continue;
             }
-            let Some(key) = self.discipline.join_class_key(&payload.pars, meter)? else {
+            let Some(key) = self.discipline.join_class_key(&payload.pars)? else {
                 continue;
             };
-            if same_class(&class.key, &class.hash, &key, meter)? {
-                generic::push_reserved(&mut members, source, meter)?;
+            if same_class(&class.key, &class.hash, &key)? {
+                members.push(source);
             }
         }
         Ok(members)
@@ -2040,56 +1762,39 @@ impl<'a, D: Discipline> PrefixSource<'a, D> {
     /// element and for a fresh element, which no store holds. A stored element misses the marker
     /// that its peek or its lift removed when this transaction owes it, and holds every marker
     /// when a capped transaction restored it.
-    fn spent_element(
-        &self,
-        x: &Incoming,
-        meter: &ScanMeter,
-    ) -> Result<Option<SpentDatum>, SpaceError> {
+    fn spent_element(&self, x: &Incoming) -> Option<SpentDatum> {
         if x.persist {
-            return Ok(None);
+            return None;
         }
-        let Some(depth) = x.restore else {
-            return Ok(None);
-        };
+        let depth = x.restore?;
         let depth = usize::from(depth);
-        let delivered = match self.owes(&x.source.hash, depth, meter)? {
+        let delivered = match self.owes(&x.source.hash, depth) {
             true => Some(depth),
             false => None,
         };
-        Ok(Some(SpentDatum {
+        Some(SpentDatum {
             home: x.coll,
-            source: meter.copy(&x.source.hash)?,
+            source: x.source.hash.clone(),
             delivered,
-        }))
+        })
     }
 
     /// Records the class of the claim `claim` in `classes`, once for each class of a path.
-    fn spent_class(
-        &self,
-        claim: &Claim,
-        classes: &mut Vec<SpentClass>,
-        meter: &ScanMeter,
-    ) -> Result<(), SpaceError> {
+    fn spent_class(&self, claim: &Claim, classes: &mut Vec<SpentClass>) -> Result<(), SpaceError> {
         let Claim::Class { coll, key, hash } = claim else {
             return Ok(());
         };
         for known in classes.iter() {
-            meter.compare(size_of::<usize>(), size_of::<usize>())?;
-            if known.home == *coll && same_class(&known.key, &known.hash, key, meter)? {
+            if known.home == *coll && same_class(&known.key, &known.hash, key)? {
                 return Ok(());
             }
         }
-        meter.reserve_copy_slice(key)?;
-        meter.reserve_copy(hash)?;
-        generic::push_reserved(
-            classes,
-            SpentClass {
-                home: *coll,
-                key: key.clone(),
-                hash: hash.clone(),
-            },
-            meter,
-        )
+        classes.push(SpentClass {
+            home: *coll,
+            key: key.clone(),
+            hash: hash.clone(),
+        });
+        Ok(())
     }
 }
 
@@ -2099,13 +1804,8 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
     // Replaced by P6 (design v3 4.0): the bound of the discipline under the config.
     // fn capacity(&self) -> Option<usize> { D::CAPACITY }
 
-    fn bound(
-        &self,
-        config: &SpaceConfig,
-        side: Side,
-        meter: &ScanMeter,
-    ) -> Result<Option<SideBound>, SpaceError> {
-        self.discipline.bound(config, side, meter)
+    fn bound(&self, config: &SpaceConfig, side: Side) -> Result<Option<SideBound>, SpaceError> {
+        self.discipline.bound(config, side)
     }
 
     /// The token `S(sid)` orders every prefix of the space (decision 31, D-2). Both counter
@@ -2136,17 +1836,11 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         ord: i64,
         level: Option<Level>,
         data: &ListParWithRandom,
-        meter: &ScanMeter,
     ) -> Result<ListParWithRandom, SpaceError> {
         match (D::JOIN_WINDOW, level) {
-            (JoinWindow::Lanes, Some(level)) => Ok(record::wrap_pq_datum_metered(
-                ord,
-                level.slot(),
-                data,
-                meter,
-            )?),
+            (JoinWindow::Lanes, Some(level)) => Ok(record::wrap_pq_datum(ord, level.slot(), data)),
             (JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes, None) => {
-                Ok(record::wrap_datum_metered(ord, data, meter)?)
+                Ok(record::wrap_datum(ord, data))
             }
             _ => Err(SpaceError::Inconsistent(
                 "a record level does not fit its discipline",
@@ -2154,50 +1848,36 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         }
     }
 
-    fn record_slots(
-        &self,
-        record: &ListParWithRandom,
-        meter: &ScanMeter,
-    ) -> Result<(i64, Option<Level>), SpaceError> {
+    fn record_slots(&self, record: &ListParWithRandom) -> Result<(i64, Option<Level>), SpaceError> {
         match D::JOIN_WINDOW {
             JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Lanes => {
-                let (ord, slot) = record::pq_datum_slots_metered(record, meter)?;
+                let (ord, slot) = record::pq_datum_slots(record)?;
                 Ok((ord, Some(Level::of_slot(slot))))
             }
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
-                Ok((record::datum_ord_metered(record, meter)?, None))
+                Ok((record::datum_ord(record)?, None))
             }
         }
     }
 
-    fn payload_of(
-        &self,
-        record: &ListParWithRandom,
-        meter: &ScanMeter,
-    ) -> Result<ListParWithRandom, SpaceError> {
+    fn payload_of(&self, record: &ListParWithRandom) -> Result<ListParWithRandom, SpaceError> {
         match D::JOIN_WINDOW {
             JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
-            JoinWindow::Lanes => Ok(record::unwrap_pq_datum_metered(record, meter)?.datum),
+            JoinWindow::Lanes => Ok(record::unwrap_pq_datum(record)?.datum),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
-                Ok(record::unwrap_datum_metered(record, meter)?.datum)
+                Ok(record::unwrap_datum(record)?.datum)
             }
         }
     }
 
-    fn waiter_slots(
-        &self,
-        waiter: &ParWaiter,
-        width: usize,
-        meter: &ScanMeter,
-    ) -> Result<Vec<JoinSlot>, SpaceError> {
+    fn waiter_slots(&self, waiter: &ParWaiter, width: usize) -> Result<Vec<JoinSlot>, SpaceError> {
         match width {
             1 => {
                 let slot = match D::JOIN_WINDOW {
                     JoinWindow::Similarity => return Err(SpaceError::Inconsistent(NO_VECTORDB)),
                     JoinWindow::Lanes => {
-                        let (ord, priority) =
-                            record::pq_continuation_slots_metered(&waiter.continuation, meter)?;
+                        let (ord, priority) = record::pq_continuation_slots(&waiter.continuation)?;
                         JoinSlot {
                             ord,
                             bind: 0,
@@ -2205,17 +1885,17 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                         }
                     }
                     JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => JoinSlot {
-                        ord: record::continuation_ord_metered(&waiter.continuation, meter)?,
+                        ord: record::continuation_ord(&waiter.continuation)?,
                         bind: 0,
                         policy: WaiterPolicy::None,
                     },
                 };
-                let mut slots = meter.buffer::<JoinSlot>(1)?;
+                let mut slots = Vec::<JoinSlot>::with_capacity(1);
                 slots.push(slot);
                 Ok(slots)
             }
             _ => {
-                let slots = record::join_continuation_slots_metered(&waiter.continuation, meter)?;
+                let slots = record::join_continuation_slots(&waiter.continuation)?;
                 let lanes_fit = match D::JOIN_WINDOW {
                     JoinWindow::Similarity => return Err(SpaceError::Inconsistent(NO_VECTORDB)),
                     JoinWindow::Lanes => true,
@@ -2246,10 +1926,9 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         incoming: Option<&Incoming>,
         pending: &[Work],
     ) -> Result<Vec<Entry>, SpaceError> {
-        let meter = cx.meter();
-        let excluded = self.in_flight(incoming, pending, meter)?;
+        let excluded = self.in_flight(incoming, pending)?;
         let entering = match incoming {
-            Some(x) => match self.enters(scope, x, coll, meter)? {
+            Some(x) => match self.enters(scope, x, coll)? {
                 true => Some(x),
                 false => None,
             },
@@ -2262,7 +1941,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                 if !x.own {
                     self.datum_path(cx, &x.source.hash)?;
                 }
-                Some(terminated(prefix_at(scope, x.coll)?, meter)?)
+                Some(terminated(prefix_at(scope, x.coll)?))
             }
             None => None,
         };
@@ -2271,7 +1950,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         let mut placed = x_key.is_none();
         for path in &paths {
             if let (false, Some(x_key)) = (placed, &x_key) {
-                match compare_keys(x_key, &path.path_key, meter)? {
+                match compare_keys(x_key, &path.path_key) {
                     Ordering::Less => {
                         self.path_window(cx, x_key, None, need, entering, &mut window)?;
                         placed = true;
@@ -2304,9 +1983,8 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         coll: usize,
         at: EntryAt,
         payload: &ListParWithRandom,
-        meter: &ScanMeter,
     ) -> Result<Claim, SpaceError> {
-        self.datum_claim(coll, at, payload, meter)
+        self.datum_claim(coll, at, payload)
     }
 
     /// PRODUCE-WAITERS of the path of `incoming`: the waiters of each prefix of the path in the
@@ -2319,18 +1997,17 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         scope: &JoinScope,
         incoming: &Incoming,
     ) -> Result<Vec<WaiterRef>, SpaceError> {
-        let meter = cx.meter();
         if let Some(depth) = incoming.restore {
-            let owed = self.owes(&incoming.source.hash, usize::from(depth), meter)?;
+            let owed = self.owes(&incoming.source.hash, usize::from(depth));
             if !owed && !self.is_stored(cx, incoming)? {
                 return Ok(Vec::new());
             }
         }
-        let path_prefix = meter.copy_slice(prefix_at(scope, incoming.coll)?)?;
+        let path_prefix = prefix_at(scope, incoming.coll)?.to_vec();
         let mut prefixes: Vec<usize> = Vec::new();
         for (coll, scoped) in scope.collections.iter().enumerate() {
-            if is_prefix_key(prefix_of_key(&scoped.key)?, &path_prefix, meter)? {
-                generic::push_reserved(&mut prefixes, coll, meter)?;
+            if is_prefix_key(prefix_of_key(&scoped.key)?, &path_prefix) {
+                prefixes.push(coll);
             }
         }
         // The prefixes of one path are nested byte prefixes in ascending key order, so the
@@ -2339,7 +2016,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         let mut order = Vec::new();
         for coll in prefixes {
             for waiter in self.waiters_of(cx, scope, coll, incoming.level)? {
-                generic::push_reserved(&mut order, waiter, meter)?;
+                order.push(waiter);
             }
         }
         Ok(order)
@@ -2354,13 +2031,12 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         scope: &JoinScope,
         coll: usize,
     ) -> Result<Vec<WaiterRef>, SpaceError> {
-        let meter = cx.meter();
         match D::JOIN_WINDOW {
             JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Head => {
                 let seats = self.seats(cx, scope, coll)?;
-                match self.head_seat(&seats.seats, None, meter)? {
-                    Some(head) => Ok(vec![self.reference(&seats, head, meter)?]),
+                match self.head_seat(&seats.seats, None)? {
+                    Some(head) => Ok(vec![self.reference(&seats, head)?]),
                     None => Ok(Vec::new()),
                 }
             }
@@ -2370,19 +2046,19 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                 for seat in &seats.seats {
                     for lane in &seat.lanes {
                         if !lanes.contains(lane) {
-                            generic::push_reserved(&mut lanes, *lane, meter)?;
+                            lanes.push(*lane);
                         }
                     }
                 }
                 let mut heads: Vec<usize> = Vec::new();
                 for lane in lanes {
-                    if let Some(head) = self.head_seat(&seats.seats, lane, meter)? {
+                    if let Some(head) = self.head_seat(&seats.seats, lane)? {
                         if !heads.contains(&head) {
-                            generic::push_reserved(&mut heads, head, meter)?;
+                            heads.push(head);
                         }
                     }
                 }
-                self.oldest_first(&seats, heads, meter)
+                self.oldest_first(&seats, heads)
             }
             JoinWindow::Classes => self.union_order(cx, scope, coll),
             JoinWindow::Scan => Ok(Vec::new()),
@@ -2398,26 +2074,24 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         colls: &[usize],
         coll: usize,
     ) -> Result<bool, SpaceError> {
-        let meter = cx.meter();
         match D::JOIN_WINDOW {
             JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Scan | JoinWindow::Classes => Ok(true),
             JoinWindow::Head | JoinWindow::Lanes => {
                 let seats = self.seats(cx, scope, coll)?;
-                for lane in self.lanes_on(slots, colls, coll, meter)? {
+                for lane in self.lanes_on(slots, colls, coll) {
                     let filter = match D::JOIN_WINDOW {
                         JoinWindow::Similarity => None,
                         JoinWindow::Lanes => lane,
                         JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => None,
                     };
-                    let Some(head) = self.head_seat(&seats.seats, filter, meter)? else {
+                    let Some(head) = self.head_seat(&seats.seats, filter)? else {
                         return Ok(false);
                     };
                     let seat = seats
                         .seats
                         .get(head)
                         .ok_or(SpaceError::Inconsistent("a seat index is outside its list"))?;
-                    meter.compare(seat.source.0.len(), waiter.source.0.len())?;
                     if seat.source != waiter.source {
                         return Ok(false);
                     }
@@ -2436,13 +2110,12 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         coll: usize,
         carried: Option<i64>,
     ) -> Result<bool, SpaceError> {
-        let meter = cx.meter();
         match D::JOIN_WINDOW {
             JoinWindow::Similarity => Err(SpaceError::Inconsistent(NO_VECTORDB)),
             JoinWindow::Scan | JoinWindow::Classes => Ok(true),
             JoinWindow::Head | JoinWindow::Lanes => {
                 let seats = self.seats(cx, scope, coll)?;
-                for lane in self.lanes_on(slots, colls, coll, meter)? {
+                for lane in self.lanes_on(slots, colls, coll) {
                     let filter = match D::JOIN_WINDOW {
                         JoinWindow::Similarity => None,
                         JoinWindow::Lanes => lane,
@@ -2457,7 +2130,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                                 .count();
                             self.discipline.reaches_head(Side::Waiters, queued)
                         }
-                        Some(ord) => match self.head_seat(&seats.seats, filter, meter)? {
+                        Some(ord) => match self.head_seat(&seats.seats, filter)? {
                             None => true,
                             Some(head) => {
                                 let head_ord = seats
@@ -2467,17 +2140,13 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                                         "a seat index is outside its list",
                                     ))?
                                     .ord;
-                                meter.compare(size_of::<i64>(), size_of::<i64>())?;
                                 match head_ord == ord {
                                     true => return Err(SpaceError::Inconsistent(
                                         "a re-issued element shares its order with a stored entry",
                                     )),
-                                    false => self.discipline.precedes(
-                                        Side::Waiters,
-                                        ord,
-                                        head_ord,
-                                        meter,
-                                    )?,
+                                    false => {
+                                        self.discipline.precedes(Side::Waiters, ord, head_ord)?
+                                    }
                                 }
                             }
                         },
@@ -2497,11 +2166,10 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         scope: &JoinScope,
         coll: usize,
     ) -> Result<usize, SpaceError> {
-        let meter = cx.meter();
         let channel = &collection(scope, coll)?.data;
         let groups: Vec<Vec<Par>> = {
             let joins = cx.joins_on(channel)?;
-            meter.copy_slice(joins)?
+            joins.to_vec()
         };
         let mut count = 0usize;
         for group in &groups {
@@ -2512,8 +2180,8 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         Ok(count)
     }
 
-    fn class_key(&self, payload: &[Par], meter: &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError> {
-        self.discipline.join_class_key(payload, meter)
+    fn class_key(&self, payload: &[Par]) -> Result<Option<Vec<u8>>, SpaceError> {
+        self.discipline.join_class_key(payload)
     }
 
     /// The marker at `index` of `I(q)` as a bind sees it: the payload of its datum re-rooted under
@@ -2527,7 +2195,6 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         index: usize,
         missing: &'static str,
     ) -> Result<StoredEntry, SpaceError> {
-        let meter = cx.meter();
         let found = self.marker_datum(cx, scope, coll, index, missing)?;
         let own = {
             let records = cx.data_on(self.home_at(found.home)?)?;
@@ -2536,11 +2203,10 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                 .ok_or(SpaceError::Inconsistent(
                     "a record index is outside its path",
                 ))?;
-            self.payload_of(&record.a, meter)?
+            self.payload_of(&record.a)?
         };
-        let claim =
-            self.datum_claim(found.home, EntryAt::Stored(found.record_index), &own, meter)?;
-        let payload = rerooted(&found.suffix, own, &HeadEPathMapAdapter, meter)?;
+        let claim = self.datum_claim(found.home, EntryAt::Stored(found.record_index), &own)?;
+        let payload = rerooted(&found.suffix, own, &HeadEPathMapAdapter)?;
         Ok(StoredEntry {
             payload,
             persist: found.persist,
@@ -2558,7 +2224,6 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         index: usize,
         missing: &'static str,
     ) -> Result<ListParWithRandom, SpaceError> {
-        let meter = cx.meter();
         let found = self.marker_datum(cx, scope, coll, index, missing)?;
         let records = cx.data_on(self.home_at(found.home)?)?;
         let record = records
@@ -2566,7 +2231,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
             .ok_or(SpaceError::Inconsistent(
                 "a record index is outside its path",
             ))?;
-        self.payload_of(&record.a, meter)
+        self.payload_of(&record.a)
     }
 
     /// The markers of `I(q)` in the order of CONSUME-CANDIDATES (path-key order, then the
@@ -2577,17 +2242,16 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         scope: &JoinScope,
         coll: usize,
     ) -> Result<Vec<usize>, SpaceError> {
-        let meter = cx.meter();
-        let excluded = self.in_flight(None, &[], meter)?;
+        let excluded = self.in_flight(None, &[])?;
         let paths = self.paths_under(cx, scope, coll, &excluded)?;
         let mut order = Vec::new();
         for path in &paths {
-            let data = PathMapOuter::path_data_metered(self.space, &path.path_key, meter)?;
+            let data = PathMapOuter::path_data(self.space, &path.path_key);
             let count = cx.data_on(&data)?.len();
-            let markers = self.markers_by_record(path, count, meter)?;
+            let markers = self.markers_by_record(path, count)?;
             for record in cx.canonical_data_order(&data)? {
                 if let Some(Some(marker)) = markers.get(record) {
-                    generic::push_reserved(&mut order, *marker, meter)?;
+                    order.push(*marker);
                 }
             }
         }
@@ -2610,13 +2274,12 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         index: usize,
         in_flight: bool,
     ) -> Result<(Incoming, ParDatum), SpaceError> {
-        let meter = cx.meter();
         let marker = {
             let markers = cx.data_on(&collection(scope, coll)?.data)?;
             let marker = markers.get(index).ok_or(SpaceError::Inconsistent(
                 "a bound index is outside the staged view",
             ))?;
-            meter.copy(marker)?
+            marker.clone()
         };
         let found = self.marker_datum(
             cx,
@@ -2626,13 +2289,13 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
             "a bound index is outside the staged view",
         )?;
         let stored = self.datum_record(cx, found.home, &found.source)?;
-        let (ord, level) = self.record_slots(&stored.a, meter)?;
-        let payload = self.payload_of(&stored.a, meter)?;
-        let introduction = cx.introduction().for_record(&stored.a, meter)?;
+        let (ord, level) = self.record_slots(&stored.a)?;
+        let payload = self.payload_of(&stored.a)?;
+        let introduction = cx.introduction().for_record(&stored.a)?;
         let restore = match in_flight {
             true => {
                 let depth = self.marker_depth(cx, scope, coll, &found)?;
-                self.owe(&found.source, depth, found.home, meter)?;
+                self.owe(&found.source, depth, found.home);
                 Some(restore_depth(depth)?)
             }
             false => None,
@@ -2670,7 +2333,6 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         if entry.persist {
             return Ok(None);
         }
-        let meter = cx.meter();
         let found = self.marker_datum(
             cx,
             scope,
@@ -2680,7 +2342,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         )?;
         let depth = self.marker_depth(cx, scope, coll, &found)?;
         let stored = self.datum_record(cx, found.home, &found.source)?;
-        self.owe(&found.source, depth, found.home, meter)?;
+        self.owe(&found.source, depth, found.home);
         Ok(Some(Work {
             coll: found.home,
             record: stored.a,
@@ -2699,13 +2361,11 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         coll: usize,
     ) -> Result<Produce, SpaceError> {
         let vehicle = self.vehicle(cx, scope, x, coll)?;
-        let meter = cx.meter();
-        Ok(Produce::create_metered(
+        Ok(Produce::create(
             &collection(scope, coll)?.data,
             &vehicle,
             x.persist,
-            meter,
-        )?)
+        ))
     }
 
     /// The vehicle of `x` on the index channel of `coll`, which no store keeps.
@@ -2720,14 +2380,11 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
     }
 
     /// True when the prefix `coll` is a prefix of the path of `x` (`prefix_key_iff_prefix`).
-    fn enters(
-        &self,
-        scope: &JoinScope,
-        x: &Incoming,
-        coll: usize,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        is_prefix_key(prefix_at(scope, coll)?, prefix_at(scope, x.coll)?, meter)
+    fn enters(&self, scope: &JoinScope, x: &Incoming, coll: usize) -> Result<bool, SpaceError> {
+        Ok(is_prefix_key(
+            prefix_at(scope, coll)?,
+            prefix_at(scope, x.coll)?,
+        ))
     }
 
     /// The payload of `x` re-rooted under the suffix of its path below the prefix `coll`.
@@ -2736,19 +2393,17 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         scope: &JoinScope,
         x: &'x Incoming,
         coll: usize,
-        meter: &ScanMeter,
     ) -> Result<Cow<'x, ListParWithRandom>, SpaceError> {
         if coll == x.coll {
             return Ok(Cow::Borrowed(&x.payload));
         }
-        let path = self.known_element_path(x, meter)?;
-        let suffix = suffix_under(&path, prefix_at(scope, coll)?, meter)?;
-        let payload = meter.copy(&x.payload)?;
+        let path = self.known_element_path(x)?;
+        let suffix = suffix_under(&path, prefix_at(scope, coll)?)?;
+        let payload = x.payload.clone();
         Ok(Cow::Owned(rerooted(
             &suffix,
             payload,
             &HeadEPathMapAdapter,
-            meter,
         )?))
     }
 
@@ -2813,14 +2468,13 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         x: Incoming,
         dirty: &mut [bool],
     ) -> Result<(), SpaceError> {
-        let meter = cx.meter();
         match x.restore {
             None => {
                 let path = self.element_path(cx, &x)?;
-                let encoded = encode_path(&path, meter)?;
-                let markers = datum_markers(&path, &x.source.hash, &x.record, meter)?;
-                self.remember(&x.source.hash, &path, meter)?;
-                let home = meter.copy(self.home_at(x.coll)?)?;
+                let encoded = encode_path(&path)?;
+                let markers = datum_markers(&path, &x.source.hash, &x.record)?;
+                self.remember(&x.source.hash, &path);
+                let home = self.home_at(x.coll)?.clone();
                 cx.store_on(&home, x.record, x.persist, &x.introduction)?;
                 for planned in markers {
                     let prefix_key =
@@ -2829,16 +2483,16 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                             .ok_or(SpaceError::Inconsistent(
                                 "an encoded path has no prefix key of a depth",
                             ))?;
-                    let channel = PathMapOuter::index_metered(self.space, prefix_key, meter)?;
-                    let introduction = cx.introduction().for_record(&planned.record, meter)?;
+                    let channel = PathMapOuter::index(self.space, prefix_key);
+                    let introduction = cx.introduction().for_record(&planned.record)?;
                     cx.store_on(&channel, planned.record, x.persist, &introduction)?;
-                    join::mark(dirty, &[coll_of(scope, prefix_key, meter)?]);
+                    join::mark(dirty, &[coll_of(scope, prefix_key)?]);
                 }
                 Ok(())
             }
             Some(depth) => {
                 let depth = usize::from(depth);
-                if self.settle_owed(&x.source.hash, Some(depth), meter)? {
+                if self.settle_owed(&x.source.hash, Some(depth)) {
                     let coll = self.restore_marker(cx, scope, &x.source.hash, depth, x.coll)?;
                     join::mark(dirty, &[coll]);
                 }
@@ -2860,7 +2514,6 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         members: &[ParCandidate],
         x: Option<&Incoming>,
     ) -> Result<PrefixSpent, SpaceError> {
-        let meter = cx.meter();
         let mut spent = PrefixSpent::default();
         match site {
             FireSite::Single => {
@@ -2874,7 +2527,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                     let index = usize::try_from(candidate.datum_index)
                         .map_err(|_| SpaceError::Inconsistent("a candidate has no view index"))?;
                     if let Some(datum) = self.spent_marker(cx, scope, coll, index)? {
-                        generic::push_reserved(&mut spent.datums, datum, meter)?;
+                        spent.datums.push(datum);
                     }
                 }
             }
@@ -2888,7 +2541,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                 for (position, (entry, &coll)) in bound.iter().zip(colls).enumerate() {
                     let datum = match (entry.at, lifted == Some(position)) {
                         (EntryAt::Incoming, _) | (EntryAt::Stored(_), true) => match x {
-                            Some(x) => self.spent_element(x, meter)?,
+                            Some(x) => self.spent_element(x),
                             None => {
                                 return Err(SpaceError::Inconsistent(
                                     "a fire binds an element in flight, but none is in flight",
@@ -2900,9 +2553,9 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                         }
                     };
                     if let Some(datum) = datum {
-                        generic::push_reserved(&mut spent.datums, datum, meter)?;
+                        spent.datums.push(datum);
                     }
-                    self.spent_class(&entry.claim, &mut spent.classes, meter)?;
+                    self.spent_class(&entry.claim, &mut spent.classes)?;
                 }
             }
         }
@@ -2925,12 +2578,11 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
         if spent.datums.is_empty() && spent.classes.is_empty() {
             return Ok(());
         }
-        let meter = cx.meter();
         let retire_random = RandomPurpose::Retire.derive(random);
         let mut retired: Vec<Blake2b256Hash> = Vec::new();
         for datum in &spent.datums {
             self.retire_datum(cx, scope, datum, &retire_random, authority, dirty)?;
-            generic::push_reserved(&mut retired, meter.copy(&datum.source)?, meter)?;
+            retired.push(datum.source.clone());
         }
         for class in &spent.classes {
             for source in self.class_members(cx, class, &retired)? {
@@ -2941,7 +2593,7 @@ impl<D: Discipline> JoinSource for PrefixSource<'_, D> {
                 };
                 self.retire_datum(cx, scope, &member, &retire_random, authority, dirty)?;
                 self.state.borrow_mut().changed = true;
-                generic::push_reserved(&mut retired, member.source, meter)?;
+                retired.push(member.source);
             }
         }
         Ok(())
@@ -2954,8 +2606,6 @@ mod tests {
 
     use super::*;
 
-    fn unmetered() -> ScanMeter { ScanMeter::new(None) }
-
     fn ints(values: &[i64]) -> Vec<Par> {
         values
             .iter()
@@ -2965,12 +2615,11 @@ mod tests {
 
     #[test]
     fn a_scope_key_tags_its_prefix_and_is_never_empty() {
-        let meter = unmetered();
-        let root = scope_key(&[], &meter).expect("the scope key of the root");
+        let root = scope_key(&[]).expect("the scope key of the root");
         assert_eq!(root.as_bytes(), &[PREFIX_KEY_TAG]);
         assert_eq!(prefix_of_key(&root).expect("a tagged key"), &[] as &[u8]);
-        let encoded = encode_path(&ints(&[0, 1]), &meter).expect("a path");
-        let key = scope_key(full_prefix(&encoded).expect("the prefix"), &meter).expect("a key");
+        let encoded = encode_path(&ints(&[0, 1])).expect("a path");
+        let key = scope_key(full_prefix(&encoded).expect("the prefix")).expect("a key");
         assert_eq!(key.as_bytes().first(), Some(&PREFIX_KEY_TAG));
         assert_eq!(
             prefix_of_key(&key).expect("a tagged key"),
@@ -2982,31 +2631,26 @@ mod tests {
 
     #[test]
     fn the_terminated_key_of_a_prefix_is_its_path_key() {
-        let meter = unmetered();
         let path = ints(&[3, 4, 5]);
-        let encoded = encode_path(&path, &meter).expect("a path");
+        let encoded = encode_path(&path).expect("a path");
         let prefix = full_prefix(&encoded).expect("the prefix");
-        assert_eq!(
-            terminated(prefix, &meter).expect("a key"),
-            path_key(&path, &meter).expect("the path key")
-        );
+        assert_eq!(terminated(prefix), path_key(&path).expect("the path key"));
     }
 
     #[test]
     fn a_suffix_under_a_prefix_is_the_rest_of_the_path() {
-        let meter = unmetered();
         let path = ints(&[0, 1, 2]);
-        let encoded = encode_path(&path, &meter).expect("a path");
+        let encoded = encode_path(&path).expect("a path");
         for depth in 0..=path.len() {
             let prefix = encoded.prefix_key(depth).expect("a prefix key");
-            assert_eq!(depth_of(&encoded, prefix, &meter).expect("a depth"), depth);
+            assert_eq!(depth_of(&encoded, prefix).expect("a depth"), depth);
             assert_eq!(
-                suffix_under(&path, prefix, &meter).expect("a suffix"),
+                suffix_under(&path, prefix).expect("a suffix"),
                 path[depth..].to_vec()
             );
         }
-        let other = encode_path(&ints(&[9]), &meter).expect("a path");
-        assert!(depth_of(&encoded, full_prefix(&other).expect("a prefix"), &meter).is_err());
+        let other = encode_path(&ints(&[9])).expect("a path");
+        assert!(depth_of(&encoded, full_prefix(&other).expect("a prefix")).is_err());
     }
 
     #[test]
@@ -3019,14 +2663,13 @@ mod tests {
 
     #[test]
     fn the_closure_adds_every_prefix_of_a_path_and_marks_the_path() {
-        let meter = unmetered();
         let mut closure = Closure::new(NativeSpace {
             sid: [7; namespace::SID_LEN],
             durability: namespace::Durability::Durable,
         });
         let path = ints(&[0, 1]);
-        closure.add_path(&path, &meter).expect("a path");
-        let encoded = encode_path(&path, &meter).expect("a path");
+        closure.add_path(&path).expect("a path");
+        let encoded = encode_path(&path).expect("a path");
         let keys: Vec<Vec<u8>> = encoded
             .prefix_keys()
             .map(|key| key.expect("a key").to_vec())
@@ -3035,9 +2678,7 @@ mod tests {
         let data: Vec<bool> = closure.prefixes.values().copied().collect();
         assert_eq!(data, vec![false, false, true]);
         assert_eq!(closure.todo.len(), 3);
-        closure
-            .add_prefix(&keys[0], true, &meter)
-            .expect("a prefix");
+        closure.add_prefix(&keys[0], true);
         assert_eq!(closure.prefixes.get(&keys[0]), Some(&true));
         assert_eq!(closure.todo.len(), 3, "a known prefix is not visited again");
     }

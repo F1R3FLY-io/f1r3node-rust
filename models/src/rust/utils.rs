@@ -270,6 +270,20 @@ pub fn no_frees_exprs(exprs: &[Expr]) -> Vec<Expr> {
         .collect()
 }
 
+/// D-D2 (DR-104): [`no_frees_exprs`] in place. It keeps the same expressions in
+/// the same order without copying them (`MatcherReadsByReference.retain_equals_filter`).
+pub fn retain_no_frees(exprs: &mut Vec<Expr>) {
+    exprs.retain(|expr| match &expr.expr_instance {
+        Some(EVarBody(EVar { v: Some(v) })) => match &v.var_instance {
+            Some(FreeVar(_)) => false,
+            Some(Wildcard(_)) => false,
+            _ => true,
+        },
+
+        _ => true,
+    });
+}
+
 // See shared/src/main/scala/coop/rchain/catscontrib/Alternative_.scala - guard
 pub fn guard(condition: bool) -> Option<()> {
     if condition {
@@ -521,6 +535,36 @@ pub fn new_guri_par(value: String, _locally_free_par: Vec<u8>, _connective_used_
 pub fn new_guri_expr(value: String) -> Expr {
     Expr {
         expr_instance: Some(GUri(value)),
+    }
+}
+
+pub fn new_guint64_expr(value: u64) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GUint64(value)),
+    }
+}
+
+pub fn new_gint32_expr(value: i32) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GInt32(value)),
+    }
+}
+
+pub fn new_guint32_expr(value: u32) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GUint32(value)),
+    }
+}
+
+pub fn new_guint16_expr(value: u16) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GUint16(value.into())),
+    }
+}
+
+pub fn new_guint8_expr(value: u8) -> Expr {
+    Expr {
+        expr_instance: Some(ExprInstance::GUint8(value.into())),
     }
 }
 

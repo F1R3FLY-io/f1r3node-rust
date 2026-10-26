@@ -39,7 +39,12 @@ pub async fn mint_on_parents(
     let deploy_storage = node.deploy_storage.clone();
     let rejected_buffer = node.rejected_deploy_buffer.clone();
     let runtime_manager = node.runtime_manager.clone();
-    let created = block_creator::create(
+    // Added by DR-116 (gap G6): a staged proposal takes the node's adopted policy.
+    let adopted_casper = node.casper.clone();
+    // let created = block_creator::create(
+    let created = block_creator::create_with_adopted_policy(
+        adopted_casper.adopted_resource_policy.as_ref(),
+        adopted_casper.offered_funded_active,
         &snapshot,
         &validator_identity,
         None,

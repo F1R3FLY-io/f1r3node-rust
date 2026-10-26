@@ -1,7 +1,6 @@
 use std::cmp::Ordering;
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::HostWorkDimension;
 use models::rust::signed_phlo_deploy::FundedDeploy;
 use thiserror::Error;
 
@@ -11,10 +10,9 @@ use super::{
     PhloFamilyFundingSelection, PhloFundingError,
 };
 use crate::rust::interpreter::accounting::monetary_allocation::{
-    reserve_work, FundingReservationError, FundingSearchError, MonetaryCursor, MonetaryCursorError,
+    FundingReservationError, FundingSearchError, MonetaryCursor, MonetaryCursorError,
     MonetaryCursorTransition,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PhloScopedCursorSnapshot {
@@ -69,19 +67,7 @@ pub enum PhloPolicyCaptureError {
     Search(#[from] FundingSearchError),
 }
 
-fn compare_custodies(
-    left: &[u8],
-    right: &[u8],
-    budget: &HostWorkBudget,
-) -> Result<Ordering, FundingSearchError> {
-    reserve_work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        left.len()
-            .min(right.len())
-            .checked_add(1)
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
+fn compare_custodies(left: &[u8], right: &[u8]) -> Result<Ordering, FundingSearchError> {
     Ok(left.cmp(right))
 }
 
@@ -89,7 +75,6 @@ fn check_snapshot_cohort(
     family: &CheckedPhloFundingFamily<'_>,
     snapshots: PhloFamilyCursorSnapshot<'_>,
     limits: PhloFamilyFundingLimits,
-    budget: &HostWorkBudget,
 ) -> Result<NonZeroUsize, PhloPolicyCaptureError> {
     let n = family.sources().len();
     let count =
@@ -105,7 +90,6 @@ fn check_snapshot_cohort(
     }
     snapshots.resource.cursor.validate(count)?;
     snapshots.fee.cursor.validate(count)?;
-    reserve_work(budget, HostWorkDimension::VerificationOperations, n)?;
     let mut remaining = limits.funding.custody_bytes;
     for custody in snapshots.canonical_custodies {
         if custody.is_empty() {
@@ -118,7 +102,7 @@ fn check_snapshot_cohort(
             ))?;
     }
     for adjacent in snapshots.canonical_custodies.windows(2) {
-        if compare_custodies(adjacent[0], adjacent[1], budget)? != Ordering::Less {
+        if compare_custodies(adjacent[0], adjacent[1])? != Ordering::Less {
             return Err(PhloPolicyCaptureError::CursorCohortMismatch);
         }
     }
@@ -127,11 +111,7 @@ fn check_snapshot_cohort(
         let mut found = false;
         while low < high {
             let middle = low + (high - low) / 2;
-            match compare_custodies(
-                snapshots.canonical_custodies[middle],
-                source.custody,
-                budget,
-            )? {
+            match compare_custodies(snapshots.canonical_custodies[middle], source.custody)? {
                 Ordering::Less => low = middle + 1,
                 Ordering::Greater => high = middle,
                 Ordering::Equal => {
@@ -152,27 +132,17 @@ impl<'a, A> CheckedSignedPhloFundingIntent<'a, A> {
         self,
         snapshots: PhloFamilyCursorSnapshot<'a>,
         limits: PhloFamilyFundingLimits,
-        budget: &HostWorkBudget,
     ) -> Result<Option<CheckedSignedPhloFamilyPolicy<'a, A>>, PhloPolicyCaptureError> {
         let family = self.intent().bound().consent().family();
-        let count = check_snapshot_cohort(family, snapshots, limits, budget)?;
+        let count = check_snapshot_cohort(family, snapshots, limits)?;
         let resource = snapshots.resource.cursor.position_index(count)?;
         let fee = snapshots.fee.cursor.position_index(count)?;
         let Some(selection) = self
             .intent()
-            .verified_funding_selection(resource, fee, limits, budget)?
+            .verified_funding_selection(resource, fee, limits)?
         else {
             return Ok(None);
         };
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            selection
-                .cursor_transitions()
-                .len()
-                .checked_mul(2)
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         for transition in selection.cursor_transitions() {
             let _ = bind_transition(snapshots.resource, transition.resource_next_cursor(), count)?;
             let _ = bind_transition(snapshots.fee, transition.fee_next_cursor(), count)?;
@@ -206,9 +176,7 @@ impl<'a, A> CheckedSignedPhloFamilyPolicy<'a, A> {
         &self,
         branch: usize,
         limits: PhloCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<ScopedPhloFundingCapture<'a, A>, PhloPolicyCaptureError> {
-        reserve_work(budget, HostWorkDimension::VerificationOperations, 4)?;
         let transition =
             self.selection
                 .cursor_transitions()
@@ -225,10 +193,7 @@ impl<'a, A> CheckedSignedPhloFamilyPolicy<'a, A> {
         )?;
         let fee_transition =
             bind_transition(self.snapshots.fee, transition.fee_next_cursor(), count)?;
-        let capture = self
-            .signed_intent
-            .intent()
-            .capture_case(branch, limits, budget)?;
+        let capture = self.signed_intent.intent().capture_case(branch, limits)?;
         Ok(ScopedPhloFundingCapture {
             signed_intent: self.signed_intent,
             capture,

@@ -1,13 +1,9 @@
 use models::rhoapi::CostRegion;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use prost::Message;
 use thiserror::Error;
 
 use super::{NativePhloMeasurement, NativePhloMeasurements};
-use crate::rust::interpreter::accounting::authority::{
-    canonical_cost_signature, reserve_authority_signature_tree, AuthorityError,
-};
-use crate::rust::interpreter::host_work::HostWorkBudget;
+use crate::rust::interpreter::accounting::authority::{canonical_cost_signature, AuthorityError};
 
 mod purses;
 pub use purses::{
@@ -51,18 +47,10 @@ impl NativePhloMeasurements<'_> {
     pub fn region_demands(
         &self,
         limits: NativePhloRegionLimits,
-        host_work: &HostWorkBudget,
     ) -> Result<NativePhloRegionDemands<'_>, NativePhloRegionError> {
         let mut region_count = 0_usize;
         let mut byte_count = 0_usize;
-        let mut depth = 0_u64;
         for row in self.observations.rows() {
-            host_work
-                .reserve(
-                    HostWorkDimension::VerificationOperations,
-                    HostWorkUnits::new(1),
-                )
-                .map_err(AuthorityError::from)?;
             region_count = region_count
                 .checked_add(row.authority.regions.len())
                 .filter(|count| *count <= limits.regions)
@@ -71,26 +59,15 @@ impl NativePhloMeasurements<'_> {
                 if region.instance_id.len() != 32 {
                     return Err(AuthorityError::InvalidRegionIdentity.into());
                 }
-                let signature = region
-                    .signature
-                    .as_ref()
-                    .ok_or(AuthorityError::MissingSignature)?;
-                reserve_authority_signature_tree(signature, host_work, &mut depth)?;
+                if region.signature.is_none() {
+                    return Err(AuthorityError::MissingSignature.into());
+                }
             }
             let encoded_bytes = row.authority.encoded_len();
             byte_count = byte_count
                 .checked_add(encoded_bytes)
                 .filter(|count| *count <= limits.encoded_authority_bytes)
                 .ok_or(NativePhloRegionError::AuthorityByteLimit)?;
-            host_work
-                .reserve(
-                    HostWorkDimension::StructuralBytes,
-                    HostWorkUnits::new(
-                        u64::try_from(encoded_bytes)
-                            .map_err(|_| AuthorityError::ArithmeticOverflow)?,
-                    ),
-                )
-                .map_err(AuthorityError::from)?;
             let mut previous: Option<&CostRegion> = None;
             for region in &row.authority.regions {
                 if previous.is_some_and(|prior| prior.instance_id >= region.instance_id) {

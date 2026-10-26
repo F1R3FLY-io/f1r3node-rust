@@ -35,13 +35,12 @@
 //! `FIRE_ROUND_CAP`. A divergent pair re-issues after one round (A10): a persistent send with a
 //! persistent waiter, or a persistent receive with a persistent record.
 //!
-//! The cell takes no send params and no query params. Its head scan reserves what the scan of a
-//! queue reserves (decision 42). Each capacity check reserves one comparison of the side size, and
-//! the re-entry rule compares nothing.
+//! The cell takes no send params and no query params. Its head scan is the scan of a queue. Each
+//! capacity check compares the size of a side with its bound, and the re-entry rule compares
+//! nothing.
 
 use serde::Serialize;
 
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{Discipline, Ordered, Side};
@@ -56,17 +55,15 @@ impl Discipline for CellDiscipline {
     const SEND_PARAMS: &'static [&'static str] = &[];
     const CAPACITY: Option<usize> = Some(1);
 
-    /// The entry with the least `(ord, bincode bytes)`, on both sides. The rule and its
-    /// reservations are the rule of the queue ([`QueueDiscipline::head_metered`]). A well-formed
-    /// cell holds at most one entry on each side, so the head is that entry. On any side, the
-    /// head is a function of the entry set.
-    fn head_metered<T: Serialize>(
+    /// The entry with the least `(ord, bincode bytes)`, on both sides. The rule is the rule of
+    /// the queue ([`QueueDiscipline::head`]). A well-formed cell holds at most one entry on each
+    /// side, so the head is that entry. On any side, the head is a function of the entry set.
+    fn head<T: Serialize>(
         &self,
         side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        QueueDiscipline.head_metered(side, entries, meter)
+        QueueDiscipline.head(side, entries)
     }
 
     /// A fresh element always reaches the head of its side. A send meets the waiter of the cell,
@@ -75,26 +72,14 @@ impl Discipline for CellDiscipline {
 
     /// A re-issued persistent element re-enters as a fresh element (decision 43, section 43.8 of
     /// its design). It keeps the order of its first round, and it reaches the head also when an
-    /// older entry holds its side. The rule compares nothing, so it reserves nothing.
-    fn precedes(
-        &self,
-        _side: Side,
-        _ord: i64,
-        _head: i64,
-        _meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        Ok(true)
-    }
+    /// older entry holds its side. The rule compares nothing.
+    fn precedes(&self, _side: Side, _ord: i64, _head: i64) -> Result<bool, SpaceError> { Ok(true) }
 }
 
 #[cfg(test)]
 mod tests {
-    use models::rust::host_work::{
-        HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
-    };
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
 
     /// The entries as borrowed `Ordered` views, in list order.
     fn ordered(entries: &[(i64, String)]) -> Vec<Ordered<'_, String>> {
@@ -133,19 +118,6 @@ mod tests {
                 all
             }
         }
-    }
-
-    /// A host-work budget that accepts every charge and records the usage.
-    fn recording() -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
-    }
-
-    /// The usage of every dimension of `budget`.
-    fn usage(budget: &HostWorkBudget) -> Vec<HostWorkUsage> {
-        HostWorkDimension::ALL
-            .into_iter()
-            .map(|dimension| budget.usage(dimension))
-            .collect()
     }
 
     #[test]
@@ -201,40 +173,23 @@ mod tests {
     }
 
     #[test]
-    fn space_cell_head_scan_reserves_what_the_queue_scan_reserves() {
+    fn space_cell_head_scan_is_the_queue_head_scan() {
         let entries = vec![
             (2, "tie-b".to_string()),
             (2, "tie-a".to_string()),
             (1, "older".to_string()),
         ];
-        let (cell_budget, queue_budget) = (recording(), recording());
         let cell = CellDiscipline
-            .head_metered(
-                Side::Data,
-                &ordered(&entries),
-                &ScanMeter::new(Some(cell_budget.clone())),
-            )
-            .expect("the scan fits the budget");
+            .head(Side::Data, &ordered(&entries))
+            .expect("the scan gives a head");
         let queue = QueueDiscipline
-            .head_metered(
-                Side::Data,
-                &ordered(&entries),
-                &ScanMeter::new(Some(queue_budget.clone())),
-            )
-            .expect("the scan fits the budget");
+            .head(Side::Data, &ordered(&entries))
+            .expect("the scan gives a head");
         assert_eq!(cell, queue);
-        assert_eq!(usage(&cell_budget), usage(&queue_budget));
-        assert_ne!(
-            usage(&cell_budget),
-            usage(&recording()),
-            "the scan reserves its comparisons and its tie-break encodes"
-        );
     }
 
     #[test]
-    fn space_cell_every_element_reaches_the_head_and_the_rule_reserves_nothing() {
-        let budget = recording();
-        let meter = ScanMeter::new(Some(budget.clone()));
+    fn space_cell_every_element_reaches_the_head() {
         for side in [Side::Data, Side::Waiters] {
             for queued in [0, 1, 2, usize::MAX] {
                 assert!(
@@ -244,26 +199,14 @@ mod tests {
             }
             for (ord, head) in [(0, 1), (1, 0), (5, 9), (9, 5), (i64::MAX, 0)] {
                 assert_eq!(
-                    CellDiscipline.precedes(side, ord, head, &meter),
+                    CellDiscipline.precedes(side, ord, head),
                     Ok(true),
                     "a re-entered element is at the head ({side:?}, {ord}, {head})"
                 );
             }
         }
-        assert_eq!(
-            usage(&budget),
-            usage(&recording()),
-            "the re-entry rule compares nothing"
-        );
-        // Negative control: the rule of the queue holds an element behind an older head, and it
-        // reserves the comparison of the two orders.
-        let queue_budget = recording();
-        let queue_meter = ScanMeter::new(Some(queue_budget.clone()));
-        assert_eq!(
-            QueueDiscipline.precedes(Side::Data, 5, 2, &queue_meter),
-            Ok(false)
-        );
+        // Negative control: the rule of the queue holds an element behind an older head.
+        assert_eq!(QueueDiscipline.precedes(Side::Data, 5, 2), Ok(false));
         assert!(!QueueDiscipline.reaches_head(Side::Data, 1));
-        assert_ne!(usage(&queue_budget), usage(&recording()));
     }
 }

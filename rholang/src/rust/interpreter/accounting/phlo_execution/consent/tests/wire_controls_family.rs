@@ -60,7 +60,6 @@ fn threshold_envelope<A: std::fmt::Debug + serde::Serialize + ToMessage>(
 
 #[test]
 fn signed_native_family_checks_maximum_holds_before_selecting_charged_or_zero_branches() {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
     use models::rust::phlo_obligation::PhloObligationKeyLimits;
 
     use crate::rust::interpreter::accounting::monetary_allocation::{
@@ -70,10 +69,8 @@ fn signed_native_family_checks_maximum_holds_before_selecting_charged_or_zero_br
         NativePhloAmountError, NativePhloPolicyError, PhloCaptureLimits, PhloFamilyCursorSnapshot,
         PhloFamilyFundingLimits, PhloScopedCursorSnapshot,
     };
-    use crate::rust::interpreter::host_work::HostWorkBudget;
 
     let cap = |value| NonZeroUsize::new(value).unwrap();
-    let budget = || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)));
     let work = PhloExecutionLimits {
         resource_entries: 4,
         authority_nodes: 1024,
@@ -259,17 +256,14 @@ fn signed_native_family_checks_maximum_holds_before_selecting_charged_or_zero_br
                     },
                 },
                 policy_limits,
-                &budget(),
             )
             .unwrap()
             .unwrap();
         assert_eq!(policy.selection().source_holds(), &[hold]);
         if hold == i64::MAX as u64 {
-            let native = policy.into_native(&budget()).unwrap();
+            let native = policy.into_native().unwrap();
             for branch in 0..2 {
-                let capture = native
-                    .capture_case(branch, capture_limits, &budget())
-                    .unwrap();
+                let capture = native.capture_case(branch, capture_limits).unwrap();
                 let amounts = &capture.amounts()[0];
                 assert_eq!(amounts.hold(), i64::MAX);
                 assert_eq!(amounts.custody(), b"wallet");
@@ -299,7 +293,7 @@ fn signed_native_family_checks_maximum_holds_before_selecting_charged_or_zero_br
             }
         } else {
             assert!(matches!(
-                policy.into_native(&budget()),
+                policy.into_native(),
                 Err(NativePhloPolicyError::Amount(
                     NativePhloAmountError::OutOfRange
                 ))
@@ -583,11 +577,10 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
         let checked_intent = authenticated.intent();
         assert_eq!(checked_intent.record(), &decoded);
         if count == 2 {
-            use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
             use models::rust::phlo_obligation::PhloObligationKeyLimits;
 
             use crate::rust::interpreter::accounting::monetary_allocation::{
-                FundingSearchError, FundingSearchLimits, MonetaryCursor, MonetaryCursorError,
+                FundingSearchLimits, MonetaryCursor, MonetaryCursorError,
             };
             use crate::rust::interpreter::accounting::phlo_execution::{
                 select_phlo_funding_family, NativePhloPolicyError, PhloCaptureLimits,
@@ -595,10 +588,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 PhloFundingRequirement, PhloOutcomeMatchError, PhloOutcomeMatchLimits,
                 PhloPolicyCaptureError, PhloScopedCursorSnapshot,
             };
-            use crate::rust::interpreter::host_work::HostWorkBudget;
 
-            let budget =
-                || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)));
             let policy_limits = PhloFamilyFundingLimits {
                 funding: PhloFundingLimits {
                     sources: NonZeroUsize::new(256).unwrap(),
@@ -614,7 +604,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 aggregate_key_bytes: 1_048_576,
             };
             assert!(!checked_intent
-                .verify_funding_policy(0, 0, policy_limits, &budget())
+                .verify_funding_policy(0, 0, policy_limits)
                 .unwrap());
             let requirements: Vec<_> = cases
                 .iter()
@@ -632,7 +622,6 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     canonical_fee_cursor: 0,
                 },
                 policy_limits,
-                &budget(),
             )
             .unwrap()
             .unwrap();
@@ -658,7 +647,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 .unwrap();
             let canonical_intent = canonical_signed.intent();
             assert!(canonical_intent
-                .verify_funding_policy(0, 0, policy_limits, &budget())
+                .verify_funding_policy(0, 0, policy_limits)
                 .unwrap());
             assert_eq!(canonical_intent.record(), checked_intent.record());
             let canonical_custodies: Vec<&[u8]> =
@@ -676,7 +665,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 },
             };
             let policy = canonical_signed
-                .plan_funding_policy(snapshots, policy_limits, &budget())
+                .plan_funding_policy(snapshots, policy_limits)
                 .unwrap()
                 .unwrap();
             assert_eq!(policy.signed_intent().intent().record(), &decoded);
@@ -693,7 +682,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 selected_family.assignments()
             );
             assert!(authenticated
-                .plan_funding_policy(snapshots, policy_limits, &budget())
+                .plan_funding_policy(snapshots, policy_limits)
                 .unwrap()
                 .is_none());
             let capture_limits = PhloCaptureLimits {
@@ -704,7 +693,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 key: policy_limits.keys,
                 aggregate_key_bytes: policy_limits.aggregate_key_bytes,
             };
-            let accepted_capture = policy.capture_case(0, capture_limits, &budget()).unwrap();
+            let accepted_capture = policy.capture_case(0, capture_limits).unwrap();
             let offered_policy = view
                 .check_offered_signed_family(
                     &offered_envelope,
@@ -713,22 +702,18 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     signed_limits,
                 )
                 .unwrap()
-                .plan_funding_policy(snapshots, policy_limits, &budget())
+                .plan_funding_policy(snapshots, policy_limits)
                 .unwrap()
                 .unwrap()
-                .into_native(&budget())
+                .into_native()
                 .unwrap();
             assert_eq!(
                 offered_policy.policy().selection().assignments(),
                 policy.selection().assignments()
             );
             for branch in 0..canonical_family.cases().len() {
-                let offered_capture = offered_policy
-                    .capture_case(branch, capture_limits, &budget())
-                    .unwrap();
-                let original = policy
-                    .capture_case(branch, capture_limits, &budget())
-                    .unwrap();
+                let offered_capture = offered_policy.capture_case(branch, capture_limits).unwrap();
+                let original = policy.capture_case(branch, capture_limits).unwrap();
                 assert!(std::ptr::eq(
                     offered_capture.scoped().signed_intent().envelope(),
                     &offered_envelope
@@ -806,7 +791,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     Err(MonetaryCursorError::ScopeMismatch)
                 );
             }
-            let rejected_capture = policy.capture_case(1, capture_limits, &budget()).unwrap();
+            let rejected_capture = policy.capture_case(1, capture_limits).unwrap();
             assert_eq!(rejected_capture.capture().branch(), 1);
             assert_eq!(rejected_capture.resource_transition(), None);
             assert_eq!(rejected_capture.fee_transition(), None);
@@ -828,8 +813,8 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     .collect::<Vec<_>>(),
                 vec![3, 1]
             );
-            assert!(policy.capture_case(2, capture_limits, &budget()).is_err());
-            let native_policy = policy.clone().into_native(&budget()).unwrap();
+            assert!(policy.capture_case(2, capture_limits).is_err());
+            let native_policy = policy.clone().into_native().unwrap();
             let match_limits = PhloOutcomeMatchLimits {
                 execution: work,
                 key: policy_limits.keys,
@@ -842,7 +827,6 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     PhloOutcome::Accepted(&[]),
                     match_limits,
                     capture_limits,
-                    &budget(),
                 )
                 .unwrap();
             let offered_success = offered_policy
@@ -851,7 +835,6 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     PhloOutcome::Accepted(&[]),
                     match_limits,
                     capture_limits,
-                    &budget(),
                 )
                 .unwrap();
             assert!(std::ptr::eq(
@@ -874,7 +857,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 crate::rust::interpreter::accounting::phlo_execution::PhloDischargeLimits {
                     execution: work, key: match_limits.key,
                     aggregate_key_bytes: match_limits.aggregate_key_bytes,
-                }, &budget(),
+                },
             ).unwrap();
             let derived_success = native_policy
                 .capture_matching_discharge(
@@ -883,7 +866,6 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     PhloOutcome::Accepted(&[]),
                     match_limits,
                     capture_limits,
-                    &budget(),
                 )
                 .unwrap();
             assert_eq!(derived_success, matched_success);
@@ -894,7 +876,6 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     PhloOutcome::Accepted(&[]),
                     match_limits,
                     capture_limits,
-                    &budget(),
                 )
                 .unwrap();
             assert_eq!(derived_offered, offered_success);
@@ -905,7 +886,6 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     PhloOutcome::Accepted(&[PhloFailure::Platform]),
                     match_limits,
                     capture_limits,
-                    &budget(),
                 )
                 .unwrap();
             assert_eq!(derived_platform.scoped(), &rejected_capture);
@@ -915,7 +895,6 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     PhloOutcome::Accepted(&[PhloFailure::Platform, PhloFailure::Platform]),
                     match_limits,
                     capture_limits,
-                    &budget(),
                 )
                 .unwrap();
             assert_eq!(matched_platform.scoped(), &rejected_capture);
@@ -924,8 +903,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     execution,
                     PhloOutcome::Accepted(&[PhloFailure::User]),
                     match_limits,
-                    capture_limits,
-                    &budget()
+                    capture_limits
                 ),
                 Err(PhloOutcomeMatchError::NoMatchingOutcome)
             ));
@@ -934,8 +912,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     execution,
                     PhloOutcome::AdmissionRejected,
                     match_limits,
-                    capture_limits,
-                    &budget()
+                    capture_limits
                 ),
                 Err(PhloOutcomeMatchError::NoMatchingOutcome)
             ));
@@ -956,8 +933,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     empty_execution,
                     PhloOutcome::Accepted(&[]),
                     match_limits,
-                    capture_limits,
-                    &budget()
+                    capture_limits
                 ),
                 Err(PhloOutcomeMatchError::NoMatchingOutcome)
             ));
@@ -969,21 +945,10 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                         cases: NonZeroUsize::new(1).unwrap(),
                         ..match_limits
                     },
-                    capture_limits,
-                    &budget()
+                    capture_limits
                 ),
                 Err(PhloOutcomeMatchError::TooManyCases)
             ));
-            let no_match_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-            assert!(native_policy
-                .capture_matching_execution(
-                    execution,
-                    PhloOutcome::Accepted(&[]),
-                    match_limits,
-                    capture_limits,
-                    &no_match_work
-                )
-                .is_err());
             let reversed_resources: Vec<_> = resources.iter().rev().copied().collect();
             let reordered_execution = check_phlo_execution(
                 checked,
@@ -1029,53 +994,19 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
             let alias_policy = view
                 .check_signed_family(&envelope, &alias_family, right, signed_limits)
                 .unwrap()
-                .plan_funding_policy(snapshots, alias_limits, &budget())
+                .plan_funding_policy(snapshots, alias_limits)
                 .unwrap()
                 .unwrap()
-                .into_native(&budget())
+                .into_native()
                 .unwrap();
-            let alias_budget = budget();
             let alias_capture = alias_policy
                 .capture_matching_execution(
                     reordered_execution,
                     PhloOutcome::Accepted(&[]),
                     match_limits,
                     capture_limits,
-                    &alias_budget,
                 )
                 .unwrap();
-            for dimension in HostWorkDimension::ALL {
-                let usage = alias_budget.usage(dimension).get();
-                if usage == 0 {
-                    continue;
-                }
-                let mut exact = alias_budget.limits();
-                exact.set(dimension, HostWorkLimit::new(usage));
-                assert_eq!(
-                    alias_policy
-                        .capture_matching_execution(
-                            reordered_execution,
-                            PhloOutcome::Accepted(&[]),
-                            match_limits,
-                            capture_limits,
-                            &HostWorkBudget::new(exact),
-                        )
-                        .unwrap(),
-                    alias_capture,
-                );
-                exact.set(dimension, HostWorkLimit::new(usage - 1));
-                let short = HostWorkBudget::new(exact);
-                assert!(alias_policy
-                    .capture_matching_execution(
-                        reordered_execution,
-                        PhloOutcome::Accepted(&[]),
-                        match_limits,
-                        capture_limits,
-                        &short,
-                    )
-                    .is_err());
-                assert!(short.is_rejected());
-            }
             let canonical_capture = alias_capture.scoped().capture();
             let expected_capture = accepted_capture.capture();
             assert_eq!(canonical_capture.sources(), expected_capture.sources());
@@ -1121,18 +1052,17 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
             let conflicting_policy = view
                 .check_signed_family(&envelope, &conflicting_family, right, signed_limits)
                 .unwrap()
-                .plan_funding_policy(snapshots, policy_limits, &budget())
+                .plan_funding_policy(snapshots, policy_limits)
                 .unwrap()
                 .unwrap()
-                .into_native(&budget())
+                .into_native()
                 .unwrap();
             assert!(matches!(
                 conflicting_policy.capture_matching_execution(
                     execution,
                     PhloOutcome::Accepted(&[PhloFailure::Platform]),
                     match_limits,
-                    capture_limits,
-                    &budget()
+                    capture_limits
                 ),
                 Err(PhloOutcomeMatchError::ConflictingMatchingOutcomes)
             ));
@@ -1142,12 +1072,8 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 policy.selection().assignments()
             );
             for branch in 0..2 {
-                let scoped = policy
-                    .capture_case(branch, capture_limits, &budget())
-                    .unwrap();
-                let native = native_policy
-                    .capture_case(branch, capture_limits, &budget())
-                    .unwrap();
+                let scoped = policy.capture_case(branch, capture_limits).unwrap();
+                let native = native_policy.capture_case(branch, capture_limits).unwrap();
                 assert_eq!(native.scoped(), &scoped);
                 assert_eq!(native.amounts().len(), canonical_custodies.len());
                 for ((amount, captured), custody) in native
@@ -1172,58 +1098,12 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 }
             }
             assert!(matches!(
-                native_policy.capture_case(2, capture_limits, &budget()),
+                native_policy.capture_case(2, capture_limits),
                 Err(NativePhloPolicyError::Policy(_))
             ));
-            let zero_budget =
-                || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-            assert!(matches!(
-                policy.clone().into_native(&zero_budget()),
-                Err(NativePhloPolicyError::Search(_))
-            ));
-            assert!(native_policy
-                .capture_case(0, capture_limits, &zero_budget())
-                .is_err());
             for branch in 0..2 {
-                let generic_budget = budget();
-                policy
-                    .capture_case(branch, capture_limits, &generic_budget)
-                    .unwrap();
-                let complete_budget = budget();
-                let complete = native_policy
-                    .capture_case(branch, capture_limits, &complete_budget)
-                    .unwrap();
-                for dimension in [
-                    HostWorkDimension::VerificationOperations,
-                    HostWorkDimension::SearchStateBytes,
-                ] {
-                    let generic_usage = generic_budget.usage(dimension).get();
-                    let complete_usage = complete_budget.usage(dimension).get();
-                    assert!(complete_usage > generic_usage);
-                    let mut generic_limit = generic_budget.limits();
-                    generic_limit.set(dimension, HostWorkLimit::new(generic_usage));
-                    assert!(policy
-                        .capture_case(branch, capture_limits, &HostWorkBudget::new(generic_limit))
-                        .is_ok());
-                    assert!(matches!(
-                        native_policy.capture_case(
-                            branch,
-                            capture_limits,
-                            &HostWorkBudget::new(generic_limit)
-                        ),
-                        Err(NativePhloPolicyError::Search(FundingSearchError::HostWork(
-                            _
-                        )))
-                    ));
-                    let mut exact_limit = generic_budget.limits();
-                    exact_limit.set(dimension, HostWorkLimit::new(complete_usage));
-                    assert_eq!(
-                        native_policy
-                            .capture_case(branch, capture_limits, &HostWorkBudget::new(exact_limit))
-                            .unwrap(),
-                        complete
-                    );
-                }
+                policy.capture_case(branch, capture_limits).unwrap();
+                native_policy.capture_case(branch, capture_limits).unwrap();
             }
             let reversed_sources: Vec<_> = sources.iter().rev().copied().collect();
             let reversed_eligibility: Vec<_> = eligibility.iter().rev().cloned().collect();
@@ -1251,17 +1131,15 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
             let reversed_policy = view
                 .check_signed_family(&envelope, &reversed_family, right, signed_limits)
                 .unwrap()
-                .plan_funding_policy(snapshots, policy_limits, &budget())
+                .plan_funding_policy(snapshots, policy_limits)
                 .unwrap()
                 .unwrap()
-                .into_native(&budget())
+                .into_native()
                 .unwrap();
             for branch in 0..2 {
-                let native = native_policy
-                    .capture_case(branch, capture_limits, &budget())
-                    .unwrap();
+                let native = native_policy.capture_case(branch, capture_limits).unwrap();
                 let reversed = reversed_policy
-                    .capture_case(branch, capture_limits, &budget())
+                    .capture_case(branch, capture_limits)
                     .unwrap();
                 assert_eq!(native.amounts(), reversed.amounts());
                 assert_eq!(
@@ -1290,8 +1168,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                             canonical_custodies: custody_keys,
                             ..snapshots
                         },
-                        policy_limits,
-                        &budget()
+                        policy_limits
                     ),
                     Err(PhloPolicyCaptureError::CursorCohortMismatch)
                 ));
@@ -1316,11 +1193,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                     }
                 };
                 assert!(matches!(
-                    canonical_signed.plan_funding_policy(
-                        exhausted_snapshots,
-                        policy_limits,
-                        &budget()
-                    ),
+                    canonical_signed.plan_funding_policy(exhausted_snapshots, policy_limits),
                     Err(PhloPolicyCaptureError::Cursor(
                         MonetaryCursorError::RevisionExhausted
                     ))
@@ -1350,12 +1223,10 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 ..snapshots
             };
             let zero_policy = zero_signed
-                .plan_funding_policy(both_exhausted, policy_limits, &budget())
+                .plan_funding_policy(both_exhausted, policy_limits)
                 .unwrap()
                 .unwrap();
-            let zero_capture = zero_policy
-                .capture_case(0, capture_limits, &budget())
-                .unwrap();
+            let zero_capture = zero_policy.capture_case(0, capture_limits).unwrap();
             assert_eq!(zero_capture.resource_transition(), None);
             assert_eq!(zero_capture.fee_transition(), None);
             assert!(zero_capture
@@ -1405,13 +1276,10 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                         ..snapshots
                     },
                     policy_limits,
-                    &budget(),
                 )
                 .unwrap()
                 .unwrap();
-            let fee_only_capture = fee_only_policy
-                .capture_case(0, capture_limits, &budget())
-                .unwrap();
+            let fee_only_capture = fee_only_policy.capture_case(0, capture_limits).unwrap();
             assert_eq!(fee_only_capture.resource_transition(), None);
             assert_eq!(
                 fee_only_capture.fee_transition().unwrap().expected(),
@@ -1423,8 +1291,7 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                         fee: both_exhausted.fee,
                         ..snapshots
                     },
-                    policy_limits,
-                    &budget()
+                    policy_limits
                 ),
                 Err(PhloPolicyCaptureError::Cursor(
                     MonetaryCursorError::RevisionExhausted
@@ -1456,14 +1323,11 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                             ..snapshots
                         };
                         let generated_policy = canonical_signed
-                            .plan_funding_policy(generated, policy_limits, &budget())
+                            .plan_funding_policy(generated, policy_limits)
                             .unwrap()
                             .unwrap();
-                        let native_policy =
-                            generated_policy.clone().into_native(&budget()).unwrap();
-                        let accepted = generated_policy
-                            .capture_case(0, capture_limits, &budget())
-                            .unwrap();
+                        let native_policy = generated_policy.clone().into_native().unwrap();
+                        let accepted = generated_policy.capture_case(0, capture_limits).unwrap();
                         for (transition, captured) in [
                             (accepted.resource_transition().unwrap(), generated.resource),
                             (accepted.fee_transition().unwrap(), generated.fee),
@@ -1490,11 +1354,10 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                         }
                         for branch in 0..2 {
                             let captured = generated_policy
-                                .capture_case(branch, capture_limits, &budget())
+                                .capture_case(branch, capture_limits)
                                 .unwrap();
-                            let native = native_policy
-                                .capture_case(branch, capture_limits, &budget())
-                                .unwrap();
+                            let native =
+                                native_policy.capture_case(branch, capture_limits).unwrap();
                             prop_assert_eq!(native.scoped(), &captured);
                             prop_assert_eq!(
                                 native.amounts().len(),
@@ -1567,16 +1430,14 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
             Err(SignedPhloConsentError::Record(_))
         ));
         {
-            use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
             use models::rust::phlo_obligation::PhloObligationKeyLimits;
 
             use crate::rust::interpreter::accounting::monetary_allocation::{
-                FundingReservationError, FundingSearchError, FundingSearchLimits,
+                FundingReservationError, FundingSearchLimits,
             };
             use crate::rust::interpreter::accounting::phlo_execution::{
-                PhloCaptureError, PhloCaptureLimits, PhloObligationError,
+                PhloCaptureError, PhloCaptureLimits,
             };
-            use crate::rust::interpreter::host_work::HostWorkBudget;
             let sources: Vec<_> = sources
                 .iter()
                 .enumerate()
@@ -1649,10 +1510,8 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                 },
                 aggregate_key_bytes: 1_048_576,
             };
-            let budget =
-                || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)));
             assert_eq!(
-                checked_intent.capture_case(2, capture_limits, &budget()),
+                checked_intent.capture_case(2, capture_limits),
                 Err(PhloCaptureError::Branch(
                     FundingReservationError::UnknownBranch
                 ))
@@ -1689,12 +1548,8 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
             .unwrap();
             let reverse_intent = view.check_family(&reverse_family, right, limits()).unwrap();
             for branch in 0..2 {
-                let captured = checked_intent
-                    .capture_case(branch, capture_limits, &budget())
-                    .unwrap();
-                let reordered = reverse_intent
-                    .capture_case(branch, capture_limits, &budget())
-                    .unwrap();
+                let captured = checked_intent.capture_case(branch, capture_limits).unwrap();
+                let reordered = reverse_intent.capture_case(branch, capture_limits).unwrap();
                 assert_eq!(captured.branch(), branch);
                 assert_eq!(captured.amounts().len(), 2);
                 assert!(std::ptr::eq(
@@ -1723,37 +1578,6 @@ fn decoded_controls_and_sources_preserve_complete_family_charges_and_original_re
                         source.hold(),
                         source.acquisition() + source.fee() + source.refund()
                     );
-                }
-                if count <= 3 {
-                    let measured = budget();
-                    checked_intent
-                        .capture_case(branch, capture_limits, &measured)
-                        .unwrap();
-                    for dimension in [
-                        HostWorkDimension::SearchCandidates,
-                        HostWorkDimension::SearchStateBytes,
-                        HostWorkDimension::VerificationOperations,
-                    ] {
-                        let complete = measured.usage(dimension).get();
-                        for prefix in [0, 1, complete / 2, complete - 1, complete] {
-                            let mut bounds =
-                                HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000));
-                            bounds.set(dimension, HostWorkLimit::new(prefix));
-                            let result = checked_intent.capture_case(
-                                branch,
-                                capture_limits,
-                                &HostWorkBudget::new(bounds),
-                            );
-                            if prefix == complete {
-                                assert_eq!(result.unwrap(), captured);
-                            } else {
-                                assert!(matches!(result,
-                                Err(PhloCaptureError::Search(FundingSearchError::HostWork(_))) |
-                                Err(PhloCaptureError::Obligation(PhloObligationError::Execution(PhloExecutionError::HostWork(_)))) |
-                                Err(PhloCaptureError::Identity(crate::rust::interpreter::accounting::monetary_allocation::FundingIdentityError::Search(FundingSearchError::HostWork(_))))));
-                            }
-                        }
-                    }
                 }
             }
         }

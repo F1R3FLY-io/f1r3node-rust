@@ -25,17 +25,18 @@
 //! `assertEqual!(ret, a, b)` replies `true` for equal `a` and `b` after `ParSortMatcher`.
 //!
 //! `vec!(ret, op, x…)` reaches the process as `[ret, [op, x…]]`, because the reducer packs the
-//! arguments after `ret` (I-18). `tensor::ops` computes the value with the host-work budget of
-//! the deploy, and the process replies `[true, value]` or `[false, code, detail]` on `ret`
-//! (decision 57). A host-work rejection fails the deploy.
+//! arguments after `ret` (I-18). `tensor::ops` computes the value, and the process replies
+//! `[true, value]` or `[false, code, detail]` on `ret` (decision 57).
 //!
 //! `embed` and `ann` are recorded processes (decision 57): the dispatcher records the reply of a
 //! call on its produce event (`non_deterministic_ops`), and replay produces the recorded reply.
 //! In play they ask the services of the node (`vectordb_services`). Every failure is a reply
 //! `[false, code, detail]`, so it is recorded too. The checks of an `ann` call read only
-//! consensus state, so play and replay both make them and reserve the same host work. Both
-//! processes run in legacy and in native execution, and native replay produces the recorded
-//! replies as legacy replay does.
+//! consensus state, so play and replay both make them. In native funded execution both processes
+//! use the record and replay of DR-114 of `feature/cost-accounted-rho` (decision 68): they are in
+//! its recorded set (`is_native_recorded_op`), a success of play takes its bytes from the record
+//! room of the deploy, and replay of a call without its record fails. They keep their own
+//! handlers, because `ann` checks consensus state in replay too.
 
 use std::sync::Arc;
 
@@ -47,7 +48,6 @@ use models::rust::space_factory_urn::SpaceInner;
 use models::rust::utils::{new_gbool_par, new_wildcard_var};
 use prost::Message;
 
-use super::costs::ScanMeter;
 use super::factory::{ContractArgs, FactoryProcess};
 use super::handle::{typed_error, HandleProcess};
 use super::runtime::ReifiedRuntime;
@@ -59,11 +59,11 @@ use super::system_channels::{
 };
 use super::user_agent::{self, MatcherProcess};
 use super::vectordb_services::{
-    self, channel_digest, collection_name, f32_list, failed_reply, list_par, ok_reply,
+    self, channel_digest, collection_name, f32_list, failed_reply, is_ok_reply, list_par, ok_reply,
     EmbedFailure, Neighbour, ServiceReplyCode, VectorDbServices,
 };
+use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::contract_call::{ContractCall, Producer};
-use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
     submit_space, SpaceRequest,
 };
@@ -198,10 +198,14 @@ enum ReifiedProcess {
 }
 
 impl ReifiedProcess {
+    /// Runs the process on the call `contract_args`. `cost` is the budget of the deploy: the
+    /// recorded processes `embed` and `ann` take the record room of their replies from it
+    /// (decision 68).
     async fn call(
         &self,
         contract: &ContractCall,
         contract_args: ContractArgs,
+        cost: &RuntimeBudget,
     ) -> Result<Vec<Par>, InterpreterError> {
         match self {
             ReifiedProcess::Factory(factory) => factory.call(contract, contract_args).await,
@@ -211,9 +215,9 @@ impl ReifiedProcess {
             ReifiedProcess::AssertEqual => assert_equal(contract, contract_args).await,
             ReifiedProcess::Handle(handle) => handle.call(contract, contract_args).await,
             ReifiedProcess::Vector => vector(contract, contract_args).await,
-            ReifiedProcess::Embed => embed(contract, contract_args).await,
+            ReifiedProcess::Embed => embed(contract, contract_args, cost).await,
             ReifiedProcess::Ann { runtime, agent } => {
-                ann(runtime, agent, contract, contract_args).await
+                ann(runtime, agent, contract, contract_args, cost).await
             }
             ReifiedProcess::Matcher(matcher) => matcher.call(contract, contract_args).await,
             ReifiedProcess::Sink => user_agent::sink(contract_args).await,
@@ -243,13 +247,15 @@ fn definition_with_remainder(
             let process = Arc::clone(&process);
             let space = context.space;
             let dispatcher = context.dispatcher;
+            let cost = context.cost;
             Box::new(move |contract_args| {
                 let process = Arc::clone(&process);
                 let contract = ContractCall {
                     space: space.clone(),
                     dispatcher: dispatcher.clone(),
                 };
-                Box::pin(async move { process.call(&contract, contract_args).await })
+                let cost = cost.clone();
+                Box::pin(async move { process.call(&contract, contract_args, &cost).await })
             })
         }),
         remainder,
@@ -332,9 +338,9 @@ async fn read_config(
         sid: space.sid,
         authority,
         channels: Vec::new(),
-        job: Box::new(move |host_work| {
+        job: Box::new(move || {
             Box::pin(async move {
-                let env = runtime.space_env(host_work)?;
+                let env = runtime.space_env()?;
                 Ok(agent.read_config(&env, space).await)
             })
         }),
@@ -359,9 +365,7 @@ async fn assert_equal(
     Ok(reply)
 }
 
-/// `vec!(ret, op, x…)`, packed as `[ret, [op, x…]]` (P6 step 6, design v3 4.7). The work is
-/// reserved on the host-work budget of the deploy (decision 42), which the reduction context
-/// holds, as `submit_space` reads it. Without a budget the meter accepts every reservation.
+/// `vec!(ret, op, x…)`, packed as `[ret, [op, x…]]` (P6 step 6, design v3 4.7).
 async fn vector(
     contract: &ContractCall,
     contract_args: ContractArgs,
@@ -372,12 +376,8 @@ async fn vector(
     let [ret, call] = args.as_slice() else {
         return Err(illegal_argument_error(VECTOR_PROCESS.urn));
     };
-    let meter = ScanMeter::new(
-        deterministic_reduction::current().and_then(|context| context.host_work_budget()),
-    );
-    let reply = match ops::reply(ops::evaluate(call, &meter), &meter) {
+    let reply = match ops::reply(ops::evaluate(call)) {
         Ok(reply) => reply,
-        Err(OpFailure::HostWork(error)) => return Err(error.into()),
         Err(OpFailure::Inconsistent(reason)) => return Err(SpaceError::Inconsistent(reason).into()),
         Err(OpFailure::Reply(_)) => {
             return Err(SpaceError::Inconsistent("a reply failure became a reply").into())
@@ -391,10 +391,12 @@ async fn vector(
 /// `embed!(ret, text)` or `embed!(ret, [text…])` (P6 step 7, decision 57). Play embeds the
 /// texts with the embedder of the node and replies `[true, vector, model]` for one text or
 /// `[true, [vector…], model]` for a list, with each vector a list of `GFloat32`, or
-/// `[false, code, detail]`. Replay produces the recorded reply.
+/// `[false, code, detail]`. In native funded execution a success takes its bytes from the record
+/// room of the deploy (decision 68). Replay produces the recorded reply.
 async fn embed(
     contract: &ContractCall,
     contract_args: ContractArgs,
+    cost: &RuntimeBudget,
 ) -> Result<Vec<Par>, InterpreterError> {
     let Some((produce, is_replay, previous_output, args)) = contract.unapply(contract_args) else {
         return Err(illegal_argument_error(EMBED_PROCESS.urn));
@@ -402,12 +404,16 @@ async fn embed(
     let [ret, input] = args.as_slice() else {
         return Err(illegal_argument_error(EMBED_PROCESS.urn));
     };
+    record_present(EMBED_PROCESS.urn, is_replay, &previous_output)?;
     if is_replay {
         produce(&previous_output, ret).await?;
         return Ok(previous_output);
     }
     let output = vec![embed_reply(input).await];
-    produce_recorded(produce, output, ret).await
+    // Changed by decision 89 (DR-114, decision 68): a success of native play takes its bytes
+    // from the record room.
+    // produce_recorded(produce, output, ret).await
+    produce_recorded(produce, within_record_room(output, cost), ret).await
 }
 
 /// The texts of the argument of `embed`: one text, or a non-empty list of texts. The flag is
@@ -476,17 +482,18 @@ async fn embed_texts(
 /// `ann!(ret, space, channel, query, options)` (P6 step 7, decision 57). Play asks the mirror of
 /// the VectorDB space `space` for the `k` records of `channel` that are nearest to `query`, and
 /// replies `[true, ids, distances, watermark]` or `[false, code, detail]`. The ids are hints: only
-/// the exact query param `ids=` turns them into a decision (decision 58). Replay produces the
-/// recorded reply.
+/// the exact query param `ids=` turns them into a decision (decision 58). In native funded
+/// execution a success takes its bytes from the record room of the deploy (decision 68). Replay
+/// produces the recorded reply.
 ///
-/// The checks of the call read consensus state only, so play and replay both make them: the
-/// config read and the decode of a numeric query reserve host work on the budget of the deploy,
-/// and both modes must reserve the same amounts. Only the answers of the services are recorded.
+/// The checks of the call read consensus state only, so play and replay both make them. Only
+/// the answers of the services are recorded.
 async fn ann(
     runtime: &Arc<ReifiedRuntime>,
     agent: &Arc<dyn SpaceAgent>,
     contract: &ContractCall,
     contract_args: ContractArgs,
+    cost: &RuntimeBudget,
 ) -> Result<Vec<Par>, InterpreterError> {
     let authority = match contract_args.0.as_slice() {
         [call] => call.cost_authority.clone(),
@@ -498,6 +505,7 @@ async fn ann(
     let [ret, space, channel, query, options] = args.as_slice() else {
         return Err(illegal_argument_error(ANN_PROCESS.urn));
     };
+    record_present(ANN_PROCESS.urn, is_replay, &previous_output)?;
     let request = ann_request(runtime, agent, authority, space, channel, query, options).await?;
     if is_replay {
         produce(&previous_output, ret).await?;
@@ -507,7 +515,10 @@ async fn ann(
         Ok(request) => ann_answer(&vectordb_services::current(), request).await,
         Err(code) => failed_reply(code),
     };
-    produce_recorded(produce, vec![reply], ret).await
+    // Changed by decision 89 (DR-114, decision 68): a success of native play takes its bytes
+    // from the record room.
+    // produce_recorded(produce, vec![reply], ret).await
+    produce_recorded(produce, within_record_room(vec![reply], cost), ret).await
 }
 
 /// A call of `ann` whose arguments pass every check of consensus state.
@@ -537,7 +548,7 @@ enum AnnQuery {
 /// (`NotAVectorDbSpace`) with a mirror (`MirrorDisabled`), the query is a text or a numeric
 /// vector of the dimensions of the space (`DimensionMismatch`, `BadArgument`), and the options
 /// are a map of `k` (`InvalidOption`). A failure of the config job fails the deploy, as for
-/// `getSpaceAgent`, and so does a host-work rejection.
+/// `getSpaceAgent`.
 async fn ann_request(
     runtime: &Arc<ReifiedRuntime>,
     agent: &Arc<dyn SpaceAgent>,
@@ -565,11 +576,8 @@ async fn ann_request(
     if !config.params.contains_key(MIRROR_PARAM) {
         return Ok(Err(ServiceReplyCode::MirrorDisabled));
     }
-    let meter = ScanMeter::new(
-        deterministic_reduction::current().and_then(|context| context.host_work_budget()),
-    );
-    let cfg = vdb_config(&config, &meter)?;
-    let query = match query_of(query, cfg.dimensions, &meter)? {
+    let cfg = vdb_config(&config)?;
+    let query = match query_of(query, cfg.dimensions) {
         Ok(query) => query,
         Err(code) => return Ok(Err(code)),
     };
@@ -586,38 +594,25 @@ async fn ann_request(
 }
 
 /// The query of an `ann` call: a text, or a numeric vector of `dimensions` elements whose
-/// values are finite as `f32` values. A host-work rejection fails the deploy.
-fn query_of(
-    query: &Par,
-    dimensions: usize,
-    meter: &ScanMeter,
-) -> Result<Result<AnnQuery, ServiceReplyCode>, InterpreterError> {
+/// values are finite as `f32` values.
+fn query_of(query: &Par, dimensions: usize) -> Result<AnnQuery, ServiceReplyCode> {
     if let (Some(ExprInstance::GString(text)), false) = (sole_expr(query), query.connective_used) {
-        return Ok(Ok(AnnQuery::Text(text.clone())));
+        return Ok(AnnQuery::Text(text.clone()));
     }
-    let vector = match num::vector_of(query, Some(dimensions), meter) {
+    let vector = match num::vector_of(query, Some(dimensions)) {
         Ok(vector) => vector,
-        Err(NumError::HostWork(error)) => return Err(error.into()),
-        Err(NumError::DimensionMismatch { .. }) => {
-            return Ok(Err(ServiceReplyCode::DimensionMismatch))
-        }
-        Err(_) => return Ok(Err(ServiceReplyCode::BadArgument)),
+        Err(NumError::DimensionMismatch { .. }) => return Err(ServiceReplyCode::DimensionMismatch),
+        Err(_) => return Err(ServiceReplyCode::BadArgument),
     };
-    let values = match vector.rationals(meter) {
-        Ok(values) => values,
-        Err(NumError::HostWork(error)) => return Err(error.into()),
-        Err(_) => return Ok(Err(ServiceReplyCode::BadArgument)),
-    };
+    let values = vector.rationals();
     let mut elements = Vec::with_capacity(values.len());
     for value in values.iter() {
-        match num::round_to_f64(value, meter).map(|value| value as f32) {
+        match num::round_to_f64(value).map(|value| value as f32) {
             Ok(element) if element.is_finite() => elements.push(element),
-            Ok(_) => return Ok(Err(ServiceReplyCode::BadArgument)),
-            Err(NumError::HostWork(error)) => return Err(error.into()),
-            Err(_) => return Ok(Err(ServiceReplyCode::BadArgument)),
+            Ok(_) | Err(_) => return Err(ServiceReplyCode::BadArgument),
         }
     }
-    Ok(Ok(AnnQuery::Vector(elements)))
+    Ok(AnnQuery::Vector(elements))
 }
 
 /// The `k` of the options of `ann`: a map with the one key `k`, an `Int` in `[1, capacity]`.
@@ -686,8 +681,9 @@ async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Par {
 }
 
 /// Produces the recorded or computed `output` of a recorded process on `ret`. A failure of the
-/// produce keeps the output, so the dispatcher records it on the failed produce event, as for the
-/// other recorded processes.
+/// produce keeps the output, so the dispatcher records it, as for the other recorded processes:
+/// native funded execution keeps the record on the produce that triggered the call and raises the
+/// cause (DR-114 of `feature/cost-accounted-rho`, gap G-A).
 async fn produce_recorded(
     produce: Producer,
     output: Vec<Par>,
@@ -699,6 +695,53 @@ async fn produce_recorded(
             cause: Box::new(error),
             output_not_produced: output.iter().map(|par| par.encode_to_vec()).collect(),
         }),
+    }
+}
+
+/// The record room that the reply `output` of native play takes (DR-114, decision 5): the
+/// encoded length of each reply value and 64 bytes. `None` when the sum overflows `u64`.
+fn record_bytes(output: &[Par]) -> Option<u64> {
+    output.iter().try_fold(0_u64, |total, par| {
+        u64::try_from(par.encoded_len())
+            .ok()
+            .and_then(|bytes| bytes.checked_add(64))
+            .and_then(|bytes| total.checked_add(bytes))
+    })
+}
+
+/// The reply that play records for the reply `output` of a call (decision 68). In native funded
+/// execution a success takes its bytes from the record room of the deploy
+/// (`RuntimeBudget::take_native_record_room`), and a success that does not fit becomes the
+/// failure `OutputTooLarge`. A failure takes no room, because its size is small and fixed.
+/// Outside native funded execution the reply stays as it is.
+fn within_record_room(output: Vec<Par>, cost: &RuntimeBudget) -> Vec<Par> {
+    let success = matches!(output.as_slice(), [reply] if is_ok_reply(reply));
+    let fits = match (cost.native_execution_active(), success) {
+        (true, true) => {
+            record_bytes(&output).is_some_and(|bytes| cost.take_native_record_room(bytes))
+        }
+        (true, false) | (false, _) => true,
+    };
+    match fits {
+        true => output,
+        false => vec![failed_reply(ServiceReplyCode::OutputTooLarge)],
+    }
+}
+
+/// Replay of a recorded call needs the record of play, as the driver of DR-114 requires
+/// (`native_recorded_call`). Play records every reply of `embed` and `ann`, and a call whose reply
+/// play could not produce keeps its record too, so an empty record means a block without the
+/// record. Replay then fails with `BugFoundError` before it reads anything.
+fn record_present(
+    urn: &str,
+    is_replay: bool,
+    previous_output: &[Par],
+) -> Result<(), InterpreterError> {
+    match is_replay && previous_output.is_empty() {
+        true => Err(InterpreterError::BugFoundError(format!(
+            "replay of {urn} has no recorded output"
+        ))),
+        false => Ok(()),
     }
 }
 
@@ -955,6 +998,35 @@ mod tests {
 
     fn typed(code: SpaceReplyCode) -> Par { typed_error(code, Vec::new()) }
 
+    /// Decision 68 (DR-114): replay of `embed` or `ann` without the record of play fails with
+    /// `BugFoundError`. Play, and replay with a record, pass the check. The success predicate of
+    /// the record room tells an `ok_reply` from a `failed_reply`.
+    #[test]
+    fn recorded_processes_need_their_record_in_replay() {
+        let reply = failed_reply(ServiceReplyCode::BadArgument);
+        for urn in [EMBED_PROCESS.urn, ANN_PROCESS.urn] {
+            assert_eq!(
+                record_present(urn, true, &[]),
+                Err(InterpreterError::BugFoundError(format!(
+                    "replay of {urn} has no recorded output"
+                )))
+            );
+            assert_eq!(
+                record_present(urn, true, std::slice::from_ref(&reply)),
+                Ok(())
+            );
+            assert_eq!(record_present(urn, false, &[]), Ok(()));
+        }
+        assert!(is_ok_reply(&ok_reply(vec![int(1)])));
+        assert!(!is_ok_reply(&reply));
+        assert!(!is_ok_reply(&int(1)));
+        assert_eq!(record_bytes(&[]), Some(0));
+        assert_eq!(
+            record_bytes(std::slice::from_ref(&reply)),
+            Some(u64::try_from(reply.encoded_len()).expect("a small reply") + 64)
+        );
+    }
+
     fn send(channel: Par, data: Vec<Par>) -> Par {
         Par::default().with_sends(vec![SendProcess {
             chan: Some(channel),
@@ -1079,68 +1151,6 @@ mod tests {
             assert_eq!(of_alias.to_urn_map().1, of_family.to_urn_map().1);
             assert_eq!(Some(of_alias.to_urn_map().1), factory_capability(family));
         }
-    }
-
-    /// `rho:lang:vector` reserves its work on the host-work budget of the deploy, which the
-    /// reduction context holds (P6 step 6). One unit less of host work rejects the call with
-    /// `HostWorkRejected`, and the call sends no reply.
-    #[tokio::test]
-    async fn space_system_ops_vector_ops_reserve_on_the_deploy_budget() {
-        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-
-        use crate::rust::interpreter::deterministic_reduction::{
-            root_with_host_work, ReductionCoordinator,
-        };
-        use crate::rust::interpreter::host_work::HostWorkBudget;
-        use crate::rust::interpreter::rho_runtime::RhoISpace;
-
-        let fixture = Fixture::new().await;
-        let session: RhoISpace = Arc::new(Box::new(fixture.rspace.clone()));
-        let dot = list(vec![
-            string("dot"),
-            list(vec![int(1), int(2)]),
-            list(vec![int(3), int(4)]),
-        ]);
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let ret = reply_name(1);
-        let reply = root_with_host_work(
-            session.clone(),
-            super::harness::budget(),
-            ReductionCoordinator::default(),
-            Some(host_work.clone()),
-            vector(
-                &fixture.contract,
-                call(vec![ret.clone(), dot.clone()], b"vector"),
-            ),
-        )
-        .await
-        .expect("the vector process replies");
-        assert_eq!(reply, vec![list(vec![
-            new_gbool_par(true, Vec::new(), false),
-            int(11)
-        ])]);
-        assert_eq!(fixture.data(&ret).await, vec![reply]);
-        let used = host_work
-            .usage(HostWorkDimension::VerificationOperations)
-            .get();
-        assert!(used > 0, "the process reserves on the budget of the deploy");
-        let tight = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(used - 1)));
-        let rejected = root_with_host_work(
-            session,
-            super::harness::budget(),
-            ReductionCoordinator::default(),
-            Some(tight),
-            vector(&fixture.contract, call(vec![reply_name(2), dot], b"vector")),
-        )
-        .await;
-        assert!(
-            matches!(rejected, Err(InterpreterError::HostWorkRejected)),
-            "{rejected:?}"
-        );
-        assert!(
-            fixture.data(&reply_name(2)).await.is_empty(),
-            "a rejected call sends no reply"
-        );
     }
 
     #[tokio::test]

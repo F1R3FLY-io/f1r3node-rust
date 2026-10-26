@@ -54,16 +54,8 @@
 //! byte-equal re-encode. prost refuses to decode a message nested deeper than its recursion
 //! limit of 100, so the translation rejects such a state before it mints the capability
 //! (`AgentPatternTooDeep`, P8 step 3).
-//!
-//! # Metering
-//!
-//! Every decode, encode, match, guard check and reply copy reserves its host work on the
-//! host-work budget of the deploy before it is made, the same in play and replay (design v2
-//! section 11, decision 40). The decode of a matcher state reserves the bytes of the id first
-//! (MO-2).
 
 use std::collections::BTreeSet;
-use std::mem::size_of;
 use std::sync::{Arc, LazyLock};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -82,10 +74,7 @@ use models::rust::utils::{
     new_boundvar_par, new_bundle_par, new_freevar_par, new_gbool_par, new_gstring_par, union,
 };
 use prost::Message;
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use shared::rust::clone_backing;
 
-use super::costs::ScanMeter;
 use super::errors::ReifiedReduceError;
 use super::factory::{handle_pattern, ContractArgs};
 use super::handle::{is_reply_name, map_par, sole_list, tuple_par};
@@ -93,7 +82,6 @@ use super::runtime::ReifiedRuntime;
 use super::scope::call_channel;
 use super::system_channels::{MATCHER_OP_PROCESS, SINK_OP_PROCESS};
 use crate::rust::interpreter::contract_call::ContractCall;
-use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::spaces::errors::SpaceError;
@@ -148,16 +136,14 @@ impl MatcherState {
         }
     }
 
-    /// The canonical `Par` of the state. The patterns and the guard are copied, and each copy
-    /// is reserved first.
-    fn to_par(&self, meter: &ScanMeter) -> Result<Par, SpaceError> {
-        let patterns = meter.copy_slice(&self.pattern.patterns)?;
+    /// The canonical `Par` of the state. The patterns and the guard are copied.
+    fn to_par(&self) -> Par {
+        let patterns = self.pattern.patterns.to_vec();
         let guard = match &self.guard {
-            Some(guard) => vec![meter.copy(guard)?],
+            Some(guard) => vec![guard.clone()],
             None => Vec::new(),
         };
-        meter.reserve_buffer::<Par>(STATE_ELEMENTS)?;
-        Ok(tuple_par(vec![
+        tuple_par(vec![
             int_par(MATCHER_STATE_VERSION),
             expr_par(ExprInstance::GByteArray(self.receive_tag.to_vec())),
             int_par(i64::from(self.bind)),
@@ -169,7 +155,7 @@ impl MatcherState {
                 int_par(i64::from(self.pattern.free_count)),
             ]),
             list_par(guard, None),
-        ]))
+        ])
     }
 
     /// The state of a canonical `Par`, or `None` when the `Par` is not the image of a
@@ -211,44 +197,33 @@ impl MatcherState {
         state.is_consistent().then_some(state)
     }
 
-    /// The canonical bytes of the state: the prost encoding of its canonical `Par`. The build of
-    /// the `Par`, the read of the length computation, the buffer and the encode are reserved
-    /// first, as the escape arm of the path codec reserves a prost encode.
-    pub fn encode(&self, meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-        let par = self.to_par(meter)?;
-        meter.inspect(&par)?;
+    /// The canonical bytes of the state: the prost encoding of its canonical `Par`.
+    pub fn encode(&self) -> Result<Vec<u8>, SpaceError> {
+        let par = self.to_par();
         let length = par.encoded_len();
-        let mut bytes = meter.buffer::<u8>(length)?;
-        if meter.is_metered() {
-            clone_backing::reserve_nested_encode(&par, length, meter)
-                .map_err(|_| RSpaceError::HostWorkRejected)?;
-        }
+        let mut bytes = Vec::<u8>::with_capacity(length);
         par.encode(&mut bytes)
             .map_err(|_| SpaceError::Inconsistent("a matcher state does not encode"))?;
         Ok(bytes)
     }
 
     /// The state of the canonical bytes `bytes`, or `None` for every other input (MO-2). The
-    /// bytes are reserved before the decode. Then the decode, the checks of the tuple, the
-    /// re-encode and the byte comparison run, so a state decodes exactly when it is the image
-    /// of [`MatcherState::encode`].
-    pub fn decode(bytes: &[u8], meter: &ScanMeter) -> Result<Option<Self>, SpaceError> {
-        meter.charge(1, bytes.len(), bytes.len())?;
+    /// decode, the checks of the tuple, the re-encode and the byte comparison run in sequence.
+    /// So a state decodes exactly when it is the image of [`MatcherState::encode`].
+    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, SpaceError> {
         let Ok(par) = Par::decode(bytes) else {
             return Ok(None);
         };
         let Some(state) = Self::from_par(par) else {
             return Ok(None);
         };
-        let encoded = state.encode(meter)?;
-        meter.compare(encoded.len(), bytes.len())?;
+        let encoded = state.encode()?;
         Ok((encoded == bytes).then_some(state))
     }
 
     /// The id `E0‖X‖state` of the matcher capability of the state.
-    pub fn channel(&self, meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-        let state = self.encode(meter)?;
-        meter.reserve_buffer::<u8>(state.len() + 2)?;
+    pub fn channel(&self) -> Result<Vec<u8>, SpaceError> {
+        let state = self.encode()?;
         Ok(namespace::matcher_channel(&state))
     }
 }
@@ -256,9 +231,9 @@ impl MatcherState {
 /// The state of a matcher capability `m`: a bare uppercase `X` id whose bytes decode exactly
 /// (MO-2). Every other value is `None`: a bundle, a lowercase `x` id, another id, or bytes that
 /// are not the image of the encoder.
-pub fn matcher_state_of(m: &Par, meter: &ScanMeter) -> Result<Option<MatcherState>, SpaceError> {
+pub fn matcher_state_of(m: &Par) -> Result<Option<MatcherState>, SpaceError> {
     match namespace::reified_id_of(m) {
-        Some(ReifiedId::Matcher(Durability::Durable, state)) => MatcherState::decode(state, meter),
+        Some(ReifiedId::Matcher(Durability::Durable, state)) => MatcherState::decode(state),
         _ => Ok(None),
     }
 }
@@ -347,8 +322,8 @@ impl MatcherProcess {
 
     /// Runs the call `(m, [ret, proc])` (MO-2, MO-3):
     ///
-    /// 1. `m` must be a bare uppercase `X` id whose state decodes exactly. The bytes of the id
-    ///    are reserved before the decode. Every other call is dropped.
+    /// 1. `m` must be a bare uppercase `X` id whose state decodes exactly. Every other call is
+    ///    dropped.
     /// 2. The message must be the list `[ret, proc]` with `ret` a reply name (A23). Every other
     ///    message is dropped.
     /// 3. A `proc` that is not a list gets `(false, Nil)`.
@@ -371,10 +346,7 @@ impl MatcherProcess {
         let [m, message] = args.as_slice() else {
             return Err(illegal_argument_error(MATCHER_OP_PROCESS.urn));
         };
-        let meter = ScanMeter::new(
-            deterministic_reduction::current().and_then(|context| context.host_work_budget()),
-        );
-        let Some(state) = matcher_state_of(m, &meter)? else {
+        let Some(state) = matcher_state_of(m)? else {
             return Ok(Vec::new());
         };
         let Some([ret, proc]) =
@@ -385,38 +357,33 @@ impl MatcherProcess {
         if !is_reply_name(ret) {
             return Ok(Vec::new());
         }
-        let reply = vec![self.answer(&state, proc, &meter)?];
+        let reply = vec![self.answer(&state, proc)?];
         produce(&reply, ret).await?;
         Ok(reply)
     }
 
     /// The reply to `proc` under `state` (steps 3 to 6 of [`MatcherProcess::call`]).
-    fn answer(
-        &self,
-        state: &MatcherState,
-        proc: &Par,
-        meter: &ScanMeter,
-    ) -> Result<Par, InterpreterError> {
+    fn answer(&self, state: &MatcherState, proc: &Par) -> Result<Par, InterpreterError> {
         let Some(elements) = sole_list(proc) else {
             return Ok(refusal());
         };
-        let env = self.runtime.space_env(meter.host_work().cloned())?;
-        let matcher = SpaceMatcher::metered(&env)?;
+        let env = self.runtime.space_env()?;
+        let matcher = SpaceMatcher::new(&env);
         let data = ListParWithRandom {
-            pars: meter.copy_slice(elements)?,
+            pars: elements.to_vec(),
             random_state: Vec::new(),
             cost_authority: None,
             cost_stack: None,
         };
-        let Some(matched) = matcher.bind(&state.pattern, &data)? else {
+        let Some(matched) = matcher.bind(&state.pattern, &data) else {
             return Ok(refusal());
         };
         if let Some(guard) = &state.guard {
-            if !guard_passes(&matcher, state, guard, &matched, meter)? {
+            if !guard_passes(&matcher, state, guard, &matched)? {
                 return Ok(refusal());
             }
         }
-        Ok(env_reply(state, matched.pars, meter)?)
+        Ok(env_reply(state, matched.pars)?)
     }
 }
 
@@ -424,13 +391,12 @@ impl MatcherProcess {
 /// placeholders for the `off_i` binders before bind `i`, the matched values of bind `i`, and
 /// `Nil` placeholders for the binders after it. The guard check pushes the values of every bind
 /// into one environment in bind order, so `BoundVar(k)` reads position `total − 1 − k`, as in a
-/// native receive. The placeholders are reserved before they are built.
+/// native receive.
 fn guard_passes(
-    matcher: &SpaceMatcher<'_>,
+    matcher: &SpaceMatcher,
     state: &MatcherState,
     guard: &Par,
     matched: &ListParWithRandom,
-    meter: &ScanMeter,
 ) -> Result<bool, SpaceError> {
     let free = state.free_count().ok_or(SpaceError::Inconsistent(
         "a decoded matcher state has a negative free count",
@@ -440,7 +406,7 @@ fn guard_passes(
     let after = usize::try_from(state.total - state.offset - free)
         .map_err(|_| SpaceError::Inconsistent("a binder position does not fit in usize"))?;
     let placeholders = |count: usize| -> Result<ListParWithRandom, SpaceError> {
-        let mut pars = meter.buffer::<Par>(count)?;
+        let mut pars = Vec::<Par>::with_capacity(count);
         pars.resize(count, Par::default());
         Ok(ListParWithRandom {
             pars,
@@ -451,34 +417,27 @@ fn guard_passes(
     };
     let continuation = TaggedContinuation {
         tagged_cont: None,
-        guard: Some(meter.copy(guard)?),
+        guard: Some(guard.clone()),
         cost_authority: None,
     };
-    let bindings = [
-        placeholders(before)?,
-        meter.copy(matched)?,
-        placeholders(after)?,
-    ];
-    matcher.admits_all(&continuation, &bindings)
+    let bindings = [placeholders(before)?, matched.clone(), placeholders(after)?];
+    Ok(matcher.admits_all(&continuation, &bindings))
 }
 
 /// The reply `(true, env)` with `env` the map from the decimal global position `off_i + j` of
-/// each binder `j` of the bind to its value `values[j]`. The keys, the pair buffer, the sort of
-/// the map and its nodes are reserved before they are built.
-fn env_reply(state: &MatcherState, values: Vec<Par>, meter: &ScanMeter) -> Result<Par, SpaceError> {
-    let mut pairs = meter.buffer::<(Par, Par)>(values.len())?;
+/// each binder `j` of the bind to its value `values[j]`.
+fn env_reply(state: &MatcherState, values: Vec<Par>) -> Result<Par, SpaceError> {
+    let mut pairs = Vec::<(Par, Par)>::with_capacity(values.len());
     for (index, value) in values.into_iter().enumerate() {
         let position = u64::from(state.offset)
-            .checked_add(u64::try_from(index).map_err(|_| RSpaceError::HostWorkRejected)?)
+            .checked_add(
+                u64::try_from(index)
+                    .map_err(|_| SpaceError::Inconsistent("a binder position overflows"))?,
+            )
             .ok_or(SpaceError::Inconsistent("a binder position overflows"))?;
         let key = position.to_string();
-        meter.charge(1, key.len(), key.len())?;
-        meter.inspect(&value)?;
-        meter.ordered_lookup(pairs.len(), key.len())?;
         pairs.push((expr_par(ExprInstance::GString(key)), value));
     }
-    meter.tree_growth::<Par, Par>(0, pairs.len())?;
-    meter.reserve_buffer::<Par>(2)?;
     Ok(tuple_par(vec![
         new_gbool_par(true, Vec::new(), false),
         map_par(pairs),
@@ -525,16 +484,11 @@ pub fn sink_channel() -> Par { SINK.clone() }
 ///   derives for a packed argument list.
 /// * The call datum takes the random state `base.split_byte(1)` with `base = Xlate.derive(R)`,
 ///   where `R` is the random state of the send datum. It keeps the authority of the send datum.
-///
-/// The copy of the agent, the derived random state and the two constants are reserved before
-/// they are made (design v2 A6).
 pub fn produce_call(
     agent: &Par,
     raw: Par,
     data: ListParWithRandom,
-    meter: &ScanMeter,
 ) -> Result<(Par, ListParWithRandom), InterpreterError> {
-    meter.reserve_copy(agent)?;
     let channel = call_channel(agent).map_err(ReifiedReduceError::from)?;
     let ListParWithRandom {
         pars,
@@ -545,9 +499,8 @@ pub fn produce_call(
     let call = RandomPurpose::Xlate
         .derive(&Blake2b512Random::from_bytes(&random_state))
         .split_byte(SEND_CALL_BRANCH);
-    meter.random_bytes(&call)?;
-    let sink = meter.copy(&*SINK)?;
-    let method = meter.copy(&*PRODUCE_METHOD)?;
+    let sink = (*SINK).clone();
+    let method = (*PRODUCE_METHOD).clone();
     Ok((channel, ListParWithRandom {
         pars: vec![sink, method, raw, list_par(pars, None)],
         random_state: call.to_bytes(),
@@ -590,35 +543,26 @@ enum GuardNode<'a> {
     Expr(&'a Expr, u32),
 }
 
-/// The work list of one guard walk. Each push reserves the `SearchStateBytes` of its entry.
-struct GuardWork<'a, 'm> {
+/// The work list of one guard walk.
+struct GuardWork<'a> {
     nodes: Vec<GuardNode<'a>>,
-    meter: &'m ScanMeter,
 }
 
-impl<'a> GuardWork<'a, '_> {
-    fn push(&mut self, node: GuardNode<'a>) -> Result<(), SpaceError> {
-        self.meter.charge(0, 0, size_of::<GuardNode<'_>>())?;
-        self.nodes
-            .try_reserve(1)
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        self.nodes.push(node);
-        Ok(())
-    }
+impl<'a> GuardWork<'a> {
+    fn push(&mut self, node: GuardNode<'a>) { self.nodes.push(node); }
 
-    fn par(&mut self, par: &'a Par, depth: u32) -> Result<(), SpaceError> {
-        self.push(GuardNode::Par(par, depth))
-    }
+    fn par(&mut self, par: &'a Par, depth: u32) { self.push(GuardNode::Par(par, depth)); }
 
-    fn optional(&mut self, par: &'a Option<Par>, depth: u32) -> Result<(), SpaceError> {
-        match par {
-            Some(par) => self.par(par, depth),
-            None => Ok(()),
+    fn optional(&mut self, par: &'a Option<Par>, depth: u32) {
+        if let Some(par) = par {
+            self.par(par, depth);
         }
     }
 
-    fn pars(&mut self, pars: &'a [Par], depth: u32) -> Result<(), SpaceError> {
-        pars.iter().try_for_each(|par| self.par(par, depth))
+    fn pars(&mut self, pars: &'a [Par], depth: u32) {
+        for par in pars {
+            self.par(par, depth);
+        }
     }
 }
 
@@ -635,27 +579,20 @@ fn deeper(depth: u32, count: i32) -> Result<u32, SpaceError> {
 /// The free `BoundVar` indices of `guard` (design v2 TR-4). A `BoundVar(k)` under `d` binders
 /// of the guard is free when `k >= d`, and then it names the index `k - d` of the scope of the
 /// guard: the binders of the receive, then the outer binders. The walk tracks the binders of
-/// nested receives, news and match cases, reads no `locally_free` set (A4), and reserves each
-/// visit, as the Seq scan does.
-pub fn guard_indices(guard: &Par, meter: &ScanMeter) -> Result<BTreeSet<u32>, SpaceError> {
+/// nested receives, news and match cases, and it reads no `locally_free` set (A4).
+pub fn guard_indices(guard: &Par) -> Result<BTreeSet<u32>, SpaceError> {
     let mut indices = BTreeSet::new();
-    let mut work = GuardWork {
-        nodes: Vec::new(),
-        meter,
-    };
-    work.par(guard, 0)?;
+    let mut work = GuardWork { nodes: Vec::new() };
+    work.par(guard, 0);
     while let Some(node) = work.nodes.pop() {
-        meter.charge(1, 0, 0)?;
         let free = match node {
             GuardNode::Par(par, depth) => {
                 guard_par(par, depth, &mut work)?;
                 None
             }
-            GuardNode::Expr(expr, depth) => guard_expr(expr, depth, &mut work)?,
+            GuardNode::Expr(expr, depth) => guard_expr(expr, depth, &mut work),
         };
         if let Some(index) = free {
-            meter.ordered_lookup(indices.len(), size_of::<u32>())?;
-            meter.tree_growth::<u32, ()>(indices.len(), 1)?;
             indices.insert(index);
         }
     }
@@ -666,7 +603,7 @@ pub fn guard_indices(guard: &Par, meter: &ScanMeter) -> Result<BTreeSet<u32>, Sp
 /// binds `bind_count` names for its body and its condition, a `new` binds `bind_count` names
 /// for its process, and a match case binds `free_count` names for its body and its guard.
 /// Patterns, sources and every other child stay at `depth`.
-fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Result<(), SpaceError> {
+fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a>) -> Result<(), SpaceError> {
     let Par {
         sends,
         receives,
@@ -690,8 +627,8 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Resu
             locally_free: _,
             connective_used: _,
         } = send;
-        work.optional(chan, depth)?;
-        work.pars(data, depth)?;
+        work.optional(chan, depth);
+        work.pars(data, depth);
     }
     for receive in receives {
         let Receive {
@@ -712,12 +649,12 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Resu
                 free_count: _,
                 cost_signature: _,
             } = bind;
-            work.pars(patterns, depth)?;
-            work.optional(source, depth)?;
+            work.pars(patterns, depth);
+            work.optional(source, depth);
         }
         let inner = deeper(depth, *bind_count)?;
-        work.optional(body, inner)?;
-        work.optional(condition, inner)?;
+        work.optional(body, inner);
+        work.optional(condition, inner);
     }
     for new in news {
         let New {
@@ -727,13 +664,13 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Resu
             injections,
             locally_free: _,
         } = new;
-        work.optional(p, deeper(depth, *bind_count)?)?;
+        work.optional(p, deeper(depth, *bind_count)?);
         for injected in injections.values() {
-            work.par(injected, depth)?;
+            work.par(injected, depth);
         }
     }
     for expr in exprs {
-        work.push(GuardNode::Expr(expr, depth))?;
+        work.push(GuardNode::Expr(expr, depth));
     }
     for matched in matches {
         let Match {
@@ -742,7 +679,7 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Resu
             locally_free: _,
             connective_used: _,
         } = matched;
-        work.optional(target, depth)?;
+        work.optional(target, depth);
         for case in cases {
             let MatchCase {
                 pattern,
@@ -750,10 +687,10 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Resu
                 free_count,
                 guard,
             } = case;
-            work.optional(pattern, depth)?;
+            work.optional(pattern, depth);
             let inner = deeper(depth, *free_count)?;
-            work.optional(source, inner)?;
-            work.optional(guard, inner)?;
+            work.optional(source, inner);
+            work.optional(guard, inner);
         }
     }
     for bundle in bundles {
@@ -762,7 +699,7 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Resu
             write_flag: _,
             read_flag: _,
         } = bundle;
-        work.optional(body, depth)?;
+        work.optional(body, depth);
     }
     for connective in connectives {
         let Connective {
@@ -770,10 +707,8 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Resu
         } = connective;
         match connective_instance {
             Some(ConnectiveInstance::ConnAndBody(ConnectiveBody { ps }))
-            | Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps })) => {
-                work.pars(ps, depth)?
-            }
-            Some(ConnectiveInstance::ConnNotBody(negated)) => work.par(negated, depth)?,
+            | Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps })) => work.pars(ps, depth),
+            Some(ConnectiveInstance::ConnNotBody(negated)) => work.par(negated, depth),
             Some(
                 ConnectiveInstance::VarRefBody(_)
                 | ConnectiveInstance::ConnBool(_)
@@ -793,24 +728,20 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a, '_>) -> Resu
             locally_free: _,
             connective_used: _,
         } = conditional;
-        work.optional(condition, depth)?;
-        work.optional(if_true, depth)?;
-        work.optional(if_false, depth)?;
+        work.optional(condition, depth);
+        work.optional(if_true, depth);
+        work.optional(if_false, depth);
     }
     for term in cost_signed_terms {
         let CostSignedTerm { body, signature: _ } = term;
-        work.optional(body, depth)?;
+        work.optional(body, depth);
     }
     Ok(())
 }
 
 /// Adds every child of `expr` to the work list, and returns the index that `expr` names when
 /// it is a free `BoundVar`.
-fn guard_expr<'a>(
-    expr: &'a Expr,
-    depth: u32,
-    work: &mut GuardWork<'a, '_>,
-) -> Result<Option<u32>, SpaceError> {
+fn guard_expr<'a>(expr: &'a Expr, depth: u32, work: &mut GuardWork<'a>) -> Option<u32> {
     let Expr { expr_instance } = expr;
     match expr_instance {
         Some(ExprInstance::EVarBody(EVar {
@@ -818,10 +749,10 @@ fn guard_expr<'a>(
                 Some(Var {
                     var_instance: Some(VarInstance::BoundVar(index)),
                 }),
-        })) => Ok(u32::try_from(*index)
+        })) => u32::try_from(*index)
             .ok()
-            .and_then(|index| index.checked_sub(depth))),
-        Some(ExprInstance::EVarBody(EVar { v: _ })) => Ok(None),
+            .and_then(|index| index.checked_sub(depth)),
+        Some(ExprInstance::EVarBody(EVar { v: _ })) => None,
         Some(
             ExprInstance::GBool(_)
             | ExprInstance::GInt(_)
@@ -832,12 +763,17 @@ fn guard_expr<'a>(
             | ExprInstance::GBigInt(_)
             | ExprInstance::GBigRat(_)
             | ExprInstance::GFixedPoint(_)
-            | ExprInstance::GFloat32(_),
+            | ExprInstance::GFloat32(_)
+            | ExprInstance::GUint64(_)
+            | ExprInstance::GInt32(_)
+            | ExprInstance::GUint32(_)
+            | ExprInstance::GUint16(_)
+            | ExprInstance::GUint8(_),
         )
-        | None => Ok(None),
+        | None => None,
         Some(ExprInstance::ENotBody(ENot { p }) | ExprInstance::ENegBody(ENeg { p })) => {
-            work.optional(p, depth)?;
-            Ok(None)
+            work.optional(p, depth);
+            None
         }
         Some(
             ExprInstance::EMultBody(EMult { p1, p2 })
@@ -857,9 +793,9 @@ fn guard_expr<'a>(
             | ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 })
             | ExprInstance::EModBody(EMod { p1, p2 }),
         ) => {
-            work.optional(p1, depth)?;
-            work.optional(p2, depth)?;
-            Ok(None)
+            work.optional(p1, depth);
+            work.optional(p2, depth);
+            None
         }
         Some(ExprInstance::EListBody(EList {
             ps,
@@ -884,8 +820,8 @@ fn guard_expr<'a>(
             connective_used: _,
             remainder: _,
         })) => {
-            work.pars(ps, depth)?;
-            Ok(None)
+            work.pars(ps, depth);
+            None
         }
         Some(ExprInstance::EMapBody(EMap {
             kvs,
@@ -895,10 +831,10 @@ fn guard_expr<'a>(
         })) => {
             for pair in kvs {
                 let KeyValuePair { key, value } = pair;
-                work.optional(key, depth)?;
-                work.optional(value, depth)?;
+                work.optional(key, depth);
+                work.optional(value, depth);
             }
-            Ok(None)
+            None
         }
         Some(ExprInstance::EMethodBody(EMethod {
             method_name: _,
@@ -907,9 +843,9 @@ fn guard_expr<'a>(
             locally_free: _,
             connective_used: _,
         })) => {
-            work.optional(target, depth)?;
-            work.pars(arguments, depth)?;
-            Ok(None)
+            work.optional(target, depth);
+            work.pars(arguments, depth);
+            None
         }
         Some(ExprInstance::EZipperBody(EZipper {
             pathmap,
@@ -925,14 +861,14 @@ fn guard_expr<'a>(
                 remainder: _,
             }) = pathmap
             {
-                work.pars(ps, depth)?;
+                work.pars(ps, depth);
             }
-            Ok(None)
+            None
         }
         Some(ExprInstance::EMatchesBody(EMatches { target, pattern })) => {
-            work.optional(target, depth)?;
-            work.optional(pattern, depth)?;
-            Ok(None)
+            work.optional(target, depth);
+            work.optional(pattern, depth);
+            None
         }
     }
 }
@@ -965,15 +901,10 @@ fn owner_of(position: u32, offsets: &[u32], counts: &[u32]) -> Option<usize> {
 /// of every such index takes the guard, bind 0 takes a guard with no such index, and two or
 /// more owners abort with `AgentGuardSpansJoin`. An index from `total` on is outer and unbound,
 /// as in a native receive (F7).
-pub fn place_guard(
-    indices: &BTreeSet<u32>,
-    counts: &[u32],
-    meter: &ScanMeter,
-) -> Result<usize, InterpreterError> {
+pub fn place_guard(indices: &BTreeSet<u32>, counts: &[u32]) -> Result<usize, InterpreterError> {
     let (offsets, total) = offsets_of(counts)?;
     let mut owner = None;
     for index in indices {
-        meter.charge(1, 0, 0)?;
         let Some(position) = index
             .checked_add(1)
             .and_then(|next| total.checked_sub(next))
@@ -995,16 +926,13 @@ pub fn place_guard(
 /// The pattern of the body receive of a translated receive with `total` binders (design v2
 /// TR-6): one map `{"g": FreeVar(g) | g < total}`. The key of a binder is the minimal decimal
 /// string of its global position, as the matcher op writes it, and `FreeVar(g)` sits at the key
-/// `"g"`, so the body binds its values in binder order. Each key, entry and insertion is
-/// reserved before it is made, as `env_reply` reserves its map.
-fn body_pattern(total: u32, meter: &ScanMeter) -> Result<BindPattern, SpaceError> {
-    let count = usize::try_from(total).map_err(|_| RSpaceError::HostWorkRejected)?;
-    let mut pairs = meter.buffer::<(Par, Par)>(count)?;
+/// `"g"`, so the body binds its values in binder order.
+fn body_pattern(total: u32) -> Result<BindPattern, SpaceError> {
+    let count = usize::try_from(total)
+        .map_err(|_| SpaceError::Inconsistent("a binder count does not fit"))?;
+    let mut pairs = Vec::<(Par, Par)>::with_capacity(count);
     for position in 0..total {
         let key = position.to_string();
-        meter.charge(1, key.len(), key.len())?;
-        meter.reserve_buffer::<Par>(2)?;
-        meter.ordered_lookup(pairs.len(), key.len())?;
         let index = i32::try_from(position)
             .map_err(|_| SpaceError::Inconsistent("a binder position does not fit"))?;
         pairs.push((
@@ -1012,7 +940,6 @@ fn body_pattern(total: u32, meter: &ScanMeter) -> Result<BindPattern, SpaceError
             new_freevar_par(index, Vec::new()),
         ));
     }
-    meter.tree_growth::<Par, Par>(0, pairs.len())?;
     Ok(BindPattern {
         patterns: vec![map_par(pairs)],
         remainder: None,
@@ -1093,7 +1020,6 @@ pub fn translate_receive(
     peek: bool,
     guard: Option<Par>,
     introduction_authority: &CostAuthority,
-    meter: &ScanMeter,
 ) -> Result<ReceiveTranslation, InterpreterError> {
     let arrow = match (persistent, peek) {
         (false, false) => "<-",
@@ -1115,17 +1041,14 @@ pub fn translate_receive(
         .map_err(|_| SpaceError::Inconsistent("a receive has too many binds"))?;
     let base = RandomPurpose::Xlate.derive(&Blake2b512Random::from_bytes(&body.random_state));
     let tag_random = base.split_byte(RECEIVE_TAG_BRANCH);
-    meter.random_bytes(&tag_random)?;
     let receive_tag = output_bytes(tag_random);
     let owner = match &guard {
-        Some(condition) => place_guard(&guard_indices(condition, meter)?, &counts, meter)?,
+        Some(condition) => place_guard(&guard_indices(condition)?, &counts)?,
         None => 0,
     };
     let mut guard = guard;
     let mut matchers = Vec::with_capacity(binds.len());
     let mut pairs = Vec::with_capacity(binds.len());
-    meter.reserve_buffer::<TranslatedReceive>(binds.len())?;
-    meter.reserve_buffer::<Par>(binds.len())?;
     let continuations = base.split_byte(MATCHER_CONTINUATION_BRANCH);
     for (index, (bind, offset)) in binds.into_iter().zip(offsets).enumerate() {
         let AgentBind { pattern, raw } = bind;
@@ -1142,19 +1065,15 @@ pub fn translate_receive(
                 false => None,
             },
         };
-        let bytes = state.encode(meter)?;
-        if MatcherState::decode(&bytes, meter)?.is_none() {
+        let bytes = state.encode()?;
+        if MatcherState::decode(&bytes)?.is_none() {
             return Err(ReifiedReduceError::AgentPatternTooDeep.into());
         }
-        meter.reserve_buffer::<u8>(bytes.len() + 2)?;
         let matcher = namespace::gprivate(namespace::matcher_channel(&bytes));
         let short = i16::try_from(index)
             .map_err(|_| SpaceError::Inconsistent("a bind index does not fit a short split"))?;
         let continuation_random = continuations.split_short(short);
-        meter.random_bytes(&continuation_random)?;
-        meter.reserve_copy(&matcher)?;
         let forwarder = matcher_forwarder(&matcher);
-        meter.reserve_copy(&matcher)?;
         let capability = new_bundle_par(matcher.clone(), true, false);
         matchers.push(TranslatedReceive {
             pattern: handle_pattern(),
@@ -1168,22 +1087,19 @@ pub fn translate_receive(
         pairs.push(tuple_par(vec![capability, raw]));
     }
     let body_random = base.split_byte(BODY_ID_BRANCH);
-    meter.random_bytes(&body_random)?;
     let body_capability = namespace::gprivate(namespace::body_channel(&output_bytes(body_random)));
     let body_receive = TranslatedReceive {
-        pattern: body_pattern(total, meter)?,
+        pattern: body_pattern(total)?,
         channel: body_capability.clone(),
         continuation: body,
         persistent,
     };
-    meter.reserve_copy(agent)?;
     let call_channel = call_channel(agent).map_err(ReifiedReduceError::from)?;
     let call_random = base.split_byte(RECEIVE_CALL_BRANCH);
-    meter.random_bytes(&call_random)?;
     let call = ListParWithRandom {
         pars: vec![
-            meter.copy(&*SINK)?,
-            meter.copy(&*CONSUME_METHOD)?,
+            (*SINK).clone(),
+            (*CONSUME_METHOD).clone(),
             list_par(pairs, None),
             new_gstring_par(arrow.to_string(), Vec::new(), false),
             new_bundle_par(body_capability, true, false),
@@ -1267,8 +1183,6 @@ fn levels_below(count: usize) -> Vec<u8> {
 ///   HEAD, of a native space, or the value of a URI.
 /// * TN-4: one call `A'_a!(r_a, "gensym")` on the call channel of each agent, and the resume
 ///   term, in one `Par` with the state `base.split_byte(7)`.
-///
-/// Every copy and every random draw is reserved before it is made.
 pub fn translate_new(
     bound: &Env<Par>,
     level: i32,
@@ -1276,7 +1190,6 @@ pub fn translate_new(
     binders: &[AgentBinder],
     body: Par,
     base: &Blake2b512Random,
-    meter: &ScanMeter,
 ) -> Result<NewTranslation, InterpreterError> {
     let count = binders.len();
     let ordered = binders.windows(2).all(|pair| pair[0].index < pair[1].index);
@@ -1294,16 +1207,13 @@ pub fn translate_new(
         (_, true, _) => {}
     }
     let replies = base.split_byte(REPLY_NAME_BRANCH);
-    meter.reserve_buffer::<Par>(count)?;
     let mut reply_names = Vec::with_capacity(count);
     for binder in binders {
         let short = i16::try_from(binder.index)
             .map_err(|_| SpaceError::Inconsistent("a binder index does not fit a short split"))?;
         let random = replies.split_short(short);
-        meter.random_bytes(&random)?;
         reply_names.push(namespace::gprivate(output_bytes(random).to_vec()));
     }
-    meter.reserve_buffer::<Par>(bind_count)?;
     let mut targets = Vec::with_capacity(bind_count);
     let mut next = binders.iter().enumerate().peekable();
     for binder in 0..bind_count {
@@ -1311,7 +1221,6 @@ pub fn translate_new(
             Some(&(rank, agent_binder)) if agent_binder.index == binder => {
                 let variable = i32::try_from(count - 1 - rank)
                     .map_err(|_| SpaceError::Inconsistent("a binder level does not fit"))?;
-                meter.reserve_copy(&agent_binder.agent)?;
                 targets.push(agent_minted_name(
                     agent_binder.agent.clone(),
                     new_boundvar_par(variable, Vec::new(), false),
@@ -1326,13 +1235,12 @@ pub fn translate_new(
                 let value = bound.env_map.get(&at).ok_or_else(|| {
                     InterpreterError::BugFoundError("a binder of a new has no value".to_string())
                 })?;
-                targets.push(meter.copy(value)?);
+                targets.push(value.clone());
             }
         }
     }
     let free_count = i32::try_from(bind_count)
         .map_err(|_| SpaceError::Inconsistent("the binder count does not fit"))?;
-    meter.reserve_buffer::<Par>(bind_count)?;
     let mut variables = Vec::with_capacity(bind_count);
     for binder in 0..free_count {
         variables.push(new_freevar_par(binder, Vec::new()));
@@ -1352,7 +1260,6 @@ pub fn translate_new(
     };
     let mut inner = Par::default().prepend_match(resume);
     for (rank, reply) in reply_names.iter().enumerate().rev() {
-        meter.reserve_copy(reply)?;
         let connective_used = inner.connective_used;
         inner = Par::default().prepend_receive(Receive {
             binds: vec![ReceiveBind {
@@ -1373,18 +1280,16 @@ pub fn translate_new(
     }
     let mut par = inner;
     for (binder, reply) in binders.iter().zip(reply_names).rev() {
-        meter.reserve_copy(&binder.agent)?;
         let channel = call_channel(&binder.agent).map_err(ReifiedReduceError::from)?;
         par = par.prepend_send(Send {
             chan: Some(channel),
-            data: vec![reply, meter.copy(&*GENSYM_METHOD)?],
+            data: vec![reply, (*GENSYM_METHOD).clone()],
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
         });
     }
     let random = base.split_byte(NEW_PAR_BRANCH);
-    meter.random_bytes(&random)?;
     Ok(NewTranslation { par, random })
 }
 
@@ -1392,22 +1297,17 @@ pub fn translate_new(
 mod tests {
     use models::rhoapi::var::VarInstance;
     use models::rhoapi::CostAuthority;
-    use models::rust::cost_protocol_limits::offered_funded_v6_host_work_limits;
-    use models::rust::host_work::{HostWorkDimension, HostWorkUsage};
     use models::rust::utils::{
         new_boundvar_par, new_bundle_par, new_freevar_par, new_freevar_var, new_gint_par,
         new_wildcard_var,
     };
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::reified::runtime::unavailable;
     use crate::rust::interpreter::reified::system_processes::harness::{
         call, int, list, reply_name, string, Fixture,
     };
     use crate::rust::interpreter::spaces::namespace::REIFIED_TAG;
-
-    fn unmetered() -> ScanMeter { ScanMeter::new(None) }
 
     /// The state of bind `bind` of a receive with the free counts `sizes`, with the patterns
     /// `patterns` and the guard `guard`.
@@ -1431,7 +1331,7 @@ mod tests {
     fn free(index: i32) -> Par { new_freevar_par(index, Vec::new()) }
 
     fn matcher_of(state: &MatcherState) -> Par {
-        namespace::gprivate(state.channel(&unmetered()).expect("a matcher id"))
+        namespace::gprivate(state.channel().expect("a matcher id"))
     }
 
     fn env(pairs: Vec<(&str, Par)>) -> Par {
@@ -1481,42 +1381,36 @@ mod tests {
         ];
         for sample in samples {
             assert!(sample.is_consistent(), "{sample:?}");
-            let bytes = sample.encode(&unmetered()).expect("an encoding");
+            let bytes = sample.encode().expect("an encoding");
             assert!(bytes.len() > SID_LEN);
             assert_eq!(
-                MatcherState::decode(&bytes, &unmetered()).expect("a decode"),
+                MatcherState::decode(&bytes).expect("a decode"),
                 Some(sample.clone())
             );
             // A matcher id is the uppercase X form, and it decodes to the same state.
-            let id = sample.channel(&unmetered()).expect("an id");
+            let id = sample.channel().expect("an id");
             assert_eq!(&id[..2], &[REIFIED_TAG, b'X']);
             assert_eq!(
-                matcher_state_of(&namespace::gprivate(id.clone()), &unmetered()).expect("a decode"),
+                matcher_state_of(&namespace::gprivate(id.clone())).expect("a decode"),
                 Some(sample.clone())
             );
             // A bundle, the lowercase form and any change of a byte name no state.
             assert_eq!(
-                matcher_state_of(
-                    &new_bundle_par(namespace::gprivate(id.clone()), true, true),
-                    &unmetered()
-                )
-                .expect("a decode"),
+                matcher_state_of(&new_bundle_par(namespace::gprivate(id.clone()), true, true))
+                    .expect("a decode"),
                 None
             );
             let mut lowercase = id.clone();
             lowercase[1] = b'x';
             assert_eq!(
-                matcher_state_of(&namespace::gprivate(lowercase), &unmetered()).expect("a decode"),
+                matcher_state_of(&namespace::gprivate(lowercase)).expect("a decode"),
                 None
             );
             let mut longer = bytes.clone();
             longer.push(0);
+            assert_eq!(MatcherState::decode(&longer).expect("a decode"), None);
             assert_eq!(
-                MatcherState::decode(&longer, &unmetered()).expect("a decode"),
-                None
-            );
-            assert_eq!(
-                MatcherState::decode(&bytes[..bytes.len() - 1], &unmetered()).expect("a decode"),
+                MatcherState::decode(&bytes[..bytes.len() - 1]).expect("a decode"),
                 None
             );
         }
@@ -1524,8 +1418,8 @@ mod tests {
         let nil_guard = state(&[1], 0, vec![free(0)], Some(Par::default()));
         let no_guard = state(&[1], 0, vec![free(0)], None);
         assert_ne!(
-            nil_guard.encode(&unmetered()).expect("an encoding"),
-            no_guard.encode(&unmetered()).expect("an encoding")
+            nil_guard.encode().expect("an encoding"),
+            no_guard.encode().expect("an encoding")
         );
     }
 
@@ -1554,32 +1448,26 @@ mod tests {
             },
         ] {
             assert!(!broken.is_consistent(), "{broken:?}");
-            let bytes = broken.encode(&unmetered()).expect("an encoding");
-            assert_eq!(
-                MatcherState::decode(&bytes, &unmetered()).expect("a decode"),
-                None
-            );
+            let bytes = broken.encode().expect("an encoding");
+            assert_eq!(MatcherState::decode(&bytes).expect("a decode"), None);
         }
         let other_version = {
-            let par = consistent.to_par(&unmetered()).expect("a par");
+            let par = consistent.to_par();
             let mut elements = into_tuple(par).expect("a tuple");
             elements[0] = int_par(MATCHER_STATE_VERSION + 1);
             tuple_par(elements).encode_to_vec()
         };
         assert_eq!(
-            MatcherState::decode(&other_version, &unmetered()).expect("a decode"),
+            MatcherState::decode(&other_version).expect("a decode"),
             None
         );
         for other in [int(1), string("state"), list(Vec::new()), Par::default()] {
             assert_eq!(
-                MatcherState::decode(&other.encode_to_vec(), &unmetered()).expect("a decode"),
+                MatcherState::decode(&other.encode_to_vec()).expect("a decode"),
                 None
             );
         }
-        assert_eq!(
-            MatcherState::decode(&[0xFF; 40], &unmetered()).expect("a decode"),
-            None
-        );
+        assert_eq!(MatcherState::decode(&[0xFF; 40]).expect("a decode"), None);
     }
 
     #[test]
@@ -1591,7 +1479,7 @@ mod tests {
             Some(ReifiedId::Body(Durability::Durable, tag)) if tag == [3; SID_LEN]
         ));
         let matcher = state(&[1], 0, vec![free(0)], None)
-            .channel(&unmetered())
+            .channel()
             .expect("an id");
         assert!(matches!(
             namespace::decode_reified_id(&matcher),
@@ -1693,166 +1581,6 @@ mod tests {
             .await
             .expect("a reply");
         assert_eq!(reply, vec![refusal()]);
-    }
-
-    /// The usage of every dimension of `host_work`.
-    fn usage_of(host_work: &HostWorkBudget) -> Vec<HostWorkUsage> {
-        HostWorkDimension::ALL
-            .into_iter()
-            .map(|dimension| host_work.usage(dimension))
-            .collect()
-    }
-
-    /// How the reference charges the match and the guard of one bind.
-    #[derive(Clone, Copy, PartialEq)]
-    enum MatchCalls {
-        /// The metered methods that a native receive calls for one bind
-        /// (`rspace++/src/rspace/replay_rspace/native_candidate/metered.rs`).
-        Metered,
-        /// The unmetered methods `get` and `check_commit`: the negative control.
-        Unmetered,
-    }
-
-    /// The reply of the matcher op to the values `elements` under `state`, and its host work,
-    /// rebuilt from the calls of a native receive and the reservations of the op itself (MO-4):
-    /// the copy of the shared matcher handle, the copy of the values, the guard environment of
-    /// TR-4, and the reply map.
-    fn reference(
-        fixture: &Fixture,
-        state: &MatcherState,
-        elements: &[Par],
-        calls: MatchCalls,
-    ) -> (Par, Vec<HostWorkUsage>) {
-        let host_work = HostWorkBudget::new(offered_funded_v6_host_work_limits());
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        let env = fixture
-            .runtime
-            .space_env(Some(host_work.clone()))
-            .expect("the fixture has a host");
-        let matcher = env.store.matcher();
-        meter.shared(1).expect("the handle copy fits");
-        let data = ListParWithRandom {
-            pars: meter.copy_slice(elements).expect("the copy fits"),
-            random_state: Vec::new(),
-            cost_authority: None,
-            cost_stack: None,
-        };
-        let matched = match calls {
-            MatchCalls::Metered => matcher
-                .get_metered(&state.pattern, &data, &meter)
-                .expect("the match fits"),
-            MatchCalls::Unmetered => matcher.get(&state.pattern, &data),
-        };
-        let Some(matched) = matched else {
-            return (refusal(), usage_of(&host_work));
-        };
-        let admitted = match &state.guard {
-            None => true,
-            Some(guard) => {
-                let free = state.free_count().expect("a consistent state");
-                let placeholders = |count: u32| {
-                    let count = usize::try_from(count).expect("a small receive");
-                    let mut pars = meter.buffer::<Par>(count).expect("the buffer fits");
-                    pars.resize(count, Par::default());
-                    ListParWithRandom {
-                        pars,
-                        random_state: Vec::new(),
-                        cost_authority: None,
-                        cost_stack: None,
-                    }
-                };
-                let continuation = TaggedContinuation {
-                    tagged_cont: None,
-                    guard: Some(meter.copy(guard).expect("the copy fits")),
-                    cost_authority: None,
-                };
-                let bindings = [
-                    placeholders(state.offset),
-                    meter.copy(&matched).expect("the copy fits"),
-                    placeholders(state.total - state.offset - free),
-                ];
-                let mut references = meter
-                    .buffer::<&ListParWithRandom>(bindings.len())
-                    .expect("the buffer fits");
-                references.extend(bindings.iter());
-                match calls {
-                    MatchCalls::Metered => matcher
-                        .check_commit_metered(&continuation, &references, &meter)
-                        .expect("the guard fits"),
-                    MatchCalls::Unmetered => matcher.check_commit(&continuation, &bindings),
-                }
-            }
-        };
-        let reply = match admitted {
-            true => env_reply(state, matched.pars, &meter).expect("the reply fits"),
-            false => refusal(),
-        };
-        (reply, usage_of(&host_work))
-    }
-
-    /// I-15 and MO-4: the matcher op meters its match and its guard with the metered methods
-    /// of the injected matcher, the methods that a native receive calls for one bind. So the
-    /// host work of the op is the host work of those calls plus the reservations of the op
-    /// itself, in every dimension: the op matches nothing without its meter and meters no match
-    /// twice. The cases cover a match, a structured match, a mismatch after a partial match, a
-    /// wrong count of values, and a guard that passes and one that refuses. A reference with the
-    /// unmetered methods charges less wherever the match does work, so the comparison can fail.
-    #[tokio::test]
-    async fn agent_matcher_metering_equals_host() {
-        let fixture = Fixture::new().await;
-        let op = MatcherProcess::new(Arc::clone(&fixture.runtime));
-        let pair = list_par(vec![free(0), free(1)], None);
-        let cases = [
-            (state(&[1], 0, vec![free(0)], None), vec![int(9)], true),
-            (
-                state(&[1, 2], 1, vec![pair.clone()], None),
-                vec![list(vec![int(4), string("b")])],
-                true,
-            ),
-            (
-                state(&[1], 0, vec![list_par(vec![free(0), int(1)], None)], None),
-                vec![list(vec![int(4), int(2)])],
-                false,
-            ),
-            (
-                state(&[1], 0, vec![free(0)], None),
-                vec![int(1), int(2)],
-                false,
-            ),
-            (
-                state(&[2, 1, 3], 1, vec![free(0)], Some(greater_than_five(2, 6))),
-                vec![int(9)],
-                true,
-            ),
-            (
-                state(&[2, 1, 3], 1, vec![free(0)], Some(greater_than_five(2, 6))),
-                vec![int(3)],
-                false,
-            ),
-        ];
-        for (index, (state, elements, matches)) in cases.into_iter().enumerate() {
-            let host_work = HostWorkBudget::new(offered_funded_v6_host_work_limits());
-            let meter = ScanMeter::new(Some(host_work.clone()));
-            let reply = op
-                .answer(&state, &list(elements.clone()), &meter)
-                .expect("the op fits the budget");
-            let used = usage_of(&host_work);
-            let (expected, host) = reference(&fixture, &state, &elements, MatchCalls::Metered);
-            assert_eq!(reply, expected, "case {index}");
-            assert_eq!(reply != refusal(), matches, "case {index}");
-            assert_eq!(used, host, "case {index}: the op and the host calls differ");
-            assert!(
-                host_work.usage(HostWorkDimension::VerificationBytes) > HostWorkUsage::ZERO,
-                "case {index}"
-            );
-            let (_, unmetered) = reference(&fixture, &state, &elements, MatchCalls::Unmetered);
-            if index != 3 {
-                assert_ne!(
-                    used, unmetered,
-                    "case {index}: the control charges the match"
-                );
-            }
-        }
     }
 
     #[tokio::test]
@@ -1973,8 +1701,7 @@ mod tests {
             b"send",
             Some(CostAuthority::default()),
         );
-        let (channel, call) =
-            produce_call(&string("agent"), int(1), data, &unmetered()).expect("a call");
+        let (channel, call) = produce_call(&string("agent"), int(1), data).expect("a call");
         assert_eq!(channel, string("agent"));
         let expected_list = list_par(vec![int(7), bound], None);
         assert_eq!(expected_list.locally_free, vec![1]);
@@ -2014,12 +1741,7 @@ mod tests {
             (new_bundle_par(agent.clone(), false, true), None),
             (new_bundle_par(agent.clone(), false, false), None),
         ] {
-            let result = produce_call(
-                &reference,
-                int(1),
-                send_datum(vec![int(2)], b"send", None),
-                &unmetered(),
-            );
+            let result = produce_call(&reference, int(1), send_datum(vec![int(2)], b"send", None));
             match (result, expected) {
                 (Ok((channel, _)), Some(expected)) => assert_eq!(channel, expected),
                 (Err(error), None) => assert!(

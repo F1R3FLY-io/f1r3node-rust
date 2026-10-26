@@ -1652,7 +1652,9 @@ async fn marker_ids_disjoint_from_runtime_ids() {
 // ── Accounting twin ────────────────────────────────────────────────────────
 
 /// The funding resolver keeps the HEAD filter, so it fails closed on a Par with a USE or
-/// NEWSPACE tuple (finding H-1). A marker-free Par and an inert marker tuple resolve.
+/// NEWSPACE tuple in a resolving position (finding H-1): at the top and in the body of a `new`.
+/// A marker-free Par and an inert marker tuple resolve. The resolver does not resolve a receive
+/// body (DR-121 of `feature/cost-accounted-rho`), so a construct in a receive body resolves.
 #[test]
 fn lexical_resolver_fails_closed_on_reified_pars() {
     let urn_map = HashMap::new();
@@ -1672,17 +1674,32 @@ fn lexical_resolver_fails_closed_on_reified_pars() {
             resolve_lexical_names_for_funding(&top, rand(), &urn_map),
             disagreement
         );
-        let nested = receive(
+        // Changed by decision 89 (DR-121): the resolver leaves a receive body unresolved, so
+        // the nested case that fails closed is the body of a `new`, a resolving position.
+        // let nested = receive(
+        //     gstring("rrs-p2-lexical"),
+        //     vec![wildcard()],
+        //     0,
+        //     marked,
+        //     false,
+        // );
+        // assert_eq!(
+        //     resolve_lexical_names_for_funding(&nested, rand(), &urn_map),
+        //     disagreement
+        // );
+        let nested = new_par(1, marked.clone());
+        assert_eq!(
+            resolve_lexical_names_for_funding(&nested, rand(), &urn_map),
+            disagreement
+        );
+        let received = receive(
             gstring("rrs-p2-lexical"),
             vec![wildcard()],
             0,
             marked,
             false,
         );
-        assert_eq!(
-            resolve_lexical_names_for_funding(&nested, rand(), &urn_map),
-            disagreement
-        );
+        assert!(resolve_lexical_names_for_funding(&received, rand(), &urn_map).is_ok());
     }
 }
 

@@ -55,11 +55,8 @@ use std::cmp::Ordering;
 
 use num_bigint::BigInt;
 use num_traits::{Signed, Zero};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 
-use super::costs;
 use super::num::{round_to_f64, scaled, sqrt_to_f64, Dyadic, Exact, ExactVector, NumError};
-use crate::rust::interpreter::reified::costs::ScanMeter;
 
 /// A built-in metric of a VectorDB space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -147,18 +144,14 @@ pub struct Query {
 
 impl Query {
     /// The query of `vector` under `metric`. A zero vector under cosine has no direction, so it
-    /// is `None`, and the caller fails with `ZeroQueryVector`. The work is reserved first.
-    pub fn new(
-        vector: ExactVector,
-        metric: Metric,
-        meter: &ScanMeter,
-    ) -> Result<Option<Query>, NumError> {
+    /// is `None`, and the caller fails with `ZeroQueryVector`.
+    pub fn new(vector: ExactVector, metric: Metric) -> Result<Option<Query>, NumError> {
         let (norm2, bits) = match metric {
-            Metric::Cosine => match dot(&vector, &vector, meter)? {
+            Metric::Cosine => match dot(&vector, &vector)? {
                 norm2 if norm2.is_zero() => return Ok(None),
                 norm2 => (norm2, None),
             },
-            Metric::Hamming | Metric::Jaccard => (Exact::zero(), bits(&vector, meter)?),
+            Metric::Hamming | Metric::Jaccard => (Exact::zero(), bits(&vector)),
             Metric::Dot | Metric::Euclidean | Metric::Manhattan => (Exact::zero(), None),
         };
         Ok(Some(Query {
@@ -185,8 +178,8 @@ impl DyadicSum {
         }
     }
 
-    /// Adds `term · 2^exponent`. Each shift and each sum is reserved before it is made.
-    fn add(&mut self, term: BigInt, exponent: i64, meter: &ScanMeter) -> Result<(), NumError> {
+    /// Adds `term · 2^exponent`.
+    fn add(&mut self, term: BigInt, exponent: i64) -> Result<(), NumError> {
         if term.is_zero() {
             return Ok(());
         }
@@ -198,31 +191,24 @@ impl DyadicSum {
         match exponent.cmp(&unit) {
             Ordering::Less => {
                 let shift = exponent_gap(unit, exponent)?;
-                costs::reserve_shift(&self.sum, shift, meter)?;
                 let aligned = std::mem::take(&mut self.sum) << shift;
-                costs::reserve_sum(&aligned, &term, meter)?;
                 self.sum = aligned + term;
                 self.unit = Some(exponent);
             }
             Ordering::Equal | Ordering::Greater => {
                 let shift = exponent_gap(exponent, unit)?;
-                costs::reserve_shift(&term, shift, meter)?;
                 let aligned = term << shift;
-                costs::reserve_sum(&self.sum, &aligned, meter)?;
                 self.sum += aligned;
             }
         }
         Ok(())
     }
 
-    /// The exact value of the sum, reserved first. A sum of no term is zero.
-    fn value(self, meter: &ScanMeter) -> Result<Exact, NumError> {
+    /// The exact value of the sum. A sum of no term is zero.
+    fn value(self) -> Exact {
         match self.unit {
-            None => Ok(Exact::zero()),
-            Some(unit) => {
-                costs::reserve_dyadic_value(&self.sum, unit, meter)?;
-                Ok(scaled(self.sum, unit))
-            }
+            None => Exact::zero(),
+            Some(unit) => scaled(self.sum, unit),
         }
     }
 }
@@ -240,49 +226,35 @@ fn exponent_sum(a: i64, b: i64) -> Result<i64, NumError> {
     a.checked_add(b).ok_or(NumError::ValueOutOfRange)
 }
 
-/// `count · width` bytes, or `HostWorkRejected` when the amount overflows.
-fn amount(count: usize, width: usize) -> Result<usize, NumError> {
-    count
-        .checked_mul(width)
-        .ok_or(NumError::HostWork(RSpaceError::HostWorkRejected))
-}
-
 /// `x − y` of two dyadic numbers, as an integer and the exponent of its unit.
-fn dyadic_difference(x: &Dyadic, y: &Dyadic, meter: &ScanMeter) -> Result<(BigInt, i64), NumError> {
+fn dyadic_difference(x: &Dyadic, y: &Dyadic) -> Result<(BigInt, i64), NumError> {
     let unit = x.exponent.min(y.exponent);
     let (left_shift, right_shift) = (
         exponent_gap(x.exponent, unit)?,
         exponent_gap(y.exponent, unit)?,
     );
-    costs::reserve_shift(&x.mantissa, left_shift, meter)?;
-    costs::reserve_shift(&y.mantissa, right_shift, meter)?;
     let (left, right) = (&x.mantissa << left_shift, &y.mantissa << right_shift);
-    costs::reserve_sum(&left, &right, meter)?;
     Ok((left - right, unit))
 }
 
 /// `a·b`, exact. The caller has checked that both vectors have one length.
-pub fn dot(a: &ExactVector, b: &ExactVector, meter: &ScanMeter) -> Result<Exact, NumError> {
+pub fn dot(a: &ExactVector, b: &ExactVector) -> Result<Exact, NumError> {
     match (a, b) {
         (ExactVector::Dyadic(left), ExactVector::Dyadic(right)) => {
             let mut sum = DyadicSum::new();
             for (x, y) in left.iter().zip(right) {
-                costs::reserve_product(&x.mantissa, &y.mantissa, meter)?;
                 sum.add(
                     &x.mantissa * &y.mantissa,
                     exponent_sum(x.exponent, y.exponent)?,
-                    meter,
                 )?;
             }
-            sum.value(meter)
+            Ok(sum.value())
         }
         _ => {
-            let (left, right) = (a.rationals(meter)?, b.rationals(meter)?);
+            let (left, right) = (a.rationals(), b.rationals());
             let mut sum = Exact::zero();
             for (x, y) in left.iter().zip(right.iter()) {
-                costs::reserve_rational(x, y, meter)?;
                 let product = x * y;
-                costs::reserve_rational(&sum, &product, meter)?;
                 sum += product;
             }
             Ok(sum)
@@ -291,26 +263,22 @@ pub fn dot(a: &ExactVector, b: &ExactVector, meter: &ScanMeter) -> Result<Exact,
 }
 
 /// The squared euclidean distance `‖a − b‖²`, exact.
-pub fn distance2(a: &ExactVector, b: &ExactVector, meter: &ScanMeter) -> Result<Exact, NumError> {
+pub fn distance2(a: &ExactVector, b: &ExactVector) -> Result<Exact, NumError> {
     match (a, b) {
         (ExactVector::Dyadic(left), ExactVector::Dyadic(right)) => {
             let mut sum = DyadicSum::new();
             for (x, y) in left.iter().zip(right) {
-                let (delta, unit) = dyadic_difference(x, y, meter)?;
-                costs::reserve_product(&delta, &delta, meter)?;
-                sum.add(&delta * &delta, exponent_sum(unit, unit)?, meter)?;
+                let (delta, unit) = dyadic_difference(x, y)?;
+                sum.add(&delta * &delta, exponent_sum(unit, unit)?)?;
             }
-            sum.value(meter)
+            Ok(sum.value())
         }
         _ => {
-            let (left, right) = (a.rationals(meter)?, b.rationals(meter)?);
+            let (left, right) = (a.rationals(), b.rationals());
             let mut sum = Exact::zero();
             for (x, y) in left.iter().zip(right.iter()) {
-                costs::reserve_rational(x, y, meter)?;
                 let delta = x - y;
-                costs::reserve_rational(&delta, &delta, meter)?;
                 let square = &delta * &delta;
-                costs::reserve_rational(&sum, &square, meter)?;
                 sum += square;
             }
             Ok(sum)
@@ -319,27 +287,25 @@ pub fn distance2(a: &ExactVector, b: &ExactVector, meter: &ScanMeter) -> Result<
 }
 
 /// The manhattan distance `‖a − b‖₁`, exact.
-pub fn manhattan(a: &ExactVector, b: &ExactVector, meter: &ScanMeter) -> Result<Exact, NumError> {
+pub fn manhattan(a: &ExactVector, b: &ExactVector) -> Result<Exact, NumError> {
     match (a, b) {
         (ExactVector::Dyadic(left), ExactVector::Dyadic(right)) => {
             let mut sum = DyadicSum::new();
             for (x, y) in left.iter().zip(right) {
-                let (delta, unit) = dyadic_difference(x, y, meter)?;
+                let (delta, unit) = dyadic_difference(x, y)?;
                 let magnitude = match delta.is_negative() {
                     true => -delta,
                     false => delta,
                 };
-                sum.add(magnitude, unit, meter)?;
+                sum.add(magnitude, unit)?;
             }
-            sum.value(meter)
+            Ok(sum.value())
         }
         _ => {
-            let (left, right) = (a.rationals(meter)?, b.rationals(meter)?);
+            let (left, right) = (a.rationals(), b.rationals());
             let mut sum = Exact::zero();
             for (x, y) in left.iter().zip(right.iter()) {
-                costs::reserve_rational(x, y, meter)?;
                 let delta = x - y;
-                costs::reserve_rational(&sum, &delta, meter)?;
                 sum += delta.abs();
             }
             Ok(sum)
@@ -373,11 +339,8 @@ fn bit_of_rational(value: &Exact) -> Option<bool> {
     }
 }
 
-/// The bits of a binary vector, or `None` when an element is not 0 or 1. The buffer and the
-/// test of each element are reserved first.
-pub fn bits(vector: &ExactVector, meter: &ScanMeter) -> Result<Option<Vec<bool>>, NumError> {
-    meter.reserve_buffer::<bool>(vector.len())?;
-    meter.charge(vector.len(), amount(vector.len(), size_of::<Exact>())?, 0)?;
+/// The bits of a binary vector, or `None` when an element is not 0 or 1.
+pub fn bits(vector: &ExactVector) -> Option<Vec<bool>> {
     let mut bits = Vec::with_capacity(vector.len());
     let mut keep = |bit: Option<bool>| match bit {
         Some(bit) => {
@@ -390,7 +353,7 @@ pub fn bits(vector: &ExactVector, meter: &ScanMeter) -> Result<Option<Vec<bool>>
         ExactVector::Dyadic(forms) => forms.iter().map(bit_of_dyadic).all(&mut keep),
         ExactVector::Rational(values) => values.iter().map(bit_of_rational).all(&mut keep),
     };
-    Ok(complete.then_some(bits))
+    complete.then_some(bits)
 }
 
 /// A count of positions as a `u64`.
@@ -399,19 +362,13 @@ fn count_of(count: usize) -> Result<u64, NumError> {
 }
 
 /// The hamming distance of two bit vectors of one length.
-pub fn hamming(left: &[bool], right: &[bool], meter: &ScanMeter) -> Result<u64, NumError> {
-    meter.charge(left.len(), amount(left.len(), 2)?, 0)?;
+pub fn hamming(left: &[bool], right: &[bool]) -> Result<u64, NumError> {
     count_of(left.iter().zip(right).filter(|(x, y)| x != y).count())
 }
 
 /// The intersection and the union of two bit vectors of one length, or `None` when the union
 /// is empty.
-pub fn jaccard(
-    left: &[bool],
-    right: &[bool],
-    meter: &ScanMeter,
-) -> Result<Option<(u64, u64)>, NumError> {
-    meter.charge(left.len(), amount(left.len(), 2)?, 0)?;
+pub fn jaccard(left: &[bool], right: &[bool]) -> Result<Option<(u64, u64)>, NumError> {
     let (inter, union) = left
         .iter()
         .zip(right)
@@ -426,34 +383,31 @@ pub fn jaccard(
 
 /// The score of the record vector `record` for `query`, or `None` when it is undefined. The
 /// caller has checked that the record has the dimension of the space.
-pub fn score(
-    query: &Query,
-    record: &ExactVector,
-    meter: &ScanMeter,
-) -> Result<Option<Score>, NumError> {
+pub fn score(query: &Query, record: &ExactVector) -> Result<Option<Score>, NumError> {
     let q = &query.vector;
     Ok(match query.metric {
-        Metric::Cosine => match dot(record, record, meter)? {
+        Metric::Cosine => match dot(record, record)? {
             norm2 if norm2.is_zero() => None,
             norm2 => Some(Score::Cosine {
-                dot: dot(q, record, meter)?,
+                dot: dot(q, record)?,
                 norm2,
             }),
         },
-        Metric::Dot => Some(Score::Dot(dot(q, record, meter)?)),
-        Metric::Euclidean => Some(Score::Euclidean(distance2(q, record, meter)?)),
-        Metric::Manhattan => Some(Score::Manhattan(manhattan(q, record, meter)?)),
+        Metric::Dot => Some(Score::Dot(dot(q, record)?)),
+        Metric::Euclidean => Some(Score::Euclidean(distance2(q, record)?)),
+        Metric::Manhattan => Some(Score::Manhattan(manhattan(q, record)?)),
         Metric::Hamming => match &query.bits {
-            Some(left) => match bits(record, meter)? {
-                Some(right) => Some(Score::Hamming(hamming(left, &right, meter)?)),
+            Some(left) => match bits(record) {
+                Some(right) => Some(Score::Hamming(hamming(left, &right)?)),
                 None => None,
             },
             None => None,
         },
         Metric::Jaccard => match &query.bits {
-            Some(left) => match bits(record, meter)? {
-                Some(right) => jaccard(left, &right, meter)?
-                    .map(|(inter, union)| Score::Jaccard { inter, union }),
+            Some(left) => match bits(record) {
+                Some(right) => {
+                    jaccard(left, &right)?.map(|(inter, union)| Score::Jaccard { inter, union })
+                }
                 None => None,
             },
             None => None,
@@ -461,21 +415,15 @@ pub fn score(
     })
 }
 
-/// `a·b` for two exact numbers, reserved first.
-fn product(a: &Exact, b: &Exact, meter: &ScanMeter) -> Result<Exact, NumError> {
-    costs::reserve_rational(a, b, meter)?;
-    Ok(a * b)
-}
+/// `a·b` for two exact numbers.
+fn product(a: &Exact, b: &Exact) -> Exact { a * b }
 
-/// The exact comparison of two rationals, reserved first.
-fn compare(a: &Exact, b: &Exact, meter: &ScanMeter) -> Result<Ordering, NumError> {
-    costs::reserve_rational_compare(a, b, meter)?;
-    Ok(a.cmp(b))
-}
+/// The exact comparison of two rationals.
+fn compare(a: &Exact, b: &Exact) -> Ordering { a.cmp(b) }
 
 /// The order of two scores of one query: `Greater` when `a` is better than `b`, `Equal` when
 /// they tie. Scores of two metrics never meet, and such a pair is `None` for the caller.
-pub fn better(a: &Score, b: &Score, meter: &ScanMeter) -> Result<Option<Ordering>, NumError> {
+pub fn better(a: &Score, b: &Score) -> Result<Option<Ordering>, NumError> {
     Ok(Some(match (a, b) {
         (
             Score::Cosine { dot: u, norm2: n },
@@ -487,23 +435,20 @@ pub fn better(a: &Score, b: &Score, meter: &ScanMeter) -> Result<Option<Ordering
             (false, true) => Ordering::Greater,
             (true, false) => Ordering::Less,
             (negative, _) => {
-                let left = product(&product(u, u, meter)?, n_prime, meter)?;
-                let right = product(&product(v, v, meter)?, n, meter)?;
-                let order = compare(&left, &right, meter)?;
+                let left = product(&product(u, u), n_prime);
+                let right = product(&product(v, v), n);
+                let order = compare(&left, &right);
                 match negative {
                     false => order,
                     true => order.reverse(),
                 }
             }
         },
-        (Score::Dot(u), Score::Dot(v)) => compare(u, v, meter)?,
+        (Score::Dot(u), Score::Dot(v)) => compare(u, v),
         (Score::Euclidean(u), Score::Euclidean(v)) | (Score::Manhattan(u), Score::Manhattan(v)) => {
-            compare(u, v, meter)?.reverse()
+            compare(u, v).reverse()
         }
-        (Score::Hamming(u), Score::Hamming(v)) => {
-            meter.compare(size_of::<u64>(), size_of::<u64>())?;
-            u.cmp(v).reverse()
-        }
+        (Score::Hamming(u), Score::Hamming(v)) => u.cmp(v).reverse(),
         (
             Score::Jaccard { inter, union },
             Score::Jaccard {
@@ -512,7 +457,6 @@ pub fn better(a: &Score, b: &Score, meter: &ScanMeter) -> Result<Option<Ordering
             },
         ) => {
             // inter/union against inter'/union': two products and one comparison.
-            meter.charge(3, 4 * size_of::<u64>(), 0)?;
             (u128::from(*inter) * u128::from(*union_prime))
                 .cmp(&(u128::from(*inter_prime) * u128::from(*union)))
         }
@@ -522,12 +466,7 @@ pub fn better(a: &Score, b: &Score, meter: &ScanMeter) -> Result<Option<Ordering
 
 /// True when `score` passes `bound` for `query`. A threshold applies to a similarity and a
 /// radius to a distance. Any other pair is `None`, and the caller rejects it before it scores.
-pub fn within(
-    score: &Score,
-    bound: &Bound,
-    query: &Query,
-    meter: &ScanMeter,
-) -> Result<Option<bool>, NumError> {
+pub fn within(score: &Score, bound: &Bound, query: &Query) -> Result<Option<bool>, NumError> {
     Ok(Some(match (score, bound) {
         (Score::Cosine { dot, norm2 }, Bound::Threshold(t)) => {
             // cos = q·e / (‖q‖·‖e‖) ≥ t: by the signs, and otherwise by the squares.
@@ -535,10 +474,10 @@ pub fn within(
                 (false, true) => true,
                 (true, false) => false,
                 (negative, _) => {
-                    let left = product(dot, dot, meter)?;
-                    let scale = product(&query.norm2, norm2, meter)?;
-                    let right = product(&product(t, t, meter)?, &scale, meter)?;
-                    let order = compare(&left, &right, meter)?;
+                    let left = product(dot, dot);
+                    let scale = product(&query.norm2, norm2);
+                    let right = product(&product(t, t), &scale);
+                    let order = compare(&left, &right);
                     match negative {
                         // Both non-negative: cos ≥ t when cos² ≥ t².
                         false => order != Ordering::Less,
@@ -548,26 +487,26 @@ pub fn within(
                 }
             }
         }
-        (Score::Dot(value), Bound::Threshold(t)) => compare(value, t, meter)? != Ordering::Less,
+        (Score::Dot(value), Bound::Threshold(t)) => compare(value, t) != Ordering::Less,
         (Score::Jaccard { inter, union }, Bound::Threshold(t)) => {
             let left = Exact::from_integer(BigInt::from(*inter));
-            let right = product(t, &Exact::from_integer(BigInt::from(*union)), meter)?;
-            compare(&left, &right, meter)? != Ordering::Less
+            let right = product(t, &Exact::from_integer(BigInt::from(*union)));
+            compare(&left, &right) != Ordering::Less
         }
         (Score::Euclidean(distance2), Bound::Radius(radius)) => match radius.is_negative() {
             // A distance is never negative, and ρ² would lose the sign of ρ.
             true => false,
             false => {
-                let limit = product(radius, radius, meter)?;
-                compare(distance2, &limit, meter)? != Ordering::Greater
+                let limit = product(radius, radius);
+                compare(distance2, &limit) != Ordering::Greater
             }
         },
         (Score::Manhattan(distance), Bound::Radius(radius)) => {
-            compare(distance, radius, meter)? != Ordering::Greater
+            compare(distance, radius) != Ordering::Greater
         }
         (Score::Hamming(count), Bound::Radius(radius)) => {
             let count = Exact::from_integer(BigInt::from(*count));
-            compare(&count, radius, meter)? != Ordering::Greater
+            compare(&count, radius) != Ordering::Greater
         }
         _ => return Ok(None),
     }))
@@ -575,26 +514,24 @@ pub fn within(
 
 /// The delivered value of `score` for `query`: `RN_53` of the exact value of the metric, or
 /// `ValueOutOfRange` beyond the finite range of `f64`.
-pub fn delivered(score: &Score, query: &Query, meter: &ScanMeter) -> Result<f64, NumError> {
+pub fn delivered(score: &Score, query: &Query) -> Result<f64, NumError> {
     match score {
         Score::Cosine { dot, norm2 } => {
             // |cos| = √((q·e)² / (‖q‖²‖e‖²)), and RN_53 commutes with the sign.
-            let numerator = product(dot, dot, meter)?;
-            let denominator = product(&query.norm2, norm2, meter)?;
-            costs::reserve_rational(&numerator, &denominator, meter)?;
-            let magnitude = sqrt_to_f64(&(numerator / denominator), meter)?;
+            let numerator = product(dot, dot);
+            let denominator = product(&query.norm2, norm2);
+            let magnitude = sqrt_to_f64(&(numerator / denominator))?;
             Ok(match dot.is_negative() {
                 true => -magnitude,
                 false => magnitude,
             })
         }
-        Score::Dot(value) | Score::Manhattan(value) => round_to_f64(value, meter),
-        Score::Euclidean(distance2) => sqrt_to_f64(distance2, meter),
-        Score::Hamming(count) => round_to_f64(&Exact::from_integer(BigInt::from(*count)), meter),
-        Score::Jaccard { inter, union } => round_to_f64(
-            &Exact::new(BigInt::from(*inter), BigInt::from(*union)),
-            meter,
-        ),
+        Score::Dot(value) | Score::Manhattan(value) => round_to_f64(value),
+        Score::Euclidean(distance2) => sqrt_to_f64(distance2),
+        Score::Hamming(count) => round_to_f64(&Exact::from_integer(BigInt::from(*count))),
+        Score::Jaccard { inter, union } => {
+            round_to_f64(&Exact::new(BigInt::from(*inter), BigInt::from(*union)))
+        }
     }
 }
 
@@ -613,46 +550,30 @@ pub struct Candidate {
 /// before `b`. The better score comes first, and the lower rank breaks a tie, so the order is
 /// total on candidates of distinct ranks (Similarity.v, S13). Candidates of two metrics never
 /// meet (`MixedScores`).
-pub fn selection_order(
-    a: &Candidate,
-    b: &Candidate,
-    meter: &ScanMeter,
-) -> Result<Ordering, NumError> {
-    match better(&a.score, &b.score, meter)?.ok_or(NumError::MixedScores)? {
+pub fn selection_order(a: &Candidate, b: &Candidate) -> Result<Ordering, NumError> {
+    match better(&a.score, &b.score)?.ok_or(NumError::MixedScores)? {
         Ordering::Greater => Ok(Ordering::Less),
         Ordering::Less => Ok(Ordering::Greater),
-        Ordering::Equal => {
-            meter.compare(size_of::<usize>(), size_of::<usize>())?;
-            Ok(a.rank.cmp(&b.rank))
-        }
+        Ordering::Equal => Ok(a.rank.cmp(&b.rank)),
     }
 }
 
-/// Sorts `candidates` in the selection order with the fallible heap sort of the substrate's
-/// space order (`SpaceOrder::sort` of space_store_handle.rs). The moves of the sort and each
-/// comparison are reserved before they are made. On distinct ranks the result is the one
-/// sorted arrangement of the candidates, whatever their input order (Similarity.v, S14).
-pub fn rank(candidates: &mut [Candidate], meter: &ScanMeter) -> Result<(), NumError> {
-    let moves = amount(size_of::<Candidate>(), 2)?;
-    meter.charge(candidates.len(), amount(candidates.len(), moves)?, 0)?;
-    shared::rust::fallible_sort::sort(candidates, |a, b| {
-        meter.charge(1, moves, 0)?;
-        selection_order(a, b, meter)
-    })
+/// Sorts `candidates` in the selection order with the fallible heap sort of `fallible_sort`: a
+/// comparison of the scores of two metrics fails the sort (`MixedScores`). On distinct ranks the
+/// result is the one sorted arrangement of the candidates, whatever their input order
+/// (Similarity.v, S14).
+pub fn rank(candidates: &mut [Candidate]) -> Result<(), NumError> {
+    shared::rust::fallible_sort::sort(candidates, selection_order)
 }
 
 #[cfg(test)]
 mod tests {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{EList, Expr, GBigRational, Par};
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use proptest::prelude::*;
 
     use super::super::num::vector_of;
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
-
-    fn unmetered() -> ScanMeter { ScanMeter::new(None) }
 
     fn expr(instance: ExprInstance) -> Par {
         Par {
@@ -675,7 +596,7 @@ mod tests {
             .iter()
             .map(|value| expr(ExprInstance::GInt(*value)))
             .collect();
-        vector_of(&list(ps), None, &unmetered()).expect("an integer vector")
+        vector_of(&list(ps), None).expect("an integer vector")
     }
 
     fn doubles(values: &[f64]) -> ExactVector {
@@ -683,12 +604,12 @@ mod tests {
             .iter()
             .map(|value| expr(ExprInstance::GDouble(value.to_bits())))
             .collect();
-        vector_of(&list(ps), None, &unmetered()).expect("a float vector")
+        vector_of(&list(ps), None).expect("a float vector")
     }
 
     /// The same values as rationals, so that a kernel takes its rational path.
     fn rational(vector: &ExactVector) -> ExactVector {
-        ExactVector::Rational(vector.rationals(&unmetered()).expect("values").into_owned())
+        ExactVector::Rational(vector.rationals().into_owned())
     }
 
     fn ratio(numerator: i64, denominator: i64) -> Exact {
@@ -696,26 +617,26 @@ mod tests {
     }
 
     fn query(vector: ExactVector, metric: Metric) -> Query {
-        Query::new(vector, metric, &unmetered())
-            .expect("an unmetered query")
+        Query::new(vector, metric)
+            .expect("a query")
             .expect("a query with a direction")
     }
 
     fn score_of(query: &Query, record: &ExactVector) -> Option<Score> {
-        score(query, record, &unmetered()).expect("an unmetered score")
+        score(query, record).expect("a score")
     }
 
     fn sole(score: Option<Score>) -> Score { score.expect("a defined score") }
 
     fn better_of(a: &Score, b: &Score) -> Ordering {
-        better(a, b, &unmetered())
-            .expect("an unmetered comparison")
+        better(a, b)
+            .expect("a comparison")
             .expect("scores of one metric")
     }
 
     fn within_of(score: &Score, bound: Bound, query: &Query) -> bool {
-        within(score, &bound, query, &unmetered())
-            .expect("an unmetered bound")
+        within(score, &bound, query)
+            .expect("a bound")
             .expect("a bound of the metric")
     }
 
@@ -742,7 +663,7 @@ mod tests {
         // The f64-accumulation mutant: 1e16 + 1 rounds to 1e16 in f64, so the float sum is 0.
         let q = doubles(&[1e16, 1.0, -1e16]);
         let e = ints(&[1, 1, 1]);
-        let exact = dot(&q, &e, &unmetered()).expect("a dot product");
+        let exact = dot(&q, &e).expect("a dot product");
         assert_eq!(exact, ratio(1, 1));
         let float: f64 = [1e16f64, 1.0, -1e16].iter().sum();
         assert_eq!(float, 0.0);
@@ -868,19 +789,16 @@ mod tests {
         assert!(!within_of(&two, Bound::Radius(ratio(3, 2)), &hamming_query));
         // A threshold never bounds a distance, and a radius never bounds a similarity.
         assert_eq!(
-            within(&five, &Bound::Threshold(ratio(1, 2)), &origin, &unmetered()),
+            within(&five, &Bound::Threshold(ratio(1, 2)), &origin),
             Ok(None)
         );
-        assert_eq!(
-            within(&close, &Bound::Radius(ratio(1, 2)), &q, &unmetered()),
-            Ok(None)
-        );
+        assert_eq!(within(&close, &Bound::Radius(ratio(1, 2)), &q), Ok(None));
     }
 
     #[test]
     fn tensor_undefined_scores_make_records_ineligible() {
-        assert!(Query::new(ints(&[0, 0]), Metric::Cosine, &unmetered())
-            .expect("an unmetered query")
+        assert!(Query::new(ints(&[0, 0]), Metric::Cosine)
+            .expect("a query")
             .is_none());
         let q = query(ints(&[1, 2]), Metric::Cosine);
         assert_eq!(score_of(&q, &ints(&[0, 0])), None);
@@ -904,7 +822,6 @@ mod tests {
                 expr(ExprInstance::GBool(false)),
             ]),
             None,
-            &unmetered(),
         )
         .expect("a Boolean vector");
         assert_eq!(score_of(&hamming_query, &booleans), Some(Score::Hamming(0)));
@@ -923,86 +840,38 @@ mod tests {
     fn tensor_scores_of_two_metrics_never_compare() {
         let dot_score = Score::Dot(ratio(1, 1));
         let distance = Score::Euclidean(ratio(1, 1));
-        assert_eq!(better(&dot_score, &distance, &unmetered()), Ok(None));
+        assert_eq!(better(&dot_score, &distance), Ok(None));
     }
 
     #[test]
     fn tensor_delivered_values_are_correctly_rounded() {
         let q = query(ints(&[3, 4]), Metric::Cosine);
         let close = sole(score_of(&q, &ints(&[4, 3])));
-        assert_eq!(delivered(&close, &q, &unmetered()), Ok(0.96));
+        assert_eq!(delivered(&close, &q), Ok(0.96));
         let opposite = sole(score_of(&q, &ints(&[-4, -3])));
-        assert_eq!(delivered(&opposite, &q, &unmetered()), Ok(-0.96));
+        assert_eq!(delivered(&opposite, &q), Ok(-0.96));
         let axis = query(ints(&[1, 0]), Metric::Cosine);
         let tilted = sole(score_of(&axis, &ints(&[1, 1])));
         assert_eq!(
-            delivered(&tilted, &axis, &unmetered()),
+            delivered(&tilted, &axis),
             Ok(std::f64::consts::FRAC_1_SQRT_2)
         );
         let origin = query(ints(&[0, 0]), Metric::Euclidean);
         let root_two = sole(score_of(&origin, &ints(&[1, 1])));
-        assert_eq!(
-            delivered(&root_two, &origin, &unmetered()),
-            Ok(std::f64::consts::SQRT_2)
-        );
+        assert_eq!(delivered(&root_two, &origin), Ok(std::f64::consts::SQRT_2));
         let jaccard_query = query(ints(&[1, 1, 0]), Metric::Jaccard);
         let third = sole(score_of(&jaccard_query, &ints(&[1, 0, 1])));
-        assert_eq!(
-            delivered(&third, &jaccard_query, &unmetered()),
-            Ok(1.0 / 3.0)
-        );
+        assert_eq!(delivered(&third, &jaccard_query), Ok(1.0 / 3.0));
         let hamming_query = query(ints(&[1, 1, 0]), Metric::Hamming);
         let two = sole(score_of(&hamming_query, &ints(&[1, 0, 1])));
-        assert_eq!(delivered(&two, &hamming_query, &unmetered()), Ok(2.0));
+        assert_eq!(delivered(&two, &hamming_query), Ok(2.0));
         let dot_query = query(doubles(&[1e308]), Metric::Dot);
         let huge = sole(score_of(&dot_query, &ints(&[10])));
-        assert_eq!(
-            delivered(&huge, &dot_query, &unmetered()),
-            Err(NumError::ValueOutOfRange)
-        );
+        assert_eq!(delivered(&huge, &dot_query), Err(NumError::ValueOutOfRange));
         let fraction = ExactVector::Rational(vec![ratio(1, 3)]);
         let l1 = query(ints(&[0]), Metric::Manhattan);
         let distance = sole(score_of(&l1, &fraction));
-        assert_eq!(delivered(&distance, &l1, &unmetered()), Ok(1.0 / 3.0));
-    }
-
-    #[test]
-    fn tensor_kernels_reserve_their_work_first() {
-        let unbounded =
-            || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let operations = HostWorkDimension::VerificationOperations;
-        let two_sevenths = expr(ExprInstance::GBigRat(GBigRational {
-            numerator: BigInt::from(2).to_signed_bytes_be(),
-            denominator: BigInt::from(7).to_signed_bytes_be(),
-        }));
-        let record = list(vec![
-            two_sevenths,
-            expr(ExprInstance::GDouble(0.25f64.to_bits())),
-        ]);
-        let run = |meter: &ScanMeter| -> Result<Vec<f64>, NumError> {
-            let mut values = Vec::new();
-            for metric in Metric::ALL {
-                let q = Query::new(doubles(&[1.5, -2.0]), metric, meter)?
-                    .expect("a query with a direction");
-                let record = vector_of(&record, Some(2), meter)?;
-                let dyadic = doubles(&[0.5, 1.0]);
-                for candidate in [&record, &dyadic] {
-                    if let Some(score) = score(&q, candidate, meter)? {
-                        values.push(delivered(&score, &q, meter)?);
-                    }
-                }
-            }
-            Ok(values)
-        };
-        let budget = unbounded();
-        let expected = run(&ScanMeter::new(Some(budget.clone()))).expect("an unbounded run");
-        assert_eq!(run(&unmetered()), Ok(expected));
-        let usage = budget.usage(operations).get();
-        assert!(usage > 0, "the kernels reserve their work");
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        limits.set(operations, HostWorkLimit::new(usage - 1));
-        let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
-        assert!(matches!(run(&cut), Err(NumError::HostWork(_))));
+        assert_eq!(delivered(&distance, &l1), Ok(1.0 / 3.0));
     }
 
     /// The bits of a delivered value, as the reference vectors write them.
@@ -1059,7 +928,6 @@ mod tests {
             document["schema"],
             serde_json::json!("reified-rspaces-numeric-reference/1")
         );
-        let meter = unmetered();
         let mut checked = 0usize;
         let mut failures = Vec::new();
         for case in document["rounding_cases"]
@@ -1067,7 +935,7 @@ mod tests {
             .expect("rounding cases")
         {
             let x: Exact = case["x"].as_str().expect("x").parse().expect("a rational");
-            let got = delivered_text(round_to_f64(&x, &meter));
+            let got = delivered_text(round_to_f64(&x));
             if got != case["rn53"].as_str().expect("rn53") {
                 failures.push(format!("rounding {}: {got}", case["x"]));
             }
@@ -1078,7 +946,7 @@ mod tests {
             .expect("square root cases")
         {
             let x: Exact = case["x"].as_str().expect("x").parse().expect("a rational");
-            let got = delivered_text(sqrt_to_f64(&x, &meter));
+            let got = delivered_text(sqrt_to_f64(&x));
             if got != case["rn53"].as_str().expect("rn53") {
                 failures.push(format!("square root {}: {got}", case["x"]));
             }
@@ -1091,8 +959,8 @@ mod tests {
             let q = reference_vector(&case["query"]);
             let e = reference_vector(&case["record"]);
             let dimension = case["query"].as_array().expect("a query").len();
-            let q = vector_of(&q, Some(dimension), &meter).expect("a query vector");
-            let e = vector_of(&e, Some(dimension), &meter).expect("a record vector");
+            let q = vector_of(&q, Some(dimension)).expect("a query vector");
+            let e = vector_of(&e, Some(dimension)).expect("a record vector");
             let bound = match case["bound"].as_object() {
                 Some(bound) => match (bound.get("threshold"), bound.get("radius")) {
                     (Some(t), None) => Some(Bound::Threshold(
@@ -1105,25 +973,25 @@ mod tests {
                 },
                 None => None,
             };
-            let outcome = match Query::new(q, metric, &meter).expect("an unmetered query") {
+            let outcome = match Query::new(q, metric).expect("a query") {
                 None => serde_json::json!({
                     "query_refused": true, "score_defined": false,
                     "delivered": null, "within": null,
                 }),
-                Some(query) => match score(&query, &e, &meter).expect("an unmetered score") {
+                Some(query) => match score(&query, &e).expect("a score") {
                     None => serde_json::json!({
                         "query_refused": false, "score_defined": false,
                         "delivered": null, "within": null,
                     }),
                     Some(score) => {
                         let within = bound.as_ref().map(|bound| {
-                            within(&score, bound, &query, &meter)
-                                .expect("an unmetered bound")
+                            within(&score, bound, &query)
+                                .expect("a bound")
                                 .expect("a bound of the metric")
                         });
                         serde_json::json!({
                             "query_refused": false, "score_defined": true,
-                            "delivered": delivered_text(delivered(&score, &query, &meter)),
+                            "delivered": delivered_text(delivered(&score, &query)),
                             "within": within,
                         })
                     }
@@ -1160,7 +1028,7 @@ mod tests {
     }
 
     fn ranked(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
-        rank(&mut candidates, &unmetered()).expect("an unmetered sort");
+        rank(&mut candidates).expect("a sort");
         candidates
     }
 
@@ -1182,9 +1050,9 @@ mod tests {
         assert_eq!(better_of(&first.score, &second.score), Ordering::Equal);
         let by_score = |mut list: Vec<Candidate>| {
             shared::rust::fallible_sort::sort(&mut list, |a, b| {
-                better(&b.score, &a.score, &unmetered()).map(|order| order.expect("one metric"))
+                better(&b.score, &a.score).map(|order| order.expect("one metric"))
             })
-            .expect("an unmetered sort");
+            .expect("a sort");
             list
         };
         let forward = vec![first.clone(), second.clone()];
@@ -1193,14 +1061,10 @@ mod tests {
         assert_eq!(ranked(forward)[0], first);
         assert_eq!(ranked(backward)[0], first);
         assert_eq!(
-            selection_order(
-                &first,
-                &Candidate {
-                    score: Score::Euclidean(ratio(1, 1)),
-                    rank: 2
-                },
-                &unmetered()
-            ),
+            selection_order(&first, &Candidate {
+                score: Score::Euclidean(ratio(1, 1)),
+                rank: 2
+            }),
             Err(NumError::MixedScores)
         );
     }
@@ -1266,8 +1130,8 @@ mod tests {
             vectors in int_vectors(2, -9, 9),
             t in small_ratio(),
         ) {
-            let Some(query) = Query::new(ints(&vectors[0]), Metric::Cosine, &unmetered())
-                .expect("an unmetered query") else {
+            let Some(query) = Query::new(ints(&vectors[0]), Metric::Cosine)
+                .expect("a query") else {
                 return Ok(());
             };
             let Some(score) = score_of(&query, &ints(&vectors[1])) else {
@@ -1281,8 +1145,8 @@ mod tests {
         /// exact cosines, and it is antisymmetric.
         #[test]
         fn prop_cosine_order_matches_the_squared_form(vectors in int_vectors(3, -20, 20)) {
-            let Some(query) = Query::new(ints(&vectors[0]), Metric::Cosine, &unmetered())
-                .expect("an unmetered query") else {
+            let Some(query) = Query::new(ints(&vectors[0]), Metric::Cosine)
+                .expect("a query") else {
                 return Ok(());
             };
             let (Some(a), Some(b)) =
@@ -1335,8 +1199,8 @@ mod tests {
                 (Metric::Dot, &vectors),
                 (Metric::Jaccard, &bits),
             ] {
-                let Some(query) = Query::new(ints(&pair[0]), metric, &unmetered())
-                    .expect("an unmetered query") else {
+                let Some(query) = Query::new(ints(&pair[0]), metric)
+                    .expect("a query") else {
                     continue;
                 };
                 let Some(score) = score_of(&query, &ints(&pair[1])) else {
@@ -1389,13 +1253,12 @@ mod tests {
                 order.iter().map(|index| pairs[*index]).unzip();
             let (a, b) = (doubles(&left), doubles(&right));
             let (pa, pb) = (doubles(&left_permuted), doubles(&right_permuted));
-            let meter = unmetered();
-            prop_assert_eq!(dot(&a, &b, &meter), dot(&b, &a, &meter));
-            prop_assert_eq!(dot(&a, &b, &meter), dot(&pa, &pb, &meter));
-            prop_assert_eq!(distance2(&a, &b, &meter), distance2(&pa, &pb, &meter));
-            prop_assert_eq!(manhattan(&a, &b, &meter), manhattan(&pa, &pb, &meter));
+            prop_assert_eq!(dot(&a, &b), dot(&b, &a));
+            prop_assert_eq!(dot(&a, &b), dot(&pa, &pb));
+            prop_assert_eq!(distance2(&a, &b), distance2(&pa, &pb));
+            prop_assert_eq!(manhattan(&a, &b), manhattan(&pa, &pb));
             let (ra, rb) = (rational(&pa), rational(&pb));
-            prop_assert_eq!(dot(&a, &b, &meter), dot(&ra, &rb, &meter));
+            prop_assert_eq!(dot(&a, &b), dot(&ra, &rb));
         }
 
         /// S7 (distance_laws): dist2 is non-negative, symmetric and zero exactly on equal
@@ -1405,20 +1268,19 @@ mod tests {
             let factor = 2f64.powi(-scale);
             let a = doubles(&vectors[0].iter().map(|x| *x as f64 * factor).collect::<Vec<_>>());
             let (b, c) = (ints(&vectors[1]), ints(&vectors[2]));
-            let meter = unmetered();
-            let ab = distance2(&a, &b, &meter).expect("a distance");
+            let ab = distance2(&a, &b).expect("a distance");
             prop_assert!(!ab.is_negative());
-            prop_assert_eq!(Ok(ab.clone()), distance2(&b, &a, &meter));
-            prop_assert_eq!(distance2(&a, &a, &meter), Ok(Exact::zero()));
-            let values = |v: &ExactVector| v.rationals(&meter).expect("values").into_owned();
+            prop_assert_eq!(Ok(ab.clone()), distance2(&b, &a));
+            prop_assert_eq!(distance2(&a, &a), Ok(Exact::zero()));
+            let values = |v: &ExactVector| v.rationals().into_owned();
             prop_assert_eq!(ab.is_zero(), values(&a) == values(&b));
             let (l_ab, l_bc, l_ac) = (
-                manhattan(&a, &b, &meter).expect("a distance"),
-                manhattan(&b, &c, &meter).expect("a distance"),
-                manhattan(&a, &c, &meter).expect("a distance"),
+                manhattan(&a, &b).expect("a distance"),
+                manhattan(&b, &c).expect("a distance"),
+                manhattan(&a, &c).expect("a distance"),
             );
             prop_assert!(!l_ab.is_negative());
-            prop_assert_eq!(Ok(l_ab.clone()), manhattan(&b, &a, &meter));
+            prop_assert_eq!(Ok(l_ab.clone()), manhattan(&b, &a));
             prop_assert!(l_ac <= &l_ab + &l_bc);
         }
 
@@ -1428,10 +1290,9 @@ mod tests {
             let factor = 2f64.powi(-scale);
             let a = doubles(&vectors[0].iter().map(|x| *x as f64 * factor).collect::<Vec<_>>());
             let b = ints(&vectors[1]);
-            let meter = unmetered();
-            let ab = dot(&a, &b, &meter).expect("a dot product");
-            let aa = dot(&a, &a, &meter).expect("a dot product");
-            let bb = dot(&b, &b, &meter).expect("a dot product");
+            let ab = dot(&a, &b).expect("a dot product");
+            let aa = dot(&a, &a).expect("a dot product");
+            let bb = dot(&b, &b).expect("a dot product");
             prop_assert!(&ab * &ab <= aa * bb);
         }
 
@@ -1439,8 +1300,8 @@ mod tests {
         /// threshold above 1, and a delivered cosine lies in [−1, 1].
         #[test]
         fn prop_cosine_bounds_hold(vectors in int_vectors(2, -50, 50), excess in 1i64..=100) {
-            let Some(query) = Query::new(ints(&vectors[0]), Metric::Cosine, &unmetered())
-                .expect("an unmetered query") else {
+            let Some(query) = Query::new(ints(&vectors[0]), Metric::Cosine)
+                .expect("a query") else {
                 return Ok(());
             };
             let Some(score) = score_of(&query, &ints(&vectors[1])) else {
@@ -1449,7 +1310,7 @@ mod tests {
             prop_assert!(within_of(&score, Bound::Threshold(ratio(-1, 1)), &query));
             let above = ratio(1, 1) + ratio(1, excess);
             prop_assert!(!within_of(&score, Bound::Threshold(above), &query));
-            let value = delivered(&score, &query, &unmetered()).expect("a value in range");
+            let value = delivered(&score, &query).expect("a value in range");
             prop_assert!((-1.0..=1.0).contains(&value));
         }
 
@@ -1465,8 +1326,8 @@ mod tests {
                 Metric::Hamming | Metric::Jaccard => &bits,
                 Metric::Cosine | Metric::Dot | Metric::Euclidean | Metric::Manhattan => &vectors,
             };
-            let Some(query) = Query::new(ints(&pool[0]), metric, &unmetered())
-                .expect("an unmetered query") else {
+            let Some(query) = Query::new(ints(&pool[0]), metric)
+                .expect("a query") else {
                 return Ok(());
             };
             let scores: Vec<Score> =
@@ -1496,14 +1357,13 @@ mod tests {
             let (left, right): (Vec<f64>, Vec<f64>) = pairs.into_iter().unzip();
             let (a, b) = (doubles(&left), doubles(&right));
             let (ra, rb) = (rational(&a), rational(&b));
-            let meter = unmetered();
-            prop_assert_eq!(dot(&a, &b, &meter), dot(&ra, &rb, &meter));
-            prop_assert_eq!(dot(&a, &b, &meter), dot(&a, &rb, &meter));
-            prop_assert_eq!(distance2(&a, &b, &meter), distance2(&ra, &rb, &meter));
-            prop_assert_eq!(manhattan(&a, &b, &meter), manhattan(&ra, &rb, &meter));
+            prop_assert_eq!(dot(&a, &b), dot(&ra, &rb));
+            prop_assert_eq!(dot(&a, &b), dot(&a, &rb));
+            prop_assert_eq!(distance2(&a, &b), distance2(&ra, &rb));
+            prop_assert_eq!(manhattan(&a, &b), manhattan(&ra, &rb));
             let (q, e) = (ints(&vectors[0]), ints(&vectors[1]));
-            let dyadic = Query::new(q.clone(), metric, &meter).expect("an unmetered query");
-            let exact = Query::new(rational(&q), metric, &meter).expect("an unmetered query");
+            let dyadic = Query::new(q.clone(), metric).expect("a query");
+            let exact = Query::new(rational(&q), metric).expect("a query");
             if let (Some(dyadic), Some(exact)) = (dyadic, exact) {
                 prop_assert_eq!(score_of(&dyadic, &e), score_of(&exact, &rational(&e)));
             }
@@ -1514,22 +1374,21 @@ mod tests {
         /// the union is empty only when neither vector sets a position.
         #[test]
         fn prop_binary_metric_laws_hold(vectors in int_vectors(3, 0, 1)) {
-            let meter = unmetered();
             let bit_vectors: Vec<Vec<bool>> = vectors
                 .iter()
                 .map(|vector| {
-                    bits(&ints(vector), &meter)
-                        .expect("an unmetered test")
-                        .expect("a binary vector")
+                    bits(&ints(vector))
+                        .expect("a test")
+
                 })
                 .collect();
             let (a, b, c) = (&bit_vectors[0], &bit_vectors[1], &bit_vectors[2]);
-            let distance = |x: &[bool], y: &[bool]| hamming(x, y, &meter).expect("a distance");
+            let distance = |x: &[bool], y: &[bool]| hamming(x, y).expect("a distance");
             prop_assert_eq!(distance(a, b), distance(b, a));
             prop_assert!(distance(a, c) <= distance(a, b) + distance(b, c));
             prop_assert_eq!(distance(a, b) == 0, a == b);
-            let counts = jaccard(a, b, &meter).expect("an unmetered test");
-            prop_assert_eq!(counts, jaccard(b, a, &meter).expect("an unmetered test"));
+            let counts = jaccard(a, b).expect("a test");
+            prop_assert_eq!(counts, jaccard(b, a).expect("a test"));
             match counts {
                 Some((inter, union)) => prop_assert!(inter <= union && union > 0),
                 None => prop_assert!(a.iter().chain(b).all(|bit| !bit)),
@@ -1572,13 +1431,13 @@ mod tests {
                 Metric::Hamming | Metric::Jaccard => &bits,
                 Metric::Cosine | Metric::Dot | Metric::Euclidean | Metric::Manhattan => &vectors,
             };
-            let Some(query) = Query::new(ints(&pool[0]), metric, &unmetered())
-                .expect("an unmetered query") else {
+            let Some(query) = Query::new(ints(&pool[0]), metric)
+                .expect("a query") else {
                 return Ok(());
             };
             let candidates = candidates_of(&query, &pool[1..]);
             let order = |a: &Candidate, b: &Candidate| {
-                selection_order(a, b, &unmetered()).expect("one metric")
+                selection_order(a, b).expect("one metric")
             };
             for a in &candidates {
                 prop_assert_eq!(order(a, a), Ordering::Equal);
@@ -1610,8 +1469,8 @@ mod tests {
                 Metric::Hamming | Metric::Jaccard => &bits,
                 Metric::Cosine | Metric::Dot | Metric::Euclidean | Metric::Manhattan => &vectors,
             };
-            let Some(query) = Query::new(ints(&pool[0]), metric, &unmetered())
-                .expect("an unmetered query") else {
+            let Some(query) = Query::new(ints(&pool[0]), metric)
+                .expect("a query") else {
                 return Ok(());
             };
             let candidates = candidates_of(&query, &pool[1..]);
@@ -1621,7 +1480,7 @@ mod tests {
             prop_assert_eq!(&sorted, &ranked(permuted));
             for pair in sorted.windows(2) {
                 prop_assert_eq!(
-                    selection_order(&pair[0], &pair[1], &unmetered()),
+                    selection_order(&pair[0], &pair[1]),
                     Ok(Ordering::Less)
                 );
             }
@@ -1644,8 +1503,8 @@ mod tests {
                 Metric::Hamming | Metric::Jaccard => &bits,
                 Metric::Cosine | Metric::Dot | Metric::Euclidean | Metric::Manhattan => &vectors,
             };
-            let Some(query) = Query::new(ints(&pool[0]), metric, &unmetered())
-                .expect("an unmetered query") else {
+            let Some(query) = Query::new(ints(&pool[0]), metric)
+                .expect("a query") else {
                 return Ok(());
             };
             let bound = match metric.is_similarity() {
@@ -1669,14 +1528,14 @@ mod tests {
         /// rounding steps, so it agrees within a few units in the last place.
         #[test]
         fn delivered_cosine_is_near_the_f64_formula(vectors in int_vectors(2, -50, 50)) {
-            let Some(query) = Query::new(ints(&vectors[0]), Metric::Cosine, &unmetered())
-                .expect("an unmetered query") else {
+            let Some(query) = Query::new(ints(&vectors[0]), Metric::Cosine)
+                .expect("a query") else {
                 return Ok(());
             };
             let Some(score) = score_of(&query, &ints(&vectors[1])) else {
                 return Ok(());
             };
-            let value = delivered(&score, &query, &unmetered()).expect("a value in range");
+            let value = delivered(&score, &query).expect("a value in range");
             let (q, record) = (&vectors[0], &vectors[1]);
             let float_dot: f64 = q.iter().zip(record).map(|(x, y)| (*x * *y) as f64).sum();
             let float_q: f64 = q.iter().map(|x| (*x * *x) as f64).sum::<f64>().sqrt();

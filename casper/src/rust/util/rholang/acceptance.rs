@@ -2,20 +2,18 @@ use crypto::rust::signatures::signed::Cosigned;
 use models::rust::casper::protocol::casper_message::Event;
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::phlo_intent::{
     PhloFundingIntentV2, PhloFundingIntentV2Limits, PhloFundingIntentVersioned,
 };
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::signed_phlo_deploy::OfferedFundedDeploy;
 use rholang::rust::interpreter::accounting::monetary_allocation::MonetaryCursor;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
 use crate::rust::errors::CasperError;
+use crate::rust::util::rholang::costacc::direct_wallet_funding::CertifiedOfferedDraft;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::{
     AdoptedResourcePolicy, CompatibleAcquisitionTerms, OFFERED_PRODUCTION_READY,
 };
-use crate::rust::util::rholang::runtime_manager::CertifiedOfferedDraft;
 
 const FIXED_FEE_REV: u128 = 1;
 
@@ -443,29 +441,7 @@ impl PreparedOfferedCandidate<'_> {
         processed: &OfferedProcessedDeploy,
         candidate_root: [u8; 32],
         certificate: &CertifiedOfferedDraft,
-        budget: &HostWorkBudget,
     ) -> Result<CandidatePublicationPermit, CasperError> {
-        let protocol = offered_funded_v6_limits();
-        let compare_bound = protocol
-            .evidence
-            .total_bytes
-            .checked_add(protocol.deploy_log_bytes)
-            .and_then(|bytes| bytes.checked_add(protocol.envelope.payload.deploy_bytes))
-            .and_then(|bytes| bytes.checked_add(protocol.envelope.payload.signing.total_bytes))
-            .and_then(|bytes| bytes.checked_add(protocol.envelope.payload.funding.wire.total_bytes))
-            .ok_or_else(|| invalid("offered candidate comparison bound overflows"))?;
-        let units = HostWorkUnits::new(
-            u64::try_from(compare_bound)
-                .map_err(|_| invalid("offered candidate comparison bound overflows"))?,
-        );
-        for dimension in [
-            HostWorkDimension::VerificationBytes,
-            HostWorkDimension::VerificationOperations,
-        ] {
-            budget
-                .reserve(dimension, units)
-                .map_err(|error| invalid(&error.to_string()))?;
-        }
         let evidence = processed
             .evidence(offered_funded_v6_limits().evidence)
             .map_err(|error| invalid(&error.to_string()))?;

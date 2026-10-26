@@ -17,8 +17,7 @@
 //! [`ReifiedRuntime::begin_evaluation_scope`] drops a journal that no result settled.
 //!
 //! Each space operation runs as an `Intent::Space` job (readiness review S9) with one
-//! transaction and at most one commit (S3). The job gets the host-work budget that the
-//! scheduler captured before it submitted the job (S5).
+//! transaction and at most one commit (S3).
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
@@ -26,7 +25,6 @@ use std::sync::{Arc, OnceLock};
 use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::space_store_handle::{SpaceStoreHandle, SpaceTxnHost};
 
-use super::costs::ScanMeter;
 use super::vectordb_services;
 use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
@@ -34,7 +32,6 @@ use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
 };
 use crate::rust::interpreter::deterministic_reduction::ReductionCoordinator;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 use crate::rust::interpreter::interpreter::EvaluateResult;
 use crate::rust::interpreter::spaces::agent::{
     self, AllocOp, Allocation, OpOrigin, ParSpaceStore, SpaceAgent, SpaceCreation, SpaceEnv,
@@ -197,9 +194,8 @@ impl ReifiedRuntime {
     // execution and in native play, and a bound native replay runtime (decision 47).
     fn host(&self) -> Result<(ParSpaceStore, RuntimeBudget), SpaceError> {
         match &self.state {
-            // Disabled by decision 47: native play runs spaces, and its transactions read
-            // through the metered reads of the substrate (`SpaceEnv::begin`). Native replay
-            // runs them over the native replay session.
+            // Disabled by decision 47: native play runs spaces, and native replay runs them over
+            // the native replay session.
             //
             // ```
             // RuntimeState::Host { budget, .. } if budget.native_execution_active() => {
@@ -261,14 +257,12 @@ impl ReifiedRuntime {
         }
     }
 
-    /// The environment of a space job. `host_work` is the host-work budget of the deploy that
-    /// the scheduler captured for the job.
-    pub fn space_env(&self, host_work: Option<HostWorkBudget>) -> Result<SpaceEnv, SpaceError> {
+    /// The environment of a space job.
+    pub fn space_env(&self) -> Result<SpaceEnv, SpaceError> {
         let (store, budget) = self.host()?;
         Ok(SpaceEnv {
             store,
             budget,
-            meter: ScanMeter::new(host_work),
             volatile: Arc::clone(&self.volatile),
             origin: OpOrigin::Program,
         })
@@ -293,12 +287,11 @@ impl ReifiedRuntime {
             sid,
             authority,
             channels: Vec::new(),
-            job: Box::new(move |host_work| {
+            job: Box::new(move || {
                 Box::pin(async move {
                     let env = SpaceEnv {
                         store,
                         budget,
-                        meter: ScanMeter::new(host_work),
                         volatile,
                         origin,
                     };
@@ -344,12 +337,11 @@ impl ReifiedRuntime {
             sid: space.sid,
             authority,
             channels: vec![namespace::gprivate(namespace::handle_channel(space))],
-            job: Box::new(move |host_work| {
+            job: Box::new(move || {
                 Box::pin(async move {
                     let env = SpaceEnv {
                         store,
                         budget,
-                        meter: ScanMeter::new(host_work),
                         volatile,
                         origin: OpOrigin::Program,
                     };
@@ -383,12 +375,11 @@ impl ReifiedRuntime {
             sid,
             authority,
             channels: Vec::new(),
-            job: Box::new(move |host_work| {
+            job: Box::new(move || {
                 Box::pin(async move {
                     let env = SpaceEnv {
                         store,
                         budget,
-                        meter: ScanMeter::new(host_work),
                         volatile,
                         origin: OpOrigin::Program,
                     };
@@ -417,12 +408,11 @@ impl ReifiedRuntime {
             sid: space.sid,
             authority,
             channels: Vec::new(),
-            job: Box::new(move |host_work| {
+            job: Box::new(move || {
                 Box::pin(async move {
                     let env = SpaceEnv {
                         store,
                         budget,
-                        meter: ScanMeter::new(host_work),
                         volatile,
                         origin: OpOrigin::Program,
                     };
@@ -475,9 +465,6 @@ mod tests {
 
     use async_trait::async_trait;
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-    use models::rust::host_work::{
-        HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
-    };
     use models::rust::space_factory_urn::SpaceFactoryUrn;
     use models::rust::utils::{new_gint_par, new_gstring_par};
     use rspace_plus_plus::rspace::operation_context::{self, CausalPath, OperationOrder};
@@ -704,7 +691,7 @@ mod tests {
         let runtime = unavailable();
         assert_eq!(runtime.mode(), ReifiedRuntimeMode::Detached);
         assert_eq!(
-            runtime.space_env(None).err(),
+            runtime.space_env().err(),
             Some(SpaceError::RuntimeUnavailable)
         );
         assert_eq!(
@@ -721,7 +708,7 @@ mod tests {
         let runtime = native_replay();
         assert_eq!(runtime.mode(), ReifiedRuntimeMode::NativeReplay);
         assert_eq!(
-            runtime.space_env(None).err(),
+            runtime.space_env().err(),
             Some(SpaceError::RuntimeUnavailable)
         );
         assert_eq!(
@@ -752,7 +739,7 @@ mod tests {
         assert_eq!(runtime.mode(), ReifiedRuntimeMode::NativeReplay);
         assert_eq!(runtime.ensure_available(), Ok(()));
         let env = runtime
-            .space_env(None)
+            .space_env()
             .expect("a bound native replay runtime has a space environment");
         let lock = namespace::gprivate(namespace::config_channel(space()));
         let order = OperationOrder {
@@ -777,23 +764,17 @@ mod tests {
     async fn host_runtime_is_available_outside_native_execution() {
         let runtime = for_host(rspace().await, budget());
         assert_eq!(runtime.ensure_available(), Ok(()));
-        assert!(runtime.space_env(None).is_ok());
+        assert!(runtime.space_env().is_ok());
     }
 
     #[tokio::test]
     async fn host_runtime_begin_evaluation_scope_resets_the_committed_parents() {
         let runtime = for_host(rspace().await, budget());
         assert_eq!(runtime.mode(), ReifiedRuntimeMode::Host);
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(8)));
         let env = runtime
-            .space_env(Some(host_work.clone()))
+            .space_env()
             .expect("a host runtime has a space environment");
         assert_eq!(env.store.mode(), SpaceMode::Play);
-        env.meter.charge(1, 0, 0).expect("one operation fits");
-        assert_eq!(
-            host_work.usage(HostWorkDimension::VerificationOperations),
-            HostWorkUsage::new(1)
-        );
         let lock = namespace::gprivate(namespace::config_channel(space()));
         let order = OperationOrder {
             session: [4; 32],
@@ -1009,7 +990,7 @@ mod tests {
                                 sid: [byte; SID_LEN],
                                 authority: None,
                                 channels: Vec::new(),
-                                job: Box::new(|_| Box::pin(async { Ok(()) })),
+                                job: Box::new(|| Box::pin(async { Ok(()) })),
                             })
                             .await
                             .expect("the empty job runs");

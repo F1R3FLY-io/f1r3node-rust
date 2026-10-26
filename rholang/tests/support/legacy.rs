@@ -13,8 +13,14 @@
 //! ([`lone_host_produce`], [`lone_host_consume`]). The host matches with a
 //! [`PinnedPayloadMatcher`], so it binds exactly the records that the staged operation binds,
 //! by their payloads, as the agent matches them.
+//!
+//! Host play picks at random among the candidates of a call since DR-129. A suite that runs a
+//! whole host program on one host pins each call to the canonical choice of decision 41
+//! ([`WaiterPin`], [`waiter_choice`], [`drawn_consume`]), so the program makes the choices of
+//! the agent (decision 89).
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use models::rhoapi::expr::ExprInstance;
@@ -34,7 +40,9 @@ use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::{ContResult, ISpace, RSpaceResult};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::space_store_handle::{ConsumeOutcome, ProduceOutcome};
+use rspace_plus_plus::rspace::space_store_handle::{
+    canonical_continuation_order, ConsumeOutcome, ProduceOutcome,
+};
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
 type ParRSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
@@ -251,6 +259,118 @@ pub async fn host_consume(
     }
 }
 
+// ─── The canonical choice of host play (decision 89, DR-129) ─────────────────────────────────
+
+/// The maximum number of draws of one host consume in [`drawn_consume`]. A host consume picks
+/// uniformly at random among the stored records that its matcher admits. A draw therefore binds
+/// a record with the persist flag of the canonical record with a chance of at least `1/n` for
+/// `n` admitted records. A generated program stores at most twelve records, so all draws miss
+/// with a chance below `(11/12)^1024`, which is less than `1e-38`.
+pub const HOST_DRAWS: usize = 1024;
+
+/// The number of runs of a host program in a test of the draws of [`drawn_consume`]. One run
+/// of an oracle without the draws makes the canonical choice with a chance of one half. So all
+/// runs of such an oracle pass with a chance of `2^-16`.
+pub const TWIN_RUNS: usize = 16;
+
+/// The waiting continuation that a host produce may fire under a pinned matcher.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WaiterPin {
+    /// Every waiter. A consume has this pin, because it fires only its own continuation.
+    Any,
+    /// Only this waiting continuation, boxed because a continuation is large.
+    Only(Box<TaggedContinuation>),
+    /// No waiter. The produce stores its record.
+    Nothing,
+}
+
+impl WaiterPin {
+    /// Whether the pin lets a fire of `continuation` commit. Host play skips a waiter that the
+    /// pin refuses, as it skips a waiter whose guard refuses (`extract_first_match`).
+    pub fn admits(&self, continuation: &TaggedContinuation) -> bool {
+        match self {
+            WaiterPin::Any => true,
+            WaiterPin::Only(chosen) => chosen.as_ref() == continuation,
+            WaiterPin::Nothing => false,
+        }
+    }
+}
+
+/// The waiter pin of a host matcher, shared with the host program.
+pub type WaiterSlot = Arc<Mutex<WaiterPin>>;
+
+/// A waiter slot that admits every waiter.
+pub fn open_waiter() -> WaiterSlot { Arc::new(Mutex::new(WaiterPin::Any)) }
+
+/// Sets the waiter pin of `waiter` to `choice`.
+pub fn set_waiter(waiter: &WaiterSlot, choice: WaiterPin) {
+    *waiter.lock().expect("the waiter lock") = choice;
+}
+
+/// The waiter that a produce of the datum record `record` on `channel` fires under the canonical
+/// order of decision 41. It is the first waiting continuation of `host` in canonical order whose
+/// pattern binds the payload and whose guard admits the match (decision 37). `Nothing` means
+/// that the produce stores the record.
+pub async fn waiter_choice(
+    host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    channel: &Par,
+    record: &ListParWithRandom,
+) -> WaiterPin {
+    let payload = record::unwrap_datum(record).expect("a datum record").datum;
+    let waiters = host.get_waiting_continuations(vec![channel.clone()]).await;
+    canonical_continuation_order(&waiters)
+        .into_iter()
+        .map(|index| &waiters[index])
+        .find(|waiter| {
+            waiter
+                .patterns
+                .first()
+                .and_then(|pattern| Matcher.get(pattern, &payload))
+                .is_some_and(|matched| {
+                    Matcher.check_commit(&waiter.continuation, std::slice::from_ref(&matched))
+                })
+        })
+        .map_or(WaiterPin::Nothing, |waiter| {
+            WaiterPin::Only(Box::new(waiter.continuation.clone()))
+        })
+}
+
+/// Makes the host consume `consume` on `host` until it binds records with the persist flags
+/// `expected`, in bind order, and returns that run. A suite pins the records of a consume by
+/// their bytes. A persistent record and a non-persistent record can have equal bytes, and host
+/// play picks among them at random. So a draw that binds a record with the other persist flag
+/// is reverted to a soft checkpoint and made again, at most [`HOST_DRAWS`] times. A run that
+/// parks returns at once. The charges of a reverted draw stay in the log of the budget, so a
+/// caller keeps the entries of each returned run.
+pub async fn drawn_consume<F, Fut>(
+    host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    expected: &[bool],
+    mut consume: F,
+) -> Result<HostConsume, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = HostConsume>,
+{
+    for _ in 0..HOST_DRAWS {
+        let checkpoint = host.create_soft_checkpoint().await;
+        let run = consume().await;
+        let bound: Option<Vec<bool>> = run
+            .fired
+            .as_ref()
+            .map(|(_, results)| results.iter().map(|result| result.persistent).collect());
+        match bound {
+            Some(flags) if flags.as_slice() != expected => host
+                .revert_to_soft_checkpoint(checkpoint)
+                .await
+                .expect("the host reverts a draw"),
+            _ => return Ok(run),
+        }
+    }
+    Err(format!(
+        "no host consume of {HOST_DRAWS} draws binds records with the persist flags {expected:?}"
+    ))
+}
+
 // ─── Lone host calls (P5c) ───────────────────────────────────────────────────────────────────
 
 /// The phlo of the budget of a lone host call: far above the charges of one operation.
@@ -269,6 +389,9 @@ pub type Pin = Arc<Mutex<Option<Vec<ListParWithRandom>>>>;
 pub struct PinnedPayloadMatcher {
     /// The records that the matcher may bind.
     pub pin: Pin,
+    /// Added by decision 89 (DR-129): the waiter that a produce may fire. Host play picks a
+    /// waiter at random, so a host program with two waiters pins the canonical one.
+    pub waiter: WaiterSlot,
 }
 
 impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for PinnedPayloadMatcher {
@@ -289,20 +412,49 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for PinnedPayload
         continuation: &TaggedContinuation,
         matched: &[ListParWithRandom],
     ) -> bool {
-        Matcher.check_commit(continuation, matched)
+        // Changed by decision 89 (DR-129): the waiter pin admits the fire first.
+        // Matcher.check_commit(continuation, matched)
+        let allowed = self
+            .waiter
+            .lock()
+            .expect("the waiter lock")
+            .admits(continuation);
+        allowed && Matcher.check_commit(continuation, matched)
     }
 }
 
-/// A `ChargingRSpace` over a fresh in-memory space with the [`PinnedPayloadMatcher`] of `pin`,
-/// which charges `budget`.
+// Changed by decision 89 (DR-129): the matcher of the host also holds a waiter pin.
+//
+// /// A `ChargingRSpace` over a fresh in-memory space with the [`PinnedPayloadMatcher`] of `pin`,
+// /// which charges `budget`.
+// pub async fn pinned_charging_host(
+//     budget: &RuntimeBudget,
+//     pin: &Pin,
+// ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+//     let mut stores = InMemoryStoreManager::new();
+//     let space = ParRSpace::create(
+//         stores.r_space_stores().await.expect("in-memory stores"),
+//         Arc::new(Box::new(PinnedPayloadMatcher { pin: pin.clone() })),
+//     )
+//     .expect("an in-memory space");
+//     let host: RhoISpace = Arc::new(Box::new(space));
+//     ChargingRSpace::charging_rspace(host, budget.clone())
+// }
+
+/// A `ChargingRSpace` over a fresh in-memory space with the [`PinnedPayloadMatcher`] of `pin`
+/// and `waiter`, which charges `budget`.
 pub async fn pinned_charging_host(
     budget: &RuntimeBudget,
     pin: &Pin,
+    waiter: &WaiterSlot,
 ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
     let mut stores = InMemoryStoreManager::new();
     let space = ParRSpace::create(
         stores.r_space_stores().await.expect("in-memory stores"),
-        Arc::new(Box::new(PinnedPayloadMatcher { pin: pin.clone() })),
+        Arc::new(Box::new(PinnedPayloadMatcher {
+            pin: pin.clone(),
+            waiter: waiter.clone(),
+        })),
     )
     .expect("an in-memory space");
     let host: RhoISpace = Arc::new(Box::new(space));
@@ -345,7 +497,10 @@ pub async fn lone_host_produce(op: &ParSpaceProduce) -> Vec<Cost> {
     let budget = RuntimeBudget::new(Cost::create(LONE_PHLO, "rrs lone host produce"));
     let _scope = budget.enter_legacy_scope();
     let pin: Pin = Arc::new(Mutex::new(Some(Vec::new())));
-    let host = pinned_charging_host(&budget, &pin).await;
+    // Changed by decision 89 (DR-129): a lone host holds at most one waiter, so its waiter pin
+    // is open.
+    // let host = pinned_charging_host(&budget, &pin).await;
+    let host = pinned_charging_host(&budget, &pin, &open_waiter()).await;
     let mut pinned = vec![op.data.clone()];
     let fires = match &op.outcome {
         ProduceOutcome::Store => false,
@@ -397,7 +552,10 @@ pub async fn lone_host_consume(op: &ParSpaceConsume) -> Vec<Cost> {
     let budget = RuntimeBudget::new(Cost::create(LONE_PHLO, "rrs lone host consume"));
     let _scope = budget.enter_legacy_scope();
     let pin: Pin = Arc::new(Mutex::new(Some(Vec::new())));
-    let host = pinned_charging_host(&budget, &pin).await;
+    // Changed by decision 89 (DR-129): a lone host holds at most one waiter, so its waiter pin
+    // is open.
+    // let host = pinned_charging_host(&budget, &pin).await;
+    let host = pinned_charging_host(&budget, &pin, &open_waiter()).await;
     let mut pinned = Vec::new();
     let fires = match &op.outcome {
         ConsumeOutcome::Park => false,

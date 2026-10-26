@@ -32,7 +32,7 @@
      operation, and one bound for the summed size of two maps, both charge
      less than the real search.
 
-   Rust correspondence: shared/src/rust/collection_backing.rs
+   Rust correspondence before DR-131: shared/src/rust/collection_backing.rs
    (tree_height_bound, tree_search_bound); its users are the produce-counter
    lookups in rspace++/src/rspace/replay_rspace/native_candidate/metered.rs
    (prepare_metered_produce_counter, metered_produce_count, metered_comm) and
@@ -40,6 +40,11 @@
    native_runtime/replay_authority/backing.rs (tree_update,
    reserve_event_lookup, reserve_changes). The extracted property tests count
    the comparisons of the real BTreeMap with a counting key type. *)
+
+(* DR-131: host work is removed. collection_backing.rs is deleted, and the
+   lookups that the Rust correspondence names charge nothing. The lookup
+   bounds still hold for a B-tree. The file stays because FreeMapBindings
+   requires it. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Lia.
 Import ListNotations.

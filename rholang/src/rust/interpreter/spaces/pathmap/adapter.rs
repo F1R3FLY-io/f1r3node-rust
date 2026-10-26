@@ -25,20 +25,17 @@
 //! adds the map mode, in which each path holds a value. Its adapter replaces
 //! [`HeadEPathMapAdapter`] after the merge (P12), and the swap touches only this file.
 //!
-//! Every read, copy, comparison and allocation is reserved on the meter of the job before it is
-//! made (decision 42). The sort of the entries reserves its moves and each comparison, as the
-//! metered candidate order of `feature/cost-accounted-rho` does.
+//! The adapter meters nothing: a space operation meters only its COMMs and the bytes that it
+//! stores (DR-131).
 
-use std::mem::size_of;
+use std::convert::Infallible;
 
 use models::rhoapi::{EPathMap, Par};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use shared::rust::fallible_sort;
 
 use super::path_codec::{
     bit_sets, entry_key, into_path_elements, plain_list, plain_list_elements, tag,
 };
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 
 /// The mode of a logical PathMap: a set of paths, or a map from paths to values (EPM1).
@@ -61,8 +58,8 @@ pub struct LogicalPath {
 impl LogicalPath {
     /// The path of `elements`. It computes the entry key, so an element that holds a PathMap or a
     /// zipper fails with `UnsupportedPathElement`.
-    pub fn new(elements: Vec<Par>, meter: &ScanMeter) -> Result<Self, SpaceError> {
-        let key = entry_key(&elements, meter)?;
+    pub fn new(elements: Vec<Par>) -> Result<Self, SpaceError> {
+        let key = entry_key(&elements)?;
         Ok(Self { elements, key })
     }
 
@@ -76,30 +73,20 @@ impl LogicalPath {
     pub fn into_elements(self) -> Vec<Par> { self.elements }
 
     /// The path `prefix ++ self`. Its key is `prefix_key(prefix) ++ key(self)`, so the encode of
-    /// the elements of `self` is not made again. The copies of the elements of `prefix` and the
-    /// new key are reserved first.
-    pub fn prefixed(self, prefix: &LogicalPath, meter: &ScanMeter) -> Result<Self, SpaceError> {
+    /// the elements of `self` is not made again.
+    pub fn prefixed(self, prefix: &LogicalPath) -> Result<Self, SpaceError> {
         let prefix_bytes = match prefix.key.split_last() {
             Some((&tag::TERM, bytes)) => bytes,
             _ => return Err(SpaceError::Inconsistent("an entry key has no terminator")),
         };
-        let elements_length = prefix
-            .elements
-            .len()
-            .checked_add(self.elements.len())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let key_length = prefix_bytes
-            .len()
-            .checked_add(self.key.len())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let mut elements = meter.buffer::<Par>(elements_length)?;
+        let elements_length = prefix.elements.len() + self.elements.len();
+        let key_length = prefix_bytes.len() + self.key.len();
+        let mut elements = Vec::<Par>::with_capacity(elements_length);
         for element in &prefix.elements {
-            meter.reserve_copy(element)?;
             elements.push(element.clone());
         }
         elements.extend(self.elements);
-        let mut key = meter.buffer::<u8>(key_length)?;
-        meter.charge(1, key_length, 0)?;
+        let mut key = Vec::<u8>::with_capacity(key_length);
         key.extend_from_slice(prefix_bytes);
         key.extend_from_slice(&self.key);
         Ok(Self { elements, key })
@@ -135,41 +122,41 @@ pub struct LogicalPathMap {
 
 impl LogicalPathMap {
     /// The set of `paths`, ordered by key. Of the paths with one key, the first in `paths` stays.
-    pub fn set(paths: Vec<LogicalPath>, meter: &ScanMeter) -> Result<Self, SpaceError> {
-        let mut entries = meter.buffer::<LogicalEntry>(paths.len())?;
+    pub fn set(paths: Vec<LogicalPath>) -> Self {
+        let mut entries = Vec::<LogicalEntry>::with_capacity(paths.len());
         entries.extend(
             paths
                 .into_iter()
                 .map(|path| LogicalEntry { path, value: None }),
         );
-        Ok(Self {
+        Self {
             mode: PathMapMode::Set,
-            entries: sorted_unique(entries, meter)?,
-        })
+            entries: sorted_unique(entries),
+        }
     }
 
     /// The map of `entries`, ordered by key. Of the entries with one key, the first in `entries`
     /// stays.
-    pub fn map(entries: Vec<(LogicalPath, Par)>, meter: &ScanMeter) -> Result<Self, SpaceError> {
-        let mut logical = meter.buffer::<LogicalEntry>(entries.len())?;
+    pub fn map(entries: Vec<(LogicalPath, Par)>) -> Self {
+        let mut logical = Vec::<LogicalEntry>::with_capacity(entries.len());
         logical.extend(entries.into_iter().map(|(path, value)| LogicalEntry {
             path,
             value: Some(value),
         }));
-        Ok(Self {
+        Self {
             mode: PathMapMode::Map,
-            entries: sorted_unique(logical, meter)?,
-        })
+            entries: sorted_unique(logical),
+        }
     }
 
     /// The set that holds only `path`: the unit rule of a re-rooting, `{|s|}`.
-    pub fn singleton(path: LogicalPath, meter: &ScanMeter) -> Result<Self, SpaceError> {
-        let mut entries = meter.buffer::<LogicalEntry>(1)?;
+    pub fn singleton(path: LogicalPath) -> Self {
+        let mut entries = Vec::<LogicalEntry>::with_capacity(1);
         entries.push(LogicalEntry { path, value: None });
-        Ok(Self {
+        Self {
             mode: PathMapMode::Set,
             entries,
-        })
+        }
     }
 
     /// The mode of the map.
@@ -191,11 +178,11 @@ impl LogicalPathMap {
     /// same mode and the same values. The key of each new path is `prefix_key(prefix) ++ key`,
     /// and a common byte prefix keeps the strict order of the keys (`PathMapPrefix.v`,
     /// `rl_sorted`). So the entries need no new sort.
-    pub fn prefixed(self, prefix: &LogicalPath, meter: &ScanMeter) -> Result<Self, SpaceError> {
-        let mut entries = meter.buffer::<LogicalEntry>(self.entries.len())?;
+    pub fn prefixed(self, prefix: &LogicalPath) -> Result<Self, SpaceError> {
+        let mut entries = Vec::<LogicalEntry>::with_capacity(self.entries.len());
         for LogicalEntry { path, value } in self.entries {
             entries.push(LogicalEntry {
-                path: path.prefixed(prefix, meter)?,
+                path: path.prefixed(prefix)?,
                 value,
             });
         }
@@ -208,63 +195,40 @@ impl LogicalPathMap {
 
 /// The entries in strictly ascending key order, with the first entry of each key. The sort orders
 /// by the key and then by the place in `entries`, so the result does not depend on the sort
-/// algorithm. The moves and each comparison are reserved, as `SpaceOrder::sort` of
-/// `space_store_handle.rs` reserves them.
-fn sorted_unique(
-    entries: Vec<LogicalEntry>,
-    meter: &ScanMeter,
-) -> Result<Vec<LogicalEntry>, SpaceError> {
-    let mut placed = meter.buffer::<(LogicalEntry, usize)>(entries.len())?;
+/// algorithm. The sort is the heap sort of `fallible_sort` with a comparator that cannot fail.
+fn sorted_unique(entries: Vec<LogicalEntry>) -> Vec<LogicalEntry> {
+    let mut placed = Vec::<(LogicalEntry, usize)>::with_capacity(entries.len());
     placed.extend(
         entries
             .into_iter()
             .enumerate()
             .map(|(place, entry)| (entry, place)),
     );
-    let moves = size_of::<(LogicalEntry, usize)>()
-        .checked_mul(2)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.charge(
-        placed.len(),
-        placed
-            .len()
-            .checked_mul(moves)
-            .ok_or(RSpaceError::HostWorkRejected)?,
-        0,
-    )?;
-    fallible_sort::sort(&mut placed, |(left, left_place), (right, right_place)| {
-        let scanned = moves
-            .checked_add(left.path.key.len())
-            .and_then(|bytes| bytes.checked_add(right.path.key.len()))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.charge(1, scanned, 0)?;
-        Ok::<_, SpaceError>(
+    let Ok(()) = fallible_sort::sort(&mut placed, |(left, left_place), (right, right_place)| {
+        Ok::<_, Infallible>(
             left.path
                 .key
                 .cmp(&right.path.key)
                 .then(left_place.cmp(right_place)),
         )
-    })?;
-    let mut unique = meter.buffer::<LogicalEntry>(placed.len())?;
+    });
+    let mut unique = Vec::<LogicalEntry>::with_capacity(placed.len());
     for (entry, _) in placed {
         let repeated = match unique.last() {
-            Some(last) => {
-                meter.compare(last.path.key.len(), entry.path.key.len())?;
-                last.path.key == entry.path.key
-            }
+            Some(last) => last.path.key == entry.path.key,
             None => false,
         };
         if !repeated {
             unique.push(entry);
         }
     }
-    Ok(unique)
+    unique
 }
 
 /// The canonical entry form of the path `elements` in an `EPathMap` of this tree. A path of one
 /// element that is not a plain list is the element itself. Every other path is the plain list
 /// of its elements. `elems` of the result gives `elements` back for closed elements.
-pub fn canonical_entry(mut elements: Vec<Par>, meter: &ScanMeter) -> Result<Par, SpaceError> {
+pub fn canonical_entry(mut elements: Vec<Par>) -> Result<Par, SpaceError> {
     let bare = matches!(
         elements.as_slice(),
         [element] if plain_list_elements(element).is_none()
@@ -273,17 +237,17 @@ pub fn canonical_entry(mut elements: Vec<Par>, meter: &ScanMeter) -> Result<Par,
         true => elements
             .pop()
             .ok_or(SpaceError::Inconsistent("a bare entry has no element")),
-        false => plain_list(elements, meter),
+        false => Ok(plain_list(elements)),
     }
 }
 
 /// The adapter between a representation of PathMap values and their logical maps.
 pub trait EPathMapAdapter {
     /// The logical map of the PathMap value `map`.
-    fn decode(&self, map: EPathMap, meter: &ScanMeter) -> Result<LogicalPathMap, SpaceError>;
+    fn decode(&self, map: EPathMap) -> Result<LogicalPathMap, SpaceError>;
 
     /// The PathMap value of the logical map `map`.
-    fn encode(&self, map: LogicalPathMap, meter: &ScanMeter) -> Result<EPathMap, SpaceError>;
+    fn encode(&self, map: LogicalPathMap) -> Result<EPathMap, SpaceError>;
 }
 
 /// The adapter of the `EPathMap` of this tree, which holds the entries in `ps` (set mode only).
@@ -293,7 +257,7 @@ pub struct HeadEPathMapAdapter;
 impl EPathMapAdapter for HeadEPathMapAdapter {
     /// The set of the paths of the entries of `map`, ordered and with one entry for each key. A map
     /// with a remainder is a pattern, not a value, so it fails with `Inconsistent`.
-    fn decode(&self, map: EPathMap, meter: &ScanMeter) -> Result<LogicalPathMap, SpaceError> {
+    fn decode(&self, map: EPathMap) -> Result<LogicalPathMap, SpaceError> {
         let EPathMap {
             ps,
             locally_free: _,
@@ -303,28 +267,28 @@ impl EPathMapAdapter for HeadEPathMapAdapter {
         match remainder {
             Some(_) => Err(SpaceError::Inconsistent("a PathMap value has a remainder")),
             None => {
-                let mut paths = meter.buffer::<LogicalPath>(ps.len())?;
+                let mut paths = Vec::<LogicalPath>::with_capacity(ps.len());
                 for entry in ps {
-                    paths.push(LogicalPath::new(into_path_elements(entry, meter)?, meter)?);
+                    paths.push(LogicalPath::new(into_path_elements(entry)?)?);
                 }
-                LogicalPathMap::set(paths, meter)
+                Ok(LogicalPathMap::set(paths))
             }
         }
     }
 
     /// The `EPathMap` of the set `map`: the entries in key order, each in its canonical entry
     /// form. A map in the map mode has no form in this tree, so it fails with `Inconsistent`.
-    fn encode(&self, map: LogicalPathMap, meter: &ScanMeter) -> Result<EPathMap, SpaceError> {
+    fn encode(&self, map: LogicalPathMap) -> Result<EPathMap, SpaceError> {
         match map.mode {
             PathMapMode::Map => Err(SpaceError::Inconsistent(
                 "the EPathMap of this tree holds no values",
             )),
             PathMapMode::Set => {
-                let mut ps = meter.buffer::<Par>(map.entries.len())?;
+                let mut ps = Vec::<Par>::with_capacity(map.entries.len());
                 for entry in map.entries {
-                    ps.push(canonical_entry(entry.path.into_elements(), meter)?);
+                    ps.push(canonical_entry(entry.path.into_elements())?);
                 }
-                let (locally_free, connective_used) = bit_sets(&ps, meter)?;
+                let (locally_free, connective_used) = bit_sets(&ps);
                 Ok(EPathMap {
                     ps,
                     locally_free,
@@ -342,23 +306,21 @@ mod tests {
     use models::rhoapi::Var;
 
     use super::*;
-    use crate::rust::interpreter::spaces::pathmap::path_codec::{path_elements, plain_list};
+    use crate::rust::interpreter::spaces::pathmap::path_codec::path_elements;
     use crate::rust::interpreter::spaces::pathmap::test_support::*;
 
     fn logical(elements: Vec<Par>) -> LogicalPath {
-        LogicalPath::new(elements, &unmetered()).expect("the path encodes")
+        LogicalPath::new(elements).expect("the path encodes")
     }
 
     fn decode(entries: Vec<Par>) -> LogicalPathMap {
         HeadEPathMapAdapter
-            .decode(epathmap(entries), &unmetered())
+            .decode(epathmap(entries))
             .expect("the map decodes")
     }
 
     fn encode(map: LogicalPathMap) -> EPathMap {
-        HeadEPathMapAdapter
-            .encode(map, &unmetered())
-            .expect("the map encodes")
+        HeadEPathMapAdapter.encode(map).expect("the map encodes")
     }
 
     fn paths(map: &LogicalPathMap) -> Vec<Vec<Par>> {
@@ -407,20 +369,19 @@ mod tests {
 
     #[test]
     fn encode_writes_each_path_in_its_canonical_entry_form() {
-        let meter = unmetered();
-        assert_eq!(canonical_entry(Vec::new(), &meter), Ok(glist(Vec::new())));
-        assert_eq!(canonical_entry(vec![gint(1)], &meter), Ok(gint(1)));
+        assert_eq!(canonical_entry(Vec::new()), Ok(glist(Vec::new())));
+        assert_eq!(canonical_entry(vec![gint(1)]), Ok(gint(1)));
         assert_eq!(
-            canonical_entry(vec![glist(vec![gint(1)])], &meter),
+            canonical_entry(vec![glist(vec![gint(1)])]),
             Ok(glist(vec![glist(vec![gint(1)])]))
         );
         assert_eq!(
-            canonical_entry(vec![gint(1), gint(2)], &meter),
+            canonical_entry(vec![gint(1), gint(2)]),
             Ok(glist(vec![gint(1), gint(2)]))
         );
         // A plain list with an element outside the structural grammar is still a plain list.
         assert_eq!(
-            canonical_entry(vec![glist(vec![Par::default()])], &meter),
+            canonical_entry(vec![glist(vec![Par::default()])]),
             Ok(glist(vec![glist(vec![Par::default()])]))
         );
         for path in [
@@ -433,7 +394,7 @@ mod tests {
             vec![glist(vec![Par::default()])],
             vec![glist(vec![gint(1), send(gint(0), Vec::new())])],
         ] {
-            let entry = canonical_entry(path.clone(), &meter).expect("the entry builds");
+            let entry = canonical_entry(path.clone()).expect("the entry builds");
             assert_eq!(path_elements(&entry), path.as_slice(), "{path:?}");
         }
         let encoded = encode(decode(vec![
@@ -460,8 +421,7 @@ mod tests {
             connective_used: true,
             ..gint(7)
         };
-        let map = LogicalPathMap::set(vec![logical(vec![bits.clone()])], &unmetered())
-            .expect("the set builds");
+        let map = LogicalPathMap::set(vec![logical(vec![bits.clone()])]);
         let encoded = encode(map);
         assert_eq!(encoded.ps, vec![bits]);
         assert_eq!(encoded.locally_free, vec![0b0010]);
@@ -470,7 +430,6 @@ mod tests {
 
     #[test]
     fn the_adapter_fails_closed() {
-        let meter = unmetered();
         let pattern = EPathMap {
             remainder: Some(Var {
                 var_instance: Some(VarInstance::FreeVar(0)),
@@ -479,7 +438,7 @@ mod tests {
             ..epathmap(vec![gint(1)])
         };
         assert_eq!(
-            HeadEPathMapAdapter.decode(pattern, &meter),
+            HeadEPathMapAdapter.decode(pattern),
             Err(SpaceError::Inconsistent("a PathMap value has a remainder"))
         );
         for entry in [
@@ -488,14 +447,13 @@ mod tests {
             send(gint(0), vec![pathmap(Vec::new())]),
         ] {
             assert_eq!(
-                HeadEPathMapAdapter.decode(epathmap(vec![gint(2), entry]), &meter),
+                HeadEPathMapAdapter.decode(epathmap(vec![gint(2), entry])),
                 Err(SpaceError::UnsupportedPathElement)
             );
         }
-        let valued = LogicalPathMap::map(vec![(logical(vec![gint(1)]), gint(9))], &meter)
-            .expect("the map builds");
+        let valued = LogicalPathMap::map(vec![(logical(vec![gint(1)]), gint(9))]);
         assert_eq!(
-            HeadEPathMapAdapter.encode(valued, &meter),
+            HeadEPathMapAdapter.encode(valued),
             Err(SpaceError::Inconsistent(
                 "the EPathMap of this tree holds no values"
             ))
@@ -504,16 +462,11 @@ mod tests {
 
     #[test]
     fn the_map_mode_keeps_one_value_for_each_path() {
-        let meter = unmetered();
-        let map = LogicalPathMap::map(
-            vec![
-                (logical(vec![gint(2)]), gstring("second")),
-                (logical(vec![gint(1)]), gstring("first")),
-                (logical(vec![gint(2)]), gstring("repeat")),
-            ],
-            &meter,
-        )
-        .expect("the map builds");
+        let map = LogicalPathMap::map(vec![
+            (logical(vec![gint(2)]), gstring("second")),
+            (logical(vec![gint(1)]), gstring("first")),
+            (logical(vec![gint(2)]), gstring("repeat")),
+        ]);
         assert_eq!(map.mode(), PathMapMode::Map);
         let values: Vec<Option<&Par>> = map.entries().iter().map(LogicalEntry::value).collect();
         assert_eq!(values, vec![
@@ -521,7 +474,7 @@ mod tests {
             Some(&gstring("second"))
         ]);
         let prefix = logical(vec![gint(0)]);
-        let prefixed = map.prefixed(&prefix, &meter).expect("the map prefixes");
+        let prefixed = map.prefixed(&prefix).expect("the map prefixes");
         assert_eq!(prefixed.mode(), PathMapMode::Map);
         assert_eq!(paths(&prefixed), vec![vec![gint(0), gint(1)], vec![
             gint(0),
@@ -539,13 +492,9 @@ mod tests {
 
     #[test]
     fn a_prefixed_path_has_the_key_of_the_joined_path() {
-        let meter = unmetered();
         let prefix = logical(vec![gint(0), gstring("x")]);
         let path = logical(vec![glist(vec![gint(1)]), Par::default()]);
-        let joined = path
-            .clone()
-            .prefixed(&prefix, &meter)
-            .expect("the path prefixes");
+        let joined = path.clone().prefixed(&prefix).expect("the path prefixes");
         assert_eq!(
             joined,
             logical(vec![
@@ -557,43 +506,19 @@ mod tests {
         );
         assert_eq!(
             logical(Vec::new())
-                .prefixed(&prefix, &meter)
+                .prefixed(&prefix)
                 .expect("the path prefixes"),
             prefix
         );
         assert_eq!(
             path.clone()
-                .prefixed(&logical(Vec::new()), &meter)
+                .prefixed(&logical(Vec::new()))
                 .expect("the path prefixes"),
             path
         );
-        let singleton = LogicalPathMap::singleton(prefix.clone(), &meter).expect("the set builds");
+        let singleton = LogicalPathMap::singleton(prefix.clone());
         assert_eq!(singleton.mode(), PathMapMode::Set);
         assert_eq!(paths(&singleton), vec![prefix.elements().to_vec()]);
-    }
-
-    #[test]
-    fn every_metered_function_of_the_adapter_rejects_a_cut_budget() {
-        let entries = vec![
-            gstring("b"),
-            glist(vec![gint(1), send(gint(0), vec![gint(1)])]),
-            gstring("b"),
-            glist(vec![gstring("a")]),
-        ];
-        assert_cut(|meter| HeadEPathMapAdapter.decode(epathmap(entries.clone()), meter));
-        let decoded = decode(entries.clone());
-        assert_cut(|meter| HeadEPathMapAdapter.encode(decoded.clone(), meter));
-        assert_cut(|meter| LogicalPath::new(vec![gint(1), eset(vec![gint(2)])], meter));
-        let prefix = logical(vec![gint(0)]);
-        assert_cut(|meter| decoded.clone().prefixed(&prefix, meter));
-        assert_cut(|meter| logical(vec![gint(5)]).prefixed(&prefix, meter));
-        assert_cut(|meter| {
-            LogicalPathMap::set(vec![logical(vec![gint(2)]), logical(vec![gint(1)])], meter)
-        });
-        assert_cut(|meter| LogicalPathMap::map(vec![(logical(vec![gint(2)]), gint(3))], meter));
-        assert_cut(|meter| LogicalPathMap::singleton(logical(vec![gint(2)]), meter));
-        assert_cut(|meter| canonical_entry(vec![gint(1), gint(2)], meter));
-        assert_cut(|meter| plain_list(vec![gint(1)], meter));
     }
 
     // `PathMapPrefix.v`, `head_roundtrip`: the decode of the encode of a logical map is the map.
@@ -630,13 +555,9 @@ mod tests {
     #[test]
     fn prop_prefixed_maps_keep_their_order() {
         check(pure_config(), (entries(), path()), |(entries, prefix)| {
-            let meter = unmetered();
             let map = decode(entries);
             let prefix = logical(prefix);
-            let prefixed = map
-                .clone()
-                .prefixed(&prefix, &meter)
-                .expect("the map prefixes");
+            let prefixed = map.clone().prefixed(&prefix).expect("the map prefixes");
             ensure(
                 strictly_ascending(&keys(&prefixed)),
                 "the prefixed keys stay in order",

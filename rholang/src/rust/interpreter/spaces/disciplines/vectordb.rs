@@ -78,10 +78,6 @@
 //! runs in the join engine (`join::classify`), which offers the second sends first, then
 //! cascades, then re-issues the operation. A second send keeps its record, so it keeps its vector
 //! and its id.
-//!
-//! **Metering (decision 42).** Every decode, kernel, comparison, sort step, list construction
-//! and copy is reserved on the meter of the job before it runs, through the numeric core and the
-//! primitives of [`Cx`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, LazyLock};
@@ -104,10 +100,9 @@ use serde::Serialize;
 
 use super::queue::QueueDiscipline;
 use super::scan::{
-    located, retire_continuation, stored_candidate, view_index, Member, RETIRE_CONTINUATION,
-    RETIRE_PATTERN,
+    located, retire_continuation, stored_candidate, view_index, Member, RETIRE_PATTERN,
 };
-use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, FIRE_ROUND_CAP};
 use crate::rust::interpreter::spaces::agent::{
     CascadeState, ConsumeOp, PendingProduce, ProduceOp, QueryParams, SettleOp, SpaceOp,
     SpaceReissue,
@@ -117,10 +112,10 @@ use crate::rust::interpreter::spaces::factory::defaults::{
     CAPACITY_PARAM, DIMENSIONS_PARAM, MAX_CAPACITY, MAX_DIMENSIONS, METRIC_PARAM,
 };
 use crate::rust::interpreter::spaces::generic::{
-    open_plan, peek_set, peek_set_all, push_reserved, Cx, Discipline, JoinWindow, OfferFire,
-    OpView, Ordered, ParCandidate, ParDatum, ParWaiter, Side, SideBound,
+    open_plan, peek_set, peek_set_all, Cx, Discipline, JoinWindow, OfferFire, OpView, Ordered,
+    ParCandidate, ParDatum, ParWaiter, Side, SideBound,
 };
-use crate::rust::interpreter::spaces::namespace::{CollectionKey, RandomPurpose};
+use crate::rust::interpreter::spaces::namespace::RandomPurpose;
 use crate::rust::interpreter::spaces::record::{self, sole_expr, Introduction, WaiterPolicy};
 use crate::rust::interpreter::spaces::settle::{lift_pattern, settle_operation};
 use crate::rust::interpreter::spaces::types::config::SpaceConfig;
@@ -170,43 +165,29 @@ impl Discipline for VectorDbDiscipline {
 
     /// The `capacity` of the space bounds the records of each collection (design v3 4.3), with
     /// `CapacityExceeded`. Nothing bounds the waiters.
-    fn bound(
-        &self,
-        config: &SpaceConfig,
-        side: Side,
-        meter: &ScanMeter,
-    ) -> Result<Option<SideBound>, SpaceError> {
+    fn bound(&self, config: &SpaceConfig, side: Side) -> Result<Option<SideBound>, SpaceError> {
         match side {
-            Side::Data => Ok(Some(SideBound::Records(
-                vdb_config(config, meter)?.capacity,
-            ))),
+            Side::Data => Ok(Some(SideBound::Records(vdb_config(config)?.capacity))),
             Side::Waiters => Ok(None),
         }
     }
 
     /// The entry with the least `(ord, bincode bytes)`, as for the queue. Only the head driver
     /// asks for a head, and a VectorDB collection does not use the head driver.
-    fn head_metered<T: Serialize>(
+    fn head<T: Serialize>(
         &self,
         side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        QueueDiscipline.head_metered(side, entries, meter)
+        QueueDiscipline.head(side, entries)
     }
 
     /// Every entry can meet an incoming element. Only the head driver asks.
     fn reaches_head(&self, _side: Side, _queued: usize) -> bool { true }
 
     /// The lesser order interacts first, as for the queue. Only the head driver asks.
-    fn precedes(
-        &self,
-        side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        QueueDiscipline.precedes(side, ord, head, meter)
+    fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+        QueueDiscipline.precedes(side, ord, head)
     }
 
     /// Checks the `embedding` param of a send and the query of a receive before any staging:
@@ -217,15 +198,14 @@ impl Discipline for VectorDbDiscipline {
         config: &SpaceConfig,
         params: &BTreeMap<String, Par>,
         query: Option<&QueryParams>,
-        meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
-        let cfg = vdb_config(config, meter)?;
-        if let Some(embedding) = lookup(params, EMBEDDING_PARAM, meter)? {
-            num::vector_of(embedding, Some(cfg.dimensions), meter)
+        let cfg = vdb_config(config)?;
+        if let Some(embedding) = lookup(params, EMBEDDING_PARAM) {
+            num::vector_of(embedding, Some(cfg.dimensions))
                 .map_err(|error| SpaceError::of_number(error, EMBEDDING_PARAM))?;
         }
         match query {
-            Some(query) => query_of(&cfg, query, meter).map(|_| ()),
+            Some(query) => query_of(&cfg, query).map(|_| ()),
             None => Ok(()),
         }
     }
@@ -261,11 +241,10 @@ impl Discipline for VectorDbDiscipline {
         cx: &mut Cx<'_, '_>,
         record: ListParWithRandom,
     ) -> Result<Option<SpaceReissue>, SpaceError> {
-        let meter = cx.meter();
-        let cfg = vdb_config(cx.config(), meter)?;
-        let origin = Origin::of(&record.random_state, record.cost_authority.as_ref(), meter)?;
+        let cfg = vdb_config(cx.config())?;
+        let origin = Origin::of(&record.random_state, record.cost_authority.as_ref());
         let mut tail = Tail::new();
-        tail.owe(record, meter)?;
+        tail.owe(record);
         match run_tail(cx, &cfg, &mut tail, &origin)? {
             None => Ok(None),
             Some(_) => Err(SpaceError::Inconsistent(
@@ -288,12 +267,12 @@ pub struct VdbConfig {
     pub metric: Metric,
 }
 
-/// The params of the VectorDB space with the config `config`, each read reserved first. The
-/// factory stored canonical params, so a malformed param is `Inconsistent`.
-pub fn vdb_config(config: &SpaceConfig, meter: &ScanMeter) -> Result<VdbConfig, SpaceError> {
-    let capacity = config_count(config, CAPACITY_PARAM, MAX_CAPACITY, meter)?;
-    let dimensions = config_count(config, DIMENSIONS_PARAM, MAX_DIMENSIONS, meter)?;
-    let metric = match lookup(&config.params, METRIC_PARAM, meter)? {
+/// The params of the VectorDB space with the config `config`. The factory stored canonical
+/// params, so a malformed param is `Inconsistent`.
+pub fn vdb_config(config: &SpaceConfig) -> Result<VdbConfig, SpaceError> {
+    let capacity = config_count(config, CAPACITY_PARAM, MAX_CAPACITY)?;
+    let dimensions = config_count(config, DIMENSIONS_PARAM, MAX_DIMENSIONS)?;
+    let metric = match lookup(&config.params, METRIC_PARAM) {
         None => Metric::Cosine,
         Some(value) => metric_of(value).ok_or(SpaceError::Inconsistent(
             "the metric of a VectorDB config is not a metric",
@@ -306,32 +285,13 @@ pub fn vdb_config(config: &SpaceConfig, meter: &ScanMeter) -> Result<VdbConfig, 
     })
 }
 
-/// The value of `key` in `map`, with the lookup and the read reserved first.
-fn lookup<'m>(
-    map: &'m BTreeMap<String, Par>,
-    key: &str,
-    meter: &ScanMeter,
-) -> Result<Option<&'m Par>, SpaceError> {
-    if map.is_empty() {
-        return Ok(None);
-    }
-    meter.ordered_lookup(map.len(), key.len())?;
-    let value = map.get(key);
-    if let Some(value) = value {
-        meter.inspect(value)?;
-    }
-    Ok(value)
-}
+/// The value of `key` in `map`.
+fn lookup<'m>(map: &'m BTreeMap<String, Par>, key: &str) -> Option<&'m Par> { map.get(key) }
 
 /// A count param of a config: a `GInt` in `[1, max]`.
-fn config_count(
-    config: &SpaceConfig,
-    key: &str,
-    max: i64,
-    meter: &ScanMeter,
-) -> Result<usize, SpaceError> {
+fn config_count(config: &SpaceConfig, key: &str, max: i64) -> Result<usize, SpaceError> {
     let malformed = SpaceError::Inconsistent("a VectorDB config lacks a valid count");
-    match lookup(&config.params, key, meter)? {
+    match lookup(&config.params, key) {
         Some(value) => match (sole_expr(value), value.connective_used) {
             (Some(ExprInstance::GInt(count)), false) if (1..=max).contains(count) => {
                 usize::try_from(*count).map_err(|_| malformed)
@@ -377,24 +337,19 @@ pub struct VdbQuery {
 
 /// The checked query of the receive query `query`: its payload holds the query vector, or
 /// nothing.
-pub fn query_of(
-    cfg: &VdbConfig,
-    query: &QueryParams,
-    meter: &ScanMeter,
-) -> Result<VdbQuery, SpaceError> {
+pub fn query_of(cfg: &VdbConfig, query: &QueryParams) -> Result<VdbQuery, SpaceError> {
     let vector = match query.payload.as_slice() {
         [] => None,
         [vector] => Some(vector),
         _ => return Err(SpaceError::PositionalParamsUnsupported),
     };
-    parse_query(cfg, vector, &query.named, meter)
+    parse_query(cfg, vector, &query.named)
 }
 
 /// True when the receive query `query` is in list mode: it names `k` or `results`. A join bind
-/// in list mode fails with `ListModeInJoin` (decision 66). The lookups are reserved first.
-pub fn is_list_query(query: &QueryParams, meter: &ScanMeter) -> Result<bool, SpaceError> {
-    Ok(lookup(&query.named, K_KEY, meter)?.is_some()
-        || lookup(&query.named, RESULTS_KEY, meter)?.is_some())
+/// in list mode fails with `ListModeInJoin` (decision 66).
+pub fn is_list_query(query: &QueryParams) -> bool {
+    lookup(&query.named, K_KEY).is_some() || lookup(&query.named, RESULTS_KEY).is_some()
 }
 
 /// Checks a query with the query vector `vector` and the named params `named`, in a fixed order
@@ -405,18 +360,17 @@ fn parse_query(
     cfg: &VdbConfig,
     vector: Option<&Par>,
     named: &BTreeMap<String, Par>,
-    meter: &ScanMeter,
 ) -> Result<VdbQuery, SpaceError> {
     if vector.is_none() {
         for key in VECTOR_KEYS {
-            if lookup(named, key, meter)?.is_some() {
+            if lookup(named, key).is_some() {
                 return Err(SpaceError::QueryNeedsVector {
                     key: key.to_string(),
                 });
             }
         }
     }
-    let metric = match lookup(named, METRIC_KEY, meter)? {
+    let metric = match lookup(named, METRIC_KEY) {
         None => cfg.metric,
         Some(value) => metric_of(value).ok_or(SpaceError::InvalidParam {
             key: METRIC_KEY.to_string(),
@@ -425,9 +379,9 @@ fn parse_query(
     let exact = match vector {
         None => None,
         Some(par) => {
-            let vector = num::vector_of(par, Some(cfg.dimensions), meter)
+            let vector = num::vector_of(par, Some(cfg.dimensions))
                 .map_err(|error| SpaceError::of_number(error, QUERY_VECTOR_KEY))?;
-            match Query::new(vector, metric, meter)
+            match Query::new(vector, metric)
                 .map_err(|error| SpaceError::of_number(error, QUERY_VECTOR_KEY))?
             {
                 Some(query) => Some(query),
@@ -435,13 +389,10 @@ fn parse_query(
             }
         }
     };
-    let bound = match (
-        lookup(named, THRESHOLD_KEY, meter)?,
-        lookup(named, RADIUS_KEY, meter)?,
-    ) {
+    let bound = match (lookup(named, THRESHOLD_KEY), lookup(named, RADIUS_KEY)) {
         (Some(_), Some(_)) => return Err(SpaceError::ConflictingParams),
         (Some(value), None) => {
-            let threshold = exact_number(value, THRESHOLD_KEY, meter)?;
+            let threshold = exact_number(value, THRESHOLD_KEY)?;
             if threshold.is_negative() || threshold > Exact::one() {
                 return Err(SpaceError::InvalidParam {
                     key: THRESHOLD_KEY.to_string(),
@@ -453,7 +404,7 @@ fn parse_query(
             Some(Bound::Threshold(threshold))
         }
         (None, Some(value)) => {
-            let radius = exact_number(value, RADIUS_KEY, meter)?;
+            let radius = exact_number(value, RADIUS_KEY)?;
             if radius.is_negative() {
                 return Err(SpaceError::InvalidParam {
                     key: RADIUS_KEY.to_string(),
@@ -466,10 +417,7 @@ fn parse_query(
         }
         (None, None) => None,
     };
-    let mode = match (
-        lookup(named, K_KEY, meter)?,
-        lookup(named, RESULTS_KEY, meter)?,
-    ) {
+    let mode = match (lookup(named, K_KEY), lookup(named, RESULTS_KEY)) {
         (Some(_), Some(_)) => {
             return Err(SpaceError::InvalidParam {
                 key: RESULTS_KEY.to_string(),
@@ -486,7 +434,7 @@ fn parse_query(
         },
         (None, None) => Mode::Single,
     };
-    let scores = match lookup(named, SCORES_KEY, meter)? {
+    let scores = match lookup(named, SCORES_KEY) {
         None => false,
         Some(value) => match (sole_expr(value), value.connective_used) {
             (Some(ExprInstance::GBool(flag)), false) => *flag,
@@ -497,9 +445,9 @@ fn parse_query(
             }
         },
     };
-    let ids = match lookup(named, IDS_KEY, meter)? {
+    let ids = match lookup(named, IDS_KEY) {
         None => None,
-        Some(value) => Some(ids_of(value, meter)?),
+        Some(value) => Some(ids_of(value)?),
     };
     Ok(VdbQuery {
         exact,
@@ -512,15 +460,12 @@ fn parse_query(
 
 /// The exact value of the number `value` of the param `key`. A value that is not a finite
 /// number is an invalid value of its param.
-fn exact_number(value: &Par, key: &str, meter: &ScanMeter) -> Result<Exact, SpaceError> {
-    let invalid = |error| match error {
-        num::NumError::HostWork(error) => SpaceError::Host(error),
-        _ => SpaceError::InvalidParam {
-            key: key.to_string(),
-        },
+fn exact_number(value: &Par, key: &str) -> Result<Exact, SpaceError> {
+    let invalid = |_| SpaceError::InvalidParam {
+        key: key.to_string(),
     };
-    match num::number_of(value, meter).map_err(invalid)? {
-        Number::Dyadic(form) => form.value(meter).map_err(invalid),
+    match num::number_of(value).map_err(invalid)? {
+        Number::Dyadic(form) => Ok(form.value()),
         Number::Rational(value) => Ok(value),
     }
 }
@@ -539,9 +484,8 @@ fn k_of(cfg: &VdbConfig, value: &Par) -> Result<usize, SpaceError> {
     }
 }
 
-/// The ids of an `ids` param: a list of 32-byte byte arrays, sorted and without duplicates. Each
-/// lookup and growth of the set is reserved first.
-fn ids_of(value: &Par, meter: &ScanMeter) -> Result<Vec<[u8; ID_LEN]>, SpaceError> {
+/// The ids of an `ids` param: a list of 32-byte byte arrays, sorted and without duplicates.
+fn ids_of(value: &Par) -> Result<Vec<[u8; ID_LEN]>, SpaceError> {
     let invalid = || SpaceError::InvalidParam {
         key: IDS_KEY.to_string(),
     };
@@ -564,47 +508,34 @@ fn ids_of(value: &Par, meter: &ScanMeter) -> Result<Vec<[u8; ID_LEN]>, SpaceErro
             }
             _ => return Err(invalid()),
         };
-        meter.ordered_lookup(ids.len(), ID_LEN)?;
         if !ids.contains(&id) {
-            meter.tree_growth::<[u8; ID_LEN], ()>(ids.len(), 1)?;
             ids.insert(id);
         }
     }
-    let mut sorted = meter.buffer::<[u8; ID_LEN]>(ids.len())?;
+    let mut sorted = Vec::<[u8; ID_LEN]>::with_capacity(ids.len());
     sorted.extend(ids);
     Ok(sorted)
 }
 
-/// True when `ids` holds the id `hash`. The search is reserved first.
-fn holds_id(
-    ids: &[[u8; ID_LEN]],
-    hash: &Blake2b256Hash,
-    meter: &ScanMeter,
-) -> Result<bool, SpaceError> {
-    meter.ordered_lookup(ids.len(), ID_LEN)?;
-    Ok(ids
-        .binary_search_by(|id| id.as_slice().cmp(hash.0.as_slice()))
-        .is_ok())
+/// True when `ids` holds the id `hash`.
+fn holds_id(ids: &[[u8; ID_LEN]], hash: &Blake2b256Hash) -> bool {
+    ids.binary_search_by(|id| id.as_slice().cmp(hash.0.as_slice()))
+        .is_ok()
 }
 
 /// The policy that a parked waiter with the query `query` keeps: the map of its named params,
-/// with the query vector under `q`, or `None` without a query. Each copy is reserved first.
-pub fn policy_of_query(
-    query: Option<&QueryParams>,
-    meter: &ScanMeter,
-) -> Result<WaiterPolicy, SpaceError> {
+/// with the query vector under `q`, or `None` without a query.
+pub fn policy_of_query(query: Option<&QueryParams>) -> WaiterPolicy {
     let Some(query) = query else {
-        return Ok(WaiterPolicy::None);
+        return WaiterPolicy::None;
     };
-    let mut map = meter.copy(&query.named)?;
+    let mut map = query.named.clone();
     if let Some(vector) = query.payload.first() {
-        meter.tree_growth::<String, Par>(map.len(), 1)?;
-        meter.reserve_copy_slice(QUERY_VECTOR_KEY.as_bytes())?;
-        map.insert(QUERY_VECTOR_KEY.to_string(), meter.copy(vector)?);
+        map.insert(QUERY_VECTOR_KEY.to_string(), vector.clone());
     }
     match map.is_empty() {
-        true => Ok(WaiterPolicy::None),
-        false => Ok(WaiterPolicy::Query(Box::new(map))),
+        true => WaiterPolicy::None,
+        false => WaiterPolicy::Query(Box::new(map)),
     }
 }
 
@@ -613,13 +544,12 @@ pub fn policy_of_query(
 pub fn policy_query(
     cfg: &VdbConfig,
     policy: &WaiterPolicy,
-    meter: &ScanMeter,
 ) -> Result<Option<VdbQuery>, SpaceError> {
     match policy {
         WaiterPolicy::None => Ok(None),
         WaiterPolicy::Query(map) => {
-            let vector = lookup(map, QUERY_VECTOR_KEY, meter)?;
-            parse_query(cfg, vector, map, meter).map(Some)
+            let vector = lookup(map, QUERY_VECTOR_KEY);
+            parse_query(cfg, vector, map).map(Some)
         }
         WaiterPolicy::Level(_) => Err(SpaceError::Inconsistent(
             "a waiter of a VectorDB collection has a priority level",
@@ -631,34 +561,32 @@ pub fn policy_query(
 
 /// The record of a send with the params `params` and the data `data`, and its vector (design v3
 /// 4.3): the vector is the `embedding` param, or else the payload itself when it is exactly one
-/// non-empty list of numbers, or none. Each check and the wrap are reserved first.
+/// non-empty list of numbers, or none.
 pub fn vdb_record(
     cfg: &VdbConfig,
     params: &BTreeMap<String, Par>,
     data: &ListParWithRandom,
-    meter: &ScanMeter,
 ) -> Result<(ListParWithRandom, Option<ExactVector>), SpaceError> {
-    let embedding = match lookup(params, EMBEDDING_PARAM, meter)? {
+    let embedding = match lookup(params, EMBEDDING_PARAM) {
         Some(embedding) => Some(embedding),
         None => match data.pars.as_slice() {
-            [single] if is_numeric_list(single, meter)? => Some(single),
+            [single] if is_numeric_list(single) => Some(single),
             _ => None,
         },
     };
     let vector = match embedding {
         Some(par) => Some(
-            num::vector_of(par, Some(cfg.dimensions), meter)
+            num::vector_of(par, Some(cfg.dimensions))
                 .map_err(|error| SpaceError::of_number(error, EMBEDDING_PARAM))?,
         ),
         None => None,
     };
-    let record = record::wrap_vdb_datum_metered(0, embedding, data, meter)?;
+    let record = record::wrap_vdb_datum(0, embedding, data)?;
     Ok((record, vector))
 }
 
-/// True when `par` is one non-empty list of numbers. The test of each element is reserved
-/// first.
-fn is_numeric_list(par: &Par, meter: &ScanMeter) -> Result<bool, SpaceError> {
+/// True when `par` is one non-empty list of numbers.
+fn is_numeric_list(par: &Par) -> bool {
     match (sole_expr(par), par.connective_used) {
         (
             Some(ExprInstance::EListBody(EList {
@@ -667,11 +595,8 @@ fn is_numeric_list(par: &Par, meter: &ScanMeter) -> Result<bool, SpaceError> {
                 ..
             })),
             false,
-        ) => {
-            meter.charge(ps.len(), 0, 0)?;
-            Ok(!ps.is_empty() && ps.iter().all(num::is_number))
-        }
-        _ => Ok(false),
+        ) => !ps.is_empty() && ps.iter().all(num::is_number),
+        _ => false,
     }
 }
 
@@ -679,10 +604,9 @@ fn is_numeric_list(par: &Par, meter: &ScanMeter) -> Result<bool, SpaceError> {
 pub fn record_vector(
     record: &ListParWithRandom,
     cfg: &VdbConfig,
-    meter: &ScanMeter,
 ) -> Result<Option<ExactVector>, SpaceError> {
-    match record::vdb_datum_slots_metered(record, meter)?.1 {
-        Some(embedding) => num::vector_of(embedding, Some(cfg.dimensions), meter)
+    match record::vdb_datum_slots(record)?.1 {
+        Some(embedding) => num::vector_of(embedding, Some(cfg.dimensions))
             .map(Some)
             .map_err(|error| SpaceError::of_number(error, EMBEDDING_PARAM)),
         None => Ok(None),
@@ -690,82 +614,75 @@ pub fn record_vector(
 }
 
 /// The payload of a stored record: the datum as the program sent it.
-pub fn payload_of(
-    record: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<ListParWithRandom, SpaceError> {
-    Ok(record::unwrap_vdb_datum_metered(record, meter)?.datum)
+pub fn payload_of(record: &ListParWithRandom) -> Result<ListParWithRandom, SpaceError> {
+    Ok(record::unwrap_vdb_datum(record)?.datum)
 }
 
 // ── Delivered values ─────────────────────────────────────────────────────────
 
 /// The value of a payload: the datum of a send of one datum, or the list of the data of a send
-/// of several. Each copy is reserved first.
-fn payload_value(payload: &ListParWithRandom, meter: &ScanMeter) -> Result<Par, SpaceError> {
+/// of several.
+fn payload_value(payload: &ListParWithRandom) -> Par {
     match payload.pars.as_slice() {
-        [single] => Ok(meter.copy(single)?),
-        many => list_of(meter.copy_slice(many)?, meter),
+        [single] => single.clone(),
+        many => list_of(many.to_vec()),
     }
 }
 
 /// The list of `values` with the bit sets of the normalizer: the union of the `locally_free`
 /// sets and the disjunction of the `connective_used` flags of the elements, as the records of a
-/// space build their lists. The caller reserved `values`. Each read and each result of the
-/// union, the copies of the bit set and the expression list are reserved first (decision 42).
-fn list_of(values: Vec<Par>, meter: &ScanMeter) -> Result<Par, SpaceError> {
+/// space build their lists.
+fn list_of(values: Vec<Par>) -> Par {
     let mut locally_free: Vec<u8> = Vec::new();
     let mut connective_used = false;
     for value in &values {
         if !value.locally_free.is_empty() {
-            meter.compare(locally_free.len(), value.locally_free.len())?;
-            meter.reserve_buffer::<u8>(locally_free.len().max(value.locally_free.len()))?;
-            locally_free = union(locally_free, meter.copy(&value.locally_free)?);
+            locally_free = union(locally_free, value.locally_free.clone());
         }
         connective_used = connective_used || value.connective_used;
     }
-    let mut exprs = meter.buffer::<Expr>(1)?;
+    let mut exprs = Vec::<Expr>::with_capacity(1);
     exprs.push(Expr {
         expr_instance: Some(ExprInstance::EListBody(EList {
             ps: values,
-            locally_free: meter.copy(&locally_free)?,
+            locally_free: locally_free.clone(),
             connective_used,
             remainder: None,
         })),
     });
-    Ok(Par {
+    Par {
         exprs,
         locally_free,
         connective_used,
         ..Par::default()
-    })
+    }
 }
 
-/// `[score, value]` with the delivered score `score` (RN_53 of the exact score). The lists and
-/// the expression list of the score are reserved first.
-fn scored(score: f64, value: Par, meter: &ScanMeter) -> Result<Par, SpaceError> {
-    let mut exprs = meter.buffer::<Expr>(1)?;
+/// `[score, value]` with the delivered score `score` (RN_53 of the exact score).
+fn scored(score: f64, value: Par) -> Par {
+    let mut exprs = Vec::<Expr>::with_capacity(1);
     exprs.push(Expr {
         expr_instance: Some(ExprInstance::GDouble(score.to_bits())),
     });
-    let mut pair = meter.buffer::<Par>(2)?;
+    let mut pair = Vec::<Par>::with_capacity(2);
     pair.push(Par {
         exprs,
         ..Par::default()
     });
     pair.push(value);
-    list_of(pair, meter)
+    list_of(pair)
 }
 
-/// The data of one value `value`: a list of one `Par`, reserved first.
-fn one_value(value: Par, meter: &ScanMeter) -> Result<Vec<Par>, SpaceError> {
-    let mut pars = meter.buffer::<Par>(1)?;
+/// The data of one value `value`: a list of one `Par`.
+fn one_value(value: Par) -> Vec<Par> {
+    let mut pars = Vec::<Par>::with_capacity(1);
     pars.push(value);
-    Ok(pars)
+    pars
 }
 
 /// The delivered score of `score` for the query `query`.
-fn delivered_score(score: &Score, query: &Query, meter: &ScanMeter) -> Result<f64, SpaceError> {
-    exact::delivered(score, query, meter).map_err(|error| SpaceError::of_number(error, SCORES_KEY))
+fn delivered_score(score: &Score, query: &Query) -> Result<f64, SpaceError> {
+    exact::delivered(score, query).map_err(|error| SpaceError::of_number(error, SCORES_KEY))
 }
 
 /// The data that a single-mode bind sees for a record with the payload `payload` and the score
@@ -774,28 +691,19 @@ pub fn single_data(
     query: &VdbQuery,
     payload: &ListParWithRandom,
     score: Option<&Score>,
-    meter: &ScanMeter,
 ) -> Result<ListParWithRandom, SpaceError> {
     match (query.scores, &query.exact, score) {
         (true, Some(exact), Some(score)) => {
-            let value = payload_value(payload, meter)?;
-            let delivered = delivered_score(score, exact, meter)?;
+            let value = payload_value(payload);
+            let delivered = delivered_score(score, exact)?;
             Ok(ListParWithRandom {
-                pars: one_value(scored(delivered, value, meter)?, meter)?,
-                random_state: meter.copy(&payload.random_state)?,
-                cost_authority: payload
-                    .cost_authority
-                    .as_ref()
-                    .map(|authority| meter.copy(authority))
-                    .transpose()?,
-                cost_stack: payload
-                    .cost_stack
-                    .as_ref()
-                    .map(|stack| meter.copy(stack))
-                    .transpose()?,
+                pars: one_value(scored(delivered, value)),
+                random_state: payload.random_state.clone(),
+                cost_authority: payload.cost_authority.as_ref().cloned(),
+                cost_stack: payload.cost_stack.as_ref().cloned(),
             })
         }
-        _ => Ok(meter.copy(payload)?),
+        _ => Ok(payload.clone()),
     }
 }
 
@@ -814,35 +722,30 @@ pub struct ListMember<'p> {
 pub fn list_data(
     query: &VdbQuery,
     members: &[ListMember<'_>],
-    meter: &ScanMeter,
 ) -> Result<ListParWithRandom, SpaceError> {
     let random_state = match members {
         [] => return Err(SpaceError::Inconsistent("a list has no member")),
-        [single] => meter.copy(&single.payload.random_state)?,
+        [single] => single.payload.random_state.clone(),
         _ => {
-            let mut randoms = meter.buffer::<Blake2b512Random>(members.len())?;
+            let mut randoms = Vec::<Blake2b512Random>::with_capacity(members.len());
             for member in members {
                 let random = Blake2b512Random::from_bytes(&member.payload.random_state);
-                meter.random_bytes(&random)?;
                 randoms.push(random);
             }
             let merged = Blake2b512Random::merge(randoms);
-            meter.random_bytes(&merged)?;
             merged.to_bytes()
         }
     };
-    let mut values = meter.buffer::<Par>(members.len())?;
+    let mut values = Vec::<Par>::with_capacity(members.len());
     for member in members {
-        let value = payload_value(member.payload, meter)?;
+        let value = payload_value(member.payload);
         values.push(match (query.scores, &query.exact, member.score) {
-            (true, Some(exact), Some(score)) => {
-                scored(delivered_score(score, exact, meter)?, value, meter)?
-            }
+            (true, Some(exact), Some(score)) => scored(delivered_score(score, exact)?, value),
             _ => value,
         });
     }
     Ok(ListParWithRandom {
-        pars: one_value(list_of(values, meter)?, meter)?,
+        pars: one_value(list_of(values)),
         random_state,
         cost_authority: None,
         cost_stack: None,
@@ -885,21 +788,20 @@ pub fn eligible(
     channel: &Par,
     flight: Option<&Flight<'_>>,
 ) -> Result<Vec<Eligible>, SpaceError> {
-    let meter = cx.meter();
     let stored = cx.data_on(channel)?.len();
     let order = match flight {
         None => cx.canonical_data_order(channel)?,
         Some(flight) => {
             let extra = Datum {
-                a: meter.copy(flight.record)?,
+                a: flight.record.clone(),
                 persist: flight.persist,
-                source: meter.copy(flight.source)?,
+                source: flight.source.clone(),
             };
             let records = cx.data_on(channel)?;
-            canonical_data_order_with(records, &extra, meter)?
+            canonical_data_order_with(records, &extra)
         }
     };
-    let mut entries = meter.buffer::<Eligible>(order.len())?;
+    let mut entries = Vec::<Eligible>::with_capacity(order.len());
     for &index in &order {
         let in_flight = match (flight, index == stored) {
             (Some(flight), true) => Some(flight),
@@ -907,8 +809,8 @@ pub fn eligible(
         };
         if let Some(ids) = &query.ids {
             let held = match in_flight {
-                Some(flight) => holds_id(ids, &flight.source.hash, meter)?,
-                None => holds_id(ids, &stored_at(cx, channel, index)?.source.hash, meter)?,
+                Some(flight) => holds_id(ids, &flight.source.hash),
+                None => holds_id(ids, &stored_at(cx, channel, index)?.source.hash),
             };
             if !held {
                 continue;
@@ -919,13 +821,13 @@ pub fn eligible(
             Some(exact) => {
                 let score = match in_flight {
                     Some(flight) => match flight.vector {
-                        Some(vector) => score_of(exact, vector, query, meter)?,
+                        Some(vector) => score_of(exact, vector, query)?,
                         None => None,
                     },
                     None => {
                         let record = &stored_at(cx, channel, index)?.a;
-                        match record_vector(record, cfg, meter)? {
-                            Some(vector) => score_of(exact, &vector, query, meter)?,
+                        match record_vector(record, cfg)? {
+                            Some(vector) => score_of(exact, &vector, query)?,
                             None => None,
                         }
                     }
@@ -936,18 +838,14 @@ pub fn eligible(
                 Some(score)
             }
         };
-        push_reserved(
-            &mut entries,
-            Eligible {
-                index: in_flight.is_none().then_some(index),
-                score,
-            },
-            meter,
-        )?;
+        entries.push(Eligible {
+            index: in_flight.is_none().then_some(index),
+            score,
+        });
     }
     match query.exact {
         None => Ok(entries),
-        Some(_) => ranked(entries, meter),
+        Some(_) => ranked(entries),
     }
 }
 
@@ -957,9 +855,8 @@ fn score_of(
     exact: &Query,
     vector: &ExactVector,
     query: &VdbQuery,
-    meter: &ScanMeter,
 ) -> Result<Option<Score>, SpaceError> {
-    let Some(score) = exact::score(exact, vector, meter)
+    let Some(score) = exact::score(exact, vector)
         .map_err(|error| SpaceError::of_number(error, QUERY_VECTOR_KEY))?
     else {
         return Ok(None);
@@ -967,7 +864,7 @@ fn score_of(
     match &query.bound {
         None => Ok(Some(score)),
         Some(bound) => {
-            let within = exact::within(&score, bound, exact, meter)
+            let within = exact::within(&score, bound, exact)
                 .map_err(|error| SpaceError::of_number(error, QUERY_VECTOR_KEY))?
                 .ok_or(SpaceError::Inconsistent(
                     "a bound does not fit the metric of its query",
@@ -982,10 +879,9 @@ fn score_of(
 pub fn flight_eligibility(
     query: &VdbQuery,
     flight: &Flight<'_>,
-    meter: &ScanMeter,
 ) -> Result<Option<Option<Score>>, SpaceError> {
     if let Some(ids) = &query.ids {
-        if !holds_id(ids, &flight.source.hash, meter)? {
+        if !holds_id(ids, &flight.source.hash) {
             return Ok(None);
         }
     }
@@ -993,16 +889,16 @@ pub fn flight_eligibility(
         None => Ok(Some(None)),
         Some(exact) => match flight.vector {
             None => Ok(None),
-            Some(vector) => Ok(score_of(exact, vector, query, meter)?.map(Some)),
+            Some(vector) => Ok(score_of(exact, vector, query)?.map(Some)),
         },
     }
 }
 
 /// `entries` in the selection order of their scores, ties in their current order, which is the
 /// canonical order (`tensor::exact::rank`).
-fn ranked(entries: Vec<Eligible>, meter: &ScanMeter) -> Result<Vec<Eligible>, SpaceError> {
-    let mut indices = meter.buffer::<Option<usize>>(entries.len())?;
-    let mut candidates = meter.buffer::<Candidate>(entries.len())?;
+fn ranked(entries: Vec<Eligible>) -> Result<Vec<Eligible>, SpaceError> {
+    let mut indices = Vec::<Option<usize>>::with_capacity(entries.len());
+    let mut candidates = Vec::<Candidate>::with_capacity(entries.len());
     for (position, entry) in entries.into_iter().enumerate() {
         let score = entry.score.ok_or(SpaceError::Inconsistent(
             "a record of a query with a vector has no score",
@@ -1013,9 +909,8 @@ fn ranked(entries: Vec<Eligible>, meter: &ScanMeter) -> Result<Vec<Eligible>, Sp
             rank: position,
         });
     }
-    exact::rank(&mut candidates, meter)
-        .map_err(|error| SpaceError::of_number(error, QUERY_VECTOR_KEY))?;
-    let mut sorted = meter.buffer::<Eligible>(candidates.len())?;
+    exact::rank(&mut candidates).map_err(|error| SpaceError::of_number(error, QUERY_VECTOR_KEY))?;
+    let mut sorted = Vec::<Eligible>::with_capacity(candidates.len());
     for candidate in candidates {
         let index = *indices.get(candidate.rank).ok_or(SpaceError::Inconsistent(
             "a ranked candidate lost its record",
@@ -1074,7 +969,6 @@ pub fn list_selection(
     channel: &Par,
     flight: Option<&Flight<'_>>,
 ) -> Result<Option<ListFire>, SpaceError> {
-    let meter = cx.meter();
     let entries = eligible(cx, cfg, query, channel, flight)?;
     let length = k.map_or(entries.len(), |k| k.min(entries.len()));
     if length == 0 {
@@ -1083,25 +977,25 @@ pub fn list_selection(
     let list = entries.get(..length).ok_or(SpaceError::Inconsistent(
         "a list is longer than its eligible records",
     ))?;
-    let mut members = meter.buffer::<Option<(ParDatum, usize)>>(length)?;
-    let mut payloads = meter.buffer::<ListParWithRandom>(length)?;
+    let mut members = Vec::<Option<(ParDatum, usize)>>::with_capacity(length);
+    let mut payloads = Vec::<ListParWithRandom>::with_capacity(length);
     for entry in list {
         match entry.index {
             Some(index) => {
-                let record = meter.copy(stored_at(cx, channel, index)?)?;
-                payloads.push(payload_of(&record.a, meter)?);
+                let record = stored_at(cx, channel, index)?.clone();
+                payloads.push(payload_of(&record.a)?);
                 members.push(Some((record, index)));
             }
             None => {
                 let flight = flight.ok_or(SpaceError::Inconsistent(
                     "a list holds an element in flight, but none is in flight",
                 ))?;
-                payloads.push(meter.copy(flight.payload)?);
+                payloads.push(flight.payload.clone());
                 members.push(None);
             }
         }
     }
-    let mut views = meter.buffer::<ListMember<'_>>(length)?;
+    let mut views = Vec::<ListMember<'_>>::with_capacity(length);
     views.extend(
         list.iter()
             .zip(&payloads)
@@ -1110,9 +1004,9 @@ pub fn list_selection(
                 score: entry.score.as_ref(),
             }),
     );
-    let data = list_data(query, &views, meter)?;
+    let data = list_data(query, &views)?;
     Ok(cx
-        .bind(pattern, &data)?
+        .bind(pattern, &data)
         .map(|matched| ListFire { matched, members }))
 }
 
@@ -1129,14 +1023,13 @@ pub fn list_offer(
     channel: &Par,
     flight: &Flight<'_>,
 ) -> Result<Option<(ListParWithRandom, Vec<ParDatum>)>, SpaceError> {
-    let meter = cx.meter();
     let Some(fire) = list_selection(cx, cfg, query, k, pattern, channel, Some(flight))? else {
         return Ok(None);
     };
     if !fire.members.iter().any(Option::is_none) {
         return Ok(None);
     }
-    let mut others = meter.buffer::<ParDatum>(fire.members.len())?;
+    let mut others = Vec::<ParDatum>::with_capacity(fire.members.len());
     others.extend(fire.members.into_iter().flatten().map(|(record, _)| record));
     Ok(Some((fire.matched, others)))
 }
@@ -1154,7 +1047,6 @@ pub fn retire_members(
     members: Vec<ParDatum>,
     element: &ListParWithRandom,
 ) -> Result<bool, SpaceError> {
-    let meter = cx.meter();
     let random = RandomPurpose::Retire.derive(&Blake2b512Random::from_bytes(&element.random_state));
     let mut retired = false;
     for member in members {
@@ -1162,27 +1054,20 @@ pub fn retire_members(
             continue;
         }
         let index = located(cx, channel, &member.source.hash)?;
-        let payload = payload_of(&member.a, meter)?;
+        let payload = payload_of(&member.a)?;
         let matched = cx
-            .bind(&RETIRE_PATTERN, &payload)?
+            .bind(&RETIRE_PATTERN, &payload)
             .ok_or(SpaceError::Inconsistent(
                 "a retired member does not bind the retire pattern",
             ))?;
-        meter.reserve_copy(&*RETIRE_CONTINUATION)?;
-        meter.reserve_buffer::<u8>(member.source.hash.0.len())?;
-        meter.random_bytes(&random)?;
-        let authority = element
-            .cost_authority
-            .as_ref()
-            .map(|authority| meter.copy(authority))
-            .transpose()?;
+        let authority = element.cost_authority.as_ref().cloned();
         let continuation = retire_continuation(&member.source.hash, &random, authority);
-        let mut channels = meter.buffer::<Par>(1)?;
-        channels.push(meter.copy(channel)?);
-        let mut patterns = meter.buffer::<BindPattern>(1)?;
-        patterns.push(meter.copy(&*RETIRE_PATTERN)?);
-        let mut candidates = meter.buffer::<ParCandidate>(1)?;
-        candidates.push(stored_candidate(meter.copy(channel)?, Member {
+        let mut channels = Vec::<Par>::with_capacity(1);
+        channels.push(channel.clone());
+        let mut patterns = Vec::<BindPattern>::with_capacity(1);
+        patterns.push((*RETIRE_PATTERN).clone());
+        let mut candidates = Vec::<ParCandidate>::with_capacity(1);
+        candidates.push(stored_candidate(channel.clone(), Member {
             record: member,
             matched,
             view_index: view_index(index)?,
@@ -1205,27 +1090,21 @@ pub fn lift_record(
     random: &Blake2b512Random,
     authority: Option<&CostAuthority>,
 ) -> Result<(), SpaceError> {
-    let meter = cx.meter();
     let index = located(cx, channel, &lead.source.hash)?;
     let matched = cx
-        .bind(&LIFT_PATTERN, &lead.a)?
+        .bind(&LIFT_PATTERN, &lead.a)
         .ok_or(SpaceError::Inconsistent(
             "a stored record does not match the lift pattern",
         ))?;
-    meter.reserve_copy(&*RETIRE_CONTINUATION)?;
-    meter.reserve_buffer::<u8>(lead.source.hash.0.len())?;
-    meter.random_bytes(random)?;
-    let authority = authority
-        .map(|authority| meter.copy(authority))
-        .transpose()?;
+    let authority = authority.cloned();
     let continuation = retire_continuation(&lead.source.hash, random, authority);
-    let mut channels = meter.buffer::<Par>(1)?;
-    channels.push(meter.copy(channel)?);
-    let mut patterns = meter.buffer::<BindPattern>(1)?;
-    patterns.push(meter.copy(&*LIFT_PATTERN)?);
-    let mut candidates = meter.buffer::<ParCandidate>(1)?;
-    candidates.push(stored_candidate(meter.copy(channel)?, Member {
-        record: meter.copy(lead)?,
+    let mut channels = Vec::<Par>::with_capacity(1);
+    channels.push(channel.clone());
+    let mut patterns = Vec::<BindPattern>::with_capacity(1);
+    patterns.push((*LIFT_PATTERN).clone());
+    let mut candidates = Vec::<ParCandidate>::with_capacity(1);
+    candidates.push(stored_candidate(channel.clone(), Member {
+        record: lead.clone(),
         matched,
         view_index: view_index(index)?,
     }));
@@ -1270,11 +1149,10 @@ impl Element {
         cfg: &VdbConfig,
         record: ListParWithRandom,
     ) -> Result<Element, SpaceError> {
-        let meter = cx.meter();
-        let payload = payload_of(&record, meter)?;
-        let vector = record_vector(&record, cfg, meter)?;
-        let source = Produce::create_metered(cx.data_channel(), &record, false, meter)?;
-        let introduction = cx.introduction().for_record(&record, meter)?;
+        let payload = payload_of(&record)?;
+        let vector = record_vector(&record, cfg)?;
+        let source = Produce::create(cx.data_channel(), &record, false);
+        let introduction = cx.introduction().for_record(&record)?;
         Ok(Element {
             record,
             source,
@@ -1303,17 +1181,11 @@ struct Origin {
 
 impl Origin {
     /// The origin with the random state `random_state` and the cost authority `authority`.
-    fn of(
-        random_state: &[u8],
-        authority: Option<&CostAuthority>,
-        meter: &ScanMeter,
-    ) -> Result<Self, SpaceError> {
-        Ok(Self {
+    fn of(random_state: &[u8], authority: Option<&CostAuthority>) -> Self {
+        Self {
             lift: RandomPurpose::Lift.derive(&Blake2b512Random::from_bytes(random_state)),
-            authority: authority
-                .map(|authority| meter.copy(authority))
-                .transpose()?,
-        })
+            authority: authority.cloned(),
+        }
     }
 }
 
@@ -1333,20 +1205,13 @@ impl Tail {
     }
 
     /// Owes `record` as the next second send.
-    fn owe(&mut self, record: ListParWithRandom, meter: &ScanMeter) -> Result<(), SpaceError> {
-        push_reserved(&mut self.work, record, meter)
-    }
+    fn owe(&mut self, record: ListParWithRandom) { self.work.push(record); }
 
     /// Owes `records` as second sends, the first of `records` first.
-    fn owe_all(
-        &mut self,
-        records: Vec<ListParWithRandom>,
-        meter: &ScanMeter,
-    ) -> Result<(), SpaceError> {
+    fn owe_all(&mut self, records: Vec<ListParWithRandom>) {
         for record in records.into_iter().rev() {
-            self.owe(record, meter)?;
+            self.owe(record);
         }
-        Ok(())
     }
 
     /// The stop of a transaction with the cause `cause`: it owes the second sends of the tail, in
@@ -1377,34 +1242,27 @@ fn offer_plan(
     if let Some(reissue) = open_plan(discipline, cx, OpView::Produce(&op))? {
         return Ok(Some(reissue));
     }
-    let meter = cx.meter();
-    let cfg = vdb_config(cx.config(), meter)?;
-    let (record, vector) = vdb_record(&cfg, &op.params, &op.data, meter)?;
-    let source = Produce::create_metered(cx.data_channel(), &record, op.persistent, meter)?;
-    meter.shared(1)?;
+    let cfg = vdb_config(cx.config())?;
+    let (record, vector) = vdb_record(&cfg, &op.params, &op.data)?;
+    let source = Produce::create(cx.data_channel(), &record, op.persistent);
     let element = Element {
         record,
         source,
         persist: op.persistent,
         introduction: Arc::clone(cx.introduction()),
-        payload: meter.copy(&op.data)?,
+        payload: op.data.clone(),
         vector,
     };
-    let origin = Origin::of(
-        &op.data.random_state,
-        op.data.cost_authority.as_ref(),
-        meter,
-    )?;
+    let origin = Origin::of(&op.data.random_state, op.data.cost_authority.as_ref());
     let mut tail = Tail::new();
     let own = match offer_vdb(cx, &cfg, element, &mut tail)? {
         OfferEnd::Settled => None,
         OfferEnd::Reissue(cause) => Some(cause),
     };
     let stop = finish_tail(cx, &cfg, &mut tail, &origin, own)?;
-    let settle = match &stop {
-        Some(_) => Some(settle_operation(OpView::Produce(&op), meter)?),
-        None => None,
-    };
+    let settle = stop
+        .as_ref()
+        .map(|_| settle_operation(OpView::Produce(&op)));
     let resume = own.map(|cause| {
         (
             SpaceOp::Produce(ProduceOp {
@@ -1414,7 +1272,7 @@ fn offer_plan(
             cause,
         )
     });
-    conclude(cx, settle, stop, resume)
+    Ok(conclude(cx, settle, stop, resume))
 }
 
 /// OFFER-VDB of `element` on the fire count of its transaction (I-21). It returns whether the
@@ -1425,7 +1283,6 @@ fn offer_vdb(
     element: Element,
     tail: &mut Tail,
 ) -> Result<OfferEnd, SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
     let mut tested = 0;
     loop {
@@ -1443,16 +1300,15 @@ fn offer_vdb(
         let peeks = !waiter.peeks.is_empty();
         let spent = !element.persist && !peeks;
         let stays = waiter.persist;
-        record::prepay_continuation_unwrap(&waiter.continuation, meter)?;
         let fire = OfferFire {
             persistent: element.persist,
             waiter,
             matched,
         };
         let step = cx.rounds().after_fire(spent, stays);
-        let staged = meter.copy(&element.record)?;
-        let removed = meter.copy(&element.record)?;
-        let source = meter.copy(&element.source)?;
+        let staged = element.record.clone();
+        let removed = element.record.clone();
+        let source = element.source.clone();
         cx.fire_offer_on(data, fire, staged, removed, source, &element.introduction)?;
         // A peek waiter takes no datum, so its fire retires nothing (decision 37).
         let retired = match peeks {
@@ -1487,28 +1343,26 @@ fn first_offer_target(
     element: &Element,
     tested: usize,
 ) -> Result<Option<OfferTarget>, SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
     let order = cx.canonical_waiter_order(data)?;
     let flight = element.flight();
     for (position, &index) in order.iter().enumerate().skip(tested) {
         let (pattern, policy) = {
             let waiter = waiter_at(cx, index)?;
-            let pattern = meter.copy(waiter_pattern(waiter)?)?;
-            let (_, policy) =
-                record::continuation_policy_slots_metered(&waiter.continuation, meter)?;
+            let pattern = waiter_pattern(waiter)?.clone();
+            let (_, policy) = record::continuation_policy_slots(&waiter.continuation)?;
             (pattern, policy)
         };
-        let bound = match policy_query(cfg, &policy, meter)? {
+        let bound = match policy_query(cfg, &policy)? {
             None => cx
-                .bind(&pattern, &element.payload)?
+                .bind(&pattern, &element.payload)
                 .map(|matched| (matched, Vec::new())),
             Some(query) => match query.mode {
-                Mode::Single => match flight_eligibility(&query, &flight, meter)? {
+                Mode::Single => match flight_eligibility(&query, &flight)? {
                     None => None,
                     Some(score) => {
-                        let data = single_data(&query, &element.payload, score.as_ref(), meter)?;
-                        cx.bind(&pattern, &data)?
+                        let data = single_data(&query, &element.payload, score.as_ref())?;
+                        cx.bind(&pattern, &data)
                             .map(|matched| (matched, Vec::new()))
                     }
                 },
@@ -1518,7 +1372,7 @@ fn first_offer_target(
         let Some((matched, others)) = bound else {
             continue;
         };
-        let waiter = meter.copy(waiter_at(cx, index)?)?;
+        let waiter = waiter_at(cx, index)?.clone();
         // The theory of the space checks the stored members of a list, and not the element in
         // flight (P7, TH-6).
         if cx.admits_records(
@@ -1559,23 +1413,21 @@ fn receive_plan(
     if let Some(reissue) = open_plan(discipline, cx, OpView::Consume(&op))? {
         return Ok(Some(reissue));
     }
-    let meter = cx.meter();
     let data = cx.data_channel();
-    let cfg = vdb_config(cx.config(), meter)?;
+    let cfg = vdb_config(cx.config())?;
     let query = match &op.query {
-        Some(query) => Some(query_of(&cfg, query, meter)?),
+        Some(query) => Some(query_of(&cfg, query)?),
         None => None,
     };
-    let policy = policy_of_query(op.query.as_ref(), meter)?;
-    let continuation = record::wrap_policy_continuation_metered(
+    let policy = policy_of_query(op.query.as_ref());
+    let continuation = record::wrap_policy_continuation_from_parts(
         0,
         &policy,
         &op.body,
         &op.guard,
         record::stamped(&op.authority),
-        meter,
     )?;
-    let origin = Origin::of(&op.body.random_state, record::stamped(&op.authority), meter)?;
+    let origin = Origin::of(&op.body.random_state, record::stamped(&op.authority));
     let mut tail = Tail::new();
     let own = loop {
         let found = receive_selection(cx, &cfg, query.as_ref(), &op.pattern, data)?;
@@ -1593,7 +1445,7 @@ fn receive_plan(
             }
             Some(_) | None => {
                 cx.check_capacity::<VectorDbDiscipline>(Side::Waiters)?;
-                let peeks = peek_set(op.peek, meter)?;
+                let peeks = peek_set(op.peek);
                 cx.park(&op, continuation, peeks)?;
                 break None;
             }
@@ -1603,19 +1455,18 @@ fn receive_plan(
         // Rule E (decision 45): the peek fire removes each non-persistent member, as the host
         // COMM does, and the transaction sends each one again after the fire.
         if op.peek {
-            let mut sends = meter.buffer::<ListParWithRandom>(fire.members.len())?;
+            let mut sends = Vec::<ListParWithRandom>::with_capacity(fire.members.len());
             for (record, _) in &fire.members {
                 if !record.persist {
-                    sends.push(meter.copy(&record.a)?);
+                    sends.push(record.a.clone());
                 }
             }
-            tail.owe_all(sends, meter)?;
+            tail.owe_all(sends);
         }
-        record::prepay_continuation_unwrap(&continuation, meter)?;
         let step = cx.rounds().after_fire(spent, stays);
         tail.removed = true;
         match step {
-            FireStep::Continue => fire_members(cx, &op, meter.copy(&continuation)?, fire)?,
+            FireStep::Continue => fire_members(cx, &op, continuation.clone(), fire)?,
             FireStep::Done => {
                 fire_members(cx, &op, continuation, fire)?;
                 break None;
@@ -1627,10 +1478,9 @@ fn receive_plan(
         }
     };
     let stop = finish_tail(cx, &cfg, &mut tail, &origin, own)?;
-    let settle = match &stop {
-        Some(_) => Some(settle_operation(OpView::Consume(&op), meter)?),
-        None => None,
-    };
+    let settle = stop
+        .as_ref()
+        .map(|_| settle_operation(OpView::Consume(&op)));
     let resume = own.map(|cause| {
         (
             SpaceOp::Consume(ConsumeOp {
@@ -1640,7 +1490,7 @@ fn receive_plan(
             cause,
         )
     });
-    conclude(cx, settle, stop, resume)
+    Ok(conclude(cx, settle, stop, resume))
 }
 
 /// A consume-side fire: the values that the first member binds, and the members in delivery
@@ -1659,15 +1509,14 @@ fn receive_selection(
     pattern: &BindPattern,
     channel: &Par,
 ) -> Result<Option<ReceiveFire>, SpaceError> {
-    let meter = cx.meter();
     match query {
         None => {
             let order = cx.canonical_data_order(channel)?;
             for &index in &order {
-                let payload = payload_of(&stored_at(cx, channel, index)?.a, meter)?;
-                if let Some(matched) = cx.bind(pattern, &payload)? {
-                    let record = meter.copy(stored_at(cx, channel, index)?)?;
-                    return Ok(Some(one_member(matched, record, index, meter)?));
+                let payload = payload_of(&stored_at(cx, channel, index)?.a)?;
+                if let Some(matched) = cx.bind(pattern, &payload) {
+                    let record = stored_at(cx, channel, index)?.clone();
+                    return Ok(Some(one_member(matched, record, index)));
                 }
             }
             Ok(None)
@@ -1678,11 +1527,11 @@ fn receive_selection(
                     let index = entry.index.ok_or(SpaceError::Inconsistent(
                         "a receive met an element in flight",
                     ))?;
-                    let payload = payload_of(&stored_at(cx, channel, index)?.a, meter)?;
-                    let data = single_data(query, &payload, entry.score.as_ref(), meter)?;
-                    if let Some(matched) = cx.bind(pattern, &data)? {
-                        let record = meter.copy(stored_at(cx, channel, index)?)?;
-                        return Ok(Some(one_member(matched, record, index, meter)?));
+                    let payload = payload_of(&stored_at(cx, channel, index)?.a)?;
+                    let data = single_data(query, &payload, entry.score.as_ref())?;
+                    if let Some(matched) = cx.bind(pattern, &data) {
+                        let record = stored_at(cx, channel, index)?.clone();
+                        return Ok(Some(one_member(matched, record, index)));
                     }
                 }
                 Ok(None)
@@ -1691,7 +1540,7 @@ fn receive_selection(
                 let Some(fire) = list_selection(cx, cfg, query, k, pattern, channel, None)? else {
                     return Ok(None);
                 };
-                let mut members = meter.buffer::<(ParDatum, usize)>(fire.members.len())?;
+                let mut members = Vec::<(ParDatum, usize)>::with_capacity(fire.members.len());
                 for member in fire.members {
                     members.push(member.ok_or(SpaceError::Inconsistent(
                         "a receive met an element in flight",
@@ -1707,15 +1556,10 @@ fn receive_selection(
 }
 
 /// The fire of one record.
-fn one_member(
-    matched: ListParWithRandom,
-    record: ParDatum,
-    index: usize,
-    meter: &ScanMeter,
-) -> Result<ReceiveFire, SpaceError> {
-    let mut members = meter.buffer::<(ParDatum, usize)>(1)?;
+fn one_member(matched: ListParWithRandom, record: ParDatum, index: usize) -> ReceiveFire {
+    let mut members = Vec::<(ParDatum, usize)>::with_capacity(1);
     members.push((record, index));
-    Ok(ReceiveFire { matched, members })
+    ReceiveFire { matched, members }
 }
 
 /// Stages the consume fire of the receive `op` over its members: the group `[D; m]` with the
@@ -1729,25 +1573,24 @@ fn fire_members(
     continuation: TaggedContinuation,
     fire: ReceiveFire,
 ) -> Result<(), SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
     let width = fire.members.len();
     let peeks = match op.peek {
-        true => peek_set_all(width, meter)?,
-        false => peek_set(false, meter)?,
+        true => peek_set_all(width)?,
+        false => peek_set(false),
     };
-    let mut channels = meter.buffer::<Par>(width)?;
-    let mut patterns = meter.buffer::<BindPattern>(width)?;
-    let mut candidates = meter.buffer::<ParCandidate>(width)?;
+    let mut channels = Vec::<Par>::with_capacity(width);
+    let mut patterns = Vec::<BindPattern>::with_capacity(width);
+    let mut candidates = Vec::<ParCandidate>::with_capacity(width);
     let mut first = Some(fire.matched);
     for (record, index) in fire.members {
         let matched = match first.take() {
             Some(matched) => matched,
-            None => payload_of(&record.a, meter)?,
+            None => payload_of(&record.a)?,
         };
-        channels.push(meter.copy(data)?);
-        patterns.push(meter.copy(&op.pattern)?);
-        candidates.push(stored_candidate(meter.copy(data)?, Member {
+        channels.push(data.clone());
+        patterns.push(op.pattern.clone());
+        candidates.push(stored_candidate(data.clone(), Member {
             record,
             matched,
             view_index: view_index(index)?,
@@ -1794,17 +1637,16 @@ fn run_tail(
     tail: &mut Tail,
     origin: &Origin,
 ) -> Result<Option<Stop>, SpaceError> {
-    let meter = cx.meter();
     loop {
         if let Some(record) = tail.work.pop() {
             if cx.rounds().fired() >= FIRE_ROUND_CAP {
-                tail.owe(record, meter)?;
+                tail.owe(record);
                 return Ok(Some(tail.stop(ReissueCause::RoundCap)));
             }
-            let kept = meter.copy(&record)?;
+            let kept = record.clone();
             let element = Element::second_send(cx, cfg, record)?;
             if let OfferEnd::Reissue(cause) = offer_vdb(cx, cfg, element, tail)? {
-                tail.owe(kept, meter)?;
+                tail.owe(kept);
                 return Ok(Some(tail.stop(cause)));
             }
             continue;
@@ -1834,16 +1676,15 @@ fn conclude(
     settle: Option<SettleOp>,
     stop: Option<Stop>,
     resume: Option<(SpaceOp, ReissueCause)>,
-) -> Result<Option<SpaceReissue>, SpaceError> {
-    let meter = cx.meter();
+) -> Option<SpaceReissue> {
     let resume = resume.map(|(op, cause)| cx.reissue(op, cause));
     let (Some(mut settle), Some(stop)) = (settle, stop) else {
-        return Ok(resume);
+        return resume;
     };
-    let mut pending = meter.buffer::<PendingProduce>(stop.pending.len())?;
+    let mut pending = Vec::<PendingProduce>::with_capacity(stop.pending.len());
     for record in stop.pending {
         pending.push(PendingProduce {
-            key: copy_key(&settle.key, meter)?,
+            key: settle.key.clone(),
             record,
             persist: false,
             restore: None,
@@ -1854,13 +1695,7 @@ fn conclude(
         pending,
         resume: resume.map(Box::new),
     }));
-    Ok(Some(cx.reissue(SpaceOp::Settle(settle), stop.cause)))
-}
-
-/// The key `key` copied, with the copy of its bytes reserved.
-fn copy_key(key: &CollectionKey, meter: &ScanMeter) -> Result<CollectionKey, SpaceError> {
-    meter.reserve_copy_slice(key.as_bytes())?;
-    Ok(key.clone())
+    Some(cx.reissue(SpaceOp::Settle(settle), stop.cause))
 }
 
 // ── The driver: LIST-CASCADE ─────────────────────────────────────────────────
@@ -1879,18 +1714,16 @@ fn first_cascade_target(
     cx: &mut Cx<'_, '_>,
     cfg: &VdbConfig,
 ) -> Result<Option<CascadeTarget>, SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
     let order = cx.canonical_waiter_order(data)?;
     for &index in &order {
         let (pattern, policy) = {
             let waiter = waiter_at(cx, index)?;
-            let pattern = meter.copy(waiter_pattern(waiter)?)?;
-            let (_, policy) =
-                record::continuation_policy_slots_metered(&waiter.continuation, meter)?;
+            let pattern = waiter_pattern(waiter)?.clone();
+            let (_, policy) = record::continuation_policy_slots(&waiter.continuation)?;
             (pattern, policy)
         };
-        let Some(query) = policy_query(cfg, &policy, meter)? else {
+        let Some(query) = policy_query(cfg, &policy)? else {
             continue;
         };
         let Mode::List(k) = query.mode else {
@@ -1899,7 +1732,7 @@ fn first_cascade_target(
         let Some(fire) = list_selection(cx, cfg, &query, k, &pattern, data, None)? else {
             continue;
         };
-        let waiter = meter.copy(waiter_at(cx, index)?)?;
+        let waiter = waiter_at(cx, index)?.clone();
         if !cx.admits_records(
             &waiter.continuation,
             &fire.matched,
@@ -1909,7 +1742,7 @@ fn first_cascade_target(
         )? {
             continue;
         }
-        let mut members = meter.buffer::<ParDatum>(fire.members.len())?;
+        let mut members = Vec::<ParDatum>::with_capacity(fire.members.len());
         for member in fire.members {
             let (record, _) = member.ok_or(SpaceError::Inconsistent(
                 "a cascade list holds an element in flight",
@@ -1936,7 +1769,6 @@ fn lift_and_reoffer(
     origin: &Origin,
     tail: &mut Tail,
 ) -> Result<FireStep, SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
     let CascadeTarget {
         waiter,
@@ -1952,23 +1784,22 @@ fn lift_and_reoffer(
     if lifted {
         lift_record(cx, data, &lead, &origin.lift, origin.authority.as_ref())?;
     }
-    let introduction = cx.introduction().for_record(&lead.a, meter)?;
+    let introduction = cx.introduction().for_record(&lead.a)?;
     let spent = !lead.persist && !peeks;
     let stays = waiter.persist;
-    record::prepay_continuation_unwrap(&waiter.continuation, meter)?;
     let fire = OfferFire {
         persistent: lead.persist,
         waiter,
         matched,
     };
     let step = cx.rounds().after_fire(spent, stays);
-    let staged = meter.copy(&lead.a)?;
-    let removed = meter.copy(&lead.a)?;
-    let source = meter.copy(&lead.source)?;
+    let staged = lead.a.clone();
+    let removed = lead.a.clone();
+    let source = lead.source.clone();
     cx.fire_offer_on(data, fire, staged, removed, source, &introduction)?;
     tail.removed = true;
     match (peeks, lifted) {
-        (true, true) => tail.owe(lead.a, meter)?,
+        (true, true) => tail.owe(lead.a),
         (true, false) => {}
         (false, _) => {
             retire_members(cx, data, members, &lead.a)?;

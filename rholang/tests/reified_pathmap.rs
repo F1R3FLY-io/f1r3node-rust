@@ -39,7 +39,6 @@
 //! | `pathmap_replay_equal` | replay reproduces play: the results, the legacy logs, the costs and the root |
 //! | `pathmap_restart` | the records, the markers and the waiters survive a checkpoint and a reset |
 //! | `pathmap_legacy_charges_equal_host` | Option P: each staged operation charges what `ChargingRSpace` charges for its host call |
-//! | `pathmap_reservation_cut_rejects_without_effect` | decision 42: a host-work cut at any reserved step has no effect |
 //! | `pathmap_staging_stays_in_the_lock_keys` | one escalation, and every staged channel lies in the lock keys of the prefix scope |
 //!
 //! | `reified_pathmapspace_alias_equal` | the FIPS alias `PathMapSpace` names `pathmap:bag`, and a program in `use space` runs the FIPS example through the reducer |
@@ -60,7 +59,6 @@ use models::rhoapi::{
     BindPattern, CostAuthority, CostRegion, CostSignature, EPathMap, EZipper, Expr,
     ListParWithRandom, Par, TaggedContinuation,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::{new_elist_par, new_freevar_par, new_gbool_par};
 use proptest::collection::vec;
@@ -68,9 +66,8 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::reified::legacy_charges::{
     consume_charges, produce_charges, ParSpaceConsume, ParSpaceProduce,
 };
@@ -94,7 +91,6 @@ use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rholang::rust::interpreter::storage::charging_rspace::ChargingRSpace;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::internal::Datum;
@@ -110,8 +106,8 @@ use rspace_plus_plus::rspace::space_store_handle::{ConsumeOutcome, ProduceOutcom
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 use support::agent::{
     any, budget, config_of, create, creation, env_over, exactly, fired, int, join_on, play,
-    play_and_replay, receive_on, run, send_on, string, unbounded_host_work, HostRecord, ParRSpace,
-    RecordingHost, StagedCopy,
+    play_and_replay, receive_on, run, send_on, string, HostRecord, ParRSpace, RecordingHost,
+    StagedCopy,
 };
 use support::legacy::{host_consume, host_produce, split};
 use support::props::{check, pure_config, tokio_runtime};
@@ -159,13 +155,13 @@ fn pathmap(ps: Vec<Par>) -> Par {
 
 /// The data channel `D(sid, path_key(p))` of the path with the elements `path`.
 fn data_at(path: &[Par]) -> Par {
-    let key = path_key(path, &ScanMeter::new(None)).expect("a path key");
+    let key = path_key(path).expect("a path key");
     PathMapOuter::path_data(SPACE, &key)
 }
 
 /// The index channel `I(sid, prefix_key(q))` of the prefix with the elements `prefix`.
 fn index_at(prefix: &[Par]) -> Par {
-    let encoded = encode_path(prefix, &ScanMeter::new(None)).expect("a path");
+    let encoded = encode_path(prefix).expect("a path");
     let key = encoded.prefix_key(encoded.depth()).expect("a prefix key");
     PathMapOuter::index(SPACE, key)
 }
@@ -838,7 +834,6 @@ fn expected_markers(at: &[Par], datum: &Datum<ListParWithRandom>) -> Vec<ListPar
                 &marker_random(&random, depth).expect("a marker random state"),
                 datum.a.cost_authority.clone(),
             )
-            .expect("a marker record")
         })
         .collect()
 }
@@ -2196,7 +2191,7 @@ async fn pathmap_staging_stays_in_the_lock_keys() {
     }
 }
 
-// ─── Option P and decision 42 ────────────────────────────────────────────────────────────────
+// ─── Option P ────────────────────────────────────────────────────────────────────────────────
 
 /// The legacy log entries of the charges of the staged operation `staged` (decision 45, Option
 /// P): the pre-charge, then the post-charges.
@@ -2536,178 +2531,6 @@ async fn pathmap_legacy_charges_equal_host() {
     }
 }
 
-/// The host-work dimensions that a space agent charges (decision 42).
-const AGENT_DIMENSIONS: [HostWorkDimension; 3] = [
-    HostWorkDimension::VerificationOperations,
-    HostWorkDimension::VerificationBytes,
-    HostWorkDimension::SearchStateBytes,
-];
-
-/// A rig of `inner` whose meter charges `host_work`, after the operations `setup`.
-async fn metered_rig(inner: SpaceInner, setup: &[SpaceOp], host_work: &HostWorkBudget) -> Rig {
-    let rig = Rig::new(inner).await;
-    for op in setup {
-        rig.ok(op.clone()).await;
-    }
-    // Every run reads the pre-state from the history of one checkpoint, so every run meets the
-    // records of a channel in one order, and the measured run reserves what the cut runs reserve.
-    rig.root().await;
-    Rig {
-        env: SpaceEnv {
-            meter: ScanMeter::new(Some(host_work.clone())),
-            ..rig.env.clone()
-        },
-        host: rig.host,
-    }
-}
-
-/// The limits that cut the dimension `dimension` of the usage `measured` at `limit`, with every
-/// other agent dimension at its usage.
-fn cut_limits(
-    measured: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    limit: u64,
-) -> HostWorkLimits {
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for other in AGENT_DIMENSIONS {
-        limits.set(other, HostWorkLimit::new(measured.usage(other).get()));
-    }
-    limits.set(dimension, HostWorkLimit::new(limit));
-    limits
-}
-
-/// Decision 42 for the operation `op` after the operations `setup` on `inner`. With the exact
-/// usage as its limits, the operation gives the outcome of an unlimited run. A limit below the
-/// usage in one dimension rejects the operation with `HostWorkRejected` before the commit, so the
-/// job logs no event and the root stays. The cuts sweep each dimension from 0 to one unit below
-/// the usage, `steps` cuts for each dimension.
-async fn cut_case(label: &str, inner: SpaceInner, setup: &[SpaceOp], op: SpaceOp, steps: u64) {
-    let measured = unbounded_host_work();
-    let expected = metered_rig(inner, setup, &measured)
-        .await
-        .run(op.clone())
-        .await
-        .unwrap_or_else(|error| panic!("{label}: the operation commits: {error:?}"));
-    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for dimension in AGENT_DIMENSIONS {
-        exact.set(
-            dimension,
-            HostWorkLimit::new(measured.usage(dimension).get()),
-        );
-    }
-    assert_eq!(
-        metered_rig(inner, setup, &HostWorkBudget::new(exact))
-            .await
-            .run(op.clone())
-            .await,
-        Ok(expected),
-        "{label}: the exact budget"
-    );
-    for dimension in AGENT_DIMENSIONS {
-        let usage = measured.usage(dimension).get();
-        assert!(usage > 0, "{label}: the operation charges {dimension}");
-        let step = (usage / steps).max(1);
-        let limits: BTreeSet<u64> = (0..usage)
-            .step_by(usize::try_from(step).expect("a small step"))
-            .chain([usage - 1])
-            .collect();
-        for limit in limits {
-            let rig = metered_rig(
-                inner,
-                setup,
-                &HostWorkBudget::new(cut_limits(&measured, dimension, limit)),
-            )
-            .await;
-            let before = rig.root().await;
-            assert_eq!(
-                rig.run(op.clone()).await,
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                "{label}: {dimension} at {limit} of {usage}"
-            );
-            assert!(
-                rig.log().await.is_empty(),
-                "{label}: {dimension} at {limit}"
-            );
-            assert_eq!(rig.root().await, before, "{label}: {dimension} at {limit}");
-        }
-    }
-}
-
-/// Decision 42 for PathMap spaces (`prefix_scan_trace_covered`). Each reservation of the prefix
-/// scope, the windows, the stores of the markers, the deliveries, the restores and the retires
-/// comes before the work that it covers. So a cut at any step rejects the job before it stages.
-#[tokio::test]
-async fn pathmap_reservation_cut_rejects_without_effect() {
-    cut_case(
-        "a receive that parks on an escalated prefix scope",
-        SpaceInner::Bag,
-        &[put(&[1, 2], 1), put(&[0, 3], 2)],
-        take(&[0], "w", exactly(9)),
-        24,
-    )
-    .await;
-    cut_case(
-        "a send that stores its record and its markers",
-        SpaceInner::Bag,
-        &[put(&[0, 1], 1)],
-        put(&[0, 1, 2], 2),
-        24,
-    )
-    .await;
-    cut_case(
-        "a receive that spends a datum with RETIRE-PLAN",
-        SpaceInner::Bag,
-        &[put(&[0, 1, 2], 1), put(&[0, 5], 2)],
-        take(&[0], "k", under(&[1, 2])),
-        24,
-    )
-    .await;
-    cut_case(
-        "a send that fires the most specific waiter with the vehicle",
-        SpaceInner::Bag,
-        &[take(&[0], "w", any()), take(&[0, 1], "v", any())],
-        put(&[0, 1, 2], 3),
-        24,
-    )
-    .await;
-    cut_case(
-        "a peek and the restore of its marker",
-        SpaceInner::Bag,
-        &[put(&[0, 1], 1)],
-        peek(&[0], "p", any()),
-        24,
-    )
-    .await;
-    cut_case(
-        "a join over prefixes and its retires",
-        SpaceInner::Bag,
-        &[put(&[0, 1], 1), put(&[4, 2], 2)],
-        joined(join(&[(&[0], any()), (&[4], any())], "j")),
-        24,
-    )
-    .await;
-    cut_case(
-        "a class fire of a set",
-        SpaceInner::Set,
-        &[put_salted(&[0, 1], 1, 1), put_salted(&[0, 1], 1, 2)],
-        take(&[0], "k", any()),
-        24,
-    )
-    .await;
-    cut_case(
-        "a queue cascade with its lift",
-        SpaceInner::Queue,
-        &[
-            put(&[0, 1], 1),
-            put(&[0, 1], 2),
-            take(&[0], "second", exactly_list(&[1, 2])),
-        ],
-        take(&[0, 1], "first", any()),
-        24,
-    )
-    .await;
-}
-
 // ─── Properties (invariant map, P5 rows 114 to 119) ──────────────────────────────────────────
 
 /// The pattern of a generated receive.
@@ -2761,11 +2584,6 @@ enum PathOp {
         peek: bool,
         persistent: bool,
     },
-    /// A join over the prefixes of its binds.
-    Join {
-        binds: Vec<(Vec<i64>, Pat)>,
-        peek: bool,
-    },
 }
 
 impl PathOp {
@@ -2793,18 +2611,6 @@ impl PathOp {
                 persistent: *persistent,
                 ..receive(&path(at), &format!("w{index}"), pat.pattern())
             }),
-            PathOp::Join { binds, peek } => {
-                let channels: Vec<Par> = binds.iter().map(|(at, _)| path(at)).collect();
-                let pairs: Vec<(&Par, BindPattern)> = channels
-                    .iter()
-                    .zip(binds)
-                    .map(|(channel, (_, pat))| (channel, pat.pattern()))
-                    .collect();
-                SpaceOp::Join(JoinOp {
-                    peek: *peek,
-                    ..join_on(SPACE, &pairs, &format!("j{index}"))
-                })
-            }
         }
     }
 
@@ -2812,7 +2618,6 @@ impl PathOp {
     fn paths(&self) -> Vec<Vec<i64>> {
         match self {
             PathOp::Send { at, .. } | PathOp::Receive { at, .. } => vec![at.clone()],
-            PathOp::Join { binds, .. } => binds.iter().map(|(at, _)| at.clone()).collect(),
         }
     }
 }
@@ -2852,13 +2657,6 @@ fn arb_receive(peek: u32, persistent: u32) -> BoxedStrategy<PathOp> {
                 persistent: persistent_roll < persistent && peek_roll >= peek,
             },
         )
-        .boxed()
-}
-
-/// A join of two binds over prefixes.
-fn arb_join() -> BoxedStrategy<PathOp> {
-    (vec((arb_path(2), arb_pat()), 2..=2), proptest::bool::ANY)
-        .prop_map(|(binds, peek)| PathOp::Join { binds, peek })
         .boxed()
 }
 
@@ -3184,82 +2982,6 @@ async fn token_case(inner: SpaceInner, script: Vec<PathOp>) -> Result<(), TestCa
             );
         }
     }
-    Ok(())
-}
-
-/// `prefix_scan_trace_covered` (R107, decision 42). For any setup and any operation, the exact
-/// usage as the limits gives the outcome of an unlimited run, and a cut of one dimension below
-/// its usage rejects the job with `HostWorkRejected` before the commit, with no event and no
-/// change of the root.
-#[test]
-fn prop_pathmap_reservation_cut_rejects_without_effect() {
-    const INNERS: &[SpaceInner] = &[SpaceInner::Bag, SpaceInner::Set, SpaceInner::Queue];
-    let case = (
-        arb_inner(INNERS),
-        vec(
-            prop_oneof![arb_send(1), arb_receive(1, 0), arb_join()],
-            0..5,
-        ),
-        prop_oneof![arb_send(1), arb_receive(2, 0), arb_join()],
-        proptest::sample::select(AGENT_DIMENSIONS.to_vec()),
-        0u64..1_000,
-    );
-    check(
-        pure_config(),
-        case,
-        |(inner, setup, op, dimension, permille)| {
-            tokio_runtime().block_on(cut_property_case(inner, setup, op, dimension, permille))
-        },
-    );
-}
-
-async fn cut_property_case(
-    inner: SpaceInner,
-    setup: Vec<PathOp>,
-    op: PathOp,
-    dimension: HostWorkDimension,
-    permille: u64,
-) -> Result<(), TestCaseError> {
-    let setup: Vec<SpaceOp> = setup
-        .iter()
-        .enumerate()
-        .map(|(index, op)| op.op(index))
-        .collect();
-    let op = op.op(setup.len());
-    let measured = unbounded_host_work();
-    let expected = metered_rig(inner, &setup, &measured)
-        .await
-        .run(op.clone())
-        .await;
-    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for other in AGENT_DIMENSIONS {
-        exact.set(other, HostWorkLimit::new(measured.usage(other).get()));
-    }
-    let rerun = metered_rig(inner, &setup, &HostWorkBudget::new(exact))
-        .await
-        .run(op.clone())
-        .await;
-    prop_assert_eq!(&rerun, &expected, "the exact budget");
-    let usage = measured.usage(dimension).get();
-    prop_assume!(usage > 0);
-    let limit = usage.saturating_mul(permille) / 1_000;
-    let rig = metered_rig(
-        inner,
-        &setup,
-        &HostWorkBudget::new(cut_limits(&measured, dimension, limit)),
-    )
-    .await;
-    let before = rig.root().await;
-    prop_assert_eq!(
-        rig.run(op).await,
-        Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-        "{} at {} of {}",
-        dimension,
-        limit,
-        usage
-    );
-    prop_assert!(rig.log().await.is_empty(), "nothing commits");
-    prop_assert_eq!(rig.root().await, before, "the state stays");
     Ok(())
 }
 

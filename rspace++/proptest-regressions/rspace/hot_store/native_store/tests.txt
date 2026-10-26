@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc db6eb3af800ba09c293af2285cd2f6817f74c49a4f819a5dda44fc0bbeefbdf7 # shrinks to ops = [ViewContinuations([2, 1]), RetireMatch { channels: [1, 2], persistent: false }]

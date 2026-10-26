@@ -28,7 +28,6 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{CostAuthority, ListParWithRandom, Par};
 
 use super::hashmap::HashMapOuter;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::AllocOp;
 use crate::rust::interpreter::spaces::allocator::{self, AllocationRule};
 use crate::rust::interpreter::spaces::errors::SpaceError;
@@ -64,19 +63,18 @@ pub struct ArrayShape {
 impl ArrayShape {
     /// Decodes the shape from the params of `config`. The factory validates the params when it
     /// creates the space, so a stored config without a positive `GInt` size, or with a `cyclic`
-    /// param that is not a `GBool`, is `Inconsistent`. Each lookup of a param and each read of a
-    /// value is reserved before it is made.
-    pub fn of_config(config: &SpaceConfig, meter: &ScanMeter) -> Result<ArrayShape, SpaceError> {
-        let size = match param(config, SIZE_PARAM, meter)? {
-            Some(value) => positive_size(value, meter)?,
+    /// param that is not a `GBool`, is `Inconsistent`.
+    pub fn of_config(config: &SpaceConfig) -> Result<ArrayShape, SpaceError> {
+        let size = match param(config, SIZE_PARAM) {
+            Some(value) => positive_size(value)?,
             None => {
                 return Err(SpaceError::Inconsistent(
                     "the config of an Array space has no size",
                 ))
             }
         };
-        let cyclic = match param(config, CYCLIC_PARAM, meter)? {
-            Some(value) => cyclic_flag(value, meter)?,
+        let cyclic = match param(config, CYCLIC_PARAM) {
+            Some(value) => cyclic_flag(value)?,
             None => false,
         };
         Ok(ArrayShape { size, cyclic })
@@ -92,21 +90,11 @@ impl ArrayShape {
     }
 }
 
-/// The value of the param `key` of `config`, or `None`. The lookup in the ordered map of the
-/// params is reserved first.
-fn param<'c>(
-    config: &'c SpaceConfig,
-    key: &str,
-    meter: &ScanMeter,
-) -> Result<Option<&'c Par>, SpaceError> {
-    meter.ordered_lookup(config.params.len(), key.len())?;
-    Ok(config.params.get(key))
-}
+/// The value of the param `key` of `config`, or `None`.
+fn param<'c>(config: &'c SpaceConfig, key: &str) -> Option<&'c Par> { config.params.get(key) }
 
 /// The size in the param value `value`: exactly one `GInt` of at least 1, without a connective.
-/// The read of the value is reserved first.
-fn positive_size(value: &Par, meter: &ScanMeter) -> Result<i64, SpaceError> {
-    meter.inspect(value)?;
+fn positive_size(value: &Par) -> Result<i64, SpaceError> {
     match (record::sole_expr(value), value.connective_used) {
         (Some(ExprInstance::GInt(size)), false) if *size >= 1 => Ok(*size),
         _ => Err(SpaceError::Inconsistent(
@@ -115,10 +103,8 @@ fn positive_size(value: &Par, meter: &ScanMeter) -> Result<i64, SpaceError> {
     }
 }
 
-/// The flag in the param value `value`: exactly one `GBool`, without a connective. The read of
-/// the value is reserved first.
-fn cyclic_flag(value: &Par, meter: &ScanMeter) -> Result<bool, SpaceError> {
-    meter.inspect(value)?;
+/// The flag in the param value `value`: exactly one `GBool`, without a connective.
+fn cyclic_flag(value: &Par) -> Result<bool, SpaceError> {
     match (record::sole_expr(value), value.connective_used) {
         (Some(ExprInstance::GBool(cyclic)), false) => Ok(*cyclic),
         _ => Err(SpaceError::Inconsistent(
@@ -137,18 +123,16 @@ impl OuterStore for ArrayOuter {
     /// Accepts `channel` only when it is an index name of this space with an index below the
     /// size of the space, and otherwise fails with `NotAnIndexName` (F8). The routed key is the
     /// key of `channel`, because routing computes it from the channel, so the store checks the
-    /// channel only. The decode of the channel, the decode of the shape and the comparisons are
-    /// reserved before they are made.
+    /// channel only.
     fn check_key(
         &self,
         config: &SpaceConfig,
         channel: &Par,
         _key: &CollectionKey,
-        meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
-        let index = allocator::index_of_name(config, channel, meter)?;
-        let shape = ArrayShape::of_config(config, meter)?;
-        allocator::check_below(index, shape.size, meter)
+        let index = allocator::index_of_name(config, channel)?;
+        let shape = ArrayShape::of_config(config)?;
+        allocator::check_below(index, shape.size)
     }
 
     /// The data channel of the HashMap store (A5).
@@ -167,9 +151,8 @@ impl OuterStore for ArrayOuter {
         space: NativeSpace,
         random: &Blake2b512Random,
         authority: &CostAuthority,
-        meter: &ScanMeter,
     ) -> Result<Vec<(Par, ListParWithRandom)>, SpaceError> {
-        allocator::creation_records(space, random, authority, meter)
+        Ok(allocator::creation_records(space, random, authority))
     }
 
     /// Allocates the names of `op` with the rule of the shape of `config`: modulo the size for a
@@ -180,7 +163,7 @@ impl OuterStore for ArrayOuter {
         config: &SpaceConfig,
         op: &AllocOp,
     ) -> Result<Vec<u64>, SpaceError> {
-        let rule = ArrayShape::of_config(config, cx.meter())?.rule();
+        let rule = ArrayShape::of_config(config)?.rule();
         allocator::allocate(cx, rule, op)
     }
 
@@ -201,9 +184,6 @@ mod tests {
     use std::sync::Arc;
 
     use models::rhoapi::{BindPattern, TaggedContinuation};
-    use models::rust::host_work::{
-        HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
-    };
     use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
     use models::rust::utils::{new_freevar_var, new_gbool_par, new_gint_par, new_gstring_par};
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -215,7 +195,6 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::RuntimeBudget;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::spaces::agent::{
         Allocation, SpaceAgent, SpaceCreation, SpaceEnv,
@@ -257,11 +236,9 @@ mod tests {
         ])
     }
 
-    fn unmetered() -> ScanMeter { ScanMeter::new(None) }
-
     fn check(config: &SpaceConfig, channel: &Par) -> Result<(), SpaceError> {
         let key = ArrayOuter.key(channel)?;
-        ArrayOuter.check_key(config, channel, &key, &unmetered())
+        ArrayOuter.check_key(config, channel, &key)
     }
 
     #[test]
@@ -288,20 +265,19 @@ mod tests {
 
     #[test]
     fn space_array_shape_decodes_the_size_and_the_cyclic_flag() {
-        let meter = unmetered();
         assert_eq!(
-            ArrayShape::of_config(&config_with(&[(SIZE_PARAM, int(3))]), &meter),
+            ArrayShape::of_config(&config_with(&[(SIZE_PARAM, int(3))])),
             Ok(ArrayShape {
                 size: 3,
                 cyclic: false
             })
         );
         assert_eq!(
-            ArrayShape::of_config(&array(5, true), &meter).map(ArrayShape::rule),
+            ArrayShape::of_config(&array(5, true)).map(ArrayShape::rule),
             Ok(AllocationRule::Cyclic { size: 5 })
         );
         assert_eq!(
-            ArrayShape::of_config(&array(i64::MAX, false), &meter).map(ArrayShape::rule),
+            ArrayShape::of_config(&array(i64::MAX, false)).map(ArrayShape::rule),
             Ok(AllocationRule::Fixed { size: i64::MAX })
         );
         let no_size = SpaceError::Inconsistent("the config of an Array space has no size");
@@ -335,27 +311,11 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                ArrayShape::of_config(&config_with(&params), &meter),
+                ArrayShape::of_config(&config_with(&params)),
                 Err(expected),
                 "{params:?}"
             );
         }
-    }
-
-    #[test]
-    fn space_array_shape_decode_reserves_its_lookups_and_reads() {
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        ArrayShape::of_config(&array(4, false), &meter).expect("a shape");
-        assert!(host_work.usage(HostWorkDimension::VerificationOperations) > HostWorkUsage::ZERO);
-        assert!(host_work.usage(HostWorkDimension::VerificationBytes) > HostWorkUsage::ZERO);
-        let zero = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-        assert_eq!(
-            ArrayShape::of_config(&array(4, false), &ScanMeter::new(Some(zero))),
-            Err(SpaceError::Host(
-                rspace_plus_plus::rspace::errors::RSpaceError::HostWorkRejected
-            ))
-        );
     }
 
     #[test]
@@ -420,7 +380,6 @@ mod tests {
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000_000, "array store test")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };

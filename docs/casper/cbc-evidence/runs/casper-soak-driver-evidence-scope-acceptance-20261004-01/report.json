@@ -1,0 +1,52 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-04T10:27:24Z",
+  "edited_at": "2026-10-04T10:43:18Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/580#issuecomment-5979020312",
+  "revision": "384b5fb08ef14307472fbe01cc83f2b2722aa96d"
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+  "docs/claims/soak-disk-protection.md": "4591986996cb979eb8bb6f17ab71000fbd6d87c82cf4b64ad77f525ba199ed1d"
+ },
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "hosted_runs": {
+  "tested_sha": "ad092b3e33433fb668dceb632648a5882d0d2f08",
+  "note": "ad092b3e3 contains 384b5fb08 and a dev merge that does not touch the accepted files.",
+  "driver_suite": {
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37176916364,
+   "conclusion": "success"
+  },
+  "claims_and_bindings": {
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37176916246,
+   "conclusion": "success"
+  }
+ },
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-driver-evidence-scope-20261004-01/report.json",
+  "sha256": "eb9959ac071a3025b4cbd99800656fe70855e1963c57c677eca96c8cb4ae0365"
+ },
+ "schema_version": 1,
+ "scope": "bounded-harness-driver-evidence-scope",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "b2b986feb1a932eb86aa8d49242953bfc14c9943cc3fdda15e58805d669ce226",
+  "scripts/run-merge-recovery-soak.sh": "5df5d1be14baa228f1ed36ec853e265273aa2ba3b5cb46586744cd8a133f0bee"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-04",
+ "waiver": null
+}

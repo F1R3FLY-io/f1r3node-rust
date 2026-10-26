@@ -19,17 +19,14 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use models::rust::cost_protocol_limits::{
-    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
-};
-use models::rust::host_work::HostWorkUsages;
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::utils::new_gstring_par;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
-    native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
-    NativePhloExecutionContract, NativePhloRegionLimits,
+    native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
+    NativePhloDimension, NativePhloExecutionContract, NativePhloRegionLimits,
 };
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
@@ -45,7 +42,6 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
@@ -147,8 +143,17 @@ pub fn trace_bind_limits() -> NativeOperationTraceLimits {
     }
 }
 
-/// A fresh host-work budget of the v6 profile, as production gives each play and each replay.
-pub fn host_work() -> HostWorkBudget { HostWorkBudget::new(offered_funded_v6_host_work_limits()) }
+/// `native_record_room` of `casper/src/rust/util/rholang/costacc/direct_wallet_funding/
+/// execution.rs` (DR-114, decision 5): the reply bytes that one offered play may record. The
+/// replay telemetry and the clone-byte check of the deploy log count a record three times, and
+/// the replay evidence counts it twice, so the room is the smallest share of those limits.
+pub fn record_room() -> u64 {
+    let protocol = offered_funded_v6_limits();
+    let room = (trace_bind_limits().telemetry_bytes / 3)
+        .min(protocol.deploy_log_bytes / 3)
+        .min(protocol.evidence.total_bytes / 2);
+    u64::try_from(room).expect("the record room fits a u64")
+}
 
 // ─── The native phlo contract ──────────────────────────────────────────────────────────────────
 
@@ -197,15 +202,26 @@ pub fn with_contract<T>(
     )
     .expect("the test controls check");
     let contract =
-        NativePhloExecutionContract::new(controls, &binding).expect("the test contract builds");
+        NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+            .expect("the test contract builds");
     action(contract)
 }
 
-/// The native runtime configuration of a deploy whose phlo limit is `limit`.
-pub fn config(limit: u64, host: HostWorkBudget) -> NativeRuntimeConfig {
+/// The native runtime configuration of a deploy whose phlo limit is `limit`, with the record
+/// room of production ([`record_room`]).
+// Changed by decision 89 (DR-114, decision 68): the configuration has the record room of
+// production, so a reply of `embed` or `ann` is recorded as Casper records it.
+// pub fn config(limit: u64) -> NativeRuntimeConfig {
+//     with_contract(limit, |contract| NativeRuntimeConfig::new(contract, trace_limits()))
+// }
+pub fn config(limit: u64) -> NativeRuntimeConfig { config_with_room(limit, record_room()) }
+
+/// [`config`] with the record room `room`: a test of the room of `embed` and `ann` (decision 68).
+pub fn config_with_room(limit: u64, room: u64) -> NativeRuntimeConfig {
     with_contract(limit, |contract| {
-        NativeRuntimeConfig::new(contract, trace_limits(), host)
+        NativeRuntimeConfig::new(contract, trace_limits())
     })
+    .with_record_room(room)
 }
 
 pub fn random() -> Blake2b512Random { Blake2b512Random::create_from_bytes(SEED) }
@@ -307,38 +323,44 @@ pub struct Played {
 
 /// Plays `term` as a native deploy whose phlo limit is `limit`, on a fresh runtime.
 pub async fn native_play(term: &str, limit: u64) -> Played {
-    native_play_with(term, limit, host_work()).await
-}
-
-/// Plays `term` as a native deploy whose phlo limit is `limit` and whose host-work budget is
-/// `host`, on a fresh runtime.
-pub async fn native_play_with(term: &str, limit: u64, host: HostWorkBudget) -> Played {
     let (mut runtime, history) = fresh_runtime().await;
     runtime.cost.set_deploy_signature_funded(DEPLOY, funding());
     play_on(
         &mut runtime,
         history,
         term,
-        limit,
-        host,
+        config(limit),
         random(),
         Injections::new(),
     )
     .await
 }
 
-/// Plays `term` like [`native_play_with`], and returns the result of the evaluation, an error
-/// included. A deploy that the host-work check rejects after its last operation evaluates to
-/// `Err(HostWorkRejected)`, so [`native_play_with`] cannot play it.
+/// Plays `term` like [`native_play`] with the record room `room` (decision 68).
+pub async fn native_play_with_room(term: &str, limit: u64, room: u64) -> Played {
+    let (mut runtime, history) = fresh_runtime().await;
+    runtime.cost.set_deploy_signature_funded(DEPLOY, funding());
+    play_on(
+        &mut runtime,
+        history,
+        term,
+        config_with_room(limit, room),
+        random(),
+        Injections::new(),
+    )
+    .await
+}
+
+/// Plays `term` like [`native_play`], and returns the result of the evaluation, an error
+/// included.
 pub async fn native_play_result(
     term: &str,
     limit: u64,
-    host: HostWorkBudget,
 ) -> Result<EvaluateResult, InterpreterError> {
     let (mut runtime, _) = fresh_runtime().await;
     runtime.cost.set_deploy_signature_funded(DEPLOY, funding());
     runtime
-        .evaluate_with_native_phlo(term, HashMap::new(), random(), None, config(limit, host))
+        .evaluate_with_native_phlo(term, HashMap::new(), random(), None, config(limit))
         .await
 }
 
@@ -349,20 +371,13 @@ async fn play_on(
     runtime: &mut RhoRuntimeImpl,
     history: RhoHistoryRepository,
     term: &str,
-    limit: u64,
-    host: HostWorkBudget,
+    config: NativeRuntimeConfig,
     random: Blake2b512Random,
     injections: Injections,
 ) -> Played {
     let pre_root = runtime.get_root().await;
     let result = runtime
-        .evaluate_with_native_phlo(
-            term,
-            injections.clone(),
-            random.clone(),
-            None,
-            config(limit, host),
-        )
+        .evaluate_with_native_phlo(term, injections.clone(), random.clone(), None, config)
         .await
         .expect("native play evaluates");
     let soft = runtime.create_soft_checkpoint().await;
@@ -521,19 +536,15 @@ impl NativeChain {
     /// Plays `term` with the random state of `label` and the phlo limit `limit`. The play
     /// keeps the history repository of the latest checkpoint, the pre-state of the deploy.
     pub async fn play(&mut self, term: &str, label: &str, limit: u64) -> Played {
-        self.play_with(term, label, limit, host_work(), Injections::new())
-            .await
+        self.play_with(term, label, limit, Injections::new()).await
     }
 
-    /// Plays `term` like [`NativeChain::play`], with the host-work budget `host` and the
-    /// injected ids `injections`. The caller keeps a clone of `host` to read the host work of
-    /// the play (P7).
+    /// Plays `term` like [`NativeChain::play`], with the injected ids `injections` (P7).
     pub async fn play_with(
         &mut self,
         term: &str,
         label: &str,
         limit: u64,
-        host: HostWorkBudget,
         injections: Injections,
     ) -> Played {
         let random = Blake2b512Random::create_from_bytes(label.as_bytes());
@@ -542,8 +553,7 @@ impl NativeChain {
             &mut self.runtime,
             history,
             term,
-            limit,
-            host,
+            config(limit),
             random,
             injections,
         )
@@ -607,32 +617,18 @@ impl NativeChain {
             .expect("reset the chain to the root");
     }
 
-    /// Evaluates `term` as one native deploy with the random state of `label`, the phlo limit
-    /// `limit` and the host-work limits of protocol version 6. It takes no soft checkpoint, scans
-    /// no store and takes no checkpoint, so a benchmark measures the deploy alone (P10 step S8).
-    /// A deploy that the host-work check rejects after its last operation gives
-    /// `Err(HostWorkRejected)`.
+    /// Evaluates `term` as one native deploy with the random state of `label` and the phlo limit
+    /// `limit`. It takes no soft checkpoint, scans no store and takes no checkpoint, so a
+    /// benchmark measures the deploy alone (P10 step S8).
     pub async fn evaluate(
         &mut self,
         term: &str,
         label: &str,
         limit: u64,
     ) -> Result<EvaluateResult, InterpreterError> {
-        self.evaluate_with(term, label, limit, host_work()).await
-    }
-
-    /// Evaluates `term` like [`NativeChain::evaluate`], with the host-work budget `host`. The
-    /// caller keeps a clone of `host` to read the host work of the deploy (P10 step S8).
-    pub async fn evaluate_with(
-        &mut self,
-        term: &str,
-        label: &str,
-        limit: u64,
-        host: HostWorkBudget,
-    ) -> Result<EvaluateResult, InterpreterError> {
         let random = Blake2b512Random::create_from_bytes(label.as_bytes());
         self.runtime
-            .evaluate_with_native_phlo(term, Injections::new(), random, None, config(limit, host))
+            .evaluate_with_native_phlo(term, Injections::new(), random, None, config(limit))
             .await
     }
 
@@ -796,10 +792,9 @@ pub fn evidence_bytes(played: &Played) -> (Vec<u8>, Vec<u8>) {
         .as_ref()
         .expect("native play records its operations");
     let wire = recording_limits();
-    let encoder = host_work();
-    let budget_bytes = encode_native_budget_recording(recording, wire, &encoder)
+    let budget_bytes = encode_native_budget_recording(recording, wire)
         .expect("the budget recording fits the v6 evidence wire");
-    let journal_bytes = encode_native_operation_journal(journal, &recording.paths, wire, &encoder)
+    let journal_bytes = encode_native_operation_journal(journal, &recording.paths, wire)
         .expect("the operation journal fits the v6 evidence wire");
     (budget_bytes, journal_bytes)
 }
@@ -817,8 +812,6 @@ pub struct CanonicalDeploy {
     pub evidence: (Vec<u8>, Vec<u8>),
     /// The phlo usage of native play.
     pub phlo: Option<u64>,
-    /// The host work of the play in each dimension.
-    pub host_work: HostWorkUsages,
 }
 
 /// Plays the deploys `terms` one after another on a fresh native chain, the deploy `i` with the
@@ -828,15 +821,8 @@ pub async fn canonical_run(label: &str, terms: &[&str], limit: u64) -> Vec<Canon
     let mut chain = NativeChain::new().await;
     let mut run = Vec::with_capacity(terms.len());
     for (index, term) in terms.iter().enumerate() {
-        let host = host_work();
         let played = chain
-            .play_with(
-                term,
-                &format!("{label}-{index}"),
-                limit,
-                host.clone(),
-                Injections::new(),
-            )
+            .play_with(term, &format!("{label}-{index}"), limit, Injections::new())
             .await;
         assert!(
             played.result.errors.is_empty(),
@@ -849,15 +835,14 @@ pub async fn canonical_run(label: &str, terms: &[&str], limit: u64) -> Vec<Canon
             log: played.log.clone(),
             evidence: evidence_bytes(&played),
             phlo: played.result.native_phlo_usage,
-            host_work: host.usages(),
         });
     }
     run
 }
 
 /// N9 (`run_twice_assert_canonical_equal`): plays the deploys `terms` in two fresh native
-/// runtimes and asserts that both runs give the same roots, outputs, event logs, evidence bytes,
-/// phlo usage and host work for each deploy. Every deploy must log events.
+/// runtimes and asserts that both runs give the same roots, outputs, event logs, evidence bytes
+/// and phlo usage for each deploy. Every deploy must log events.
 pub async fn run_twice_assert_canonical_equal(label: &str, terms: &[&str], limit: u64) {
     let first = canonical_run(label, terms, limit).await;
     let second = canonical_run(label, terms, limit).await;
@@ -880,10 +865,9 @@ pub fn decode_evidence(
     journal_bytes: &[u8],
 ) -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
     let wire = recording_limits();
-    let decoder = host_work();
-    let mut decoded = decode_native_budget_recording(budget_bytes, wire, &decoder)
-        .expect("the budget recording decodes");
-    let journal = decode_native_operation_journal(journal_bytes, &mut decoded, wire, &decoder)
+    let mut decoded =
+        decode_native_budget_recording(budget_bytes, wire).expect("the budget recording decodes");
+    let journal = decode_native_operation_journal(journal_bytes, &mut decoded, wire)
         .expect("the operation journal decodes");
     (decoded, journal)
 }
@@ -896,29 +880,17 @@ pub async fn replay_environment(
     recording: &NativeBudgetRecording,
     journal: Arc<[NativeOperationRecord]>,
 ) -> Result<NativeReplayEnvironment, String> {
-    replay_environment_with(played, limit, recording, journal, host_work()).await
-}
-
-/// [`replay_environment`] with the host-work budget `host` of the certification.
-pub async fn replay_environment_with(
-    played: &Played,
-    limit: u64,
-    recording: &NativeBudgetRecording,
-    journal: Arc<[NativeOperationRecord]>,
-    host: HostWorkBudget,
-) -> Result<NativeReplayEnvironment, String> {
     replay_environment_from(
         played.history.clone(),
         played.log.clone(),
         limit,
         recording,
         journal,
-        host,
     )
     .await
 }
 
-/// [`replay_environment_with`] from the parts of a play that a validator holds: the history of
+/// [`replay_environment`] from the parts of a play that a validator holds: the history of
 /// the pre-state and the event log of the block (P7: a process that did not play).
 pub async fn replay_environment_from(
     history: RhoHistoryRepository,
@@ -926,30 +898,22 @@ pub async fn replay_environment_from(
     limit: u64,
     recording: &NativeBudgetRecording,
     journal: Arc<[NativeOperationRecord]>,
-    host: HostWorkBudget,
 ) -> Result<NativeReplayEnvironment, String> {
     let trace = with_contract(limit, |contract| {
-        contract.check_operation_journal(
-            recording.session,
-            recording,
-            journal,
-            journal_limits(),
-            &host,
-        )
+        contract.check_operation_journal(recording.session, recording, journal, journal_limits())
     })
     .map_err(|error| format!("the journal check rejects the journal: {error}"))?
-    .bind_trace(log.into(), trace_bind_limits(), &host)
+    .bind_trace(log.into(), trace_bind_limits())
     .map_err(|error| format!("the trace binding rejects the log: {error}"))?;
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget.set_deploy_signature_funded(DEPLOY, funding());
     budget
-        .reset_for_native_execution(config(limit, host.clone()))
+        .reset_for_native_execution(config(limit))
         .expect("the replay budget enters native execution");
     Ok(create_native_replay_env(
         trace,
         history,
         Arc::new(Box::new(Matcher)),
-        host,
         Arc::new(RwLock::new(HashMap::new())),
         Arc::new(default_mergeable_tags()),
         &mut Vec::new(),
@@ -1017,18 +981,8 @@ pub async fn finish_injected(
 
 /// Certifies `played` through its committed evidence, as validator replay does.
 pub async fn certify(played: &Played, term: &str, limit: u64) -> Certification {
-    certify_with(played, term, limit, host_work()).await
-}
-
-/// Certifies `played` through its committed evidence with the host-work budget `host`.
-pub async fn certify_with(
-    played: &Played,
-    term: &str,
-    limit: u64,
-    host: HostWorkBudget,
-) -> Certification {
     let (recording, journal) = committed_evidence(played);
-    let environment = replay_environment_with(played, limit, &recording, journal, host)
+    let environment = replay_environment(played, limit, &recording, journal)
         .await
         .expect("the committed evidence checks");
     finish_injected(

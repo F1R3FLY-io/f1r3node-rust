@@ -1,21 +1,18 @@
 // See rspace/src/main/scala/coop/rchain/rspace/history/RadixTree.scala
 
 use std::collections::BTreeMap;
-use std::mem::size_of;
 use std::sync::Arc;
 
 use dashmap::DashMap;
 use itertools::Itertools;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use shared::rust::collection_backing::hash_backing;
 use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::{Byte, ByteVector};
 
 use super::history_action::{DeleteAction, HistoryAction, InsertAction};
 use crate::rspace::errors::{RSpaceError, RadixTreeError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::history::Either;
 use crate::rspace::history::history_action::HistoryActionTrait;
 
@@ -966,18 +963,7 @@ impl RadixTreeImpl {
         node_bytes_hash
     }
 
-    pub(crate) fn save_native_root(
-        &self,
-        node: &Node,
-        meter: &dyn SourceMeter,
-    ) -> Result<ByteVector, RSpaceError> {
-        let node_scan = node
-            .len()
-            .checked_mul(size_of::<Item>())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(1, node_scan, 0)?;
-        let mut encoded = 0usize;
-        let mut payload_scan = 0usize;
+    pub(crate) fn save_native_root(&self, node: &Node) -> Result<ByteVector, RSpaceError> {
         for item in node {
             let (prefix, payload) = match item {
                 Item::EmptyItem => continue,
@@ -990,48 +976,9 @@ impl RadixTreeImpl {
                 )
                 .into());
             }
-            encoded = encoded
-                .checked_add(HEAD_SIZE)
-                .and_then(|length| length.checked_add(prefix.len()))
-                .and_then(|length| length.checked_add(DEF_SIZE))
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            payload_scan = payload_scan
-                .checked_add(prefix.len())
-                .and_then(|length| length.checked_add(DEF_SIZE))
-                .ok_or(RSpaceError::HostWorkRejected)?;
         }
-        let hash_scan = node_scan
-            .checked_add(payload_scan)
-            .and_then(|length| length.checked_add(encoded))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let count = self.cache_w.len();
-        let next = count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?;
-        let (old_ops, old_backing) =
-            hash_backing::<ByteVector, ByteVector>(count).ok_or(RSpaceError::HostWorkRejected)?;
-        let (new_ops, new_backing) =
-            hash_backing::<ByteVector, ByteVector>(next).ok_or(RSpaceError::HostWorkRejected)?;
-        let backing = encoded
-            .checked_add(3 * DEF_SIZE)
-            .and_then(|length| length.checked_add(size_of::<(ByteVector, ByteVector)>()))
-            .and_then(|length| length.checked_add(new_backing.checked_sub(old_backing)?))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(
-            node.len()
-                .checked_add(1)
-                .and_then(|ops| ops.checked_add(new_ops.checked_sub(old_ops)?))
-                .ok_or(RSpaceError::HostWorkRejected)?,
-            hash_scan,
-            backing,
-        )?;
         let (key, bytes) = hash_node(node);
         if let Some(existing) = self.cache_r.get(&key) {
-            meter.reserve(
-                1,
-                node_scan
-                    .checked_add(payload_scan)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                0,
-            )?;
             if existing.value().as_ref() != node {
                 return Err(RadixTreeError::CollisionError(format!(
                     "Radix Tree - Collision in cache: record with key = {} has already existed.",
@@ -1110,61 +1057,21 @@ impl RadixTreeImpl {
 
     pub(crate) fn prepare_native_commit(
         &self,
-        meter: &dyn SourceMeter,
     ) -> Result<Vec<(ByteVector, ByteVector)>, RSpaceError> {
-        let count = self.cache_w.len();
-        let shards = self.cache_w.shards().len();
-        let guard_bytes = size_of::<dashmap::RwLockReadGuard<'_, ()>>()
-            .checked_add(2 * size_of::<usize>())
-            .and_then(|bytes| {
-                bytes.checked_add(2 * std::mem::align_of::<dashmap::RwLockReadGuard<'_, ()>>())
-            })
-            .and_then(|bytes| bytes.checked_mul(shards))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(shards, 0, guard_bytes)?;
-        let backing = count
-            .checked_mul(size_of::<(ByteVector, ByteVector)>())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve(count.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, 0, backing)?;
-        let mut writes = Vec::new();
-        writes
-            .try_reserve_exact(count)
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
+        let mut writes = Vec::with_capacity(self.cache_w.len());
         for entry in self.cache_w.iter() {
             let key = entry.key();
             let value = entry.value();
-            meter.reserve(1, key.len(), 0)?;
             let mut present = false;
             let mut collision = false;
-            let mut rejected = None;
             self.store.with_value(key, &mut |existing| {
                 if let Some(existing) = existing {
-                    let scanned = existing
-                        .len()
-                        .checked_add(value.len())
-                        .ok_or(RSpaceError::HostWorkRejected);
-                    match scanned.and_then(|scanned| meter.reserve(1, scanned, 0)) {
-                        Ok(()) => {
-                            present = true;
-                            collision = existing != value.as_slice();
-                        }
-                        Err(error) => rejected = Some(error),
-                    }
-                } else if let Err(error) = meter.reserve(1, 0, 0) {
-                    rejected = Some(error);
+                    present = true;
+                    collision = existing != value.as_slice();
                 }
                 Ok(())
             })?;
-            if let Some(error) = rejected {
-                return Err(error);
-            }
             if collision {
-                let diagnostic = key
-                    .len()
-                    .checked_mul(2)
-                    .and_then(|length| length.checked_add(80))
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                meter.reserve(1, key.len(), diagnostic)?;
                 return Err(RadixTreeError::CollisionError(format!(
                     "1 collisions in KVDB (first collision with key = {}.",
                     hex::encode(key)
@@ -1172,50 +1079,10 @@ impl RadixTreeImpl {
                 .into());
             }
             if !present {
-                let bytes = key
-                    .len()
-                    .checked_add(value.len())
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                meter.reserve(2, bytes, bytes)?;
                 writes.push((key.clone(), value.clone()));
             }
         }
-        let written_bytes = writes.iter().try_fold(0usize, |total, (key, value)| {
-            total.checked_add(key.len())?.checked_add(value.len())
-        });
-        meter.reserve(1, written_bytes.ok_or(RSpaceError::HostWorkRejected)?, 0)?;
         Ok(writes)
-    }
-
-    pub(crate) fn reserve_native_new(
-        &self,
-        meter: &dyn SourceMeter,
-        shared: bool,
-    ) -> Result<(), RSpaceError> {
-        let shards = self
-            .cache_r
-            .shards()
-            .len()
-            .checked_add(self.cache_w.shards().len())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let arrays = std::mem::size_of_val(self.cache_r.shards())
-            .checked_add(std::mem::size_of_val(self.cache_w.shards()))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let arc = if shared {
-            size_of::<RadixTreeImpl>()
-                .checked_add(2 * size_of::<usize>())
-                .and_then(|bytes| bytes.checked_add(2 * std::mem::align_of::<RadixTreeImpl>()))
-                .ok_or(RSpaceError::HostWorkRejected)?
-        } else {
-            0
-        };
-        meter.reserve(
-            shards.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?,
-            0,
-            arrays
-                .checked_add(arc)
-                .ok_or(RSpaceError::HostWorkRejected)?,
-        )
     }
 
     pub fn commit(&self) -> Result<(), RadixTreeError> {
@@ -1862,33 +1729,17 @@ mod native_commit_tests {
         assert_eq!(tree.save_node(node), key);
         assert_eq!(tree.prepare_commit().unwrap(), vec![(key.clone(), value.clone())]);
         assert_eq!(store.get_one(&key).unwrap(), None);
-        let calls = std::cell::Cell::new(0);
-        let metered = tree
-            .prepare_native_commit(&|_, _, _| {
-                calls.set(calls.get() + 1);
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(metered, vec![(key.clone(), value.clone())]);
-        for accepted in 0..calls.get() {
-            let remaining = std::cell::Cell::new(accepted);
-            assert_eq!(
-                tree.prepare_native_commit(&|_, _, _| {
-                    if remaining.get() == 0 {
-                        return Err(RSpaceError::HostWorkRejected);
-                    }
-                    remaining.set(remaining.get() - 1);
-                    Ok(())
-                }),
-                Err(RSpaceError::HostWorkRejected)
-            );
-            assert_eq!(store.get_one(&key).unwrap(), None);
-        }
+        assert_eq!(
+            tree.prepare_native_commit()
+                .expect("native commit preparation"),
+            vec![(key.clone(), value.clone())]
+        );
+        assert_eq!(store.get_one(&key).unwrap(), None);
 
         store.put_one(key.clone(), vec![1]).unwrap();
         assert!(matches!(tree.prepare_commit(), Err(RadixTreeError::CollisionError(_))));
         assert!(matches!(
-            tree.prepare_native_commit(&|_, _, _| Ok(())),
+            tree.prepare_native_commit(),
             Err(RSpaceError::RadixTreeError(RadixTreeError::CollisionError(_)))
         ));
         assert_eq!(store.get_one(&key).unwrap(), Some(vec![1]));
@@ -1896,45 +1747,30 @@ mod native_commit_tests {
         store.put_one(key.clone(), value).unwrap();
         assert!(tree.prepare_commit().unwrap().is_empty());
         assert!(
-            tree.prepare_native_commit(&|_, _, _| Ok(()))
-                .unwrap()
+            tree.prepare_native_commit()
+                .expect("native commit preparation")
                 .is_empty()
         );
     }
 
+    /// Changed by DR-131 S6: the native root save no longer reserves host
+    /// work before the hash and the cache growth. The test keeps its checks
+    /// that the save returns the node's key and stages one write without
+    /// publishing it.
     #[test]
-    fn native_root_reservation_precedes_hash_and_cache_growth() {
+    fn native_root_save_stages_one_write_without_publication() {
         let store = Arc::new(InMemoryKeyValueStore::new());
         let node = empty_node();
         let (expected, _) = hash_node(&node);
         let tree = RadixTreeImpl::new(store.clone());
-        let calls = std::cell::Cell::new(0);
+        assert_eq!(tree.save_native_root(&node).expect("native root save"), expected);
         assert_eq!(
-            tree.save_native_root(&node, &|_, _, _| {
-                calls.set(calls.get() + 1);
-                Ok(())
-            })
-            .unwrap(),
-            expected
+            tree.prepare_native_commit()
+                .expect("native commit preparation")
+                .len(),
+            1
         );
-        for accepted in 0..calls.get() {
-            let denied = RadixTreeImpl::new(store.clone());
-            let remaining = std::cell::Cell::new(accepted);
-            assert_eq!(
-                denied.save_native_root(&node, &|_, _, _| {
-                    if remaining.get() == 0 {
-                        return Err(RSpaceError::HostWorkRejected);
-                    }
-                    remaining.set(remaining.get() - 1);
-                    Ok(())
-                }),
-                Err(RSpaceError::HostWorkRejected)
-            );
-            assert!(denied.cache_w.is_empty());
-            assert_eq!(store.get_one(&expected).unwrap(), None);
-        }
-        assert_eq!(tree.prepare_native_commit(&|_, _, _| Ok(())).unwrap().len(), 1);
-        assert_eq!(store.get_one(&expected).unwrap(), None);
+        assert_eq!(store.get_one(&expected).expect("history store read"), None);
     }
 
     #[test]

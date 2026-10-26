@@ -1,7 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/errors.scala
 use std::fmt;
 
-use models::rust::host_work::HostWorkReservationError;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 
 // PartialEq here is needed for testing purposes
@@ -19,6 +18,9 @@ pub enum InterpreterError {
     UnexpectedBundleContent(String),
     UnrecognizedNormalizerError(String),
     OutOfPhlogistonsError,
+    /// Added by DR-113: a native charge exceeds the signed phlo limit. It is a
+    /// classified user failure.
+    SignedLimitExhausted,
     HostWorkRejected,
     UserAbortError,
     TopLevelWildcardsNotAllowedError(String),
@@ -97,6 +99,33 @@ pub enum InterpreterError {
     OllamaError(String),
     ChromaDBError(String),
     IllegalArgumentError(String),
+    /// Added by DR-114 (§4.1 option A): native funded execution received a
+    /// malformed system-process call: a wrong argument, or a persistent send
+    /// to a recorded process. It depends only on the user's term, so it is a
+    /// classified user failure.
+    SystemProcessShapeError(String),
+    /// Added by DR-128 (bug 11414): a `/` or `%` divisor is zero. The result
+    /// depends only on the user's operands, so it is a classified user
+    /// failure.
+    DivisionByZero(String),
+    /// Added by DR-128 (bug 11414): an integer result does not fit its
+    /// operand type. It is a classified user failure.
+    ArithmeticOverflow(String),
+    /// Added by DR-128 (bug 11414): an integer method argument lies outside
+    /// the method's domain, such as an `nth` index past the end or a negative
+    /// `dropHead` count. It is a classified user failure.
+    ArgumentOutOfRange(String),
+    /// Added by DR-128 (bug 11414): a send or a receive uses a bundle without
+    /// that permission. It is a classified user failure.
+    BundlePermissionError(String),
+    /// Added by DR-128 (bug 11414): an operand, receiver or argument has a
+    /// type or shape that the operation rejects. It is a classified user
+    /// failure.
+    ValueTypeError(String),
+    /// Added by DR-128 (bug 11414): a process breaks a structural rule at
+    /// evaluation: it has more than 32767 terms. It is a classified user
+    /// failure.
+    TermStructureError(String),
     IoError(String),
     /// Raised when a non-deterministic process (OpenAI, Ollama, gRPC) fails during execution.
     /// Contains the underlying cause and the empty output that would have been produced.
@@ -157,6 +186,10 @@ impl fmt::Display for InterpreterError {
                 write!(f, "Computation ran out of phlogistons.")
             }
 
+            InterpreterError::SignedLimitExhausted => {
+                write!(f, "Computation exhausted its signed phlo limit.")
+            }
+
             InterpreterError::HostWorkRejected => {
                 write!(f, "Host work budget rejected evaluation.")
             }
@@ -196,6 +229,15 @@ impl fmt::Display for InterpreterError {
             InterpreterError::SortMatchError(msg) => write!(f, "Sort match error: {}", msg),
 
             InterpreterError::ReduceError(msg) => write!(f, "Reduce error: {}", msg),
+
+            // Added by DR-128 (bug 11414): each user variant keeps the text of
+            // the reduce error that it replaces.
+            InterpreterError::DivisionByZero(msg)
+            | InterpreterError::ArithmeticOverflow(msg)
+            | InterpreterError::ArgumentOutOfRange(msg)
+            | InterpreterError::BundlePermissionError(msg)
+            | InterpreterError::ValueTypeError(msg)
+            | InterpreterError::TermStructureError(msg) => write!(f, "Reduce error: {}", msg),
 
             InterpreterError::MethodNotDefined { method, other_type } => write!(
                 f,
@@ -253,6 +295,10 @@ impl fmt::Display for InterpreterError {
             InterpreterError::ChromaDBError(msg) => write!(f, "ChromaDB error: {}", msg),
 
             InterpreterError::IllegalArgumentError(msg) => write!(f, "Illegal argument: {}", msg),
+
+            InterpreterError::SystemProcessShapeError(msg) => {
+                write!(f, "Illegal system process call: {}", msg)
+            }
 
             InterpreterError::IoError(msg) => write!(f, "IO error: {}", msg),
 
@@ -354,21 +400,17 @@ impl From<RSpaceError> for InterpreterError {
     fn from(err: RSpaceError) -> InterpreterError {
         match err {
             RSpaceError::OutOfPhlogistons => InterpreterError::OutOfPhlogistonsError,
-            RSpaceError::HostWorkRejected => InterpreterError::HostWorkRejected,
+            RSpaceError::SignedLimitExhausted => InterpreterError::SignedLimitExhausted,
             other => InterpreterError::RSpaceError(other),
         }
     }
-}
-
-impl From<HostWorkReservationError> for InterpreterError {
-    fn from(_: HostWorkReservationError) -> Self { Self::HostWorkRejected }
 }
 
 impl From<InterpreterError> for RSpaceError {
     fn from(error: InterpreterError) -> Self {
         match error {
             InterpreterError::OutOfPhlogistonsError => Self::OutOfPhlogistons,
-            InterpreterError::HostWorkRejected => Self::HostWorkRejected,
+            InterpreterError::SignedLimitExhausted => Self::SignedLimitExhausted,
             InterpreterError::RSpaceError(error) => error,
             other => Self::InterpreterError(other.to_string()),
         }
@@ -538,6 +580,10 @@ mod tests {
                 "Illegal argument: i".to_string(),
             ),
             (
+                InterpreterError::SystemProcessShapeError("s".to_string()),
+                "Illegal system process call: s".to_string(),
+            ),
+            (
                 InterpreterError::IoError("i".to_string()),
                 "IO error: i".to_string(),
             ),
@@ -675,24 +721,20 @@ mod tests {
 
     #[test]
     fn resource_errors_keep_their_class_across_rspace() {
-        for expected in [
-            InterpreterError::HostWorkRejected,
-            InterpreterError::OutOfPhlogistonsError,
-        ] {
-            let transported = RSpaceError::from(expected.clone());
-            assert_eq!(InterpreterError::from(transported), expected);
-        }
+        let expected = InterpreterError::OutOfPhlogistonsError;
+        let transported = RSpaceError::from(expected.clone());
+        assert_eq!(InterpreterError::from(transported), expected);
     }
 
     proptest::proptest! {
         #[test]
         fn error_transport_preserves_class_at_every_hop(
-            host in proptest::bool::ANY,
+            signed_limit in proptest::bool::ANY,
             hops in 0usize..256,
             wrapped in proptest::bool::ANY,
         ) {
-            let expected = if host {
-                RSpaceError::HostWorkRejected
+            let expected = if signed_limit {
+                RSpaceError::SignedLimitExhausted
             } else {
                 RSpaceError::OutOfPhlogistons
             };

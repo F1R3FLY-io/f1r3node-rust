@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "run_id": "casper-authority-finality-20260918-01",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-002"
+  ],
+  "status": "verification-passed-claim-pending",
+  "phase": "pre_pr216_merge",
+  "implementation_base": "d871a2df83a69dbb0ddaafffef609612cf8388ea",
+  "commit_is_base": true,
+  "worktree_dirty": true,
+  "verified_at": "2026-09-18T14:19:14Z",
+  "scope": "controlled-transcript-profile-and-bounded-refutation",
+  "node_execution": false,
+  "proof_execution": false,
+  "unbounded_proof": false,
+  "source_digests": {
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    ".github/workflows/casper-authority-finality.yml": "db9a1044cb693690f66975ff45d7954ab10b4469d353d156fe5bc402e6746721",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "docs/claims/casper-soak-authority-finality.md": "9340a152acec453ce2acf2e68b5238e06e4201476d036e2e883213560549e4f4",
+    "docs/work-logs/task-017-5-authority-finality.md": "7a75e4c0a31e0448c13b000b2f9262924c0877316066341b823be239f203e3d2",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/AuthorityFinality.tla": "3a10b0683796a16feaa7fb90df679c5338e1f01bf5fcc5bffca44cce41633e43",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_finality_unsafe.cfg": "3bf95d421574c52be7e5f6c1088750f1b8005bf04678c149502ec88790decda3",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_head_unsafe.cfg": "e14750f03bde5483e91b03a1f0af7389b4d3d5a69a0370cb94741ea8b2c0a145",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality_pair_unsafe.cfg": "9e191e33d284747e20a309c5a62f73244e1dd54ee8d062de676886dcb392d594",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/MC_AuthorityFinality.cfg": "b667ec0af8708b150743719d18a6667b2faa5906fc4b1a6f21591e68812746b8",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/README.md": "3ac84f95a33760072d7a622e0409b1ce0a043e6c082aeaac80260ae49833f634",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/verification-plan.jsonc": "0caee1e328f2f1e2c29da9cff7e6185e2d1a36767247853dcd45eab4355ab345",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "scripts/casper-soak/check-authority-finality.sh": "f91835e3c2901e7f5f58e881415e70494639f45ddd324d112c8add20354f367b",
+    "scripts/casper-soak/src/bin/casper-authority-finality.rs": "93caa3d4c8909d8c8befe4ec3a1b551ca470d75fe39bf14ba7a45100310d1718",
+    "scripts/casper-soak/src/lib.rs": "2dc948c0a4450b0ba3bd994af7b676e4874992f46dbe5653f7eeb0e27c99c6fe",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/src/profiles/authority_finality.rs": "18a1a18cebe632dc5f87483784e08a00c11f3870116f3a3b54766bbf68c45e47",
+    "scripts/casper-soak/tests/authority_finality.rs": "a9c67d88729fa43ebef6b65ce112d223752f35d4395b702139dc19cd71e8f2c8"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-authority-finality.md": "9340a152acec453ce2acf2e68b5238e06e4201476d036e2e883213560549e4f4"
+  },
+  "executables": {
+    "native_sha256": "32855f48422ee9a275c1e54168ec61e5960477fbfec397c380473beff66c6281",
+    "linux_musl_sha256": "d4f981125bfe32a8b9a8d79f678e8bcb578e1a0f96404adfcc20aec7f23ddf28"
+  },
+  "archives": {
+    "source.tar.gz": "3fa916c901abbb0fa22c0bc5dd417a2e7afab550216fb0eadb368b98271b1cfd",
+    "evidence.tar.gz": "4c7988ca1a6e515e9c3877e70e104339dac8ff0a197dcd09a62f50b0b4dff6d2",
+    "support.tar.gz": "3eee98654e0511c46eccf473944d2c85a6a7c074c8b39d7c81e33ba5027d7c3f"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "pending-review",
+    "soak": "pending"
+  },
+  "checks": {
+    "rust_tests": 8,
+    "fixture_cases": 58,
+    "profile_invocations": 65,
+    "threshold_cases": 2000,
+    "clean_distinct_states": 1681,
+    "clean_generated_states": 3281,
+    "negative_controls": 3,
+    "shared_host_regressions": 11,
+    "linux_cross_build": "passed",
+    "linux_execution": "not-run-docker-unavailable",
+    "native_test_optimization": 0,
+    "linux_test_optimization": 1,
+    "java": "26.0.2.1",
+    "tlc": "2.19",
+    "tlc_jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "rustfmt": "passed",
+    "bash_syntax": "passed",
+    "ste_check": "passed",
+    "strict_claim_001_exit": 0,
+    "strict_claim_002_exit": 4
+  },
+  "final_evidence": "evidence.tar.gz:final-source",
+  "failure_history": [
+    "missing-ft-red: exit 101",
+    "receipt-identity-red: exit 101",
+    "replay-receipt-red: exit 101",
+    "default Java: incompatible architecture",
+    "Docker socket unavailable",
+    "models-01/models-02/models-03: exit 255 for each TLC configuration",
+    "final-checks: dependency compilation failed with an LLVM target-feature error"
+  ],
+  "limits": [
+    "Human binding acceptance remains pending.",
+    "The new workflow mandatory tag remains unratified and unapplied.",
+    "Historical RED logs do not include every intermediate source snapshot.",
+    "One initial language-server check remained inconclusive.",
+    "Live adapters and post-merge interfaces remain blocked.",
+    "A synthetic passed scenario is not node evidence or a passing soak."
+  ],
+  "waiver": null
+}

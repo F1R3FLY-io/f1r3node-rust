@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-profile-review-fixes-20261003-01",
+ "task": "TASK-017-13 follow-up",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-profile-review-fixes-20261003-01.external.tar.gz",
+   "sha256": "6a7a92ab99d500d47baae84ef301b915305d4d60059a0c516fed0074cb501cc9",
+   "bytes": 1813149,
+   "members": 10598,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

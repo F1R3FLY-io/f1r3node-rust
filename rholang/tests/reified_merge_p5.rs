@@ -158,8 +158,7 @@ impl Deployed {
 }
 
 /// The execution model of the deploys of a node: the legacy model of the P5 cases, or the
-/// native funded model (protocol v6) at the v6 host-work limits, which the P6 cases use
-/// (decision 69).
+/// native funded model (protocol v6), which the P6 cases use (decision 69).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Execution {
     Legacy,
@@ -226,10 +225,7 @@ impl Node {
                         HashMap::new(),
                         random,
                         None,
-                        support::native::config(
-                            support::native::AMPLE_LIMIT,
-                            support::native::host_work(),
-                        ),
+                        support::native::config(support::native::AMPLE_LIMIT),
                     )
                     .await
             }

@@ -19,7 +19,6 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{CostAuthority, ListParWithRandom, Par};
 
 use super::hashmap::HashMapOuter;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::AllocOp;
 use crate::rust::interpreter::spaces::allocator::{self, AllocationRule};
 use crate::rust::interpreter::spaces::errors::SpaceError;
@@ -41,16 +40,14 @@ impl OuterStore for VectorOuter {
     /// Accepts `channel` only when it is an index name of this space, and otherwise fails with
     /// `NotAnIndexName` (F8). Every index is below the bound of a Vector space. The routed key is
     /// the key of `channel`, because routing computes it from the channel, so the store checks the
-    /// channel only. The decode of the channel and the comparison of the spaces are reserved
-    /// before they are made.
+    /// channel only.
     fn check_key(
         &self,
         config: &SpaceConfig,
         channel: &Par,
         _key: &CollectionKey,
-        meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
-        allocator::index_of_name(config, channel, meter).map(drop)
+        allocator::index_of_name(config, channel).map(drop)
     }
 
     /// The data channel of the HashMap store (A5).
@@ -69,9 +66,8 @@ impl OuterStore for VectorOuter {
         space: NativeSpace,
         random: &Blake2b512Random,
         authority: &CostAuthority,
-        meter: &ScanMeter,
     ) -> Result<Vec<(Par, ListParWithRandom)>, SpaceError> {
-        allocator::creation_records(space, random, authority, meter)
+        Ok(allocator::creation_records(space, random, authority))
     }
 
     /// Allocates the names of `op` in order, each once (`allocator::allocate` with
@@ -142,7 +138,7 @@ mod tests {
 
     fn check(channel: &Par) -> Result<(), SpaceError> {
         let key = VectorOuter.key(channel)?;
-        VectorOuter.check_key(&config(), channel, &key, &ScanMeter::new(None))
+        VectorOuter.check_key(&config(), channel, &key)
     }
 
     #[test]
@@ -210,7 +206,6 @@ mod tests {
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000_000, "vector store test")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };

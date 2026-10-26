@@ -3430,13 +3430,24 @@ async fn space_store_handle_unsorted_repeat_fails_closed() {
     assert_eq!(checkpoint(&space).await.root, checkpoint(&reference).await.root);
 }
 
-// Control (HEAD behavior): host replay binds the records of a repeated
-// channel in store order, where host play binds them in hash order. So host
-// replay of a valid play log can compute another COMM than the log records
-// and fail its assertion. The substrate replays the same log, because the
-// agent stages the recorded bindings (FR-1').
+// Host replay of a repeated channel (HEAD behavior since DR-129, E1): host
+// play and host replay give the list of a channel that a join names twice one
+// order by source hash, with the incoming datum first
+// (`order_repeated_channels`). So host replay of the play log binds the
+// recorded data, leaves no binding and reaches the play root, as the
+// substrate does (FR-1').
+// Changed by decision 89 (DR-129): before E1, host replay bound the records in
+// store order and failed on this log, and this control expected the failure:
+//
+// // Control (HEAD behavior): host replay binds the records of a repeated
+// // channel in store order, where host play binds them in hash order. So host
+// // replay of a valid play log can compute another COMM than the log records
+// // and fail its assertion. The substrate replays the same log, because the
+// // agent stages the recorded bindings (FR-1').
+// #[tokio::test]
+// async fn space_store_handle_host_replay_repeated_channel_control() {
 #[tokio::test]
-async fn space_store_handle_host_replay_repeated_channel_control() {
+async fn space_store_handle_host_replay_follows_a_repeated_channel() {
     let ops = vec![
         Op::produce("a", "y", false),
         Op::produce("a", "x", true),
@@ -3462,14 +3473,19 @@ async fn space_store_handle_host_replay_repeated_channel_control() {
     let host_replay = replay_over(&play);
     rig(&host_replay, &start.root, &played.log).await;
     run_host_ops(&host_replay, &ops[..2]).await;
-    let refused = match AssertUnwindSafe(run_host(&host_replay, &ops[2]))
-        .catch_unwind()
+    // let refused = match AssertUnwindSafe(run_host(&host_replay, &ops[2]))
+    //     .catch_unwind()
+    //     .await
+    // {
+    //     Err(payload) => panic_text(payload),
+    //     Ok(outcome) => panic!("expected the host replay to fail, got {:?}",
+    // outcome.map(|_| ())), };
+    // assert!(refused.contains("was not contained in the trace"), "{}", refused);
+    run_host(&host_replay, &ops[2])
         .await
-    {
-        Err(payload) => panic_text(payload),
-        Ok(outcome) => panic!("expected the host replay to fail, got {:?}", outcome.map(|_| ())),
-    };
-    assert!(refused.contains("was not contained in the trace"), "{}", refused);
+        .expect("host replay binds the recorded data of the repeated channel");
+    assert!(replay_bindings(&host_replay).is_empty());
+    assert_eq!(checkpoint(&host_replay).await.root, played.root);
 }
 
 // One evaluation of a deploy: a transaction under `parent` that stores
@@ -3914,12 +3930,14 @@ fn result_flags(receipt: &SpaceOpReceipt<String, Pat, String, String>) -> Vec<bo
     }
 }
 
-// A name for a peek waiter on `channel` that the host tries before the
-// taking waiter `taking`. The host tries the waiting continuations of a
-// channel group in the canonical candidate order (candidate_order.rs, DR-75):
-// by the hash of their source consume, then by the digest of their bincode
-// bytes only when two source hashes are equal. The two waiters have different
-// continuations, so their source hashes differ.
+// A name for a peek waiter on `channel` that comes before the taking waiter
+// `taking` in the canonical candidate order (candidate_order.rs, DR-75): by the
+// hash of their source consume, then by the digest of their bincode bytes only
+// when two source hashes are equal. The two waiters have different
+// continuations, so their source hashes differ. Since DR-129 host play picks a
+// waiter at random, so the tests of the peek re-offer draw host plays until the
+// host fires this waiter first (`HOST_DRAWS`); replay keeps the canonical
+// order.
 fn peek_tried_first(channel: &str, taking: &str) -> String {
     let order = |waiting: &WaitingContinuation<Pat, String>| waiting.source.hash.clone();
     let taking = order(&waiter(&[channel], taking, false));
@@ -3927,6 +3945,17 @@ fn peek_tried_first(channel: &str, taking: &str) -> String {
         .map(|index| format!("peek-{}", index))
         .find(|name| order(&waiter(&[channel], name, true)) < taking)
         .expect("a peek waiter that the host tries first")
+}
+
+// The most host plays that a test of the peek re-offer draws before the host
+// fires the peek waiter first (decision 89, DR-129). Each play picks one of two
+// waiters, so all 64 draws miss with probability 2^-64.
+const HOST_DRAWS: usize = 64;
+
+// True when the host outcome `outcome` of a produce fires the continuation
+// `continuation`.
+fn fires_continuation(outcome: &HostOutcome, continuation: &str) -> bool {
+    matches!(outcome, HostOutcome::Produced(Some((fired, _, _))) if fired.continuation == continuation)
 }
 
 // An introduction-authority registry with the rule of
@@ -4243,9 +4272,23 @@ async fn space_store_handle_peek_reoffer_equals_head_reproduce() {
     ];
     let send = Op::produce("a", "d", false);
     let d = produce_source("a", "d", false);
-    let twin = twin().await;
-    run_host_ops(&twin.host, &parks).await;
-    let fired = run_host(&twin.host, &send).await.expect("the host produce");
+    // Changed by decision 89 (DR-129): host play picks one of the two waiters
+    // at random, so the test draws twins until HEAD fires the peek waiter, the
+    // play of FR-10.
+    // let twin = twin().await;
+    // run_host_ops(&twin.host, &parks).await;
+    // let fired = run_host(&twin.host, &send).await.expect("the host produce");
+    let mut drawn = None;
+    for _ in 0..HOST_DRAWS {
+        let twin = twin().await;
+        run_host_ops(&twin.host, &parks).await;
+        let fired = run_host(&twin.host, &send).await.expect("the host produce");
+        if fires_continuation(&fired, &peeking) {
+            drawn = Some((twin, fired));
+            break;
+        }
+    }
+    let (twin, fired) = drawn.expect("a host play that fires the peek waiter first");
     let reproduced = run_host(&twin.host, &send)
         .await
         .expect("HEAD's re-produce");
@@ -4385,8 +4428,20 @@ async fn space_store_handle_peek_reoffer_replay_and_report() {
         Op::produce("a", "e", false),
         Op::produce("a", "e", false),
     ];
-    let plans = plan_groups(&groups).await;
-    assert_eq!(plans.iter().map(Vec::len).collect::<Vec<_>>(), vec![2, 2, 1, 2]);
+    // Changed by decision 89 (DR-129): host play picks one of the two waiters
+    // of `d` at random, so the test draws plans until the planner fires the
+    // peek waiter first, the play of FR-10 with a re-offer (`[2, 2, 1, 2]`).
+    // let plans = plan_groups(&groups).await;
+    // assert_eq!(plans.iter().map(Vec::len).collect::<Vec<_>>(), vec![2, 2, 1, 2]);
+    let mut drawn = None;
+    for _ in 0..HOST_DRAWS {
+        let plans = plan_groups(&groups).await;
+        if plans.iter().map(Vec::len).collect::<Vec<_>>() == vec![2, 2, 1, 2] {
+            drawn = Some(plans);
+            break;
+        }
+    }
+    let plans = drawn.expect("a planner play that fires the peek waiter first");
     let (play, replay) = play_and_replay().await;
     let start = checkpoint(&play).await;
     let played_receipts =
@@ -4461,9 +4516,28 @@ async fn space_store_handle_peek_reoffer_replay_and_report() {
         .expect("host replay pairs every COMM of the transaction log");
     assert_eq!(checkpoint(&host_replay).await.root, played.root);
 
-    let (head_play, txn_replay) = play_and_replay().await;
-    let head_start = checkpoint(&head_play).await;
-    run_host_ops(&head_play, &head_ops).await;
+    // Changed by decision 89 (DR-129): HEAD's play of `head_ops` picks one of
+    // the two waiters of `d` at random, so the test draws plays until HEAD fires
+    // the peek waiter first. Only that play has the log of the transactions.
+    // let (head_play, txn_replay) = play_and_replay().await;
+    // let head_start = checkpoint(&head_play).await;
+    // run_host_ops(&head_play, &head_ops).await;
+    let mut drawn = None;
+    for _ in 0..HOST_DRAWS {
+        let (head_play, txn_replay) = play_and_replay().await;
+        let head_start = checkpoint(&head_play).await;
+        run_host_ops(&head_play, &head_ops[..2]).await;
+        let fired = run_host(&head_play, &head_ops[2])
+            .await
+            .expect("HEAD's produce of d");
+        if fires_continuation(&fired, &peeking) {
+            run_host_ops(&head_play, &head_ops[3..]).await;
+            drawn = Some((head_play, txn_replay, head_start));
+            break;
+        }
+    }
+    let (head_play, txn_replay, head_start) =
+        drawn.expect("a HEAD play that fires the peek waiter first");
     let head_played = checkpoint(&head_play).await;
     assert_eq!(event_bytes(&head_played.log), event_bytes(&played.log));
     assert_eq!(head_played.root, played.root);

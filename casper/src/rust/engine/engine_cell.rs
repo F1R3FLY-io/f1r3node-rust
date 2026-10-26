@@ -19,6 +19,7 @@ use super::engine::{noop, Engine};
 #[derive(Clone)]
 pub struct EngineCell {
     inner: Arc<RwLock<Arc<dyn Engine>>>,
+    observer: Option<Arc<crate::rust::soak_observer::ObserverController>>,
 }
 
 impl EngineCell {
@@ -27,6 +28,7 @@ impl EngineCell {
         let engine = Arc::new(noop());
         EngineCell {
             inner: Arc::new(RwLock::new(engine)),
+            observer: None,
         }
     }
 
@@ -37,5 +39,18 @@ impl EngineCell {
 
     /// Set the engine to a new instance (equivalent to Cell.set(s: Engine[F]): F[Unit])
     #[inline]
-    pub async fn set(&self, engine: Arc<dyn Engine>) { *self.inner.write().await = engine; }
+    pub async fn set(&self, engine: Arc<dyn Engine>) {
+        let mut current = self.inner.write().await;
+        if let Some(observer) = &self.observer {
+            let casper = engine.with_casper();
+            observer.install(casper.as_deref());
+        }
+        *current = engine;
+    }
+
+    pub fn observed(observer: Arc<crate::rust::soak_observer::ObserverController>) -> Self {
+        let mut cell = Self::init();
+        cell.observer = Some(observer);
+        cell
+    }
 }

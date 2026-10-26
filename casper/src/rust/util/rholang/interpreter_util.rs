@@ -14,6 +14,8 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, ProcessedUserDeploy,
     RejectedDeploy, SystemDeployData,
 };
+use models::rust::deploy_envelope::DeployEnvelope;
+use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
@@ -28,6 +30,7 @@ use super::runtime_manager::RuntimeManager;
 use crate::rust::block_status::{BlockError, BlockStatus};
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
+use crate::rust::finality::block_facts::{block_facts, held_block_facts};
 use crate::rust::merging::block_index::BlockIndex;
 use crate::rust::merging::dag_merger;
 use crate::rust::merging::deploy_chain_index::DeployChainIndex;
@@ -47,6 +50,8 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
+use crate::rust::util::rholang::costacc::v6_merge::fast::{try_compose, FastPathInputs};
+use crate::rust::util::rholang::costacc::v6_merge::{self, MergeRule};
 use crate::rust::BlockProcessing;
 
 pub fn mk_term(rho: &str, normalizer_env: HashMap<String, Par>) -> Result<Par, InterpreterError> {
@@ -112,7 +117,7 @@ fn block_in_base_merge_scope(
 /// (who currently stands), the latest kept rejection record (the
 /// adjudication a retry settles against), and the first carrier (whose
 /// sender is the deploy's recovery owner).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SigDisposition {
     /// Latest disposition as `(height, won)`. A win and a rejection never
     /// share a height (a merge sits one block above its siblings), so the
@@ -197,31 +202,18 @@ pub(crate) fn canonical_dispositions(
         // A block this walk cannot read is a gap, not a "no": a partial
         // disposition map silently misreads the retry gate and the
         // canonical-won filter. Absence keeps its name so callers defer.
-        let Some(block) = block_store.get(&hash)? else {
-            return Err(CasperError::BlockNotHeld(
-                hash,
-                MissingBlockContext::new("parents-post-state body read"),
-            ));
-        };
-        let bn = block.body.state.block_number;
+        let facts = block_facts(block_store, &hash, "parents-post-state body read")?;
+        let bn = facts.block_number;
         if bn < earliest_block_number {
             continue;
         }
-        for pd in &block.body.deploys {
-            note_inclusion(
-                &mut dispositions,
-                Bytes::copy_from_slice(pd.identity_bytes()),
-                bn,
-                &hash,
-                &block.sender,
-            );
+        for sig in &facts.deploy_sigs {
+            note_inclusion(&mut dispositions, sig.clone(), bn, &hash, &facts.sender);
         }
-        for rd in proto_util::kept_rejected_records(&block) {
+        for rd in facts.kept_rejected() {
             note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
         }
-        for p in &block.header.parents_hash_list {
-            queue.push_back(p.clone());
-        }
+        queue.extend(facts.parents.iter().cloned());
     }
     Ok(dispositions)
 }
@@ -251,24 +243,15 @@ fn rejected_sig_has_visible_non_source_win(
         if hash == source_block {
             continue;
         }
-        let Some(block) = block_store.get(hash)? else {
+        let Some(facts) = held_block_facts(block_store, hash)? else {
             continue;
         };
-        let bn = block.body.state.block_number;
-        for pd in &block.body.deploys {
-            if pd.identity_bytes() == sig.as_ref() {
-                record_disposition(
-                    &mut disposition,
-                    Bytes::copy_from_slice(pd.identity_bytes()),
-                    bn,
-                    true,
-                );
-            }
+        let bn = facts.block_number;
+        if facts.deploy_sigs.contains(sig) {
+            record_disposition(&mut disposition, sig.clone(), bn, true);
         }
-        for rd in proto_util::kept_rejected_records(&block) {
-            if rd.sig == *sig {
-                record_disposition(&mut disposition, rd.sig.clone(), bn, false);
-            }
+        if facts.kept_rejected().any(|rd| rd.sig == *sig) {
+            record_disposition(&mut disposition, sig.clone(), bn, false);
         }
     }
     Ok(disposition.get(sig).map(|(_, won)| *won).unwrap_or(false))
@@ -295,10 +278,9 @@ fn suppress_already_recorded_rejections(
 
     let mut visible_records: HashSet<RejectedDeploy> = HashSet::new();
     for hash in visible_blocks {
-        let Some(block) = block_store.get(hash)? else {
-            continue;
-        };
-        visible_records.extend(block.body.rejected_deploys.iter().cloned());
+        if let Some(facts) = held_block_facts(block_store, hash)? {
+            visible_records.extend(facts.rejected.iter().cloned());
+        }
     }
     if visible_records.is_empty() {
         return Ok(0);
@@ -334,6 +316,24 @@ fn retain_recoverable_rejected_deploys_for_buffer(
             > floor_block_number
     });
     before - deploys.len()
+}
+
+/// Added by DR-116 (gap G6): the window rule of
+/// `retain_recoverable_rejected_deploys_for_buffer`, for offered envelopes.
+fn retain_recoverable_rejected_envelopes_for_buffer(
+    floor_block_number: i64,
+    deploy_lifespan: i64,
+    envelopes: &mut Vec<DeployEnvelope>,
+) -> usize {
+    let before = envelopes.len();
+    envelopes.retain(|envelope| {
+        envelope
+            .body()
+            .valid_after_block_number
+            .saturating_add(deploy_lifespan)
+            > floor_block_number
+    });
+    before - envelopes.len()
 }
 
 /// Update `disposition[sig]` toward the latest (highest-block) verdict. A higher
@@ -899,7 +899,9 @@ pub async fn compute_deploys_checkpoint_envelopes(
     system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
     s: &CasperSnapshot,
     runtime_manager: &RuntimeManager,
-    approved_genesis: Option<&BlockMessage>,
+    // Changed by DR-99: the policy adopted at start replaces the approved genesis.
+    // approved_genesis: Option<&BlockMessage>,
+    adopted_policy: Option<&AdoptedResourcePolicy>,
     block_data: BlockData,
     invalid_blocks: HashMap<BlockHash, Validator>,
     rejected_deploy_buffer: Option<&std::sync::Arc<std::sync::Mutex<block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer>>>,
@@ -944,18 +946,32 @@ pub async fn compute_deploys_checkpoint_envelopes(
         .iter()
         .any(|candidate| matches!(candidate, PendingDeployCandidate::Envelope(_)))
     {
-        let approved_genesis = approved_genesis.ok_or_else(|| {
+        // Changed by DR-99 (joined-node policy adoption): the proposal takes
+        // the policy adopted at start and checks it against the snapshot's
+        // shard configuration, without new exploratory evaluations.
+        // let approved_genesis = approved_genesis.ok_or_else(|| {
+        //     CasperError::RuntimeError(
+        //         "offered proposal requires its authenticated approved genesis".to_string(),
+        //     )
+        // })?;
+        // Some(
+        //     AdoptedResourcePolicy::load(
+        //         runtime_manager,
+        //         approved_genesis,
+        //         &s.on_chain_state.shard_conf,
+        //     )
+        //     .await?,
+        // )
+        let adopted_policy = adopted_policy.ok_or_else(|| {
             CasperError::RuntimeError(
-                "offered proposal requires its authenticated approved genesis".to_string(),
+                "offered proposal requires the adopted genesis resource policy".to_string(),
             )
         })?;
         Some(
-            AdoptedResourcePolicy::load(
-                runtime_manager,
-                approved_genesis,
-                &s.on_chain_state.shard_conf,
-            )
-            .await?,
+            adopted_policy
+                .genesis()
+                .clone()
+                .adopt(&s.on_chain_state.shard_conf)?,
         )
     } else {
         None
@@ -1842,7 +1858,7 @@ pub async fn compute_parents_post_state(
             // ~30 per-sig lineage walks per merge, each loading full block
             // bodies. Each closure now builds its applied-sig set with ONE
             // walk on the first probe (`settled_sigs_of_lineage`, backed by
-            // the per-block lineage-step cache) and answers every probe by
+            // the block-facts cache) and answers every probe by
             // membership. Built lazily so a merge that never probes never
             // walks; RefCell suffices because the merge is synchronous on
             // this thread. The FIRST probe's wrapper-counter sample folds
@@ -1916,15 +1932,9 @@ pub async fn compute_parents_post_state(
                     cursor = s.dag.main_parent(&hash);
                     count_visible.insert(hash);
                 }
-                // Records load through the lineage-step cache (one decode
-                // per block process-wide, store-revalidated) instead of a
-                // full body decode per visible block per merge — the same
-                // batching CLAIM-FINALITY-001 applied to the settled
-                // probes, for the walk that was next in the run
-                // 33099406770 attribution (~47ms/merge).
                 dag_merger::scope_prior_rejection_counts(count_visible, |hash: &BlockHash| {
-                    crate::rust::finality::deploy_lifecycle::rejected_records_of(block_store, hash)
-                        .map(|records| records.as_ref().clone())
+                    block_facts(block_store, hash, "prior-rejection records read")
+                        .map(|facts| facts.rejected.as_ref().clone())
                 })?
             };
             let prior_rejection_elapsed = prior_rejection_started.elapsed();
@@ -1982,8 +1992,31 @@ pub async fn compute_parents_post_state(
                 settled_probe_time_ns.increment(probe_started.elapsed().as_nanos() as u64);
                 result
             };
+            // Added by DR-120 (gap G9): a conflict-free v6 scope composes without merge analysis.
+            let merge_rule = v6_merge::rule_for(&parents, &visible_blocks, block_store)?;
+            if let MergeRule::OfferedV6 = merge_rule {
+                if let Some(composed) = try_compose(&FastPathInputs {
+                    dag: &s.dag,
+                    block_store,
+                    history_repository: &runtime_manager.history_repo,
+                    base: &scope_anchor_hash,
+                    base_post_state: &base_state,
+                    base_holds_floor,
+                    scope: &visible_blocks,
+                    base_lineage_blocks: &base_lineage_blocks,
+                    floor_block_number,
+                    deploy_lifespan: s.on_chain_state.shard_conf.deploy_lifespan,
+                    index: &|hash| Ok(block_index_f(hash)?.deploy_chains),
+                    prior_rejection_counts: &prior_rejection_counts,
+                })? {
+                    let merged = composed.into_merged_pre_state(scope_anchor_hash.clone());
+                    runtime_manager.put_cached_parents_post_state(cache_key, merged.clone());
+                    return Ok(merged);
+                }
+            }
             let merge_started = std::time::Instant::now();
-            let merger_result = dag_merger::merge(
+            let merger_result = dag_merger::merge_with_rule(
+                merge_rule,
                 &s.dag,
                 &scope_anchor_hash,
                 &base_state,
@@ -2114,6 +2147,10 @@ pub async fn compute_parents_post_state(
                             .push(sig.clone());
                     }
                     let mut deploys_to_buffer: Vec<Signed<DeployData>> = Vec::new();
+                    // Added by DR-116 (gap G6): rejected offered envelopes, and the
+                    // failed offered deploys whose recovery custody ends.
+                    let mut envelopes_to_buffer: Vec<DeployEnvelope> = Vec::new();
+                    let mut custody_ended: Vec<DeployIdV6> = Vec::new();
                     for (src_block, sigs) in by_block {
                         let sig_set: HashSet<Bytes> = sigs.into_iter().collect();
                         match block_store.get(&src_block) {
@@ -2151,13 +2188,47 @@ pub async fn compute_parents_post_state(
                                             floor_block = floor_block_number,
                                             "deploy lifecycle"
                                         );
-                                        let legacy = pd.as_legacy().ok_or_else(|| {
-                                            CasperError::RuntimeError(
-                                                "offered-funded recovery requires an envelope buffer"
-                                                    .to_string(),
-                                            )
-                                        })?;
-                                        deploys_to_buffer.push(legacy.deploy.clone());
+                                        // Changed by DR-116 (gap G6): the buffer carries a
+                                        // rejected offered envelope in its own table.
+                                        // let legacy = pd.as_legacy().ok_or_else(|| {
+                                        //     CasperError::RuntimeError(
+                                        //         "offered-funded recovery requires an envelope buffer"
+                                        //             .to_string(),
+                                        //     )
+                                        // })?;
+                                        // deploys_to_buffer.push(legacy.deploy.clone());
+                                        match pd {
+                                            ProcessedUserDeploy::Legacy(legacy) => {
+                                                deploys_to_buffer.push(legacy.deploy.clone());
+                                            }
+                                            // A failed deploy is final in Casper: the dev
+                                            // merge index never held one, so recovery never
+                                            // retried one. A failed offered deploy that a
+                                            // merge rejects therefore ends its recovery
+                                            // custody (user decision, DR-116).
+                                            ProcessedUserDeploy::Offered(offered)
+                                                if offered.is_failed() =>
+                                            {
+                                                tracing::info!(
+                                                    target: "f1r3fly.casper.deploy_lifecycle",
+                                                    event = "buffer_suppressed",
+                                                    deploy_sig = %hex::encode(pd.identity_bytes()),
+                                                    carrier = %hex::encode(&src_block),
+                                                    reason = "failed_offered_settlement",
+                                                    floor_block = floor_block_number,
+                                                    "deploy lifecycle"
+                                                );
+                                                if let DeployLookupId::V6(deploy_id) =
+                                                    offered.envelope().identity()
+                                                {
+                                                    custody_ended.push(*deploy_id);
+                                                }
+                                            }
+                                            ProcessedUserDeploy::Offered(offered) => {
+                                                envelopes_to_buffer
+                                                    .push(offered.envelope().clone());
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2208,6 +2279,64 @@ pub async fn compute_parents_post_state(
                             Err(_) => {
                                 tracing::warn!(
                                     "RejectedDeployBuffer lock poisoned; skipping populate"
+                                );
+                            }
+                        }
+                    }
+                    // Added by DR-116 (gap G6): the same window rule for offered
+                    // envelopes. A failed copy of an identity ends custody even when
+                    // the same merge also rejects a successful copy of it.
+                    let skipped_envelopes = retain_recoverable_rejected_envelopes_for_buffer(
+                        floor_block_number,
+                        s.on_chain_state.shard_conf.deploy_lifespan,
+                        &mut envelopes_to_buffer,
+                    );
+                    if skipped_envelopes > 0 {
+                        tracing::info!(
+                            target: "f1r3fly.casper.recovery",
+                            "RejectedDeployBuffer populate: skipped {} window-closed envelope(s)",
+                            skipped_envelopes
+                        );
+                    }
+                    envelopes_to_buffer.retain(|envelope| match envelope.identity() {
+                        DeployLookupId::V6(deploy_id) => !custody_ended.contains(deploy_id),
+                        _ => true,
+                    });
+                    if !envelopes_to_buffer.is_empty() || !custody_ended.is_empty() {
+                        for envelope in &envelopes_to_buffer {
+                            tracing::info!(
+                                target: "f1r3fly.casper.deploy_lifecycle",
+                                event = "buffer_added",
+                                deploy_sig = %hex::encode(envelope.identity().as_bytes()),
+                                valid_after_block = envelope.body().valid_after_block_number,
+                                floor_block = floor_block_number,
+                                "deploy lifecycle"
+                            );
+                        }
+                        // One lock section: a proposer never reads an entry whose
+                        // custody this merge ends.
+                        match buffer.lock() {
+                            Ok(mut guard) => {
+                                if !envelopes_to_buffer.is_empty() {
+                                    if let Err(err) = guard.add_envelopes(&envelopes_to_buffer) {
+                                        tracing::warn!(
+                                            "RejectedDeployBuffer add_envelopes failed: {}",
+                                            err
+                                        );
+                                    }
+                                }
+                                for deploy_id in &custody_ended {
+                                    if let Err(err) = guard.remove_envelope_by_id(deploy_id) {
+                                        tracing::warn!(
+                                            "RejectedDeployBuffer remove_envelope_by_id failed: {}",
+                                            err
+                                        );
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    "RejectedDeployBuffer lock poisoned; skipping envelope populate"
                                 );
                             }
                         }
@@ -2567,6 +2696,239 @@ mod backstop_tests {
             Some((1, carrier.block_hash.clone())),
             "the height-1 inclusion is the first carrier",
         );
+    }
+
+    #[tokio::test]
+    async fn a_repeat_disposition_walk_decodes_no_block_body() {
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let deploy = construct_deploy::source_deploy_now_full(
+            "@9!(9)".to_string(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("deploy");
+        let sig = deploy.sig.clone();
+        let (_, sender) = Secp256k1.new_key_pair();
+        let carrier = disposition_test_block(1, sender.bytes.clone(), Vec::new(), vec![
+            ProcessedDeploy::empty(deploy),
+        ]);
+        block_store
+            .put_block_message(&carrier)
+            .expect("store block");
+        let first = canonical_dispositions(&block_store, &[carrier.block_hash.clone()], i64::MIN)
+            .expect("walk");
+        assert!(first.contains_key(&sig));
+
+        // A body stored under an existing hash is visible only to a walk that decodes it again.
+        let mut rewritten = carrier.clone();
+        rewritten.body.deploys.clear();
+        block_store
+            .put_block_message(&rewritten)
+            .expect("overwrite body");
+
+        let second = canonical_dispositions(&block_store, &[carrier.block_hash.clone()], i64::MIN)
+            .expect("walk");
+        assert!(
+            second.contains_key(&sig),
+            "the second walk must read the block's cached facts, not its body"
+        );
+    }
+
+    #[tokio::test]
+    async fn cached_disposition_walk_matches_a_body_decoding_walk() {
+        fn decoding_walk(
+            block_store: &KeyValueBlockStore,
+            parents: &[BlockHash],
+            earliest_block_number: i64,
+        ) -> std::collections::HashMap<Bytes, super::SigDisposition> {
+            let mut dispositions = std::collections::HashMap::new();
+            let mut visited = HashSet::new();
+            let mut queue: std::collections::VecDeque<BlockHash> =
+                parents.iter().cloned().collect();
+            while let Some(hash) = queue.pop_front() {
+                if !visited.insert(hash.clone()) {
+                    continue;
+                }
+                let block = block_store.get(&hash).expect("read").expect("held");
+                let bn = block.body.state.block_number;
+                if bn < earliest_block_number {
+                    continue;
+                }
+                for pd in &block.body.deploys {
+                    super::note_inclusion(
+                        &mut dispositions,
+                        Bytes::copy_from_slice(pd.identity_bytes()),
+                        bn,
+                        &hash,
+                        &block.sender,
+                    );
+                }
+                for rd in block
+                    .body
+                    .rejected_deploys
+                    .iter()
+                    .filter(|rd| !rd.duplicate)
+                {
+                    super::note_kept_rejection(&mut dispositions, rd.sig.clone(), bn, &hash);
+                }
+                queue.extend(block.header.parents_hash_list.iter().cloned());
+            }
+            dispositions
+        }
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag = generated_disposition_dag(&block_store);
+        let layer = dag.tips;
+
+        for earliest in [i64::MIN, 4, 9] {
+            let expected = decoding_walk(&block_store, &layer, earliest);
+            for _pass in 0..2 {
+                let actual = canonical_dispositions(&block_store, &layer, earliest).expect("walk");
+                assert_eq!(
+                    actual, expected,
+                    "cached walk diverged at earliest {}",
+                    earliest
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_visible_win_check_matches_a_body_decoding_check() {
+        fn decoding_check(
+            block_store: &KeyValueBlockStore,
+            visible_blocks: &HashSet<BlockHash>,
+            sig: &Bytes,
+            source_block: &BlockHash,
+        ) -> bool {
+            let mut disposition = std::collections::HashMap::new();
+            for hash in visible_blocks {
+                if hash == source_block {
+                    continue;
+                }
+                let block = block_store.get(hash).expect("read").expect("held");
+                let bn = block.body.state.block_number;
+                for pd in &block.body.deploys {
+                    if pd.identity_bytes() == sig.as_ref() {
+                        super::record_disposition(&mut disposition, sig.clone(), bn, true);
+                    }
+                }
+                for rd in block
+                    .body
+                    .rejected_deploys
+                    .iter()
+                    .filter(|rd| !rd.duplicate)
+                {
+                    if rd.sig == *sig {
+                        super::record_disposition(&mut disposition, sig.clone(), bn, false);
+                    }
+                }
+            }
+            disposition.get(sig).map(|(_, won)| *won).unwrap_or(false)
+        }
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag = generated_disposition_dag(&block_store);
+        let visible: HashSet<BlockHash> = dag.blocks.iter().cloned().collect();
+
+        for _pass in 0..2 {
+            for sig in &dag.sigs {
+                for source in &dag.blocks {
+                    assert_eq!(
+                        rejected_sig_has_visible_non_source_win(
+                            &block_store,
+                            &visible,
+                            sig,
+                            source
+                        )
+                        .expect("check"),
+                        decoding_check(&block_store, &visible, sig, source),
+                        "cached visible-win check diverged for source {}",
+                        hex::encode(&source[..8.min(source.len())]),
+                    );
+                }
+            }
+        }
+    }
+
+    struct GeneratedDispositionDag {
+        blocks: Vec<BlockHash>,
+        tips: Vec<BlockHash>,
+        sigs: Vec<Bytes>,
+    }
+
+    /// Twelve layers of 1–3 blocks with random multi-parent links, repeated and
+    /// failed deploys of six sigs, and kept and duplicate-flagged rejection records.
+    fn generated_disposition_dag(block_store: &KeyValueBlockStore) -> GeneratedDispositionDag {
+        let mut seed: u64 = 0x5eed;
+        let mut rand = |n: u64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) % n
+        };
+        let senders: Vec<Bytes> = (0..3).map(|_| Secp256k1.new_key_pair().1.bytes).collect();
+        let deploys: Vec<_> = (0..6)
+            .map(|n| construct_deploy::basic_deploy_data(900 + n, None, None).expect("deploy"))
+            .collect();
+
+        let mut layer: Vec<BlockHash> = Vec::new();
+        let mut blocks: Vec<BlockHash> = Vec::new();
+        for height in 0..12 {
+            let mut next = Vec::new();
+            for _ in 0..=rand(3) {
+                let parents: Vec<BlockHash> = layer
+                    .iter()
+                    .filter(|_| rand(2) == 0)
+                    .cloned()
+                    .chain(layer.first().cloned())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                let body_deploys = (0..rand(3))
+                    .map(|_| {
+                        let mut pd = ProcessedDeploy::empty(deploys[rand(6) as usize].clone());
+                        pd.is_failed = rand(4) == 0;
+                        pd
+                    })
+                    .collect();
+                let mut block = disposition_test_block(
+                    height,
+                    senders[rand(3) as usize].clone(),
+                    parents,
+                    body_deploys,
+                );
+                block.body.rejected_deploys = (0..rand(3))
+                    .filter(|_| !blocks.is_empty())
+                    .map(|_| RejectedDeploy {
+                        sig: deploys[rand(6) as usize].sig.clone(),
+                        duplicate: rand(3) == 0,
+                        carrier: blocks[rand(blocks.len() as u64) as usize].clone(),
+                    })
+                    .collect();
+                block_store.put_block_message(&block).expect("store block");
+                next.push(block.block_hash.clone());
+            }
+            blocks.extend(next.iter().cloned());
+            layer = next;
+        }
+        GeneratedDispositionDag {
+            blocks,
+            tips: layer,
+            sigs: deploys.iter().map(|d| d.sig.clone()).collect(),
+        }
     }
 
     /// The tripwire errors exactly when a NON-duplicate record rejects a
@@ -3302,6 +3664,49 @@ mod backstop_tests {
         let mut boundary = vec![closed.clone()];
         let skipped = retain_recoverable_rejected_deploys_for_buffer(50, 50, &mut boundary);
         assert_eq!(skipped, 1);
+        assert!(boundary.is_empty());
+    }
+
+    /// DR-116 (gap G6): a body envelope with the given validity window start.
+    fn body_envelope(
+        valid_after_block_number: i64,
+        time_stamp: i64,
+    ) -> models::rust::deploy_envelope::DeployEnvelope {
+        use crypto::rust::private_key::PrivateKey;
+        use crypto::rust::signatures::signed::Cosigned;
+        let body = models::rust::cost_deploy_data::DeployData {
+            term: "Nil".to_string(),
+            language: "rholang".to_string(),
+            time_stamp,
+            valid_after_block_number,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            authority_presentations: Vec::new(),
+        };
+        let signed = Cosigned::create_single_envelope(
+            body,
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[2; 32]),
+        )
+        .expect("a body envelope signs");
+        models::rust::deploy_envelope::DeployEnvelope::from_body_envelope(signed)
+            .expect("a body envelope encodes")
+    }
+
+    #[test]
+    fn window_open_rejected_envelopes_stay_buffered_and_window_closed_drop() {
+        let open = body_envelope(60, 1);
+        let closed = body_envelope(0, 2);
+        let mut envelopes = vec![open.clone(), closed.clone()];
+        let skipped =
+            super::retain_recoverable_rejected_envelopes_for_buffer(100, 50, &mut envelopes);
+        assert_eq!(skipped, 1);
+        assert_eq!(envelopes, vec![open]);
+        let mut boundary = vec![closed];
+        assert_eq!(
+            super::retain_recoverable_rejected_envelopes_for_buffer(50, 50, &mut boundary),
+            1
+        );
         assert!(boundary.is_empty());
     }
 }

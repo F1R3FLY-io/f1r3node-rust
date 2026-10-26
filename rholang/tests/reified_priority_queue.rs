@@ -21,7 +21,7 @@
 //!   keeps its seniority.
 //! * One counter serves the whole priority queue (decision 31), so two branches race on it.
 //!   Replay reproduces play, and the order survives a restart.
-//! * Metering (decision 42) and the legacy charges of Option P (decision 45).
+//! * The legacy charges of Option P (decision 45).
 //!
 //! Each property below states an invariant of `PriorityQueue.v` or `PriorityQueue.tla`:
 //!
@@ -34,7 +34,6 @@
 //! | `prop_pq_settle_bounded_any_schedule` | `pq_settle_terminates` |
 //! | `prop_pq_txn_fires_bounded_at_the_cap` | `TxnFiresBounded`, `pq_settle_terminates` |
 //! | `prop_pq_plan_permutation_invariant` | `pq_plan_permutation_invariant` |
-//! | `prop_pq_reservation_cut_rejects_without_effect` | `level_scan_trace_covered` |
 //! | `prop_pq_reissue_keeps_ord_any_schedule` | `ReissueKeepsOrd`, `pq_reissue_takes_level_fifo_place`, `pq_reentered_waiter_keeps_seniority` |
 //! | `prop_pq_priority_domain` | `pq_priority_domain` |
 //! | `prop_pq_no_level_storage` | `pq_no_level_storage` |
@@ -54,7 +53,6 @@ use models::rhoapi::{
     BindPattern, CostAuthority, CostRegion, CostSignature, EEq, EVar, Expr, ListParWithRandom, Par,
     ParWithRandom, TaggedContinuation, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::new_gbool_par;
 use proptest::arbitrary::any as arbitrary;
@@ -65,9 +63,8 @@ use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use rholang::rust::interpreter::accounting::byte_accounting::produce_introduction_identity;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::reified::legacy_charges::{
     consume_charges, produce_charges, ParSpaceConsume, ParSpaceProduce,
 };
@@ -97,7 +94,6 @@ use rholang::rust::interpreter::spaces::settle::{lift_continuation, lift_pattern
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
@@ -113,8 +109,8 @@ use rspace_plus_plus::rspace::space_store_handle::{
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce};
 use support::agent::{
     any, body_name, budget, counter, counter_channel, create, creation, data_channel, env_over,
-    exactly, fired, int, key_of, metered_env, named, play, play_and_replay, receive_on, run,
-    send_on, space_counter_channel, string, unbounded_host_work, ParRSpace,
+    exactly, fired, int, key_of, named, play, play_and_replay, receive_on, run, send_on,
+    space_counter_channel, string, ParRSpace,
 };
 use support::legacy::{charging_host, host_consume, host_produce, split};
 use support::props::{check, pure_config, tokio_runtime};
@@ -1805,7 +1801,7 @@ async fn space_disciplines_pq_branches_race_on_the_counter() {
     }
 }
 
-// ─── Metering (decision 42) and the legacy charges (decision 45, Option P) ───────────────────
+// ─── The legacy charges (decision 45, Option P) ──────────────────────────────────────────────
 
 /// The state before the send of 0 that settles: the record 1 at the level 1, and the
 /// unrestricted waiters b (only 0) and u (only 1).
@@ -1815,59 +1811,15 @@ async fn exposure(env: &SpaceEnv) {
     consume(env, receive_at("u", exactly(1), None)).await;
 }
 
-/// The host work of `VerificationOperations` that the send of 0 makes after `exposure`, on a
-/// fresh store.
-async fn settle_usage() -> u64 {
-    let Fixture { space, env } = fixture().await;
-    exposure(&env).await;
-    let host_work = unbounded_host_work();
-    let metered = metered_env(space.clone(), &env.budget, &host_work);
-    let outcome = produce(&metered, send_at(0, Some(0))).await;
-    assert_eq!(outcome.fires.len(), 2, "the plan and the settle fire");
-    host_work
-        .usage(HostWorkDimension::VerificationOperations)
-        .get()
-}
-
-/// A meter that allows `limit` units of `VerificationOperations` and every other unit.
-fn cut_host_work(limit: u64) -> HostWorkBudget {
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    limits.set(
-        HostWorkDimension::VerificationOperations,
-        HostWorkLimit::new(limit),
-    );
-    HostWorkBudget::new(limits)
-}
-
+/// After [`exposure`], the send of 0 fires the waiter b in its plan, and its settle then fires the
+/// waiter u with the record 1, in one operation.
 #[tokio::test]
-async fn space_disciplines_pq_reservation_cut_rejects_without_effect() {
-    let usage = settle_usage().await;
-    assert_eq!(settle_usage().await, usage, "the usage is deterministic");
-    for limit in [usage - 1, usage * 3 / 4, usage / 2, 0] {
-        let Fixture { space, env } = fixture().await;
-        exposure(&env).await;
-        let records_before = records(&space).await;
-        let waiters_before = waiters(&space).await;
-        let counter_before = counter_value(&space).await;
-        space.take_event_log().await;
-        let metered = metered_env(space.clone(), &env.budget, &cut_host_work(limit));
-        assert_eq!(
-            run(&pq(), &metered, SpaceOp::Produce(send_at(0, Some(0)))).await,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            "the limit {limit} of {usage}"
-        );
-        assert!(space.take_event_log().await.is_empty(), "nothing commits");
-        assert_eq!(records(&space).await, records_before);
-        assert_eq!(waiters(&space).await, waiters_before);
-        assert_eq!(counter_value(&space).await, counter_before);
-    }
-    let Fixture { space, env } = fixture().await;
+async fn space_disciplines_pq_send_fires_the_plan_and_the_settle() {
+    let Fixture { env, .. } = fixture().await;
     exposure(&env).await;
-    let metered = metered_env(space.clone(), &env.budget, &cut_host_work(usage));
-    assert_eq!(fired(&produce(&metered, send_at(0, Some(0))).await), vec![
-        literal("b"),
-        literal("u")
-    ]);
+    let outcome = produce(&env, send_at(0, Some(0))).await;
+    assert_eq!(outcome.fires.len(), 2, "the plan and the settle fire");
+    assert_eq!(fired(&outcome), vec![literal("b"), literal("u")]);
 }
 
 /// A fresh legacy budget and a charging host over it.
@@ -2096,7 +2048,7 @@ async fn space_disciplines_pq_legacy_charges_equal_host() {
 /// The slots of a test entry for `lane_heads`: `(level slot, ord, payload)`.
 type LevelEntry = (Option<i64>, i64, String);
 
-fn level_entry_slots(entry: &LevelEntry, _meter: &ScanMeter) -> Result<(i64, Level), SpaceError> {
+fn level_entry_slots(entry: &LevelEntry) -> Result<(i64, Level), SpaceError> {
     Ok((entry.1, Level::of_slot(entry.0)))
 }
 
@@ -2127,12 +2079,7 @@ fn prop_pq_level_order() {
                 })
                 .collect();
             let heads = PriorityQueueDiscipline
-                .lane_heads(
-                    Side::Data,
-                    &entries,
-                    level_entry_slots,
-                    &ScanMeter::new(None),
-                )
+                .lane_heads(Side::Data, &entries, level_entry_slots)
                 .map_err(|error| TestCaseError::fail(format!("{error}")))?;
             let levels: Vec<Level> = heads.keys().copied().collect();
             let expected_levels: Vec<Level> = entries
@@ -2166,12 +2113,7 @@ fn prop_pq_level_order() {
                 rotated.rotate_left(shift);
             }
             let rotated_heads = PriorityQueueDiscipline
-                .lane_heads(
-                    Side::Data,
-                    &rotated,
-                    level_entry_slots,
-                    &ScanMeter::new(None),
-                )
+                .lane_heads(Side::Data, &rotated, level_entry_slots)
                 .map_err(|error| TestCaseError::fail(format!("{error}")))?;
             for (level, head) in &rotated_heads {
                 let original = heads
@@ -2928,75 +2870,6 @@ fn prop_pq_plan_permutation_invariant() {
     });
 }
 
-/// `level_scan_trace_covered`: an operation reserves all of its work before the commit, so a
-/// budget below its usage rejects it with no effect, and a budget equal to its usage runs it.
-#[test]
-fn prop_pq_reservation_cut_rejects_without_effect() {
-    check(
-        pure_config(),
-        (arb_schedule(), 0u64..=100),
-        |(schedule, percent)| {
-            tokio_runtime().block_on(async {
-                let Some((last, prefix)) = schedule.split_last() else {
-                    return Ok(());
-                };
-                let index = prefix.len();
-                let mut usages = Vec::with_capacity(2);
-                let mut outcomes = Vec::with_capacity(2);
-                for limit in [None, Some(percent)] {
-                    let Fixture { space, env } = fixture().await;
-                    for (position, step_of) in prefix.iter().enumerate() {
-                        run(&pq(), &env, op_of(position, step_of))
-                            .await
-                            .map_err(|error| TestCaseError::fail(format!("{error}")))?;
-                    }
-                    let before = (
-                        records(&space).await,
-                        waiters(&space).await,
-                        counter_value(&space).await,
-                    );
-                    space.take_event_log().await;
-                    let host_work = match limit {
-                        None => unbounded_host_work(),
-                        Some(percent) => cut_host_work(usages[0] * percent / 100),
-                    };
-                    let metered = metered_env(space.clone(), &env.budget, &host_work);
-                    let result = run(&pq(), &metered, op_of(index, last)).await;
-                    usages.push(
-                        host_work
-                            .usage(HostWorkDimension::VerificationOperations)
-                            .get(),
-                    );
-                    match (&result, limit) {
-                        (Ok(_), None) => {}
-                        (Ok(_), Some(percent)) => {
-                            prop_assert_eq!(percent, 100, "only the full usage runs")
-                        }
-                        (Err(SpaceError::Host(RSpaceError::HostWorkRejected)), Some(percent)) => {
-                            prop_assert!(percent < 100);
-                            prop_assert!(space.take_event_log().await.is_empty());
-                            let after = (
-                                records(&space).await,
-                                waiters(&space).await,
-                                counter_value(&space).await,
-                            );
-                            prop_assert_eq!(after, before, "a rejected operation has no effect");
-                        }
-                        (other, _) => {
-                            return Err(TestCaseError::fail(format!("unexpected {other:?}")));
-                        }
-                    }
-                    outcomes.push(result);
-                }
-                if percent == 100 {
-                    prop_assert_eq!(&outcomes[1], &outcomes[0]);
-                }
-                Ok(())
-            })
-        },
-    );
-}
-
 /// One round of a generated schedule with re-issues: a fresh operation, or the next round of the
 /// oldest re-issued operation or settle job.
 #[derive(Clone, Debug)]
@@ -3470,9 +3343,8 @@ fn prop_pq_priority_domain() {
                 }),
             };
             let params = BTreeMap::from([(PRIORITY_PARAM.to_string(), value.clone())]);
-            let meter = ScanMeter::new(None);
             prop_assert_eq!(
-                PriorityQueueDiscipline.check_values(&config, &params, None, &meter),
+                PriorityQueueDiscipline.check_values(&config, &params, None),
                 expected.clone()
             );
             let query = QueryParams {
@@ -3480,12 +3352,7 @@ fn prop_pq_priority_domain() {
                 named: params,
             };
             prop_assert_eq!(
-                PriorityQueueDiscipline.check_values(
-                    &config,
-                    &BTreeMap::new(),
-                    Some(&query),
-                    &meter
-                ),
+                PriorityQueueDiscipline.check_values(&config, &BTreeMap::new(), Some(&query),),
                 expected
             );
             Ok(())

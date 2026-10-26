@@ -48,14 +48,11 @@
 //! identity. The decoders are strict: a record that is not the exact image of its encoder is a
 //! [`MalformedRecord`], and the operation aborts with `Inconsistent`.
 //!
-//! The space agents call the metered forms (decision 42): each one reserves on the host-work
-//! meter of the job the reads and the copies that its plain form makes, before the plain form
-//! makes them (DR-88 of `feature/cost-accounted-rho`). Then it calls the plain form, so both
-//! forms give the same record. Without a budget every reservation is free.
+//! The space agents build each parked continuation from its parts, with one copy of each part
+//! ([`wrap_continuation_from_parts`] and the forms for the other envelopes).
 
 use std::collections::BTreeMap;
-use std::mem::size_of;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
@@ -66,19 +63,35 @@ use models::rhoapi::{
 };
 use models::rust::utils::union;
 use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::rspace_interface::{RSpaceOperationSource, RSpaceResult};
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;
 use rspace_plus_plus::rspace::space_store_handle::BeforeObserve;
 
 use super::agent::{ConsumeOp, ProduceOp};
 use super::errors::SpaceError;
 use super::namespace::REIFIED_TAG;
 use super::types::config::{map_entries, map_par, string_par};
-use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
+use crate::rust::interpreter::accounting::authority::{
+    resolve_system_residue, AuthorityByteEventKind, ResidueContext,
+};
 use crate::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
 };
 use crate::rust::interpreter::accounting::RuntimeBudget;
-use crate::rust::interpreter::reified::costs::ScanMeter;
+
+/// The bincode bytes of `value`, as the host encodes a channel or a datum. An encode that fails
+/// is `Inconsistent`.
+pub fn bincode_bytes<T: serde::Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, SpaceError> {
+    bincode::serialize(value).map_err(|_| SpaceError::Inconsistent("a space value does not encode"))
+}
+
+/// The blake2b-256 hash of the bincode bytes of `value`, as the host hashes a channel
+/// (`stable_hash_provider::hash`).
+pub fn bincode_digest<T: serde::Serialize + ?Sized>(
+    value: &T,
+) -> Result<Blake2b256Hash, SpaceError> {
+    Ok(Blake2b256Hash::new(&bincode_bytes(value)?))
+}
 
 /// The second byte of every record tag.
 pub const RECORD_TAG_MARK: u8 = 0x52;
@@ -478,16 +491,6 @@ pub fn cost_authority(authority: &CostAuthority) -> Option<CostAuthority> {
     stamped(authority).cloned()
 }
 
-/// [`cost_authority`] with its copy reserved.
-pub fn cost_authority_metered(
-    authority: &CostAuthority,
-    meter: &ScanMeter,
-) -> Result<Option<CostAuthority>, RSpaceError> {
-    stamped(authority)
-        .map(|authority| meter.copy(authority))
-        .transpose()
-}
-
 // Disabled by decision 42: the authorities were copied once for each operation, before the
 // operation needed them. The borrowed form below copies an authority only where a record or a
 // callback keeps it, and the meter reserves that copy.
@@ -580,126 +583,21 @@ impl<'a> OperationAuthority<'a> {
 //     })
 // }
 
-// ── Metered forms (decision 42) ───────────────────────────────────────────────────────────
-
-/// The bytes of the spine of a continuation envelope: the `Par`, its `Expr`, the `EList` and the
-/// four element `Par`s. A metered decode reserves the spine and reads the three small slots. It
-/// does not read the body: the decoder reads only the `connective_used` flag of the body, which
-/// the spine covers, and DR-88 charges no part that the decoder does not read.
-const CONTINUATION_SPINE_BYTES: usize =
-    size_of::<Par>() + size_of::<Expr>() + size_of::<EList>() + 4 * size_of::<Par>();
-
-/// The slots that [`into_continuation`] moves out of a fired continuation: the body, the random
-/// state, the guard and the cost authority. Each move is one operation that reads its slot
-/// (DR-91).
-const CONTINUATION_MOVED_SLOTS: [usize; 4] = [
-    size_of::<Par>(),
-    size_of::<Vec<u8>>(),
-    size_of::<Option<Par>>(),
-    size_of::<Option<CostAuthority>>(),
-];
-
-/// The machine words of a `RuntimeBudget` handle. Every field of the handle but one is a
-/// shared pointer, so a copy of the handle copies at most this many shared pointers.
-const RUNTIME_BUDGET_WORDS: usize = size_of::<RuntimeBudget>() / size_of::<usize>();
-
-// The templates of the envelopes that an agent builds. Every envelope of a kind has the shape of
-// its template: the order and the value are inline integers, and every bit set of a template
-// element is empty. So a reserved copy of the template reserves the allocations of a new
-// envelope, before the builder makes them.
-
-/// The template of a datum envelope.
-static DATUM_ENVELOPE: LazyLock<Par> = LazyLock::new(|| datum_envelope(0));
-
-/// The template of a continuation envelope around an empty body: the spine, the tag, the order
-/// and the policy slot.
-static CONTINUATION_ENVELOPE: LazyLock<Par> =
-    LazyLock::new(|| continuation_envelope(0, Par::default()));
-
-/// The template of the pars of a counter record.
-static COUNTER_PARS: LazyLock<Vec<Par>> = LazyLock::new(|| counter_pars(0));
-
-/// The template of the envelope of a config record.
-static CONFIG_ENVELOPE: LazyLock<Par> = LazyLock::new(config_envelope);
-
-/// [`wrap_datum`] with its copies reserved: the envelope, the buffer of the envelope and the
-/// payload, each payload par, the random state, the cost authority and the cost stack of
-/// `datum`.
-pub fn wrap_datum_metered(
-    ord: i64,
-    datum: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<ListParWithRandom, RSpaceError> {
-    let length = datum
-        .pars
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve_copy(&*DATUM_ENVELOPE)?;
-    meter.reserve_buffer::<Par>(length)?;
-    for par in &datum.pars {
-        meter.reserve_copy(par)?;
-    }
-    meter.reserve_copy(&datum.random_state)?;
-    meter.reserve_copy(&datum.cost_authority)?;
-    meter.reserve_copy(&datum.cost_stack)?;
-    Ok(wrap_datum(ord, datum))
-}
-
-/// [`datum_ord`] with its read reserved: the envelope, which is small for every record that an
-/// agent wrote (DR-76: inspect before an unmetered walk).
-pub fn datum_ord_metered(record: &ListParWithRandom, meter: &ScanMeter) -> Result<i64, SpaceError> {
-    if let Some(envelope) = record.pars.first() {
-        meter.inspect(envelope)?;
-    }
-    Ok(datum_ord(record)?)
-}
-
-/// [`unwrap_datum`] with its reads and copies reserved: the envelope, the payload, the random
-/// state, the cost authority and the cost stack.
-pub fn unwrap_datum_metered(
-    record: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<DatumRecord, SpaceError> {
-    if let Some(envelope) = record.pars.first() {
-        meter.inspect(envelope)?;
-    }
-    if let Some(payload) = record.pars.get(1..) {
-        meter.reserve_copy_slice(payload)?;
-    }
-    meter.reserve_copy(&record.random_state)?;
-    meter.reserve_copy(&record.cost_authority)?;
-    meter.reserve_copy(&record.cost_stack)?;
-    Ok(unwrap_datum(record)?)
-}
+// ── The builder from parts and the owned decoder of a continuation ────────────────────────
 
 /// The parked continuation of a receive with the order `ord`, built from its parts with one
 /// copy of each part: the body inside the envelope, the random state, the guard and the cost
 /// authority. It equals [`wrap_continuation`] of the continuation with these parts.
-///
-/// The reservations are the envelope, the body, the work of `list_par` on the bit set of the
-/// body (its copy into the fold, the union and the copy into the list), the random state, the
-/// guard and the cost authority.
-pub fn wrap_continuation_metered(
+pub fn wrap_continuation_from_parts(
     ord: i64,
     body: &ParWithRandom,
     guard: &Option<Par>,
     cost_authority: Option<&CostAuthority>,
-    meter: &ScanMeter,
 ) -> Result<TaggedContinuation, SpaceError> {
     let Some(original) = &body.body else {
         return Err(MalformedRecord(RecordKind::Continuation).into());
     };
-    meter.reserve_copy(&*CONTINUATION_ENVELOPE)?;
-    meter.reserve_copy(original)?;
-    meter.reserve_copy(&original.locally_free)?;
-    meter.reserve_buffer::<u8>(original.locally_free.len())?;
-    meter.reserve_copy(&original.locally_free)?;
-    meter.reserve_copy(&body.random_state)?;
-    meter.reserve_copy(guard)?;
-    let cost_authority = cost_authority
-        .map(|authority| meter.copy(authority))
-        .transpose()?;
+    let cost_authority = cost_authority.cloned();
     Ok(TaggedContinuation {
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
             body: Some(continuation_envelope(ord, original.clone())),
@@ -710,66 +608,13 @@ pub fn wrap_continuation_metered(
     })
 }
 
-/// Reserves the decode of the envelope of `continuation`: its spine and its tag, order and
-/// policy slots, never its body.
-fn reserve_continuation_envelope(
-    continuation: &TaggedContinuation,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    meter.charge(4, CONTINUATION_SPINE_BYTES, 0)?;
-    let slots = match &continuation.tagged_cont {
-        Some(TaggedCont::ParBody(ParWithRandom {
-            body: Some(body), ..
-        })) => match sole_expr(body) {
-            Some(ExprInstance::EListBody(EList { ps, .. })) => ps.get(..3),
-            _ => None,
-        },
-        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
-        | Some(TaggedCont::ScalaBodyRef(_))
-        | None => None,
-    };
-    for slot in slots.unwrap_or_default() {
-        meter.inspect(slot)?;
-    }
-    Ok(())
-}
-
-/// [`continuation_ord`] with its read reserved: the spine and the small slots of the envelope.
-pub fn continuation_ord_metered(
-    continuation: &TaggedContinuation,
-    meter: &ScanMeter,
-) -> Result<i64, SpaceError> {
-    reserve_continuation_envelope(continuation, meter)?;
-    Ok(continuation_ord(continuation)?)
-}
-
-/// Reserves the later [`into_continuation`] of a fired continuation at the time its fire is
-/// staged: the decode of its envelope and the moves of its four slots. The outcome of the
-/// operation decodes the receipt after the commit, so the agent pays for that work before the
-/// commit, and a host-work rejection never follows a commit.
-pub fn prepay_continuation_unwrap(
-    continuation: &TaggedContinuation,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    reserve_continuation_envelope(continuation, meter)?;
-    // A VectorDB waiter carries its query (P6). The decode of a query policy is more than the
-    // read of its slot, so it is reserved here; `Nil` and a level reserve nothing more.
-    if let Some(policy) = continuation_policy_par(continuation) {
-        reserve_policy_decode(policy, meter)?;
-    }
-    for slot in CONTINUATION_MOVED_SLOTS {
-        meter.moved(slot)?;
-    }
-    Ok(())
-}
-
 /// Decodes an owned parked continuation (the inverse of [`wrap_continuation`], of
 /// [`wrap_pq_continuation`] and of [`wrap_policy_continuation`]). It moves the original body,
-/// the random state, the guard and the cost authority out of the record, so it copies nothing.
-/// [`prepay_continuation_unwrap`] reserves its work. The outcome of every family decodes its
-/// fired continuations here, and a fired waiter carries its policy: the level of a priority
-/// queue (P5b) or the query of a VectorDB waiter (P6). So this decoder accepts every policy
-/// that [`policy_of`] accepts.
+/// the random state, the guard and the cost authority out of the record, so it copies none of
+/// these parts.
+/// The outcome of every family decodes its fired continuations here, and a fired waiter carries its
+/// policy: the level of a priority queue (P5b) or the query of a VectorDB waiter (P6). So this
+/// decoder accepts every policy that [`policy_of`] accepts.
 pub fn into_continuation(
     continuation: TaggedContinuation,
 ) -> Result<ContinuationRecord, MalformedRecord> {
@@ -811,53 +656,6 @@ pub fn into_continuation(
             cost_authority,
         },
     })
-}
-
-/// [`counter_record`] with its copies reserved: the pars and the bytes of the random state. The
-/// caller reserves the copy of `cost_authority`.
-pub fn counter_record_metered(
-    value: i64,
-    random: &Blake2b512Random,
-    cost_authority: Option<CostAuthority>,
-    meter: &ScanMeter,
-) -> Result<ListParWithRandom, RSpaceError> {
-    meter.reserve_copy(&*COUNTER_PARS)?;
-    meter.random_bytes(random)?;
-    Ok(counter_record(value, random, cost_authority))
-}
-
-/// [`counter_value`] with its read reserved: the envelope and the value.
-pub fn counter_value_metered(
-    record: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<i64, SpaceError> {
-    meter.inspect(&record.pars)?;
-    Ok(counter_value(record)?)
-}
-
-/// [`config_record`] with its copies reserved: the envelope, the buffer of the two pars and the
-/// bytes of the random state. The config map moves into the record.
-pub fn config_record_metered(
-    config: Par,
-    random: &Blake2b512Random,
-    meter: &ScanMeter,
-) -> Result<ListParWithRandom, RSpaceError> {
-    meter.reserve_copy(&*CONFIG_ENVELOPE)?;
-    meter.reserve_buffer::<Par>(2)?;
-    meter.random_bytes(random)?;
-    Ok(config_record(config, random))
-}
-
-/// [`config_map`] with its read reserved: the envelope. The caller reserves its reads of the
-/// map.
-pub fn config_map_metered<'a>(
-    record: &'a ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<&'a Par, SpaceError> {
-    if let Some(envelope) = record.pars.first() {
-        meter.inspect(envelope)?;
-    }
-    Ok(config_map(record)?)
 }
 
 // ── The slots of a priority queue (P5b, decision 38) ──────────────────────────────────────
@@ -1116,102 +914,20 @@ pub fn unwrap_pq_continuation(
     })
 }
 
-/// The template of a datum envelope of a priority queue with a level: the order and the level
-/// are inline integers, so a reserved copy of it reserves the allocations of such an envelope.
-static PQ_DATUM_ENVELOPE: LazyLock<Par> = LazyLock::new(|| pq_datum_envelope(0, Some(0)));
-
-/// The template of the policy of a waiter of a level: one entry with an inline integer.
-static PQ_POLICY: LazyLock<Par> = LazyLock::new(|| pq_policy(Some(0)));
-
-/// [`wrap_pq_datum`] with its copies reserved: the envelope (the template of its shape), the
-/// buffer of the envelope and the payload, each payload par, the random state, the cost
-/// authority and the cost stack of `datum`.
-pub fn wrap_pq_datum_metered(
-    ord: i64,
-    priority: Option<i64>,
-    datum: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<ListParWithRandom, RSpaceError> {
-    let length = datum
-        .pars
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let template = match priority {
-        Some(_) => &*PQ_DATUM_ENVELOPE,
-        None => &*DATUM_ENVELOPE,
-    };
-    meter.reserve_copy(template)?;
-    meter.reserve_buffer::<Par>(length)?;
-    for par in &datum.pars {
-        meter.reserve_copy(par)?;
-    }
-    meter.reserve_copy(&datum.random_state)?;
-    meter.reserve_copy(&datum.cost_authority)?;
-    meter.reserve_copy(&datum.cost_stack)?;
-    Ok(wrap_pq_datum(ord, priority, datum))
-}
-
-/// [`pq_datum_slots`] with its read reserved: the envelope, which is small for every record that
-/// an agent wrote.
-pub fn pq_datum_slots_metered(
-    record: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<(i64, Option<i64>), SpaceError> {
-    if let Some(envelope) = record.pars.first() {
-        meter.inspect(envelope)?;
-    }
-    Ok(pq_datum_slots(record)?)
-}
-
-/// [`unwrap_pq_datum`] with its reads and copies reserved: the envelope, the payload, the random
-/// state, the cost authority and the cost stack.
-pub fn unwrap_pq_datum_metered(
-    record: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<PqDatumRecord, SpaceError> {
-    if let Some(envelope) = record.pars.first() {
-        meter.inspect(envelope)?;
-    }
-    if let Some(payload) = record.pars.get(1..) {
-        meter.reserve_copy_slice(payload)?;
-    }
-    meter.reserve_copy(&record.random_state)?;
-    meter.reserve_copy(&record.cost_authority)?;
-    meter.reserve_copy(&record.cost_stack)?;
-    Ok(unwrap_pq_datum(record)?)
-}
-
 /// The parked continuation of a receive of a priority queue with the order `ord` and the policy
 /// of `priority`, built from its parts with one copy of each part. It equals
 /// [`wrap_pq_continuation`] of the continuation with these parts.
-///
-/// The reservations are those of [`wrap_continuation_metered`], and for a waiter of a level the
-/// policy (the template of its shape).
-pub fn wrap_pq_continuation_metered(
+pub fn wrap_pq_continuation_from_parts(
     ord: i64,
     priority: Option<i64>,
     body: &ParWithRandom,
     guard: &Option<Par>,
     cost_authority: Option<&CostAuthority>,
-    meter: &ScanMeter,
 ) -> Result<TaggedContinuation, SpaceError> {
     let Some(original) = &body.body else {
         return Err(MalformedRecord(RecordKind::Continuation).into());
     };
-    meter.reserve_copy(&*CONTINUATION_ENVELOPE)?;
-    if priority.is_some() {
-        meter.reserve_copy(&*PQ_POLICY)?;
-    }
-    meter.reserve_copy(original)?;
-    meter.reserve_copy(&original.locally_free)?;
-    meter.reserve_buffer::<u8>(original.locally_free.len())?;
-    meter.reserve_copy(&original.locally_free)?;
-    meter.reserve_copy(&body.random_state)?;
-    meter.reserve_copy(guard)?;
-    let cost_authority = cost_authority
-        .map(|authority| meter.copy(authority))
-        .transpose()?;
+    let cost_authority = cost_authority.cloned();
     Ok(TaggedContinuation {
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
             body: Some(pq_continuation_envelope(ord, priority, original.clone())),
@@ -1220,16 +936,6 @@ pub fn wrap_pq_continuation_metered(
         guard: guard.clone(),
         cost_authority,
     })
-}
-
-/// [`pq_continuation_slots`] with its read reserved: the spine and the small slots of the
-/// envelope, the policy included, never the body.
-pub fn pq_continuation_slots_metered(
-    continuation: &TaggedContinuation,
-    meter: &ScanMeter,
-) -> Result<(i64, Option<i64>), SpaceError> {
-    reserve_continuation_envelope(continuation, meter)?;
-    Ok(pq_continuation_slots(continuation)?)
 }
 
 // ── Waiter policies and the records of a VectorDB space (P6, design v3 4.0 and 4.3) ───────
@@ -1262,8 +968,7 @@ pub const VDB_QUERY_KEYS: [&str; 8] = [
 /// The policy slot of a parked waiter (version 1) and of a join slot (version 2).
 ///
 /// The query map is boxed, so the policy has the size of the `Option<i64>` that the slot held
-/// before P6, and every reservation that the join engine makes by the size of a slot stays the
-/// same for the families of P5.
+/// before P6.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum WaiterPolicy {
     /// `Nil`: a waiter without a policy.
@@ -1318,10 +1023,6 @@ pub fn policy_par(policy: &WaiterPolicy) -> Par {
     }
 }
 
-/// True when `par` cannot be a level policy or `Nil`, so that its decode is the decode of a
-/// query map. The check reads the structure of the slot only.
-fn is_query_policy(par: &Par) -> bool { level_of_policy(par).is_none() }
-
 /// The policy of a policy slot: `Nil`, the exact image of [`pq_policy`] with a natural level,
 /// or a non-empty map whose keys are in [`VDB_QUERY_KEYS`] and that equals its re-encoding.
 /// Every other value is `None`.
@@ -1342,37 +1043,6 @@ pub fn policy_of(par: &Par) -> Option<WaiterPolicy> {
             .collect(),
     ));
     (policy_par(&policy) == *par).then_some(policy)
-}
-
-/// Reserves the decode of the policy slot `par` beyond its read: nothing for `Nil` and for a
-/// level, whose decode the read covers, and for a query map the decode of its entries, their
-/// re-encoding and the comparison of the two maps (the config record decodes the same way).
-fn reserve_policy_decode(par: &Par, meter: &ScanMeter) -> Result<(), SpaceError> {
-    if is_query_policy(par) {
-        meter.reserve_copy(par)?;
-        meter.reserve_copy(par)?;
-        meter.inspect(par)?;
-        meter.inspect(par)?;
-    }
-    Ok(())
-}
-
-/// Reserves the encode of `policy` into its par: nothing for `Nil`, the template of the level
-/// map for a level, and for a query map the copy of each key and value and the buffer of the
-/// entries.
-fn reserve_policy_encode(policy: &WaiterPolicy, meter: &ScanMeter) -> Result<(), SpaceError> {
-    match policy {
-        WaiterPolicy::None => Ok(()),
-        WaiterPolicy::Level(_) => meter.reserve_copy(&*PQ_POLICY).map_err(SpaceError::from),
-        WaiterPolicy::Query(entries) => {
-            meter.reserve_buffer::<KeyValuePair>(entries.len())?;
-            for (key, value) in entries.iter() {
-                meter.reserve_copy(key)?;
-                meter.reserve_copy(value)?;
-            }
-            Ok(())
-        }
-    }
 }
 
 /// The envelope of a parked continuation with the order `ord` and the policy `policy` around
@@ -1476,29 +1146,17 @@ pub fn unwrap_policy_continuation(
 }
 
 /// [`wrap_policy_continuation`] built from the parts of a receive, with one copy of each part.
-/// The reservations are those of [`wrap_continuation_metered`] and the encode of the policy.
-pub fn wrap_policy_continuation_metered(
+pub fn wrap_policy_continuation_from_parts(
     ord: i64,
     policy: &WaiterPolicy,
     body: &ParWithRandom,
     guard: &Option<Par>,
     cost_authority: Option<&CostAuthority>,
-    meter: &ScanMeter,
 ) -> Result<TaggedContinuation, SpaceError> {
     let Some(original) = &body.body else {
         return Err(MalformedRecord(RecordKind::Continuation).into());
     };
-    meter.reserve_copy(&*CONTINUATION_ENVELOPE)?;
-    reserve_policy_encode(policy, meter)?;
-    meter.reserve_copy(original)?;
-    meter.reserve_copy(&original.locally_free)?;
-    meter.reserve_buffer::<u8>(original.locally_free.len())?;
-    meter.reserve_copy(&original.locally_free)?;
-    meter.reserve_copy(&body.random_state)?;
-    meter.reserve_copy(guard)?;
-    let cost_authority = cost_authority
-        .map(|authority| meter.copy(authority))
-        .transpose()?;
+    let cost_authority = cost_authority.cloned();
     Ok(TaggedContinuation {
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
             body: Some(policy_continuation_envelope(ord, policy, original.clone())),
@@ -1507,34 +1165,6 @@ pub fn wrap_policy_continuation_metered(
         guard: guard.clone(),
         cost_authority,
     })
-}
-
-/// [`continuation_policy_slots`] with its read reserved: the spine and the small slots of the
-/// envelope, and the decode of a query policy.
-pub fn continuation_policy_slots_metered(
-    continuation: &TaggedContinuation,
-    meter: &ScanMeter,
-) -> Result<(i64, WaiterPolicy), SpaceError> {
-    reserve_continuation_envelope(continuation, meter)?;
-    if let Some(policy) = continuation_policy_par(continuation) {
-        reserve_policy_decode(policy, meter)?;
-    }
-    Ok(continuation_policy_slots(continuation)?)
-}
-
-/// The policy slot of a continuation record of version 1, read without a check.
-fn continuation_policy_par(continuation: &TaggedContinuation) -> Option<&Par> {
-    match &continuation.tagged_cont {
-        Some(TaggedCont::ParBody(ParWithRandom {
-            body: Some(body), ..
-        })) => match sole_expr(body) {
-            Some(ExprInstance::EListBody(EList { ps, .. })) => ps.get(2),
-            _ => None,
-        },
-        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
-        | Some(TaggedCont::ScalaBodyRef(_))
-        | None => None,
-    }
 }
 
 /// True when `par` can fill the embedding slot of a datum of a VectorDB space: one list without
@@ -1626,65 +1256,6 @@ pub fn unwrap_vdb_datum(record: &ListParWithRandom) -> Result<VdbDatumRecord, Ma
     })
 }
 
-/// [`wrap_vdb_datum`] with its copies reserved: the envelope, the embedding, the buffer of the
-/// envelope and the payload, each payload par, the random state, the cost authority and the
-/// cost stack of `datum`.
-pub fn wrap_vdb_datum_metered(
-    ord: i64,
-    embedding: Option<&Par>,
-    datum: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<ListParWithRandom, SpaceError> {
-    let length = datum
-        .pars
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve_copy(&*DATUM_ENVELOPE)?;
-    if let Some(vector) = embedding {
-        meter.inspect(vector)?;
-        meter.reserve_copy(vector)?;
-    }
-    meter.reserve_buffer::<Par>(length)?;
-    for par in &datum.pars {
-        meter.reserve_copy(par)?;
-    }
-    meter.reserve_copy(&datum.random_state)?;
-    meter.reserve_copy(&datum.cost_authority)?;
-    meter.reserve_copy(&datum.cost_stack)?;
-    Ok(wrap_vdb_datum(ord, embedding, datum)?)
-}
-
-/// [`vdb_datum_slots`] with its read reserved: the envelope, the embedding included.
-pub fn vdb_datum_slots_metered<'r>(
-    record: &'r ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<(i64, Option<&'r Par>), SpaceError> {
-    if let Some(envelope) = record.pars.first() {
-        meter.inspect(envelope)?;
-    }
-    Ok(vdb_datum_slots(record)?)
-}
-
-/// [`unwrap_vdb_datum`] with its reads and copies reserved: the envelope, the embedding, the
-/// payload, the random state, the cost authority and the cost stack.
-pub fn unwrap_vdb_datum_metered(
-    record: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<VdbDatumRecord, SpaceError> {
-    if let Some(envelope) = record.pars.first() {
-        meter.inspect(envelope)?;
-        meter.reserve_copy(envelope)?;
-    }
-    if let Some(payload) = record.pars.get(1..) {
-        meter.reserve_copy_slice(payload)?;
-    }
-    meter.reserve_copy(&record.random_state)?;
-    meter.reserve_copy(&record.cost_authority)?;
-    meter.reserve_copy(&record.cost_stack)?;
-    Ok(unwrap_vdb_datum(record)?)
-}
-
 // ── The continuation record of a join (P5c, decision 29) ──────────────────────────────────
 //
 // A waiter with two or more binds parks on the group of its channels in canonical order
@@ -1716,8 +1287,7 @@ pub const JOIN_CONTINUATION_TAG: [u8; 4] = [
 /// The slot of one group position of a join waiter.
 ///
 /// The slot was `Copy` with a level `priority: Option<i64>` until P6. The policy of P6 also holds
-/// the query of a VectorDB bind (design v3 4.0), boxed, so the slot keeps its size and the join
-/// engine reserves the same work for the families of P5.
+/// the query of a VectorDB bind (design v3 4.0), boxed, so the slot keeps its size.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JoinSlot {
     /// The order of the waiter in the collection of the position. Repeated channels of one
@@ -1739,9 +1309,6 @@ pub struct JoinContinuationRecord {
     /// guard and its cost authority.
     pub continuation: TaggedContinuation,
 }
-
-/// The type of one result of a fire receipt.
-type FiredResult = RSpaceResult<Par, ListParWithRandom>;
 
 fn join_tag() -> Par { expr_par(ExprInstance::GByteArray(JOIN_CONTINUATION_TAG.to_vec())) }
 
@@ -1892,7 +1459,6 @@ pub fn unwrap_join_continuation(
 
 /// Decodes an owned continuation record of a join. It moves the original body, the random
 /// state, the guard and the cost authority out of the record, as [`into_continuation`] does.
-/// [`prepay_join_continuation_unwrap`] reserves its work.
 pub fn into_join_continuation(
     continuation: TaggedContinuation,
 ) -> Result<JoinContinuationRecord, MalformedRecord> {
@@ -1931,8 +1497,7 @@ pub fn into_join_continuation(
 /// The results of a join fire in the bind order of its receive. The receipt lists one result
 /// for each group position, in group order, and the slot of position `i` names its bind. The
 /// host dispatches the results of a join in bind order (`dispatch.rs`), so the outcome puts
-/// result `i` at the place `slots[i].bind`. [`prepay_join_continuation_unwrap`] reserves the two
-/// buffers and the moves.
+/// result `i` at the place `slots[i].bind`.
 pub fn restore_bind_order<T>(slots: &[JoinSlot], results: Vec<T>) -> Result<Vec<T>, SpaceError> {
     if slots.len() != results.len() {
         return Err(SpaceError::Inconsistent(
@@ -1961,57 +1526,22 @@ pub fn restore_bind_order<T>(slots: &[JoinSlot], results: Vec<T>) -> Result<Vec<
         .collect()
 }
 
-/// The template of the envelope of a join record with an empty slot list around an empty body:
-/// the spine, the tag and the spine of the slot list.
-static JOIN_CONTINUATION_ENVELOPE: LazyLock<Par> =
-    LazyLock::new(|| list_par(vec![join_tag(), list_par(Vec::new()), Par::default()]));
-
-/// The template of one slot without a policy: the orders are inline integers.
-static JOIN_SLOT: LazyLock<Par> =
-    LazyLock::new(|| list_par(vec![int_par(0), int_par(0), Par::default()]));
-
-/// The bytes of the spine of a join envelope: the `Par`, its `Expr`, the `EList` and the three
-/// element `Par`s.
-const JOIN_SPINE_BYTES: usize =
-    size_of::<Par>() + size_of::<Expr>() + size_of::<EList>() + 3 * size_of::<Par>();
-
 /// The parked continuation of a receive with two or more binds and the slots `slots`, built
 /// from its parts with one copy of each part. It equals [`wrap_join_continuation`] of the
 /// continuation with these parts.
-///
-/// The reservations are the check of the slots (one flag for each slot), the envelope (the
-/// template of its spine), the buffer of the slot list, each slot (the template of its shape and
-/// a lane policy), the body, the work of `list_par` on the bit set of the body, the random
-/// state, the guard and the cost authority.
-pub fn wrap_join_continuation_metered(
+pub fn wrap_join_continuation_from_parts(
     slots: &[JoinSlot],
     body: &ParWithRandom,
     guard: &Option<Par>,
     cost_authority: Option<&CostAuthority>,
-    meter: &ScanMeter,
 ) -> Result<TaggedContinuation, SpaceError> {
     let Some(original) = &body.body else {
         return Err(MalformedRecord(RecordKind::Continuation).into());
     };
-    meter.reserve_buffer::<bool>(slots.len())?;
     if !join_slots_valid(slots) {
         return Err(MalformedRecord(RecordKind::Continuation).into());
     }
-    meter.reserve_copy(&*JOIN_CONTINUATION_ENVELOPE)?;
-    meter.reserve_buffer::<Par>(slots.len())?;
-    for slot in slots {
-        meter.reserve_copy(&*JOIN_SLOT)?;
-        reserve_policy_encode(&slot.policy, meter)?;
-    }
-    meter.reserve_copy(original)?;
-    meter.reserve_copy(&original.locally_free)?;
-    meter.reserve_buffer::<u8>(original.locally_free.len())?;
-    meter.reserve_copy(&original.locally_free)?;
-    meter.reserve_copy(&body.random_state)?;
-    meter.reserve_copy(guard)?;
-    let cost_authority = cost_authority
-        .map(|authority| meter.copy(authority))
-        .transpose()?;
+    let cost_authority = cost_authority.cloned();
     Ok(TaggedContinuation {
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
             body: Some(join_envelope_of(slots, original.clone())?),
@@ -2020,96 +1550,6 @@ pub fn wrap_join_continuation_metered(
         guard: guard.clone(),
         cost_authority,
     })
-}
-
-/// The elements of the outer list of the envelope of `continuation`, read without a check. A
-/// continuation without such a list has none.
-fn envelope_elements(continuation: &TaggedContinuation) -> &[Par] {
-    match &continuation.tagged_cont {
-        Some(TaggedCont::ParBody(ParWithRandom {
-            body: Some(body), ..
-        })) => match sole_expr(body) {
-            Some(ExprInstance::EListBody(EList { ps, .. })) => ps.as_slice(),
-            _ => &[],
-        },
-        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
-        | Some(TaggedCont::ScalaBodyRef(_))
-        | None => &[],
-    }
-}
-
-/// Reserves the decode of the envelope of a join record: its spine, its tag, its slot list and
-/// the two buffers of the decoder (the slots and the flags of the permutation check), never its
-/// body.
-fn reserve_join_envelope(
-    continuation: &TaggedContinuation,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    meter.charge(4, JOIN_SPINE_BYTES, 0)?;
-    let count = match envelope_elements(continuation) {
-        [tag, slot_list, ..] => {
-            meter.inspect(tag)?;
-            meter.inspect(slot_list)?;
-            match sole_expr(slot_list) {
-                Some(ExprInstance::EListBody(EList { ps, .. })) => ps.len(),
-                _ => 0,
-            }
-        }
-        [tag] => {
-            meter.inspect(tag)?;
-            0
-        }
-        [] => 0,
-    };
-    meter.reserve_buffer::<JoinSlot>(count)?;
-    meter.reserve_buffer::<bool>(count)?;
-    // The decode of a query policy of a VectorDB bind is more than the read of the slot list
-    // (P6); `Nil` and a level reserve nothing more.
-    if let [_, slot_list, ..] = envelope_elements(continuation) {
-        if let Some(ExprInstance::EListBody(EList { ps, .. })) = sole_expr(slot_list) {
-            for slot in ps {
-                if let Some(ExprInstance::EListBody(EList { ps: parts, .. })) = sole_expr(slot) {
-                    if let Some(policy) = parts.get(2) {
-                        reserve_policy_decode(policy, meter)?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// [`join_continuation_slots`] with its read reserved: the spine, the tag and the slot list of
-/// the envelope and the buffers of the decoder, never the body.
-pub fn join_continuation_slots_metered(
-    continuation: &TaggedContinuation,
-    meter: &ScanMeter,
-) -> Result<Vec<JoinSlot>, SpaceError> {
-    reserve_join_envelope(continuation, meter)?;
-    Ok(join_continuation_slots(continuation)?)
-}
-
-/// Reserves the later [`into_join_continuation`] and [`restore_bind_order`] of a fired join
-/// waiter at the time its fire is staged, for a receipt of `results` results: the decode of the
-/// envelope, the moves of its four slots, the two buffers of the bind order and the two moves of
-/// each result. The outcome runs after the commit, so a host-work rejection never follows a
-/// commit.
-pub fn prepay_join_continuation_unwrap(
-    continuation: &TaggedContinuation,
-    results: usize,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    reserve_join_envelope(continuation, meter)?;
-    for slot in CONTINUATION_MOVED_SLOTS {
-        meter.moved(slot)?;
-    }
-    meter.reserve_buffer::<Option<FiredResult>>(results)?;
-    meter.reserve_buffer::<FiredResult>(results)?;
-    for _ in 0..results {
-        meter.moved(size_of::<FiredResult>())?;
-        meter.moved(size_of::<Option<FiredResult>>())?;
-    }
-    Ok(())
 }
 
 /// The introduction authority of one operation and the phlo budget of its deploy. The staged
@@ -2121,39 +1561,42 @@ pub struct Introduction {
 }
 
 impl Introduction {
-    /// The introduction of `authority` on `budget`, with its copies reserved: the shared
-    /// pointers of the budget handle, the authority and the shared allocation.
-    pub fn new(
-        budget: &RuntimeBudget,
-        authority: &CostAuthority,
-        meter: &ScanMeter,
-    ) -> Result<Arc<Introduction>, RSpaceError> {
-        meter.shared(RUNTIME_BUDGET_WORDS)?;
-        meter.reserve_copy(authority)?;
-        let allocation = shared::rust::clone_backing::arc_allocation_bytes::<Introduction>()
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.charge(1, 0, allocation)?;
-        Ok(Arc::new(Introduction {
+    /// The introduction of `authority` on `budget`.
+    pub fn new(budget: &RuntimeBudget, authority: &CostAuthority) -> Arc<Introduction> {
+        Arc::new(Introduction {
             budget: budget.clone(),
             authority: authority.clone(),
-        }))
+        })
     }
 
     /// The introduction authority.
     pub fn authority(&self) -> &CostAuthority { &self.authority }
 
     /// The introduction of a re-stored record (decision 45, Rule E): the budget of this
-    /// introduction and the record's own cost authority, or the empty authority when the record
-    /// has none. The host reducer's `produce_peeks` registers the same authority when it sends a
-    /// peeked datum again. The copies are reserved as in [`Introduction::new`].
-    pub fn for_record(
-        &self,
-        record: &ListParWithRandom,
-        meter: &ScanMeter,
-    ) -> Result<Arc<Introduction>, RSpaceError> {
+    /// introduction and the record's own cost authority as the deployment of the budget resolves
+    /// it, or the empty authority when the record has none. A Unit region of system residue that
+    /// this deployment derived from the random state of the record resolves to the region of
+    /// the payer, and every other region stays as stored (DR-101 of `feature/cost-accounted-rho`).
+    /// The host reducer's `produce_peeks` registers the same authority when it sends a peeked
+    /// datum again. A seal that does not resolve is `Inconsistent`.
+    pub fn for_record(&self, record: &ListParWithRandom) -> Result<Arc<Introduction>, SpaceError> {
+        // Changed by decision 89 (DR-101): a restored record charges its seal as this deployment
+        // resolves it, so the system residue of an earlier deployment stays free.
+        // match &record.cost_authority {
+        //     Some(authority) => Introduction::new(&self.budget, authority),
+        //     None => Introduction::new(&self.budget, &CostAuthority::default()),
+        // }
+        const UNRESOLVED: &str = "the seal of a re-stored record does not resolve";
         match &record.cost_authority {
-            Some(authority) => Introduction::new(&self.budget, authority, meter),
-            None => Introduction::new(&self.budget, &CostAuthority::default(), meter),
+            Some(seal) => {
+                let context =
+                    ResidueContext::new(&self.budget.signature(), self.budget.deploy_id())
+                        .map_err(|_| SpaceError::Inconsistent(UNRESOLVED))?;
+                let authority = resolve_system_residue(seal, &record.random_state, &context)
+                    .map_err(|_| SpaceError::Inconsistent(UNRESOLVED))?;
+                Ok(Introduction::new(&self.budget, &authority))
+            }
+            None => Ok(Introduction::new(&self.budget, &CostAuthority::default())),
         }
     }
 }
@@ -2163,14 +1606,10 @@ impl Introduction {
 /// introduction authority under the identity of the staged operation, where the reducer's
 /// `produce` and `consume` register it (P4 design B.7). A repeated identity, a re-offer or a
 /// re-fire, registers its first authority again. Another authority fails the commit at that
-/// operation. The callback copies one shared pointer, which the meter reserves.
-pub fn register_introduction(
-    introduction: &Arc<Introduction>,
-    meter: &ScanMeter,
-) -> Result<BeforeObserve, RSpaceError> {
-    meter.shared(1)?;
+/// operation. The callback copies one shared pointer.
+pub fn register_introduction(introduction: &Arc<Introduction>) -> BeforeObserve {
     let introduction = Arc::clone(introduction);
-    Ok(Box::new(move |source: RSpaceOperationSource<'_>| {
+    Box::new(move |source: RSpaceOperationSource<'_>| {
         let (identity, kind) = match source {
             RSpaceOperationSource::Produce(produce) => (
                 produce_introduction_identity(produce),
@@ -2185,7 +1624,7 @@ pub fn register_introduction(
             .budget
             .register_introduction_authority(identity, kind, &introduction.authority)
             .map_err(RSpaceError::from)
-    }))
+    })
 }
 
 #[cfg(test)]
@@ -2597,11 +2036,10 @@ mod tests {
         }
     }
 
-    /// The introduction of `authority` on a fresh budget, without a meter.
+    /// The introduction of `authority` on a fresh budget.
     fn introduction_of(authority: &CostAuthority) -> Arc<Introduction> {
         let budget = RuntimeBudget::new(Cost::create(1_000, "record test"));
-        Introduction::new(&budget, authority, &ScanMeter::new(None))
-            .expect("an unmetered introduction")
+        Introduction::new(&budget, authority)
     }
 
     #[test]
@@ -2654,10 +2092,8 @@ mod tests {
 
     /// The `before_observe` callback of an operation with the authority `authority`.
     fn callback(budget: &RuntimeBudget, authority: &CostAuthority) -> BeforeObserve {
-        let meter = ScanMeter::new(None);
-        let introduction =
-            Introduction::new(budget, authority, &meter).expect("an unmetered introduction");
-        register_introduction(&introduction, &meter).expect("an unmetered callback")
+        let introduction = Introduction::new(budget, authority);
+        register_introduction(&introduction)
     }
 
     #[test]
@@ -2704,6 +2140,88 @@ mod tests {
                 AuthorityByteEventKind::ConsumeIntroduction
             ),
             Ok(region(9))
+        );
+    }
+
+    /// Decision 89 (DR-101): a re-stored record charges its seal as the deployment of the budget
+    /// resolves it, as the host reducer's `produce_peeks` does. Residue that this deployment
+    /// sealed from the random state of the record resolves to the region of the payer. Another
+    /// deployment, another payer and system work keep the stored seal, and a record without a
+    /// cost authority gets the empty authority.
+    #[test]
+    fn space_record_restore_resolves_residue_only_in_its_deployment() {
+        use crate::rust::interpreter::accounting::authority::{
+            canonical_authority, cost_region, sig_to_cost_signature, system_residue_region,
+        };
+        use crate::rust::interpreter::accounting::Sig;
+
+        let payer = Sig::Ground(vec![1; 33]);
+        let entropy = b"rrs-residue-entropy".to_vec();
+        let payer_region = cost_region(
+            &sig_to_cost_signature(&payer).expect("a ground payer converts"),
+            &entropy,
+            0,
+        )
+        .expect("the region of the payer");
+        let stored =
+            canonical_authority(&CostAuthority {
+                regions: vec![
+                    system_residue_region(&payer_region, &[7; 32]).expect("a residue region")
+                ],
+            })
+            .expect("a canonical residue seal");
+        let paid = canonical_authority(&CostAuthority {
+            regions: vec![payer_region],
+        })
+        .expect("a canonical payer seal");
+        let record = ListParWithRandom {
+            pars: vec![int(1)],
+            random_state: entropy,
+            cost_authority: Some(stored.clone()),
+            cost_stack: None,
+        };
+        let budget = RuntimeBudget::new(Cost::create(1_000, "record residue"));
+        let introduction = Introduction::new(&budget, &region(9));
+        budget
+            .set_deploy_id_funded([7; 32], payer.clone())
+            .expect("a funded deployment");
+        assert_eq!(
+            introduction
+                .for_record(&record)
+                .expect("the seal resolves")
+                .authority(),
+            &paid
+        );
+        for (deploy_id, other) in [([8; 32], payer), ([7; 32], Sig::Ground(vec![2; 33]))] {
+            budget
+                .set_deploy_id_funded(deploy_id, other)
+                .expect("another funded deployment");
+            assert_eq!(
+                introduction
+                    .for_record(&record)
+                    .expect("the seal stays")
+                    .authority(),
+                &stored
+            );
+        }
+        budget.set_system_payer();
+        assert_eq!(
+            introduction
+                .for_record(&record)
+                .expect("system work keeps the seal")
+                .authority(),
+            &stored
+        );
+        let bare = ListParWithRandom {
+            cost_authority: None,
+            ..record
+        };
+        assert_eq!(
+            introduction
+                .for_record(&bare)
+                .expect("a record without a seal")
+                .authority(),
+            &CostAuthority::default()
         );
     }
 
@@ -2958,84 +2476,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn space_record_pq_metered_forms_equal_the_plain_forms_and_reserve_first() {
-        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-
-        use crate::rust::interpreter::host_work::HostWorkBudget;
-
-        let unbounded =
-            || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let operations = HostWorkDimension::VerificationOperations;
-        let original = datum(vec![string("payload"), int(3)]);
-        let body = ParWithRandom {
-            body: Some(int(9)),
-            random_state: vec![5, 6],
-        };
-        for priority in PRIORITIES {
-            let budget = unbounded();
-            let meter = ScanMeter::new(Some(budget.clone()));
-            let record = wrap_pq_datum_metered(2, priority, &original, &meter).expect("a record");
-            assert_eq!(record, wrap_pq_datum(2, priority, &original));
-            assert_eq!(pq_datum_slots_metered(&record, &meter), Ok((2, priority)));
-            assert_eq!(
-                unwrap_pq_datum_metered(&record, &meter).map(|decoded| decoded.datum),
-                Ok(original.clone())
-            );
-            let continuation = wrap_pq_continuation_metered(
-                3,
-                priority,
-                &body,
-                &Some(int(1)),
-                Some(&region(7)),
-                &meter,
-            )
-            .expect("a continuation");
-            assert_eq!(
-                continuation,
-                wrap_pq_continuation(3, priority, &parked(int(9))).expect("a body")
-            );
-            assert_eq!(
-                pq_continuation_slots_metered(&continuation, &meter),
-                Ok((3, priority))
-            );
-            let usage = budget.usage(operations).get();
-            assert!(usage > 0, "the forms reserve their work");
-            // A budget one unit short rejects the forms before they return a value.
-            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-            limits.set(operations, HostWorkLimit::new(usage - 1));
-            let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
-            let outcome = wrap_pq_datum_metered(2, priority, &original, &cut)
-                .map_err(SpaceError::from)
-                .and_then(|record| {
-                    pq_datum_slots_metered(&record, &cut)?;
-                    unwrap_pq_datum_metered(&record, &cut)?;
-                    let continuation = wrap_pq_continuation_metered(
-                        3,
-                        priority,
-                        &body,
-                        &Some(int(1)),
-                        Some(&region(7)),
-                        &cut,
-                    )?;
-                    pq_continuation_slots_metered(&continuation, &cut)
-                });
-            assert_eq!(
-                outcome,
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-            );
-        }
-        // A waiter of a level reserves its policy, so it reserves more than an unrestricted one.
-        let usage_of = |priority: Option<i64>| {
-            let budget = unbounded();
-            let meter = ScanMeter::new(Some(budget.clone()));
-            wrap_pq_continuation_metered(3, priority, &body, &None, None, &meter)
-                .expect("a continuation");
-            budget.usage(operations).get()
-        };
-        assert!(usage_of(Some(1)) > usage_of(None));
-    }
-
     // ── The continuation record of a join (P5c, decision 29) ──────────────────────────────
 
     fn slot(ord: i64, bind: usize, priority: Option<i64>) -> JoinSlot {
@@ -3274,7 +2714,7 @@ mod tests {
                 Some(malformed)
             );
             assert_eq!(
-                wrap_join_continuation_metered(
+                wrap_join_continuation_from_parts(
                     &bad,
                     &ParWithRandom {
                         body: Some(int(9)),
@@ -3282,7 +2722,6 @@ mod tests {
                     },
                     &None,
                     None,
-                    &ScanMeter::new(None),
                 )
                 .err(),
                 Some(SpaceError::from(malformed))
@@ -3326,80 +2765,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn space_record_join_metered_forms_equal_the_plain_forms_and_reserve_first() {
-        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-
-        use crate::rust::interpreter::host_work::HostWorkBudget;
-
-        let unbounded =
-            || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let operations = HostWorkDimension::VerificationOperations;
-        let body = ParWithRandom {
-            body: Some(int(9)),
-            random_state: vec![5, 6],
-        };
-        for slots in join_slot_lists() {
-            let budget = unbounded();
-            let meter = ScanMeter::new(Some(budget.clone()));
-            let wrapped = wrap_join_continuation_metered(
-                &slots,
-                &body,
-                &Some(int(1)),
-                Some(&region(7)),
-                &meter,
-            )
-            .expect("a join record");
-            assert_eq!(
-                wrapped,
-                wrap_join_continuation(&slots, &parked(int(9))).expect("a body")
-            );
-            assert_eq!(
-                join_continuation_slots_metered(&wrapped, &meter),
-                Ok(slots.clone())
-            );
-            prepay_join_continuation_unwrap(&wrapped, slots.len(), &meter)
-                .expect("an unbounded prepay");
-            let usage = budget.usage(operations).get();
-            assert!(usage > 0, "the forms reserve their work");
-            // A budget one unit short rejects the forms before they return a value.
-            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-            limits.set(operations, HostWorkLimit::new(usage - 1));
-            let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
-            let outcome = wrap_join_continuation_metered(
-                &slots,
-                &body,
-                &Some(int(1)),
-                Some(&region(7)),
-                &cut,
-            )
-            .and_then(|wrapped| {
-                join_continuation_slots_metered(&wrapped, &cut)?;
-                prepay_join_continuation_unwrap(&wrapped, slots.len(), &cut)
-            });
-            assert_eq!(
-                outcome,
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-            );
-        }
-        // More slots and more results reserve more work.
-        let usage_of = |slots: &[JoinSlot]| {
-            let budget = unbounded();
-            let meter = ScanMeter::new(Some(budget.clone()));
-            let wrapped = wrap_join_continuation_metered(slots, &body, &None, None, &meter)
-                .expect("a join record");
-            join_continuation_slots_metered(&wrapped, &meter).expect("the slots");
-            prepay_join_continuation_unwrap(&wrapped, slots.len(), &meter).expect("a prepay");
-            budget.usage(operations).get()
-        };
-        let two = vec![slot(0, 0, None), slot(0, 1, None)];
-        let three = vec![slot(0, 0, None), slot(0, 1, None), slot(0, 2, None)];
-        assert!(usage_of(&three) > usage_of(&two));
-        // A lane policy is reserved.
-        let laned = vec![slot(0, 0, Some(1)), slot(0, 1, None)];
-        assert!(usage_of(&laned) > usage_of(&two));
-    }
-
     // ── Waiter policies and the records of a VectorDB space (P6, design v3 4.0) ───────────
 
     fn double(value: f64) -> Par { expr_par(ExprInstance::GDouble(value.to_bits())) }
@@ -3438,8 +2803,8 @@ mod tests {
 
     #[test]
     fn space_record_waiter_policy_keeps_the_size_of_a_level() {
-        // The join engine reserves its slot buffers by size, so the policy of P6 keeps the size
-        // of the `Option<i64>` level of P5, and a slot keeps its size.
+        // The query of P6 is boxed, so the policy keeps the size of the `Option<i64>` level of P5,
+        // and a slot keeps its size.
         assert_eq!(size_of::<WaiterPolicy>(), size_of::<Option<i64>>());
         assert_eq!(
             size_of::<JoinSlot>(),
@@ -3465,10 +2830,7 @@ mod tests {
             assert_eq!(policy_of(&par), Some(policy.clone()));
             assert_eq!(policy.level(), None);
             assert!(policy.query().is_some());
-            assert!(is_query_policy(&par));
         }
-        assert!(!is_query_policy(&Par::default()));
-        assert!(!is_query_policy(&pq_policy(Some(2))));
     }
 
     #[test]
@@ -3628,106 +2990,5 @@ mod tests {
             Par::default(),
             vector.clone()
         ])));
-    }
-
-    #[test]
-    fn space_record_vdb_metered_forms_equal_the_plain_forms_and_reserve_first() {
-        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-
-        use crate::rust::interpreter::host_work::HostWorkBudget;
-
-        let unbounded =
-            || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let operations = HostWorkDimension::VerificationOperations;
-        let original = datum(vec![string("payload"), int(3)]);
-        let vector = list_par(vec![int(1), double(-0.5), int(0)]);
-        let body = ParWithRandom {
-            body: Some(int(9)),
-            random_state: vec![5, 6],
-        };
-        let mut policies = vec![WaiterPolicy::None, WaiterPolicy::Level(1)];
-        policies.extend(query_policies());
-        for (embedding, policy) in [None, Some(&vector)].into_iter().cycle().zip(policies) {
-            let budget = unbounded();
-            let meter = ScanMeter::new(Some(budget.clone()));
-            let record = wrap_vdb_datum_metered(0, embedding, &original, &meter).expect("a record");
-            assert_eq!(
-                record,
-                wrap_vdb_datum(0, embedding, &original).expect("a record")
-            );
-            assert_eq!(vdb_datum_slots_metered(&record, &meter), Ok((0, embedding)));
-            assert_eq!(
-                unwrap_vdb_datum_metered(&record, &meter).map(|decoded| decoded.datum),
-                Ok(original.clone())
-            );
-            let continuation = wrap_policy_continuation_metered(
-                3,
-                &policy,
-                &body,
-                &Some(int(1)),
-                Some(&region(7)),
-                &meter,
-            )
-            .expect("a continuation");
-            assert_eq!(
-                continuation,
-                wrap_policy_continuation(3, &policy, &parked(int(9))).expect("a body")
-            );
-            assert_eq!(
-                continuation_policy_slots_metered(&continuation, &meter),
-                Ok((3, policy.clone()))
-            );
-            prepay_continuation_unwrap(&continuation, &meter).expect("an unbounded prepay");
-            let usage = budget.usage(operations).get();
-            assert!(usage > 0, "the forms reserve their work");
-            // A budget one unit short rejects the forms before they return a value.
-            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-            limits.set(operations, HostWorkLimit::new(usage - 1));
-            let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
-            let outcome =
-                wrap_vdb_datum_metered(0, embedding, &original, &cut).and_then(|record| {
-                    vdb_datum_slots_metered(&record, &cut)?;
-                    unwrap_vdb_datum_metered(&record, &cut)?;
-                    let continuation = wrap_policy_continuation_metered(
-                        3,
-                        &policy,
-                        &body,
-                        &Some(int(1)),
-                        Some(&region(7)),
-                        &cut,
-                    )?;
-                    continuation_policy_slots_metered(&continuation, &cut)?;
-                    prepay_continuation_unwrap(&continuation, &cut)
-                });
-            assert_eq!(
-                outcome,
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-            );
-        }
-        // The decode of `Nil` and of a level reserves nothing beyond the read of the slot, so
-        // the prepay of every waiter of P5 does the same work as before P6. A query reserves
-        // its decode.
-        let decode_usage = |policy: &Par| {
-            let budget = unbounded();
-            let meter = ScanMeter::new(Some(budget.clone()));
-            reserve_policy_decode(policy, &meter).expect("an unbounded reservation");
-            budget.usage(operations).get()
-        };
-        assert_eq!(decode_usage(&Par::default()), 0);
-        assert_eq!(decode_usage(&pq_policy(Some(3))), 0);
-        for policy in query_policies() {
-            assert!(decode_usage(&policy_par(&policy)) > 0);
-        }
-        // A waiter with a query reserves more than a waiter without one.
-        let usage_of = |policy: &WaiterPolicy| {
-            let budget = unbounded();
-            let meter = ScanMeter::new(Some(budget.clone()));
-            wrap_policy_continuation_metered(3, policy, &body, &None, None, &meter)
-                .expect("a continuation");
-            budget.usage(operations).get()
-        };
-        for policy in query_policies() {
-            assert!(usage_of(&policy) > usage_of(&WaiterPolicy::None));
-        }
     }
 }

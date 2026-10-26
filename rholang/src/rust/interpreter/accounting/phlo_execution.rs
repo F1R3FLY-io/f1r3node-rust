@@ -1,12 +1,10 @@
 use std::collections::BTreeMap;
 
-use models::rust::host_work::{HostWorkDimension, HostWorkReservationError, HostWorkUnits};
 use models::rust::phlo_resource::{PhloAuthorityNode as AuthorityNode, PhloResourceKeyV1};
 use thiserror::Error;
 
 use super::phlo_controls::CheckedPhloControls;
 use super::Sig;
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 mod obligations;
 mod funding;
@@ -250,8 +248,6 @@ impl<'a> CheckedPhloExecution<'a> {
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum PhloExecutionError {
-    #[error(transparent)]
-    HostWork(#[from] HostWorkReservationError),
     #[error("phlo resource allocation failed")]
     AllocationFailed,
     #[error("phlo resource quantity must be positive")]
@@ -317,34 +313,10 @@ impl WorkBudget {
     }
 }
 
-fn resource_key<'a>(
-    resource: PhloResource<'a>,
-    budget: &mut WorkBudget,
-) -> Result<ResourceKey<'a>, PhloExecutionError> {
-    resource_key_with_host_work(resource, budget, None)
-}
-
-fn reserve_key_work(
-    budget: Option<&HostWorkBudget>,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), PhloExecutionError> {
-    if let Some(budget) = budget {
-        budget.reserve(
-            dimension,
-            HostWorkUnits::new(
-                u64::try_from(amount).map_err(|_| PhloExecutionError::ArithmeticOverflow)?,
-            ),
-        )?;
-    }
-    Ok(())
-}
-
 fn push_key_entry<T>(
     output: &mut Vec<T>,
     reserved: &mut usize,
     value: T,
-    host: Option<&HostWorkBudget>,
 ) -> Result<(), PhloExecutionError> {
     let length = output.len();
     if length == *reserved {
@@ -355,59 +327,41 @@ fn push_key_entry<T>(
                 .checked_mul(2)
                 .ok_or(PhloExecutionError::ArithmeticOverflow)?
         };
-        let bytes = capacity
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or(PhloExecutionError::ArithmeticOverflow)?;
-        reserve_key_work(host, HostWorkDimension::SearchStateBytes, bytes)?;
-        reserve_key_work(host, HostWorkDimension::VerificationOperations, length)?;
         output
             .try_reserve_exact(capacity - length)
             .map_err(|_| PhloExecutionError::AllocationFailed)?;
         *reserved = capacity;
     }
-    reserve_key_work(host, HostWorkDimension::VerificationOperations, 1)?;
     output.push(value);
     Ok(())
 }
 
-fn resource_key_with_host_work<'a>(
+fn resource_key<'a>(
     resource: PhloResource<'a>,
     budget: &mut WorkBudget,
-    host: Option<&HostWorkBudget>,
 ) -> Result<ResourceKey<'a>, PhloExecutionError> {
-    reserve_key_work(host, HostWorkDimension::VerificationOperations, 3)?;
     budget.bytes(resource.location.len())?;
     budget.bytes(resource.acquisition_terms.len())?;
     let mut pending = Vec::new();
     let mut pending_reserved = 0;
-    push_key_entry(
-        &mut pending,
-        &mut pending_reserved,
-        resource.authority,
-        host,
-    )?;
+    push_key_entry(&mut pending, &mut pending_reserved, resource.authority)?;
     let mut authority = Vec::new();
     let mut authority_reserved = 0;
     while let Some(current) = pending.pop() {
-        reserve_key_work(host, HostWorkDimension::VerificationOperations, 1)?;
         budget.remaining_nodes = budget
             .remaining_nodes
             .checked_sub(1)
             .ok_or(PhloExecutionError::TooManyAuthorityNodes)?;
         match current {
-            Sig::Unit => push_key_entry(
-                &mut authority,
-                &mut authority_reserved,
-                AuthorityNode::Unit,
-                host,
-            )?,
+            Sig::Unit => {
+                push_key_entry(&mut authority, &mut authority_reserved, AuthorityNode::Unit)?
+            }
             Sig::Ground(bytes) => {
                 budget.bytes(bytes.len())?;
                 push_key_entry(
                     &mut authority,
                     &mut authority_reserved,
                     AuthorityNode::Ground(bytes),
-                    host,
                 )?;
             }
             Sig::Quote(bytes) => {
@@ -416,18 +370,12 @@ fn resource_key_with_host_work<'a>(
                     &mut authority,
                     &mut authority_reserved,
                     AuthorityNode::Quote(bytes),
-                    host,
                 )?;
             }
             Sig::And(left, right) => {
-                push_key_entry(
-                    &mut authority,
-                    &mut authority_reserved,
-                    AuthorityNode::And,
-                    host,
-                )?;
-                push_key_entry(&mut pending, &mut pending_reserved, right.as_ref(), host)?;
-                push_key_entry(&mut pending, &mut pending_reserved, left.as_ref(), host)?;
+                push_key_entry(&mut authority, &mut authority_reserved, AuthorityNode::And)?;
+                push_key_entry(&mut pending, &mut pending_reserved, right.as_ref())?;
+                push_key_entry(&mut pending, &mut pending_reserved, left.as_ref())?;
             }
             _ => return Err(PhloExecutionError::UnsupportedFundingAuthority),
         }

@@ -1,0 +1,29 @@
+{
+ "schema_version": 2,
+ "package": "casper-linux-admission-7509c831c-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-linux-admission-7509c831c-01.external.tar.gz",
+   "sha256": "6421065e4f9a17588a589e3202246e0273f11d988f30a58b9e46666b27275deb",
+   "bytes": 14510,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  },
+  {
+   "asset": "casper-linux-admission-7509c831c-01.metadata.tar.gz",
+   "sha256": "b12dca1c35017f0d6d317965c350d3cb3e5e56f28663de10b648160c0585d93e",
+   "bytes": 962,
+   "members": 2,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

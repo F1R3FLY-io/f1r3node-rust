@@ -10,7 +10,6 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, ParWithRandom, TaggedC
 use models::rust::casper::protocol::casper_message::{
     CommEvent, ConsumeEvent, Event as CasperEvent, Peek, ProduceEvent,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsages};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::utils::{new_freevar_par, new_gint_par, new_gstring_par};
 use proptest::prelude::*;
@@ -20,8 +19,8 @@ use proptest::test_runner::{RngSeed, TestRunner};
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
-    native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
-    NativePhloExecutionContract, NativePhloRegionLimits,
+    native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
+    NativePhloDimension, NativePhloExecutionContract, NativePhloRegionLimits,
 };
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
@@ -29,7 +28,6 @@ use rholang::rust::interpreter::accounting::phlo_controls::{
 use rholang::rust::interpreter::accounting::{NativeRuntimeConfig, Sig};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
@@ -78,7 +76,9 @@ const R3_SAME_CHANNEL_JOIN: &str =
     r#"for (@[y, 6] <- @"rrs-r3-greedy" & @[1, x] <- @"rrs-r3-greedy") { Nil }"#;
 // The witness of greedy joins needs `[1, 6]` before the other datum in the
 // canonical candidate order, so that the bind `[1, x]` takes it first. The
-// order follows the source hashes of the two produces (DR-75). The data
+// order follows the source hashes of the two produces (DR-75). Since DR-129
+// play picks at random again, and E1 keeps this order for a channel that a join
+// names twice, as here (`order_repeated_channels`). The data
 // `[1, 5]` were the witness under the digest order before the merge of
 // feature/cost-accounted-rho at 4d67b5ccc. Under the canonical order, `[1, 1]`
 // and `[1, 2]` are witnesses, and `[1, 0]`, `[1, 3]`, `[1, 4]`, `[1, 5]`,
@@ -431,20 +431,6 @@ fn errors_json(errors: &[InterpreterError]) -> Value {
         errors
             .iter()
             .map(|error| Value::String(format!("{error:?}")))
-            .collect(),
-    )
-}
-
-fn usages_json(usages: &HostWorkUsages) -> Value {
-    Value::Object(
-        HostWorkDimension::ALL
-            .into_iter()
-            .map(|dimension| {
-                (
-                    format!("{dimension:?}"),
-                    Value::from(usages.get(dimension).get()),
-                )
-            })
             .collect(),
     )
 }
@@ -1745,7 +1731,7 @@ fn reified_ordinary_regression_r5_event_struct_and_proto_bytes() {
     observe("r5", "r5_event_struct_and_proto_bytes", section);
 }
 
-fn native_config(limit: u64, host_work: HostWorkBudget) -> NativeRuntimeConfig {
+fn native_config(limit: u64) -> NativeRuntimeConfig {
     let names: [&[u8]; 4] = [b"c", b"i", b"t", b"r"];
     let descriptor = PhloScheduleV1 {
         protocol_version: 6,
@@ -1783,22 +1769,19 @@ fn native_config(limit: u64, host_work: HostWorkBudget) -> NativeRuntimeConfig {
     )
     .expect("check the native phlo controls");
     let contract =
-        NativePhloExecutionContract::new(controls, &binding).expect("build the native contract");
-    NativeRuntimeConfig::new(
-        contract,
-        NativeBudgetTraceLimits {
-            attempts: 100_000,
-            path_segments: 4096,
-            regions: NativePhloRegionLimits {
-                regions: 1000,
-                encoded_authority_bytes: 10_000_000,
-            },
+        NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+            .expect("build the native contract");
+    NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+        attempts: 100_000,
+        path_segments: 4096,
+        regions: NativePhloRegionLimits {
+            regions: 1000,
+            encoded_authority_bytes: 10_000_000,
         },
-        host_work,
-    )
+    })
 }
 
-fn native_json(result: &EvaluateResult, host_work: &HostWorkBudget) -> Value {
+fn native_json(result: &EvaluateResult) -> Value {
     let comm_identity_counts: Vec<usize> = result
         .native_operation_recording
         .as_ref()
@@ -1817,8 +1800,6 @@ fn native_json(result: &EvaluateResult, host_work: &HostWorkBudget) -> Value {
             .as_ref()
             .map(|rows| rows.len()),
         "comm_identity_counts": comm_identity_counts,
-        "host_work_usage": usages_json(&host_work.usages()),
-        "host_work_rejection": format!("{:?}", host_work.rejection()),
     })
 }
 
@@ -1841,39 +1822,19 @@ async fn r6_program(program: &CostProgram) -> Value {
             "quantitative_byte_cost": result.quantitative_byte_cost,
         })
     };
-    let host_work = {
-        let Runtimes { play, .. } = fresh_runtimes().await;
-        let (result, report) = play
-            .evaluate_with_host_work(
-                program.source,
-                Cost::create(program.phlo, label.clone()),
-                HashMap::new(),
-                seed(&label),
-                HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{label} host-work evaluation failed: {error:?}"));
-        json!({
-            "cost": result.cost.value,
-            "errors": errors_json(&result.errors),
-            "host_work_usage": usages_json(&report.usages),
-            "host_work_rejection": format!("{:?}", report.rejection),
-        })
-    };
     let native = {
         let Runtimes { mut play, .. } = fresh_runtimes().await;
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
         let result = play
             .evaluate_with_native_phlo(
                 program.source,
                 HashMap::new(),
                 seed(&label),
                 None,
-                native_config(program.native_limit, budget.clone()),
+                native_config(program.native_limit),
             )
             .await
             .unwrap_or_else(|error| panic!("{label} native evaluation failed: {error:?}"));
-        native_json(&result, &budget)
+        native_json(&result)
     };
     json!({
         "source": program.source,
@@ -1881,7 +1842,6 @@ async fn r6_program(program: &CostProgram) -> Value {
         "native_limit": program.native_limit,
         "native_weights": NATIVE_WEIGHTS,
         "standard": standard,
-        "host_work": host_work,
         "native": native,
     })
 }
@@ -1902,7 +1862,7 @@ async fn reified_ordinary_regression_r6_cost_vectors() {
         .count();
     assert!(
         comm_programs >= 4,
-        "the host-work-metered native path observes COMMs in several programs"
+        "the native path observes COMMs in several programs"
     );
     assert!(
         programs["out_of_phlo"]["standard"]["errors"]
@@ -2204,9 +2164,18 @@ async fn deterministic_data_candidates() -> Value {
         remaining = after;
     }
     let ranked_hashes: Vec<Blake2b256Hash> = ranked.iter().map(|(hash, _)| hash.clone()).collect();
+    // Changed by decision 89 (DR-129): play picks at random among candidates again, as on dev,
+    // so the consumes take the data in some order. Each datum departs exactly once, and the
+    // observation records the taken data sorted.
+    // assert_eq!(
+    //     taken, ranked_hashes,
+    //     "consumes take data in the canonical candidate order"
+    // );
+    let taken = sorted_hashes(taken);
     assert_eq!(
-        taken, ranked_hashes,
-        "consumes take data in the canonical candidate order"
+        taken,
+        sorted_hashes(ranked_hashes.clone()),
+        "the consumes take each datum once"
     );
     json!({
         "source": DC_DATA_SOURCE,
@@ -2216,8 +2185,16 @@ async fn deterministic_data_candidates() -> Value {
             .iter()
             .map(|(_, index)| stored[*index].a.pars.iter().map(pretty).collect::<Vec<_>>())
             .collect::<Vec<_>>(),
-        "taken": hash_hex_list(&taken),
+        // "taken": hash_hex_list(&taken),
+        "taken_sorted": hash_hex_list(&taken),
     })
+}
+
+/// The hashes `hashes` in ascending order: the order-independent view of the candidates that
+/// a sequence of COMMs took (decision 89, DR-129).
+fn sorted_hashes(mut hashes: Vec<Blake2b256Hash>) -> Vec<Blake2b256Hash> {
+    hashes.sort();
+    hashes
 }
 
 async fn deterministic_continuation_candidates() -> Value {
@@ -2249,9 +2226,18 @@ async fn deterministic_continuation_candidates() -> Value {
         remaining = after;
     }
     let ranked_hashes: Vec<Blake2b256Hash> = ranked.iter().map(|(hash, _)| hash.clone()).collect();
+    // Changed by decision 89 (DR-129): play picks at random among candidates again, as on dev,
+    // so the produces fire the continuations in some order. Each continuation fires exactly
+    // once, and the observation records the fired continuations sorted.
+    // assert_eq!(
+    //     fired, ranked_hashes,
+    //     "produces fire continuations in the canonical candidate order"
+    // );
+    let fired = sorted_hashes(fired);
     assert_eq!(
-        fired, ranked_hashes,
-        "produces fire continuations in the canonical candidate order"
+        fired,
+        sorted_hashes(ranked_hashes.clone()),
+        "the produces fire each continuation once"
     );
     json!({
         "source": DC_CONTINUATION_SOURCE,
@@ -2261,7 +2247,8 @@ async fn deterministic_continuation_candidates() -> Value {
             .iter()
             .map(|(_, index)| continuation_state_json(&waiting[*index].continuation))
             .collect::<Vec<_>>(),
-        "fired": hash_hex_list(&fired),
+        // "fired": hash_hex_list(&fired),
+        "fired_sorted": hash_hex_list(&fired),
     })
 }
 

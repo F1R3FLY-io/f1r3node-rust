@@ -1,4 +1,3 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_obligation::PhloObligationKeyLimits;
 
 use super::*;
@@ -6,7 +5,6 @@ use crate::rust::interpreter::accounting::monetary_allocation::FundingSearchLimi
 use crate::rust::interpreter::accounting::phlo_execution::{
     CanonicalPhloFundingCapture, PhloCaptureLimits, PhloObligationKey, PhloResourceAmount,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Column {
@@ -38,7 +36,6 @@ fn with_capture(
     inspect: impl FnOnce(&CanonicalPhloFundingCapture<'_>),
 ) -> Vec<Column> {
     let cap = |n| NonZeroUsize::new(n).unwrap();
-    let budget = || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)));
     let wire = PhloWireLimits {
         total_bytes: 1_048_576,
         field_bytes: 524_288,
@@ -145,7 +142,7 @@ fn with_capture(
         work,
     )
     .unwrap()
-    .with_retained_acquisitions(&retained, &budget())
+    .with_retained_acquisitions(&retained)
     .unwrap();
     let obligations =
         project_phlo_obligations(execution, PhloOutcome::Accepted(&[]), cap(4)).unwrap();
@@ -192,21 +189,17 @@ fn with_capture(
         )
         .unwrap();
     let capture = checked
-        .capture_case(
-            0,
-            PhloCaptureLimits {
-                funding: FundingSearchLimits {
-                    source_cap: cap(count),
-                    obligation_cap: cap(4),
-                },
-                key: PhloObligationKeyLimits {
-                    wire,
-                    authority_nodes: 65_536,
-                },
-                aggregate_key_bytes: 1_048_576,
+        .capture_case(0, PhloCaptureLimits {
+            funding: FundingSearchLimits {
+                source_cap: cap(count),
+                obligation_cap: cap(4),
             },
-            &budget(),
-        )
+            key: PhloObligationKeyLimits {
+                wire,
+                authority_nodes: 65_536,
+            },
+            aggregate_key_bytes: 1_048_576,
+        })
         .unwrap();
     assert_eq!(capture.obligations().len(), 4);
     inspect(&capture);

@@ -993,6 +993,61 @@ pub async fn run_host_ops<S: ISpace<String, Pat, String, String>>(space: &S, ops
     }
 }
 
+/// The maximum number of fresh host replay spaces in [`paired_host_replay`].
+/// For a consume with two recorded COMMs, a draw tries them in the order of the
+/// log with a chance of one half, and that order pairs both. The draws are
+/// independent.
+pub const HOST_REPLAY_DRAWS: usize = 1024;
+
+/// Replays `ops` from `start` with the recorded `log` on fresh spaces from
+/// `fresh`, and returns the first space that pairs every recorded COMM.
+/// Decision 89 adds it for DR-129.
+///
+/// Legacy host replay tries the recorded COMMs of one consume in the iteration
+/// order of a hash map (`MultisetMultiMap`). A COMM that binds a persistent
+/// record can pair at any time (`was_repeated_enough_times`). A consume can
+/// fire twice in a log of random host play: first on a non-persistent record,
+/// and later on a persistent twin. Then the later COMM can pair first, and the
+/// produce counter of the earlier COMM is stale when the consume comes again.
+/// That COMM stays unpaired. Each fresh space has a new hash order. A draw that
+/// fails keeps its error for the report of the last draw.
+pub async fn paired_host_replay<S, F>(
+    fresh: F,
+    start: &Blake2b256Hash,
+    log: &[Event],
+    ops: &[Op],
+) -> Result<S, String>
+where
+    S: ISpace<String, Pat, String, String>,
+    F: Fn() -> S,
+{
+    let mut last = String::new();
+    for _ in 0..HOST_REPLAY_DRAWS {
+        let space = fresh();
+        space
+            .rig_and_reset(start.clone(), log.to_vec())
+            .await
+            .expect("rig a host replay space");
+        let ran: Result<(), RSpaceError> = async {
+            for op in ops {
+                run_host(&space, op).await?;
+            }
+            Ok(())
+        }
+        .await;
+        match ran {
+            Ok(()) => match space.check_replay_data().await {
+                Ok(()) => return Ok(space),
+                Err(error) => last = format!("{error:?}"),
+            },
+            Err(error) => last = format!("{error:?}"),
+        }
+    }
+    Err(format!(
+        "no host replay of {HOST_REPLAY_DRAWS} draws pairs every recorded COMM; last: {last}"
+    ))
+}
+
 /// The host-executable operations of `groups`: every operation the
 /// substrate does not reject, in order.
 pub fn flatten(groups: &[Vec<Op>]) -> Vec<Op> {
@@ -1040,6 +1095,20 @@ pub struct LogicalState {
 }
 
 impl LogicalState {
+    /// The same state with the record lists sorted: the view of headline H2
+    /// (`EventCorrelation.v`), where the record lists of a channel agree up to
+    /// permutation and the continuations and the joins are equal. Since
+    /// DR-129 the host picks at random among candidates, so it can take
+    /// another copy of a byte-identical record than the plan, which
+    /// takes the first copy (decision 89). The hot store keeps no two
+    /// byte-identical continuations, so only the record lists need the
+    /// permutation.
+    pub fn data_sorted(&self) -> LogicalState {
+        let mut sorted = self.clone();
+        sorted.data.values_mut().for_each(|records| records.sort());
+        sorted
+    }
+
     /// The same state with every list sorted (multiset view).
     pub fn sorted(&self) -> LogicalState {
         let mut sorted = self.clone();

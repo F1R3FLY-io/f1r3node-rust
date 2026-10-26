@@ -1,4 +1,3 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
@@ -9,10 +8,6 @@ use crate::rust::interpreter::accounting::phlo_execution::{
     check_counted_phlo_execution, PhloOutcome,
 };
 use crate::rust::interpreter::accounting::Sig;
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn limits() -> PhloExecutionLimits {
     PhloExecutionLimits {
@@ -53,12 +48,11 @@ fn measured_prepaid_keeps_exact_counts_for_zero_and_large_authority_groups() {
                 ..measured[0].resource
             },
         };
-        let bound =
-            bind_measured_phlo_prepaid(&measured, &[assignment; 2], limits(), &budget()).unwrap();
+        let bound = bind_measured_phlo_prepaid(&measured, &[assignment; 2], limits()).unwrap();
         assert_eq!(bound.witness().used.len(), 2);
         assert!(bound.witness().fresh.is_empty());
         assert!(matches!(
-            bind_measured_phlo_prepaid(&measured, &[assignment; 3], limits(), &budget()),
+            bind_measured_phlo_prepaid(&measured, &[assignment; 3], limits()),
             Err(MeasuredPhloPrepaidError::ExcessConsumption)
         ));
     }
@@ -106,8 +100,7 @@ fn measured_prepaid_rejects_each_identity_change_and_overdraw_without_input_muta
                     resource: changed,
                     ..assignment
                 }],
-                limits(),
-                &budget()
+                limits()
             ),
             Err(MeasuredPhloPrepaidError::ShapeMismatch)
         ));
@@ -119,16 +112,15 @@ fn measured_prepaid_rejects_each_identity_change_and_overdraw_without_input_muta
                 demand_index: 1,
                 ..assignment
             }],
-            limits(),
-            &budget()
+            limits()
         ),
         Err(MeasuredPhloPrepaidError::MissingDemand)
     ));
     assert!(matches!(
-        bind_measured_phlo_prepaid(&measured, &[assignment, assignment], limits(), &budget()),
+        bind_measured_phlo_prepaid(&measured, &[assignment, assignment], limits()),
         Err(MeasuredPhloPrepaidError::ExcessConsumption)
     ));
-    let bound = bind_measured_phlo_prepaid(&measured, &[assignment], limits(), &budget()).unwrap();
+    let bound = bind_measured_phlo_prepaid(&measured, &[assignment], limits()).unwrap();
     assert_eq!(
         bound.witness().used[0].resource.acquisition_terms,
         b"original-terms"
@@ -148,7 +140,7 @@ fn measured_prepaid_enforces_limits_and_keeps_large_quantities_counted() {
         demand_index: 0,
         resource: measured[0].resource,
     };
-    let bound = bind_measured_phlo_prepaid(&measured, &[assignment], limits(), &budget()).unwrap();
+    let bound = bind_measured_phlo_prepaid(&measured, &[assignment], limits()).unwrap();
     assert_eq!(bound.witness().fresh.len(), 1);
     assert_eq!(bound.witness().fresh[0].quantity, u64::MAX - 1);
     assert_eq!(bound.witness().used.len(), 1);
@@ -166,17 +158,7 @@ fn measured_prepaid_enforces_limits_and_keeps_large_quantities_counted() {
             ..limits()
         },
     ] {
-        assert!(bind_measured_phlo_prepaid(&measured, &[assignment], changed, &budget()).is_err());
-    }
-    for dimension in [
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let mut caps = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-        caps.set(dimension, HostWorkLimit::new(0));
-        let work = HostWorkBudget::new(caps);
-        assert!(bind_measured_phlo_prepaid(&measured, &[assignment], limits(), &work).is_err());
-        assert!(work.is_rejected());
+        assert!(bind_measured_phlo_prepaid(&measured, &[assignment], changed).is_err());
     }
     assert!(bind_measured_phlo_prepaid(
         &[PhloResourceAmount {
@@ -184,11 +166,10 @@ fn measured_prepaid_enforces_limits_and_keeps_large_quantities_counted() {
             ..measured[0]
         }],
         &[],
-        limits(),
-        &budget()
+        limits()
     )
     .is_err());
-    assert!(bind_measured_phlo_prepaid(&[], &[], limits(), &budget())
+    assert!(bind_measured_phlo_prepaid(&[], &[], limits())
         .unwrap()
         .witness()
         .required
@@ -233,7 +214,7 @@ proptest! {
             *quantity = quantity.checked_sub(1).ok_or(())?;
             Ok::<_, ()>(())
         }).is_ok();
-        let result = bind_measured_phlo_prepaid(&measured, &assignments, limits(), &budget());
+        let result = bind_measured_phlo_prepaid(&measured, &assignments, limits());
         prop_assert_eq!(result.is_ok(), expected);
         if !expected { return Ok(()); }
         let bound = result.unwrap();
@@ -254,11 +235,11 @@ proptest! {
             demand_index: middle[..assignment.demand_index].iter().filter(|amount| amount.quantity > 0).count(),
             ..*assignment
         }).collect();
-        let rest = bind_measured_phlo_prepaid(&positive, &translated, limits(), &budget()).unwrap();
+        let rest = bind_measured_phlo_prepaid(&positive, &translated, limits()).unwrap();
         prop_assert_eq!(rest.witness().fresh, witness.fresh);
         let mut reversed = assignments.clone();
         reversed.reverse();
-        let reverse = bind_measured_phlo_prepaid(&measured, &reversed, limits(), &budget()).unwrap();
+        let reverse = bind_measured_phlo_prepaid(&measured, &reversed, limits()).unwrap();
         prop_assert_eq!(reverse.witness().fresh, witness.fresh);
         let total = quantities.iter().sum::<u64>() * weight * owners as u64;
         let prepaid = positions.len() as u64 * weight * owners as u64;

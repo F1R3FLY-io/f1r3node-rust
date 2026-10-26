@@ -1,0 +1,312 @@
+{
+  "schema_version": 1,
+  "status": "accepted-bounded-slashing-binding",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-006"
+  ],
+  "claim_discharge": "discharged",
+  "phase": "pre_pr216_merge",
+  "scope": "harness-profile",
+  "source_digests": {
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    ".gitattributes": "826b4870598cfead9e6e42a6d70351736d7ea5eab97c4c3de87922d89c4e9832",
+    ".github/workflows/casper-slashing.yml": "53a2f0bcf732405cde493c1aaf13868913ad58c5d97a5116059d90b5cd502675",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "docs/casper/design/decision-ledger/09-slashing-authorization.md": "de6a5f97e1185b4620c6dc7e3aed4f8805c7217781981796698c31ce6191445c",
+    "docs/casper/design/soak-interface-contract.md": "addd0a25f3d6eb044097533224d3d500dce97785886eeab33897a1e69af033e7",
+    "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing.cfg": "ec027f41c43cfca705d91e5f872ef34e9f0f00958b15b4e3c72ffa32d36d2ed3",
+    "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_authorization_unsafe.cfg": "938955b64080a1049dd7d57da178228dec0f4ac4779557fb4415af8c8f14044f",
+    "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_epoch_unsafe.cfg": "cdc39f894cd45a1dbd9223ac926322d7d99f6cf4d0adea959107ffdecaa9bcc6",
+    "formal/tlaplus/casper_soak/profiles/slashing/MC_Slashing_order_unsafe.cfg": "7ff73a5f463d6510c84f9042e816db00687c4c86203917ed8e327d0c7885e6bf",
+    "formal/tlaplus/casper_soak/profiles/slashing/README.md": "8b2e66e36b3166079d7b502c497a4954b8a36168b69c30aaaaee3c019aaa2979",
+    "formal/tlaplus/casper_soak/profiles/slashing/Slashing.tla": "42dcaf827385e79506bee7087323f640d3f756e60c01b684731c361f6f5c2ab3",
+    "formal/tlaplus/casper_soak/profiles/slashing/verification-plan.jsonc": "bbfdd0879243ef2f121ddade08982fae495e29d5c589b37aff574991fc7f3f31",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "scripts/casper-soak/check-slashing.sh": "9e0929400d9c4e6ff38b93e41bb046b23845bc7245c41d0768bc931506559234",
+    "scripts/casper-soak/src/bin/casper-slashing.rs": "fbc7cb4f303f79f57aa8bc57a6c837f2507def6388fb789ffb3aafb062996b5a",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/src/profiles/slashing.rs": "694491c0d9f4ac986424a0c4cc278ae9918674c4e27fbc4ddf0983e3c2b00665",
+    "scripts/casper-soak/tests/slashing.rs": "e013ec602c58bd291aa02b9af7a3e135581ac51d9e29f3b3f02d8d38dcc44afb"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-slashing.md": "79e37bb2c481d95d9a2548f41e44bfc6e642a866263c665e6cef63fdcfd68a48"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "approval": {
+    "confirmation": "accepted for Claim006's bounded binding and go ahead with the assignement for 017-11 to the other agent",
+    "scope": "bounded-claim-006-only",
+    "recorded_at": "2026-09-19T16:00:28Z"
+  },
+  "review": {
+    "report": "docs/casper/cbc-evidence/runs/casper-slashing-20260919-02/report.json",
+    "sha256": "8d7d4583a67d3e54247421e95690fab1fcd6ea40f9cd92afc7be9d461aed01c2",
+    "preacceptance_revalidation": {
+      "status": "bounded-package-verified-binding-pending",
+      "report_sha256": "8d7d4583a67d3e54247421e95690fab1fcd6ea40f9cd92afc7be9d461aed01c2",
+      "validator_sha256": "fbfbb6742ca66ddae46d004d226bb430b5b559476fa1936fd32353000c3c1e7c",
+      "source_files": 24,
+      "evidence_files": 12614,
+      "artifacts": 12,
+      "pending_ledgers": 12,
+      "nested_references": 1430,
+      "native": {
+        "tests": 7,
+        "cases": 66,
+        "invocations": 72
+      },
+      "isolated_linux": {
+        "tests": 7,
+        "cases": 66,
+        "invocations": 72
+      },
+      "model_controls": 4,
+      "strict_claims_001_005": 0,
+      "strict_claim_006": 4,
+      "strict_bundle": 4,
+      "workflow_tag_ratified": false,
+      "node_execution": false,
+      "post_merge_execution": "blocked",
+      "soak": "pending"
+    }
+  },
+  "hosted": {
+    "report": "docs/casper/cbc-evidence/runs/casper-slashing-hosted-20260919-01/report.json",
+    "sha256": "5dcb1028ff8cb44fc0533955509fe79fc349f8037d42d7a17712a9687e061416",
+    "run_id": 35452747041,
+    "artifact_id": 10587177940
+  },
+  "previous_ledgers": {
+    "path": "docs/casper/cbc-evidence/runs/casper-slashing-acceptance-20260919-01/previous-ledgers.tar.gz",
+    "sha256": "a112156258c8407d2b5b498c3cc338085e706f9c743df29abb7eb5aefecb3189",
+    "count": 12
+  },
+  "reviewed_checks": {
+    "native": {
+      "tests": 7,
+      "cases": 66,
+      "invocations": 72,
+      "exit": 0,
+      "binary_sha256": "63925b09ad83b5b80a4db4ef4af9f1a98a8ccd46c53c86f52d1349128e1e6ba3",
+      "opt_level": 0
+    },
+    "isolated_linux": {
+      "architecture": "aarch64",
+      "tests": 7,
+      "cases": 66,
+      "invocations": 72,
+      "exit": 0,
+      "binary_sha256": "010c32206e91589092b2d01b187a5b7cb2fbc994a6b6802777584393239cf442",
+      "opt_level": 1,
+      "image": "sha256:7d402dd7f1922bcdbdbeb90d14cecf398fdd36bc5105242fa4a4dc1d1cd596c5",
+      "network": false,
+      "host_mounts": false,
+      "user": "65534:65534"
+    },
+    "models": {
+      "construction": "not-applicable",
+      "driver_binding": "pending",
+      "harness_binary_sha256": "63925b09ad83b5b80a4db4ef4af9f1a98a8ccd46c53c86f52d1349128e1e6ba3",
+      "heap_limit_mb": 512,
+      "kill_grace_seconds": 5,
+      "model": "formal/tlaplus/casper_soak/Slashing.tla",
+      "plan_sha256": "59fd141fa1c9a8e056047dac3b3fc0012ca6da88d83e6b452590f7fbe50cfa12",
+      "profile_verification": "pending",
+      "results": [
+        {
+          "configuration": "MC_Slashing.cfg",
+          "configuration_sha256": "ec027f41c43cfca705d91e5f872ef34e9f0f00958b15b4e3c72ffa32d36d2ed3",
+          "constant_assignments": [
+            [
+              "Scenarios",
+              "2"
+            ],
+            [
+              "MaxObservations",
+              "3"
+            ],
+            [
+              "ReuseRequestedOrder",
+              "FALSE"
+            ],
+            [
+              "DropEpochIdentity",
+              "FALSE"
+            ],
+            [
+              "SuppressSlashMismatch",
+              "FALSE"
+            ]
+          ],
+          "distinct_states": 1681,
+          "elapsed_seconds": 0.843096708,
+          "exit": 0,
+          "expected_exit": 0,
+          "expected_property": null,
+          "log": "MC_Slashing.log",
+          "log_sha256": "4d98647e61ee64de1fa82f18915a57798dca7ac4cb3e975e85d8ecae9d993256",
+          "model_sha256": "42dcaf827385e79506bee7087323f640d3f756e60c01b684731c361f6f5c2ab3",
+          "outcome": "passed",
+          "states_generated": 3281,
+          "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+          "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+        },
+        {
+          "configuration": "MC_Slashing_order_unsafe.cfg",
+          "configuration_sha256": "7ff73a5f463d6510c84f9042e816db00687c4c86203917ed8e327d0c7885e6bf",
+          "constant_assignments": [
+            [
+              "Scenarios",
+              "2"
+            ],
+            [
+              "MaxObservations",
+              "3"
+            ],
+            [
+              "ReuseRequestedOrder",
+              "TRUE"
+            ],
+            [
+              "DropEpochIdentity",
+              "FALSE"
+            ],
+            [
+              "SuppressSlashMismatch",
+              "FALSE"
+            ]
+          ],
+          "distinct_states": 483,
+          "elapsed_seconds": 0.758425709,
+          "exit": 12,
+          "expected_exit": 12,
+          "expected_property": "EvidenceOrderRecorded",
+          "log": "MC_Slashing_order_unsafe.log",
+          "log_sha256": "d9ddbcf8900d0f3ea24ab3afe36f075553bb5635668aef9db7629bf3ce3666cc",
+          "model_sha256": "42dcaf827385e79506bee7087323f640d3f756e60c01b684731c361f6f5c2ab3",
+          "outcome": "passed",
+          "states_generated": 891,
+          "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+          "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+        },
+        {
+          "configuration": "MC_Slashing_epoch_unsafe.cfg",
+          "configuration_sha256": "cdc39f894cd45a1dbd9223ac926322d7d99f6cf4d0adea959107ffdecaa9bcc6",
+          "constant_assignments": [
+            [
+              "Scenarios",
+              "2"
+            ],
+            [
+              "MaxObservations",
+              "3"
+            ],
+            [
+              "ReuseRequestedOrder",
+              "FALSE"
+            ],
+            [
+              "DropEpochIdentity",
+              "TRUE"
+            ],
+            [
+              "SuppressSlashMismatch",
+              "FALSE"
+            ]
+          ],
+          "distinct_states": 450,
+          "elapsed_seconds": 0.75754475,
+          "exit": 12,
+          "expected_exit": 12,
+          "expected_property": "EpochCorrelationRequired",
+          "log": "MC_Slashing_epoch_unsafe.log",
+          "log_sha256": "28a3bec5d193027ef45b67bbd92a46affccbbe5a7449bdeddff1bb0777351906",
+          "model_sha256": "42dcaf827385e79506bee7087323f640d3f756e60c01b684731c361f6f5c2ab3",
+          "outcome": "passed",
+          "states_generated": 834,
+          "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+          "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+        },
+        {
+          "configuration": "MC_Slashing_authorization_unsafe.cfg",
+          "configuration_sha256": "938955b64080a1049dd7d57da178228dec0f4ac4779557fb4415af8c8f14044f",
+          "constant_assignments": [
+            [
+              "Scenarios",
+              "2"
+            ],
+            [
+              "MaxObservations",
+              "3"
+            ],
+            [
+              "ReuseRequestedOrder",
+              "FALSE"
+            ],
+            [
+              "DropEpochIdentity",
+              "FALSE"
+            ],
+            [
+              "SuppressSlashMismatch",
+              "TRUE"
+            ]
+          ],
+          "distinct_states": 516,
+          "elapsed_seconds": 0.765928,
+          "exit": 12,
+          "expected_exit": 12,
+          "expected_property": "AuthorizationMismatchReported",
+          "log": "MC_Slashing_authorization_unsafe.log",
+          "log_sha256": "2d964d701b413fc059d487e483a19d692d17f478d9a7e84b77d62c1b1760d034",
+          "model_sha256": "42dcaf827385e79506bee7087323f640d3f756e60c01b684731c361f6f5c2ab3",
+          "outcome": "passed",
+          "states_generated": 948,
+          "tlc_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+          "tlc_version": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
+        }
+      ],
+      "runner_sha256": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+      "scope": "bounded-harness-refutation-only",
+      "seed": 1,
+      "status": "passed",
+      "timeout_seconds": 120,
+      "workers": 1
+    },
+    "shared_tests": 11,
+    "clippy": "passed",
+    "ste_check": "passed",
+    "lsp": {
+      "confirmed_clean": 5,
+      "inconclusive": 1,
+      "diagnostics": 0
+    },
+    "runner_controls": {
+      "renamed_case_exit": 1,
+      "interrupted_exit": 143
+    }
+  },
+  "base_revision": "fcc2fb22270d403757785f6955915e40dec3625d",
+  "reviewed_artifacts_unchanged": true,
+  "workflow_tag": {
+    "path": ".github/workflows/casper-slashing.yml",
+    "proposed_cbc": "mandatory",
+    "proposed_weight": "high",
+    "ratified": false
+  },
+  "task_closure": "pending-workflow-tag-ratification",
+  "other_claims": "outside-this-acceptance",
+  "live_adapters": "unqualified",
+  "post_merge_execution": "blocked",
+  "policy_activation": false,
+  "node_execution": false,
+  "soak": "pending",
+  "waiver": null
+}

@@ -15,8 +15,8 @@
 //! | `queue_ordering` | `atomic_ordering` |
 //!
 //! The legacy groups `phlogiston` and `registry_lookup`/`registry_scale` have no counterpart:
-//! one charging path exists (M-3), so each case records its phlo and host work, and the
-//! registry is deleted (D12). `checkpoint_operations` is in `reified_persistence.rs`.
+//! one charging path exists (M-3), so each case records its phlo, and the registry is deleted
+//! (D12). `checkpoint_operations` is in `reified_persistence.rs`.
 //!
 //! A measured deploy is one native play at the v6 limits, without its checkpoint. The host work
 //! of the v6 limits bounds the operations of one deploy, so each one-deploy series measures 1
@@ -26,7 +26,6 @@
 //! The read series fill their collections in setup deploys of [`common::CHUNK`] operations.
 
 #[path = "../tests/support/mod.rs"]
-#[allow(dead_code)]
 mod support;
 
 #[allow(dead_code)]

@@ -1,0 +1,119 @@
+' Recommended pipeline for cost-accounted (v6) shards: order-then-execute.
+' Consensus orders accepted envelopes and never waits for execution. A
+' deterministic executor runs the finalized order, applies the P1 acceptance
+' gate before each envelope, and settles it. Later blocks attest the executed
+' roots, and a wrong attestation is slashing evidence.
+'
+' Paper anchors: P1 = publications cost-accounting/cost-accounted-rho.tex
+'   gate P1:2188-2213 · rejection without effect P1:2208-2212 ·
+'   block validity P1:1708-1714 · epoch boundary P1:3036-3043.
+' Source of truth: docs/casper/theory/cost-accounting-consensus-proposal.md §7.
+' Palette: user and envelope = supply blue · proposer = control amber ·
+'   gate and inclusion filter = gate teal · Casper core = capability indigo ·
+'   linearizer = process lilac · executor = pool green ·
+'   attested roots = delta orange · rejection = reject red
+' The legend also defines every name and abbreviation that the labels use,
+' so the diagram reads on its own.
+' Render:  ./render.sh consensus-proposal-order-then-execute.puml
+
+@startuml consensus-proposal-order-then-execute
+!include palette.iuml
+$ca_base_skin()
+skinparam sequence {
+  ArrowColor              $ca_neutral
+  LifeLineBorderColor     #666666
+  ParticipantBorderColor  #333333
+  DividerBackgroundColor  $ca_note_grey
+  GroupBorderColor        #666666
+  GroupBackgroundColor    #FAFAFA
+}
+skinparam maxMessageSize 330
+title Recommended for v6 shards: order-then-execute
+
+autonumber
+
+actor       "User\n(signer)"                             as U  $ca_supply
+participant "Proposer\n(no execution)"                    as P  $ca_control
+participant "Inclusion filter\n(DR-64 check, DR-65 groups)" as G $ca_gate
+participant "Validators\n(structural validity)"           as V  $ca_capability
+participant "Fork choice and\nclique-oracle finality"     as F  $ca_capability
+participant "Linearizer\n(main-chain epochs)"             as L  $ca_process
+participant "Executor\n(P1 gate, execute, settle)"        as X  $ca_pool
+database    "Executed roots\nand attestations"            as A  $ca_delta
+
+== Inclusion: the proposer orders and does not execute ==
+U -[$ca_instantiate]> P : signed offered envelope
+P -> A : newest finalized block E that this node\nhas executed, and its root <latex>r_E</latex>
+P -> G : candidates in canonical order
+G -> G : DR-64 check of each envelope at <latex>r_E</latex>,\nDR-65 group rule inside the block,\nper-block demand cap
+G --> P : included envelopes
+P -[$ca_instantiate]> V : block = parents, justifications, envelopes,\nattestation <latex>(E, r_E)</latex>, epoch validator set
+
+== Structural validation: no merge, no replay ==
+V -> V : signature, sequence number, justifications,\nequivocation check (unchanged Casper)
+V -> V : envelope syntax and signatures, validity window,\nrepeat rule in the past cone, demand cap,\nempty v6 merge fields
+V -> F : add the valid block to the DAG
+note over P, F $ca_note_green
+  **Consensus keeps accepting blocks.** No step of
+  inclusion or validation waits for execution
+  (P1:1708-1714 makes block validity a syntactic predicate).
+end note
+
+== Finality: unchanged Casper ==
+F -> F : LMD-GHOST fork choice with the invalid-message\nfilter, clique oracle with the epoch weights
+F -> L : the LFB advances, the newly finalized set
+
+== Deterministic linearization ==
+L -> L : for each new main-chain block M: the blocks of\n<latex>\mathrm{past}(M) \setminus \mathrm{past}(\mathrm{mp}(M))</latex> in topological order,\nties broken by (block number, block hash)
+L -> X : ordered blocks, each with its envelopes in block order
+
+== Execution after finality ==
+loop each envelope e in the canonical order
+  X -> X : e already executed, or outside its validity window?\nThen skip e with no effect.
+  X -> X : P1 gate at the current root: <latex>\Sigma_s \geq \Delta_s</latex> for every lane s?\n(DR-65 group rule for members of one block)
+  alt the gate accepts
+    X -> X : hold, execute, settle: charge measured use,\nrefund the unused hold, fee to the including proposer
+  else the gate rejects
+    X -[$ca_debit]> X : reject e: no state change,\nno tokens consumed (P1:2208-2212)
+  end
+end
+X -> X : CloseBlock and slash system work of each block\nat its position in the order
+X -> A : record (block, root) for each executed block
+
+== Attestation and deferred checks ==
+P -> A : the next proposal reads its newest executed root
+P -[$ca_instantiate]> V : the next block attests <latex>(E', r_{E'})</latex>
+V -> A : when local execution reaches <latex>E'</latex>:\ncompare the attested root and re-run the\ninclusion filter of that block at its attested root
+note over V, A $ca_note_red
+  A root mismatch, or an envelope that fails the filter at the
+  proposer's own attested root, is signed slashing evidence.
+  It never changes block validity after the fact.
+end note
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| user and signed envelope |
+  |<$ca_control>| proposer |
+  |<$ca_gate>| DR-64 check and inclusion filter |
+  |<$ca_capability>| Casper core: validity, DAG, fork choice, finality |
+  |<$ca_process>| deterministic linearization |
+  |<$ca_pool>| execution after finality |
+  |<$ca_delta>| executed roots and attestations |
+  |<$ca_note_red>| slashing evidence |
+
+  |= name |= meaning |
+  | P1 | the paper "Cost-Accounted Rho Calculus" (L. G. Meredith, May 2026). P1:a-b cites its lines a to b. |
+  | P1 gate | accept an envelope only if <latex>\Sigma_s \geq \Delta_s</latex> for every signature lane s |
+  | <latex>\Sigma_s</latex>, <latex>\Delta_s</latex> | the token supply and the demand of signature s |
+  | DR-64 | the decision record of the funding check before execution |
+  | DR-65 | the decision record that makes same-block offers on one purse one funding decision |
+  | E, <latex>r_E</latex> | the newest finalized block that the proposer has executed, and its root. E' is a later one. |
+  | e | one envelope: a signed user deploy |
+  | M, mp(M), past(M) | a main-chain block, its main parent, and M with all its ancestors |
+  | LMD-GHOST | latest-message-driven greedy heaviest-observed subtree fork choice |
+  | LFB, DAG | the last finalized block, and the directed acyclic graph of blocks |
+  | v6 | protocol version 6, with cost accounting |
+  | CloseBlock | the system deploy that closes each block |
+endlegend
+
+@enduml

@@ -32,21 +32,15 @@
 //! introduction of the equivalent host produce does (DR-47), and the stored markers stay short.
 //!
 //! The decoders are strict: a record that is not the exact image of its encoder is a
-//! [`MalformedMarker`], and the operation aborts with `Inconsistent`. The metered forms reserve
-//! each read and copy on the meter of the job before they make it (decision 42). The formal
-//! model is `PathMapPrefix.v` (`marker_record_roundtrip`, `vehicle_carries_payload`).
-
-use std::mem::size_of;
-use std::sync::LazyLock;
+//! [`MalformedMarker`], and the operation aborts with `Inconsistent`. The formal model is
+//! `PathMapPrefix.v` (`marker_record_roundtrip`, `vehicle_carries_payload`).
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{CostAuthority, EList, Expr, ListParWithRandom, Par};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 use super::path_codec::plain_list;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{RandomPurpose, REIFIED_TAG};
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr, RECORD_TAG_MARK};
@@ -65,9 +59,6 @@ pub const SOURCE_LEN: usize = 32;
 
 /// The pars of a marker that come before the payload of a vehicle: the envelope and the suffix.
 pub const MARKER_PARS: usize = 2;
-
-/// The bytes that a decode reads from the spine of a list: the `Par`, its `Expr` and the `EList`.
-const LIST_SPINE_BYTES: usize = size_of::<Par>() + size_of::<Expr>() + size_of::<EList>();
 
 /// A record on an index channel that is not the exact image of the marker encoder, or a vehicle
 /// that is not the exact image of the vehicle encoder. It aborts the operation with
@@ -117,11 +108,6 @@ fn envelope_of(source: Vec<u8>) -> Par {
     }
 }
 
-/// The template of an envelope: the tag and a source of [`SOURCE_LEN`] zero bytes. Every
-/// envelope has its shape, so a reserved copy of the template reserves the allocations of a new
-/// envelope before the builder makes them.
-static ENVELOPE: LazyLock<Par> = LazyLock::new(|| envelope_of(vec![0; SOURCE_LEN]));
-
 /// The cost authority of every marker of the datum whose record on `D(p)` is `datum_record`: the
 /// cost authority of that record (open point 6 of the seams arbitration). The store of the
 /// markers and the restore of a marker that a peek removed take the authority from this one
@@ -154,41 +140,13 @@ pub fn marker_record(
     suffix: Vec<Par>,
     random: &Blake2b512Random,
     cost_authority: Option<CostAuthority>,
-) -> Result<ListParWithRandom, SpaceError> {
-    let unmetered = ScanMeter::new(None);
-    Ok(ListParWithRandom {
-        pars: vec![marker_envelope(source), plain_list(suffix, &unmetered)?],
+) -> ListParWithRandom {
+    ListParWithRandom {
+        pars: vec![marker_envelope(source), plain_list(suffix)],
         random_state: random.to_bytes(),
         cost_authority,
         cost_stack: None,
-    })
-}
-
-/// [`marker_record`] with its work reserved first: the copy of the envelope template, the list
-/// of the suffix (its bit sets and its buffer, as `plain_list` reserves them), the buffer of the
-/// two pars, the bytes of the random state and the copy of the cost authority.
-pub fn marker_record_metered(
-    source: &Blake2b256Hash,
-    suffix: Vec<Par>,
-    random: &Blake2b512Random,
-    cost_authority: Option<&CostAuthority>,
-    meter: &ScanMeter,
-) -> Result<ListParWithRandom, SpaceError> {
-    meter.reserve_copy(&*ENVELOPE)?;
-    let suffix = plain_list(suffix, meter)?;
-    let mut pars = meter.buffer::<Par>(MARKER_PARS)?;
-    meter.random_bytes(random)?;
-    let cost_authority = cost_authority
-        .map(|authority| meter.copy(authority))
-        .transpose()?;
-    pars.push(marker_envelope(source));
-    pars.push(suffix);
-    Ok(ListParWithRandom {
-        pars,
-        random_state: random.to_bytes(),
-        cost_authority,
-        cost_stack: None,
-    })
+    }
 }
 
 /// The vehicle of the datum `datum` on the prefix whose suffix is `suffix`: the marker pars
@@ -198,52 +156,17 @@ pub fn vehicle(
     source: &Blake2b256Hash,
     suffix: Vec<Par>,
     datum: &ListParWithRandom,
-) -> Result<ListParWithRandom, SpaceError> {
-    let unmetered = ScanMeter::new(None);
+) -> ListParWithRandom {
     let mut pars = Vec::with_capacity(MARKER_PARS + datum.pars.len());
     pars.push(marker_envelope(source));
-    pars.push(plain_list(suffix, &unmetered)?);
+    pars.push(plain_list(suffix));
     pars.extend(datum.pars.iter().cloned());
-    Ok(ListParWithRandom {
+    ListParWithRandom {
         pars,
         random_state: datum.random_state.clone(),
         cost_authority: datum.cost_authority.clone(),
         cost_stack: datum.cost_stack.clone(),
-    })
-}
-
-/// [`vehicle`] with its work reserved first: the copy of the envelope template, the list of the
-/// suffix, the buffer of the pars, the copy of each par of the payload, and the copies of the
-/// random state, the cost authority and the cost stack of `datum`.
-pub fn vehicle_metered(
-    source: &Blake2b256Hash,
-    suffix: Vec<Par>,
-    datum: &ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<ListParWithRandom, SpaceError> {
-    let length = datum
-        .pars
-        .len()
-        .checked_add(MARKER_PARS)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve_copy(&*ENVELOPE)?;
-    let suffix = plain_list(suffix, meter)?;
-    let mut pars = meter.buffer::<Par>(length)?;
-    for par in &datum.pars {
-        meter.reserve_copy(par)?;
     }
-    let random_state = meter.copy(&datum.random_state)?;
-    let cost_authority = meter.copy(&datum.cost_authority)?;
-    let cost_stack = meter.copy(&datum.cost_stack)?;
-    pars.push(marker_envelope(source));
-    pars.push(suffix);
-    pars.extend(datum.pars.iter().cloned());
-    Ok(ListParWithRandom {
-        pars,
-        random_state,
-        cost_authority,
-        cost_stack,
-    })
 }
 
 /// A decoded marker, borrowed from its record.
@@ -283,16 +206,6 @@ pub fn decode_marker(record: &ListParWithRandom) -> Result<MarkerView<'_>, Malfo
     }
 }
 
-/// [`decode_marker`] with its reads reserved first: the envelope, and the spine of the suffix
-/// list with the flag of each element. The decode reads no other part of an element.
-pub fn decode_marker_metered<'r>(
-    record: &'r ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<MarkerView<'r>, SpaceError> {
-    reserve_marker_reads(&record.pars, meter)?;
-    Ok(decode_marker(record)?)
-}
-
 /// Decodes a delivery vehicle (the inverse of [`vehicle`]): the marker part and the payload.
 pub fn decode_vehicle(record: &ListParWithRandom) -> Result<VehicleView<'_>, MalformedMarker> {
     let malformed = MalformedMarker(MarkerShape::Vehicle);
@@ -303,40 +216,6 @@ pub fn decode_vehicle(record: &ListParWithRandom) -> Result<VehicleView<'_>, Mal
         },
         _ => Err(malformed),
     }
-}
-
-/// [`decode_vehicle`] with its reads reserved first, as for [`decode_marker_metered`]. The
-/// payload is not read.
-pub fn decode_vehicle_metered<'r>(
-    record: &'r ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<VehicleView<'r>, SpaceError> {
-    let marker = record.pars.get(..MARKER_PARS).unwrap_or(&record.pars);
-    reserve_marker_reads(marker, meter)?;
-    Ok(decode_vehicle(record)?)
-}
-
-/// Reserves the reads of a strict decode of the marker pars `pars`: the envelope, and the spine
-/// of the suffix list with one flag read for each element.
-fn reserve_marker_reads(pars: &[Par], meter: &ScanMeter) -> Result<(), SpaceError> {
-    if let Some(envelope) = pars.first() {
-        meter.inspect(envelope)?;
-    }
-    if let Some(suffix) = pars.get(1) {
-        let elements = match sole_expr(suffix) {
-            Some(ExprInstance::EListBody(EList { ps, .. })) => ps.len(),
-            _ => 0,
-        };
-        let flags = elements
-            .checked_mul(size_of::<Par>())
-            .and_then(|bytes| bytes.checked_add(LIST_SPINE_BYTES))
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let operations = elements
-            .checked_add(1)
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.charge(operations, flags, 0)?;
-    }
-    Ok(())
 }
 
 /// The marker part of a record: an envelope with the marker tag and a source of
@@ -433,7 +312,6 @@ mod tests {
             &marker_random(&random(b"datum"), 1).expect("a depth of 1 fits"),
             Some(region(3)),
         )
-        .expect("a marker encodes")
     }
 
     #[test]
@@ -560,7 +438,7 @@ mod tests {
     fn a_vehicle_is_the_marker_followed_by_the_payload() {
         let payload = vec![gint(42), gstring("x")];
         let sent = datum(payload.clone());
-        let carried = vehicle(&source(7), vec![gint(2)], &sent).expect("a vehicle encodes");
+        let carried = vehicle(&source(7), vec![gint(2)], &sent);
         assert_eq!(carried.pars.len(), MARKER_PARS + payload.len());
         assert_eq!(carried.random_state, sent.random_state);
         assert_eq!(carried.cost_authority, sent.cost_authority);
@@ -584,40 +462,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn metered_forms_equal_the_plain_forms_and_reject_a_cut_budget() {
-        let suffix = vec![gint(2), glist(vec![gstring("a")])];
-        let sent = datum(vec![gint(42), eset(vec![gint(1)])]);
-        let at = marker_random(&random(b"datum"), 2).expect("depth 2");
-        assert_cut(|meter| {
-            marker_record_metered(&source(7), suffix.clone(), &at, Some(&region(3)), meter)
-        });
-        assert_eq!(
-            marker_record_metered(
-                &source(7),
-                suffix.clone(),
-                &at,
-                Some(&region(3)),
-                &unmetered()
-            )
-            .expect("a marker encodes"),
-            marker_record(&source(7), suffix.clone(), &at, Some(region(3)))
-                .expect("a marker encodes")
-        );
-        assert_cut(|meter| vehicle_metered(&source(7), suffix.clone(), &sent, meter));
-        assert_eq!(
-            vehicle_metered(&source(7), suffix.clone(), &sent, &unmetered())
-                .expect("a vehicle encodes"),
-            vehicle(&source(7), suffix.clone(), &sent).expect("a vehicle encodes")
-        );
-        let stored = marker(suffix.clone());
-        assert_cut(|meter| decode_marker_metered(&stored, meter).map(|view| view.suffix.to_vec()));
-        let carried = vehicle(&source(7), suffix.clone(), &sent).expect("a vehicle encodes");
-        assert_cut(|meter| {
-            decode_vehicle_metered(&carried, meter).map(|view| view.payload.to_vec())
-        });
-    }
-
     // `marker_record_roundtrip` of `PathMapPrefix.v`: the decode inverts the encode, and the
     // encode is injective on the source and the suffix.
     #[test]
@@ -637,10 +481,8 @@ mod tests {
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let left_hash = Blake2b256Hash::from_bytes(left_source.to_vec());
                 let right_hash = Blake2b256Hash::from_bytes(right_source.to_vec());
-                let left = marker_record(&left_hash, left_suffix.clone(), &at, None)
-                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
-                let right = marker_record(&right_hash, right_suffix.clone(), &at, None)
-                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let left = marker_record(&left_hash, left_suffix.clone(), &at, None);
+                let right = marker_record(&right_hash, right_suffix.clone(), &at, None);
                 let view =
                     decode_marker(&left).map_err(|error| TestCaseError::fail(error.to_string()))?;
                 ensure(view.source == left_source.as_slice(), "the source survives")?;
@@ -669,12 +511,10 @@ mod tests {
             |(bytes, suffix, payload)| {
                 let hash = Blake2b256Hash::from_bytes(bytes.to_vec());
                 let sent = datum(payload.clone());
-                let carried = vehicle(&hash, suffix.clone(), &sent)
-                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let carried = vehicle(&hash, suffix.clone(), &sent);
                 let at = marker_random(&random(b"vehicle"), suffix.len())
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
-                let stored = marker_record(&hash, suffix.clone(), &at, None)
-                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let stored = marker_record(&hash, suffix.clone(), &at, None);
                 ensure(
                     carried.pars[..MARKER_PARS] == stored.pars[..],
                     "the vehicle starts with the marker pars",

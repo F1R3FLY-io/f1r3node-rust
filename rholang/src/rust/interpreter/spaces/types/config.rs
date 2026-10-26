@@ -13,8 +13,8 @@
 //! `getSpaceAgent` read it. The decoder is strict: it accepts exactly the image of
 //! [`SpaceConfig::to_par`]. The theory slot holds `Nil` for a space without a theory, and the
 //! canonical bytes of the identity of its theory otherwise, in one `GByteArray` (P7, TH-2 and
-//! decision 74). The metered decode resolves the identity, so a config read of a theory that
-//! this build cannot check fails with `TheoryUnavailable` (TH-7).
+//! decision 74). The decode [`SpaceConfig::from_par_with_theory`] resolves the identity, so a
+//! config read of a theory that this build cannot check fails with `TheoryUnavailable` (TH-7).
 
 use std::collections::BTreeMap;
 
@@ -25,7 +25,6 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 
 use super::id::space_id_from_bytes;
 use super::qualifier::SpaceQualifier;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::SpaceId;
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr, MalformedRecord, RecordKind};
@@ -181,21 +180,14 @@ impl SpaceConfig {
 }
 
 impl SpaceConfig {
-    /// [`SpaceConfig::from_par`] with its work reserved on `meter` before the decode makes it
-    /// (decision 42). The decode walks the entries of `map`, copies the decoded fields, encodes
-    /// the decoded config again with [`SpaceConfig::to_par`] and compares the two maps. Each
-    /// part reads or copies at most `map`, so the reservations are a read of `map`, two copies
-    /// of `map` and a read of each side of the comparison.
+    /// Decodes a config map with [`SpaceConfig::from_par`]. The decode walks the entries of `map`,
+    /// copies the decoded fields, encodes the decoded config again with [`SpaceConfig::to_par`] and
+    /// compares the two maps.
     ///
     /// The decode then resolves the identity of the theory (TH-7): an identity that names no
-    /// checker of this build fails with `TheoryUnavailable`, at the charge of the read. The
-    /// resolution is a pure function of the identity, and it reads nothing more.
-    pub fn from_par_metered(map: &Par, meter: &ScanMeter) -> Result<Self, SpaceError> {
-        meter.inspect(map)?;
-        meter.reserve_copy(map)?;
-        meter.reserve_copy(map)?;
-        meter.inspect(map)?;
-        meter.inspect(map)?;
+    /// checker of this build fails with `TheoryUnavailable`. The resolution is a pure function of
+    /// the identity, and it reads nothing more.
+    pub fn from_par_with_theory(map: &Par) -> Result<Self, SpaceError> {
         // Changed by P7 step 4 (design v3 TH-7): the read resolves the theory.
         // Ok(Self::from_par(map)?)
         let config = Self::from_par(map)?;

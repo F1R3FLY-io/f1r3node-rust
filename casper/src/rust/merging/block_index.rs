@@ -15,6 +15,7 @@ use crate::rust::errors::CasperError;
 use crate::rust::merging::deploy_chain_index::DeployChainIndex;
 use crate::rust::merging::deploy_index::DeployIndex;
 use crate::rust::util::event_converter;
+use crate::rust::util::rholang::costacc::offered_evidence::failed_offered_committed_suffix;
 
 #[derive(Clone)]
 pub struct BlockIndex {
@@ -28,6 +29,17 @@ pub trait ProcessedIndexDeploy {
     fn deploy_log(&self) -> &[Event];
     fn cost(&self) -> u64;
     fn is_failed(&self) -> bool;
+    /// Added by DR-115: the part of the deploy log that the block committed,
+    /// or `None` when the merge indexes nothing for the deploy. The default
+    /// keeps the dev rule: the whole log of a successful deploy, nothing for
+    /// a failed one.
+    fn committed_log(&self) -> Result<Option<&[Event]>, CasperError> {
+        if self.is_failed() {
+            Ok(None)
+        } else {
+            Ok(Some(self.deploy_log()))
+        }
+    }
 }
 
 impl ProcessedIndexDeploy for ProcessedDeploy {
@@ -46,6 +58,20 @@ impl ProcessedIndexDeploy for ProcessedUserDeploy {
     fn deploy_log(&self) -> &[Event] { ProcessedUserDeploy::deploy_log(self) }
     fn cost(&self) -> u64 { ProcessedUserDeploy::cost(self).cost }
     fn is_failed(&self) -> bool { ProcessedUserDeploy::is_failed(self) }
+    // Added by DR-115: a failed offered deploy commits its settlement suffix
+    // (the wallet settlement and the receipts after its rolled-back user
+    // events). A legacy deploy keeps the dev rule.
+    fn committed_log(&self) -> Result<Option<&[Event]>, CasperError> {
+        match self {
+            ProcessedUserDeploy::Legacy(deploy) => ProcessedIndexDeploy::committed_log(deploy),
+            ProcessedUserDeploy::Offered(deploy) if !deploy.is_failed() => {
+                Ok(Some(deploy.deploy_log()))
+            }
+            ProcessedUserDeploy::Offered(deploy) => {
+                failed_offered_committed_suffix(deploy).map(Some)
+            }
+        }
+    }
 }
 
 pub fn create_event_log_index(
@@ -124,25 +150,48 @@ pub fn new<D: ProcessedIndexDeploy>(
         .zip(sys_mergeable_chs.iter())
         .collect();
 
-    // Create user deploy indices - filter out failed deploys
-    let mut usr_deploy_indices = Vec::new();
+    // Changed by DR-115: a failed offered deploy keeps its committed settlement
+    // suffix in the index, so a merged branch keeps its charge. A failed legacy
+    // deploy stays skipped, as on dev.
+    // // Create user deploy indices - filter out failed deploys
+    // let mut usr_deploy_indices = Vec::new();
+    // for (deploy, merge_chs) in usr_deploys_with_mergeable {
+    //     if !deploy.is_failed() {
+    //         let event_log_index = create_event_log_index(
+    //             deploy.deploy_log(),
+    //             history_repository.clone(),
+    //             pre_state_hash,
+    //             merge_chs.clone(),
+    //         );
+    //
+    //         let deploy_index = DeployIndex {
+    //             deploy_id: deploy.identity_bytes().to_vec().into(),
+    //             cost: deploy.cost(),
+    //             event_log_index,
+    //         };
+    //
+    //         usr_deploy_indices.push(deploy_index);
+    //     }
+    // }
+    let mut usr_deploy_indices = Vec::with_capacity(usr_count);
     for (deploy, merge_chs) in usr_deploys_with_mergeable {
-        if !deploy.is_failed() {
-            let event_log_index = create_event_log_index(
-                deploy.deploy_log(),
-                history_repository.clone(),
-                pre_state_hash,
-                merge_chs.clone(),
-            );
+        let Some(committed) = deploy.committed_log()? else {
+            continue;
+        };
+        let event_log_index = create_event_log_index(
+            committed,
+            history_repository.clone(),
+            pre_state_hash,
+            merge_chs.clone(),
+        );
 
-            let deploy_index = DeployIndex {
-                deploy_id: deploy.identity_bytes().to_vec().into(),
-                cost: deploy.cost(),
-                event_log_index,
-            };
+        let deploy_index = DeployIndex {
+            deploy_id: deploy.identity_bytes().to_vec().into(),
+            cost: deploy.cost(),
+            event_log_index,
+        };
 
-            usr_deploy_indices.push(deploy_index);
-        }
+        usr_deploy_indices.push(deploy_index);
     }
 
     // Create system deploy indices - collect successful system deploys
@@ -238,4 +287,72 @@ pub fn new<D: ProcessedIndexDeploy>(
         block_hash: block_hash.clone(),
         deploy_chains: deploy_chain_indices,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    // DR-115: the committed log keeps the dev rule for every deploy except a
+    // failed offered one. The offered API probes cover that case end to end.
+    use models::rust::casper::protocol::casper_message::{
+        Event, ProcessedDeploy, ProcessedUserDeploy, ProduceEvent,
+    };
+
+    use super::ProcessedIndexDeploy;
+    use crate::rust::util::construct_deploy;
+
+    fn log() -> Vec<Event> {
+        (0u8..3)
+            .map(|position| {
+                Event::Produce(ProduceEvent {
+                    channels_hash: vec![position].into(),
+                    hash: vec![position].into(),
+                    persistent: false,
+                    times_repeated: 0,
+                    is_deterministic: true,
+                    output_value: Vec::new(),
+                    failed: false,
+                })
+            })
+            .collect()
+    }
+
+    fn legacy(failed: bool) -> ProcessedDeploy {
+        let deploy =
+            construct_deploy::source_deploy("Nil".to_string(), 1, None, None, None, None, None)
+                .expect("a legacy test deploy signs");
+        ProcessedDeploy {
+            deploy_log: log(),
+            is_failed: failed,
+            ..ProcessedDeploy::empty(deploy)
+        }
+    }
+
+    #[test]
+    fn a_failed_legacy_deploy_keeps_no_index() {
+        let failed = legacy(true);
+        assert_eq!(
+            failed.committed_log().expect("the dev rule cannot fail"),
+            None
+        );
+        let user = ProcessedUserDeploy::Legacy(failed);
+        assert_eq!(
+            ProcessedIndexDeploy::committed_log(&user).expect("the dev rule cannot fail"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_successful_legacy_deploy_keeps_its_whole_log() {
+        let expected = log();
+        let succeeded = legacy(false);
+        assert_eq!(
+            succeeded.committed_log().expect("the dev rule cannot fail"),
+            Some(expected.as_slice())
+        );
+        let user = ProcessedUserDeploy::Legacy(succeeded);
+        assert_eq!(
+            ProcessedIndexDeploy::committed_log(&user).expect("the dev rule cannot fail"),
+            Some(expected.as_slice())
+        );
+    }
 }

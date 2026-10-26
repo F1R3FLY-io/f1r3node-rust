@@ -12,7 +12,7 @@ use crate::rust::interpreter::accounting::native_phlo_rules::{
 #[path = "replay_dependencies.rs"]
 mod dependencies;
 
-fn replay_fixture(budget: HostWorkBudget) -> NativeOperationReplay {
+fn replay_fixture() -> NativeOperationReplay {
     let mut attempts = Vec::new();
     let mut rows = Vec::new();
     for index in 0..4 {
@@ -75,7 +75,7 @@ fn replay_fixture(budget: HostWorkBudget) -> NativeOperationReplay {
     let log = events(&rows);
     bind(&recording, rows.into(), log)
         .unwrap()
-        .into_replay(budget)
+        .into_replay()
         .unwrap()
 }
 
@@ -151,7 +151,7 @@ fn publish_slot(replay: &NativeOperationReplay, slot: usize) {
 
 #[test]
 fn every_slot_including_denials_must_complete_exactly_once() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     for slot in [3, 1, 2, 0] {
         assert!(matches!(
             replay.check_complete(),
@@ -168,7 +168,7 @@ fn every_slot_including_denials_must_complete_exactly_once() {
 
 #[test]
 fn completion_requires_actual_budget_observations() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     for slot in 0..4 {
         let mut ticket = reserve_slot(&replay, slot).unwrap();
         ticket.authenticate_footprint(&[slot as u8], &[]).unwrap();
@@ -183,7 +183,7 @@ fn completion_requires_actual_budget_observations() {
 
 #[test]
 fn completion_requires_the_actual_locked_footprint() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     let mut ticket = reserve_slot(&replay, 0).unwrap();
     let result = ticket.observe_introduction(&observation(
         0,
@@ -216,10 +216,7 @@ fn single_footprint_fixture(footprint: Vec<Arc<[u8]>>) -> NativeOperationReplay 
     row.footprint = footprint.into();
     let rows = Arc::from([row]);
     let log = events(&rows);
-    bind(&recording, rows, log)
-        .unwrap()
-        .into_replay(host())
-        .unwrap()
+    bind(&recording, rows, log).unwrap().into_replay().unwrap()
 }
 
 #[test]
@@ -259,7 +256,7 @@ fn footprint_rejects_omitted_join_extra_channel_and_duplicate_authentication() {
 
 #[test]
 fn forged_comm_with_authentic_budget_evidence_cannot_advance_or_charge() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     let expected = actual_comm(
         &replay
             .trace()
@@ -325,7 +322,7 @@ fn forged_comm_with_authentic_budget_evidence_cannot_advance_or_charge() {
 
 #[test]
 fn logical_comm_authentication_does_not_use_post_dispatch_telemetry() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     let mut ticket = reserve_slot(&replay, 1).unwrap();
     ticket.authenticate_footprint(&[1u8], &[]).unwrap();
     ticket
@@ -350,31 +347,8 @@ fn logical_comm_authentication_does_not_use_post_dispatch_telemetry() {
 }
 
 #[test]
-fn footprint_host_rejection_keeps_the_operation_unobserved() {
-    let budget = host();
-    let replay = replay_fixture(budget.clone());
-    let mut ticket = reserve_slot(&replay, 0).unwrap();
-    assert!(work(&budget, HostWorkDimension::SearchStateBytes, usize::MAX).is_err());
-    assert!(matches!(
-        ticket.authenticate_footprint(&[0u8], &[]),
-        Err(NativeReplayError::Host(_))
-    ));
-    assert!(matches!(
-        ticket.observe_introduction(&observation(
-            0,
-            AuthorityByteEventKind::ProduceIntroduction,
-            1
-        )),
-        Err(NativeReplayError::Stage)
-    ));
-    drop(ticket);
-    assert_eq!(replay.completed_usage(), 0);
-    assert!(replay.checkpoint().is_ok());
-}
-
-#[test]
 fn stage_checks_reject_omissions_duplicates_and_out_of_order_observations() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     for slot in 0..4 {
         let mut ticket = reserve_slot(&replay, slot).unwrap();
         ticket.authenticate_footprint(&[slot as u8], &[]).unwrap();
@@ -430,7 +404,7 @@ fn stage_checks_reject_omissions_duplicates_and_out_of_order_observations() {
 
 #[test]
 fn actual_observation_mutations_do_not_advance_the_stage() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     for mutation in 0..7 {
         let mut ticket = reserve_slot(&replay, 0).unwrap();
         ticket.authenticate_footprint(&[0u8], &[]).unwrap();
@@ -464,10 +438,7 @@ fn actual_observation_mutations_do_not_advance_the_stage() {
 #[test]
 fn retry_checks_the_original_observation_without_a_second_charge() {
     let (recording, rows, log) = trace_fixture();
-    let replay = bind(&recording, rows, log)
-        .unwrap()
-        .into_replay(host())
-        .unwrap();
+    let replay = bind(&recording, rows, log).unwrap().into_replay().unwrap();
     let root = replay.checkpoint().unwrap();
     for _ in 0..2 {
         for slot in 0..3 {
@@ -499,10 +470,7 @@ fn retry_checks_the_original_observation_without_a_second_charge() {
 #[test]
 fn direct_retry_reservation_cannot_bypass_its_channel_predecessor() {
     let (recording, rows, log) = trace_fixture();
-    let replay = bind(&recording, rows, log)
-        .unwrap()
-        .into_replay(host())
-        .unwrap();
+    let replay = bind(&recording, rows, log).unwrap().into_replay().unwrap();
     let root = replay.checkpoint().unwrap();
     for _ in 0..2 {
         assert!(
@@ -540,28 +508,8 @@ fn direct_retry_reservation_cannot_bypass_its_channel_predecessor() {
 }
 
 #[test]
-fn observation_host_rejection_does_not_publish_usage() {
-    let budget = host();
-    let replay = replay_fixture(budget.clone());
-    let mut ticket = reserve_slot(&replay, 0).unwrap();
-    ticket.authenticate_footprint(&[0u8], &[]).unwrap();
-    assert!(work(&budget, HostWorkDimension::VerificationBytes, usize::MAX).is_err());
-    assert!(matches!(
-        ticket.observe_introduction(&observation(
-            0,
-            AuthorityByteEventKind::ProduceIntroduction,
-            1
-        )),
-        Err(NativeReplayError::Budget(NativeBudgetTraceError::Work(_)))
-    ));
-    drop(ticket);
-    assert_eq!(replay.completed_usage(), 0);
-    assert!(replay.checkpoint().is_ok());
-}
-
-#[test]
 fn all_wrong_outcomes_and_denial_stages_release_without_consumption() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     let outcomes = [
         NativeReplayOutcome::Stored,
         NativeReplayOutcome::Matched,
@@ -591,7 +539,7 @@ fn all_wrong_outcomes_and_denial_stages_release_without_consumption() {
 
 #[test]
 fn checkpoint_and_restore_require_an_exclusive_quiescent_boundary() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     let root = replay.checkpoint().unwrap();
     let ticket = reserve_slot(&replay, 0).unwrap();
     assert!(matches!(replay.checkpoint(), Err(NativeReplayError::Busy)));
@@ -625,7 +573,7 @@ fn checkpoint_and_restore_require_an_exclusive_quiescent_boundary() {
 
 #[test]
 fn dropping_a_prepared_restore_keeps_the_original_state_and_releases_the_boundary() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     let root = replay.checkpoint().unwrap();
     publish_slot(&replay, 0);
     let prepared = replay
@@ -654,7 +602,7 @@ fn empty_replay_is_complete_and_supports_root_checkpoint() {
     };
     let replay = bind(&recording, Arc::from([]), Vec::new())
         .unwrap()
-        .into_replay(host())
+        .into_replay()
         .unwrap();
     replay.check_complete().unwrap();
     let root = replay.checkpoint().unwrap();
@@ -664,8 +612,8 @@ fn empty_replay_is_complete_and_supports_root_checkpoint() {
 
 #[test]
 fn stale_foreign_and_abandoned_checkpoint_tokens_cannot_restore() {
-    let replay = replay_fixture(host());
-    let foreign = replay_fixture(host()).checkpoint().unwrap();
+    let replay = replay_fixture();
+    let foreign = replay_fixture().checkpoint().unwrap();
     let root = replay.checkpoint().unwrap();
     publish_slot(&replay, 0);
     let abandoned = replay.checkpoint().unwrap();
@@ -705,7 +653,7 @@ fn stale_foreign_and_abandoned_checkpoint_tokens_cannot_restore() {
 
 #[test]
 fn independent_publications_can_finish_in_reverse_reservation_order() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     let root = replay.checkpoint().unwrap();
     let first = authenticate(reserve_slot(&replay, 0).unwrap())
         .prepare_completion(NativeReplayOutcome::Stored)
@@ -738,7 +686,7 @@ fn independent_publications_can_finish_in_reverse_reservation_order() {
 
 #[test]
 fn concurrent_duplicate_reservations_have_one_owner() {
-    let replay = replay_fixture(host());
+    let replay = replay_fixture();
     let barrier = Barrier::new(2);
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..2)
@@ -774,55 +722,12 @@ fn concurrent_duplicate_reservations_have_one_owner() {
     ));
 }
 
-#[test]
-fn prepaid_publication_and_rollback_survive_later_host_exhaustion() {
-    let budget = host();
-    let replay = replay_fixture(budget.clone());
-    let root = replay.checkpoint().unwrap();
-    let publication = authenticate(reserve_slot(&replay, 0).unwrap())
-        .prepare_completion(NativeReplayOutcome::Stored)
-        .unwrap();
-    assert!(work(
-        &budget,
-        HostWorkDimension::VerificationOperations,
-        usize::MAX
-    )
-    .is_err());
-    publication.publish();
-    replay.restore(&root).unwrap();
-    assert!(replay.checkpoint().is_ok());
-    assert!(matches!(
-        replay.check_complete(),
-        Err(NativeReplayError::Incomplete)
-    ));
-}
-
-#[test]
-fn preparation_host_rejection_releases_its_reservation() {
-    let budget = host();
-    let replay = replay_fixture(budget.clone());
-    let ticket = authenticate(reserve_slot(&replay, 0).unwrap());
-    assert!(work(
-        &budget,
-        HostWorkDimension::VerificationOperations,
-        usize::MAX
-    )
-    .is_err());
-    assert!(matches!(
-        ticket.prepare_completion(NativeReplayOutcome::Stored),
-        Err(NativeReplayError::Host(_))
-    ));
-    assert!(replay.checkpoint().is_ok());
-    assert!(matches!(
-        replay.check_complete(),
-        Err(NativeReplayError::Incomplete)
-    ));
-}
-
+/// Changed by DR-131: the check that each authentication paid its bytes went
+/// with host work. The test keeps its check that authentication precedes the
+/// reservation.
 #[test]
 fn context_and_full_source_authentication_precede_reservation() {
-    let budget = host();
-    let replay = replay_fixture(budget.clone());
+    let replay = replay_fixture();
     let source = producer(&produce(0));
     assert!(matches!(
         replay.reserve_current(RSpaceOperationSource::Produce(&source)),
@@ -841,7 +746,6 @@ fn context_and_full_source_authentication_precede_reservation() {
             3 => source.channel_hash.0[0] ^= 1,
             _ => source.persistent = !source.persistent,
         }
-        let before = budget.usage(HostWorkDimension::VerificationBytes).get();
         let result = operation_context::scope(order, async {
             replay.reserve_current(RSpaceOperationSource::Produce(&source))
         })
@@ -851,7 +755,6 @@ fn context_and_full_source_authentication_precede_reservation() {
             result,
             Err(NativeReplayError::Context | NativeReplayError::Source)
         ));
-        assert!(budget.usage(HostWorkDimension::VerificationBytes).get() >= before + 64);
     }
     publish_slot(&replay, 0);
 }
@@ -878,7 +781,7 @@ proptest! {
     fn arbitrary_completion_drop_and_rollback_sequences_preserve_the_exact_prefix(
         commands in prop::collection::vec((0u8..5, 0usize..4), 0..100),
     ) {
-        let replay = replay_fixture(host());
+        let replay = replay_fixture();
         let root = replay.checkpoint().unwrap();
         let mut completed = Vec::<(usize, usize)>::new();
         let mut serial = 0;

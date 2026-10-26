@@ -21,13 +21,13 @@
 // every record and continuation that it removes must sit where the staged
 // view held it. After its effects, every staged change must have its event.
 //
-// Reads in native execution (decision 47). A transaction that
-// `begin_metered` opens charges each key computation and each value that its
-// view or its commit checks read on the meter of the space job, the same on
-// a cache hit and a miss (I-12). It reads a value that is not in the hot
-// store at the history root through the native history reader, so native
-// play and native replay decode a cold value with the same limits. A
-// transaction that `begin` opens reads as the host does in legacy execution.
+// Reads. A transaction reads through the store of its host (`TxnStore`):
+// the hot store in play, replay and reporting, and the digest-keyed store of
+// the native replay session in native replay (DR-96). Each read gives the
+// value that the host reads, and a value that the store does not hold is
+// read at the history root. A space operation meters only what its host
+// operation meters: its COMMs and the bytes that it stores, through the
+// observer calls of the host (DR-131).
 //
 // Module layout:
 //   space_store_handle.rs          — public API, staged view, staging rules,
@@ -35,37 +35,30 @@
 //   rspace/space_play.rs           — `SpaceTxnHost` for `RSpace` (play)
 //   replay_rspace/space_replay.rs  — `SpaceTxnHost` for `ReplayRSpace` and
 //                                    `ReportingRspace` (replay, reporting)
+//   replay_rspace/native_session/space.rs
+//                                  — `SpaceTxnHost` for the native replay
+//                                    session (native replay)
 
 use std::any::Any;
 use std::borrow::{Borrow, Cow};
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::{self, Debug};
 use std::hash::Hash;
-use std::mem::size_of;
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::ThreadId;
 
 use async_trait::async_trait;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
-use shared::rust::clone_backing::CloneBacking;
 
-use crate::rspace::candidate_order::{self, CandidateSource, OrderWork};
+use crate::rspace::candidate_order::{self, CandidateSource};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::{self, SourceMeter};
 use crate::rspace::hashing::stable_hash_provider::hash_from_hashes;
 use crate::rspace::history::history_reader::HistoryReader;
-use crate::rspace::history::history_repository::HistoryRepository;
-use crate::rspace::history::native_reader::{
-    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
-    decode_record,
-};
 use crate::rspace::hot_store::HotStore;
 use crate::rspace::internal::{ConsumeCandidate, Datum, Install, WaitingContinuation};
 use crate::rspace::r#match::Match;
-use crate::rspace::native_backing;
 use crate::rspace::operation_context::{self, CausalPath, OperationOrder};
 use crate::rspace::rspace_interface::{
     ContResult, MaybeConsumeResult, RSpaceOperationCompletion, RSpaceOperationSource, RSpaceResult,
@@ -91,7 +84,7 @@ pub enum SpaceMode {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpaceTxnError {
     /// Observer or host error, unchanged (`OutOfPhlogistons`,
-    /// `HostWorkRejected`, ...).
+    /// `SignedLimitExhausted`, ...).
     Host(RSpaceError),
     /// Empty channels, arity mismatch, empty lock keys, or a bad incoming
     /// candidate.
@@ -307,46 +300,14 @@ pub struct SweepReport {
     pub joins: usize,
 }
 
-/// The bincode bytes of `value`, encoded by the metered writer of the host
-/// (`native_source::encode`): each write and each growth of the buffer is
-/// reserved on `meter` before it happens. Space agents meter their encodes
-/// with the rule of the host (decision 42).
-pub fn metered_encode<T: Serialize + ?Sized>(
-    value: &T,
-    meter: &impl SourceMeter,
-) -> Result<Vec<u8>, RSpaceError> {
-    native_source::encode(value, meter)
-}
-
-/// The blake2b-256 hash of the bincode bytes of `value`, hashed by the
-/// metered writer of the host (`native_source::hash`): each write is reserved
-/// on `meter` before it happens. A set agent hashes its class keys with it
-/// (P5a, decision 41).
-pub fn metered_hash<T: Serialize + ?Sized>(
-    value: &T,
-    meter: &impl SourceMeter,
-) -> Result<Blake2b256Hash, RSpaceError> {
-    native_source::hash(value, meter)
-}
-
 /// The canonical order of the stored records `data` of one collection
 /// (DR-75, decision 41): by the hash of the source produce of each record,
 /// then by its full digest inside a run of equal source hashes, then by its
-/// index. It returns the indices of `data` in that order, which is the order
-/// of `candidate_order::canonical_candidates`. The work is reserved on
-/// `meter` as metered native replay reserves it for the same order
-/// (`MeteredOrder` of `native_candidate/metered.rs`, restated in
-/// [`SpaceOrder`]), so a bag or a set agent charges for its order what the
-/// branch charges. The records are ordered as borrowed views, and the agent
-/// copies only the records that it binds.
-pub fn canonical_data_order<A>(
-    data: &[Datum<A>],
-    meter: &dyn SourceMeter,
-) -> Result<Vec<usize>, RSpaceError>
-where
-    A: Clone + Serialize + CloneBacking,
-{
-    canonical_view_order(data, meter)
+/// index. It returns the indices of `data` in that order, the order of
+/// `candidate_order::canonical_candidates`. The records are ordered as
+/// borrowed views, and the agent copies only the records that it binds.
+pub fn canonical_data_order<A: Clone + Serialize>(data: &[Datum<A>]) -> Vec<usize> {
+    canonical_view_order(data)
 }
 
 /// [`canonical_data_order`] of the stored records `data` and one record `extra`
@@ -354,142 +315,40 @@ where
 /// DR-75, where `extra` has the index `data.len()`. A VectorDB offer ranks its
 /// datum among the stored records with it, so the list of a list-mode waiter
 /// that the datum completes has the order of the records once the datum is
-/// stored (P6, design v3 4.5). The work is reserved on `meter` as for
-/// [`canonical_data_order`].
-pub fn canonical_data_order_with<A>(
+/// stored (P6, design v3 4.5).
+pub fn canonical_data_order_with<A: Clone + Serialize>(
     data: &[Datum<A>],
     extra: &Datum<A>,
-    meter: &dyn SourceMeter,
-) -> Result<Vec<usize>, RSpaceError>
-where
-    A: Clone + Serialize + CloneBacking,
-{
-    let length = data
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut views = space_order_buffer(length, meter)?;
+) -> Vec<usize> {
+    let mut views = Vec::with_capacity(data.len() + 1);
     views.extend(data.iter().map(Cow::Borrowed));
     views.push(Cow::Borrowed(extra));
-    let ordered = candidate_order::canonical_order(views, &SpaceOrder(meter))?;
-    let mut indices = space_order_buffer(ordered.len(), meter)?;
-    for (_, index) in ordered {
-        indices.push(usize::try_from(index).map_err(|_| RSpaceError::HostWorkRejected)?);
-    }
-    Ok(indices)
+    view_indices(candidate_order::canonical_candidates(views))
 }
 
 /// [`canonical_data_order`] for the waiting continuations of one collection:
 /// by the hash of the source consume of each continuation, then by its
 /// digest, then by its index.
-pub fn canonical_continuation_order<P, K>(
-    waiters: &[WaitingContinuation<P, K>],
-    meter: &dyn SourceMeter,
-) -> Result<Vec<usize>, RSpaceError>
+pub fn canonical_continuation_order<P, K>(waiters: &[WaitingContinuation<P, K>]) -> Vec<usize>
 where
-    P: Clone + Serialize + CloneBacking,
-    K: Clone + Serialize + CloneBacking,
+    P: Clone + Serialize,
+    K: Clone + Serialize,
 {
-    canonical_view_order(waiters, meter)
+    canonical_view_order(waiters)
 }
 
-fn canonical_view_order<T>(
-    entries: &[T],
-    meter: &dyn SourceMeter,
-) -> Result<Vec<usize>, RSpaceError>
-where
-    T: CandidateSource + Clone + Serialize + CloneBacking,
-{
-    let mut views = space_order_buffer(entries.len(), meter)?;
+fn canonical_view_order<T: CandidateSource + Clone + Serialize>(entries: &[T]) -> Vec<usize> {
+    let mut views = Vec::with_capacity(entries.len());
     views.extend(entries.iter().map(Cow::Borrowed));
-    let ordered = candidate_order::canonical_order(views, &SpaceOrder(meter))?;
-    let mut indices = space_order_buffer(ordered.len(), meter)?;
-    for (_, index) in ordered {
-        indices.push(usize::try_from(index).map_err(|_| RSpaceError::HostWorkRejected)?);
-    }
-    Ok(indices)
+    view_indices(candidate_order::canonical_candidates(views))
 }
 
-/// The order work of a space agent over borrowed views. It restates the
-/// reservations of `MeteredOrder` and of its helpers `buffer` and `sort` in
-/// `native_candidate/metered.rs`, a file of `feature/cost-accounted-rho` that
-/// the campaign does not edit (M-3).
-struct SpaceOrder<'m>(&'m dyn SourceMeter);
-
-impl<'v, T> OrderWork<Cow<'v, T>> for SpaceOrder<'_>
-where T: Clone + Serialize + CloneBacking
-{
-    type Error = RSpaceError;
-
-    fn index_bound(&self, length: usize) -> Result<i32, RSpaceError> {
-        i32::try_from(length).map_err(|_| RSpaceError::HostWorkRejected)
-    }
-
-    fn buffer<U>(&self, length: usize) -> Result<Vec<U>, RSpaceError> {
-        space_order_buffer(length, self.0)
-    }
-
-    fn sort<U>(
-        &self,
-        values: &mut [U],
-        compare: impl Fn(&U, &U) -> Ordering,
-        scanned: impl Fn(&U) -> usize,
-    ) -> Result<(), RSpaceError> {
-        let moves = size_of::<U>()
-            .checked_mul(2)
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        self.0.reserve(
-            values.len(),
-            values
-                .len()
-                .checked_mul(moves)
-                .ok_or(RSpaceError::HostWorkRejected)?,
-            0,
-        )?;
-        shared::rust::fallible_sort::sort(values, |a, b| {
-            self.0.reserve(
-                1,
-                moves
-                    .checked_add(scanned(a))
-                    .and_then(|bytes| bytes.checked_add(scanned(b)))
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                0,
-            )?;
-            Ok(compare(a, b))
-        })
-    }
-
-    fn scan(&self, left: &Blake2b256Hash, right: &Blake2b256Hash) -> Result<(), RSpaceError> {
-        self.0.reserve(
-            1,
-            left.0
-                .len()
-                .checked_add(right.0.len())
-                .ok_or(RSpaceError::HostWorkRejected)?,
-            0,
-        )
-    }
-
-    fn digest(&self, value: &Cow<'v, T>) -> Result<Blake2b256Hash, RSpaceError> {
-        crate::rspace::native_backing::inspect(value, self.0)?;
-        native_source::hash(value, &|operations, scanned, backing| {
-            self.0.reserve(operations, scanned, backing)
-        })
-    }
-}
-
-/// An empty buffer for `length` values, reserved as the `buffer` helper of
-/// `native_candidate/metered.rs` reserves it.
-fn space_order_buffer<U>(length: usize, meter: &dyn SourceMeter) -> Result<Vec<U>, RSpaceError> {
-    let bytes = length
-        .checked_mul(size_of::<U>())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve(length.checked_add(1).ok_or(RSpaceError::HostWorkRejected)?, bytes, bytes)?;
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(length)
-        .map_err(|_| RSpaceError::HostWorkRejected)?;
-    Ok(values)
+// The positions of an ordered list of views. A position is an index of the
+// list before the order, so it is not negative.
+fn view_indices<V>(ordered: Vec<(V, i32)>) -> Vec<usize> {
+    let mut indices = Vec::with_capacity(ordered.len());
+    indices.extend(ordered.into_iter().map(|(_, index)| index as usize));
+    indices
 }
 
 /// Candidate that binds the stored record `stored` (at `view_index` in the
@@ -667,21 +526,11 @@ struct HandleState {
 /// and every sweep goes through a handle: the handle refuses a nested `begin`
 /// or sweep in one task and admits one commit per parent operation order.
 /// The registration ends when the transaction commits, fails closed, or is
-/// dropped, and when the sweep returns. A registration of
-/// [`SpaceStoreHandle::begin_metered`] also carries the metered reads of the
-/// transaction.
+/// dropped, and when the sweep returns.
 pub struct TxnRegistration {
     state: Arc<HandleState>,
     context: TxnContext,
-    reads: Option<ErasedReads>,
 }
-
-// The metered reads that a transaction of native execution carries from
-// `begin_metered` to `HostTxn::new` (decision 47). The registration and the
-// `SpaceTxnHost::begin` signature are not generic, so the registration holds
-// an `Arc<dyn ViewReads<C, P, A, K>>` type-erased, and `HostTxn::new` takes
-// it back with the types of its handle, as `StoreIdentity` erases a store.
-type ErasedReads = Arc<dyn Any + Send + Sync>;
 
 impl TxnRegistration {
     fn register(state: &Arc<HandleState>) -> Result<Self, SpaceTxnError> {
@@ -695,47 +544,16 @@ impl TxnRegistration {
             true => Ok(Self {
                 state: Arc::clone(state),
                 context,
-                reads: None,
             }),
             false => Err(SpaceTxnError::NestedTransaction),
         }
     }
 
-    /// True when the transaction reads with the metered reads of native
-    /// execution ([`SpaceStoreHandle::begin_metered`]).
-    pub fn is_metered(&self) -> bool { self.reads.is_some() }
-
-    // The metered reads of the transaction with the types of its handle, or
-    // `None` for a transaction of `begin`.
-    fn metered_reads<C, P, A, K>(&self) -> Result<Option<SharedReads<C, P, A, K>>, SpaceTxnError>
-    where
-        C: Clone + Hash + Eq + 'static,
-        P: Clone + 'static,
-        A: Clone + 'static,
-        K: Clone + 'static,
-    {
-        match &self.reads {
-            None => Ok(None),
-            Some(reads) => reads
-                .downcast_ref::<SharedReads<C, P, A, K>>()
-                .map(|reads| Some(Arc::clone(reads)))
-                .ok_or(SpaceTxnError::Inconsistent(
-                    "the metered reads do not have the types of the transaction",
-                )),
-        }
-    }
-
-    fn admit_parent<C, P, A, K>(
+    fn admit_parent<S: Any + Send + Sync>(
         &self,
         parent: &OperationOrder,
-        store: &SharedStore<C, P, A, K>,
-    ) -> Result<(), SpaceTxnError>
-    where
-        C: Clone + Hash + Eq + 'static,
-        P: Clone + 'static,
-        A: Clone + 'static,
-        K: Clone + 'static,
-    {
+        store: &Arc<S>,
+    ) -> Result<(), SpaceTxnError> {
         let weak = Arc::downgrade(store);
         let store: StoreIdentity = weak;
         self.state
@@ -813,24 +631,6 @@ where
     /// transaction of this handle.
     pub async fn begin(&self, lock_keys: &[C]) -> Result<BoxedSpaceTxn<C, P, A, K>, SpaceTxnError> {
         let registration = TxnRegistration::register(&self.state)?;
-        self.host.begin(lock_keys, registration).await
-    }
-
-    /// [`SpaceStoreHandle::begin`] for native execution (decision 47): the
-    /// transaction reads its view and its commit checks through `reads`,
-    /// which charges each key and each value on the meter of the space job,
-    /// the same on a cache hit and a miss (I-12).
-    pub async fn begin_metered(
-        &self,
-        lock_keys: &[C],
-        reads: SharedReads<C, P, A, K>,
-    ) -> Result<BoxedSpaceTxn<C, P, A, K>, SpaceTxnError>
-    where
-        C: Hash + Eq,
-    {
-        let mut registration = TxnRegistration::register(&self.state)?;
-        let erased: ErasedReads = Arc::new(reads);
-        registration.reads = Some(erased);
         self.host.begin(lock_keys, registration).await
     }
 
@@ -921,406 +721,84 @@ where
 
 pub(crate) type SharedStore<C, P, A, K> = Arc<Box<dyn HotStore<C, P, A, K>>>;
 
-/// The history repository of a host. The hot store of the host layers on
-/// its root.
-pub(crate) type SharedHistory<C, P, A, K> =
-    Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>;
-
-/// The [`ViewReads`] of one transaction.
-pub type SharedReads<C, P, A, K> = Arc<dyn ViewReads<C, P, A, K>>;
-
-/// Where a metered read finds a value: the hot store, and the history root
-/// that the hot store layers on.
-pub struct ViewSource<'s, C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> {
-    pub store: &'s dyn HotStore<C, P, A, K>,
-    pub history: &'s dyn HistoryRepository<C, P, A, K>,
-    pub root: [u8; 32],
-}
-
-// The fields are references and an array, so a source copies for any type
-// parameters. A derive would require `C: Copy` and the others.
-impl<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> Clone for ViewSource<'_, C, P, A, K> {
-    fn clone(&self) -> Self { *self }
-}
-
-impl<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> Copy for ViewSource<'_, C, P, A, K> {}
-
-/// The reads of a transaction in native execution (decision 47, design v2,
-/// S4 and S5). Each key computation and each value that enters a view or a
-/// commit check is charged on the meter of the space job. A charge is a
-/// function of the key and of the logical value only, so it is the same on a
-/// cache hit and a miss (I-12). A value that is not in the hot store is read
-/// at the history root through the native history reader, with a meter that
-/// accepts every reservation: that physical read is node work, bounded by
-/// the structural limits of the reader. The implementation carries the
-/// bounds of the native reader, so the generic substrate needs none.
-pub trait ViewReads<C, P, A, K>: Send + Sync
+/// The store that a transaction reads: the hot store in play, replay and
+/// reporting, or the digest-keyed store of the native replay session in
+/// native replay (DR-96). Each read gives the list that the host reads, with
+/// the installed entries first, and a value that the store does not hold is
+/// read at the history root. `key` is the store identity of `channel`
+/// ([`channel_key`]), and `keys` are the channel keys of a group in group
+/// order, so a store that is keyed by digests computes no hash of its own.
+pub(crate) trait TxnStore<C, P, A, K>: Send + Sync
 where
     C: Clone + Hash + Eq,
     P: Clone,
     A: Clone,
     K: Clone,
 {
-    /// The store identity of `channel`, charged: the walk of the channel,
-    /// then the metered hash of its bincode bytes.
-    fn key(&self, channel: &C) -> Result<Blake2b256Hash, RSpaceError>;
-
-    /// The data of `channel`, whose key is `key`. The copy of the records is
-    /// charged before the copy.
-    fn data(
-        &self,
-        source: ViewSource<'_, C, P, A, K>,
-        channel: &C,
-        key: &Blake2b256Hash,
-    ) -> Result<Vec<Datum<A>>, RSpaceError>;
-
-    /// The waiting continuations of the group `channels`. The history key of
-    /// the group and the copy of the continuations are charged.
-    fn continuations(
-        &self,
-        source: ViewSource<'_, C, P, A, K>,
-        channels: &[C],
-    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError>;
-
-    /// The join groups of `channel`, whose key is `key`. The copy of the
-    /// groups is charged.
-    fn joins(
-        &self,
-        source: ViewSource<'_, C, P, A, K>,
-        channel: &C,
-        key: &Blake2b256Hash,
-    ) -> Result<Vec<Vec<C>>, RSpaceError>;
-}
-
-/// The [`ViewReads`] of native execution over the meter of a space job.
-pub struct NativeViewReads<M> {
-    meter: M,
-}
-
-impl<M> NativeViewReads<M> {
-    /// The reads that charge `meter`.
-    pub fn new(meter: M) -> Self { Self { meter } }
-}
-
-impl<C, P, A, K, M> ViewReads<C, P, A, K> for NativeViewReads<M>
-where
-    C: Clone + Hash + Eq + Serialize + DeserializeOwned + CloneBacking + Send + Sync,
-    P: Clone + Serialize + DeserializeOwned + CloneBacking + Send + Sync,
-    A: Clone + Serialize + DeserializeOwned + CloneBacking + Send + Sync,
-    K: Clone + Serialize + DeserializeOwned + CloneBacking + Send + Sync,
-    M: SourceMeter + Send + Sync,
-{
-    fn key(&self, channel: &C) -> Result<Blake2b256Hash, RSpaceError> {
-        native_backing::inspect(channel, &self.meter)?;
-        native_source::hash(channel, &self.meter)
-    }
-
-    fn data(
-        &self,
-        source: ViewSource<'_, C, P, A, K>,
-        channel: &C,
-        key: &Blake2b256Hash,
-    ) -> Result<Vec<Datum<A>>, RSpaceError> {
-        let view = source.store.get_data_view_with_reader(
-            channel,
-            &|| history_records(source.history, source.root, NativeLeafKind::Data, key),
-            &accept_all,
-        )?;
-        native_backing::reserve_slice_copy_and_cleanup(view.values(), &self.meter)?;
-        Ok(view.values().to_vec())
-    }
-
-    fn continuations(
-        &self,
-        source: ViewSource<'_, C, P, A, K>,
-        channels: &[C],
-    ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
-        // The history key of the group, the hash of its sorted channel keys
-        // (`hash_from_hashes`). Native replay of a host consume computes it
-        // with `channels_hash` (`native_session/history.rs`), so this read
-        // charges the same function.
-        let projection = native_source::channels_hash(channels, &self.meter)?;
-        let views = source.store.get_continuation_views_with_reader(
-            channels,
-            &|| {
-                history_records(
-                    source.history,
-                    source.root,
-                    NativeLeafKind::Continuations,
-                    &projection,
-                )
-            },
-            &accept_all,
-        )?;
-        let mut waiting = Vec::new();
-        waiting
-            .try_reserve_exact(views.len())
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        for view in &views {
-            native_backing::reserve_copy_and_cleanup(&**view, &self.meter)?;
-            waiting.push(WaitingContinuation::clone(view));
-        }
-        Ok(waiting)
-    }
-
-    fn joins(
-        &self,
-        source: ViewSource<'_, C, P, A, K>,
-        channel: &C,
-        key: &Blake2b256Hash,
-    ) -> Result<Vec<Vec<C>>, RSpaceError> {
-        let joins = source.store.get_joins_with_reader(
-            channel,
-            &|| history_records(source.history, source.root, NativeLeafKind::Joins, key),
-            &accept_all,
-        )?;
-        native_backing::reserve_slice_copy_and_cleanup(&joins, &self.meter)?;
-        Ok(joins)
-    }
-}
-
-// The meter of the physical read of a metered view load. That read is node
-// work (design v2, S4), so its reservations charge no deploy.
-fn accept_all(_operations: usize, _scanned: usize, _backing: usize) -> Result<(), RSpaceError> {
-    Ok(())
-}
-
-// The decode meter of the physical read, with the same rule as `accept_all`.
-struct AcceptAll;
-
-impl NativeReadMeter for AcceptAll {
-    type Error = RSpaceError;
-
-    fn reserve(&self, _charge: NativeReadCharge) -> Result<(), RSpaceError> { Ok(()) }
-}
-
-// The fault mapping of every native history read of the host
-// (`ispace_impl.rs`, `native_session/history.rs`): a structural fault is a
-// deterministic host-work rejection.
-fn native_read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
-    match error {
-        NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
-        NativeReadError::Store(error) => error.into(),
-        NativeReadError::Invalid(
-            NativeReadFault::Depth | NativeReadFault::Allocation | NativeReadFault::Overflow,
-        ) => RSpaceError::HostWorkRejected,
-        NativeReadError::Invalid(error) => {
-            RSpaceError::InterpreterError(format!("native history: {error:?}"))
-        }
-    }
-}
-
-// The records of the leaf `projection` of `kind` at `root`, decoded by the
-// native history reader, as the native replay session reads them
-// (`native_session/history.rs`, `read_records`). The meters accept every
-// reservation (S4), and the structural limits of the reader still apply.
-fn history_records<C, P, A, K, T>(
-    history: &dyn HistoryRepository<C, P, A, K>,
-    root: [u8; 32],
-    kind: NativeLeafKind,
-    projection: &Blake2b256Hash,
-) -> Result<Vec<T>, RSpaceError>
-where
-    C: Clone,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-    T: DeserializeOwned,
-{
-    let projection: [u8; 32] = projection.0.as_slice().try_into().map_err(|_| {
-        RSpaceError::InterpreterError("native history projection length".to_owned())
-    })?;
-    history
-        .native_history_reader(root)
-        .with_records(kind, &projection, &AcceptAll, |rows| {
-            let mut values = Vec::new();
-            values
-                .try_reserve_exact(rows.len())
-                .map_err(|_| RSpaceError::HostWorkRejected)?;
-            for row in rows.iter() {
-                values.push(decode_record(row, &AcceptAll).map_err(native_read_error)?);
-            }
-            Ok(values)
-        })
-        .map_err(native_read_error)
-        .map(Option::unwrap_or_default)
-}
-
-// The history repository and the root of a host, with the root as the bytes
-// that the native history reader takes.
-pub(crate) fn history_at_root<C, P, A, K>(
-    history: SharedHistory<C, P, A, K>,
-) -> Result<(SharedHistory<C, P, A, K>, [u8; 32]), SpaceTxnError>
-where
-    C: Clone,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
-    let root: [u8; 32] = history
-        .root()
-        .0
-        .as_slice()
-        .try_into()
-        .map_err(|_| SpaceTxnError::Inconsistent("a history root is not 32 bytes"))?;
-    Ok((history, root))
-}
-
-// The metered reads of an open transaction: the reads of `begin_metered`,
-// and the history repository and root of its host.
-pub(crate) struct MeteredReads<C, P, A, K>
-where
-    C: Clone + Hash + Eq,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
-    reads: SharedReads<C, P, A, K>,
-    history: SharedHistory<C, P, A, K>,
-    root: [u8; 32],
-}
-
-/// How a transaction reads the hot store: as the host does in legacy
-/// execution, or through its [`MeteredReads`] in native execution. The plain
-/// arms make exactly the calls that the substrate made before decision 47,
-/// so legacy execution is unchanged.
-pub(crate) struct Reads<'r, C, P, A, K>
-where
-    C: Clone + Hash + Eq,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
-    metered: Option<&'r MeteredReads<C, P, A, K>>,
-}
-
-impl<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> Clone for Reads<'_, C, P, A, K> {
-    fn clone(&self) -> Self { *self }
-}
-
-impl<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone> Copy for Reads<'_, C, P, A, K> {}
-
-impl<'r, C, P, A, K> Reads<'r, C, P, A, K>
-where
-    C: Clone + Hash + Eq + Serialize,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
-    pub(crate) fn new(metered: Option<&'r MeteredReads<C, P, A, K>>) -> Self { Self { metered } }
-
-    fn source<'s>(
-        metered: &'s MeteredReads<C, P, A, K>,
-        store: &'s dyn HotStore<C, P, A, K>,
-    ) -> ViewSource<'s, C, P, A, K> {
-        ViewSource {
-            store,
-            history: &**metered.history,
-            root: metered.root,
-        }
-    }
-
-    /// The store identity of `channel` ([`channel_key`]).
-    pub(crate) fn key(&self, channel: &C) -> Result<Blake2b256Hash, SpaceTxnError> {
-        match self.metered {
-            None => channel_key(channel),
-            Some(metered) => metered.reads.key(channel).map_err(SpaceTxnError::Host),
-        }
-    }
-
-    /// The store identity of a group ([`group_identity`]).
-    pub(crate) fn group_identity(&self, group: &[C]) -> Result<Vec<Blake2b256Hash>, SpaceTxnError> {
-        match self.metered {
-            None => group_identity(group),
-            Some(_) => {
-                let mut keys = Vec::with_capacity(group.len());
-                for channel in group {
-                    keys.push(self.key(channel)?);
-                }
-                Ok(keys)
-            }
-        }
-    }
-
-    /// The key of a non-empty canonical group ([`canonical_group_key`]).
-    pub(crate) fn canonical_group_key(
-        &self,
-        group: &[C],
-    ) -> Result<Vec<Blake2b256Hash>, SpaceTxnError> {
-        match self.metered {
-            None => canonical_group_key(group),
-            Some(_) => {
-                if group.is_empty() {
-                    return Err(SpaceTxnError::InvalidOperation("channels must not be empty"));
-                }
-                let keys = self.group_identity(group)?;
-                require_canonical(&keys)?;
-                Ok(keys)
-            }
-        }
-    }
-
     /// The data of `channel`, whose key is `key`.
-    pub(crate) fn data(
-        &self,
-        store: &dyn HotStore<C, P, A, K>,
-        channel: &C,
-        key: &Blake2b256Hash,
-    ) -> Result<Vec<Datum<A>>, SpaceTxnError> {
-        match self.metered {
-            None => Ok(store.get_data(channel)),
-            Some(metered) => metered
-                .reads
-                .data(Self::source(metered, store), channel, key)
-                .map_err(SpaceTxnError::Host),
-        }
-    }
+    fn data(&self, channel: &C, key: &Blake2b256Hash) -> Result<Vec<Datum<A>>, SpaceTxnError>;
 
-    /// The waiting continuations of the group `channels`.
-    pub(crate) fn continuations(
+    /// The waiting continuations of the group `channels`, whose channel keys
+    /// are `keys`.
+    fn continuations(
         &self,
-        store: &dyn HotStore<C, P, A, K>,
         channels: &[C],
-    ) -> Result<Vec<WaitingContinuation<P, K>>, SpaceTxnError> {
-        match self.metered {
-            None => Ok(store.get_continuations(channels)),
-            Some(metered) => metered
-                .reads
-                .continuations(Self::source(metered, store), channels)
-                .map_err(SpaceTxnError::Host),
-        }
-    }
+        keys: &[Blake2b256Hash],
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, SpaceTxnError>;
 
     /// The join groups of `channel`, whose key is `key`.
-    pub(crate) fn joins(
-        &self,
-        store: &dyn HotStore<C, P, A, K>,
-        channel: &C,
-        key: &Blake2b256Hash,
-    ) -> Result<Vec<Vec<C>>, SpaceTxnError> {
-        match self.metered {
-            None => Ok(store.get_joins(channel)),
-            Some(metered) => metered
-                .reads
-                .joins(Self::source(metered, store), channel, key)
-                .map_err(SpaceTxnError::Host),
-        }
+    fn joins(&self, channel: &C, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, SpaceTxnError>;
+}
+
+// The hot store reads by the channels, so it does not use the keys.
+impl<C, P, A, K> TxnStore<C, P, A, K> for dyn HotStore<C, P, A, K> + '_
+where
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    fn data(&self, channel: &C, _key: &Blake2b256Hash) -> Result<Vec<Datum<A>>, SpaceTxnError> {
+        Ok(self.get_data(channel))
     }
 
-    /// The join groups of `channel`. Only a metered read computes the key of
-    /// the channel, so a plain read makes the single host call of before.
-    pub(crate) fn channel_joins(
+    fn continuations(
         &self,
-        store: &dyn HotStore<C, P, A, K>,
-        channel: &C,
-    ) -> Result<Vec<Vec<C>>, SpaceTxnError> {
-        match self.metered {
-            None => Ok(store.get_joins(channel)),
-            Some(_) => {
-                let key = self.key(channel)?;
-                self.joins(store, channel, &key)
-            }
-        }
+        channels: &[C],
+        _keys: &[Blake2b256Hash],
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, SpaceTxnError> {
+        Ok(self.get_continuations_arc(channels))
+    }
+
+    fn joins(&self, channel: &C, _key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, SpaceTxnError> {
+        Ok(self.get_joins(channel))
+    }
+}
+
+// A boxed store reads as the store in the box. A host keeps its hot store
+// boxed in an `Arc` (`SharedStore`).
+impl<S, C, P, A, K> TxnStore<C, P, A, K> for Box<S>
+where
+    S: TxnStore<C, P, A, K> + ?Sized,
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    fn data(&self, channel: &C, key: &Blake2b256Hash) -> Result<Vec<Datum<A>>, SpaceTxnError> {
+        (**self).data(channel, key)
+    }
+
+    fn continuations(
+        &self,
+        channels: &[C],
+        keys: &[Blake2b256Hash],
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, SpaceTxnError> {
+        (**self).continuations(channels, keys)
+    }
+
+    fn joins(&self, channel: &C, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, SpaceTxnError> {
+        (**self).joins(channel, key)
     }
 }
 
@@ -1646,8 +1124,17 @@ pub(crate) fn installed_channels<C: Serialize, P, K>(
     installs: &Mutex<HashMap<Vec<C>, Install<P, K>>>,
 ) -> Result<BTreeSet<Blake2b256Hash>, SpaceTxnError> {
     let installs = installs.lock().expect("installs lock");
+    installed_channel_keys(installs.keys())
+}
+
+/// Keys of every channel of the installed groups `groups` (R2). Play takes
+/// the groups from its installs ([`installed_channels`]), and native replay
+/// takes them from the installations of its session.
+pub fn installed_channel_keys<'g, C: Serialize + 'g>(
+    groups: impl IntoIterator<Item = &'g Vec<C>>,
+) -> Result<BTreeSet<Blake2b256Hash>, SpaceTxnError> {
     let mut installed = BTreeSet::new();
-    for channel in installs.keys().flatten() {
+    for channel in groups.into_iter().flatten() {
         installed.insert(channel_key(channel)?);
     }
     Ok(installed)
@@ -1703,15 +1190,14 @@ where
 {
     /// Loads `channel`'s data on the first touch of `key`. A failed read
     /// caches nothing in the view.
-    pub(crate) fn load_data(
+    pub(crate) fn load_data<S: TxnStore<C, P, A, K> + ?Sized>(
         &mut self,
-        store: &dyn HotStore<C, P, A, K>,
+        store: &S,
         key: &Blake2b256Hash,
         channel: &C,
-        reads: Reads<'_, C, P, A, K>,
     ) -> Result<&[Datum<A>], SpaceTxnError> {
         if !self.data.contains_key(key) {
-            let records = reads.data(store, channel, key)?;
+            let records = store.data(channel, key)?;
             self.data.insert(key.clone(), DataEntry { records });
         }
         self.data
@@ -1721,16 +1207,18 @@ where
     }
 
     /// Loads the continuations of the group `channels` on the first touch of
-    /// `key`. A failed read caches nothing in the view.
-    pub(crate) fn load_continuations(
+    /// `key`, as copies of the shared continuations of the store. A failed
+    /// read caches nothing in the view.
+    pub(crate) fn load_continuations<S: TxnStore<C, P, A, K> + ?Sized>(
         &mut self,
-        store: &dyn HotStore<C, P, A, K>,
+        store: &S,
         key: &[Blake2b256Hash],
         channels: &[C],
-        reads: Reads<'_, C, P, A, K>,
     ) -> Result<&[WaitingContinuation<P, K>], SpaceTxnError> {
         if !self.conts.contains_key(key) {
-            let waiting = reads.continuations(store, channels)?;
+            let shared = store.continuations(channels, key)?;
+            let mut waiting = Vec::with_capacity(shared.len());
+            waiting.extend(shared.iter().map(|continuation| (**continuation).clone()));
             self.conts
                 .insert(key.to_vec(), ContinuationEntry { waiting });
         }
@@ -1742,18 +1230,17 @@ where
 
     /// Loads `channel`'s join groups. A stored group that is not canonical
     /// fails the read and is not cached in the view.
-    pub(crate) fn load_joins(
+    pub(crate) fn load_joins<S: TxnStore<C, P, A, K> + ?Sized>(
         &mut self,
-        store: &dyn HotStore<C, P, A, K>,
+        store: &S,
         key: &Blake2b256Hash,
         channel: &C,
-        reads: Reads<'_, C, P, A, K>,
     ) -> Result<&JoinEntry<C>, SpaceTxnError> {
         if !self.joins.contains_key(key) {
-            let groups = reads.joins(store, channel, key)?;
+            let groups = store.joins(channel, key)?;
             let mut keys = Vec::with_capacity(groups.len());
             for group in &groups {
-                let group_key = reads.group_identity(group)?;
+                let group_key = group_identity(group)?;
                 require_canonical(&group_key)?;
                 keys.push(group_key);
             }
@@ -2102,6 +1589,8 @@ pub(crate) struct StagedConsumeFire<C, A: Clone> {
 pub(crate) struct StagedConsume<C, P: Clone, A: Clone, K: Clone> {
     pub(crate) source: Consume,
     pub(crate) channels: Vec<C>,
+    /// The key of the group `channels`, which a native park publishes under.
+    pub(crate) group: Vec<Blake2b256Hash>,
     pub(crate) patterns: Vec<P>,
     pub(crate) continuation: K,
     pub(crate) persist: bool,
@@ -2121,8 +1610,9 @@ pub(crate) struct Staged<C, P: Clone, A: Clone, K: Clone> {
     effects: Vec<StoreEffect>,
 }
 
-/// One host mode. Each child module (`space_play`, `space_replay`)
-/// implements `apply_op` in the host's exact call order.
+/// One host mode. Each child module (`space_play`, `space_replay`,
+/// `native_session/space`) implements `apply_op` in the host's exact call
+/// order.
 pub(crate) trait TxnBackend<C, P, A, K>: Send + Sync + 'static
 where
     C: Clone + Hash + Eq,
@@ -2130,8 +1620,13 @@ where
     A: Clone,
     K: Clone,
 {
-    /// The host's current hot store.
-    fn store(&self) -> SharedStore<C, P, A, K>;
+    /// The store that the host reads and changes. A commit compares the
+    /// store with the store of its parent order, so it lives as long as the
+    /// program (`admit_parent`).
+    type Store: TxnStore<C, P, A, K> + 'static;
+
+    /// The host's current store.
+    fn store(&self) -> Arc<Self::Store>;
 
     /// The host produce counter (play: trace_log.rs; replay:
     /// `get_produce_count`).
@@ -2144,23 +1639,18 @@ where
     /// The recorded copy of `comm` under `event` and its multiplicity.
     fn recorded_binding(&self, event: &IOEvent, comm: &COMM) -> Option<(COMM, usize)>;
 
-    /// The history repository of the host and the root that its hot store
-    /// layers on. Metered reads take a cold value from there (decision 47).
-    fn history(&self) -> Result<(SharedHistory<C, P, A, K>, [u8; 32]), SpaceTxnError>;
-
     /// Applies one staged operation to `store` and reports the events it
-    /// emitted. Its commit checks read through `reads`.
+    /// emitted.
     fn apply_op(
         &self,
-        store: &dyn HotStore<C, P, A, K>,
+        store: &Self::Store,
         operation: StagedOperation<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
-        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError>;
 }
 
-pub(crate) struct TxnCore<C, P, A, K>
+pub(crate) struct TxnCore<S, C, P, A, K>
 where
     C: Clone + Hash + Eq,
     P: Clone,
@@ -2168,19 +1658,18 @@ where
     K: Clone,
 {
     mode: SpaceMode,
-    store: SharedStore<C, P, A, K>,
+    store: Arc<S>,
     installed: BTreeSet<Blake2b256Hash>,
     coverage: LockCoverage,
     view: TxnView<C, P, A, K>,
     paired: Vec<COMM>,
     staged: Vec<Staged<C, P, A, K>>,
     finished: bool,
-    // The metered reads of a transaction of `begin_metered` (decision 47).
-    metered: Option<MeteredReads<C, P, A, K>>,
 }
 
-impl<C, P, A, K> TxnCore<C, P, A, K>
+impl<S, C, P, A, K> TxnCore<S, C, P, A, K>
 where
+    S: TxnStore<C, P, A, K>,
     C: Clone + Debug + Serialize + Hash + Eq + Send + Sync + 'static,
     P: Clone + Debug + Serialize + Send + Sync + 'static,
     A: Clone + Debug + Serialize + Send + Sync + 'static,
@@ -2209,7 +1698,7 @@ where
         lock_use: LockUse,
     ) -> Result<Vec<Blake2b256Hash>, SpaceTxnError> {
         check_arity(channels, patterns)?;
-        let key = Reads::new(self.metered.as_ref()).canonical_group_key(channels)?;
+        let key = canonical_group_key(channels)?;
         for channel in channels {
             self.coverage.require(channel, lock_use)?;
         }
@@ -2221,10 +1710,9 @@ where
 
     fn read_data(&mut self, channel: &C) -> Result<&[Datum<A>], SpaceTxnError> {
         self.ensure_open()?;
-        let reads = Reads::new(self.metered.as_ref());
-        let key = reads.key(channel)?;
+        let key = channel_key(channel)?;
         self.admit(&key)?;
-        self.view.load_data(&**self.store, &key, channel, reads)
+        self.view.load_data(&*self.store, &key, channel)
     }
 
     fn read_continuations(
@@ -2232,22 +1720,19 @@ where
         channels: &[C],
     ) -> Result<&[WaitingContinuation<P, K>], SpaceTxnError> {
         self.ensure_open()?;
-        let reads = Reads::new(self.metered.as_ref());
-        let key = reads.canonical_group_key(channels)?;
+        let key = canonical_group_key(channels)?;
         for channel_key in &key {
             self.admit(channel_key)?;
         }
-        self.view
-            .load_continuations(&**self.store, &key, channels, reads)
+        self.view.load_continuations(&*self.store, &key, channels)
     }
 
     fn read_joins(&mut self, channel: &C) -> Result<&[Vec<C>], SpaceTxnError> {
         self.ensure_open()?;
-        let reads = Reads::new(self.metered.as_ref());
-        let key = reads.key(channel)?;
+        let key = channel_key(channel)?;
         self.admit(&key)?;
         self.view
-            .load_joins(&**self.store, &key, channel, reads)
+            .load_joins(&*self.store, &key, channel)
             .map(|entry| entry.groups.as_slice())
     }
 
@@ -2347,13 +1832,12 @@ where
     // Loads a fired group: the data and the join groups of every channel and
     // the group's continuations.
     fn load_group(&mut self, key: &[Blake2b256Hash], channels: &[C]) -> Result<(), SpaceTxnError> {
-        let store = &**self.store;
-        let reads = Reads::new(self.metered.as_ref());
+        let store = &*self.store;
         for (channel_key, channel) in key.iter().zip(channels) {
-            self.view.load_data(store, channel_key, channel, reads)?;
-            self.view.load_joins(store, channel_key, channel, reads)?;
+            self.view.load_data(store, channel_key, channel)?;
+            self.view.load_joins(store, channel_key, channel)?;
         }
-        self.view.load_continuations(store, key, channels, reads)?;
+        self.view.load_continuations(store, key, channels)?;
         Ok(())
     }
 
@@ -2415,8 +1899,7 @@ where
             outcome,
             before_observe,
         } = op;
-        let reads = Reads::new(self.metered.as_ref());
-        let key = reads.key(&channel)?;
+        let key = channel_key(&channel)?;
         self.coverage.require(&channel, LockUse::Produced)?;
         self.admit(&key)?;
         let source = Produce::create(&channel, &data, persist);
@@ -2435,13 +1918,13 @@ where
                     ));
                 }
                 check_peeks(channels.len(), &continuation.peeks)?;
-                check_lined_up(reads, &group, &candidates)?;
-                check_incoming(reads, &candidates, &key, &source, &data, persist)?;
+                check_lined_up(&group, &candidates)?;
+                check_incoming(&candidates, &key, &source, &data, persist)?;
                 Some((group, channels, continuation, candidates))
             }
         };
         let joins_at_start = {
-            let entry = self.view.load_joins(&**self.store, &key, &channel, reads)?;
+            let entry = self.view.load_joins(&*self.store, &key, &channel)?;
             for group in &entry.groups {
                 for joined in group {
                     self.coverage.require(joined, LockUse::Joined)?;
@@ -2449,7 +1932,7 @@ where
             }
             entry.groups.clone()
         };
-        self.view.load_data(&**self.store, &key, &channel, reads)?;
+        self.view.load_data(&*self.store, &key, &channel)?;
         let index = self.staged.len();
         match fired {
             None => {
@@ -2636,15 +2119,13 @@ where
         check_peeks(channels.len(), &peeks)?;
         let source = Consume::create(&channels, &patterns, &continuation, persist);
         let index = self.staged.len();
-        let reads = Reads::new(self.metered.as_ref());
         match outcome {
             ConsumeOutcome::Park => {
                 {
-                    let store = &**self.store;
-                    self.view
-                        .load_continuations(store, &group, &channels, reads)?;
+                    let store = &*self.store;
+                    self.view.load_continuations(store, &group, &channels)?;
                     for (channel_key, channel) in group.iter().zip(&channels) {
-                        self.view.load_joins(store, channel_key, channel, reads)?;
+                        self.view.load_joins(store, channel_key, channel)?;
                     }
                 }
                 let waiting = WaitingContinuation {
@@ -2662,6 +2143,7 @@ where
                     operation: StagedOperation::Consume(StagedConsume {
                         source: source.clone(),
                         channels,
+                        group,
                         patterns,
                         continuation,
                         persist,
@@ -2678,16 +2160,16 @@ where
                 })
             }
             ConsumeOutcome::Fire { data: candidates } => {
-                check_lined_up(reads, &group, &candidates)?;
+                check_lined_up(&group, &candidates)?;
                 if candidates.iter().any(|candidate| candidate.datum_index < 0) {
                     return Err(SpaceTxnError::InvalidOperation(
                         "a consume fire binds only stored records",
                     ));
                 }
                 {
-                    let store = &**self.store;
+                    let store = &*self.store;
                     for (channel_key, channel) in group.iter().zip(&channels) {
-                        self.view.load_data(store, channel_key, channel, reads)?;
+                        self.view.load_data(store, channel_key, channel)?;
                     }
                 }
                 self.check_stored_candidates(&group, &candidates)?;
@@ -2709,6 +2191,7 @@ where
                     operation: StagedOperation::Consume(StagedConsume {
                         source: source.clone(),
                         channels,
+                        group: group.clone(),
                         patterns,
                         continuation,
                         persist,
@@ -2745,24 +2228,17 @@ fn check_arity<C>(channels: &[C], patterns: usize) -> Result<(), SpaceTxnError> 
 }
 
 // `candidates[i]` binds the channel with key `group[i]`.
-fn check_lined_up<C, P, A, K>(
-    reads: Reads<'_, C, P, A, K>,
+fn check_lined_up<C: Serialize, A: Clone>(
     group: &[Blake2b256Hash],
     candidates: &[ConsumeCandidate<C, A>],
-) -> Result<(), SpaceTxnError>
-where
-    C: Clone + Hash + Eq + Serialize,
-    P: Clone,
-    A: Clone,
-    K: Clone,
-{
+) -> Result<(), SpaceTxnError> {
     let misaligned =
         SpaceTxnError::InvalidOperation("the candidates do not line up with the channels");
     if candidates.len() != group.len() {
         return Err(misaligned);
     }
     for (candidate, key) in candidates.iter().zip(group) {
-        if reads.key(&candidate.channel)? != *key {
+        if channel_key(&candidate.channel)? != *key {
             return Err(misaligned);
         }
     }
@@ -2771,27 +2247,20 @@ where
 
 // The incoming candidate carries the produced record: its channel, source,
 // original data and persistence. A produce fire has exactly one.
-fn check_incoming<C, P, A, K>(
-    reads: Reads<'_, C, P, A, K>,
+fn check_incoming<C: Serialize, A: Clone + Serialize>(
     candidates: &[ConsumeCandidate<C, A>],
     key: &Blake2b256Hash,
     source: &Produce,
     data: &A,
     persist: bool,
-) -> Result<(), SpaceTxnError>
-where
-    C: Clone + Hash + Eq + Serialize,
-    P: Clone,
-    A: Clone + Serialize,
-    K: Clone,
-{
+) -> Result<(), SpaceTxnError> {
     let source_bytes = record_bytes(source)?;
     let data_bytes = record_bytes(data)?;
     let mut incoming = 0usize;
     for candidate in candidates {
         match candidate.datum_index {
             -1 => {
-                let carries = reads.key(&candidate.channel)? == *key &&
+                let carries = channel_key(&candidate.channel)? == *key &&
                     candidate.datum.persist == persist &&
                     record_bytes(&candidate.datum.source)? == source_bytes &&
                     record_bytes(&candidate.removed_datum)? == data_bytes;
@@ -2872,13 +2341,13 @@ pub(crate) fn live_comm<C, A: Clone>(
 /// Positions of the bound records in the live store (`claim_positions`):
 /// the first byte-equal record not claimed by an earlier candidate. `keys[i]`
 /// is the key of candidate `i`. The incoming candidate keeps `-1`.
-pub(crate) fn committed_candidates<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
+pub(crate) fn committed_candidates<S, C, P, A, K>(
+    store: &S,
     candidates: &[ConsumeCandidate<C, A>],
     keys: &[Blake2b256Hash],
-    reads: Reads<'_, C, P, A, K>,
 ) -> Result<Vec<ConsumeCandidate<C, A>>, SpaceTxnError>
 where
+    S: TxnStore<C, P, A, K> + ?Sized,
     C: Clone + Hash + Eq + Serialize,
     P: Clone,
     A: Clone + Serialize,
@@ -2887,7 +2356,7 @@ where
     let mut live: BTreeMap<&Blake2b256Hash, Vec<Datum<A>>> = BTreeMap::new();
     for (candidate, key) in candidates.iter().zip(keys) {
         if candidate.datum_index >= 0 && !live.contains_key(key) {
-            live.insert(key, reads.data(store, &candidate.channel, key)?);
+            live.insert(key, store.data(&candidate.channel, key)?);
         }
     }
     let positions = claim_positions(
@@ -2937,25 +2406,25 @@ pub(crate) fn check_removed_records<C, A: Clone>(
 }
 
 /// Index of the fired continuation in the live store, by bincode equality.
-/// A plain read compares the shared continuations of the store, and a
-/// metered read compares a charged copy (decision 47).
-pub(crate) fn committed_continuation_index<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
+/// The comparison reads the shared continuations of the store. `keys` are
+/// the channel keys of the group `channels`.
+pub(crate) fn committed_continuation_index<S, C, P, A, K>(
+    store: &S,
     channels: &[C],
+    keys: &[Blake2b256Hash],
     continuation: &WaitingContinuation<P, K>,
-    reads: Reads<'_, C, P, A, K>,
 ) -> Result<i32, SpaceTxnError>
 where
+    S: TxnStore<C, P, A, K> + ?Sized,
     C: Clone + Hash + Eq + Serialize,
     P: Clone + Serialize,
     A: Clone,
     K: Clone + Serialize,
 {
-    let position = match reads.metered {
-        None => first_equal_continuation(&store.get_continuations_arc(channels), continuation)?,
-        Some(_) => first_equal_continuation(&reads.continuations(store, channels)?, continuation)?,
-    }
-    .ok_or(SpaceTxnError::Inconsistent("the fired continuation is absent from the hot store"))?;
+    let position = first_equal_continuation(&store.continuations(channels, keys)?, continuation)?
+        .ok_or(SpaceTxnError::Inconsistent(
+        "the fired continuation is absent from the hot store",
+    ))?;
     i32::try_from(position)
         .map_err(|_| SpaceTxnError::Inconsistent("a continuation index exceeds i32"))
 }
@@ -2971,14 +2440,14 @@ pub(crate) struct ReadyFire<C, P: Clone, A: Clone, K: Clone> {
     pub(crate) committed: Vec<ConsumeCandidate<C, A>>,
 }
 
-pub(crate) fn ready_produce_fire<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
+pub(crate) fn ready_produce_fire<S, C, P, A, K>(
+    store: &S,
     fire: StagedFire<C, P, A, K>,
     incoming: Option<&Produce>,
     counters: impl Fn(&[Produce]) -> BTreeMap<Produce, i32>,
-    reads: Reads<'_, C, P, A, K>,
 ) -> Result<ReadyFire<C, P, A, K>, SpaceTxnError>
 where
+    S: TxnStore<C, P, A, K> + ?Sized,
     C: Clone + Hash + Eq + Serialize,
     P: Clone + Serialize,
     A: Clone + Serialize,
@@ -2995,13 +2464,17 @@ where
     let continuation_index = match fire.continuation_position {
         None => None,
         Some(position) => {
-            let live =
-                committed_continuation_index(store, &fire.channels, &fire.continuation, reads)?;
+            let live = committed_continuation_index(
+                store,
+                &fire.channels,
+                &fire.group,
+                &fire.continuation,
+            )?;
             check_staged_position(usize::try_from(live).ok(), position)?;
             Some(live)
         }
     };
-    let committed = committed_candidates(store, &fire.candidates, &fire.group, reads)?;
+    let committed = committed_candidates(store, &fire.candidates, &fire.group)?;
     check_removed_records(&committed, &fire.removed)?;
     Ok(ReadyFire {
         fire,
@@ -3019,22 +2492,22 @@ pub(crate) struct ReadyConsumeFire<C, A: Clone> {
     pub(crate) committed: Vec<ConsumeCandidate<C, A>>,
 }
 
-pub(crate) fn ready_consume_fire<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
+pub(crate) fn ready_consume_fire<S, C, P, A, K>(
+    store: &S,
     fire: StagedConsumeFire<C, A>,
     consume: &Consume,
     peeks: &BTreeSet<i32>,
     counters: impl Fn(&[Produce]) -> BTreeMap<Produce, i32>,
-    reads: Reads<'_, C, P, A, K>,
 ) -> Result<ReadyConsumeFire<C, A>, SpaceTxnError>
 where
+    S: TxnStore<C, P, A, K> + ?Sized,
     C: Clone + Hash + Eq + Serialize,
     P: Clone,
     A: Clone + Serialize,
     K: Clone,
 {
     let comm = live_comm(&fire.candidates, consume, peeks, None, counters, &fire.comm)?;
-    let committed = committed_candidates(store, &fire.candidates, &fire.group, reads)?;
+    let committed = committed_candidates(store, &fire.candidates, &fire.group)?;
     check_removed_records(&committed, &fire.removed)?;
     Ok(ReadyConsumeFire {
         fire,
@@ -3057,15 +2530,16 @@ pub(crate) struct ReadyProduce<C, P: Clone, A: Clone, K: Clone> {
 /// non-persistent produce has counter room (`host_counter` is its live host
 /// counter), and a fire is located in the live store with its COMM
 /// recomputed from `counters`. Returns the produce and the join groups for
-/// `observe_operation_start`.
-pub(crate) fn ready_produce<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
+/// `observe_operation_start`. The channel hash of the source is the store
+/// identity of the channel, so the join read computes no key.
+pub(crate) fn ready_produce<S, C, P, A, K>(
+    store: &S,
     produce: StagedProduce<C, P, A, K>,
     host_counter: i32,
     counters: impl Fn(&[Produce]) -> BTreeMap<Produce, i32>,
-    reads: Reads<'_, C, P, A, K>,
 ) -> Result<(ReadyProduce<C, P, A, K>, Vec<Vec<C>>), SpaceTxnError>
 where
+    S: TxnStore<C, P, A, K> + ?Sized,
     C: Clone + Hash + Eq + Serialize,
     P: Clone + Serialize,
     A: Clone + Serialize,
@@ -3079,7 +2553,7 @@ where
         joins_at_start,
         fire,
     } = produce;
-    let joins = reads.channel_joins(store, &channel)?;
+    let joins = store.joins(&channel, &source.channel_hash)?;
     if record_bytes(&joins)? != record_bytes(&joins_at_start)? {
         return Err(SpaceTxnError::Inconsistent("the join groups changed since staging"));
     }
@@ -3093,7 +2567,7 @@ where
                 true => None,
                 false => Some(&source),
             };
-            Some(ready_produce_fire(store, fire, incoming, counters, reads)?)
+            Some(ready_produce_fire(store, fire, incoming, counters)?)
         }
     };
     Ok((
@@ -3112,6 +2586,8 @@ where
 pub(crate) struct ReadyConsume<C, P: Clone, A: Clone, K: Clone> {
     pub(crate) source: Consume,
     pub(crate) channels: Vec<C>,
+    /// The key of the group `channels`.
+    pub(crate) group: Vec<Blake2b256Hash>,
     pub(crate) patterns: Vec<P>,
     pub(crate) continuation: K,
     pub(crate) persist: bool,
@@ -3122,13 +2598,13 @@ pub(crate) struct ReadyConsume<C, P: Clone, A: Clone, K: Clone> {
 /// Read-only commit checks of a staged consume, before any effect of the
 /// operation: a fire is located in the live store with its COMM recomputed
 /// from `counters`.
-pub(crate) fn ready_consume<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
+pub(crate) fn ready_consume<S, C, P, A, K>(
+    store: &S,
     consume: StagedConsume<C, P, A, K>,
     counters: impl Fn(&[Produce]) -> BTreeMap<Produce, i32>,
-    reads: Reads<'_, C, P, A, K>,
 ) -> Result<ReadyConsume<C, P, A, K>, SpaceTxnError>
 where
+    S: TxnStore<C, P, A, K> + ?Sized,
     C: Clone + Hash + Eq + Serialize,
     P: Clone,
     A: Clone + Serialize,
@@ -3137,6 +2613,7 @@ where
     let StagedConsume {
         source,
         channels,
+        group,
         patterns,
         continuation,
         persist,
@@ -3145,11 +2622,12 @@ where
     } = consume;
     let fire = match fire {
         None => None,
-        Some(fire) => Some(ready_consume_fire(store, fire, &source, &peeks, counters, reads)?),
+        Some(fire) => Some(ready_consume_fire(store, fire, &source, &peeks, counters)?),
     };
     Ok(ReadyConsume {
         source,
         channels,
+        group,
         patterns,
         continuation,
         persist,
@@ -3361,10 +2839,9 @@ pub(crate) fn store_persistent_data<C, P, A, K>(
 // debug and release commit identical results (FR-7').
 fn commit_operation<B, C, P, A, K>(
     backend: &B,
-    store: &dyn HotStore<C, P, A, K>,
+    store: &B::Store,
     index: usize,
     staged: Staged<C, P, A, K>,
-    reads: Reads<'_, C, P, A, K>,
 ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError>
 where
     B: TxnBackend<C, P, A, K>,
@@ -3379,7 +2856,7 @@ where
         effects,
     } = staged;
     let mut events = Vec::with_capacity(2);
-    let receipt = backend.apply_op(store, operation, before_observe, reads, &mut events)?;
+    let receipt = backend.apply_op(store, operation, before_observe, &mut events)?;
     check_event_correlation(index, &effects, &events)?;
     Ok(receipt)
 }
@@ -3394,10 +2871,9 @@ where
 // its calls, and with the same prefix (decision 36).
 async fn commit_staged<B, C, P, A, K>(
     backend: &B,
-    store: SharedStore<C, P, A, K>,
+    store: Arc<B::Store>,
     registration: &TxnRegistration,
     staged: Vec<Staged<C, P, A, K>>,
-    reads: Reads<'_, C, P, A, K>,
 ) -> Result<SpaceTxnReceipt<C, P, A, K>, SpaceTxnError>
 where
     B: TxnBackend<C, P, A, K>,
@@ -3417,13 +2893,13 @@ where
     for (index, entry) in staged.into_iter().enumerate() {
         let receipt = match &parent {
             Some(parent) => {
-                let store = &**store;
+                let store = &*store;
                 operation_context::scope(sub_order(parent, index), async move {
-                    commit_operation(backend, store, index, entry, reads)
+                    commit_operation(backend, store, index, entry)
                 })
                 .await?
             }
-            None => commit_operation(backend, &**store, index, entry, reads)?,
+            None => commit_operation(backend, &*store, index, entry)?,
         };
         ops.push(receipt);
     }
@@ -3442,54 +2918,37 @@ struct HeldTxn {
 /// and what `begin` holds until commit, a fail-closed error, or drop.
 pub(crate) struct HostTxn<B, C, P, A, K>
 where
+    B: TxnBackend<C, P, A, K>,
     C: Clone + Hash + Eq,
     P: Clone,
     A: Clone,
     K: Clone,
 {
-    core: TxnCore<C, P, A, K>,
+    core: TxnCore<B::Store, C, P, A, K>,
     backend: B,
     held: Option<HeldTxn>,
 }
 
 impl<B, C, P, A, K> HostTxn<B, C, P, A, K>
 where
+    B: TxnBackend<C, P, A, K>,
     C: Clone + Hash + Eq,
     P: Clone,
     A: Clone,
     K: Clone,
 {
-    /// A transaction of `backend`. A registration of `begin_metered` gives
-    /// it the metered reads, with the history repository and the root of the
-    /// host (decision 47).
+    /// A transaction of `backend` over `store`, the current store of its
+    /// host.
     pub(crate) fn new(
         mode: SpaceMode,
         backend: B,
-        store: SharedStore<C, P, A, K>,
+        store: Arc<B::Store>,
         installed: BTreeSet<Blake2b256Hash>,
         coverage: LockCoverage,
         locks: (ChannelLockGuard, ChannelLockGuard),
         registration: TxnRegistration,
-    ) -> Result<Self, SpaceTxnError>
-    where
-        B: TxnBackend<C, P, A, K>,
-        C: 'static,
-        P: 'static,
-        A: 'static,
-        K: 'static,
-    {
-        let metered = match registration.metered_reads::<C, P, A, K>()? {
-            None => None,
-            Some(reads) => {
-                let (history, root) = backend.history()?;
-                Some(MeteredReads {
-                    reads,
-                    history,
-                    root,
-                })
-            }
-        };
-        Ok(Self {
+    ) -> Self {
+        Self {
             core: TxnCore {
                 mode,
                 store,
@@ -3499,14 +2958,13 @@ where
                 paired: Vec::new(),
                 staged: Vec::new(),
                 finished: false,
-                metered,
             },
             backend,
             held: Some(HeldTxn {
                 _locks: locks,
                 registration,
             }),
-        })
+        }
     }
 
     // A transaction that failed closed releases its locks and its
@@ -3635,8 +3093,7 @@ where
         self.core.paired.clear();
         self.core.view.count_delta.clear();
         let store = Arc::clone(&self.core.store);
-        let reads = Reads::new(self.core.metered.as_ref());
-        let result = commit_staged(&self.backend, store, &held.registration, staged, reads).await;
+        let result = commit_staged(&self.backend, store, &held.registration, staged).await;
         drop(held);
         result
     }
@@ -3672,21 +3129,22 @@ pub(crate) fn sweep_channels<C: Clone + Serialize>(
     Ok(swept)
 }
 
-/// The volatile sweep. Validation is read-only: no channel is installed,
+/// The swept groups of a volatile sweep, by group key: the group of each
+/// swept channel, and every join group of a swept channel.
+pub(crate) type SweptGroups<C> = BTreeMap<Vec<Blake2b256Hash>, Vec<C>>;
+
+/// The read-only validation of a volatile sweep: no channel is installed,
 /// every stored join group of a swept channel is canonical and is swept as a
-/// whole, and no swept key has a leaf at the history root. Then
-/// continuations, joins and data are removed through the hot store, so the
-/// keys end empty and `changes()` emits deletes of keys absent from the trie
-/// (root neutral). `on_continuation_removed` runs once per removed
-/// continuation, and the report counts what was actually removed.
-pub(crate) fn sweep_volatile_channels<C, P, A, K>(
-    store: &dyn HotStore<C, P, A, K>,
+/// whole, and no swept key has a leaf at the history root. It returns the
+/// swept groups. Every mode validates with it before any effect.
+pub(crate) fn plan_sweep<S, C, P, A, K>(
+    store: &S,
     reader: &dyn HistoryReader<Blake2b256Hash, C, P, A, K>,
     installed: &BTreeSet<Blake2b256Hash>,
     channels: &BTreeMap<Blake2b256Hash, C>,
-    mut on_continuation_removed: impl FnMut(),
-) -> Result<SweepReport, SpaceTxnError>
+) -> Result<SweptGroups<C>, SpaceTxnError>
 where
+    S: TxnStore<C, P, A, K> + ?Sized,
     C: Clone + Serialize + Hash + Eq,
     P: Clone,
     A: Clone,
@@ -3695,10 +3153,10 @@ where
     if channels.keys().any(|key| installed.contains(key)) {
         return Err(SpaceTxnError::InstalledChannel);
     }
-    let mut groups: BTreeMap<Vec<Blake2b256Hash>, Vec<C>> = BTreeMap::new();
+    let mut groups: SweptGroups<C> = BTreeMap::new();
     for (key, channel) in channels {
         groups.insert(vec![key.clone()], vec![channel.clone()]);
-        for group in store.get_joins(channel) {
+        for group in store.joins(channel, key)? {
             let group_key = group_identity(&group)?;
             require_canonical(&group_key)?;
             groups.insert(group_key, group);
@@ -3732,54 +3190,114 @@ where
             return Err(SpaceTxnError::SweepTouchesPersisted);
         }
     }
+    Ok(groups)
+}
 
+/// The number of join groups of the swept channels.
+pub(crate) fn swept_join_count<S, C, P, A, K>(
+    store: &S,
+    channels: &BTreeMap<Blake2b256Hash, C>,
+) -> Result<usize, SpaceTxnError>
+where
+    S: TxnStore<C, P, A, K> + ?Sized,
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    let mut count = 0usize;
+    for (key, channel) in channels {
+        count += store.joins(channel, key)?.len();
+    }
+    Ok(count)
+}
+
+/// The residue check of a volatile sweep: after its effects, every swept
+/// channel holds no data and no join, and every swept group holds no
+/// waiting continuation.
+pub(crate) fn check_swept<S, C, P, A, K>(
+    store: &S,
+    channels: &BTreeMap<Blake2b256Hash, C>,
+    groups: &SweptGroups<C>,
+) -> Result<(), SpaceTxnError>
+where
+    S: TxnStore<C, P, A, K> + ?Sized,
+    C: Clone + Hash + Eq,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+{
+    let residue = SpaceTxnError::Inconsistent("the volatile sweep left residue");
+    for (key, channel) in channels {
+        if !store.data(channel, key)?.is_empty() || !store.joins(channel, key)?.is_empty() {
+            return Err(residue);
+        }
+    }
+    for (group_key, group) in groups {
+        if !store.continuations(group, group_key)?.is_empty() {
+            return Err(residue);
+        }
+    }
+    Ok(())
+}
+
+/// The volatile sweep of a hot store, in play, replay and reporting. The
+/// validation of [`plan_sweep`] runs first. Then continuations, joins and
+/// data are removed through the hot store, so the keys end empty and
+/// `changes()` emits deletes of keys absent from the trie (root neutral).
+/// `on_continuation_removed` runs once per removed continuation, and the
+/// report counts what was actually removed.
+pub(crate) fn sweep_volatile_channels<C, P, A, K>(
+    hot: &dyn HotStore<C, P, A, K>,
+    reader: &dyn HistoryReader<Blake2b256Hash, C, P, A, K>,
+    installed: &BTreeSet<Blake2b256Hash>,
+    channels: &BTreeMap<Blake2b256Hash, C>,
+    mut on_continuation_removed: impl FnMut(),
+) -> Result<SweepReport, SpaceTxnError>
+where
+    C: Clone + Serialize + Hash + Eq + 'static,
+    P: Clone + 'static,
+    A: Clone + 'static,
+    K: Clone + 'static,
+{
+    let groups = plan_sweep(hot, reader, installed, channels)?;
     let mut report = SweepReport {
         channels: channels.len(),
         ..SweepReport::default()
     };
     for group in groups.values() {
-        let waiting = store.get_continuations_arc(group).len();
+        let waiting = hot.get_continuations_arc(group).len();
         for index in (0..waiting).rev() {
             let index = i32::try_from(index)
                 .map_err(|_| SpaceTxnError::Inconsistent("a continuation index exceeds i32"))?;
-            store
-                .remove_continuation(group, index)
+            hot.remove_continuation(group, index)
                 .ok_or(SpaceTxnError::Inconsistent("a swept continuation could not be removed"))?;
             report.continuations += 1;
             on_continuation_removed();
         }
     }
     for channel in channels.values() {
-        let joined = store.get_joins(channel);
+        let joined = hot.get_joins(channel);
         for group in &joined {
-            store.remove_join(channel, group);
+            hot.remove_join(channel, group);
         }
         let removed = joined
             .len()
-            .checked_sub(store.get_joins(channel).len())
+            .checked_sub(hot.get_joins(channel).len())
             .ok_or(SpaceTxnError::Inconsistent("the volatile sweep added a join"))?;
         report.joins += removed;
     }
     for channel in channels.values() {
-        let records = store.get_data(channel).len();
+        let records = hot.get_data(channel).len();
         for index in (0..records).rev() {
             let index = i32::try_from(index)
                 .map_err(|_| SpaceTxnError::Inconsistent("a record index exceeds i32"))?;
-            store.remove_datum(channel, index)?;
+            hot.remove_datum(channel, index)?;
             report.data += 1;
         }
     }
-
-    let residue = channels
-        .values()
-        .any(|channel| !store.get_data(channel).is_empty() || !store.get_joins(channel).is_empty()) ||
-        groups
-            .values()
-            .any(|group| !store.get_continuations_arc(group).is_empty());
-    match residue {
-        true => Err(SpaceTxnError::Inconsistent("the volatile sweep left residue")),
-        false => Ok(report),
-    }
+    check_swept(hot, channels, &groups)?;
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -3816,24 +3334,9 @@ mod tests {
         channels
     }
 
-    // A meter that counts the reserved operations, scanned bytes and backing
-    // bytes, and that rejects once the operations pass `limit`.
-    fn counting_meter(
-        counts: &std::cell::Cell<(usize, usize, usize)>,
-        limit: usize,
-    ) -> impl Fn(usize, usize, usize) -> Result<(), RSpaceError> + '_ {
-        move |operations, scanned, backing| {
-            let (o, s, b) = counts.get();
-            let next = (o + operations, s + scanned, b + backing);
-            if next.0 > limit {
-                return Err(RSpaceError::HostWorkRejected);
-            }
-            counts.set(next);
-            Ok(())
-        }
-    }
-
-    fn play_indices<D: CandidateSource + Serialize>(values: Vec<D>) -> Vec<usize> {
+    // The indices of `values` in the order of
+    // `candidate_order::canonical_candidates`.
+    fn canonical_indices<D: CandidateSource + Serialize>(values: Vec<D>) -> Vec<usize> {
         candidate_order::canonical_candidates(values)
             .into_iter()
             .map(|(_, index)| index as usize)
@@ -3841,129 +3344,36 @@ mod tests {
     }
 
     proptest::proptest! {
-        // DR-75 (decision 41): the metered order of a space agent is the
-        // order of play, also with tie runs of equal source hashes.
+        // DR-75 (decision 41): the order of a space agent is the canonical
+        // candidate order, also with tie runs of equal source hashes. The
+        // order of the stored records and one more record is the order of the
+        // list that holds the record last.
         #[test]
-        fn canonical_data_order_is_the_order_of_play(
+        fn canonical_data_order_is_the_canonical_candidate_order(
             data in candidate_order::candidate_strategy()
         ) {
-            let counts = std::cell::Cell::new((0, 0, 0));
-            let order = canonical_data_order(&data, &counting_meter(&counts, usize::MAX))
-                .expect("an unlimited meter accepts");
-            proptest::prop_assert_eq!(order, play_indices(data.clone()));
-            // A cut one operation below the usage rejects, and the exact usage
-            // accepts, so every reservation precedes the result.
-            let used = counts.get().0;
-            let exact = std::cell::Cell::new((0, 0, 0));
-            proptest::prop_assert!(
-                canonical_data_order(&data, &counting_meter(&exact, used)).is_ok()
-            );
-            proptest::prop_assert_eq!(exact.get(), counts.get());
-            if used > 0 {
-                let cut = std::cell::Cell::new((0, 0, 0));
+            proptest::prop_assert_eq!(canonical_data_order(&data), canonical_indices(data.clone()));
+            if let Some((extra, stored)) = data.split_last() {
                 proptest::prop_assert_eq!(
-                    canonical_data_order(&data, &counting_meter(&cut, used - 1)),
-                    Err(RSpaceError::HostWorkRejected)
+                    canonical_data_order_with(stored, extra),
+                    canonical_indices(data.clone())
                 );
             }
         }
     }
 
     #[test]
-    fn canonical_continuation_order_is_the_order_of_play() {
+    fn canonical_continuation_order_is_the_canonical_candidate_order() {
         let waiters = vec![
             wk(&["a"], "k3", BTreeSet::new()),
             wk(&["a"], "k1", BTreeSet::new()),
             wk(&["a"], "k2", BTreeSet::from([0])),
         ];
-        let counts = std::cell::Cell::new((0, 0, 0));
-        let order = canonical_continuation_order(&waiters, &counting_meter(&counts, usize::MAX))
-            .expect("an unlimited meter accepts");
-        assert_eq!(order, play_indices(waiters.clone()));
-        assert!(counts.get().0 > 0, "the order reserves its buffers and its sort");
+        assert_eq!(canonical_continuation_order(&waiters), canonical_indices(waiters.clone()));
         assert_eq!(
-            canonical_continuation_order(
-                &[] as &[WaitingContinuation<String, String>],
-                &|_, _, _| { Ok(()) }
-            ),
-            Ok(Vec::new())
+            canonical_continuation_order(&[] as &[WaitingContinuation<String, String>]),
+            Vec::<usize>::new()
         );
-    }
-
-    #[test]
-    fn metered_hash_is_the_hash_of_the_bincode_bytes() {
-        let value = (String::from("rrs-set-key"), vec![1u8, 2, 3], 7i64);
-        let counts = std::cell::Cell::new((0, 0, 0));
-        let hashed = metered_hash(&value, &counting_meter(&counts, usize::MAX))
-            .expect("an unlimited meter accepts");
-        let bytes = bincode::serialize(&value).expect("the value encodes");
-        assert_eq!(hashed, Blake2b256Hash::new(&bytes));
-        assert!(counts.get().1 >= bytes.len(), "the hash reserves the bytes that it reads");
-    }
-
-    // DR-75 (decision 41): each primitive of the space order reserves what the
-    // branch's `MeteredOrder` and its helpers `buffer` and `sort` reserve
-    // (`native_candidate/metered.rs`). Both implement the one `OrderWork` of
-    // `candidate_order::canonical_order`, so the order of a space agent costs
-    // what the order of metered native replay costs.
-    #[test]
-    fn space_order_primitives_reserve_the_restated_formula() {
-        type View<'v> = Cow<'v, Datum<String>>;
-        let recorded = std::cell::RefCell::new(Vec::new());
-        let recorder = |operations: usize, scanned: usize, backing: usize| {
-            recorded.borrow_mut().push((operations, scanned, backing));
-            Ok(())
-        };
-        let order = SpaceOrder(&recorder);
-        // A buffer of `length` values: `length + 1` operations and
-        // `length * size` bytes, scanned and backed.
-        let buffered: Vec<(u64, u32)> =
-            <SpaceOrder<'_> as OrderWork<View<'_>>>::buffer(&order, 5).expect("a buffer");
-        assert!(buffered.capacity() >= 5);
-        let bytes = 5 * size_of::<(u64, u32)>();
-        assert_eq!(recorded.take(), vec![(6, bytes, bytes)]);
-        // A sort: one reservation of the moves of every value, then one for
-        // each comparison, which reads the moves of two values and the bytes
-        // that `scanned` gives for each.
-        let mut values = vec![5_u64, 3, 9, 1, 7];
-        let comparisons = std::cell::Cell::new(0_usize);
-        <SpaceOrder<'_> as OrderWork<View<'_>>>::sort(
-            &order,
-            &mut values,
-            |left, right| {
-                comparisons.set(comparisons.get() + 1);
-                left.cmp(right)
-            },
-            |_| 32,
-        )
-        .expect("a sort");
-        assert_eq!(values, vec![1, 3, 5, 7, 9]);
-        let moves = 2 * size_of::<u64>();
-        let mut expected = vec![(5, 5 * moves, 0)];
-        expected.extend(std::iter::repeat_n((1, moves + 64, 0), comparisons.get()));
-        assert!(comparisons.get() > 0);
-        assert_eq!(recorded.take(), expected);
-        // A scan: one comparison of two hashes.
-        let (left, right) = (Blake2b256Hash::new(b"left"), Blake2b256Hash::new(b"right"));
-        <SpaceOrder<'_> as OrderWork<View<'_>>>::scan(&order, &left, &right).expect("a scan");
-        assert_eq!(recorded.take(), vec![(1, left.0.len() + right.0.len(), 0)]);
-        // A digest: the inspect of the value, then the metered hash of its
-        // bincode bytes.
-        let datum: View<'_> =
-            Cow::Owned(Datum::create(&"channel".to_string(), "payload".to_string(), false));
-        let digest = order.digest(&datum).expect("a digest");
-        let digested = recorded.take();
-        let reference = std::cell::RefCell::new(Vec::new());
-        let reference_meter = |operations: usize, scanned: usize, backing: usize| {
-            reference.borrow_mut().push((operations, scanned, backing));
-            Ok(())
-        };
-        crate::rspace::native_backing::inspect(&datum, &reference_meter).expect("an inspect");
-        let expected_digest =
-            native_source::hash(&datum, &reference_meter).expect("a metered hash");
-        assert_eq!(digest, expected_digest);
-        assert_eq!(digested, reference.take());
-        assert!(!digested.is_empty());
     }
 
     // A sub-order sorts after its parent operation and before the parent's

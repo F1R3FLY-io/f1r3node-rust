@@ -47,7 +47,6 @@ use models::rhoapi::{
     BindPattern, Bundle, CostAuthority, CostRegion, CostSignature, EList, Expr, GDeployId,
     GDeployerId, GUnforgeable, ListParWithRandom, New, Par, ParWithRandom, TaggedContinuation, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage};
 use models::rust::reified::encoding::{
     decode_process_tuple, encode_free, encode_params, Marker, ProcessConstruct, SendParams,
     UseBlock,
@@ -74,11 +73,10 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig};
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
-use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::reified::errors::ReifiedReduceError;
 use rholang::rust::interpreter::reified::factory::{handle_continuation, handle_pattern};
 use rholang::rust::interpreter::reified::handle::typed_error;
@@ -129,9 +127,7 @@ use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier as Conf
 use rholang::rust::interpreter::system_processes::byte_name;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rholang::rust::interpreter::util::allocate_new_bindings;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash as stable_hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::internal::Datum;
@@ -2562,53 +2558,16 @@ async fn in_memory_rspace_with(
     .expect("an in-memory RSpace")
 }
 
-/// The rholang matcher with a count of its calls: every spatial match and every guard check,
-/// with a meter or without one. It delegates each call unchanged, and it records the
-/// reservations that the metered calls make.
+/// The rholang matcher with a count of its calls: every spatial match and every guard check. It
+/// delegates each call unchanged.
 struct CountingMatcher {
     calls: Arc<AtomicUsize>,
-    reserved: Arc<[AtomicUsize; 3]>,
-}
-
-/// A meter that forwards each reservation of the matcher and records it.
-struct ForwardingMeter<'m> {
-    inner: &'m (dyn SourceMeter + Send + Sync),
-    recorded: &'m [AtomicUsize; 3],
-}
-
-impl SourceMeter for ForwardingMeter<'_> {
-    fn reserve(
-        &self,
-        operations: usize,
-        scanned: usize,
-        backing: usize,
-    ) -> Result<(), RSpaceError> {
-        self.inner.reserve(operations, scanned, backing)?;
-        for (recorded, amount) in self.recorded.iter().zip([operations, scanned, backing]) {
-            recorded.fetch_add(amount, Ordering::Relaxed);
-        }
-        Ok(())
-    }
 }
 
 impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for CountingMatcher {
     fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         Matcher.get(pattern, data)
-    }
-
-    fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        let forwarding = ForwardingMeter {
-            inner: meter,
-            recorded: &self.reserved,
-        };
-        Matcher.get_metered(pattern, data, &forwarding)
     }
 
     fn check_commit(
@@ -2620,18 +2579,17 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for CountingMatch
         Matcher.check_commit(continuation, matched)
     }
 
-    fn check_commit_metered(
+    fn commit_may_veto(&self, continuation: &TaggedContinuation) -> bool {
+        Matcher.commit_may_veto(continuation)
+    }
+
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
+    ) -> bool {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        let forwarding = ForwardingMeter {
-            inner: meter,
-            recorded: &self.reserved,
-        };
-        Matcher.check_commit_metered(continuation, matched, &forwarding)
+        Matcher.check_commit_by_reference(continuation, matched)
     }
 }
 
@@ -2644,9 +2602,6 @@ struct AgentRig {
     channels: CollectionChannels,
     /// The matcher calls since the rig was staged.
     matcher_calls: Arc<AtomicUsize>,
-    /// The reservations of the metered matcher calls since the rig was staged: operations,
-    /// scanned bytes and backing bytes.
-    matcher_reserved: Arc<[AtomicUsize; 3]>,
 }
 
 /// A padding par of `bytes` bytes.
@@ -2656,12 +2611,8 @@ impl AgentRig {
     /// Creates the space with the agent, then stages `state` on the collection in one raw
     /// transaction. `order` is the staging order of the entries: records first, then waiters,
     /// as indices into one list.
-    async fn new(
-        state: &QueueState,
-        order: &[usize],
-        host_work: Option<HostWorkBudget>,
-    ) -> AgentRig {
-        AgentRig::padded(state, order, host_work, &|_, _| 0).await
+    async fn new(state: &QueueState, order: &[usize]) -> AgentRig {
+        AgentRig::padded(state, order, &|_, _| 0).await
     }
 
     /// [`AgentRig::new`] with padding: `pad(side, ord)` bytes are appended to the payload of
@@ -2669,20 +2620,16 @@ impl AgentRig {
     async fn padded(
         state: &QueueState,
         order: &[usize],
-        host_work: Option<HostWorkBudget>,
         pad: &dyn Fn(Side, i64) -> usize,
     ) -> AgentRig {
         let matcher_calls = Arc::new(AtomicUsize::new(0));
-        let matcher_reserved: Arc<[AtomicUsize; 3]> = Arc::new(Default::default());
         let host = in_memory_rspace_with(Arc::new(Box::new(CountingMatcher {
             calls: Arc::clone(&matcher_calls),
-            reserved: Arc::clone(&matcher_reserved),
         })))
         .await;
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(host.clone()),
             budget: RuntimeBudget::new(Cost::create(RIG_PHLO, "rrs-p4-props agent rig")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };
@@ -2772,14 +2719,7 @@ impl AgentRig {
             txn.commit().await.expect("the staged collection commits");
         }
         host.take_event_log().await;
-        let env = SpaceEnv {
-            meter: ScanMeter::new(host_work),
-            ..env
-        };
         matcher_calls.store(0, Ordering::Relaxed);
-        for amount in matcher_reserved.iter() {
-            amount.store(0, Ordering::Relaxed);
-        }
         AgentRig {
             host,
             env,
@@ -2787,24 +2727,16 @@ impl AgentRig {
             key,
             channels,
             matcher_calls,
-            matcher_reserved,
         }
     }
 
     /// The matcher calls since the rig was staged.
     fn matcher_calls(&self) -> usize { self.matcher_calls.load(Ordering::Relaxed) }
 
-    /// The reservations of the metered matcher calls since the rig was staged.
-    fn matcher_reserved(&self) -> [u64; 3] {
-        self.matcher_reserved.each_ref().map(|amount| {
-            u64::try_from(amount.load(Ordering::Relaxed)).expect("a reservation fits u64")
-        })
-    }
-
     /// A rig with the entries staged in their natural order.
     async fn of(state: &QueueState) -> AgentRig {
         let order: Vec<usize> = (0..state.records.len() + state.waiters.len()).collect();
-        AgentRig::new(state, &order, None).await
+        AgentRig::new(state, &order).await
     }
 
     fn space_op(&self, op: &QueueOp, salt: u64) -> SpaceOp {
@@ -3127,9 +3059,8 @@ async fn queue_candidates_head_only_case(
         }
     }
     let op = aimed(&state, op);
-    let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX / 4)));
     let order: Vec<usize> = (0..state.records.len() + state.waiters.len()).collect();
-    let rig = AgentRig::new(&state, &order, Some(host_work.clone())).await;
+    let rig = AgentRig::new(&state, &order).await;
     let outcome = rig.run(&op, 1).await.expect("the operation commits");
     let fired = fired_partners(&op, &outcome);
     let heads = other_side(&state, &op);
@@ -3143,11 +3074,6 @@ async fn queue_candidates_head_only_case(
         calls,
         fired.len(),
         heads.len()
-    );
-    prop_assert_eq!(
-        host_work.usage(HostWorkDimension::SearchCandidates),
-        HostWorkUsage::ZERO,
-        "the branch charges candidates only in its funding search"
     );
     Ok(())
 }
@@ -3502,10 +3428,8 @@ async fn queue_plan_permutation_invariant_case(
         let other = usize::try_from(draw >> 33).expect("a small draw") % (index + 1);
         shuffled.swap(index, other);
     }
-    let first_work = unlimited_host_work();
-    let second_work = unlimited_host_work();
-    let first = AgentRig::new(&state, &natural, Some(first_work.clone())).await;
-    let second = AgentRig::new(&state, &shuffled, Some(second_work.clone())).await;
+    let first = AgentRig::new(&state, &natural).await;
+    let second = AgentRig::new(&state, &shuffled).await;
     let first_outcome = first.run(&op, 1).await;
     let second_outcome = second.run(&op, 1).await;
     prop_assert_eq!(&first_outcome, &second_outcome);
@@ -3514,11 +3438,6 @@ async fn queue_plan_permutation_invariant_case(
         second.host.take_event_log().await
     );
     prop_assert_eq!(first.view().await, second.view().await);
-    prop_assert_eq!(
-        first_work.usages(),
-        second_work.usages(),
-        "the charges do not depend on the list order of the store"
-    );
     Ok(())
 }
 
@@ -4234,8 +4153,8 @@ async fn queue_reentry_head_blocks_case(
 
 /// `queue_reentry_permutation_invariant` (decision 43): the re-entry of a persistent element
 /// depends on the entries of the collection, not on the list order of the store. Two stores
-/// with the same entries in other list orders stage the same operations, log the same events,
-/// reach the same entries, and charge the same host work.
+/// with the same entries in other list orders stage the same operations, log the same events
+/// and reach the same entries.
 #[test]
 fn prop_queue_reentry_permutation_invariant() {
     check(
@@ -4296,10 +4215,8 @@ async fn queue_reentry_permutation_invariant_case(
         let other = usize::try_from(draw >> 33).expect("a small draw") % (index + 1);
         shuffled.swap(index, other);
     }
-    let first_work = unlimited_host_work();
-    let second_work = unlimited_host_work();
-    let first = AgentRig::new(&state, &natural, Some(first_work.clone())).await;
-    let second = AgentRig::new(&state, &shuffled, Some(second_work.clone())).await;
+    let first = AgentRig::new(&state, &natural).await;
+    let second = AgentRig::new(&state, &shuffled).await;
     let reentry = |rig: &AgentRig| match rig.space_op(&op, 1) {
         SpaceOp::Produce(produce) => SpaceOp::Produce(ProduceOp {
             reissued_ord: Some(kept),
@@ -4321,11 +4238,6 @@ async fn queue_reentry_permutation_invariant_case(
         second.host.take_event_log().await
     );
     prop_assert_eq!(first.view().await, second.view().await);
-    prop_assert_eq!(
-        first_work.usages(),
-        second_work.usages(),
-        "the charges do not depend on the list order of the store"
-    );
     Ok(())
 }
 
@@ -4569,95 +4481,31 @@ async fn queue_persistent_reissue_charged_once_case(
     Ok(())
 }
 
-/// A host-work budget that no queue operation of these tests exhausts.
-fn unlimited_host_work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX / 4)))
-}
-
-/// The dimensions that a space job charges (decision 42).
-const AGENT_DIMENSIONS: [HostWorkDimension; 3] = [
-    HostWorkDimension::VerificationOperations,
-    HostWorkDimension::VerificationBytes,
-    HostWorkDimension::SearchStateBytes,
-];
-
-/// `agent_reservation_cut` (decision 42): a queue operation reserves its work before it makes
-/// it. With its exact usage as the limits it commits. With one unit less in any charged
-/// dimension it fails with `HostWorkRejected` before the commit, so it logs no event and leaves
-/// the collection unchanged.
+/// The head-only plan reads the envelope of each entry of its side and copies only the heads that
+/// it meets. So the payloads of the records and the bodies of the waiters that it never meets do
+/// not change its outcome. An operation meets the heads that it fires and at most one more: the
+/// head that blocks it.
 #[test]
-fn prop_agent_reservation_cut_rejects_without_effect() {
-    check(
-        pure_config(),
-        (arb_queue_state(5), arb_queue_op()),
-        |(state, op)| tokio_runtime().block_on(agent_reservation_cut_case(state, op)),
-    );
-}
-
-/// One case of `prop_agent_reservation_cut_rejects_without_effect`.
-async fn agent_reservation_cut_case(state: QueueState, op: QueueOp) -> Result<(), TestCaseError> {
-    let order: Vec<usize> = (0..state.records.len() + state.waiters.len()).collect();
-    let measured = unlimited_host_work();
-    let rig = AgentRig::new(&state, &order, Some(measured.clone())).await;
-    let expected = rig.run(&op, 1).await;
-    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for dimension in AGENT_DIMENSIONS {
-        exact.set(
-            dimension,
-            HostWorkLimit::new(measured.usage(dimension).get()),
-        );
-    }
-    let rig = AgentRig::new(&state, &order, Some(HostWorkBudget::new(exact))).await;
-    prop_assert_eq!(
-        &rig.run(&op, 1).await,
-        &expected,
-        "the exact usage suffices"
-    );
-    for dimension in AGENT_DIMENSIONS {
-        let usage = measured.usage(dimension).get();
-        prop_assert!(usage > 0, "every operation charges {dimension}");
-        let mut cut = exact;
-        cut.set(dimension, HostWorkLimit::new(usage - 1));
-        let rig = AgentRig::new(&state, &order, Some(HostWorkBudget::new(cut))).await;
-        let before = rig.view().await;
-        prop_assert_eq!(
-            rig.run(&op, 1).await,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            "{}",
-            dimension
-        );
-        prop_assert!(rig.host.take_event_log().await.is_empty(), "{dimension}");
-        prop_assert_eq!(rig.view().await, before, "{}", dimension);
-    }
-    Ok(())
-}
-
-/// `agent_charge_independent_of_unread_payloads` (decision 42): a queue operation reads the
-/// envelope of each entry of its side and copies only the heads that it meets. So the payloads
-/// of the records and the bodies of the waiters that it never meets do not change its charges.
-/// An operation meets the heads that it fires and at most one more: the head that blocks it.
-#[test]
-fn prop_agent_charge_independent_of_unread_payloads() {
+fn prop_agent_outcome_independent_of_unread_payloads() {
     check(
         pure_config(),
         (arb_queue_state(5), arb_queue_op(), 1usize..4096),
         |(state, op, bytes)| {
-            tokio_runtime().block_on(agent_charge_independent_of_unread_payloads_case(
+            tokio_runtime().block_on(agent_outcome_independent_of_unread_payloads_case(
                 state, op, bytes,
             ))
         },
     );
 }
 
-/// One case of `prop_agent_charge_independent_of_unread_payloads`.
-async fn agent_charge_independent_of_unread_payloads_case(
+/// One case of `prop_agent_outcome_independent_of_unread_payloads`.
+async fn agent_outcome_independent_of_unread_payloads_case(
     state: QueueState,
     op: QueueOp,
     bytes: usize,
 ) -> Result<(), TestCaseError> {
     let order: Vec<usize> = (0..state.records.len() + state.waiters.len()).collect();
-    let plain_work = unlimited_host_work();
-    let plain = AgentRig::new(&state, &order, Some(plain_work.clone())).await;
+    let plain = AgentRig::new(&state, &order).await;
     let plain_outcome = plain.run(&op, 1).await;
     let met = match &plain_outcome {
         Ok(outcome) => outcome.fires.len() + 1,
@@ -4677,14 +4525,12 @@ async fn agent_charge_independent_of_unread_payloads_case(
         true => 0,
         false => bytes,
     };
-    let padded_work = unlimited_host_work();
-    let padded = AgentRig::padded(&state, &order, Some(padded_work.clone()), &pad).await;
+    let padded = AgentRig::padded(&state, &order, &pad).await;
     let padded_outcome = padded.run(&op, 1).await;
-    prop_assert_eq!(&padded_outcome, &plain_outcome);
     prop_assert_eq!(
-        padded_work.usages(),
-        plain_work.usages(),
-        "unread payloads of {} bytes changed the charges",
+        &padded_outcome,
+        &plain_outcome,
+        "unread payloads of {} bytes changed the outcome",
         bytes
     );
     Ok(())
@@ -4696,40 +4542,6 @@ fn sorted_ords(ords: impl Iterator<Item = i64>, count: usize) -> Vec<i64> {
     ords.sort_unstable();
     ords.truncate(count);
     ords
-}
-
-/// `p4_scan_covered_only_if_free` (decision 42, negative control): every queue operation
-/// reserves work of its own in each charged dimension, beyond the reservations of the matcher.
-/// The P4 meter charged only the reads of the matcher, so it left that work unreserved.
-#[test]
-fn prop_agent_reserves_its_own_work_beyond_the_matcher() {
-    check(
-        pure_config(),
-        (arb_queue_state(5), arb_queue_op()),
-        |(state, op)| tokio_runtime().block_on(agent_reserves_its_own_work_case(state, op)),
-    );
-}
-
-/// One case of `prop_agent_reserves_its_own_work_beyond_the_matcher`.
-async fn agent_reserves_its_own_work_case(
-    state: QueueState,
-    op: QueueOp,
-) -> Result<(), TestCaseError> {
-    let order: Vec<usize> = (0..state.records.len() + state.waiters.len()).collect();
-    let host_work = unlimited_host_work();
-    let rig = AgentRig::new(&state, &order, Some(host_work.clone())).await;
-    rig.run(&op, 1).await.expect("the operation commits");
-    for (dimension, matcher) in AGENT_DIMENSIONS.into_iter().zip(rig.matcher_reserved()) {
-        let usage = host_work.usage(dimension).get();
-        prop_assert!(
-            usage > matcher,
-            "{}: the agent reserved nothing beyond the matcher ({} of {})",
-            dimension,
-            matcher,
-            usage
-        );
-    }
-    Ok(())
 }
 
 // ─── Peek re-store (decision 45) ─────────────────────────────────────────────────────────────
@@ -8297,9 +8109,7 @@ fn translation_matcher_id() -> Par {
         },
         guard: None,
     };
-    let bytes = state
-        .encode(&ScanMeter::new(None))
-        .expect("a translation state encodes");
+    let bytes = state.encode().expect("a translation state encodes");
     gprivate(namespace::matcher_channel(&bytes))
 }
 

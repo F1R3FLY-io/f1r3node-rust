@@ -11,7 +11,7 @@
 //! the contract, and a reviewer copies FILE to `test-vectors/`.
 //! `RRS_BENCH_MAX_SIZE` bounds the sizes of the series, and the ALL gate sets it to 1000.
 //! `RRS_BENCH_RECORD=FILE` appends one JSON line for each case: its group, id, phlo, root,
-//! result, host work, the time of its setup and the time of its reference play.
+//! result, the time of its setup and the time of its reference play.
 //!
 //! The filter of a run is the first argument that is not an option. Criterion matches it as a
 //! regular expression against the id `group/case` of each benchmark, and [`matches`] does the
@@ -25,14 +25,13 @@ use std::time::{Duration, Instant};
 
 use criterion::measurement::WallTime;
 use criterion::{BenchmarkGroup, Criterion, SamplingMode};
-use models::rust::host_work::HostWorkDimension;
 use regex::Regex;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 
-use crate::support::native::{host_work, NativeChain};
+use crate::support::native::NativeChain;
 use crate::support::session::error_codes;
 
 /// The path of the frozen contract, relative to the `rholang` crate.
@@ -62,8 +61,6 @@ pub struct Observed {
     pub phlo: Option<u64>,
     /// The root of the checkpoint after the deploy, in hex.
     pub root: String,
-    /// The host work of the deploy in each dimension that it used, against the v6 limits.
-    pub host_work: BTreeMap<String, u64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -231,7 +228,6 @@ pub fn record(key: &str, observed: &Observed, setup: Duration, reference: Durati
             "phlo": observed.phlo,
             "root": observed.root,
             "result": observed.result,
-            "host_work": observed.host_work,
             "setup_ns": setup.as_nanos() as u64,
             "reference_play_ns": reference.as_nanos() as u64,
         });
@@ -264,20 +260,11 @@ pub async fn observe(
     term: &str,
     label: &str,
 ) -> (Observed, Blake2b256Hash) {
-    let host = host_work();
-    let evaluated = chain
-        .evaluate_with(term, label, PHLO_LIMIT, host.clone())
-        .await;
+    let evaluated = chain.evaluate(term, label, PHLO_LIMIT).await;
     let (errors, phlo) = match &evaluated {
         Ok(result) => (error_codes(&result.errors), result.native_phlo_usage),
         Err(error) => (error_codes(std::slice::from_ref(error)), None),
     };
-    let usages = host.usages();
-    let host_work = HostWorkDimension::ALL
-        .iter()
-        .map(|d| (format!("{d:?}"), usages.get(*d).get()))
-        .filter(|(_, used)| *used > 0)
-        .collect();
     let result = if errors.is_empty() {
         let mut values: Vec<String> = chain
             .values(OUT)
@@ -303,7 +290,6 @@ pub async fn observe(
         result,
         phlo,
         root: hex::encode(root.bytes()),
-        host_work,
     };
     (observed, root)
 }
@@ -480,7 +466,6 @@ pub fn measure_prepared(
                 result: vec![format!("error the collection is full at {reached} records")],
                 phlo: None,
                 root: String::new(),
-                host_work: BTreeMap::new(),
             };
             check(&key, &observed);
             record(&key, &observed, setup, Duration::ZERO);

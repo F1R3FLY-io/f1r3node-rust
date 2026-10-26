@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "kind": "evidence-integrity-only",
+  "generated_at": "2026-09-22T16:38:09Z",
+  "report_sha256": "86c890bf25d0869a075ce0fbb1cf900dc876b7f5279328498554cd7dd4e8b252",
+  "evidence_integrity": "passed",
+  "source_files_checked": 23,
+  "bulk_files_checked": 278,
+  "source_identity_matches": 18,
+  "existing_records_and_claims_unchanged": true,
+  "verification_containers_running": 0,
+  "strict_audit": {
+    "exit_code": 4,
+    "total": 7,
+    "gaps": 7
+  },
+  "isolated_test_gate": "failed",
+  "claim_gate": "blocked",
+  "claims_accepted": false,
+  "b2_planning": "blocked",
+  "ste_check": "passed",
+  "human_ste_review": "not-recorded",
+  "full_ste_conformance": "not-claimed"
+}

@@ -113,10 +113,19 @@ pub(crate) fn admit_deploy_envelope<T: TransportLayer + Send + Sync>(
     envelope: DeployEnvelope,
     adopted_policy: &crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
+    // Changed by DR-99 (joined-node policy adoption): the policy identity is
+    // the genesis post-state, which differs from an LFS-joined node's anchor.
+    // The submitted policy must be the one this node adopted at start.
+    // if !OFFERED_PRODUCTION_READY
+    //     || !adopted_policy.offered_funded_v6_active()
+    //     || adopted_policy.genesis().genesis_root()
+    //         != &this.approved_block.body.state.post_state_hash
+    // {
     if !OFFERED_PRODUCTION_READY
         || !adopted_policy.offered_funded_v6_active()
-        || adopted_policy.genesis().genesis_root()
-            != &this.approved_block.body.state.post_state_hash
+        || this.adopted_resource_policy.as_ref().is_none_or(|own| {
+            own.genesis().genesis_root() != adopted_policy.genesis().genesis_root()
+        })
     {
         return Err(CasperError::RuntimeError(
             "offered-funded deploy admission is not active under the current genesis policy"

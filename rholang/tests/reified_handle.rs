@@ -23,7 +23,6 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
-use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::handle::typed_error;
 use rholang::rust::interpreter::reified::route::{classify_channel, ChannelClass};
 use rholang::rust::interpreter::reified::scope::{classify_space_ref, SpaceRef};
@@ -649,9 +648,7 @@ fn translation_matcher_id() -> Par {
         },
         guard: None,
     };
-    let bytes = state
-        .encode(&ScanMeter::new(None))
-        .expect("a translation state encodes");
+    let bytes = state.encode().expect("a translation state encodes");
     namespace::gprivate(namespace::matcher_channel(&bytes))
 }
 

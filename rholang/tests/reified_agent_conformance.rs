@@ -39,7 +39,7 @@ use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::reified::route::agent_parts;
-use support::native::{assert_reproduces, certify, host_work, NativeChain, AMPLE_LIMIT};
+use support::native::{assert_reproduces, certify, NativeChain, AMPLE_LIMIT};
 use support::props::{check, runtime_config, tokio_runtime};
 use support::session::Injections;
 
@@ -180,7 +180,7 @@ impl Kit {
         let label = format!("{}, step {}", self.label, self.steps);
         let played = self
             .chain
-            .play_with(term, &label, LIMIT, host_work(), Injections::new())
+            .play_with(term, &label, LIMIT, Injections::new())
             .await;
         assert!(
             played.result.errors.is_empty(),
@@ -477,13 +477,7 @@ async fn reference_agent_example_runs() {
     let mut chain = NativeChain::new().await;
     let label = "the reference agent example";
     let played = chain
-        .play_with(
-            REFERENCE_AGENT,
-            label,
-            LIMIT,
-            host_work(),
-            Injections::new(),
-        )
+        .play_with(REFERENCE_AGENT, label, LIMIT, Injections::new())
         .await;
     assert!(
         played.result.errors.is_empty(),

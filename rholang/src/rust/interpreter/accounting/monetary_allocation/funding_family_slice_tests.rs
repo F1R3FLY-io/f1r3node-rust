@@ -1,6 +1,5 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
@@ -16,10 +15,6 @@ fn limits() -> FundingFamilyLimits {
         },
         case_cap: NonZeroUsize::new(16).unwrap(),
     }
-}
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,8 +143,7 @@ fn assert_oracle(
         &vec![0; problem.capacities.len()],
         problem.exposure_limit,
     );
-    let result =
-        solve_funding_family_slice(problem, constraints, forced, limits(), &work()).unwrap();
+    let result = solve_funding_family_slice(problem, constraints, forced, limits()).unwrap();
     assert_eq!(result.is_some(), expected);
     if let Some(result) = result {
         let mut holds = vec![0_u64; problem.capacities.len()];
@@ -238,7 +232,6 @@ fn family_rank_need_not_be_locally_minimax_and_still_requires_resource_flow() {
         &[FundingResourceConstraint::Rank(&[2, 0])],
         &[None],
         limits(),
-        &work(),
     )
     .unwrap()
     .unwrap();
@@ -263,8 +256,7 @@ fn family_rank_need_not_be_locally_minimax_and_still_requires_resource_flow() {
         restricted_problem,
         &[FundingResourceConstraint::Rank(&[2, 0])],
         &[None],
-        limits(),
-        &work()
+        limits()
     )
     .unwrap()
     .is_none());
@@ -315,10 +307,9 @@ fn fixed_draws_forced_fees_and_cross_outcome_backtracking_preserve_feasibility()
         FundingResourceConstraint::Rank(&[1, 0, 0]),
         FundingResourceConstraint::Fixed(&[0, 1, 0]),
     ];
-    let selected =
-        solve_funding_family_slice(problem, &constraints, &[Some(2), None], limits(), &work())
-            .unwrap()
-            .unwrap();
+    let selected = solve_funding_family_slice(problem, &constraints, &[Some(2), None], limits())
+        .unwrap()
+        .unwrap();
     assert_eq!(selected.draws, [vec![0, 1, 0], vec![0, 1, 0]]);
     assert_eq!(selected.holds, [0, 1, 1]);
     assert_oracle(problem, &constraints, &[Some(2), None]);
@@ -351,7 +342,6 @@ fn duplicate_rank_values_large_cohorts_and_full_width_fees_need_no_token_iterati
             &[FundingResourceConstraint::Rank(&rank)],
             &[None],
             limits(),
-            &work(),
         )
         .unwrap()
         .unwrap();
@@ -379,7 +369,6 @@ fn duplicate_rank_values_large_cohorts_and_full_width_fees_need_no_token_iterati
         &[FundingResourceConstraint::Rank(&[u64::MAX - 2, 1, 1])],
         &[Some(0)],
         limits(),
-        &work(),
     )
     .unwrap()
     .unwrap();
@@ -389,69 +378,7 @@ fn duplicate_rank_values_large_cohorts_and_full_width_fees_need_no_token_iterati
 }
 
 #[test]
-fn late_budget_exhaustion_never_returns_a_partial_family() {
-    let capacities = [1, 1];
-    let first = [vec![true], vec![true]];
-    let second = [vec![false], vec![true]];
-    let outcomes = [
-        FundingOutcomeProblem {
-            resources: FundingMinimaxProblem {
-                capacities: &capacities,
-                obligations: &[1],
-                eligible: &first,
-            },
-            unit_fee_eligible: None,
-        },
-        FundingOutcomeProblem {
-            resources: FundingMinimaxProblem {
-                capacities: &capacities,
-                obligations: &[1],
-                eligible: &second,
-            },
-            unit_fee_eligible: None,
-        },
-    ];
-    let problem = FundingFamilyOptimizationProblem {
-        capacities: &capacities,
-        outcomes: &outcomes,
-        exposure_limit: 1,
-        resource_cursor: 0,
-        fee_cursor: 0,
-    };
-    let constraints = [
-        FundingResourceConstraint::Rank(&[1, 0]),
-        FundingResourceConstraint::Rank(&[1, 0]),
-    ];
-    let complete = work();
-    assert!(
-        solve_funding_family_slice(problem, &constraints, &[None, None], limits(), &complete)
-            .unwrap()
-            .is_some()
-    );
-    for dimension in [
-        HostWorkDimension::SearchCandidates,
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let used = complete.usage(dimension).get();
-        assert!(used > 0);
-        let mut capped = complete.limits();
-        capped.set(dimension, HostWorkLimit::new(used - 1));
-        assert!(matches!(
-            solve_funding_family_slice(
-                problem,
-                &constraints,
-                &[None, None],
-                limits(),
-                &HostWorkBudget::new(capped)
-            ),
-            Err(FundingFamilyError::Search(FundingSearchError::HostWork(_)))
-        ));
-    }
-}
-
-#[test]
-fn malformed_later_constraints_and_budget_exhaustion_are_errors() {
+fn malformed_later_constraints_are_errors() {
     let caps = [0, 0];
     let edges = [vec![true], vec![true]];
     let case = FundingOutcomeProblem {
@@ -478,26 +405,11 @@ fn malformed_later_constraints_and_budget_exhaustion_are_errors() {
                 FundingResourceConstraint::Rank(&[0, 1])
             ],
             &[None, None],
-            limits(),
-            &work()
+            limits()
         ),
         Err(FundingFamilyError::Search(
             FundingSearchError::InvalidResult
         ))
-    ));
-    let empty = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(matches!(
-        solve_funding_family_slice(
-            problem,
-            &[
-                FundingResourceConstraint::Rank(&[1, 0]),
-                FundingResourceConstraint::Rank(&[1, 0])
-            ],
-            &[None, None],
-            limits(),
-            &empty
-        ),
-        Err(FundingFamilyError::Search(FundingSearchError::HostWork(_)))
     ));
 }
 

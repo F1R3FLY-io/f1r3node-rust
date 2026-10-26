@@ -9,7 +9,6 @@ use models::rhoapi::{
     EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
@@ -26,18 +25,17 @@ use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use rspace_plus_plus::rspace::history::Either;
-use shared::rust::clone_backing::BackingMeter;
 
 use super::accounting::costs::Cost;
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::metering::MeteredMachine;
+use super::unwrap_option_safe;
 use super::util::{prepend_connective, prepend_expr};
-use super::{deterministic_reduction, unwrap_option_safe};
 
-mod native_cost_signature;
-mod native_expr;
-mod native_par;
+// Added by DR-131 P1: the stack-safety tests of the cost-signature substitution.
+#[cfg(test)]
+mod cost_signature_stack_safety_tests;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/Substitute.scala
 pub trait SubstituteTrait<A> {
@@ -57,46 +55,66 @@ pub struct Substitute {
 }
 
 impl Substitute {
-    pub(crate) fn substitute_cost_signature_metered(
+    /// Added by D-F2 (DR-118): the charged substitution, which also returns
+    /// the prost length of the substituted term. The phlo charge measures
+    /// that length, so the reducer can reuse it for the introduction bytes.
+    fn substitute_measured<A>(
         &self,
-        signature: CostSignature,
-        depth: i32,
-        env: &Env<Par>,
-        backing: &dyn BackingMeter,
-    ) -> Result<CostSignature, InterpreterError> {
-        native_cost_signature::substitute_cost_signature_metered_with(
-            self,
-            signature,
-            depth,
-            env,
-            backing,
-            &Self::substitute_par_metered,
-        )
+        term: &A,
+        substitute: impl FnOnce(A) -> Result<A, InterpreterError>,
+    ) -> Result<(A, u64), InterpreterError>
+    where
+        A: Clone + prost::Message,
+    {
+        // scala 'charge' function built in here
+        match substitute(term.clone()) {
+            Ok(subst_term) => {
+                let measured = subst_term.encoded_len();
+                self.metering.reserve_substitution(Cost::create(
+                    (measured as i64).max(i64::from(!self.metering.budget().is_legacy())),
+                    "substitution",
+                ))?;
+                let measured = u64::try_from(measured).map_err(|_| {
+                    InterpreterError::BugFoundError(
+                        "substitution byte count does not fit in u64".to_string(),
+                    )
+                })?;
+                Ok((subst_term, measured))
+            }
+            Err(th) => {
+                self.metering.reserve_substitution(Cost::create(
+                    (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
+                    "substitution",
+                ))?;
+                Err(th)
+            }
+        }
     }
 
-    fn reserve_host_work<A: prost::Message>(
+    pub(crate) fn substitute_and_measure<A>(
+        &self,
         term: &A,
+        depth: i32,
         env: &Env<Par>,
-    ) -> Result<(), InterpreterError> {
-        let bindings = u64::try_from(env.env_map.len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "substitution binding count does not fit in u64".to_string(),
-            )
-        })?;
-        let bytes = u64::try_from(term.encoded_len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "substitution byte count does not fit in u64".to_string(),
-            )
-        })?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::SubstitutionBindings,
-            HostWorkUnits::new(bindings),
-        )?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::SubstitutionBytes,
-            HostWorkUnits::new(bytes),
-        )?;
-        Ok(())
+    ) -> Result<(A, u64), InterpreterError>
+    where
+        Self: SubstituteTrait<A>,
+        A: Clone + prost::Message,
+    {
+        self.substitute_measured(term, |term| self.substitute(term, depth, env))
+    }
+
+    pub(crate) fn substitute_no_sort_and_measure<A>(
+        &self,
+        term: &A,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<(A, u64), InterpreterError>
+    where
+        Self: SubstituteTrait<A>,
+        A: Clone + prost::Message,
+    {
+        self.substitute_measured(term, |term| self.substitute_no_sort(term, depth, env))
     }
 
     pub fn substitute_and_charge<A>(
@@ -109,25 +127,29 @@ impl Substitute {
         Self: SubstituteTrait<A>,
         A: Clone + prost::Message,
     {
-        Self::reserve_host_work(term, env)?;
-        // scala 'charge' function built in here
-        match self.substitute(term.clone(), depth, env) {
-            Ok(subst_term) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (subst_term.encoded_len() as i64)
-                        .max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
-                Ok(subst_term)
-            }
-            Err(th) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
-                Err(th)
-            }
-        }
+        // Changed by D-F2 (DR-118): the body moved to `substitute_measured`,
+        // which also returns the prost length that the phlo charge measures.
+        // Self::reserve_host_work(term, env)?;
+        // // scala 'charge' function built in here
+        // match self.substitute(term.clone(), depth, env) {
+        //     Ok(subst_term) => {
+        //         self.metering.reserve_substitution(Cost::create(
+        //             (subst_term.encoded_len() as i64)
+        //                 .max(i64::from(!self.metering.budget().is_legacy())),
+        //             "substitution",
+        //         ))?;
+        //         Ok(subst_term)
+        //     }
+        //     Err(th) => {
+        //         self.metering.reserve_substitution(Cost::create(
+        //             (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
+        //             "substitution",
+        //         ))?;
+        //         Err(th)
+        //     }
+        // }
+        self.substitute_and_measure(term, depth, env)
+            .map(|(subst_term, _)| subst_term)
     }
 
     pub fn substitute_no_sort_and_charge<A>(
@@ -140,25 +162,29 @@ impl Substitute {
         Self: SubstituteTrait<A>,
         A: Clone + prost::Message,
     {
-        Self::reserve_host_work(term, env)?;
-        // scala 'charge' function built in here
-        match self.substitute_no_sort(term.clone(), depth, env) {
-            Ok(subst_term) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (subst_term.encoded_len() as i64)
-                        .max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
-                Ok(subst_term)
-            }
-            Err(th) => {
-                self.metering.reserve_substitution(Cost::create(
-                    (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
-                Err(th)
-            }
-        }
+        // Changed by D-F2 (DR-118): the body moved to `substitute_measured`,
+        // which also returns the prost length that the phlo charge measures.
+        // Self::reserve_host_work(term, env)?;
+        // // scala 'charge' function built in here
+        // match self.substitute_no_sort(term.clone(), depth, env) {
+        //     Ok(subst_term) => {
+        //         self.metering.reserve_substitution(Cost::create(
+        //             (subst_term.encoded_len() as i64)
+        //                 .max(i64::from(!self.metering.budget().is_legacy())),
+        //             "substitution",
+        //         ))?;
+        //         Ok(subst_term)
+        //     }
+        //     Err(th) => {
+        //         self.metering.reserve_substitution(Cost::create(
+        //             (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
+        //             "substitution",
+        //         ))?;
+        //         Err(th)
+        //     }
+        // }
+        self.substitute_no_sort_and_measure(term, depth, env)
+            .map(|(subst_term, _)| subst_term)
     }
 
     // pub here for testing purposes
@@ -212,7 +238,81 @@ impl Substitute {
         }
     }
 
+    // Changed by DR-131 P1: the substitution runs on an explicit work stack and
+    // a value stack, so the native stack no longer grows with the compound
+    // depth. `Visit` substitutes one signature. A compound pushes `Close` with
+    // its element count and then its elements in reverse, so the elements run
+    // in source order and stop at the first error, as the recursive version
+    // did. `Close` takes the substituted elements from the value stack in
+    // source order. Each leaf and each compound is sorted when it completes,
+    // as the recursive version sorted every level. The recursive version stays
+    // below as the test oracle.
     pub(crate) fn substitute_cost_signature(
+        &self,
+        signature: CostSignature,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<CostSignature, InterpreterError> {
+        enum Step {
+            Visit(CostSignature),
+            Close(usize),
+        }
+        let mut work = vec![Step::Visit(signature)];
+        let mut done: Vec<CostSignature> = Vec::new();
+        while let Some(step) = work.pop() {
+            let value = match step {
+                Step::Close(count) => {
+                    let elements = done.split_off(done.len() - count);
+                    CostSignatureValue::Compound(CostSignatureCompound { elements })
+                }
+                Step::Visit(signature) => match signature.value {
+                    Some(CostSignatureValue::Compound(compound)) => {
+                        work.push(Step::Close(compound.elements.len()));
+                        work.extend(compound.elements.into_iter().rev().map(Step::Visit));
+                        continue;
+                    }
+                    Some(CostSignatureValue::Unit(value)) => CostSignatureValue::Unit(value),
+                    Some(CostSignatureValue::Ground(bytes)) => CostSignatureValue::Ground(bytes),
+                    Some(CostSignatureValue::BoundLevel(index)) if depth == 0 => {
+                        match env.get(&index) {
+                            Some(name) => {
+                                CostSignatureValue::Name(ParSortMatcher::sort_match(&name).term)
+                            }
+                            None => CostSignatureValue::BoundLevel(index),
+                        }
+                    }
+                    Some(CostSignatureValue::BoundLevel(index)) => {
+                        CostSignatureValue::BoundLevel(index)
+                    }
+                    Some(CostSignatureValue::Quote(par)) => CostSignatureValue::Quote(
+                        self.substitute_no_sort(par, depth, env)
+                            .map(|par| ParSortMatcher::sort_match(&par).term)?,
+                    ),
+                    Some(CostSignatureValue::Name(par)) => CostSignatureValue::Name(
+                        self.substitute_no_sort(par, depth, env)
+                            .map(|par| ParSortMatcher::sort_match(&par).term)?,
+                    ),
+                    None => {
+                        return Err(InterpreterError::UndefinedRequiredProtobufFieldError(
+                            "CostSignature.value".to_string(),
+                        ))
+                    }
+                },
+            };
+            done.push(sort_signature(&CostSignature { value: Some(value) }).term);
+        }
+        done.pop().ok_or_else(|| {
+            InterpreterError::BugFoundError(
+                "the cost-signature substitution left no signature".to_string(),
+            )
+        })
+    }
+
+    // Replaced by DR-131 P1 with the work-stack substitution above, because it
+    // recursed once for each compound level. It stays as the oracle of the
+    // stack-safety tests.
+    #[cfg(test)]
+    pub(crate) fn substitute_cost_signature_recursive(
         &self,
         signature: CostSignature,
         depth: i32,
@@ -234,7 +334,7 @@ impl Substitute {
                 let elements = compound
                     .elements
                     .into_iter()
-                    .map(|element| self.substitute_cost_signature(element, depth, env))
+                    .map(|element| self.substitute_cost_signature_recursive(element, depth, env))
                     .collect::<Result<Vec<_>, _>>()?;
                 CostSignatureValue::Compound(CostSignatureCompound { elements })
             }
@@ -1471,6 +1571,7 @@ fn set_bits_until(bits: Vec<u8>, until: i32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use models::rust::utils::{new_boundvar_par, new_freevar_par, new_gint_par};
+    use prost::Message;
 
     use super::*;
     use crate::rust::interpreter::accounting::RuntimeBudget;
@@ -2094,6 +2195,50 @@ mod tests {
         assert!(substitute
             .substitute_no_sort_and_charge(&free, 0, &env)
             .is_err());
+    }
+
+    /// D-F2 (DR-118): the measuring forms return the prost length of the
+    /// substituted term, and they charge exactly what the charging forms
+    /// charge, on success and on error.
+    #[test]
+    fn measure_wrappers_return_the_charged_prost_length() {
+        let env = env_with(gint(42));
+        for term in [bound(0), gint(7), new_freevar_par(0, Vec::new())] {
+            let measuring = substitute_instance();
+            let charging = substitute_instance();
+            let measured: Result<(Par, u64), _> = measuring.substitute_and_measure(&term, 0, &env);
+            let charged: Result<Par, _> = charging.substitute_and_charge(&term, 0, &env);
+            match (measured, charged) {
+                (Ok((measured, bytes)), Ok(charged)) => {
+                    assert_eq!(measured, charged);
+                    assert_eq!(bytes, u64::try_from(measured.encoded_len()).unwrap());
+                }
+                (Err(measured), Err(charged)) => assert_eq!(measured, charged),
+                other => panic!("the wrappers disagree: {other:?}"),
+            }
+            assert_eq!(
+                measuring.metering.budget().remaining(),
+                charging.metering.budget().remaining()
+            );
+
+            let measuring = substitute_instance();
+            let charging = substitute_instance();
+            let measured: Result<(Par, u64), _> =
+                measuring.substitute_no_sort_and_measure(&term, 0, &env);
+            let charged: Result<Par, _> = charging.substitute_no_sort_and_charge(&term, 0, &env);
+            match (measured, charged) {
+                (Ok((measured, bytes)), Ok(charged)) => {
+                    assert_eq!(measured, charged);
+                    assert_eq!(bytes, u64::try_from(measured.encoded_len()).unwrap());
+                }
+                (Err(measured), Err(charged)) => assert_eq!(measured, charged),
+                other => panic!("the wrappers disagree: {other:?}"),
+            }
+            assert_eq!(
+                measuring.metering.budget().remaining(),
+                charging.metering.budget().remaining()
+            );
+        }
     }
 
     #[test]

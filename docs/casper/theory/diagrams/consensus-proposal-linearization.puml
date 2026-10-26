@@ -1,0 +1,91 @@
+' Deterministic linearization of finalized blocks by main-chain epochs.
+' Left: a small block DAG. Solid arrows point from a block to its main parent
+' (parents[0]); dashed arrows point to a secondary parent. Right: the
+' canonical order. Bottom: why one node-local sort of each finality batch
+' diverges.
+'
+' Heights: G = 0, M1 = 1, S1 = 1, M2 = 2 (parents M1, S1), S2 = 2 (parent M1),
+' M3 = 3 (parents M2, S2). Node A finalizes M2 and then M3. Node B finalizes M3
+' in one step. A height-then-hash sort of each batch gives two different
+' orders when h(M1) < h(S1) and h(S2) < h(M2), where h is the block hash.
+' The main-chain epoch rule gives one order.
+'
+' Source of truth: docs/casper/theory/cost-accounting-consensus-proposal.md §7.5.
+' Palette: genesis = supply blue · main-chain blocks = capability indigo ·
+'   side blocks = control amber · canonical epochs = process lilac ·
+'   canonical order = pool green · divergent order = reject red
+' The legend also defines every name and symbol that the labels use,
+' so the diagram reads on its own.
+' Render:  ./render.sh consensus-proposal-linearization.puml
+
+@startuml consensus-proposal-linearization
+!include palette.iuml
+$ca_base_skin()
+skinparam componentStyle rectangle
+skinparam rectangle {
+  BorderColor #333333
+  RoundCorner 8
+}
+skinparam ArrowColor $ca_neutral
+title Linearization by main-chain epochs: one order for every node
+
+package "Block DAG: the past of the LFB M3" as DAG $ca_pkg_indigo {
+  rectangle "G\nheight 0, genesis" as G $ca_supply
+  rectangle "M1\nheight 1, main chain" as M1 $ca_capability
+  rectangle "S1\nheight 1, side block" as S1 $ca_control
+  rectangle "M2\nheight 2, main chain" as M2 $ca_capability
+  rectangle "S2\nheight 2, side block" as S2 $ca_control
+  rectangle "M3\nheight 3, main chain, LFB" as M3 $ca_capability
+}
+
+M1 -up-> G : main parent
+S1 -up-> G : main parent
+M2 -up-> M1 : main parent
+M2 .up.> S1 : secondary parent
+S2 -up-> M1 : main parent
+M3 -up-> M2 : main parent
+M3 .up.> S2 : secondary parent
+
+package "Canonical order (recommended): the main chain of the LFB defines the epochs" as CANON $ca_pkg_green {
+  rectangle "epoch of M1\n<latex>\mathrm{past}(M_1) \setminus \mathrm{past}(G) = \{M_1\}</latex>" as E1 $ca_process
+  rectangle "epoch of M2\n<latex>\mathrm{past}(M_2) \setminus \mathrm{past}(M_1) = \{S_1, M_2\}</latex>\ntopological order: S1, M2" as E2 $ca_process
+  rectangle "epoch of M3\n<latex>\mathrm{past}(M_3) \setminus \mathrm{past}(M_2) = \{S_2, M_3\}</latex>\ntopological order: S2, M3" as E3 $ca_process
+  rectangle "order: M1, S1, M2, S2, M3\nthe same on node A and on node B" as ORD $ca_pool
+}
+E1 -down-> E2
+E2 -down-> E3
+E3 -down-> ORD
+
+DAG -right[hidden]-> CANON
+' The edge has no label: a label at its midpoint lands on the package borders.
+' The package title above carries the text instead.
+M3 .right.> E1
+
+package "Rejected rule: sort each node-local finality batch by (height, hash)" as BAD $ca_pkg_amber {
+  rectangle "node A finalizes M2, then M3\nbatch 1 = M1, S1, M2, then batch 2 = S2, M3\norder: M1, S1, M2, S2, M3" as NA $ca_note_green
+  rectangle "node B finalizes M3 in one step\none batch sorted by (height, hash)\nwith <latex>h(M_1) < h(S_1)</latex> and <latex>h(S_2) < h(M_2)</latex>\norder: M1, S1, S2, M2, M3" as NB $ca_rejectfill
+}
+DAG -down[hidden]-> BAD
+NA .right.> NB : the executors run S2 and M2\nin different orders:\ndivergent roots
+
+legend bottom
+  |= colour |= meaning |
+  |<$ca_supply>| genesis |
+  |<$ca_capability>| main-chain block (parents[0] chain of the LFB) |
+  |<$ca_control>| side block, reached only as a secondary parent |
+  |<$ca_process>| one epoch of the canonical order |
+  |<$ca_pool>| resulting canonical order |
+  |<$ca_rejectfill>| divergent order of the rejected rule |
+
+  |= name |= meaning |
+  | G, M1 to M3, S1, S2 | genesis, the main-chain blocks, and the side blocks of the example DAG |
+  | <latex>M_i</latex>, <latex>S_i</latex> | the blocks Mi and Si, written as symbols |
+  | LFB | the last finalized block. Here it is M3. |
+  | DAG | the directed acyclic graph of blocks |
+  | <latex>\mathrm{past}(X)</latex> | the block X and all of its ancestors |
+  | epoch of <latex>M_i</latex> | <latex>\mathrm{past}(M_i) \setminus \mathrm{past}(M_{i-1})</latex>: the blocks that <latex>M_i</latex> adds to the past |
+  | <latex>h(X)</latex> | the hash of the block X |
+  | (height, hash) | sort by block height, and break ties by the block hash |
+endlegend
+
+@enduml

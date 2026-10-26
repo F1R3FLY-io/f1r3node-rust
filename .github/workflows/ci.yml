@@ -58,6 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     if: >-
@@ -86,6 +87,9 @@ jobs:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HAS_HEAVY_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci-heavy') }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         shell: bash -euo pipefail {0}
         run: |
           target="$REQUESTED_TARGET_SHA"
@@ -129,6 +133,40 @@ jobs:
               exit 1
             }
           fi
+          # A merge group may reuse the heavy result of its top pull request.
+          # The group must name one pull request, the pull request head must
+          # contain the group base, and the two trees must be equal. The newest
+          # ci.yml pull_request run for that head must also have both
+          # Integration aggregator jobs concluded success, not skipped. Any
+          # other result, including an API error, runs the heavy pipeline. The
+          # push to dev after the merge still runs it.
+          heavy_result_reusable() {
+            local number pull_head relationship group_tree head_tree run_id jobs passed
+            [[ "$MERGE_GROUP_HEAD_REF" =~ ^refs/heads/gh-readonly-queue/[^/]+/pr-([1-9][0-9]*)-[0-9a-f]{40}$ ]] || return 1
+            number="${BASH_REMATCH[1]}"
+            [[ "$MERGE_GROUP_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "$MERGE_GROUP_BASE_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+            pull_head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${number}" --jq '.head.sha')" || return 1
+            [[ "$pull_head" =~ ^[0-9a-f]{40}$ ]] || return 1
+            relationship="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${MERGE_GROUP_BASE_SHA}...${pull_head}" --jq '.status')" || return 1
+            [ "$relationship" = ahead ] || [ "$relationship" = identical ] || return 1
+            group_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${MERGE_GROUP_HEAD_SHA}" --jq '.tree.sha')" || return 1
+            head_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${pull_head}" --jq '.tree.sha')" || return 1
+            [[ "$group_tree" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [ "$group_tree" = "$head_tree" ] || return 1
+            run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${pull_head}&event=pull_request&per_page=100" \
+              --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml")] | max_by(.id) | .id // empty')" || return 1
+            [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || return 1
+            jobs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[]
+                | select(.name == "Integration Tests (amd64)" or .name == "Integration Tests (arm64)")
+                | [.name, (.conclusion // "pending")] | @tsv')" || return 1
+            passed="$(printf '%s\n' "$jobs" |
+              awk -F '\t' 'NF == 2 { seen[$1]++; if ($2 == "success") ok[$1]++ } END { n = 0; for (k in seen) if (seen[k] == 1 && ok[k] == 1) n++; print n }')"
+            [ "$passed" = 2 ] || return 1
+            printf '%s %s %s\n' "$number" "$pull_head" "$run_id"
+          }
+
           # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
           # naming a top PR, or a PR labelled ci-heavy. A plain PR push runs the
           # GitHub-hosted checks only and reaches the heavy pipeline through the
@@ -136,6 +174,12 @@ jobs:
           run_heavy=false
           if [ "$EVENT_NAME" = merge_group ]; then
             run_heavy=true
+            if reused="$(heavy_result_reusable)"; then
+              read -r reused_pull reused_head reused_run <<<"$reused"
+              run_heavy=false
+              echo "::notice::Merge group tree equals pull request #${reused_pull} head ${reused_head}, which passed the heavy pipeline in run ${reused_run}. The heavy pipeline is skipped."
+              echo "Heavy pipeline reused from pull request #${reused_pull} at ${reused_head} (run ${reused_run})." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            fi
           elif [ "$EVENT_NAME" = workflow_dispatch ] && [ "$top" -gt 0 ]; then
             run_heavy=true
           elif [ "$EVENT_NAME" = push ] && {
@@ -376,14 +420,6 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-run-integration-preflight.sh
 
-      - name: Verify soak fail-closed driver
-        shell: bash -euo pipefail {0}
-        run: scripts/bench/test-run-merge-recovery-soak.sh
-
-      - name: Verify isolated disk admission and emergency scenarios
-        shell: bash -euo pipefail {0}
-        run: bash scripts/bench/test-soak-disk-admission.sh
-
       - name: Verify soak dashboard restoration
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-restore-soak-dashboard-run.sh
@@ -404,6 +440,17 @@ jobs:
 
       - name: Install system dependencies
         run: bash .github/scripts/install-system-dependencies.sh
+
+      - name: Build the soak harness
+        run: cargo build --locked -p casper-soak --bin casper-soak
+
+      - name: Verify soak fail-closed driver
+        shell: bash -euo pipefail {0}
+        run: scripts/bench/test-run-merge-recovery-soak.sh
+
+      - name: Verify isolated disk admission and emergency scenarios
+        shell: bash -euo pipefail {0}
+        run: bash scripts/bench/test-soak-disk-admission.sh
 
       - name: Check formatting
         run: cargo fmt --all -- --check

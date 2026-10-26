@@ -39,7 +39,7 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use support::family_programs::{StoredFamily, STORED_FAMILIES};
 use support::native::{
     assert_reproduces, certify, decode_evidence, decode_log, encode_log, evidence_bytes,
-    finish_injected, host_work, replay_environment_from, NativeChain, Played, AMPLE_LIMIT,
+    finish_injected, replay_environment_from, NativeChain, Played, AMPLE_LIMIT,
 };
 use support::session::Injections;
 
@@ -67,8 +67,6 @@ struct DeployRecord {
     phlo: Option<u64>,
     /// The usage of its budget recording.
     used: u64,
-    /// The host work of native play in each dimension.
-    host: Vec<u64>,
     /// The evidence bytes of the budget recording.
     budget_bytes: Vec<u8>,
     /// The evidence bytes of the operation journal.
@@ -84,7 +82,6 @@ type RecordFields = (
     Vec<u8>,
     Option<u64>,
     u64,
-    Vec<u64>,
     Vec<u8>,
     Vec<u8>,
     Vec<u8>,
@@ -98,7 +95,6 @@ impl DeployRecord {
             self.post_root.clone(),
             self.phlo,
             self.used,
-            self.host.clone(),
             self.budget_bytes.clone(),
             self.journal_bytes.clone(),
             self.log.clone(),
@@ -106,15 +102,13 @@ impl DeployRecord {
     }
 
     fn of_fields(fields: RecordFields) -> Self {
-        let (label, pre_root, post_root, phlo, used, host, budget_bytes, journal_bytes, log) =
-            fields;
+        let (label, pre_root, post_root, phlo, used, budget_bytes, journal_bytes, log) = fields;
         Self {
             label,
             pre_root,
             post_root,
             phlo,
             used,
-            host,
             budget_bytes,
             journal_bytes,
             log,
@@ -146,9 +140,8 @@ fn root(bytes: &[u8]) -> Blake2b256Hash { Blake2b256Hash::from_bytes(bytes.to_ve
 /// leaves no volatile channel, certifies it, and returns the play and its record.
 async fn play_recorded(chain: &mut NativeChain, term: &str, label: &str) -> (Played, DeployRecord) {
     let pre_root = chain.history().root();
-    let host = host_work();
     let played = chain
-        .play_with(term, label, AMPLE_LIMIT, host.clone(), Injections::new())
+        .play_with(term, label, AMPLE_LIMIT, Injections::new())
         .await;
     assert!(
         played.result.errors.is_empty(),
@@ -174,12 +167,6 @@ async fn play_recorded(chain: &mut NativeChain, term: &str, label: &str) -> (Pla
             .as_ref()
             .expect("native play records its budget")
             .used,
-        host: host
-            .usages()
-            .into_array()
-            .iter()
-            .map(|usage| usage.get())
-            .collect(),
         budget_bytes,
         journal_bytes,
         log: encode_log(&played.log),
@@ -312,7 +299,6 @@ async fn replay(directory: &Path) {
             AMPLE_LIMIT,
             &recording,
             journal,
-            host_work(),
         )
         .await
         .unwrap_or_else(|error| panic!("{label}: the evidence checks: {error}"));
@@ -362,7 +348,6 @@ fn assert_same_record(warm: &DeployRecord, child: &DeployRecord) {
     assert_eq!(warm.post_root, child.post_root, "{label}: post-state root");
     assert_eq!(warm.phlo, child.phlo, "{label}: phlo usage");
     assert_eq!(warm.used, child.used, "{label}: budget usage");
-    assert_eq!(warm.host, child.host, "{label}: host work");
     assert_eq!(
         warm.budget_bytes, child.budget_bytes,
         "{label}: evidence of the budget recording"

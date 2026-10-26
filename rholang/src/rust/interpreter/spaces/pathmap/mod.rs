@@ -24,8 +24,7 @@
 //! the receive on @[0, 1] binds R([2], v)          for example [2, 42] when v = 42
 //! ```
 //!
-//! Every function reserves its reads, copies and allocations on the meter of the job before it
-//! makes them (decision 42). The formal model of this layer is `PathMapPrefix.v`.
+//! The formal model of this layer is `PathMapPrefix.v`.
 
 pub mod adapter;
 pub mod delivery;
@@ -52,10 +51,9 @@ pub use reroot::{reroot, reroot_payload};
 #[path = "../../../../../tests/support/props.rs"]
 mod props;
 
-/// The builders, the generators and the metering checks of the unit tests of this module.
+/// The builders and the generators of the unit tests of this module.
 #[cfg(test)]
 mod test_support {
-    use std::fmt::Debug;
 
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
@@ -63,27 +61,12 @@ mod test_support {
         CostSignature, CostStack, EList, EPathMap, ESet, ETuple, EZipper, Expr, GBigRational,
         GFixedPoint, GPrivate, GUnforgeable, Par, Send,
     };
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
     use models::rust::rholang::sorter::sortable::Sortable;
     use proptest::prelude::*;
     use proptest::test_runner::TestCaseError;
-    use rspace_plus_plus::rspace::errors::RSpaceError;
 
     pub use super::props::{check, pure_config};
-    use crate::rust::interpreter::host_work::HostWorkBudget;
-    use crate::rust::interpreter::reified::costs::ScanMeter;
-    use crate::rust::interpreter::spaces::errors::SpaceError;
-
-    /// The dimensions that a space job charges (decision 42).
-    pub const CHARGED: [HostWorkDimension; 3] = [
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::VerificationBytes,
-        HostWorkDimension::SearchStateBytes,
-    ];
-
-    /// A meter without a budget, as the production host runs a job.
-    pub fn unmetered() -> ScanMeter { ScanMeter::new(None) }
 
     /// A `Par` that holds exactly the expression `instance`.
     pub fn expr(instance: ExprInstance) -> Par {
@@ -223,53 +206,6 @@ mod test_support {
 
     /// The canonical form of `par`: the term of the host sorter.
     pub fn sorted(par: &Par) -> Par { ParSortMatcher::sort_match(par).term }
-
-    /// Runs `run` under a budget with no bound, and returns its result and its usage in the
-    /// charged dimensions.
-    pub fn usage_of<T>(run: impl Fn(&ScanMeter) -> Result<T, SpaceError>) -> (T, [u64; 3]) {
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let value = run(&ScanMeter::new(Some(budget.clone())))
-            .expect("a budget with no bound accepts the work");
-        (
-            value,
-            CHARGED.map(|dimension| budget.usage(dimension).get()),
-        )
-    }
-
-    /// Checks the metering of `run`. With its usage as the limits it succeeds, and it gives the
-    /// result of a run without a budget. A cut of one unit in any charged dimension rejects it
-    /// with `HostWorkRejected`.
-    pub fn assert_cut<T: Debug + PartialEq>(run: impl Fn(&ScanMeter) -> Result<T, SpaceError>) {
-        let (metered, usage) = usage_of(&run);
-        assert_eq!(
-            run(&unmetered()).expect("a run without a budget succeeds"),
-            metered,
-            "a metered run gives the result of a run without a budget"
-        );
-        assert!(
-            usage.iter().any(|used| *used > 0),
-            "the work reserves something"
-        );
-        let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        for (dimension, used) in CHARGED.into_iter().zip(usage) {
-            exact.set(dimension, HostWorkLimit::new(used));
-        }
-        assert_eq!(
-            run(&ScanMeter::new(Some(HostWorkBudget::new(exact)))).expect("the exact usage fits"),
-            metered
-        );
-        for (dimension, used) in CHARGED.into_iter().zip(usage) {
-            if let Some(cut) = used.checked_sub(1) {
-                let mut limits = exact;
-                limits.set(dimension, HostWorkLimit::new(cut));
-                assert_eq!(
-                    run(&ScanMeter::new(Some(HostWorkBudget::new(limits)))).err(),
-                    Some(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                    "a cut of {dimension} rejects the work"
-                );
-            }
-        }
-    }
 
     /// A leaf path element: every scalar arm, a name, and leaves outside the structural grammar.
     /// The small ranges make equal elements likely.

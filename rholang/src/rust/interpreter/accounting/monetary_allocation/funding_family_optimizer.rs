@@ -1,16 +1,11 @@
 use std::cmp::Ordering;
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
 
 use super::funding_family::{push, split_hold_box, sum, vector, HoldBox};
 use super::{
-    reserve_work, select_fixed_funding_policy, select_funding_with_unit_fee,
-    FundingAssignmentError, FundingAssignmentTotals, FundingBoxProblem, FundingFamilyError,
-    FundingFamilyLimits, FundingFamilyResourcePriority, FundingMinimaxProblem, FundingPolicyResult,
-    FundingSearchError,
+    select_fixed_funding_policy, select_funding_with_unit_fee, FundingAssignmentError,
+    FundingAssignmentTotals, FundingBoxProblem, FundingFamilyError, FundingFamilyLimits,
+    FundingFamilyResourcePriority, FundingMinimaxProblem, FundingPolicyResult, FundingSearchError,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FundingOutcomeProblem<'a> {
@@ -69,8 +64,7 @@ pub struct FundingFamilyProposal<'a> {
 fn validate(
     problem: FundingFamilyOptimizationProblem<'_>,
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
-) -> Result<HoldBox, FundingFamilyError> {
+) -> Result<(HoldBox, u128), FundingFamilyError> {
     let n = problem.capacities.len();
     if n == 0 {
         return Err(FundingSearchError::from(FundingAssignmentError::EmptySources).into());
@@ -87,8 +81,9 @@ fn validate(
     if problem.resource_cursor >= n || problem.fee_cursor >= n {
         return Err(FundingSearchError::InvalidPriorityCursor.into());
     }
-    let lower = vector(n, budget)?;
-    let mut upper = vector(n, budget)?;
+    let lower = vector(n)?;
+    let mut upper = vector(n)?;
+    let mut largest_charge = 0_u128;
     for outcome in problem.outcomes {
         let resources = outcome.resources;
         if resources.capacities.len() != n
@@ -103,23 +98,13 @@ fn validate(
                 FundingSearchError::from(FundingAssignmentError::TooManyObligations).into(),
             );
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            resources
-                .obligations
-                .len()
-                .checked_add(2)
-                .and_then(|m| n.checked_mul(m))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         FundingBoxProblem {
             lower: &lower,
             upper: resources.capacities,
             obligations: resources.obligations,
             eligible: resources.eligible,
         }
-        .validate(limits.search, budget)?;
+        .validate(limits.search)?;
         let total = resources.obligations.iter().try_fold(
             u128::from(outcome.unit_fee_eligible.is_some()),
             |total, amount| {
@@ -128,37 +113,29 @@ fn validate(
                     .ok_or(FundingSearchError::Overflow)
             },
         )?;
+        largest_charge = largest_charge.max(total);
         for (i, cap) in upper.iter_mut().enumerate() {
             let bounded = u128::from(resources.capacities[i].min(problem.capacities[i])).min(total);
             *cap = (*cap).max(u64::try_from(bounded).map_err(|_| FundingSearchError::Overflow)?);
         }
     }
-    Ok(HoldBox { lower, upper })
+    Ok((HoldBox { lower, upper }, largest_charge))
 }
 
 fn relaxed_optimum(
     problem: FundingFamilyOptimizationProblem<'_>,
     bounds: &HoldBox,
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Option<FundingFamilyAllocation>, FundingFamilyError> {
     let n = problem.capacities.len();
     let count = problem.outcomes.len();
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(size_of::<FundingOutcomeAllocation>() + size_of::<&[u64]>())
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
     let mut outcomes = Vec::new();
     outcomes
         .try_reserve_exact(count)
         .map_err(|_| FundingSearchError::AllocationFailed)?;
-    let mut holds = vector(n, budget)?;
-    let mut capacities = vector(n, budget)?;
+    let mut holds = vector(n)?;
+    let mut capacities = vector(n)?;
     for outcome in problem.outcomes {
-        reserve_work(budget, HostWorkDimension::SearchCandidates, n)?;
         for (i, cap) in capacities.iter_mut().enumerate() {
             *cap = bounds.upper[i].min(outcome.resources.capacities[i]);
         }
@@ -173,24 +150,19 @@ fn relaxed_optimum(
                 problem.resource_cursor,
                 problem.fee_cursor,
                 limits.search,
-                budget,
             )?
             else {
                 return Ok(None);
             };
             selected.into_charges()
         } else {
-            let FundingPolicyResult::Selected(selected) = select_fixed_funding_policy(
-                resources,
-                problem.resource_cursor,
-                limits.search,
-                budget,
-            )?
+            let FundingPolicyResult::Selected(selected) =
+                select_fixed_funding_policy(resources, problem.resource_cursor, limits.search)?
             else {
                 return Ok(None);
             };
             let (assignment, totals, _, _) = selected.into_resource_parts();
-            (assignment, totals, vector(n, budget)?)
+            (assignment, totals, vector(n)?)
         };
         for ((hold, resource), fee) in holds.iter_mut().zip(totals.source_debits()).zip(&fees) {
             *hold = (*hold).max(
@@ -216,7 +188,6 @@ fn relaxed_optimum(
         &draws,
         problem.resource_cursor,
         limits,
-        budget,
     )?;
     let total_held = sum(&holds)?;
     Ok(Some(FundingFamilyAllocation {
@@ -231,20 +202,12 @@ fn compare(
     left: &FundingFamilyAllocation,
     right: &FundingFamilyAllocation,
     fee_cursor: usize,
-    budget: &HostWorkBudget,
 ) -> Result<Ordering, FundingFamilyError> {
-    let resources = left
-        .resource_priority
-        .compare(&right.resource_priority, budget)?;
+    let resources = left.resource_priority.compare(&right.resource_priority)?;
     if resources != Ordering::Equal {
         return Ok(resources);
     }
     for (lhs, rhs) in left.outcomes.iter().zip(&right.outcomes) {
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            lhs.fee_debits.len(),
-        )?;
         let order = rhs.fee_debits[fee_cursor..]
             .iter()
             .chain(&rhs.fee_debits[..fee_cursor])
@@ -259,11 +222,6 @@ fn compare(
     }
     for (lhs, rhs) in left.outcomes.iter().zip(&right.outcomes) {
         for (left_row, right_row) in lhs.resources.iter().zip(&rhs.resources) {
-            reserve_work(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                left_row.len(),
-            )?;
             let order = left_row.cmp(right_row);
             if order != Ordering::Equal {
                 return Ok(order);
@@ -276,26 +234,33 @@ fn compare(
 pub fn optimize_funding_family(
     problem: FundingFamilyOptimizationProblem<'_>,
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<Option<FundingFamilyAllocation>, FundingFamilyError> {
-    let root = validate(problem, limits, budget)?;
+    let (root, largest_charge) = validate(problem, limits)?;
+    // Added by DR-131 (decision D-J): every accepted node holds at least the
+    // charge of each case, so a charge above the exposure limit admits no node.
+    if largest_charge > problem.exposure_limit {
+        return Ok(None);
+    }
+    search_funding_family(problem, root, limits)
+}
+
+fn search_funding_family(
+    problem: FundingFamilyOptimizationProblem<'_>,
+    root: HoldBox,
+    limits: FundingFamilyLimits,
+) -> Result<Option<FundingFamilyAllocation>, FundingFamilyError> {
     let mut stack = Vec::new();
-    push(&mut stack, root, budget)?;
+    push(&mut stack, root)?;
     let mut best = None;
     while let Some(bounds) = stack.pop() {
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchCandidates,
-            problem.capacities.len(),
-        )?;
         if sum(&bounds.lower)? > problem.exposure_limit {
             continue;
         }
-        let Some(relaxed) = relaxed_optimum(problem, &bounds, limits, budget)? else {
+        let Some(relaxed) = relaxed_optimum(problem, &bounds, limits)? else {
             continue;
         };
         if let Some(incumbent) = &best {
-            if compare(&relaxed, incumbent, problem.fee_cursor, budget)? != Ordering::Less {
+            if compare(&relaxed, incumbent, problem.fee_cursor)? != Ordering::Less {
                 continue;
             }
         }
@@ -311,7 +276,7 @@ pub fn optimize_funding_family(
             best = Some(relaxed);
         } else {
             drop(relaxed);
-            split_hold_box(bounds, &mut stack, budget)?;
+            split_hold_box(bounds, &mut stack)?;
         }
     }
     Ok(best)
@@ -321,31 +286,19 @@ pub fn verify_funding_family_allocation(
     problem: FundingFamilyOptimizationProblem<'_>,
     proposal: FundingFamilyProposal<'_>,
     limits: FundingFamilyLimits,
-    budget: &HostWorkBudget,
 ) -> Result<bool, FundingFamilyError> {
-    let Some(expected) = optimize_funding_family(problem, limits, budget)? else {
+    let Some(expected) = optimize_funding_family(problem, limits)? else {
         return Ok(false);
     };
     let n = problem.capacities.len();
-    reserve_work(budget, HostWorkDimension::VerificationOperations, n)?;
     if proposal.holds != expected.holds || proposal.outcomes.len() != expected.outcomes.len() {
         return Ok(false);
     }
     for (supplied, correct) in proposal.outcomes.iter().zip(&expected.outcomes) {
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            n.checked_mul(2).ok_or(FundingSearchError::Overflow)?,
-        )?;
         if supplied.fee_debits != correct.fee_debits || supplied.resources.len() != n {
             return Ok(false);
         }
         for (row, expected_row) in supplied.resources.iter().zip(&correct.resources) {
-            reserve_work(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                expected_row.len(),
-            )?;
             if row != expected_row {
                 return Ok(false);
             }

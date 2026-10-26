@@ -22,7 +22,7 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::reified::vectordb_services::Neighbour;
 use support::backends::{self, services, EmbedMode, FakeMirror, MirrorCall, MockEmbedder};
-use support::native::{assert_reproduces, certify, host_work, NativeChain, AMPLE_LIMIT};
+use support::native::{assert_reproduces, certify, NativeChain, AMPLE_LIMIT};
 use support::session::{error_codes, Injections};
 
 const LIMIT: u64 = AMPLE_LIMIT;
@@ -157,7 +157,7 @@ async fn run(example: &Example) -> (String, String) {
             lock.replace(services(&embedder, &FakeMirror::new(neighbours, 1)));
         }
         let played = chain
-            .play_with(source, &label, LIMIT, host_work(), Injections::new())
+            .play_with(source, &label, LIMIT, Injections::new())
             .await;
         match (&example.expect, last) {
             (Expect::Error(code), true) => {

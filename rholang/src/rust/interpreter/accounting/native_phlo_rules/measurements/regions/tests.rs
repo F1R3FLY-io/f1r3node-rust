@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::CostSignature;
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::super::tests::{row, snapshot};
@@ -15,10 +14,6 @@ use crate::rust::interpreter::accounting::native_phlo_rules::tests::schedule;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativePhloDimension, NativePhloRules,
 };
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000_000)))
-}
 
 fn limits() -> NativePhloRegionLimits {
     NativePhloRegionLimits {
@@ -46,7 +41,7 @@ fn project(
     rules: &NativePhloRules,
 ) -> Vec<(ByteObservation, CostRegion, usize, u64)> {
     let measured = rules.measure(input, 32).unwrap();
-    let demands = measured.region_demands(limits(), &budget()).unwrap();
+    let demands = measured.region_demands(limits()).unwrap();
     demands
         .occurrences()
         .map(|demand| {
@@ -91,7 +86,7 @@ fn projection_retains_unit_compound_regions_and_repeated_occurrences() {
         let observation = with_regions(row(AuthorityByteEventKind::Comm, [3, 5, 7], owners), 65);
         let input = snapshot(vec![observation.clone(), observation.clone()]);
         let measured = rules.measure(&input, 2).unwrap();
-        let demands = measured.region_demands(limits(), &budget()).unwrap();
+        let demands = measured.region_demands(limits()).unwrap();
         let actual: Vec<_> = demands.occurrences().collect();
         assert_eq!(actual.len(), 2 * 4 * 65);
         for (index, demand) in actual.iter().enumerate() {
@@ -175,7 +170,7 @@ fn malformed_or_missing_region_evidence_rejects_the_complete_projection() {
         let original = input.clone();
         let measured = rules.measure(&input, 2).unwrap();
         assert_eq!(
-            measured.region_demands(limits(), &budget()).unwrap_err(),
+            measured.region_demands(limits()).unwrap_err(),
             NativePhloRegionError::Authority(expected),
             "case {case}"
         );
@@ -184,7 +179,7 @@ fn malformed_or_missing_region_evidence_rejects_the_complete_projection() {
 }
 
 #[test]
-fn aggregate_region_bytes_and_host_work_limits_reject_without_a_partial_result() {
+fn aggregate_region_byte_limits_reject_without_a_partial_result() {
     let rules = NativePhloRules::resolve(&schedule()).unwrap();
     let observation = with_regions(row(AuthorityByteEventKind::Comm, [u64::MAX; 3], 3), 2);
     let input = snapshot(vec![observation.clone()]);
@@ -195,7 +190,7 @@ fn aggregate_region_bytes_and_host_work_limits_reject_without_a_partial_result()
     };
     assert_eq!(
         measured
-            .region_demands(exact, &budget())
+            .region_demands(exact)
             .unwrap()
             .occurrences()
             .count(),
@@ -203,67 +198,40 @@ fn aggregate_region_bytes_and_host_work_limits_reject_without_a_partial_result()
     );
     assert_eq!(
         measured
-            .region_demands(
-                NativePhloRegionLimits {
-                    regions: 1,
-                    ..exact
-                },
-                &budget()
-            )
+            .region_demands(NativePhloRegionLimits {
+                regions: 1,
+                ..exact
+            })
             .unwrap_err(),
         NativePhloRegionError::RegionLimit
     );
     assert_eq!(
         measured
-            .region_demands(
-                NativePhloRegionLimits {
-                    encoded_authority_bytes: exact.encoded_authority_bytes - 1,
-                    ..exact
-                },
-                &budget()
-            )
+            .region_demands(NativePhloRegionLimits {
+                encoded_authority_bytes: exact.encoded_authority_bytes - 1,
+                ..exact
+            })
             .unwrap_err(),
         NativePhloRegionError::AuthorityByteLimit
     );
-    for dimension in [
-        HostWorkDimension::AuthorityNodes,
-        HostWorkDimension::AuthorityDepth,
-        HostWorkDimension::StructuralBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let mut caps = HostWorkLimits::uniform(HostWorkLimit::new(10_000));
-        caps.set(dimension, HostWorkLimit::new(0));
-        let work = HostWorkBudget::new(caps);
-        assert_eq!(
-            measured.region_demands(exact, &work).unwrap_err(),
-            NativePhloRegionError::Authority(AuthorityError::HostWorkRejected)
-        );
-        assert!(work.is_rejected());
-    }
     let observation = with_regions(row(AuthorityByteEventKind::Comm, [0; 3], 3), 2);
     let input = snapshot(vec![observation.clone(), observation.clone()]);
     let measured = rules.measure(&input, 2).unwrap();
     assert_eq!(
         measured
-            .region_demands(
-                NativePhloRegionLimits {
-                    regions: 3,
-                    ..limits()
-                },
-                &budget()
-            )
+            .region_demands(NativePhloRegionLimits {
+                regions: 3,
+                ..limits()
+            })
             .unwrap_err(),
         NativePhloRegionError::RegionLimit
     );
     assert_eq!(
         measured
-            .region_demands(
-                NativePhloRegionLimits {
-                    encoded_authority_bytes: observation.authority.encoded_len(),
-                    ..limits()
-                },
-                &budget()
-            )
+            .region_demands(NativePhloRegionLimits {
+                encoded_authority_bytes: observation.authority.encoded_len(),
+                ..limits()
+            })
             .unwrap_err(),
         NativePhloRegionError::AuthorityByteLimit
     );
@@ -276,13 +244,10 @@ fn empty_measurements_do_not_invent_demand_and_zero_rows_do_not_hide_malformed_r
     let measured = rules.measure(&empty, 0).unwrap();
     assert_eq!(
         measured
-            .region_demands(
-                NativePhloRegionLimits {
-                    regions: 0,
-                    encoded_authority_bytes: 0
-                },
-                &budget()
-            )
+            .region_demands(NativePhloRegionLimits {
+                regions: 0,
+                encoded_authority_bytes: 0
+            })
             .unwrap()
             .occurrences()
             .count(),
@@ -296,7 +261,7 @@ fn empty_measurements_do_not_invent_demand_and_zero_rows_do_not_hide_malformed_r
     let measured = rules.measure(&input, 1).unwrap();
     assert_eq!(
         measured
-            .region_demands(limits(), &budget())
+            .region_demands(limits())
             .unwrap()
             .occurrences()
             .count(),
@@ -309,7 +274,7 @@ fn empty_measurements_do_not_invent_demand_and_zero_rows_do_not_hide_malformed_r
     let input = snapshot(vec![zero]);
     let measured = rules.measure(&input, 1).unwrap();
     assert_eq!(
-        measured.region_demands(limits(), &budget()).unwrap_err(),
+        measured.region_demands(limits()).unwrap_err(),
         NativePhloRegionError::Authority(AuthorityError::MissingSignature)
     );
 }
@@ -330,7 +295,7 @@ proptest! {
             with_regions(row(AuthorityByteEventKind::from_tag(*kind).unwrap(), *quantities, *owners), *regions)
         }).collect());
         let measured = rules.measure(&input, 16).unwrap();
-        let demands = measured.region_demands(limits(), &budget()).unwrap();
+        let demands = measured.region_demands(limits()).unwrap();
         let actual: Vec<_> = demands.occurrences().map(|demand| {
             let part = demand.measurement();
             (part.observation(), part.dimension(), part.class(), part.quantity(), demand.region())

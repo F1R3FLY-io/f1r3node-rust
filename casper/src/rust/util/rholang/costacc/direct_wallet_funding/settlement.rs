@@ -1,8 +1,5 @@
-use std::mem::size_of;
-
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
-use models::rust::host_work::{HostWorkDimension, HostWorkReservationError, HostWorkUnits};
 use rholang::rust::interpreter::accounting::monetary_allocation::{
     MonetaryCursor, MonetaryCursorError, MonetaryCursorTransition,
 };
@@ -10,7 +7,6 @@ use rholang::rust::interpreter::accounting::phlo_execution::{
     CheckedPhloExecution, NativePhloSourceAmounts, NativeScopedPhloFundingCapture,
     PhloCaptureLimits, PhloOutcome, PhloOutcomeMatchError, PhloOutcomeMatchLimits,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_type::Extractor;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
@@ -50,16 +46,12 @@ pub enum DirectWalletSettlementError {
     InconsistentAmounts,
     #[error("settlement cursor presence does not match positive contributions")]
     CursorPresence,
-    #[error("settlement work calculation overflowed")]
-    Overflow,
     #[error("settlement allocation failed")]
     AllocationFailed,
     #[error(transparent)]
     Outcome(#[from] PhloOutcomeMatchError),
     #[error(transparent)]
     Cursor(#[from] MonetaryCursorError),
-    #[error(transparent)]
-    HostWork(#[from] HostWorkReservationError),
     #[error(transparent)]
     Native(#[from] CasperError),
 }
@@ -93,40 +85,10 @@ struct ProjectedSettlement {
     has_fee: bool,
 }
 
-fn reserve_projection(
-    count: usize,
-    budget: &HostWorkBudget,
-) -> Result<(), DirectWalletSettlementError> {
-    for (dimension, per_source, fixed) in [
-        (HostWorkDimension::SearchCandidates, 1, 1),
-        (
-            HostWorkDimension::SearchStateBytes,
-            size_of::<VaultAllocation>() + size_of::<VaultSettlement>() + 1024,
-            1024,
-        ),
-        (
-            HostWorkDimension::VerificationOperations,
-            512usize
-                .checked_add(64 * usize::BITS as usize)
-                .ok_or(DirectWalletSettlementError::Overflow)?,
-            512,
-        ),
-    ] {
-        let work = count
-            .checked_mul(per_source)
-            .and_then(|n| n.checked_add(fixed))
-            .and_then(|n| u64::try_from(n).ok())
-            .ok_or(DirectWalletSettlementError::Overflow)?;
-        budget.reserve(dimension, HostWorkUnits::new(work))?;
-    }
-    Ok(())
-}
-
 fn project_amounts<'a>(
     payers: &BTreeMap<[u8; 32], VaultPayer>,
     canonical_custodies: &[&[u8]],
     rows: impl ExactSizeIterator<Item = SettlementRow<'a>>,
-    budget: &HostWorkBudget,
 ) -> Result<ProjectedSettlement, DirectWalletSettlementError> {
     let count = payers.len();
     let payer_count =
@@ -134,7 +96,6 @@ fn project_amounts<'a>(
     if canonical_custodies.len() != count || rows.len() != count {
         return Err(DirectWalletSettlementError::CustodyMismatch);
     }
-    reserve_projection(count, budget)?;
     let mut result = ProjectedSettlement {
         allocations: Vec::new(),
         settlements: Vec::new(),
@@ -205,15 +166,10 @@ impl<'a, A> CheckedDirectWalletPolicy<'a, A> {
         outcome: PhloOutcome<'_>,
         limits: PhloOutcomeMatchLimits,
         capture_limits: PhloCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<CheckedDirectWalletSettlement<'a, A>, DirectWalletSettlementError> {
-        let capture = self.policy().capture_matching_execution(
-            observed,
-            outcome,
-            limits,
-            capture_limits,
-            budget,
-        )?;
+        let capture =
+            self.policy()
+                .capture_matching_execution(observed, outcome, limits, capture_limits)?;
         if !std::ptr::eq(
             capture.scoped().signed_intent().envelope(),
             self.snapshot().wallets().authorization().envelope(),
@@ -249,7 +205,6 @@ impl<'a, A> CheckedDirectWalletSettlement<'a, A> {
         reservation_id: [u8; 32],
         fee_address: &VaultAddress,
         initial_rand: Blake2b512Random,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedDirectWalletSettlement<'s, 'a, A>, DirectWalletSettlementError> {
         let amounts = project_amounts(
             self.snapshot.wallets().authorization().payers(),
@@ -259,7 +214,6 @@ impl<'a, A> CheckedDirectWalletSettlement<'a, A> {
                 .iter()
                 .copied()
                 .map(SettlementRow::from),
-            budget,
         )?;
         let scoped = self.capture.scoped();
         check_transition(

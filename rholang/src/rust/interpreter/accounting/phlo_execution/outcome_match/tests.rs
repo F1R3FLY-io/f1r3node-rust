@@ -1,6 +1,5 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
@@ -27,10 +26,6 @@ const SCHEDULES: [PhloSchedule<'static>; 1] = [PhloSchedule {
     weights: &[1, 1, 0],
     actual_price: 2,
 }];
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn limits() -> PhloOutcomeMatchLimits {
     PhloOutcomeMatchLimits {
@@ -97,9 +92,9 @@ fn fresh<'a>(resources: &'a [PhloResource<'a>]) -> PhloExecutionWitness<'a> {
 }
 
 fn equal(left: CheckedPhloExecution<'_>, right: CheckedPhloExecution<'_>) -> bool {
-    let left = normalize_execution(left, limits(), &work()).unwrap();
-    let right = normalize_execution(right, limits(), &work()).unwrap();
-    normalized_executions_equal(&left, &right, &work()).unwrap()
+    let left = normalize_execution(left, limits()).unwrap();
+    let right = normalize_execution(right, limits()).unwrap();
+    normalized_executions_equal(&left, &right).unwrap()
 }
 
 #[test]
@@ -114,7 +109,7 @@ fn retained_acquisition_identity_is_compared_even_when_the_price_is_zero() {
         resource: free,
         quantity: 5,
     }];
-    let actual = base.with_retained_acquisitions(&retained, &work()).unwrap();
+    let actual = base.with_retained_acquisitions(&retained).unwrap();
     assert_eq!(
         base.retained_charge(PhloOutcome::Accepted(&[])),
         actual.retained_charge(PhloOutcome::Accepted(&[]))
@@ -130,7 +125,7 @@ fn retained_acquisition_identity_is_compared_even_when_the_price_is_zero() {
             quantity: 3,
         },
     ];
-    let equivalent = base.with_retained_acquisitions(&split, &work()).unwrap();
+    let equivalent = base.with_retained_acquisitions(&split).unwrap();
     assert!(equal(actual, equivalent));
     let changed = [PhloResourceAmount {
         resource: PhloResource {
@@ -141,7 +136,7 @@ fn retained_acquisition_identity_is_compared_even_when_the_price_is_zero() {
     }];
     assert!(!equal(
         actual,
-        base.with_retained_acquisitions(&changed, &work()).unwrap()
+        base.with_retained_acquisitions(&changed).unwrap()
     ));
     let extra = [PhloResourceAmount {
         resource: free,
@@ -149,7 +144,7 @@ fn retained_acquisition_identity_is_compared_even_when_the_price_is_zero() {
     }];
     assert!(!equal(
         actual,
-        base.with_retained_acquisitions(&extra, &work()).unwrap()
+        base.with_retained_acquisitions(&extra).unwrap()
     ));
 }
 
@@ -279,7 +274,7 @@ fn exact_outcome_masks_ignore_order_and_duplicates_but_not_failure_kind() {
         PhloFailure::Certificate,
         PhloFailure::Unclassified,
     ];
-    let rejected = normalize_outcome(PhloOutcome::AdmissionRejected, &work()).unwrap();
+    let rejected = normalize_outcome(PhloOutcome::AdmissionRejected).unwrap();
     let mut normalized = Vec::new();
     for bits in 0_u8..16 {
         let failures: Vec<_> = kinds
@@ -288,16 +283,16 @@ fn exact_outcome_masks_ignore_order_and_duplicates_but_not_failure_kind() {
             .filter(|(i, _)| bits & (1 << i) != 0)
             .map(|(_, kind)| *kind)
             .collect();
-        let original = normalize_outcome(PhloOutcome::Accepted(&failures), &work()).unwrap();
+        let original = normalize_outcome(PhloOutcome::Accepted(&failures)).unwrap();
         let reversed: Vec<_> = failures.iter().rev().copied().collect();
         let repeated: Vec<_> = failures.iter().chain(&failures).copied().collect();
         assert_eq!(
             original,
-            normalize_outcome(PhloOutcome::Accepted(&reversed), &work()).unwrap()
+            normalize_outcome(PhloOutcome::Accepted(&reversed)).unwrap()
         );
         assert_eq!(
             original,
-            normalize_outcome(PhloOutcome::Accepted(&repeated), &work()).unwrap()
+            normalize_outcome(PhloOutcome::Accepted(&repeated)).unwrap()
         );
         assert_ne!(original, rejected);
         for earlier in &normalized {
@@ -308,83 +303,32 @@ fn exact_outcome_masks_ignore_order_and_duplicates_but_not_failure_kind() {
 }
 
 #[test]
-fn normalization_limits_fail_closed_for_resources_keys_and_host_work() {
+fn normalization_limits_fail_closed_for_resources_and_keys() {
     let authority = Sig::Ground(vec![1]);
     let resources = [resource(&authority); 3];
     let execution = checked(fresh(&resources));
-    let measured = work();
-    let normalized = normalize_execution(execution, limits(), &measured).unwrap();
-    assert!(normalize_execution(
-        execution,
-        PhloOutcomeMatchLimits {
-            aggregate_key_bytes: 0,
-            ..limits()
-        },
-        &work()
-    )
+    assert!(normalize_execution(execution, limits()).is_ok());
+    assert!(normalize_execution(execution, PhloOutcomeMatchLimits {
+        aggregate_key_bytes: 0,
+        ..limits()
+    })
     .is_err());
-    assert!(normalize_execution(
-        execution,
-        PhloOutcomeMatchLimits {
-            execution: PhloExecutionLimits {
-                resource_entries: 1,
-                ..limits().execution
-            },
-            ..limits()
+    assert!(normalize_execution(execution, PhloOutcomeMatchLimits {
+        execution: PhloExecutionLimits {
+            resource_entries: 1,
+            ..limits().execution
         },
-        &work()
-    )
+        ..limits()
+    })
     .is_err());
-    assert!(normalize_execution(
-        execution,
-        PhloOutcomeMatchLimits {
-            key: PhloObligationKeyLimits {
-                authority_nodes: 0,
-                ..limits().key
-            },
-            ..limits()
+    assert!(normalize_execution(execution, PhloOutcomeMatchLimits {
+        key: PhloObligationKeyLimits {
+            authority_nodes: 0,
+            ..limits().key
         },
-        &work()
-    )
+        ..limits()
+    })
     .is_err());
-    let mut charged = 0;
-    for dimension in HostWorkDimension::ALL {
-        let amount = measured.usage(dimension).get();
-        if amount == 0 {
-            continue;
-        }
-        charged += 1;
-        let mut exact = measured.limits();
-        exact.set(dimension, HostWorkLimit::new(amount));
-        let accepted =
-            normalize_execution(execution, limits(), &HostWorkBudget::new(exact)).unwrap();
-        assert!(normalized_executions_equal(&normalized, &accepted, &work()).unwrap());
-        exact.set(dimension, HostWorkLimit::new(amount - 1));
-        assert!(normalize_execution(execution, limits(), &HostWorkBudget::new(exact)).is_err());
-    }
-    assert!(charged > 0);
-    let comparison = work();
-    assert!(normalized_executions_equal(&normalized, &normalized, &comparison).unwrap());
-    let mut comparison_dimensions = 0;
-    for dimension in HostWorkDimension::ALL {
-        let amount = comparison.usage(dimension).get();
-        if amount == 0 {
-            continue;
-        }
-        comparison_dimensions += 1;
-        let mut exact = comparison.limits();
-        exact.set(dimension, HostWorkLimit::new(amount));
-        assert!(
-            normalized_executions_equal(&normalized, &normalized, &HostWorkBudget::new(exact))
-                .unwrap()
-        );
-        exact.set(dimension, HostWorkLimit::new(amount - 1));
-        assert!(
-            normalized_executions_equal(&normalized, &normalized, &HostWorkBudget::new(exact))
-                .is_err()
-        );
-    }
-    assert!(comparison_dimensions > 0);
 }
 
 proptest! {

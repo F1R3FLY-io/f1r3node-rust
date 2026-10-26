@@ -38,13 +38,15 @@ use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::finality::floor::{floor_of_view, Floor};
 use casper::rust::safety::clique_oracle::FtThreshold;
-use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -62,7 +64,9 @@ fn lagged_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
 async fn lagged_three_node_network() -> (Vec<TestNode>, String, BlockMessage) {
     let genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(Some(lagged_bonds), Some(3));
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
@@ -164,7 +168,9 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         r#"@"race"!("s")"#.to_string(),
         None,
         None,
-        Some(construct_deploy::DEFAULT_SEC2.clone()),
+        // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+        // Some(construct_deploy::DEFAULT_SEC2.clone()),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
         Some(0),
         Some(shard_id.clone()),
     )
@@ -201,11 +207,13 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
             r#"for (@v <- @"race") { @"race"!("b") | @"XB"!(v) }"#.to_string(),
             None,
             None,
-            Some(
-                crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
-                    .0
-                    .clone(),
-            ),
+            // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
+            // Some(
+            // crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+            // .0
+            // .clone(),
+            // ),
+            Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),
         )
@@ -230,7 +238,9 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         nodes[2]
             .deploy_storage
             .lock()
-            .add(vec![contender_b.clone()])
+            // Changed by DR-116 (gap G6): the pending store holds offered envelopes.
+            // .add(vec![contender_b.clone()])
+            .add_envelope_if_absent(&contender_b.envelope)
             .expect("stage contender b");
         let validator_identity = nodes[2]
             .validator_id_opt
@@ -239,7 +249,12 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         let deploy_storage = nodes[2].deploy_storage.clone();
         let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
         let runtime_manager = nodes[2].runtime_manager.clone();
-        let created = block_creator::create(
+        // Added by DR-116 (gap G6): a staged proposal takes the node's adopted policy.
+        let adopted_casper = nodes[2].casper.clone();
+        // let created = block_creator::create(
+        let created = block_creator::create_with_adopted_policy(
+            adopted_casper.adopted_resource_policy.as_ref(),
+            adopted_casper.offered_funded_active,
             &snapshot,
             &validator_identity,
             None,

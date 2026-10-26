@@ -1,100 +1,10 @@
 use std::cmp::Ordering;
-use std::mem::size_of;
-use std::sync::Arc;
 
-use models::rust::host_work::HostWorkDimension;
 use rspace_plus_plus::rspace::operation_context::PathDigest;
 
-use super::recording::{work, RecordedOccurrence};
-use super::{HostWorkBudget, InterpreterError};
+use super::recording::recording_error;
+use super::InterpreterError;
 use crate::rust::interpreter::accounting::native_phlo_rules::NativeAttemptStage;
-
-pub(super) trait IndexKey: Ord {
-    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError>;
-
-    fn compare_metered(
-        &self,
-        other: &Self,
-        budget: &HostWorkBudget,
-    ) -> Result<Ordering, InterpreterError> {
-        let (operations, bytes) = self.comparison_work()?;
-        work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            operations
-                .checked_add(2)
-                .ok_or(InterpreterError::HostWorkRejected)?,
-        )?;
-        work(budget, HostWorkDimension::VerificationBytes, bytes)?;
-        Ok(self.cmp(other))
-    }
-}
-
-impl IndexKey for Arc<[u8]> {
-    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((1, self.len())) }
-}
-
-// Changed by C7b (DR-86): the path-keyed comparison belongs to the
-// producer's recorded occurrences, which keep copied paths.
-// impl IndexKey for NativeBudgetOccurrence {
-impl IndexKey for RecordedOccurrence {
-    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
-        let operations = self
-            .path
-            .len()
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(4));
-        let bytes = self
-            .path
-            .len()
-            .checked_mul(16)
-            .and_then(|n| n.checked_add(33));
-        Ok((
-            operations.ok_or(InterpreterError::HostWorkRejected)?,
-            bytes.ok_or(InterpreterError::HostWorkRejected)?,
-        ))
-    }
-
-    fn compare_metered(
-        &self,
-        other: &Self,
-        budget: &HostWorkBudget,
-    ) -> Result<Ordering, InterpreterError> {
-        work(budget, HostWorkDimension::VerificationOperations, 1)?;
-        work(budget, HostWorkDimension::VerificationBytes, 32)?;
-        let order = self.session.cmp(&other.session);
-        if order != Ordering::Equal {
-            return Ok(order);
-        }
-        let shared = self.path.len().min(other.path.len());
-        let mut start = 0;
-        while start < shared {
-            let end = start.saturating_add(16).min(shared);
-            let count = end - start;
-            work(budget, HostWorkDimension::VerificationOperations, count * 2)?;
-            work(budget, HostWorkDimension::VerificationBytes, count * 16)?;
-            for index in start..end {
-                let order = self.path[index].cmp(&other.path[index]);
-                if order != Ordering::Equal {
-                    return Ok(order);
-                }
-            }
-            start = end;
-        }
-        work(budget, HostWorkDimension::VerificationOperations, 1)?;
-        let order = self.path.len().cmp(&other.path.len());
-        if order != Ordering::Equal {
-            return Ok(order);
-        }
-        work(budget, HostWorkDimension::VerificationOperations, 1)?;
-        work(budget, HostWorkDimension::VerificationBytes, 1)?;
-        Ok(self.stage.cmp(&other.stage))
-    }
-}
-
-impl IndexKey for (NativeAttemptStage, [u8; 32]) {
-    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> { Ok((2, 33)) }
-}
 
 /// The key of the recording occurrence index (C7a, DR-85): the session, the
 /// chained digest of the path, the path depth, the last segment and the
@@ -110,85 +20,6 @@ pub(super) struct OccurrenceKey {
     pub(super) stage: NativeAttemptStage,
 }
 
-const OCCURRENCE_KEY_COMPARISON_BYTES: usize = 32 + 32 + size_of::<usize>() + 17 + 1;
-
-impl IndexKey for OccurrenceKey {
-    fn comparison_work(&self) -> Result<(usize, usize), InterpreterError> {
-        Ok((5, OCCURRENCE_KEY_COMPARISON_BYTES))
-    }
-}
-
-pub(super) fn height_bound(nodes: usize) -> usize {
-    let bits = usize::BITS as usize;
-    2 * nodes
-        .checked_add(1)
-        .map_or(bits + 1, |n| bits - n.leading_zeros() as usize)
-}
-
-pub(super) fn reserve_lookup(
-    bound: (usize, usize),
-    nodes: usize,
-    budget: &HostWorkBudget,
-) -> Result<(), InterpreterError> {
-    let comparisons = height_bound(nodes);
-    work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        comparisons
-            .checked_mul(
-                bound
-                    .0
-                    .checked_add(2)
-                    .ok_or(InterpreterError::HostWorkRejected)?,
-            )
-            .ok_or(InterpreterError::HostWorkRejected)?,
-    )?;
-    work(
-        budget,
-        HostWorkDimension::VerificationBytes,
-        comparisons
-            .checked_mul(bound.1)
-            .ok_or(InterpreterError::HostWorkRejected)?,
-    )
-}
-
-pub(in crate::rust::interpreter::accounting) fn reserve_vector<T>(
-    values: &mut Vec<T>,
-    logical_capacity: &mut usize,
-    additional: usize,
-    budget: &HostWorkBudget,
-) -> Result<(), InterpreterError> {
-    let required = values
-        .len()
-        .checked_add(additional)
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    if required <= *logical_capacity {
-        return Ok(());
-    }
-    let capacity = logical_capacity
-        .checked_mul(2)
-        .ok_or(InterpreterError::HostWorkRejected)?
-        .max(required)
-        .max(4);
-    let bytes = capacity
-        .checked_mul(size_of::<T>())
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    let moved = values
-        .len()
-        .checked_mul(size_of::<T>())
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-    work(budget, HostWorkDimension::VerificationBytes, moved)?;
-    let mut replacement = Vec::new();
-    replacement
-        .try_reserve_exact(capacity)
-        .map_err(|_| InterpreterError::HostWorkRejected)?;
-    replacement.append(values);
-    *values = replacement;
-    *logical_capacity = capacity;
-    Ok(())
-}
-
 struct Node<K, V> {
     key: K,
     value: V,
@@ -200,7 +31,6 @@ struct Node<K, V> {
 
 pub(super) struct NativeIndex<K, V> {
     nodes: Vec<Node<K, V>>,
-    logical_capacity: usize,
     root: Option<usize>,
     revision: usize,
 }
@@ -209,7 +39,6 @@ impl<K, V> Default for NativeIndex<K, V> {
     fn default() -> Self {
         Self {
             nodes: Vec::new(),
-            logical_capacity: 0,
             root: None,
             revision: 0,
         }
@@ -234,11 +63,8 @@ pub(super) struct PreparedBatch<K, V> {
     updates: Vec<(K, V)>,
 }
 
-impl<K: IndexKey, V> NativeIndex<K, V> {
+impl<K: Ord, V> NativeIndex<K, V> {
     pub(super) fn len(&self) -> usize { self.nodes.len() }
-
-    #[cfg(test)]
-    pub(super) fn capacity(&self) -> usize { self.logical_capacity }
 
     // Since C7b (DR-86) only tests read the keys in insertion order.
     #[cfg(test)]
@@ -246,18 +72,14 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
         self.nodes.iter().map(|node| &node.key)
     }
 
-    fn locate(
-        &self,
-        key: &K,
-        mut compare: impl FnMut(&K, &K) -> Result<Ordering, InterpreterError>,
-    ) -> Result<Location, InterpreterError> {
+    fn locate(&self, key: &K) -> Location {
         let mut current = self.root;
         let mut parent = None;
         let mut left = false;
         while let Some(index) = current {
             let node = &self.nodes[index];
-            match compare(key, &node.key)? {
-                Ordering::Equal => return Ok(Location::Existing(index)),
+            match key.cmp(&node.key) {
+                Ordering::Equal => return Location::Existing(index),
                 Ordering::Less => {
                     current = node.left;
                     left = true;
@@ -269,69 +91,25 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
             }
             parent = Some(index);
         }
-        Ok(Location::Vacant { parent, left })
+        Location::Vacant { parent, left }
     }
 
-    fn locate_metered(
-        &self,
-        key: &K,
-        budget: &HostWorkBudget,
-    ) -> Result<Location, InterpreterError> {
-        self.locate(key, |a, b| a.compare_metered(b, budget))
-    }
-
-    pub(super) fn get(
-        &self,
-        key: &K,
-        budget: &HostWorkBudget,
-    ) -> Result<Option<&V>, InterpreterError> {
-        Ok(match self.locate_metered(key, budget)? {
-            Location::Existing(index) => Some(&self.nodes[index].value),
-            Location::Vacant { .. } => None,
-        })
-    }
-
-    pub(super) fn get_prepaid(&self, key: &K) -> Option<&V> {
-        match self
-            .locate(key, |a, b| Ok(a.cmp(b)))
-            .expect("prepaid comparison is infallible")
-        {
+    pub(super) fn get(&self, key: &K) -> Option<&V> {
+        match self.locate(key) {
             Location::Existing(index) => Some(&self.nodes[index].value),
             Location::Vacant { .. } => None,
         }
-    }
-
-    fn reserve_repair(
-        nodes: usize,
-        count: usize,
-        budget: &HostWorkBudget,
-    ) -> Result<(), InterpreterError> {
-        let work_bound = height_bound(nodes)
-            .checked_add(1)
-            .and_then(|height| height.checked_mul(256))
-            .and_then(|single| single.checked_mul(count))
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            work_bound,
-        )
     }
 
     pub(super) fn prepare_insert(
         &mut self,
         key: K,
         value: V,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedInsert<K, V>, InterpreterError> {
         self.revision
             .checked_add(1)
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        let location = self.locate_metered(&key, budget)?;
-        if matches!(location, Location::Vacant { .. }) {
-            Self::reserve_repair(self.len(), 1, budget)?;
-            reserve_vector(&mut self.nodes, &mut self.logical_capacity, 1, budget)?;
-        }
+            .ok_or_else(|| recording_error("native index revision overflow"))?;
+        let location = self.locate(&key);
         Ok(PreparedInsert {
             revision: self.revision,
             location,
@@ -351,25 +129,10 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
     pub(super) fn prepare_batch(
         &mut self,
         updates: Vec<(K, V)>,
-        budget: &HostWorkBudget,
     ) -> Result<PreparedBatch<K, V>, InterpreterError> {
         self.revision
             .checked_add(updates.len())
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        let final_size = self
-            .len()
-            .checked_add(updates.len())
-            .ok_or(InterpreterError::HostWorkRejected)?;
-        for (key, _) in &updates {
-            reserve_lookup(key.comparison_work()?, final_size, budget)?;
-        }
-        Self::reserve_repair(final_size, updates.len(), budget)?;
-        reserve_vector(
-            &mut self.nodes,
-            &mut self.logical_capacity,
-            updates.len(),
-            budget,
-        )?;
+            .ok_or_else(|| recording_error("native index revision overflow"))?;
         Ok(PreparedBatch {
             revision: self.revision,
             updates,
@@ -381,10 +144,9 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
             prepared.revision, self.revision,
             "native index preparation is stale"
         );
+        self.nodes.reserve(prepared.updates.len());
         for (key, value) in prepared.updates {
-            let location = self
-                .locate(&key, |a, b| Ok(a.cmp(b)))
-                .expect("prepaid comparison is infallible");
+            let location = self.locate(&key);
             self.publish(location, key, value);
         }
     }
@@ -476,10 +238,6 @@ impl<K: IndexKey, V> NativeIndex<K, V> {
                 Some(std::mem::replace(&mut self.nodes[index].value, value))
             }
             Location::Vacant { parent, left } => {
-                assert!(
-                    self.nodes.len() < self.logical_capacity,
-                    "native index insertion lacks reserved storage"
-                );
                 let index = self.nodes.len();
                 self.nodes.push(Node {
                     key,

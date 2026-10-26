@@ -275,25 +275,6 @@
           "PRODUCE 83520a63a6074a623cdef0b509b90cc31cb1b69b463462aac2464d99ff85993a on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
           "CONSUME 5cd327bc3b218797352dd6790b2ac25ba01d23ea4ce7fbc642dfbbe73e931032 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 66,
-          "PrimitiveInputBytes": 132,
-          "ReductionSteps": 67,
-          "ReductionTermBytes": 5637,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 12255969,
-          "StructuralBytes": 4639,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 396,
-          "SubstitutionBytes": 5742,
-          "VerificationBytes": 162345212,
-          "VerificationOperations": 2133010,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-capped-park",
         "root": "5b64ef21908105c609117153fc8073124d46f6d5680f23c91cce6d2b37047989"
       },
@@ -441,25 +422,6 @@
           "COMM 5cd327bc3b218797352dd6790b2ac25ba01d23ea4ce7fbc642dfbbe73e931032 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false with [29db8aade6783e7ff9aeb1feba4b10ca1a66a51fc6984c0f2707c8f3fa1489e2 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=true deterministic=true failed=false output=[]] peeks=[] repeated=[29db8aade6783e7ff9aeb1feba4b10ca1a66a51fc6984c0f2707c8f3fa1489e2=0]",
           "PRODUCE 29db8aade6783e7ff9aeb1feba4b10ca1a66a51fc6984c0f2707c8f3fa1489e2 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=true deterministic=true failed=false output=[]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 280,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 8469235,
-          "StructuralBytes": 314,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 4,
-          "SubstitutionBytes": 80,
-          "VerificationBytes": 98435843,
-          "VerificationOperations": 1704149,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-capped-send",
         "root": "b80db6f3a29b762358c3b85c0639b68cdf0dd5bf16ace3a951095031c54f887a"
       }
@@ -657,25 +619,6 @@
           "CONSUME 9ab936103088b9af6e30ca19733ee8c6d76cfd759300af07fc182b659c8a3240 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=true",
           "COMM 9ab936103088b9af6e30ca19733ee8c6d76cfd759300af07fc182b659c8a3240 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=true with [3e209111d0133b1551e9c573572730b25b3cc19ceec58c75f6f2104933bf3fc4 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=true deterministic=true failed=false output=[]] peeks=[] repeated=[3e209111d0133b1551e9c573572730b25b3cc19ceec58c75f6f2104933bf3fc4=0]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 2,
-          "PrimitiveInputBytes": 4,
-          "ReductionSteps": 3,
-          "ReductionTermBytes": 366,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 9718524,
-          "StructuralBytes": 382,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 10,
-          "SubstitutionBytes": 167,
-          "VerificationBytes": 114819073,
-          "VerificationOperations": 1663371,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-divergent",
         "root": "e2fb8735b514681e3163eab7103472faf3a8394d692db570f6cb5967b9971de2"
       }
@@ -691,25 +634,6 @@
           "PRODUCE 19869b4457205d92adf18b92c20487208c484ccdef6fc5e5e0fb22c1abaaaaf1 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
           "PRODUCE c35c40a2611ab3edb229bbd32a2fad5aa154c3903748ffa4b05e462d33dfe341 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 276,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 194613,
-          "StructuralBytes": 311,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 4,
-          "SubstitutionBytes": 80,
-          "VerificationBytes": 2520849,
-          "VerificationOperations": 35892,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-fifo-enqueue-5",
         "root": "900c75b77c3def219629cac650ae47e685a060912d3d04c68a7e27b1703837cb"
       },
@@ -722,25 +646,6 @@
           "PRODUCE d21539a9c89dad602c5304c2e1234f8dfa843d5b8e11f36afcddb16b6c748525 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
           "PRODUCE d08fc5c0e59dc81e13a61c60134d95956f912ed8c18457f093bfc1234aaea068 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 276,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 183516,
-          "StructuralBytes": 311,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 4,
-          "SubstitutionBytes": 80,
-          "VerificationBytes": 2445224,
-          "VerificationOperations": 31174,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-fifo-enqueue-6",
         "root": "7cb43188f32ddac9d5f6e22829c3a10f2255a6dbfc4651792b2ba95a88601a27"
       },
@@ -755,25 +660,6 @@
           "COMM 4bc3b6e5ab0701768bef21b1f899e1aa3781cfc3a28db965729c200dd81c7cf0 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false with [c35c40a2611ab3edb229bbd32a2fad5aa154c3903748ffa4b05e462d33dfe341 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]] peeks=[0] repeated=[c35c40a2611ab3edb229bbd32a2fad5aa154c3903748ffa4b05e462d33dfe341=0]",
           "PRODUCE c35c40a2611ab3edb229bbd32a2fad5aa154c3903748ffa4b05e462d33dfe341 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 310,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 267279,
-          "StructuralBytes": 345,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 6,
-          "SubstitutionBytes": 87,
-          "VerificationBytes": 3181730,
-          "VerificationOperations": 48731,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-fifo-peek-1",
         "root": "620f3f5a8bbec1b2a72014bba0512d27d16aa1d69ce1f62ccbc980a7024b3b05"
       },
@@ -788,25 +674,6 @@
           "COMM 9b3a9324e62867b26cd744e7884b53cf9e07f68949de14bc979ce1bf0ecadf6d on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false with [c35c40a2611ab3edb229bbd32a2fad5aa154c3903748ffa4b05e462d33dfe341 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]] peeks=[0] repeated=[c35c40a2611ab3edb229bbd32a2fad5aa154c3903748ffa4b05e462d33dfe341=0]",
           "PRODUCE c35c40a2611ab3edb229bbd32a2fad5aa154c3903748ffa4b05e462d33dfe341 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 310,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 267279,
-          "StructuralBytes": 345,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 6,
-          "SubstitutionBytes": 87,
-          "VerificationBytes": 3181730,
-          "VerificationOperations": 48731,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-fifo-peek-2",
         "root": "9d2b06f26419d7da5dc6944ff93fc149b4d0652771758d72736a04ea46a69ff3"
       },
@@ -825,25 +692,6 @@
           "CONSUME c6d2eb4479e21010df44488fb85d3f3a421fcaa4436ee177a18a0915c6e41acb on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false",
           "COMM c6d2eb4479e21010df44488fb85d3f3a421fcaa4436ee177a18a0915c6e41acb on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false with [d08fc5c0e59dc81e13a61c60134d95956f912ed8c18457f093bfc1234aaea068 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[d08fc5c0e59dc81e13a61c60134d95956f912ed8c18457f093bfc1234aaea068=0]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 3,
-          "ReductionTermBytes": 505,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 518022,
-          "StructuralBytes": 409,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 9,
-          "SubstitutionBytes": 222,
-          "VerificationBytes": 6149227,
-          "VerificationOperations": 89006,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-fifo-dequeue",
         "root": "d52a8dfdbb84c86dac4362795bf32ac7ab28d784c252c88aad40939db108f609"
       }
@@ -2104,25 +1952,6 @@
           "PRODUCE 710cc09d7d2d2ebf88baff16844d73e61482f3e20d2d4766d929549b25c6e3e7 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
           "PRODUCE 9979ccce44fd28b4d37094847c3a62573ad4d479f6b2cf0dfc472165aad61b04 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 3,
-          "PrimitiveInputBytes": 6,
-          "ReductionSteps": 4,
-          "ReductionTermBytes": 376,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 572742,
-          "StructuralBytes": 379,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 12,
-          "SubstitutionBytes": 239,
-          "VerificationBytes": 7486922,
-          "VerificationOperations": 102958,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-persistent-fill",
         "root": "02c28a1434c9c9562bd54ba6db1fe7c0f1a9906b2baa5b17f9f356976216a244"
       },
@@ -2145,25 +1974,6 @@
           "CONSUME 490c2dc952a5654470913ce786d9ec2a83043d78da4eba0a48b0f8a8e212f1a4 on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false",
           "COMM 490c2dc952a5654470913ce786d9ec2a83043d78da4eba0a48b0f8a8e212f1a4 on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false with [a67ae913b175567d2c2132b8aabade70aad9423b4895f4fd0810cde67993f4a9 on 485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880 persistent=true deterministic=true failed=false output=[]] peeks=[] repeated=[a67ae913b175567d2c2132b8aabade70aad9423b4895f4fd0810cde67993f4a9=0]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 3,
-          "PrimitiveInputBytes": 6,
-          "ReductionSteps": 4,
-          "ReductionTermBytes": 431,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 699234,
-          "StructuralBytes": 439,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 16,
-          "SubstitutionBytes": 251,
-          "VerificationBytes": 8547162,
-          "VerificationOperations": 119449,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-persistent-send",
         "root": "09e364cf4f066a7384d7eaf3d07b57dcbf9117f6e9bfa91a3bec2c908fc16225"
       },
@@ -2180,25 +1990,6 @@
           "COMM 32c2240114c6978514ee6c0dedefa8caa58e302c6cb4a153c8fc64845557bfa4 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=true with [9979ccce44fd28b4d37094847c3a62573ad4d479f6b2cf0dfc472165aad61b04 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[9979ccce44fd28b4d37094847c3a62573ad4d479f6b2cf0dfc472165aad61b04=0]",
           "CONSUME 32c2240114c6978514ee6c0dedefa8caa58e302c6cb4a153c8fc64845557bfa4 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=true"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 310,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 348820,
-          "StructuralBytes": 344,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 6,
-          "SubstitutionBytes": 87,
-          "VerificationBytes": 3881196,
-          "VerificationOperations": 65426,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-persistent-drain",
         "root": "85394c8d56236ab8a8faccb6639dfdd8493a3e54b2640b923eee9a52c9ae8dff"
       }
@@ -2214,25 +2005,6 @@
           "PRODUCE 2f6ec0ed0507e017a0c3b9e3de620545f77f65e773c1d2457deec12741e8b228 on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]",
           "CONSUME c86be6f59fb890c8032139b0d532f4bb36063ada9d460eb0fcb475823d1b11a0 on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 305,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 191925,
-          "StructuralBytes": 342,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 6,
-          "SubstitutionBytes": 86,
-          "VerificationBytes": 2522952,
-          "VerificationOperations": 31434,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-reoffer-peek",
         "root": "25194922af4dcf68971355417c1a017fd99355fd22d780bbd9ccb24fabe83694"
       },
@@ -2245,25 +2017,6 @@
           "PRODUCE 824805fc194f9e74348e1c9f0f9abeb1ee17029505d8091eff2ab9505de9ff25 on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]",
           "CONSUME 6f12687f1a0c1abb8195ebe2a655a7a2ef18fa3be5f027753116945cf9530ce1 on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 301,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 185604,
-          "StructuralBytes": 339,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 6,
-          "SubstitutionBytes": 86,
-          "VerificationBytes": 2458804,
-          "VerificationOperations": 32332,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-reoffer-take",
         "root": "a1f21a3a1b7db37c489030212bcbe221b3df36977c352b4cb0c7b39acf79339b"
       },
@@ -2279,25 +2032,6 @@
           "PRODUCE ec22bb89565c0544db93df52c7c904cf97a94ba052e24143eab16b8fd906a45f on 485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880 persistent=false deterministic=true failed=false output=[]",
           "COMM 6f12687f1a0c1abb8195ebe2a655a7a2ef18fa3be5f027753116945cf9530ce1 on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false with [ec22bb89565c0544db93df52c7c904cf97a94ba052e24143eab16b8fd906a45f on 485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[ec22bb89565c0544db93df52c7c904cf97a94ba052e24143eab16b8fd906a45f=2]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 271,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 351215,
-          "StructuralBytes": 308,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 4,
-          "SubstitutionBytes": 79,
-          "VerificationBytes": 3837886,
-          "VerificationOperations": 69221,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-reoffer-send",
         "root": "d3b9d087e8714609da8249d862d9c9369c7da31194510d60661c72ee10d7d54d"
       },
@@ -2311,25 +2045,6 @@
           "PRODUCE d570b0ef6d225d83375e9db14719329c559ada06e59fb32b1a09d66c49fe0b17 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
           "CONSUME e9953327170ed104c3f4fa3f05723f534f5f44773a622dfb7b481ffc7427bc78 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 310,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 191925,
-          "StructuralBytes": 345,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 6,
-          "SubstitutionBytes": 87,
-          "VerificationBytes": 2522952,
-          "VerificationOperations": 31434,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-reoffer-peek-a",
         "root": "f0044cda2208a36d4f14aed75c8d01a0ceaaa2db7c2e8727021d0434e6c9d7cc"
       },
@@ -2344,25 +2059,6 @@
           "COMM e9953327170ed104c3f4fa3f05723f534f5f44773a622dfb7b481ffc7427bc78 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false with [0ebdd9480861baae1bfdef3301243d795e08f7c0ebf1f8746c16b877c5b4e509 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]] peeks=[0] repeated=[0ebdd9480861baae1bfdef3301243d795e08f7c0ebf1f8746c16b877c5b4e509=1]",
           "PRODUCE 0ebdd9480861baae1bfdef3301243d795e08f7c0ebf1f8746c16b877c5b4e509 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 276,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 273498,
-          "StructuralBytes": 311,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 4,
-          "SubstitutionBytes": 80,
-          "VerificationBytes": 3189488,
-          "VerificationOperations": 55147,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-reoffer-store",
         "root": "37de0cd95d8a0d4b60ef4a5aa8ff5294311420ee3c5ea3e2d1f70d8d1b5ec6bb"
       }
@@ -2630,25 +2326,6 @@
           "PRODUCE 793bdac3eeae36c4ced235fee8165b0e3de35f9ab019e04ac294297015da3de8 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
           "CONSUME 8e8a76f04214b239eed4f0cd216f064b0bfa336b5ad4670ac2cc4d8d68368db5 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 64,
-          "PrimitiveInputBytes": 128,
-          "ReductionSteps": 65,
-          "ReductionTermBytes": 5543,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 11886129,
-          "StructuralBytes": 4539,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 384,
-          "SubstitutionBytes": 5603,
-          "VerificationBytes": 157456185,
-          "VerificationOperations": 2068905,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-reentry-park",
         "root": "f1063fa2bb0763e8390435ebb553cf86c1f770f6564d6d4cf4014001e92d334b"
       },
@@ -2661,25 +2338,6 @@
           "PRODUCE 1d69cb478e676dc5e81b9a65daf906bf892e121c7ecbe6761cf8daaef0213933 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
           "CONSUME 57ce6004391687f9ab52994ced07942386babdc03e3226700ed1de4717ec2115 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 2,
-          "ReductionTermBytes": 284,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 185604,
-          "StructuralBytes": 331,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 6,
-          "SubstitutionBytes": 80,
-          "VerificationBytes": 2458588,
-          "VerificationOperations": 32302,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-reentry-park-one",
         "root": "8fffa28e55e97b95a851c635d8e39160cb97fb72097d86580369f311738cd250"
       },
@@ -2829,25 +2487,6 @@
           "COMM 57ce6004391687f9ab52994ced07942386babdc03e3226700ed1de4717ec2115 on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false with [822755393f8c3750fe4a14265fe11b6bcfe95f5821fc50841516059618f360a7 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=true deterministic=true failed=false output=[]] peeks=[] repeated=[822755393f8c3750fe4a14265fe11b6bcfe95f5821fc50841516059618f360a7=0]",
           "PRODUCE 822755393f8c3750fe4a14265fe11b6bcfe95f5821fc50841516059618f360a7 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=true deterministic=true failed=false output=[]"
         ],
-        "host_work": {
-          "AuthorityDepth": 0,
-          "AuthorityNodes": 0,
-          "PrimitiveCalls": 1,
-          "PrimitiveInputBytes": 2,
-          "ReductionSteps": 3,
-          "ReductionTermBytes": 361,
-          "SearchCandidates": 0,
-          "SearchStateBytes": 8459314,
-          "StructuralBytes": 314,
-          "StructuralItems": 1,
-          "SubstitutionBindings": 6,
-          "SubstitutionBytes": 157,
-          "VerificationBytes": 98741786,
-          "VerificationOperations": 1712743,
-          "WitnessBytes": 0,
-          "WitnessFields": 0
-        },
-        "host_work_rejected": false,
         "label": "rrs-parity-reentry-send",
         "root": "ab85e3707b4516fe3f37c6a65efca116b7099a201453790dea72f92f2397593a"
       }

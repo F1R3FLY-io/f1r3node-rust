@@ -18,58 +18,18 @@ use crate::rust::interpreter::rho_runtime::test_accounting_observer;
 mod histories;
 mod joins;
 
-#[tokio::test]
-async fn live_observer_preserves_host_rejection_without_mutating_tuples() {
-    for produce in [false, true] {
-        let mut stores = InMemoryStoreManager::new();
-        let (play, _) = RSpace::create_with_replay(
-            stores.r_space_stores().await.unwrap(),
-            Arc::new(Box::new(Matcher)),
-        )
-        .unwrap();
-        let before = play.create_checkpoint().await.unwrap();
-        let config = config(u64::MAX, [0, 1, 1, 0]);
-        let host = config.host_work();
-        let budget = RuntimeBudget::new(Cost::unsafe_max());
-        budget.reset_for_native_execution(config).unwrap();
-        let _scope = budget.enter_comm_accounting_scope();
-        play.set_accounting_observer(Some(test_accounting_observer(budget.clone())));
-        assert!(host
-            .reserve(HostWorkDimension::VerificationOperations, u64::MAX.into())
-            .is_err());
-        let rejected = operation_context::scope(
-            OperationOrder {
-                session: budget.deploy_id(),
-                path: vec![(0, 0)].into(),
-            },
-            async {
-                if produce {
-                    play.produce(Par::default(), ListParWithRandom::default(), false)
-                        .await
-                        .err()
-                } else {
-                    play.consume(
-                        vec![Par::default()],
-                        vec![BindPattern::default()],
-                        TaggedContinuation::default(),
-                        false,
-                        BTreeSet::new(),
-                    )
-                    .await
-                    .err()
-                }
-            },
-        )
-        .await
-        .expect("the host budget must reject the operation");
-        assert_eq!(
-            InterpreterError::from(rejected),
-            InterpreterError::HostWorkRejected
-        );
-        let after = play.create_checkpoint().await.unwrap();
-        assert_eq!(before.root, after.root);
-        assert!(after.log.is_empty());
+fn unmeasured(authority: &CostAuthority) -> IntroductionRecord {
+    IntroductionRecord {
+        authority: authority.clone(),
+        measurement: None,
     }
+}
+
+/// Changed by DR-131 S6: the error that a failing authority resolution
+/// returns. It was `RSpaceError::HostWorkRejected`, which is deleted. The
+/// replay returns the error of the resolution unchanged.
+fn authority_rejection() -> RSpaceError {
+    RSpaceError::BugFoundError("authority rejected".to_owned())
 }
 
 async fn exercise(
@@ -211,26 +171,21 @@ async fn exercise(
     );
     let recording = budget.native_budget_recording().unwrap().unwrap();
     let rows = budget.native_operation_recording().unwrap().unwrap();
-    let host = config(limit, [0, 1, 1, 0]).host_work;
     let trace = with_contract(limit, [0, 1, 1, 0], |contract| {
         contract
-            .check_operation_journal(recording.session, &recording, rows, journal_limits(), &host)
+            .check_operation_journal(recording.session, &recording, rows, journal_limits())
             .unwrap()
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 10,
-            source_entries: 100,
-            source_bytes: 100_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 10,
+        source_entries: 100,
+        source_bytes: 100_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .unwrap();
     let replay = trace
-        .into_session(history, Arc::new(Box::new(Matcher)), host)
+        .into_session(history, Arc::new(Box::new(Matcher)))
         .unwrap();
     let mut checkpoint = Some(replay.checkpoint().await.unwrap());
     operation_context::scope(order(), async {
@@ -266,7 +221,7 @@ async fn exercise(
                 .inner
                 .produce_with_authority(channel.clone(), data.clone(), data_persistent, |source| {
                     assert_eq!(source.hash, producer.hash);
-                    Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                    Err::<IntroductionRecord, _>(authority_rejection())
                 })
                 .await
                 .map(|_| ())
@@ -281,7 +236,7 @@ async fn exercise(
                     BTreeSet::new(),
                     |source| {
                         assert_eq!(source, &consumer);
-                        Err::<CostAuthority, _>(RSpaceError::HostWorkRejected)
+                        Err::<IntroductionRecord, _>(authority_rejection())
                     },
                 )
                 .await
@@ -289,7 +244,7 @@ async fn exercise(
         }
     })
     .await;
-    assert!(matches!(rejected, Err(RSpaceError::HostWorkRejected)));
+    assert_eq!(rejected, Err(authority_rejection()));
     assert!(replay.check_complete().await.is_err());
     for round in 0..2 {
         let resolutions = std::cell::Cell::new(0);
@@ -307,7 +262,7 @@ async fn exercise(
                                 bincode::serialize(source).unwrap(),
                                 bincode::serialize(&producer).unwrap()
                             );
-                            Ok(auth.clone())
+                            Ok(unmeasured(&auth))
                         },
                     )
                     .await
@@ -324,7 +279,7 @@ async fn exercise(
                         |source| {
                             resolutions.set(resolutions.get() + 1);
                             assert_eq!(source, &consumer);
-                            Ok(auth.clone())
+                            Ok(unmeasured(&auth))
                         },
                     )
                     .await
@@ -416,23 +371,12 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for OverlappingMa
         Matcher.get(pattern, data)
     }
 
-    fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        self.rendezvous();
-        Matcher.get_metered(pattern, data, meter)
-    }
-
-    fn check_commit_metered(
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        Matcher.check_commit_metered(continuation, matched, meter)
+    ) -> bool {
+        Matcher.check_commit_by_reference(continuation, matched)
     }
 }
 
@@ -523,23 +467,18 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
         if shared_channel { &[0][..] } else { &[][..] }
     );
     let log = play.create_soft_checkpoint().await.log;
-    let host = config(u64::MAX, [0, 1, 1, 0]).host_work;
     let trace = with_contract(u64::MAX, [0, 1, 1, 0], |contract| {
         contract
-            .check_operation_journal(recording.session, &recording, rows, journal_limits(), &host)
+            .check_operation_journal(recording.session, &recording, rows, journal_limits())
             .unwrap()
     })
-    .bind_trace(
-        log.into(),
-        NativeOperationTraceLimits {
-            events: 10,
-            source_entries: 100,
-            source_bytes: 100_000,
-            telemetry_items: 100,
-            telemetry_bytes: 100_000,
-        },
-        &host,
-    )
+    .bind_trace(log.into(), NativeOperationTraceLimits {
+        events: 10,
+        source_entries: 100,
+        source_bytes: 100_000,
+        telemetry_items: 100,
+        telemetry_bytes: 100_000,
+    })
     .unwrap();
     assert_eq!(trace.journal_index(0), Some(1));
     let overlapping = Arc::new(OverlappingMatcher {
@@ -552,7 +491,7 @@ async fn exercise_readiness(shared_channel: bool, concurrent_matches: bool) {
         } else {
             Arc::new(Box::new(Matcher))
         };
-    let replay = trace.into_session(history, matcher, host).unwrap();
+    let replay = trace.into_session(history, matcher).unwrap();
     let root = replay.checkpoint().await.unwrap();
     if concurrent_matches {
         let replay = Arc::new(replay);
@@ -678,22 +617,12 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for SharedMatcher
         self.0.get(pattern, data)
     }
 
-    fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        self.0.get_metered(pattern, data, meter)
-    }
-
-    fn check_commit_metered(
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        self.0.check_commit_metered(continuation, matched, meter)
+    ) -> bool {
+        self.0.check_commit_by_reference(continuation, matched)
     }
 }
 

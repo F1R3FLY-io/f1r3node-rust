@@ -16,7 +16,7 @@
 **Effect on this entry.**
 
 - Sub-decision 7.4 is deferred. The one-parent B1 predicate stays. The 2026-08-20 B1 row keeps its pending liveness guarantee.
-- The record lists exact occurrences, tombstones, and reason joining as `dev` rules to preserve. Section 2 attributes them to PR #216, and `dev` code holds no occurrence store and no tombstone as of 2026-09-18. The ratifiers must confirm whether sub-decisions 7.1 and 7.2 are ratified as rules or preserved as absent. This entry does not flip those two sub-decisions until that confirmation.
+- The record lists exact occurrences, tombstones, and reason joining as `dev` rules to preserve. Section 2 attributes them to PR #216, and `dev` code holds no occurrence store and no tombstone as of 2026-09-18. The ratifiers resolved this on 2026-09-19. Section 8 records Reading A, so sub-decisions 7.1 and 7.2 are ratified as rules to build, and PR #216 supplies them.
 - Sub-decision 7.3 is ratified. Custody stays with the carrier owner.
 - The prior-rejection count keeps the signature as its owner until protocol 7. Entry D-10 records the identity.
 - Open question 1 is answered by D-10. Open question 2 moves to the harness PR.
@@ -81,7 +81,59 @@ Adopt option A, as four sub-decisions.
 - 7.4: `RecoveryFrontierCoverage.tla` with its one-parent control, and the split-frontier examples named in DR-56.
 - After ratification, update the glossary entries for merged-frontier retry packaging and kept rejection record, the protocol step 3 exclusion rule, and the 2026-08-20 B1 row.
 
-## 8. Open questions
+## 8. Confirmation requested: are 7.1 and 7.2 rules or absences?
+
+**Status.** Answered on 2026-09-19. The ratifiers confirmed Reading A. Sub-decisions 7.1 and 7.2 are ratified as rules to build, and PR #216 supplies the implementation. The decision subsection below records the effects.
+
+**Ratifiers.** jeffrey-l-turner, dylon, spreston8.
+
+### The contradiction
+
+Section 2 lists exact occurrences, tombstones, and reason joining as `dev` rules to preserve. Section 3 attributes them to PR #216.
+
+A source check of the node crates on 2026-09-19 found no occurrence store and no tombstone. The strings `occurrence` and `tombstone` do not appear in `casper/src`, `node/src`, or `block-storage/src`.
+
+The formal models exist. `formal/tlaplus/deploy_recovery/` holds `DeployRecovery.tla`, `FinalizedOccurrenceStatus.tla`, `EffectCausalClosure.tla`, and their configurations. The models are ahead of the implementation.
+
+A rejection record on `dev` is keyed by the deploy signature. There is no canonical reason join.
+
+### Reading A: ratified as rules to build
+
+Exact-occurrence recovery and the reason-join semilattice become protocol obligations. The node must gain an occurrence store, exact tombstones, a `(signature, source block)` record key, and the four-value join.
+
+Consequences. The recovery profile's synthetic occurrence schema specifies future node behavior. Adapter qualification waits for the implementation. EPIC-018 reverification tests the new rules. Principle P2 supports this reading, because both rules are functions of on-chain data.
+
+### Reading B: preserved as absent
+
+`dev` behavior stands. No occurrence store, no tombstone, no canonical join. The signature keeps the record key.
+
+Consequences. The recovery profile describes a schema the node does not implement. Its adapters cannot be qualified against a baseline node until the team decides what they observe. The duplicate-occurrence storm in DR-33 stays open on `dev`. Sub-decision 7.4 stays deferred either way.
+
+### What the answer unblocks
+
+Recovery adapter qualification for CLAIM-CASPER-SOAK-004 under TASK-017-12. The reverification tasks TASK-018-3 and TASK-018-5, which both cite this entry. The blocked alternate-policy experiments, including collective coverage.
+
+It does not block the pre-merge baseline soak. That soak exercises the lifecycle harness and needs no recovery adapter.
+
+### Decision
+
+**Ratified reading.** Reading A. Sub-decisions 7.1 and 7.2 are ratified as rules to build.
+
+**Date and proof.** Confirmed 2026-09-19 by jeffrey-l-turner with dylon and spreston8. The maintainer relayed the confirmation to the steward session. A proof link is still to be attached.
+
+**Implementation.** PR #216 supplies the implementation. Its merge is the gate. The node gains an occurrence store, exact tombstones, a `(deploy signature, source block)` record key, and the four-value reason join through that pull request. No separate implementing task is created.
+
+**Effect on 7.1 and 7.2.** Both flip from preserved-as-absent to ratified. Exact-occurrence recovery and the reason-join semilattice are protocol obligations. Principle P2 supports both, because each rule is a function of on-chain data.
+
+**Effect on the recovery profile.** The synthetic occurrence schema in the recovery profile specifies future node behavior rather than current behavior. It stays as a specification.
+
+**Effect on adapter qualification.** Recovery adapter qualification for CLAIM-CASPER-SOAK-004 waits for the PR #216 merge. A `dev` node before that merge has no occurrence store to observe. TASK-017-12 may qualify the authority and publication adapters without waiting.
+
+**Effect on reverification.** TASK-018-3 and TASK-018-5 test the ratified rules after the merge. Both already cite this entry.
+
+**Unchanged.** Sub-decision 7.4, collective coverage, stays deferred. The one-parent B1 predicate stays, and the 2026-08-20 B1 row keeps its pending liveness guarantee. The duplicate-occurrence storm that DR-33 describes closes when PR #216 merges.
+
+## 9. Open questions
 
 1. Does the deploy-identity change to the prior-rejection count depend on protocol 6, or does it apply to legacy signatures unchanged? Entry D-10 tracks the tag.
 2. The dev remedy ladder lists C1 and C2 as escalations behind soak evidence. PR #216 does not mention them. Are they still the next steps if collective coverage leaves residual expiries?

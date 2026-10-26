@@ -1,0 +1,67 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "edited_at": "2026-10-03T18:27:18Z",
+  "posted_at": "2026-10-03T18:24:22Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/441#issuecomment-5972145164",
+  "revision": "1aea3f6b4905533e3891b8b497aacb6198ef08e9"
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-carrier-index.md": "4aab7367b93766df504bcd679670b8d4bcfeda3d4cd5ea3a2f6b2f39ca86a236",
+  "docs/claims/casper-soak-merge-accounting.md": "22a6534ef37b1675b6fe69cd04dbae6473d2fa93d9306efb454499cd04c970f3",
+  "docs/claims/casper-soak-publication.md": "f49995b85ec66fe5da179efeadef28559eaec3df2a55fa69479c7688492b00db",
+  "docs/claims/casper-soak-slashing.md": "6954ff5fe9edb29909f88f94b328aced5229ac5c7387b67d02c185c4b717845b"
+ },
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-003",
+  "CLAIM-CASPER-SOAK-005",
+  "CLAIM-CASPER-SOAK-006",
+  "CLAIM-CASPER-SOAK-008"
+ ],
+ "hosted_runs": {
+  "CLAIM-CASPER-SOAK-003": {
+   "conclusion": "success",
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37143973273
+  },
+  "CLAIM-CASPER-SOAK-005": {
+   "conclusion": "success",
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37143973302
+  },
+  "CLAIM-CASPER-SOAK-006": {
+   "conclusion": "success",
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37143973328
+  },
+  "CLAIM-CASPER-SOAK-008": {
+   "conclusion": "success",
+   "repository": "F1R3FLY-io/f1r3node-rust",
+   "run_id": 37143973298
+  }
+ },
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-profile-review-fixes-20261003-01/report.json",
+  "sha256": "b060f4da3968453376894f123251ce0cdfabfabd783b283ce5d09878b67ae73d"
+ },
+ "schema_version": 1,
+ "scope": "bounded-profile-validator-review-remediation",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/casper-soak/src/profiles/carrier_index.rs": "4deffb17e398490678d4c5ecc09eb486c9110c4cbbf541da5a65cf2669cdfa62",
+  "scripts/casper-soak/src/profiles/merge_accounting.rs": "2e7e96dbfefd77688bb8f6c69ca7a6cd86782d5c00dab40b653ef1bd2884ca8f",
+  "scripts/casper-soak/src/profiles/publication.rs": "21848ac903ddf4cdcacfbc4ce3b31b1bd1033f64dc034c1bc11604cc544502c1",
+  "scripts/casper-soak/src/profiles/slashing.rs": "00203010bcad782b9c9631aa72e5052f4d49830ca9ba08b0f7fcaf78c5dfd4c2"
+ },
+ "status": "accepted-review-remediation",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-03",
+ "waiver": null
+}

@@ -1,16 +1,11 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
 use crate::rust::interpreter::accounting::monetary_allocation::{
     check_funding_deficit, check_funding_minimax_certificate, FundingBurdenRank, FundingExcessCut,
 };
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn limits(problem: FundingMinimaxProblem<'_>) -> FundingSearchLimits {
     FundingSearchLimits {
@@ -56,22 +51,21 @@ fn expected(problem: FundingMinimaxProblem<'_>) -> Option<Vec<u64>> {
 }
 
 fn actual(problem: FundingMinimaxProblem<'_>) -> Option<Vec<u64>> {
-    match solve_fixed_funding_minimax_rank(problem, limits(problem), &work()).unwrap() {
+    match solve_fixed_funding_minimax_rank(problem, limits(problem)).unwrap() {
         FundingMinimaxRankResult::Optimal {
             assignment,
             totals,
             certificate,
         } => {
             assert_eq!(
-                problem.check_assignment(&assignment, limits(problem), &work()),
+                problem.check_assignment(&assignment, limits(problem)),
                 Ok(totals.clone())
             );
             assert!(check_funding_minimax_certificate(
                 problem,
                 &assignment,
                 certificate.cuts(),
-                limits(problem),
-                &work()
+                limits(problem)
             )
             .unwrap());
             Some(
@@ -107,7 +101,7 @@ fn lower_rank_levels_are_optimized_after_the_forced_maximum() {
     assert_eq!(actual(problem), Some(vec![5, 3, 2]));
     let wrong = [vec![5, 0], vec![0, 4], vec![0, 1]];
     assert_eq!(
-        certify_funding_minimax(problem, &wrong, limits(problem), &work()),
+        certify_funding_minimax(problem, &wrong, limits(problem)),
         Ok(None)
     );
     let maximum_only = [
@@ -124,14 +118,10 @@ fn lower_rank_levels_are_optimized_after_the_forced_maximum() {
             selected_obligations: vec![true, false],
         },
     ];
-    assert!(!check_funding_minimax_certificate(
-        problem,
-        &wrong,
-        &maximum_only,
-        limits(problem),
-        &work()
-    )
-    .unwrap());
+    assert!(
+        !check_funding_minimax_certificate(problem, &wrong, &maximum_only, limits(problem))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -142,7 +132,7 @@ fn certificates_cannot_omit_or_reorder_levels_or_forge_capacity() {
         eligible: &[vec![true, false], vec![false, true], vec![false, true]],
     };
     let assignment = [vec![5, 0], vec![0, 3], vec![0, 2]];
-    let certificate = certify_funding_minimax(problem, &assignment, limits(problem), &work())
+    let certificate = certify_funding_minimax(problem, &assignment, limits(problem))
         .unwrap()
         .unwrap();
     for index in 0..certificate.cuts().len() {
@@ -152,8 +142,7 @@ fn certificates_cannot_omit_or_reorder_levels_or_forge_capacity() {
             problem,
             &assignment,
             &shortened,
-            limits(problem),
-            &work()
+            limits(problem)
         )
         .unwrap());
         let mut altered = certificate.cuts().to_vec();
@@ -162,8 +151,7 @@ fn certificates_cannot_omit_or_reorder_levels_or_forge_capacity() {
             problem,
             &assignment,
             &altered,
-            limits(problem),
-            &work()
+            limits(problem)
         )
         .unwrap());
         altered = certificate.cuts().to_vec();
@@ -177,22 +165,17 @@ fn certificates_cannot_omit_or_reorder_levels_or_forge_capacity() {
                 problem,
                 &assignment,
                 &altered,
-                limits(problem),
-                &work()
+                limits(problem)
             )
             .unwrap());
         }
     }
     let mut reversed = certificate.cuts().to_vec();
     reversed.reverse();
-    assert!(!check_funding_minimax_certificate(
-        problem,
-        &assignment,
-        &reversed,
-        limits(problem),
-        &work()
-    )
-    .unwrap());
+    assert!(
+        !check_funding_minimax_certificate(problem, &assignment, &reversed, limits(problem))
+            .unwrap()
+    );
     let unrestricted = FundingMinimaxProblem {
         eligible: &[vec![true; 2], vec![true; 2], vec![true; 2]],
         ..problem
@@ -201,8 +184,7 @@ fn certificates_cannot_omit_or_reorder_levels_or_forge_capacity() {
         unrestricted,
         &assignment,
         certificate.cuts(),
-        limits(unrestricted),
-        &work()
+        limits(unrestricted)
     )
     .unwrap());
 }
@@ -314,7 +296,7 @@ fn zero_demand_has_no_positive_level_certificates() {
         obligations: &[],
         eligible: &[vec![], vec![], vec![]],
     };
-    let result = solve_fixed_funding_minimax_rank(problem, limits(problem), &work()).unwrap();
+    let result = solve_fixed_funding_minimax_rank(problem, limits(problem)).unwrap();
     let FundingMinimaxRankResult::Optimal {
         totals,
         certificate,
@@ -325,41 +307,6 @@ fn zero_demand_has_no_positive_level_certificates() {
     };
     assert_eq!(totals.source_debits(), &[0, 0, 0]);
     assert!(certificate.cuts().is_empty());
-}
-
-#[test]
-fn insufficient_budget_never_selects_an_uncertified_result() {
-    let problem = FundingMinimaxProblem {
-        capacities: &[3, 3, 3],
-        obligations: &[3, 2],
-        eligible: &[vec![true, false], vec![false, true], vec![false, true]],
-    };
-    let measured = work();
-    let result = solve_fixed_funding_minimax_rank(problem, limits(problem), &measured).unwrap();
-    for dimension in [
-        HostWorkDimension::SearchCandidates,
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let full = measured.usage(dimension).get();
-        for prefix in 0..=full {
-            let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000));
-            bounds.set(dimension, HostWorkLimit::new(prefix));
-            let actual = solve_fixed_funding_minimax_rank(
-                problem,
-                limits(problem),
-                &HostWorkBudget::new(bounds),
-            );
-            if prefix == full {
-                assert_eq!(actual, Ok(result.clone()));
-            } else {
-                assert!(
-                    matches!(actual, Err(FundingSearchError::HostWork(_))),
-                    "{dimension:?} {prefix}/{full}: {actual:?}"
-                );
-            }
-        }
-    }
 }
 
 proptest! {

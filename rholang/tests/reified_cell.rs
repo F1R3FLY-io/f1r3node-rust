@@ -19,8 +19,6 @@
 //!   slot before each re-store. The twin behaves as the cell on every script.
 //! * `prop_cell_reentry_as_fresh`: a re-entered persistent element behaves as a fresh element
 //!   with its first-round order.
-//!
-//! `prop_cell_reservation_cut_rejects_without_effect` checks decision 42 for the cell.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -30,17 +28,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::new_gbool_par;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::sample::Index;
 use proptest::test_runner::TestCaseError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
-use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter};
+use rholang::rust::interpreter::reified::costs::ReissueCause;
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, JoinOp, ProduceOp, QueryParams, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp,
     SpaceOutcome, SpaceReissue,
@@ -54,7 +50,6 @@ use rholang::rust::interpreter::spaces::namespace::{self, Durability, NativeSpac
 use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
@@ -71,8 +66,8 @@ use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 use serde::Serialize;
 use support::agent::{
     any, budget, config_of, counter, counter_channel, create, creation, data_channel, env_over,
-    exactly, fired, int, metered_env, play, play_and_replay, receive_on, records_on, run, send_on,
-    space_counter_channel, string, unbounded_host_work, waiters_on, ParRSpace,
+    exactly, fired, int, play, play_and_replay, receive_on, records_on, run, send_on,
+    space_counter_channel, string, waiters_on, ParRSpace,
 };
 use support::props::{check, pure_config, tokio_runtime};
 use support::session::{config_channel, data_produces};
@@ -87,13 +82,6 @@ const SPACE: NativeSpace = NativeSpace {
     sid: [0xC5; SID_LEN],
     durability: Durability::Durable,
 };
-
-/// The dimensions that a space job charges (decision 42).
-const AGENT_DIMENSIONS: [HostWorkDimension; 3] = [
-    HostWorkDimension::VerificationOperations,
-    HostWorkDimension::VerificationBytes,
-    HostWorkDimension::SearchStateBytes,
-];
 
 /// The labels of the bump of an operation on an open collection. The bump takes the counter
 /// record and puts the next one.
@@ -303,27 +291,20 @@ impl Discipline for CheckedRestore {
     const SEND_PARAMS: &'static [&'static str] = CellDiscipline::SEND_PARAMS;
     const CAPACITY: Option<usize> = CellDiscipline::CAPACITY;
 
-    fn head_metered<T: Serialize>(
+    fn head<T: Serialize>(
         &self,
         side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        CellDiscipline.head_metered(side, entries, meter)
+        CellDiscipline.head(side, entries)
     }
 
     fn reaches_head(&self, side: Side, queued: usize) -> bool {
         CellDiscipline.reaches_head(side, queued)
     }
 
-    fn precedes(
-        &self,
-        side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        CellDiscipline.precedes(side, ord, head, meter)
+    fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+        CellDiscipline.precedes(side, ord, head)
     }
 
     fn restore(
@@ -349,27 +330,20 @@ impl Discipline for CountingRestore {
     const SEND_PARAMS: &'static [&'static str] = CellDiscipline::SEND_PARAMS;
     const CAPACITY: Option<usize> = CellDiscipline::CAPACITY;
 
-    fn head_metered<T: Serialize>(
+    fn head<T: Serialize>(
         &self,
         side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        CellDiscipline.head_metered(side, entries, meter)
+        CellDiscipline.head(side, entries)
     }
 
     fn reaches_head(&self, side: Side, queued: usize) -> bool {
         CellDiscipline.reaches_head(side, queued)
     }
 
-    fn precedes(
-        &self,
-        side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        CellDiscipline.precedes(side, ord, head, meter)
+    fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+        CellDiscipline.precedes(side, ord, head)
     }
 
     fn restore(
@@ -399,27 +373,19 @@ impl Discipline for QueueRuleCell {
     const SEND_PARAMS: &'static [&'static str] = CellDiscipline::SEND_PARAMS;
     const CAPACITY: Option<usize> = CellDiscipline::CAPACITY;
 
-    fn head_metered<T: Serialize>(
+    fn head<T: Serialize>(
         &self,
         side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        CellDiscipline.head_metered(side, entries, meter)
+        CellDiscipline.head(side, entries)
     }
 
     fn reaches_head(&self, side: Side, queued: usize) -> bool {
         CellDiscipline.reaches_head(side, queued)
     }
 
-    fn precedes(
-        &self,
-        _side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        meter.compare(size_of::<i64>(), size_of::<i64>())?;
+    fn precedes(&self, _side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
         Ok(ord < head)
     }
 }
@@ -1963,89 +1929,6 @@ async fn reentry_as_fresh_case(
     };
     if differs {
         REENTRY_COVERAGE[2].fetch_add(1, Ordering::Relaxed);
-    }
-    Ok(())
-}
-
-/// `agent_reservation_cut` for the cell (decision 42): with its exact usage as the limits, the
-/// last operation of a generated script gives its unmetered result. With one unit less in any
-/// charged dimension it fails with `HostWorkRejected` before the commit, so it logs no event and
-/// leaves the collection unchanged. The capacity check reserves its comparison first.
-#[test]
-fn prop_cell_reservation_cut_rejects_without_effect() {
-    check(
-        pure_config(),
-        (vec(arb_op(), 0..8), arb_op()),
-        |(prefix, last)| tokio_runtime().block_on(reservation_cut_case(prefix, last)),
-    );
-}
-
-/// The records, the waiters and the counter of the cell, and the space counter.
-type CellView = (
-    Vec<(i64, Vec<Par>, bool)>,
-    Vec<(i64, bool, bool)>,
-    Vec<i64>,
-    Vec<i64>,
-);
-
-/// The collection of the cell and the space counter.
-async fn view(host: &ParRSpace) -> CellView {
-    (
-        records(host).await,
-        waiters(host).await,
-        cell_counter(host).await,
-        counter(host, &space_counter_channel(SPACE)).await,
-    )
-}
-
-/// Runs the prefix in a fresh space, then `last` with the host-work budget `host_work`.
-async fn run_cut(
-    prefix: &[CellOp],
-    last: CellOp,
-    host_work: &HostWorkBudget,
-) -> (Fixture, Result<SpaceOutcome, SpaceError>) {
-    let fixture = fixture().await;
-    run_prefix(&fixture.env, prefix).await;
-    fixture.host.take_event_log().await;
-    let metered = metered_env(fixture.host.clone(), &budget(), host_work);
-    let result = run(&cell(), &metered, last.space_op("last")).await;
-    (fixture, result)
-}
-
-async fn reservation_cut_case(prefix: Vec<CellOp>, last: CellOp) -> Result<(), TestCaseError> {
-    let measured = unbounded_host_work();
-    let (_, expected) = run_cut(&prefix, last, &measured).await;
-    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for dimension in AGENT_DIMENSIONS {
-        exact.set(
-            dimension,
-            HostWorkLimit::new(measured.usage(dimension).get()),
-        );
-    }
-    let (_, with_exact) = run_cut(&prefix, last, &HostWorkBudget::new(exact)).await;
-    prop_assert_eq!(&with_exact, &expected, "the exact usage suffices");
-    for dimension in AGENT_DIMENSIONS {
-        let usage = measured.usage(dimension).get();
-        prop_assert!(usage > 0, "every cell operation charges {}", dimension);
-        let mut cut = exact;
-        cut.set(dimension, HostWorkLimit::new(usage - 1));
-        let fixture = fixture().await;
-        run_prefix(&fixture.env, &prefix).await;
-        fixture.host.take_event_log().await;
-        let before = view(&fixture.host).await;
-        let metered = metered_env(fixture.host.clone(), &budget(), &HostWorkBudget::new(cut));
-        prop_assert_eq!(
-            run(&cell(), &metered, last.space_op("last")).await,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            "{}",
-            dimension
-        );
-        prop_assert!(
-            fixture.host.take_event_log().await.is_empty(),
-            "{}",
-            dimension
-        );
-        prop_assert_eq!(view(&fixture.host).await, before, "{}", dimension);
     }
     Ok(())
 }

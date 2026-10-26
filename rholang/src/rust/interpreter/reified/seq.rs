@@ -23,10 +23,7 @@
 //! its seq name.
 //!
 //! The scan walks a work list, so its depth needs no stack. It destructures every field of every
-//! type of the `Par` tree, so a new field is a compile error until the scan handles it. Before
-//! each step it reserves one `VerificationOperations` unit for the node, the `VerificationBytes`
-//! of each id that it reads, and the `SearchStateBytes` of each entry that it adds to the work
-//! list (A14).
+//! type of the `Par` tree, so a new field is a compile error until the scan handles it.
 //!
 //! ```text
 //! CHECK-SEND(chan, pars, seq):
@@ -38,14 +35,13 @@
 //! SCAN(root, seq, exempt):
 //!   work ← [root]
 //!   while work is not empty:
-//!     node ← pop(work)                         ▷ one VerificationOperations unit
-//!     for each GPrivate id of node:             ▷ the VerificationBytes of the id
+//!     node ← pop(work)
+//!     for each GPrivate id of node:
 //!       if id = n(sid…), sid ∈ seq and sid ≠ exempt: abort SeqSent(sid)
 //!     push every Par, Expr and CostSignature child of node
 //! ```
 
 use std::collections::BTreeSet;
-use std::mem::size_of;
 
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::cost_signature::Value as SignatureValue;
@@ -58,13 +54,11 @@ use models::rhoapi::{
     ESet, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, Match, MatchCase,
     New, Par, Receive, ReceiveBind, Send,
 };
-use rspace_plus_plus::rspace::errors::RSpaceError;
 
-use super::costs::ScanMeter;
 use super::system_channels::{handle_of, op_of};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{
-    decode_reified_id, reified_id_of, Durability, ReifiedId, SpaceId, HANDLE_OP, SID_LEN,
+    decode_reified_id, reified_id_of, Durability, ReifiedId, SpaceId, HANDLE_OP,
 };
 use crate::rust::interpreter::spaces::record::sole_expr;
 
@@ -73,13 +67,8 @@ const CHANNEL_ARGUMENT: usize = 2;
 
 /// SQ-2 for one send: checks the data elements `pars` of a send on `chan` against the `seq`
 /// spaces `seq` of the evaluation, with the two exemptions of the module docs. With no `seq`
-/// space nothing is scanned and nothing is reserved.
-pub fn check_send(
-    chan: &Par,
-    pars: &[Par],
-    seq: &BTreeSet<SpaceId>,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
+/// space nothing is scanned.
+pub fn check_send(chan: &Par, pars: &[Par], seq: &BTreeSet<SpaceId>) -> Result<(), SpaceError> {
     if seq.is_empty() {
         return Ok(());
     }
@@ -95,7 +84,7 @@ pub fn check_send(
             (Some(sid), true) => Some(sid),
             (Some(_), false) | (None, _) => None,
         };
-        scan(par, seq, exempt, meter)?;
+        scan(par, seq, exempt)?;
     }
     Ok(())
 }
@@ -115,61 +104,44 @@ enum Node<'a> {
     Signature(&'a CostSignature),
 }
 
-/// The work list of one scan. Each push reserves the `SearchStateBytes` of its entry.
-struct Work<'a, 'm> {
+/// The work list of one scan.
+struct Work<'a> {
     nodes: Vec<Node<'a>>,
-    meter: &'m ScanMeter,
 }
 
-impl<'a> Work<'a, '_> {
-    fn push(&mut self, node: Node<'a>) -> Result<(), SpaceError> {
-        self.meter.charge(0, 0, size_of::<Node<'_>>())?;
-        self.nodes
-            .try_reserve(1)
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-        self.nodes.push(node);
-        Ok(())
-    }
+impl<'a> Work<'a> {
+    fn push(&mut self, node: Node<'a>) { self.nodes.push(node); }
 
-    fn par(&mut self, par: &'a Par) -> Result<(), SpaceError> { self.push(Node::Par(par)) }
+    fn par(&mut self, par: &'a Par) { self.push(Node::Par(par)); }
 
-    fn optional(&mut self, par: &'a Option<Par>) -> Result<(), SpaceError> {
-        match par {
-            Some(par) => self.par(par),
-            None => Ok(()),
+    fn optional(&mut self, par: &'a Option<Par>) {
+        if let Some(par) = par {
+            self.par(par);
         }
     }
 
-    fn pars(&mut self, pars: &'a [Par]) -> Result<(), SpaceError> {
-        pars.iter().try_for_each(|par| self.par(par))
+    fn pars(&mut self, pars: &'a [Par]) {
+        for par in pars {
+            self.par(par);
+        }
     }
 
-    fn signature(&mut self, signature: &'a Option<CostSignature>) -> Result<(), SpaceError> {
-        match signature {
-            Some(signature) => self.push(Node::Signature(signature)),
-            None => Ok(()),
+    fn signature(&mut self, signature: &'a Option<CostSignature>) {
+        if let Some(signature) = signature {
+            self.push(Node::Signature(signature));
         }
     }
 }
 
 /// Scans `root` for a seq name of `seq` other than a name of `exempt`.
-fn scan(
-    root: &Par,
-    seq: &BTreeSet<SpaceId>,
-    exempt: Option<SpaceId>,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    let mut work = Work {
-        nodes: Vec::new(),
-        meter,
-    };
-    work.par(root)?;
+fn scan(root: &Par, seq: &BTreeSet<SpaceId>, exempt: Option<SpaceId>) -> Result<(), SpaceError> {
+    let mut work = Work { nodes: Vec::new() };
+    work.par(root);
     while let Some(node) = work.nodes.pop() {
-        meter.charge(1, 0, 0)?;
         match node {
-            Node::Par(par) => scan_par(par, &mut work, seq, exempt, meter)?,
-            Node::Expr(expr) => scan_expr(expr, &mut work)?,
-            Node::Signature(signature) => scan_signature(signature, &mut work)?,
+            Node::Par(par) => scan_par(par, &mut work, seq, exempt)?,
+            Node::Expr(expr) => scan_expr(expr, &mut work),
+            Node::Signature(signature) => scan_signature(signature, &mut work),
         }
     }
     Ok(())
@@ -178,10 +150,9 @@ fn scan(
 /// Checks the unforgeables of `par` and adds every child of `par` to the work list.
 fn scan_par<'a>(
     par: &'a Par,
-    work: &mut Work<'a, '_>,
+    work: &mut Work<'a>,
     seq: &BTreeSet<SpaceId>,
     exempt: Option<SpaceId>,
-    meter: &ScanMeter,
 ) -> Result<(), SpaceError> {
     let Par {
         sends,
@@ -199,7 +170,7 @@ fn scan_par<'a>(
         cost_stacks,
     } = par;
     for unforgeable in unforgeables {
-        check_unforgeable(unforgeable, seq, exempt, meter)?;
+        check_unforgeable(unforgeable, seq, exempt)?;
     }
     for send in sends {
         let Send {
@@ -209,8 +180,8 @@ fn scan_par<'a>(
             locally_free: _,
             connective_used: _,
         } = send;
-        work.optional(chan)?;
-        work.pars(data)?;
+        work.optional(chan);
+        work.pars(data);
     }
     for receive in receives {
         let Receive {
@@ -231,12 +202,12 @@ fn scan_par<'a>(
                 free_count: _,
                 cost_signature,
             } = bind;
-            work.pars(patterns)?;
-            work.optional(source)?;
-            work.signature(cost_signature)?;
+            work.pars(patterns);
+            work.optional(source);
+            work.signature(cost_signature);
         }
-        work.optional(body)?;
-        work.optional(condition)?;
+        work.optional(body);
+        work.optional(condition);
     }
     for new in news {
         let New {
@@ -246,13 +217,13 @@ fn scan_par<'a>(
             injections,
             locally_free: _,
         } = new;
-        work.optional(p)?;
+        work.optional(p);
         for injected in injections.values() {
-            work.par(injected)?;
+            work.par(injected);
         }
     }
     for expr in exprs {
-        work.push(Node::Expr(expr))?;
+        work.push(Node::Expr(expr));
     }
     for matched in matches {
         let Match {
@@ -261,7 +232,7 @@ fn scan_par<'a>(
             locally_free: _,
             connective_used: _,
         } = matched;
-        work.optional(target)?;
+        work.optional(target);
         for case in cases {
             let MatchCase {
                 pattern,
@@ -269,9 +240,9 @@ fn scan_par<'a>(
                 free_count: _,
                 guard,
             } = case;
-            work.optional(pattern)?;
-            work.optional(source)?;
-            work.optional(guard)?;
+            work.optional(pattern);
+            work.optional(source);
+            work.optional(guard);
         }
     }
     for bundle in bundles {
@@ -280,7 +251,7 @@ fn scan_par<'a>(
             write_flag: _,
             read_flag: _,
         } = bundle;
-        work.optional(body)?;
+        work.optional(body);
     }
     for connective in connectives {
         let Connective {
@@ -288,8 +259,8 @@ fn scan_par<'a>(
         } = connective;
         match connective_instance {
             Some(ConnectiveInstance::ConnAndBody(ConnectiveBody { ps }))
-            | Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps })) => work.pars(ps)?,
-            Some(ConnectiveInstance::ConnNotBody(negated)) => work.par(negated)?,
+            | Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps })) => work.pars(ps),
+            Some(ConnectiveInstance::ConnNotBody(negated)) => work.par(negated),
             Some(
                 ConnectiveInstance::VarRefBody(_)
                 | ConnectiveInstance::ConnBool(_)
@@ -309,48 +280,42 @@ fn scan_par<'a>(
             locally_free: _,
             connective_used: _,
         } = conditional;
-        work.optional(condition)?;
-        work.optional(if_true)?;
-        work.optional(if_false)?;
+        work.optional(condition);
+        work.optional(if_true);
+        work.optional(if_false);
     }
     for term in cost_signed_terms {
         let CostSignedTerm { body, signature } = term;
-        work.optional(body)?;
-        work.signature(signature)?;
+        work.optional(body);
+        work.signature(signature);
     }
     for stack in cost_stacks {
         let CostStack { cells } = stack;
         for cell in cells {
-            work.push(Node::Signature(cell))?;
+            work.push(Node::Signature(cell));
         }
     }
     Ok(())
 }
 
 /// Fails with `SeqSent` when `unforgeable` is a seq name of `seq` other than a name of `exempt`.
-/// The read of the id is reserved first, and the lookup in `seq` too for a name of an ephemeral
-/// space.
+/// The lookup in `seq` is only for a name of an ephemeral space.
 fn check_unforgeable(
     unforgeable: &GUnforgeable,
     seq: &BTreeSet<SpaceId>,
     exempt: Option<SpaceId>,
-    meter: &ScanMeter,
 ) -> Result<(), SpaceError> {
     let GUnforgeable { unf_instance } = unforgeable;
     match unf_instance {
-        Some(UnfInstance::GPrivateBody(GPrivate { id })) => {
-            meter.charge(0, id.len(), 0)?;
-            match decode_reified_id(id) {
-                Some(ReifiedId::Name(space, _)) if space.durability == Durability::Ephemeral => {
-                    meter.ordered_lookup(seq.len(), SID_LEN)?;
-                    match seq.contains(&space.sid) && exempt != Some(space.sid) {
-                        true => Err(SpaceError::SeqSent { space: space.sid }),
-                        false => Ok(()),
-                    }
+        Some(UnfInstance::GPrivateBody(GPrivate { id })) => match decode_reified_id(id) {
+            Some(ReifiedId::Name(space, _)) if space.durability == Durability::Ephemeral => {
+                match seq.contains(&space.sid) && exempt != Some(space.sid) {
+                    true => Err(SpaceError::SeqSent { space: space.sid }),
+                    false => Ok(()),
                 }
-                Some(_) | None => Ok(()),
             }
-        }
+            Some(_) | None => Ok(()),
+        },
         Some(
             UnfInstance::GDeployIdBody(_)
             | UnfInstance::GDeployerIdBody(_)
@@ -363,7 +328,7 @@ fn check_unforgeable(
 }
 
 /// Adds every `Par` of `expr` to the work list.
-fn scan_expr<'a>(expr: &'a Expr, work: &mut Work<'a, '_>) -> Result<(), SpaceError> {
+fn scan_expr<'a>(expr: &'a Expr, work: &mut Work<'a>) {
     let Expr { expr_instance } = expr;
     match expr_instance {
         Some(
@@ -376,11 +341,16 @@ fn scan_expr<'a>(expr: &'a Expr, work: &mut Work<'a, '_>) -> Result<(), SpaceErr
             | ExprInstance::GBigInt(_)
             | ExprInstance::GBigRat(_)
             | ExprInstance::GFixedPoint(_)
-            | ExprInstance::GFloat32(_),
+            | ExprInstance::GFloat32(_)
+            | ExprInstance::GUint64(_)
+            | ExprInstance::GInt32(_)
+            | ExprInstance::GUint32(_)
+            | ExprInstance::GUint16(_)
+            | ExprInstance::GUint8(_),
         )
-        | None => Ok(()),
+        | None => (),
         Some(ExprInstance::ENotBody(ENot { p }) | ExprInstance::ENegBody(ENeg { p })) => {
-            work.optional(p)
+            work.optional(p);
         }
         Some(
             ExprInstance::EMultBody(EMult { p1, p2 })
@@ -400,10 +370,10 @@ fn scan_expr<'a>(expr: &'a Expr, work: &mut Work<'a, '_>) -> Result<(), SpaceErr
             | ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 })
             | ExprInstance::EModBody(EMod { p1, p2 }),
         ) => {
-            work.optional(p1)?;
-            work.optional(p2)
+            work.optional(p1);
+            work.optional(p2);
         }
-        Some(ExprInstance::EVarBody(EVar { v: _ })) => Ok(()),
+        Some(ExprInstance::EVarBody(EVar { v: _ })) => (),
         Some(ExprInstance::EListBody(EList {
             ps,
             locally_free: _,
@@ -435,10 +405,9 @@ fn scan_expr<'a>(expr: &'a Expr, work: &mut Work<'a, '_>) -> Result<(), SpaceErr
         })) => {
             for pair in kvs {
                 let KeyValuePair { key, value } = pair;
-                work.optional(key)?;
-                work.optional(value)?;
+                work.optional(key);
+                work.optional(value);
             }
-            Ok(())
         }
         Some(ExprInstance::EMethodBody(EMethod {
             method_name: _,
@@ -447,8 +416,8 @@ fn scan_expr<'a>(expr: &'a Expr, work: &mut Work<'a, '_>) -> Result<(), SpaceErr
             locally_free: _,
             connective_used: _,
         })) => {
-            work.optional(target)?;
-            work.pars(arguments)
+            work.optional(target);
+            work.pars(arguments);
         }
         Some(ExprInstance::EZipperBody(EZipper {
             pathmap,
@@ -456,48 +425,49 @@ fn scan_expr<'a>(expr: &'a Expr, work: &mut Work<'a, '_>) -> Result<(), SpaceErr
             is_write_zipper: _,
             locally_free: _,
             connective_used: _,
-        })) => match pathmap {
-            Some(EPathMap {
+        })) => {
+            if let Some(EPathMap {
                 ps,
                 locally_free: _,
                 connective_used: _,
                 remainder: _,
-            }) => work.pars(ps),
-            None => Ok(()),
-        },
+            }) = pathmap
+            {
+                work.pars(ps);
+            }
+        }
         Some(ExprInstance::EMatchesBody(EMatches { target, pattern })) => {
-            work.optional(target)?;
-            work.optional(pattern)
+            work.optional(target);
+            work.optional(pattern);
         }
     }
 }
 
 /// Adds every `Par` and every nested signature of `signature` to the work list.
-fn scan_signature<'a>(
-    signature: &'a CostSignature,
-    work: &mut Work<'a, '_>,
-) -> Result<(), SpaceError> {
+fn scan_signature<'a>(signature: &'a CostSignature, work: &mut Work<'a>) {
     let CostSignature { value } = signature;
     match value {
         Some(SignatureValue::Quote(par) | SignatureValue::Name(par)) => work.par(par),
-        Some(SignatureValue::Compound(CostSignatureCompound { elements })) => elements
-            .iter()
-            .try_for_each(|element| work.push(Node::Signature(element))),
+        Some(SignatureValue::Compound(CostSignatureCompound { elements })) => {
+            for element in elements {
+                work.push(Node::Signature(element));
+            }
+        }
         Some(
             SignatureValue::Ground(_) | SignatureValue::BoundLevel(_) | SignatureValue::Unit(_),
         )
-        | None => Ok(()),
+        | None => (),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
-    use crate::rust::interpreter::spaces::namespace::{self, gprivate, NameTail, NativeSpace};
+    use crate::rust::interpreter::spaces::namespace::{
+        self, gprivate, NameTail, NativeSpace, SID_LEN,
+    };
 
     fn space(seed: u8, durability: Durability) -> NativeSpace {
         NativeSpace {
@@ -521,8 +491,6 @@ mod tests {
     fn seq_of(spaces: &[NativeSpace]) -> BTreeSet<SpaceId> {
         spaces.iter().map(|space| space.sid).collect()
     }
-
-    fn unmetered() -> ScanMeter { ScanMeter::new(None) }
 
     /// `par` as the expression of a tuple, a map value, a quoted send, a bundle, a receive
     /// pattern, a match guard and two cost signatures: the places where a name can hide.
@@ -630,12 +598,7 @@ mod tests {
         let seq = space(1, Durability::Ephemeral);
         for (index, data) in hidden(name(seq, 7)).into_iter().enumerate() {
             assert_eq!(
-                check_send(
-                    &string("out"),
-                    &[int(0), data],
-                    &seq_of(&[seq]),
-                    &unmetered()
-                ),
+                check_send(&string("out"), &[int(0), data], &seq_of(&[seq])),
                 Err(SpaceError::SeqSent { space: seq.sid }),
                 "place {index}"
             );
@@ -660,7 +623,7 @@ mod tests {
         for id in ids {
             for data in hidden(id.clone()) {
                 assert_eq!(
-                    check_send(&string("out"), &[data], &seq_of(&[seq]), &unmetered()),
+                    check_send(&string("out"), &[data], &seq_of(&[seq])),
                     Ok(()),
                     "{id:?}"
                 );
@@ -668,12 +631,7 @@ mod tests {
         }
         // With no seq space nothing is scanned, so a seq name of an ended space passes.
         assert_eq!(
-            check_send(
-                &string("out"),
-                &[name(seq, 7)],
-                &BTreeSet::new(),
-                &unmetered()
-            ),
+            check_send(&string("out"), &[name(seq, 7)], &BTreeSet::new()),
             Ok(())
         );
     }
@@ -693,23 +651,18 @@ mod tests {
             list(vec![]),
         ]);
         assert_eq!(
-            check_send(&op, &[handle(seq), args.clone()], &spaces, &unmetered()),
+            check_send(&op, &[handle(seq), args.clone()], &spaces),
             Ok(())
         );
         // Without a bare handle first, the send to HANDLE_OP is scanned.
         assert_eq!(
-            check_send(&op, &[string("h"), args], &spaces, &unmetered()),
+            check_send(&op, &[string("h"), args], &spaces),
             Err(SpaceError::SeqSent { space: seq.sid })
         );
         // The channel argument of S's own produce may hold names of S.
         let call = |ch: Par, msg: Par| vec![string("r"), string("produce"), ch, msg];
         assert_eq!(
-            check_send(
-                &handle(seq),
-                &call(x.clone(), list(vec![])),
-                &spaces,
-                &unmetered()
-            ),
+            check_send(&handle(seq), &call(x.clone(), list(vec![])), &spaces),
             Ok(())
         );
         // The message is scanned in full.
@@ -717,19 +670,13 @@ mod tests {
             check_send(
                 &handle(seq),
                 &call(x.clone(), list(vec![x.clone()])),
-                &spaces,
-                &unmetered()
+                &spaces
             ),
             Err(SpaceError::SeqSent { space: seq.sid })
         );
         // A name of another seq space in the channel argument is sent.
         assert_eq!(
-            check_send(
-                &handle(seq),
-                &call(name(other, 2), list(vec![])),
-                &spaces,
-                &unmetered()
-            ),
+            check_send(&handle(seq), &call(name(other, 2), list(vec![])), &spaces),
             Err(SpaceError::SeqSent { space: other.sid })
         );
         // Only the method produce exempts its channel argument.
@@ -737,19 +684,13 @@ mod tests {
             check_send(
                 &handle(seq),
                 &[string("r"), string("config"), x.clone()],
-                &spaces,
-                &unmetered()
+                &spaces
             ),
             Err(SpaceError::SeqSent { space: seq.sid })
         );
         // The handle of another space exempts nothing.
         assert_eq!(
-            check_send(
-                &handle(other),
-                &call(x.clone(), list(vec![])),
-                &spaces,
-                &unmetered()
-            ),
+            check_send(&handle(other), &call(x.clone(), list(vec![])), &spaces),
             Err(SpaceError::SeqSent { space: seq.sid })
         );
         // The return name of a call is scanned.
@@ -757,36 +698,9 @@ mod tests {
             check_send(
                 &handle(seq),
                 &[x, string("produce"), name(seq, 3), list(vec![])],
-                &spaces,
-                &unmetered()
+                &spaces
             ),
             Err(SpaceError::SeqSent { space: seq.sid })
         );
-    }
-
-    #[test]
-    fn reified_seq_scan_reserves_each_node_before_it_reads_it() {
-        let seq = space(1, Durability::Ephemeral);
-        let deep = (0..64).fold(int(0), |inner, _| list(vec![inner]));
-        let budget = |operations: u64| {
-            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-            limits.set(
-                HostWorkDimension::VerificationOperations,
-                HostWorkLimit::new(operations),
-            );
-            ScanMeter::new(Some(HostWorkBudget::new(limits)))
-        };
-        // 64 lists, each a Par node and an Expr node, and the innermost Par and its Expr.
-        assert!(check_send(
-            &string("out"),
-            &[deep.clone()],
-            &seq_of(&[seq]),
-            &budget(130)
-        )
-        .is_ok());
-        assert!(matches!(
-            check_send(&string("out"), &[deep], &seq_of(&[seq]), &budget(129)),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        ));
     }
 }

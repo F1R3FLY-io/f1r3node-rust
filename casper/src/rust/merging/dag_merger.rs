@@ -22,6 +22,7 @@ use super::conflict_set_merger::{self, Branch};
 use super::deploy_chain_index::DeployChainIndex;
 use crate::rust::errors::CasperError;
 use crate::rust::system_deploy::{is_slash_deploy_id, is_system_deploy_id};
+use crate::rust::util::rholang::costacc::v6_merge::{ordered, MergeRule};
 
 pub fn cost_optimal_rejection_alg() -> impl Fn(&DeployChainIndex) -> u64 {
     |deploy_chain_index: &DeployChainIndex| {
@@ -162,7 +163,7 @@ fn branch_mergeable_channels(
     Ok(branch_mergeable)
 }
 
-fn split_unavailable_branch_consumes(
+pub(crate) fn split_unavailable_branch_consumes(
     branch: HashableSet<DeployChainIndex>,
     depends: &impl Fn(&DeployChainIndex, &DeployChainIndex) -> bool,
     state_changes: &impl Fn(
@@ -774,7 +775,7 @@ fn resolve_conflicts_with_unavailable_retry(
 /// Rejected chains are recorded like any other loser; the block-expired
 /// selection filter uses the same bound, so recovery never re-proposes
 /// them. Chains with no window entries (system-only) are exempt.
-fn split_window_closed_chains(
+pub(crate) fn split_window_closed_chains(
     chains: Vec<DeployChainIndex>,
     floor_block_number: i64,
     deploy_lifespan: i64,
@@ -810,6 +811,48 @@ pub fn partition_base_conflicts(
         .partition(|chain| !merging_logic::are_conflicting(&chain.event_log_index, base_event_log))
 }
 
+/// Added by DR-120 (gap G9): dev's signature, which merges under dev's rule.
+pub fn merge(
+    dag: &KeyValueDagRepresentation,
+    base: &BlockHash,
+    base_post_state: &Blake2b256Hash,
+    index: impl Fn(&BlockHash) -> Result<Vec<DeployChainIndex>, CasperError>,
+    history_repository: &RhoHistoryRepository,
+    rejection_cost_f: impl Fn(&DeployChainIndex) -> u64,
+    scope: Option<HashSet<BlockHash>>,
+    floor_block_number: i64,
+    deploy_lifespan: i64,
+    sig_settled_in_base: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
+    sig_settled_in_floor: &dyn Fn(&Bytes) -> Result<bool, CasperError>,
+    base_lineage_blocks: &HashSet<BlockHash>,
+    prior_rejection_counts: &HashMap<Bytes, u64>,
+) -> Result<
+    (
+        Blake2b256Hash,
+        Vec<RejectedDeploy>,
+        Vec<(Bytes, BlockHash)>,
+        HashSet<Bytes>,
+    ),
+    CasperError,
+> {
+    merge_with_rule(
+        MergeRule::Dev,
+        dag,
+        base,
+        base_post_state,
+        index,
+        history_repository,
+        rejection_cost_f,
+        scope,
+        floor_block_number,
+        deploy_lifespan,
+        sig_settled_in_base,
+        sig_settled_in_floor,
+        base_lineage_blocks,
+        prior_rejection_counts,
+    )
+}
+
 /// Merge the scope onto `base`.
 ///
 /// `base` is the merging block's state parent — its main parent, or the
@@ -817,7 +860,8 @@ pub fn partition_base_conflicts(
 /// content. It is NOT the LFB, and has not been since the base moved off the
 /// floor; the merge only ever needed a committed state to build on and the
 /// block hash that names it.
-pub fn merge(
+pub fn merge_with_rule(
+    rule: MergeRule,
     dag: &KeyValueDagRepresentation,
     base: &BlockHash,
     base_post_state: &Blake2b256Hash,
@@ -1815,13 +1859,28 @@ pub fn merge(
             Ok(rejected)
         };
 
-    let (mut resolved, unavailable_rejected_count) = resolve_conflicts_with_unavailable_retry(
-        &actual_seq_all,
-        &late_seq_all,
-        &resolve_once,
-        &split_unavailable,
-    )
-    .map_err(CasperError::HistoryError)?;
+    let (mut resolved, unavailable_rejected_count) = match rule {
+        MergeRule::Dev => resolve_conflicts_with_unavailable_retry(
+            &actual_seq_all,
+            &late_seq_all,
+            &resolve_once,
+            &split_unavailable,
+        )
+        .map_err(CasperError::HistoryError)?,
+        // Added by DR-120 (gap G9): one ordered pass replaces the option search.
+        MergeRule::OfferedV6 => ordered::ordered_pass(&ordered::OrderedPassInputs {
+            dag,
+            actual: &actual_seq_all,
+            late: &late_seq_all,
+            pinned: &pinned,
+            base_conflicting: &base_conflicting,
+            settled_conflicting: &settled_conflicting,
+            depends: &depends_fn,
+            compute_branches: &compute_branches_fn,
+            compute_conflict_map: &compute_conflict_map_fn,
+            history_reader: &history_reader,
+        })?,
+    };
 
     // Chains the base's own content precluded, and chains settled
     // carriers' content precluded. Folded in here so they travel the

@@ -49,7 +49,6 @@ use proptest::prelude::*;
 use proptest::sample::select;
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::runtime::unavailable;
 use rholang::rust::interpreter::reified::system_channels::{
     SystemChannel, P4_SYSTEM_CHANNELS, P5_SYSTEM_CHANNELS, P6_PROCESSES, P6_SYSTEM_CHANNELS,
@@ -834,7 +833,6 @@ async fn space_factory_alias_install_idempotent() {
 /// receive through the agent of its family.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_family_dispatch_by_config() {
-    let meter = ScanMeter::new(None);
     for family in SpaceFactoryUrn::all() {
         let config = SpaceConfig::new(
             [7; SID_LEN],
@@ -843,8 +841,8 @@ async fn space_family_dispatch_by_config() {
             SpaceQualifier::Default,
         );
         assert_eq!(
-            Family::of_config(&config, &meter),
-            Ok(Family::of_urn(family)),
+            Family::of_config(&config),
+            Family::of_urn(family),
             "{family}"
         );
     }

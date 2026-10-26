@@ -25,18 +25,13 @@
 //! An id with an ephemeral KIND whose space is not in the book belongs to a deploy that has
 //! ended, so the entry points of DG-1 fail with `DanglingHandle` or `DanglingName` before any job.
 //!
-//! The book reserves nothing on the meter of a job, as the mirror journal reserves nothing: its
-//! copies are bounded by the lock keys, which the agent reserved when it made them.
-//!
 //! **Seq claims (design v3 SQ-3, SQ-4, decision 73).** Each channel of a `seq` space has its own
 //! causal-lineage claim in the book: the participant path of its last use. [`SeqClaims`] holds
 //! the claims of one program job. A claim of a channel is admitted when the channel has no claim
 //! or its claim is a prefix of the participant path of the job. The job stores its claims only
-//! after its commit succeeded, so a failed job or a dropped transaction changes no claim. Its
-//! metered work is reserved on the meter of the job (SQ-8).
+//! after its commit succeeded, so a failed job or a dropped transaction changes no claim.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::mem::size_of;
 use std::sync::{Arc, Mutex};
 
 use models::rhoapi::Par;
@@ -47,7 +42,6 @@ use super::namespace::{
     decode_reified_id, sole_gprivate_id, Durability, NativeSpace, ReifiedId, SpaceId,
 };
 use super::types::qualifier::SpaceQualifier;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 
 /// The space of a space-scoped id with an ephemeral KIND: a config, counter, data, path-index,
 /// allocator, handle or name id of a `temp` or `seq` space. Every other id gives `None`.
@@ -161,9 +155,6 @@ impl VolatileRegistry {
             .any(|qualifier| *qualifier == SpaceQualifier::Seq)
     }
 
-    /// The number of claimed channels.
-    fn claim_count(&self) -> usize { self.state().claims.len() }
-
     /// The claim of the channel with the id `id`.
     fn claim_of(&self, id: &[u8]) -> Option<Vec<PathSegment>> {
         self.state().claims.get(id).cloned()
@@ -199,9 +190,6 @@ pub enum ClaimRole {
     Waiter,
 }
 
-/// The bytes of one segment of a participant path, for the reservation of a comparison.
-const SEGMENT_BYTES: usize = size_of::<PathSegment>();
-
 /// The claims of one program job on the channels of one `seq` space (SQ-3, SQ-4).
 pub struct SeqClaims {
     registry: Arc<VolatileRegistry>,
@@ -222,7 +210,6 @@ impl SeqClaims {
         space: NativeSpace,
         qualifier: SpaceQualifier,
         internal: bool,
-        meter: &ScanMeter,
     ) -> Result<Option<Self>, SpaceError> {
         if qualifier != SpaceQualifier::Seq || internal {
             return Ok(None);
@@ -230,7 +217,6 @@ impl SeqClaims {
         let order = operation_context::current().ok_or(SpaceError::Inconsistent(
             "a program operation on a seq space runs without an operation order",
         ))?;
-        meter.reserve_buffer::<PathSegment>(order.path.len())?;
         let mut path = order.path.to_vec();
         path.pop().ok_or(SpaceError::Inconsistent(
             "the operation order of a job has no step",
@@ -246,14 +232,8 @@ impl SeqClaims {
     /// Claims `channel` in the role `role` (SQ-3). A channel that is not claimable in that role,
     /// or that belongs to another space, claims nothing. The claim is admitted when the channel
     /// has no claim or its claim is a prefix of the participant path of the job, and it is then
-    /// pending until [`SeqClaims::store`]. Otherwise the deploy aborts with `SeqConcurrent`. The
-    /// lookups, the comparison and the copy of the id are reserved before they are made (SQ-8).
-    pub fn claim(
-        &mut self,
-        channel: &Par,
-        role: ClaimRole,
-        meter: &ScanMeter,
-    ) -> Result<(), SpaceError> {
+    /// pending until [`SeqClaims::store`]. Otherwise the deploy aborts with `SeqConcurrent`.
+    pub fn claim(&mut self, channel: &Par, role: ClaimRole) -> Result<(), SpaceError> {
         let Some(id) = sole_gprivate_id(channel) else {
             return Ok(());
         };
@@ -267,19 +247,14 @@ impl SeqClaims {
         if !claimable {
             return Ok(());
         }
-        meter.ordered_lookup(self.pending.len(), id.len())?;
         if self.pending.contains(id) {
             return Ok(());
         }
-        meter.ordered_lookup(self.registry.claim_count(), id.len())?;
         if let Some(claim) = self.registry.claim_of(id) {
-            meter.compare(claim.len() * SEGMENT_BYTES, self.path.len() * SEGMENT_BYTES)?;
             if !self.path.starts_with(&claim) {
                 return Err(SpaceError::SeqConcurrent { space: self.space });
             }
         }
-        meter.tree_growth::<Vec<u8>, ()>(self.pending.len(), 1)?;
-        meter.reserve_buffer::<u8>(id.len())?;
         self.pending.insert(id.to_vec());
         Ok(())
     }
@@ -381,15 +356,9 @@ mod tests {
             path: order.into(),
         };
         operation_context::scope(order, async {
-            let claims = SeqClaims::open(
-                registry,
-                space,
-                SpaceQualifier::Seq,
-                false,
-                &ScanMeter::new(None),
-            )
-            .expect("a seq job opens its claims")
-            .expect("a program job on a seq space claims");
+            let claims = SeqClaims::open(registry, space, SpaceQualifier::Seq, false)
+                .expect("a seq job opens its claims")
+                .expect("a program job on a seq space claims");
             body(claims)
         })
         .await
@@ -403,16 +372,15 @@ mod tests {
     async fn seq_claims_apply_only_to_program_jobs_on_seq_spaces() {
         let registry = Arc::new(VolatileRegistry::default());
         let seq = space(4, Durability::Ephemeral);
-        let meter = ScanMeter::new(None);
         for (qualifier, internal) in [
             (SpaceQualifier::Default, false),
             (SpaceQualifier::Temp, false),
             (SpaceQualifier::Seq, true),
         ] {
-            let claims = SeqClaims::open(&registry, seq, qualifier, internal, &meter);
+            let claims = SeqClaims::open(&registry, seq, qualifier, internal);
             assert!(matches!(claims, Ok(None)), "{qualifier:?} {internal}");
         }
-        let unordered = SeqClaims::open(&registry, seq, SpaceQualifier::Seq, false, &meter);
+        let unordered = SeqClaims::open(&registry, seq, SpaceQualifier::Seq, false);
         assert!(matches!(
             unordered,
             Err(SpaceError::Inconsistent(
@@ -436,9 +404,7 @@ mod tests {
         let seq = space(4, Durability::Ephemeral);
         let x = data(seq, 1);
         let id = sole_gprivate_id(&x).expect("an id").to_vec();
-        let meter = ScanMeter::new(None);
-        let used =
-            |mut claims: SeqClaims| claims.claim(&x, ClaimRole::Data, &meter).map(|_| claims);
+        let used = |mut claims: SeqClaims| claims.claim(&x, ClaimRole::Data).map(|_| claims);
         // A job that fails or drops its transaction stores no claim (SQ-4).
         job(&registry, seq, &[(0, 1)], |claims| {
             used(claims).expect("a first use")
@@ -479,7 +445,7 @@ mod tests {
         // Another channel of the space has its own claim (decision 73).
         job(&registry, seq, &[(0, 2)], |mut claims| {
             claims
-                .claim(&data(seq, 2), ClaimRole::Data, &meter)
+                .claim(&data(seq, 2), ClaimRole::Data)
                 .expect("another channel");
             claims.store();
         })
@@ -494,7 +460,6 @@ mod tests {
         let seq = space(4, Durability::Ephemeral);
         let other = space(5, Durability::Ephemeral);
         let durable = space(4, Durability::Durable);
-        let meter = ScanMeter::new(None);
         let index = gprivate(namespace::path_index_channel(seq, &[3]));
         let pending = job(&registry, seq, &[(0, 1)], |mut claims| {
             for (channel, role) in [
@@ -515,16 +480,14 @@ mod tests {
                 (data(durable, 1), ClaimRole::Data),
                 (Par::default(), ClaimRole::Waiter),
             ] {
-                claims
-                    .claim(&channel, role, &meter)
-                    .expect("nothing to claim");
+                claims.claim(&channel, role).expect("nothing to claim");
             }
             assert!(claims.pending.is_empty(), "{:?}", claims.pending);
             claims
-                .claim(&index, ClaimRole::Waiter, &meter)
+                .claim(&index, ClaimRole::Waiter)
                 .expect("a waiter on a prefix");
             claims
-                .claim(&data(seq, 1), ClaimRole::Data, &meter)
+                .claim(&data(seq, 1), ClaimRole::Data)
                 .expect("a data channel");
             claims.pending.len()
         })

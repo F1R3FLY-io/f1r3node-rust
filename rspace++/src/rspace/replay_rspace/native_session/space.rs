@@ -12,17 +12,23 @@
 // orders every transaction of one space before the next, so every
 // predecessor of a space row has completed (design v2, section 4.5).
 //
-// The effects are the store steps of play (`store_data` and the others of
-// `space_store_handle.rs`), so native replay changes the store as play does.
+// A transaction reads and changes the digest-keyed store of the session
+// (DR-96) through `NativeSpaceStore`, so a space operation and a host
+// operation of native replay share one store, as they share the hot store in
+// play. The effects are the store steps of native replay of a host operation
+// (`operations.rs`): `put_datum`, `store_consume`, `retire_produce_match` and
+// `retire_data`. The oracle tests of `native_store.rs` show that these steps
+// change the store as the steps of play (`store_data` and the others of
+// `space_store_handle.rs`) change the hot store. So the export of the session
+// holds the effects of the space operations, and native replay reaches the
+// root of play.
+//
 // The session logs no event. The backend gives the events of play to the
 // event correlation check of `commit_operation` only. A non-persistent
 // produce advances the produce counter of the session, which `host_counter`
-// reads, as `log_produce` advances the counter of play.
-//
-// Native play charges no host work for the source, the locks and the
-// produce counter of a space operation, so this backend charges none either.
-// Its view and its commit checks read through the metered reads of the
-// transaction (S4, S5). The ticket protocol charges its own verification.
+// reads, as `log_produce` advances the counter of play. A space operation
+// meters only what its host operation meters, through the observations of
+// the ticket: its COMMs and the bytes that it stores (DR-131).
 
 use std::collections::BTreeSet;
 use std::fmt::Debug;
@@ -33,27 +39,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use shared::rust::clone_backing::CloneBacking;
 
-use super::{NativeReplaySession, PublicationGuard};
+use super::{NativeReplaySession, PublicationGuard, result};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hot_store::HotStore;
-use crate::rspace::internal::WaitingContinuation;
+use crate::rspace::hashing::native_source::{GroupKeys, StoreKey};
+use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::r#match::Match;
 use crate::rspace::replay_rspace::native_epoch::{
     NativeOperationEpoch, NativeOperationPublication, NativeOperationTicket, NativeReplayDecision,
     NativeReplayOutcome,
 };
 use crate::rspace::rspace_interface::RSpaceOperationSource;
+use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::space_store_handle::{
-    BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, Reads, ReadyConsume, ReadyConsumeFire,
-    ReadyFire, ReadyProduce, SharedHistory, SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError,
-    SpaceTxnHost, StagedConsume, StagedConsumeFire, StagedFire, StagedOperation, StagedProduce,
-    SweepReport, TxnBackend, TxnRegistration, channel_key, fired_receipt, ready_consume,
-    ready_produce, remove_matched_datum_and_join, root_leaf_records, run_before_observe,
-    store_data, store_persistent_data, store_waiting_continuation, sweep_channels,
-    sweep_volatile_channels,
+    BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, ReadyConsume, ReadyConsumeFire, ReadyFire,
+    ReadyProduce, SpaceMode, SpaceOpReceipt, SpaceTxnError, SpaceTxnHost, StagedConsume,
+    StagedConsumeFire, StagedFire, StagedOperation, StagedProduce, SweepReport, TxnBackend,
+    TxnRegistration, TxnStore, check_swept, fired_receipt, plan_sweep, ready_consume,
+    ready_produce, root_leaf_records, run_before_observe, sweep_channels, swept_join_count,
 };
 use crate::rspace::striped_locks;
 use crate::rspace::trace::event::{COMM, Event, IOEvent, Produce};
@@ -70,6 +74,112 @@ pub type AuthorityResolver<C, P, A, K, E> = Arc<
         + Sync,
 >;
 
+/// The digest-keyed store of a native replay session (DR-96) as the store of
+/// a space transaction. A read takes the value from the store, and a value
+/// that the store does not hold from the history at the root of the session,
+/// with the cold fills of the session. The session sits inside its owner by
+/// value, so the store keeps the owner and a projection to the session.
+pub(crate) struct NativeSpaceStore<O, C, P, A, K, E>
+where
+    C: Clone,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+    E: NativeOperationEpoch<C, P, A, K>,
+{
+    owner: Arc<O>,
+    session: fn(&O) -> &NativeReplaySession<C, P, A, K, E>,
+}
+
+impl<O, C, P, A, K, E> NativeSpaceStore<O, C, P, A, K, E>
+where
+    C: Clone,
+    P: Clone,
+    A: Clone,
+    K: Clone,
+    E: NativeOperationEpoch<C, P, A, K>,
+{
+    fn session(&self) -> &NativeReplaySession<C, P, A, K, E> { (self.session)(&self.owner) }
+}
+
+/// The store keys of a group from the store identities of its channels, in
+/// group order. A store identity is the digest that keys the channel in the
+/// session store, so no channel is hashed again.
+fn group_keys(keys: &[Blake2b256Hash]) -> Result<GroupKeys, RSpaceError> {
+    let mut channels = Vec::with_capacity(keys.len());
+    for key in keys {
+        channels.push(StoreKey::from_digest(key)?);
+    }
+    Ok(GroupKeys::from_channel_keys(channels))
+}
+
+impl<O, C, P, A, K, E> TxnStore<C, P, A, K> for NativeSpaceStore<O, C, P, A, K, E>
+where
+    O: Send + Sync + 'static,
+    C: Clone
+        + Debug
+        + Default
+        + Serialize
+        + DeserializeOwned
+        + ColdStoreDecode
+        + Hash
+        + Ord
+        + Eq
+        + 'static
+        + Sync
+        + Send,
+    P: Clone
+        + Debug
+        + Default
+        + Serialize
+        + DeserializeOwned
+        + ColdStoreDecode
+        + 'static
+        + Sync
+        + Send,
+    A: Clone
+        + Debug
+        + Default
+        + Serialize
+        + DeserializeOwned
+        + ColdStoreDecode
+        + 'static
+        + Sync
+        + Send,
+    K: Clone
+        + Debug
+        + Default
+        + Serialize
+        + DeserializeOwned
+        + ColdStoreDecode
+        + 'static
+        + Sync
+        + Send,
+    E: NativeOperationEpoch<C, P, A, K> + 'static,
+{
+    fn data(&self, channel: &C, key: &Blake2b256Hash) -> Result<Vec<Datum<A>>, SpaceTxnError> {
+        let session = self.session();
+        session.ensure_open()?;
+        Ok(session.read_data_with(channel, StoreKey::from_digest(key)?)?)
+    }
+
+    fn continuations(
+        &self,
+        channels: &[C],
+        keys: &[Blake2b256Hash],
+    ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, SpaceTxnError> {
+        let session = self.session();
+        session.ensure_open()?;
+        Ok(session.read_continuation_views(channels, &group_keys(keys)?)?)
+    }
+
+    fn joins(&self, channel: &C, key: &Blake2b256Hash) -> Result<Vec<Vec<C>>, SpaceTxnError> {
+        let session = self.session();
+        session.ensure_open()?;
+        Ok(session.read_joins(channel, StoreKey::from_digest(key)?)?)
+    }
+}
+
 /// `SpaceTxnHost` over a native replay session that `owner` holds (decision
 /// 47, R1). The session sits inside its owner by value, so the host keeps the
 /// owner and a projection to the session.
@@ -85,6 +195,7 @@ where
     session: fn(&O) -> &NativeReplaySession<C, P, A, K, E>,
     authority: AuthorityResolver<C, P, A, K, E>,
     installed: BTreeSet<Blake2b256Hash>,
+    store: Arc<NativeSpaceStore<O, C, P, A, K, E>>,
 }
 
 // The mismatch of native replay, in the class of the session's own mismatch
@@ -103,10 +214,6 @@ fn require(
     }
 }
 
-// The reservation of work that native play does not charge for a space
-// operation: the locks and the produce counter (see the module comment).
-fn free(_operations: usize, _scanned: usize, _backing: usize) -> Result<(), RSpaceError> { Ok(()) }
-
 impl<O, C, P, A, K, E> NativeSpaceHost<O, C, P, A, K, E>
 where
     O: Send + Sync + 'static,
@@ -114,8 +221,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -126,8 +233,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -135,8 +242,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -144,35 +251,37 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
     E: NativeOperationEpoch<C, P, A, K> + 'static,
 {
-    /// The host of the session that `session` projects out of `owner`. The
-    /// installed channels are taken once, from the installed continuations of
-    /// the session store (R2), because the session installs its system
-    /// processes into the store only.
+    /// The host of the session that `session` projects out of `owner`.
+    /// `installed` holds the keys of the channels of the system processes
+    /// that the session installs (R2). The caller takes them from the
+    /// installations of the session (`installed_channel_keys`), as play
+    /// takes them from its installs. Every transaction and every sweep of
+    /// the host shares one store, so the store identity of a commit is
+    /// stable.
     pub fn new(
         owner: Arc<O>,
         session: fn(&O) -> &NativeReplaySession<C, P, A, K, E>,
         authority: AuthorityResolver<C, P, A, K, E>,
-    ) -> Result<Self, SpaceTxnError> {
-        let state = session(&owner).space.get_store().snapshot();
-        let mut installed = BTreeSet::new();
-        for channels in state.installed_continuations_flat().keys() {
-            for channel in channels {
-                installed.insert(channel_key(channel)?);
-            }
-        }
-        Ok(Self {
+        installed: BTreeSet<Blake2b256Hash>,
+    ) -> Self {
+        let store = Arc::new(NativeSpaceStore {
+            owner: Arc::clone(&owner),
+            session,
+        });
+        Self {
             owner,
             session,
             authority,
             installed,
-        })
+            store,
+        }
     }
 
     fn session(&self) -> &NativeReplaySession<C, P, A, K, E> { (self.session)(&self.owner) }
@@ -186,8 +295,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -198,8 +307,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -207,8 +316,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -216,8 +325,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -227,10 +336,10 @@ where
 
     fn matcher(&self) -> Arc<Box<dyn Match<P, A, K>>> { Arc::clone(&self.session().space.matcher) }
 
-    // R3. A transaction of native replay reads through metered reads only:
-    // native play meters the same reads, and a plain read would make the
-    // charges of the two modes differ (I-12). The stripes are taken without a
-    // charge, as play takes them.
+    // The stripes are taken as play takes them. Changed by decision 89
+    // (DR-131): R3 refused a transaction without the metered reads, and the
+    // metered reads are removed with host-work metering, so a native replay
+    // transaction reads as a transaction of play reads.
     async fn begin(
         &self,
         lock_keys: &[C],
@@ -238,11 +347,6 @@ where
     ) -> Result<BoxedSpaceTxn<C, P, A, K>, SpaceTxnError> {
         let session = self.session();
         session.ensure_open()?;
-        if !registration.is_metered() {
-            return Err(SpaceTxnError::InvalidOperation(
-                "a native replay transaction reads through metered reads",
-            ));
-        }
         if lock_keys.is_empty() {
             return Err(SpaceTxnError::InvalidOperation("lock keys must not be empty"));
         }
@@ -252,25 +356,23 @@ where
             session.space.phase_a_locks.len(),
             session.space.phase_b_locks.len(),
         );
-        let locks = session
-            .consume_lock_with(&hashes, |_operations, _bytes| Ok(()))
-            .await?;
-        let store = session.space.get_store();
+        let locks = session.consume_lock(&hashes).await?;
         let backend = NativeBackend {
             owner: Arc::clone(&self.owner),
             session: self.session,
             authority: Arc::clone(&self.authority),
+            store: Arc::clone(&self.store),
             denied: AtomicBool::new(false),
         };
         Ok(Box::new(HostTxn::new(
             SpaceMode::NativeReplay,
             backend,
-            store,
+            Arc::clone(&self.store),
             self.installed.clone(),
             coverage,
             locks,
             registration,
-        )?))
+        )))
     }
 
     // R7.
@@ -282,7 +384,12 @@ where
         root_leaf_records(reader.as_ref(), channel)
     }
 
-    // R6: `sweep_replay` over the session, with the installed channels of R2.
+    // R6: the sweep of play over the session store (DR-96), with the
+    // installed channels of R2. The validation of `plan_sweep` runs first.
+    // Then each continuation of a swept group leaves with
+    // `retire_continuation`, the highest index first, and the last one of a
+    // group takes the join of the group with it. Then each swept channel
+    // loses its data. The residue check of play closes the sweep.
     async fn sweep_volatile(
         &self,
         channels: &[C],
@@ -292,9 +399,7 @@ where
         session.ensure_open()?;
         let channels = sweep_channels(channels)?;
         let hashes: Vec<u64> = channels.values().map(striped_locks::channel_hash).collect();
-        let _guards = session
-            .consume_lock_with(&hashes, |_operations, _bytes| Ok(()))
-            .await?;
+        let _guards = session.consume_lock(&hashes).await?;
         let _gate = session
             .gate
             .try_read()
@@ -303,17 +408,41 @@ where
         let reader = repository
             .get_history_reader(&repository.root())
             .map_err(RSpaceError::from)?;
-        let store = session.space.get_store();
-        sweep_volatile_channels(&**store, reader.as_ref(), &self.installed, &channels, || {
-            if session
-                .space
-                .replay_waiting_continuations_estimate
-                .load(std::sync::atomic::Ordering::Relaxed) >
-                0
-            {
-                session.space.dec_replay_waiting_continuations();
+        let store = &*self.store;
+        let groups = plan_sweep(store, reader.as_ref(), &self.installed, &channels)?;
+        let mut report = SweepReport {
+            channels: channels.len(),
+            ..SweepReport::default()
+        };
+        let joins_before = swept_join_count(store, &channels)?;
+        for (group_key, group) in &groups {
+            let keys = group_keys(group_key)?;
+            let waiting = store.continuations(group, group_key)?.len();
+            for index in (0..waiting).rev() {
+                let index = i32::try_from(index)
+                    .map_err(|_| SpaceTxnError::Inconsistent("a continuation index exceeds i32"))?;
+                session.store.retire_continuation(group, &keys, index)?;
+                report.continuations += 1;
+                if session
+                    .space
+                    .replay_waiting_continuations_estimate
+                    .load(Ordering::Relaxed) >
+                    0
+                {
+                    session.space.dec_replay_waiting_continuations();
+                }
             }
-        })
+        }
+        report.joins = joins_before
+            .checked_sub(swept_join_count(store, &channels)?)
+            .ok_or(SpaceTxnError::Inconsistent("the volatile sweep added a join"))?;
+        for (key, channel) in &channels {
+            let key = StoreKey::from_digest(key)?;
+            session.prefetch_data(channel, key)?;
+            report.data += session.store.retire_channel_data(channel, key)?;
+        }
+        check_swept(store, &channels, &groups)?;
+        Ok(report)
     }
 }
 
@@ -329,6 +458,7 @@ where
     owner: Arc<O>,
     session: fn(&O) -> &NativeReplaySession<C, P, A, K, E>,
     authority: AuthorityResolver<C, P, A, K, E>,
+    store: Arc<NativeSpaceStore<O, C, P, A, K, E>>,
     // Set when the current operation published a recorded denial, so its row
     // is complete and its failure keeps the epoch open.
     denied: AtomicBool,
@@ -341,8 +471,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -353,8 +483,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -362,8 +492,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -371,14 +501,16 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
     E: NativeOperationEpoch<C, P, A, K> + 'static,
 {
-    fn store(&self) -> SharedStore<C, P, A, K> { self.session().space.get_store() }
+    type Store = NativeSpaceStore<O, C, P, A, K, E>;
+
+    fn store(&self) -> Arc<Self::Store> { Arc::clone(&self.store) }
 
     // A3: the produce counter of the session.
     fn host_counter(&self, produce: &Produce) -> i32 {
@@ -389,18 +521,11 @@ where
 
     fn recorded_binding(&self, _event: &IOEvent, _comm: &COMM) -> Option<(COMM, usize)> { None }
 
-    // The session reads its history at its own root.
-    fn history(&self) -> Result<(SharedHistory<C, P, A, K>, [u8; 32]), SpaceTxnError> {
-        let session = self.session();
-        Ok((session.space.get_history_repository(), session.root))
-    }
-
     fn apply_op(
         &self,
-        store: &dyn HotStore<C, P, A, K>,
+        store: &Self::Store,
         operation: StagedOperation<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
-        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         let session = self.session();
@@ -414,10 +539,10 @@ where
             .map_err(|_| mismatch("the session is at a boundary"))?;
         let result = match operation {
             StagedOperation::Produce(produce) => {
-                self.apply_produce(store, produce, before_observe, reads, events)
+                self.apply_produce(store, produce, before_observe, events)
             }
             StagedOperation::Consume(consume) => {
-                self.apply_consume(store, consume, before_observe, reads, events)
+                self.apply_consume(store, consume, before_observe, events)
             }
         };
         // A failed operation leaves its journal row incomplete, and an operation
@@ -439,8 +564,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -451,8 +576,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -460,8 +585,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -469,8 +594,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -495,7 +620,8 @@ where
     }
 
     // R5 (A11): a recorded denial is published with its outcome, and the
-    // operation fails as play fails it.
+    // operation fails as play fails it, with the error that the epoch names
+    // for its denial (DR-113).
     fn publish_denial(
         &self,
         ticket: E::Ticket,
@@ -509,19 +635,20 @@ where
         completion.publish();
         publication.complete();
         self.denied.store(true, Ordering::Release);
-        Err(SpaceTxnError::Host(RSpaceError::OutOfPhlogistons))
+        // Changed by decision 89 (DR-113): the epoch names the error of its
+        // denial, because the class of an exhaustion depends on the bound
+        // source, as `operations.rs` returns it for a host operation.
+        // Err(SpaceTxnError::Host(RSpaceError::OutOfPhlogistons))
+        Err(SpaceTxnError::Host(session.epoch.denial()))
     }
 
     // R4 step 9 (first part): the staged COMM is the COMM of the recorded
     // candidate. `observe_comm` checks it again.
     fn check_candidate(&self, ticket: &E::Ticket, comm: &COMM) -> Result<(), SpaceTxnError> {
-        let session = self.session();
         let identity = ticket
             .candidate_identity()
             .ok_or_else(|| mismatch("a recorded fire has no candidate identity"))?;
-        let meter =
-            |operations, scanned, backing| session.history_reserve(operations, scanned, backing);
-        match identity.metered_matches_comm(comm, &meter)? {
+        match identity.matches_comm(comm) {
             true => Ok(()),
             false => Err(mismatch("the staged COMM differs from the recorded candidate")),
         }
@@ -529,22 +656,17 @@ where
 
     fn apply_produce(
         &self,
-        store: &dyn HotStore<C, P, A, K>,
+        store: &NativeSpaceStore<O, C, P, A, K, E>,
         produce: StagedProduce<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
-        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         let session = self.session();
-        // Step 2: the commit checks of play, with the metered reads.
+        // Step 2: the commit checks of play, over the session store.
         let host_counter = self.host_counter(&produce.source);
-        let (produce, joins) = ready_produce(
-            store,
-            produce,
-            host_counter,
-            |produces| session.space.produce_counters(produces),
-            reads,
-        )?;
+        let (produce, joins) = ready_produce(store, produce, host_counter, |produces| {
+            session.space.produce_counters(produces)
+        })?;
         let ReadyProduce {
             source: produce_ref,
             channel,
@@ -581,16 +703,26 @@ where
         require(decision, NativeReplayDecision::Granted)?;
         match fire {
             None => {
-                // Steps 10 to 12.
-                let counter =
-                    session
-                        .space
-                        .prepare_metered_produce_counter(&produce_ref, persist, &free)?;
+                // Steps 10 to 12, with the store step of a stored host
+                // produce (`operations.rs`): the data of the channel are in
+                // the store before the publication.
+                let key = StoreKey::from_digest(&produce_ref.channel_hash)?;
+                session.prefetch_data(&channel, key)?;
+                let counter = session
+                    .space
+                    .prepare_produce_counter(&produce_ref, persist)?;
                 let mut completion = ticket.prepare(NativeReplayOutcome::Stored)?;
                 let publication = PublicationGuard::with_invalidation(&session.unavailable, || {
                     session.epoch.invalidate()
                 });
-                store_data(store, channel, data, persist, produce_ref.clone());
+                // Changed by decision 89 (DR-96): the session store takes the
+                // datum, so the export of the session holds it.
+                // store_data(store, channel, data, persist, produce_ref.clone());
+                session.store.put_datum(&channel, key, Datum {
+                    a: data,
+                    persist,
+                    source: produce_ref.clone(),
+                })?;
                 counter.publish();
                 completion.publish();
                 publication.complete();
@@ -604,6 +736,7 @@ where
                     fire:
                         StagedFire {
                             channels,
+                            group,
                             continuation,
                             candidates,
                             ..
@@ -626,21 +759,44 @@ where
                 }
                 require(decision, NativeReplayDecision::Granted)?;
                 let returned = ticket.returned_produce(&produce_ref)?;
-                // Steps 10 to 12. The incoming datum is never stored, as in
-                // play (FR-10, decision 30).
-                let counter =
-                    session
-                        .space
-                        .prepare_metered_produce_counter(&produce_ref, persist, &free)?;
+                // Steps 10 to 12, with the store step of a host produce match
+                // (`operations.rs`). The incoming datum is never stored, as in
+                // play (FR-10, decision 30). The continuations, the data and
+                // the joins of the group are in the store before the
+                // publication. A persistent continuation stays, so its index
+                // is not read: `continuation_index` is `None` exactly for a
+                // persistent continuation.
+                let keys = group_keys(&group)?;
+                session.prefetch_continuations(&channels, &keys)?;
+                for (joined, joined_key) in channels.iter().zip(&keys.channels) {
+                    session.prefetch_data(joined, *joined_key)?;
+                    session.read_joins(joined, *joined_key)?;
+                }
+                let retired = result::prepare(committed);
+                let counter = session
+                    .space
+                    .prepare_produce_counter(&produce_ref, persist)?;
                 let mut completion = ticket.prepare(NativeReplayOutcome::Matched)?;
                 let publication = PublicationGuard::with_invalidation(&session.unavailable, || {
                     session.epoch.invalidate()
                 });
-                if let Some(index) = continuation_index {
-                    store.remove_continuation(&channels, index);
-                }
+                // Changed by decision 89 (DR-96): the session store retires the
+                // continuation, the data and the joins of the match, so the
+                // export of the session holds the removals.
+                // if let Some(index) = continuation_index {
+                //     store.remove_continuation(&channels, index);
+                // }
+                // session.space.mark_replay_waiting_continuation_match();
+                // remove_matched_datum_and_join(store, &channels, &committed);
+                session.store.retire_produce_match(
+                    &channels,
+                    &keys,
+                    continuation_index.unwrap_or(0),
+                    continuation.persist,
+                    &retired.data,
+                    &retired.retirement,
+                )?;
                 session.space.mark_replay_waiting_continuation_match();
-                remove_matched_datum_and_join(store, &channels, &committed);
                 counter.publish();
                 completion.publish();
                 publication.complete();
@@ -659,23 +815,19 @@ where
 
     fn apply_consume(
         &self,
-        store: &dyn HotStore<C, P, A, K>,
+        store: &NativeSpaceStore<O, C, P, A, K, E>,
         consume: StagedConsume<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
-        reads: Reads<'_, C, P, A, K>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         let session = self.session();
         // Step 2.
-        let consume = ready_consume(
-            store,
-            consume,
-            |produces| session.space.produce_counters(produces),
-            reads,
-        )?;
+        let consume =
+            ready_consume(store, consume, |produces| session.space.produce_counters(produces))?;
         let ReadyConsume {
             source: consume_ref,
             channels,
+            group,
             patterns,
             continuation,
             persist,
@@ -723,15 +875,30 @@ where
             peeks,
             source: consume_ref.clone(),
         };
+        let keys = group_keys(&group)?;
         match fire {
             None => {
-                // Steps 10 to 12.
+                // Steps 10 to 12, with the store step of a parked host
+                // consume (`operations.rs`): the continuations of the group and
+                // the joins of its channels are in the store before the
+                // publication.
+                session.prefetch_continuations(&channels, &keys)?;
+                for (joined, joined_key) in channels.iter().zip(&keys.channels) {
+                    session.read_joins(joined, *joined_key)?;
+                }
                 let mut completion = ticket.prepare(NativeReplayOutcome::Stored)?;
                 let publication = PublicationGuard::with_invalidation(&session.unavailable, || {
                     session.epoch.invalidate()
                 });
-                if store_waiting_continuation(store, channels.clone(), wk) {
-                    session.space.inc_replay_waiting_continuations(&channels);
+                // Changed by decision 89 (DR-96): the session store takes the
+                // continuation and its joins, and it gives the depth of the
+                // group for the waiting-continuation estimate.
+                // if store_waiting_continuation(store, channels.clone(), wk) {
+                //     session.space.inc_replay_waiting_continuations(&channels);
+                // }
+                let (inserted, depth) = session.store.store_consume(&channels, &keys, wk)?;
+                if inserted {
+                    session.space.inc_replay_waiting_continuations_depth(depth);
                 }
                 completion.publish();
                 publication.complete();
@@ -754,12 +921,24 @@ where
                     return self.publish_denial(ticket, outcome);
                 }
                 require(decision, NativeReplayDecision::Granted)?;
-                // Steps 10 to 12.
+                // Steps 10 to 12, with the store step of a host consume match
+                // (`operations.rs`): the data of the channels are in the store
+                // before the publication.
+                for (joined, joined_key) in channels.iter().zip(&keys.channels) {
+                    session.prefetch_data(joined, *joined_key)?;
+                }
+                let retired = result::prepare(committed);
                 let mut completion = ticket.prepare(NativeReplayOutcome::Matched)?;
                 let publication = PublicationGuard::with_invalidation(&session.unavailable, || {
                     session.epoch.invalidate()
                 });
-                store_persistent_data(store, &committed);
+                // Changed by decision 89 (DR-96): the session store retires the
+                // data of the match, so the export of the session holds the
+                // removals.
+                // store_persistent_data(store, &committed);
+                session
+                    .store
+                    .retire_data(&retired.data, &keys.channels, &retired.retirement)?;
                 completion.publish();
                 publication.complete();
                 events.push(Event::IoEvent(IOEvent::Consume(consume_ref.clone())));
@@ -776,12 +955,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, VecDeque};
+    use std::collections::{BTreeSet, HashMap, VecDeque};
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
-    use crate::rspace::hashing::native_source::SourceMeter;
+    use crate::rspace::hot_store_action::{HotStoreAction, InsertAction};
     use crate::rspace::internal::{ConsumeCandidate, Datum, Install};
     use crate::rspace::replay_rspace::native_epoch::{
         NativeCandidateIdentity, NativeReplayBoundary, NativeReplayEpoch, NativeReplayRestore,
@@ -791,8 +970,8 @@ mod tests {
     use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
     use crate::rspace::space_store_handle::{
-        ConsumeOutcome, NativeViewReads, ProduceOutcome, SharedReads, SpaceConsume, SpaceProduce,
-        SpaceStoreHandle, SpaceTxnReceipt, bind_candidate, incoming_candidate,
+        ConsumeOutcome, ProduceOutcome, SharedStore, SpaceConsume, SpaceProduce, SpaceStoreHandle,
+        SpaceTxnReceipt, bind_candidate, incoming_candidate, installed_channel_keys,
     };
     use crate::rspace::trace::event::Consume;
 
@@ -860,7 +1039,6 @@ mod tests {
         rows: Arc<Mutex<VecDeque<Row>>>,
         log: Arc<Mutex<Vec<String>>>,
         not_ready: Arc<AtomicBool>,
-        work: Arc<AtomicUsize>,
     }
 
     impl Script {
@@ -884,16 +1062,12 @@ mod tests {
 
         fn begin_boundary(&self) -> Result<Boundary, RSpaceError> { Ok(Boundary) }
 
-        fn reserve_work(&self, operations: usize, _bytes: usize) -> Result<(), RSpaceError> {
-            self.work.fetch_add(operations, Ordering::Relaxed);
-            Ok(())
-        }
-
-        fn reserve_comparison(&self, operations: usize, bytes: usize) -> Result<(), RSpaceError> {
-            self.reserve_work(operations, bytes)
-        }
-
         fn invalidate(&self) { self.note("invalidate"); }
+
+        // DR-113: the epoch names the error of its denial. The script names
+        // the error of an exhausted signed limit, so a test sees that a space
+        // operation fails with the error of its epoch.
+        fn denial(&self) -> RSpaceError { RSpaceError::SignedLimitExhausted }
     }
 
     impl NativeReplayBoundary for Boundary {
@@ -938,39 +1112,6 @@ mod tests {
         }
 
         fn matches_comm(&self, source: &COMM) -> bool { self.0.as_ref() == Some(source) }
-
-        fn metered_matches_consume(
-            &self,
-            source: &Consume,
-            _meter: &dyn SourceMeter,
-        ) -> Result<bool, RSpaceError> {
-            Ok(self.matches_consume(source))
-        }
-
-        fn metered_matches_produce(
-            &self,
-            source: &Produce,
-            _meter: &dyn SourceMeter,
-        ) -> Result<bool, RSpaceError> {
-            Ok(self.matches_produce(source))
-        }
-
-        fn metered_repetition(
-            &self,
-            source: &Produce,
-            _meter: &dyn SourceMeter,
-        ) -> Result<Option<i32>, RSpaceError> {
-            Ok(self.repetition(source))
-        }
-
-        fn metered_matches_comm(
-            &self,
-            source: &COMM,
-            meter: &dyn SourceMeter,
-        ) -> Result<bool, RSpaceError> {
-            meter.reserve(1, 0, 0)?;
-            Ok(self.matches_comm(source))
-        }
     }
 
     struct Ticket {
@@ -1063,25 +1204,6 @@ mod tests {
     impl NativeOperationEpoch<String, String, String, String> for Script {
         type Ticket = Ticket;
 
-        fn prepare_produce_source(
-            &self,
-            _channel: &String,
-            _data: &String,
-        ) -> Result<(), RSpaceError> {
-            self.note("prepare_produce_source");
-            Ok(())
-        }
-
-        fn prepare_consume_source(
-            &self,
-            _channels: &[String],
-            _patterns: &[String],
-            _continuation: &String,
-        ) -> Result<(), RSpaceError> {
-            self.note("prepare_consume_source");
-            Ok(())
-        }
-
         async fn wait_ready(&self, _source: RSpaceOperationSource<'_>) -> Result<(), RSpaceError> {
             self.note("wait_ready");
             Ok(())
@@ -1148,20 +1270,76 @@ mod tests {
         )
     }
 
-    fn handle(session: &Arc<Session>) -> Handle {
+    fn handle(session: &Arc<Session>) -> Handle { handle_with(session, BTreeSet::new()) }
+
+    // The handle of a session whose system processes install the channels of
+    // `installed` (R2).
+    fn handle_with(session: &Arc<Session>, installed: BTreeSet<Blake2b256Hash>) -> Handle {
         let host = NativeSpaceHost::new(
             Arc::clone(session),
             |session: &Session| session,
             Arc::new(|_source: RSpaceOperationSource<'_>| Ok(())),
-        )
-        .expect("the native space host");
+            installed,
+        );
         SpaceStoreHandle::new(host)
     }
 
-    fn reads() -> SharedReads<String, String, String, String> {
-        Arc::new(NativeViewReads::new(|_operations: usize, _scanned: usize, _backing: usize| {
-            Ok::<(), RSpaceError>(())
-        }))
+    // The data, continuations and joins of a store, as maps.
+    #[derive(Debug, PartialEq)]
+    struct StoreState {
+        data: HashMap<String, Vec<Datum<String>>>,
+        continuations: HashMap<Vec<String>, Vec<WaitingContinuation<String, String>>>,
+        joins: HashMap<String, Vec<Vec<String>>>,
+    }
+
+    impl StoreState {
+        // The state of the hot store of play.
+        fn of_play(store: SharedStore<String, String, String, String>) -> Self {
+            let snapshot = store.snapshot();
+            Self {
+                data: snapshot.data_flat(),
+                continuations: snapshot.continuations_flat(),
+                joins: snapshot.joins_flat(),
+            }
+        }
+
+        // The state of the session store, from the export of every entry. An
+        // empty list exports a deletion, so the maps do not hold it.
+        fn of_session(session: &Session) -> Self {
+            let mut state = Self {
+                data: HashMap::new(),
+                continuations: HashMap::new(),
+                joins: HashMap::new(),
+            };
+            for action in session.store.changes() {
+                match action {
+                    HotStoreAction::Insert(InsertAction::InsertData(insert)) => {
+                        state.data.insert(insert.channel, insert.data);
+                    }
+                    HotStoreAction::Insert(InsertAction::InsertContinuations(insert)) => {
+                        state
+                            .continuations
+                            .insert(insert.channels, insert.continuations);
+                    }
+                    HotStoreAction::Insert(InsertAction::InsertJoins(insert)) => {
+                        state.joins.insert(insert.channel, insert.joins);
+                    }
+                    HotStoreAction::Delete(_) => {}
+                }
+            }
+            state
+        }
+
+        // The state without empty lists. A view load caches the empty history
+        // value of a channel that it reads, so a run that loaded an empty
+        // channel holds an empty list where another run holds none. An empty
+        // list stores nothing and reaches no checkpoint.
+        fn nonempty(mut self) -> Self {
+            self.data.retain(|_, records| !records.is_empty());
+            self.continuations.retain(|_, waiters| !waiters.is_empty());
+            self.joins.retain(|_, groups| !groups.is_empty());
+            self
+        }
     }
 
     fn store_op(channel: &str, data: &str) -> SpaceProduce<String, String, String, String> {
@@ -1231,10 +1409,7 @@ mod tests {
     // Parks `k` on `b` through one recorded row.
     async fn park_k(script: &Script, handle: &Handle) {
         script.push(Row::stored());
-        let mut txn = handle
-            .begin_metered(&[s("b")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("b")]).await.expect("begin");
         txn.consume(park_op("b", "k")).expect("stage the park");
         txn.commit().await.expect("commit the park");
     }
@@ -1249,10 +1424,7 @@ mod tests {
         let handle = handle(&session);
         script.push(Row::stored());
         script.push(Row::stored());
-        let mut txn = handle
-            .begin_metered(&[s("a"), s("b")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("a"), s("b")]).await.expect("begin");
         txn.produce(store_op("a", "x")).expect("stage x");
         txn.consume(park_op("b", "k")).expect("stage the park");
         let receipt = txn.commit().await.expect("commit");
@@ -1270,9 +1442,9 @@ mod tests {
             "prepare Stored",
             "publish",
         ]);
-        let state = session.space.get_store().snapshot();
-        assert_eq!(state.data_flat().get(&s("a")).map(Vec::len), Some(1));
-        assert_eq!(state.continuations_flat().get(&vec![s("b")]).map(Vec::len), Some(1));
+        let state = StoreState::of_session(&session);
+        assert_eq!(state.data.get(&s("a")).map(Vec::len), Some(1));
+        assert_eq!(state.continuations.get(&vec![s("b")]).map(Vec::len), Some(1));
         let x = Produce::create(&s("a"), &s("x"), false);
         assert_eq!(session.space.get_produce_count(&x), 1);
     }
@@ -1286,10 +1458,7 @@ mod tests {
         let handle = handle(&session);
         park_k(&script, &handle).await;
         script.clear();
-        let mut txn = handle
-            .begin_metered(&[s("b")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("b")]).await.expect("begin");
         let waiting = txn.continuations(&[s("b")]).expect("read [b]")[0].clone();
         let staged = txn
             .produce(fire_op("b", "z", &waiting))
@@ -1305,10 +1474,10 @@ mod tests {
             "prepare Matched",
             "publish",
         ]);
-        let state = session.space.get_store().snapshot();
+        let state = StoreState::of_session(&session);
         assert!(
             state
-                .continuations_flat()
+                .continuations
                 .get(&vec![s("b")])
                 .is_none_or(Vec::is_empty)
         );
@@ -1326,10 +1495,7 @@ mod tests {
         let handle = handle(&session);
         park_k(&script, &handle).await;
         script.clear();
-        let mut txn = handle
-            .begin_metered(&[s("b")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("b")]).await.expect("begin");
         let waiting = txn.continuations(&[s("b")]).expect("read [b]")[0].clone();
         let staged = txn
             .produce(fire_op("b", "z", &waiting))
@@ -1344,8 +1510,8 @@ mod tests {
         assert!(!script.log().contains(&"observe_comm".to_owned()));
         assert!(!script.log().contains(&"publish".to_owned()));
         assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
-        let state = session.space.get_store().snapshot();
-        assert_eq!(state.continuations_flat().get(&vec![s("b")]).map(Vec::len), Some(1));
+        let state = StoreState::of_session(&session);
+        assert_eq!(state.continuations.get(&vec![s("b")]).map(Vec::len), Some(1));
     }
 
     // Negative control: a recorded outcome that does not fit the staged kind fails
@@ -1356,10 +1522,7 @@ mod tests {
         let session = session(&script, Vec::new()).await;
         let handle = handle(&session);
         script.push(Row::matched(None));
-        let mut txn = handle
-            .begin_metered(&[s("a")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("a")]).await.expect("begin");
         txn.produce(store_op("a", "x")).expect("stage x");
         let error = txn.commit().await.expect_err("a misfit outcome fails");
         assert_eq!(error, mismatch("the recorded outcome does not fit the staged produce"));
@@ -1370,14 +1533,10 @@ mod tests {
                 .iter()
                 .any(|entry| entry.starts_with("observe"))
         );
-        // The metered view load caches the empty history value of `a`. No record is
-        // stored.
+        // The view load caches the empty history value of `a`. No record is stored.
         assert!(
-            session
-                .space
-                .get_store()
-                .snapshot()
-                .data_flat()
+            StoreState::of_session(&session)
+                .data
                 .get(&s("a"))
                 .is_none_or(Vec::is_empty)
         );
@@ -1393,17 +1552,14 @@ mod tests {
         let handle = handle(&session);
         script.push(Row::stored());
         script.push(Row::denied_introduction());
-        let mut txn = handle
-            .begin_metered(&[s("a")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("a")]).await.expect("begin");
         txn.produce(store_op("a", "x")).expect("stage x");
         txn.produce(store_op("a", "y")).expect("stage y");
         let error = txn
             .commit()
             .await
             .expect_err("the denial fails the operation");
-        assert_eq!(error, SpaceTxnError::Host(RSpaceError::OutOfPhlogistons));
+        assert_eq!(error, SpaceTxnError::Host(RSpaceError::SignedLimitExhausted));
         let log = script.log();
         assert_eq!(&log[5..], &[
             "begin produce",
@@ -1412,9 +1568,9 @@ mod tests {
             "prepare DeniedIntroduction",
             "publish",
         ]);
-        let state = session.space.get_store().snapshot();
+        let state = StoreState::of_session(&session);
         assert_eq!(
-            state.data_flat().get(&s("a")).map(|records| records
+            state.data.get(&s("a")).map(|records| records
                 .iter()
                 .map(|datum| datum.a.clone())
                 .collect::<Vec<_>>()),
@@ -1435,17 +1591,14 @@ mod tests {
         let handle = handle(&session);
         park_k(&script, &handle).await;
         script.clear();
-        let mut txn = handle
-            .begin_metered(&[s("b")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("b")]).await.expect("begin");
         let waiting = txn.continuations(&[s("b")]).expect("read [b]")[0].clone();
         let staged = txn
             .produce(fire_op("b", "z", &waiting))
             .expect("stage the fire");
         script.push(Row::denied_comm(staged.comm.clone().expect("a fire has a COMM")));
         let error = txn.commit().await.expect_err("the denial fails the fire");
-        assert_eq!(error, SpaceTxnError::Host(RSpaceError::OutOfPhlogistons));
+        assert_eq!(error, SpaceTxnError::Host(RSpaceError::SignedLimitExhausted));
         assert_eq!(script.log(), vec![
             "begin produce",
             "footprint [\"b\"] [[\"b\"]]",
@@ -1454,8 +1607,8 @@ mod tests {
             "prepare DeniedComm",
             "publish",
         ]);
-        let state = session.space.get_store().snapshot();
-        assert_eq!(state.continuations_flat().get(&vec![s("b")]).map(Vec::len), Some(1));
+        let state = StoreState::of_session(&session);
+        assert_eq!(state.continuations.get(&vec![s("b")]).map(Vec::len), Some(1));
     }
 
     // P1: a row that is not ready fails the operation closed. The backend holds
@@ -1467,49 +1620,25 @@ mod tests {
         let session = session(&script, Vec::new()).await;
         let handle = handle(&session);
         script.not_ready.store(true, Ordering::Release);
-        let mut txn = handle
-            .begin_metered(&[s("a")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("a")]).await.expect("begin");
         txn.produce(store_op("a", "x")).expect("stage x");
         let error = txn.commit().await.expect_err("an unready row fails");
         assert_eq!(error, mismatch("the journal row of the operation is not ready"));
         // The failure closes the epoch, so an operation that waits for the row
         // wakes and fails.
         assert_eq!(script.log(), vec!["begin produce", "invalidate"]);
-        // The metered view load caches the empty history value of `a`. No record is
-        // stored.
+        // The view load caches the empty history value of `a`. No record is stored.
         assert!(
-            session
-                .space
-                .get_store()
-                .snapshot()
-                .data_flat()
+            StoreState::of_session(&session)
+                .data
                 .get(&s("a"))
                 .is_none_or(Vec::is_empty)
         );
     }
 
-    // R3: native replay reads through metered reads only.
-    #[tokio::test]
-    async fn native_space_replay_requires_metered_reads() {
-        let script = Script::default();
-        let session = session(&script, Vec::new()).await;
-        let handle = handle(&session);
-        let error = handle
-            .begin(&[s("a")])
-            .await
-            .err()
-            .expect("a plain begin fails");
-        assert_eq!(
-            error,
-            SpaceTxnError::InvalidOperation(
-                "a native replay transaction reads through metered reads"
-            )
-        );
-    }
-
     // R2 (A4): the installed channels of the session are guarded, as in play.
+    // The keys come from the installations of the session, as
+    // `create_native_replay_env` takes them.
     #[tokio::test]
     async fn native_space_replay_keeps_the_installed_guard() {
         let script = Script::default();
@@ -1517,12 +1646,12 @@ mod tests {
             patterns: vec![s("_")],
             continuation: s("system"),
         };
-        let session = session(&script, vec![(vec![s("sys")], install)]).await;
-        let handle = handle(&session);
-        let mut txn = handle
-            .begin_metered(&[s("sys")], reads())
-            .await
-            .expect("begin");
+        let installs = vec![(vec![s("sys")], install)];
+        let installed = installed_channel_keys(installs.iter().map(|(channels, _)| channels))
+            .expect("the keys of the installed channels");
+        let session = session(&script, installs).await;
+        let handle = handle_with(&session, installed);
+        let mut txn = handle.begin(&[s("sys")]).await.expect("begin");
         assert_eq!(txn.data(&s("sys")).err(), Some(SpaceTxnError::InstalledChannel));
     }
 
@@ -1534,10 +1663,7 @@ mod tests {
         let session = session(&script, Vec::new()).await;
         let handle = handle(&session);
         park_k(&script, &handle).await;
-        let mut txn = handle
-            .begin_metered(&[s("b")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("b")]).await.expect("begin");
         assert_eq!(txn.mode(), SpaceMode::NativeReplay);
         let waiting = txn.continuations(&[s("b")]).expect("read [b]")[0].clone();
         let staged = txn
@@ -1562,10 +1688,7 @@ mod tests {
         let session = session(&script, Vec::new()).await;
         let handle = handle(&session);
         script.push(Row::stored());
-        let mut txn = handle
-            .begin_metered(&[s("a")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("a")]).await.expect("begin");
         txn.produce(store_op("a", "x")).expect("stage x");
         let exclusive = session.gate.write().await;
         let error = txn
@@ -1577,14 +1700,6 @@ mod tests {
         assert!(script.log().is_empty());
     }
 
-    // The committed state of a plan in play or in native replay.
-    type Outcome = (
-        Vec<SpaceTxnReceipt<String, String, String, String>>,
-        std::collections::HashMap<String, Vec<Datum<String>>>,
-        std::collections::HashMap<Vec<String>, Vec<WaitingContinuation<String, String>>>,
-        std::collections::HashMap<String, Vec<Vec<String>>>,
-    );
-
     // Runs one plan: store x and y on a and park k on b, then take x from a and
     // fire k with z. `script` is the native replay script, or `None` for play.
     // Native replay records the row of each operation as play commits it.
@@ -1592,42 +1707,35 @@ mod tests {
         handle: &Handle,
         script: Option<&Script>,
     ) -> Vec<SpaceTxnReceipt<String, String, String, String>> {
-        let first = run_first(handle, script, reads()).await;
-        let second = run_second(handle, script, reads()).await;
+        let first = run_first(handle, script).await;
+        let second = run_second(handle, script).await;
         vec![first, second]
     }
 
-    // The first transaction of the plan, through `reads`: store x and y on a and
-    // park k on b.
+    // The first transaction of the plan: store x and y on a and park k on b.
     async fn run_first(
         handle: &Handle,
         script: Option<&Script>,
-        reads: SharedReads<String, String, String, String>,
     ) -> SpaceTxnReceipt<String, String, String, String> {
         if let Some(script) = script {
             for _ in 0..3 {
                 script.push(Row::stored());
             }
         }
-        let mut txn = handle
-            .begin_metered(&[s("a"), s("b")], reads)
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("a"), s("b")]).await.expect("begin");
         txn.produce(store_op("a", "x")).expect("stage x");
         txn.produce(store_op("a", "y")).expect("stage y");
         txn.consume(park_op("b", "k")).expect("stage the park");
         txn.commit().await.expect("commit the stores and the park")
     }
 
-    // The second transaction of the plan, through `reads`: take x from a and fire k
-    // with z.
+    // The second transaction of the plan: take x from a and fire k with z.
     async fn run_second(
         handle: &Handle,
         script: Option<&Script>,
-        reads: SharedReads<String, String, String, String>,
     ) -> SpaceTxnReceipt<String, String, String, String> {
         let keys = [s("a"), s("b")];
-        let mut txn = handle.begin_metered(&keys, reads).await.expect("begin");
+        let mut txn = handle.begin(&keys).await.expect("begin");
         let (index, stored) = txn
             .data(&s("a"))
             .expect("read a")
@@ -1650,19 +1758,9 @@ mod tests {
         txn.commit().await.expect("commit the take and the fire")
     }
 
-    fn state(
-        store: SharedStore<String, String, String, String>,
-    ) -> (
-        std::collections::HashMap<String, Vec<Datum<String>>>,
-        std::collections::HashMap<Vec<String>, Vec<WaitingContinuation<String, String>>>,
-        std::collections::HashMap<String, Vec<Vec<String>>>,
-    ) {
-        let snapshot = store.snapshot();
-        (snapshot.data_flat(), snapshot.continuations_flat(), snapshot.joins_flat())
-    }
-
-    // H24 by construction (S2): native replay commits the receipts, the store state
-    // and the produce counters of play.
+    // H24 (S2): native replay commits the receipts, the store state and the
+    // produce counters of play, and its export reaches the root of the
+    // checkpoint of play. Both runs start at the empty history.
     #[tokio::test]
     async fn native_space_replay_effects_equal_play() {
         let mut stores = InMemoryStoreManager::new();
@@ -1671,118 +1769,41 @@ mod tests {
             Arc::new(Box::new(AnyMatch)),
         )
         .expect("the play space");
+        let empty = play.get_history_repository().root();
         let play_handle = SpaceStoreHandle::new(play.clone());
         let played = run_plan(&play_handle, None).await;
-        let play_state = state(play.get_store());
 
         let script = Script::default();
         let session = session(&script, Vec::new()).await;
         let native_handle = handle(&session);
         let replayed = run_plan(&native_handle, Some(&script)).await;
-        let replay_state = state(session.space.get_store());
 
-        let outcome: Outcome = (played, play_state.0, play_state.1, play_state.2);
-        let native: Outcome = (replayed, replay_state.0, replay_state.1, replay_state.2);
-        assert_eq!(outcome, native);
+        assert_eq!(replayed, played);
+        assert_eq!(
+            StoreState::of_session(&session).nonempty(),
+            StoreState::of_play(play.get_store()).nonempty()
+        );
         let produces: Vec<Produce> = [("a", "x"), ("a", "y"), ("b", "z")]
             .into_iter()
             .map(|(channel, data)| Produce::create(&s(channel), &s(data), false))
             .collect();
         let mut counters = Vec::with_capacity(2);
         for handle in [&play_handle, &native_handle] {
-            let mut txn = handle
-                .begin_metered(&[s("a"), s("b")], reads())
-                .await
-                .expect("begin");
+            let mut txn = handle.begin(&[s("a"), s("b")]).await.expect("begin");
             counters.push(txn.produce_counters(&produces).expect("read the counters"));
         }
         assert_eq!(counters[0], counters[1]);
         assert_eq!(counters[1].values().copied().collect::<Vec<_>>(), vec![1, 1, 1]);
         assert!(!script.log().contains(&"wait_ready".to_owned()));
-    }
-
-    // The view reservations of metered reads, in order: (operations, scanned,
-    // backing).
-    #[derive(Clone, Default)]
-    struct ChargeLog(Arc<Mutex<Vec<(usize, usize, usize)>>>);
-
-    impl ChargeLog {
-        fn reads(&self) -> SharedReads<String, String, String, String> {
-            let log = self.clone();
-            Arc::new(NativeViewReads::new(
-                move |operations: usize, scanned: usize, backing: usize| {
-                    log.0
-                        .lock()
-                        .expect("the charge log")
-                        .push((operations, scanned, backing));
-                    Ok::<(), RSpaceError>(())
-                },
-            ))
-        }
-
-        fn entries(&self) -> Vec<(usize, usize, usize)> {
-            self.0.lock().expect("the charge log").clone()
-        }
-    }
-
-    // The native replay session of `script` over `history`, at its current root.
-    fn session_on(
-        script: &Script,
-        history: SharedHistory<String, String, String, String>,
-    ) -> Arc<Session> {
-        Arc::new(
-            Session::new_with_installs(
-                history,
-                Arc::new(Box::new(AnyMatch)),
-                script.clone(),
-                Vec::new(),
-            )
-            .expect("a native replay session"),
-        )
-    }
-
-    // P5 (decision 47, I-12): the metered reads of native replay reserve the view
-    // loads of play, in the order of play, and a warm load reserves what a cold
-    // load reserves. Play and native replay read the records of the first
-    // transaction cold from the history. A second play reads them warm from its
-    // hot store.
-    #[tokio::test]
-    async fn native_space_replay_view_charges_equal_play() {
-        let mut stores = InMemoryStoreManager::new();
-        let cold = RSpace::<String, String, String, String>::create(
-            stores.r_space_stores().await.expect("in-memory stores"),
-            Arc::new(Box::new(AnyMatch)),
-        )
-        .expect("the cold play space");
-        let cold_handle = SpaceStoreHandle::new(cold.clone());
-        run_first(&cold_handle, None, reads()).await;
-        cold.create_checkpoint().await.expect("the checkpoint");
-        let history = cold.get_history_repository();
-        let cold_charges = ChargeLog::default();
-        let cold_receipt = run_second(&cold_handle, None, cold_charges.reads()).await;
-
-        let script = Script::default();
-        let session = session_on(&script, history);
-        let native_handle = handle(&session);
-        let native_charges = ChargeLog::default();
-        let native_receipt =
-            run_second(&native_handle, Some(&script), native_charges.reads()).await;
-
-        let mut stores = InMemoryStoreManager::new();
-        let warm = RSpace::<String, String, String, String>::create(
-            stores.r_space_stores().await.expect("in-memory stores"),
-            Arc::new(Box::new(AnyMatch)),
-        )
-        .expect("the warm play space");
-        let warm_handle = SpaceStoreHandle::new(warm);
-        run_first(&warm_handle, None, reads()).await;
-        let warm_charges = ChargeLog::default();
-        run_second(&warm_handle, None, warm_charges.reads()).await;
-
-        assert!(!cold_charges.entries().is_empty(), "the metered reads reserve the view loads");
-        assert_eq!(native_charges.entries(), cold_charges.entries());
-        assert_eq!(warm_charges.entries(), cold_charges.entries());
-        assert_eq!(native_receipt, cold_receipt);
+        // The export of the session holds the effects of the space operations,
+        // so it reaches the root of play (DR-96).
+        let exported = session.export().await.expect("the export");
+        let checkpoint = play.create_checkpoint().await.expect("the checkpoint");
+        assert_ne!(
+            checkpoint.root, empty,
+            "the plan changes the store, so the check is not vacuous"
+        );
+        assert_eq!(exported.root(), &checkpoint.root);
     }
 
     // Negative control for a backend that searches the candidates again (design
@@ -1797,10 +1818,7 @@ mod tests {
         for _ in 0..2 {
             script.push(Row::stored());
         }
-        let mut txn = handle
-            .begin_metered(&[s("a")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("a")]).await.expect("begin");
         txn.produce(store_op("a", "x")).expect("stage x");
         txn.produce(store_op("a", "y")).expect("stage y");
         txn.commit().await.expect("commit the stores");
@@ -1808,10 +1826,7 @@ mod tests {
 
         // The COMM of the take of y, from a transaction that never commits.
         let other = {
-            let mut txn = handle
-                .begin_metered(&[s("a")], reads())
-                .await
-                .expect("begin");
+            let mut txn = handle.begin(&[s("a")]).await.expect("begin");
             let (index, stored) = txn
                 .data(&s("a"))
                 .expect("read a")
@@ -1826,10 +1841,7 @@ mod tests {
                 .comm
                 .expect("a take has a COMM")
         };
-        let mut txn = handle
-            .begin_metered(&[s("a")], reads())
-            .await
-            .expect("begin");
+        let mut txn = handle.begin(&[s("a")]).await.expect("begin");
         let (index, stored) = txn
             .data(&s("a"))
             .expect("read a")
@@ -1847,20 +1859,21 @@ mod tests {
         assert!(!script.log().contains(&"observe_comm".to_owned()));
         assert!(!script.log().contains(&"publish".to_owned()));
         assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
-        let state = session.space.get_store().snapshot();
-        assert_eq!(state.data_flat().get(&s("a")).map(Vec::len), Some(2));
+        let state = StoreState::of_session(&session);
+        assert_eq!(state.data.get(&s("a")).map(Vec::len), Some(2));
     }
 
-    // ─── Properties of decision 47 (H24-H27, T8, NoDeadlock)
+    // ─── Properties of decision 47 (H24-H26, T8, NoDeadlock)
     // ──────────────────────
     //
     // A plan is a list of transactions of one to three steps. A step is a send of
     // a value or a receive on a channel, and the agent's rule decides its staged
     // operation: a send fires the first waiter of its channel or stores, and a
     // receive takes the first record of its channel or parks. Play runs the plan on
-    // a play space with metered reads, and native replay runs it on a scripted
-    // epoch that records the row of each operation as play staged it. Runs are
-    // deterministic (a fixed seed) and keep no failure file.
+    // a play space, and native replay runs it on a scripted epoch that records the
+    // row of each operation as play staged it. Runs are deterministic (a fixed
+    // seed) and keep no failure file. H27 compared the charges of metered reads,
+    // and the metered reads are removed with host-work metering (DR-131).
 
     const PROP_SEED: u64 = 0x0D47_5EED_2026_1007;
 
@@ -1991,12 +2004,11 @@ mod tests {
         script: Option<&Script>,
         plan: &[Vec<Step>],
         edit: Option<(usize, usize, Edit)>,
-        reads: impl Fn() -> SharedReads<String, String, String, String>,
     ) -> PlanResults {
         let keys: Vec<String> = PROP_CHANNELS.iter().map(|channel| s(channel)).collect();
         let mut results = Vec::with_capacity(plan.len());
         for (index, steps) in plan.iter().enumerate() {
-            let mut txn = handle.begin_metered(&keys, reads()).await.expect("begin");
+            let mut txn = handle.begin(&keys).await.expect("begin");
             let mut rows = Vec::with_capacity(steps.len());
             for (position, step) in steps.iter().enumerate() {
                 rows.push(stage_step(&mut txn, *step, &format!("k{index}.{position}")));
@@ -2060,65 +2072,54 @@ mod tests {
             }
         }
         let keys: Vec<String> = PROP_CHANNELS.iter().map(|channel| s(channel)).collect();
-        let mut txn = handle.begin_metered(&keys, reads()).await.expect("begin");
+        let mut txn = handle.begin(&keys).await.expect("begin");
         txn.produce_counters(&produces)
             .expect("read the counters")
             .into_iter()
             .collect()
     }
 
-    // The store state without empty entries. A metered view load caches the empty
-    // history value of a channel that it reads, so a run that loaded a view of an
-    // empty channel holds an empty entry where a run that did not load it holds
-    // none. An empty entry stores nothing and reaches no checkpoint.
-    fn nonempty(state: Outcome0) -> Outcome0 {
-        let (mut data, mut conts, mut joins) = state;
-        data.retain(|_, records| !records.is_empty());
-        conts.retain(|_, waiters| !waiters.is_empty());
-        joins.retain(|_, groups| !groups.is_empty());
-        (data, conts, joins)
-    }
-
-    type Outcome0 = (
-        std::collections::HashMap<String, Vec<Datum<String>>>,
-        std::collections::HashMap<Vec<String>, Vec<WaitingContinuation<String, String>>>,
-        std::collections::HashMap<String, Vec<Vec<String>>>,
-    );
-
     proptest::proptest! {
         #![proptest_config(property_config())]
 
         // H24 and T8: native replay over the rows of play commits the receipts, the
         // store and the produce counters of play, consumes one row for each
-        // operation, and keeps the epoch open.
+        // operation, and keeps the epoch open. Its export reaches the root of the
+        // checkpoint of play (DR-96).
         #[test]
         fn prop_native_space_replay_reproduces_play(plan in plan_strategy()) {
             property_runtime().block_on(async {
                 let play = play_space().await;
                 let play_handle = SpaceStoreHandle::new(play.clone());
-                let played = run_prop_plan(&play_handle, None, &plan, None, reads).await;
+                let played = run_prop_plan(&play_handle, None, &plan, None).await;
                 proptest::prop_assert!(played.iter().all(Result::is_ok), "{:?}", played);
 
                 let script = Script::default();
                 let session = session(&script, Vec::new()).await;
                 let native_handle = handle(&session);
-                let replayed =
-                    run_prop_plan(&native_handle, Some(&script), &plan, None, reads).await;
+                let replayed = run_prop_plan(&native_handle, Some(&script), &plan, None).await;
                 proptest::prop_assert_eq!(&replayed, &played);
-                proptest::prop_assert_eq!(state(session.space.get_store()), state(play.get_store()));
+                proptest::prop_assert_eq!(
+                    StoreState::of_session(&session).nonempty(),
+                    StoreState::of_play(play.get_store()).nonempty()
+                );
                 proptest::prop_assert_eq!(
                     plan_counters(&native_handle).await,
                     plan_counters(&play_handle).await
                 );
                 proptest::prop_assert!(script.rows.lock().expect("rows lock").is_empty());
                 proptest::prop_assert!(!script.log().contains(&"invalidate".to_owned()));
+                let exported = session.export().await.expect("the export");
+                let checkpoint = play.create_checkpoint().await.expect("the checkpoint");
+                proptest::prop_assert_eq!(exported.root(), &checkpoint.root);
                 Ok::<(), proptest::test_runner::TestCaseError>(())
             })?;
         }
 
         // H25 and NoDeadlock: a recorded denial at one operation fails the commit
-        // with OutOfPhlogistons, keeps the operations before it applied (D6), as
-        // play of the prefix applies them, and keeps the epoch open.
+        // with the denial error of the epoch (DR-113), keeps the operations before
+        // it applied (D6), as play of the prefix applies them, and keeps the epoch
+        // open.
         #[test]
         fn prop_native_space_replay_denial_keeps_prefix(
             plan in plan_strategy(),
@@ -2133,7 +2134,6 @@ mod tests {
                     None,
                     &prefix_plan(&plan, at, op),
                     None,
-                    reads,
                 )
                 .await;
 
@@ -2144,18 +2144,17 @@ mod tests {
                     Some(&script),
                     &plan,
                     Some((at, op, Edit::Deny { comm })),
-                    reads,
                 )
                 .await;
                 proptest::prop_assert_eq!(replayed.len(), at + 1);
                 proptest::prop_assert!(replayed[..at].iter().all(Result::is_ok));
                 proptest::prop_assert_eq!(
                     replayed[at].as_ref().err(),
-                    Some(&SpaceTxnError::Host(RSpaceError::OutOfPhlogistons))
+                    Some(&SpaceTxnError::Host(RSpaceError::SignedLimitExhausted))
                 );
                 proptest::prop_assert_eq!(
-                    nonempty(state(session.space.get_store())),
-                    nonempty(state(prefix.get_store()))
+                    StoreState::of_session(&session).nonempty(),
+                    StoreState::of_play(prefix.get_store()).nonempty()
                 );
                 proptest::prop_assert!(!script.log().contains(&"invalidate".to_owned()));
                 Ok::<(), proptest::test_runner::TestCaseError>(())
@@ -2181,14 +2180,13 @@ mod tests {
                     None,
                     &prefix_plan(&plan, at, op),
                     None,
-                    reads,
                 )
                 .await;
 
                 let script = Script::default();
                 let session = session(&script, Vec::new()).await;
                 let replayed =
-                    run_prop_plan(&handle(&session), Some(&script), &plan, Some((at, op, edit)), reads)
+                    run_prop_plan(&handle(&session), Some(&script), &plan, Some((at, op, edit)))
                         .await;
                 proptest::prop_assert_eq!(replayed.len(), at + 1);
                 proptest::prop_assert!(replayed[..at].iter().all(Result::is_ok));
@@ -2199,66 +2197,10 @@ mod tests {
                     other => proptest::prop_assert!(false, "a mismatch, not {:?}", other),
                 }
                 proptest::prop_assert_eq!(
-                    nonempty(state(session.space.get_store())),
-                    nonempty(state(prefix.get_store()))
+                    StoreState::of_session(&session).nonempty(),
+                    StoreState::of_play(prefix.get_store()).nonempty()
                 );
                 proptest::prop_assert!(script.log().contains(&"invalidate".to_owned()));
-                Ok::<(), proptest::test_runner::TestCaseError>(())
-            })?;
-        }
-
-        // H27 (P5): play reads a view cold from the history, native replay reads it
-        // cold through its session, and a second play reads it warm from its hot
-        // store. The three runs reserve the same view charges in the same order.
-        #[test]
-        fn prop_view_charge_cache_independent(plan in plan_strategy()) {
-            property_runtime().block_on(async {
-                let steps: Vec<Vec<Step>> = vec![plan.concat()];
-                let read_all = |txn: &mut BoxedSpaceTxn<String, String, String, String>| {
-                    for channel in PROP_CHANNELS {
-                        txn.data(&s(channel)).expect("read the data");
-                        txn.continuations(&[s(channel)]).expect("read the waiters");
-                    }
-                };
-                let keys: Vec<String> = PROP_CHANNELS.iter().map(|channel| s(channel)).collect();
-
-                let cold = play_space().await;
-                let cold_handle = SpaceStoreHandle::new(cold.clone());
-                run_prop_plan(&cold_handle, None, &steps, None, reads).await;
-                cold.create_checkpoint().await.expect("the checkpoint");
-                let history = cold.get_history_repository();
-                let cold_charges = ChargeLog::default();
-                let mut txn = cold_handle
-                    .begin_metered(&keys, cold_charges.reads())
-                    .await
-                    .expect("begin");
-                read_all(&mut txn);
-                drop(txn);
-
-                let script = Script::default();
-                let session = session_on(&script, history);
-                let native_charges = ChargeLog::default();
-                let mut txn = handle(&session)
-                    .begin_metered(&keys, native_charges.reads())
-                    .await
-                    .expect("begin");
-                read_all(&mut txn);
-                drop(txn);
-
-                let warm = play_space().await;
-                let warm_handle = SpaceStoreHandle::new(warm);
-                run_prop_plan(&warm_handle, None, &steps, None, reads).await;
-                let warm_charges = ChargeLog::default();
-                let mut txn = warm_handle
-                    .begin_metered(&keys, warm_charges.reads())
-                    .await
-                    .expect("begin");
-                read_all(&mut txn);
-                drop(txn);
-
-                proptest::prop_assert!(!cold_charges.entries().is_empty());
-                proptest::prop_assert_eq!(native_charges.entries(), cold_charges.entries());
-                proptest::prop_assert_eq!(warm_charges.entries(), cold_charges.entries());
                 Ok::<(), proptest::test_runner::TestCaseError>(())
             })?;
         }

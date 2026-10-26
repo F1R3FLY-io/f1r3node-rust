@@ -14,9 +14,7 @@ fn retained_acquisition_is_a_separate_funded_obligation_not_a_comm() {
         quantity: 3,
     }];
     let base = execution(&SCHEDULES, &[], &required, &required);
-    let checked = base
-        .with_retained_acquisitions(&retained, &funding_work())
-        .unwrap();
+    let checked = base.with_retained_acquisitions(&retained).unwrap();
     assert_eq!(checked.usage(), base.usage());
     assert_eq!(checked.fresh_usage(), base.fresh_usage());
     assert_eq!(base.retained_usage(), 0);
@@ -57,7 +55,7 @@ fn retained_acquisition_is_a_separate_funded_obligation_not_a_comm() {
         Err(PhloObligationError::TooManyObligations)
     );
     let prepaid = execution(&SCHEDULES, &required, &required, &[])
-        .with_retained_acquisitions(&retained, &funding_work())
+        .with_retained_acquisitions(&retained)
         .unwrap();
     assert_eq!(
         project_phlo_obligations(prepaid, PhloOutcome::Accepted(&[]), cap(2))
@@ -76,7 +74,7 @@ fn retained_acquisition_requires_distinct_backing_and_signed_resource_permission
         quantity: 3,
     }];
     let checked = execution(&SCHEDULES, &[], &required, &required)
-        .with_retained_acquisitions(&retained, &funding_work())
+        .with_retained_acquisitions(&retained)
         .unwrap();
     let obligations =
         project_phlo_obligations(checked, PhloOutcome::Accepted(&[]), cap(3)).unwrap();
@@ -96,7 +94,7 @@ fn retained_acquisition_requires_distinct_backing_and_signed_resource_permission
             canonical_fee_cursor: 0,
         };
         let selection = obligations
-            .select_funding(input, selection_limits(), &funding_work())
+            .select_funding(input, selection_limits())
             .unwrap()
             .unwrap();
         for (column, expected) in [1u64, 2, 6].into_iter().enumerate() {
@@ -187,8 +185,7 @@ fn retained_acquisition_requires_distinct_backing_and_signed_resource_permission
 }
 
 #[test]
-fn retained_acquisition_checks_zero_quantities_overflow_and_work() {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
+fn retained_acquisition_checks_zero_quantities_and_overflow() {
     let authority = Sig::Ground(vec![1]);
     let base = execution(&SCHEDULES, &[], &[], &[]);
     for quantity in [0, u64::MAX] {
@@ -196,16 +193,12 @@ fn retained_acquisition_checks_zero_quantities_overflow_and_work() {
             resource: resource(&authority),
             quantity,
         }];
-        assert!(base
-            .with_retained_acquisitions(&output, &funding_work())
-            .is_err());
+        assert!(base.with_retained_acquisitions(&output).is_err());
     }
     let output = [PhloResourceAmount {
         resource: resource(&authority),
         quantity: 1,
     }];
-    let zero = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(base.with_retained_acquisitions(&output, &zero).is_err());
     let unknown = [PhloResourceAmount {
         resource: PhloResource {
             class: 3,
@@ -213,9 +206,7 @@ fn retained_acquisition_checks_zero_quantities_overflow_and_work() {
         },
         quantity: 1,
     }];
-    assert!(base
-        .with_retained_acquisitions(&unknown, &funding_work())
-        .is_err());
+    assert!(base.with_retained_acquisitions(&unknown).is_err());
     let free = PhloResource {
         class: 2,
         ..resource(&authority)
@@ -230,15 +221,9 @@ fn retained_acquisition_checks_zero_quantities_overflow_and_work() {
             quantity: 1,
         },
     ];
-    assert!(base
-        .with_retained_acquisitions(&overflowing, &funding_work())
-        .is_err());
-    let retained = base
-        .with_retained_acquisitions(&output, &funding_work())
-        .unwrap();
-    let cleared = retained
-        .with_retained_acquisitions(&[], &funding_work())
-        .unwrap();
+    assert!(base.with_retained_acquisitions(&overflowing).is_err());
+    let retained = base.with_retained_acquisitions(&output).unwrap();
+    let cleared = retained.with_retained_acquisitions(&[]).unwrap();
     assert_eq!(cleared, base);
 }
 
@@ -257,14 +242,14 @@ proptest! {
             vec![PhloResourceAmount { resource: resource(&authority), quantity: 1 },
                 PhloResourceAmount { resource: resource(&authority), quantity: retained - 1 }]
         } else { vec![PhloResourceAmount { resource: resource(&authority), quantity: retained }] };
-        let checked = base.with_retained_acquisitions(&outputs, &funding_work()).unwrap();
+        let checked = base.with_retained_acquisitions(&outputs).unwrap();
         let obligations = project_phlo_obligations(checked, PhloOutcome::Accepted(&[]), cap(3)).unwrap();
         prop_assert_eq!(checked.usage(), 2 * (used + fresh) as u64);
         prop_assert_eq!(obligations.total(), 1 + 2 * (fresh as u64 + retained) * price);
         prop_assert_eq!(obligations.amounts().last().copied(), Some(2 * retained * price));
         prop_assert_eq!(obligations.quantities().last().copied(), Some(retained));
         let mut reversed = outputs.clone(); reversed.reverse();
-        let other = base.with_retained_acquisitions(&reversed, &funding_work()).unwrap();
+        let other = base.with_retained_acquisitions(&reversed).unwrap();
         let compared = project_phlo_obligations(other, PhloOutcome::Accepted(&[]), cap(3)).unwrap();
         prop_assert_eq!(obligations.amounts(), compared.amounts());
         prop_assert_eq!(obligations.encoded_keys(wire_limits(), 65_536).unwrap(), compared.encoded_keys(wire_limits(), 65_536).unwrap());

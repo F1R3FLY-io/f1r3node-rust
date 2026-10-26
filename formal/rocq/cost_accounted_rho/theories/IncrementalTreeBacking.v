@@ -28,12 +28,16 @@
    - legacy_cumulative_quadratic and legacy_example: the legacy charge grows
      quadratically, while the C13 charge stays linear.
 
-   Rust correspondence: shared/src/rust/collection_backing.rs (tree_backing,
+   Rust correspondence before DR-131: shared/src/rust/collection_backing.rs (tree_backing,
    tree_growth); rholang/src/rust/interpreter/accounting/mod.rs
    (reserve_registry_insert, reserve_tree_birth, reserve_tree_batch);
    rspace++/src/rspace/replay_rspace/native_candidate/metered.rs
    (prepare_metered_produce_counter). The extracted property tests are in the tree_growth_tests
    module of accounting/mod.rs. *)
+
+(* DR-131: host work is removed, so the tree growth charges of this file
+   describe deleted code. The file stays because FreeMapBindings requires
+   it, and FreeVariableFastPath requires FreeMapBindings. *)
 
 From Stdlib Require Import Lists.List Arith.PeanoNat Lia.
 From CostAccountedRho Require Import NativeCheckpointBacking.

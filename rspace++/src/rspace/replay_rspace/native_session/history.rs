@@ -1,31 +1,22 @@
 use serde::de::DeserializeOwned;
-use shared::rust::clone_backing::CloneBacking;
 
 use super::*;
-use crate::rspace::hashing::native_source::{SourceMeter, channels_hash, hash};
+// Changed by D-C2d (D-S1, DR-96): the cold fills read the history by the
+// store keys, so they no longer hash a channel.
+// use crate::rspace::hashing::native_source::{
+//     GroupKeys, SourceMeter, StoreKey, channels_hash, hash,
+// };
+use crate::rspace::hashing::native_source::{GroupKeys, StoreKey, channels_hash_from_keys};
 use crate::rspace::history::native_reader::{
-    NativeLeafKind, NativeReadCharge, NativeReadError, NativeReadFault, NativeReadMeter,
-    decode_record,
+    NativeLeafKind, NativeReadError, decode_continuation, decode_datum, decode_join,
 };
 use crate::rspace::hot_store::NativeDataView;
-
-struct Meter<F>(F);
-
-impl<F: Fn(usize, usize, usize) -> Result<(), RSpaceError>> NativeReadMeter for Meter<F> {
-    type Error = RSpaceError;
-
-    fn reserve(&self, charge: NativeReadCharge) -> Result<(), Self::Error> {
-        (self.0)(charge.operations, charge.scanned_bytes, charge.backing_bytes)
-    }
-}
+use crate::rspace::serializers::cold_store_decode::{ColdStoreDecode, ColdStoreDecodeError};
 
 fn read_error(error: NativeReadError<RSpaceError>) -> RSpaceError {
     match error {
-        NativeReadError::Host(error) | NativeReadError::Consumer(error) => error,
+        NativeReadError::Consumer(error) => error,
         NativeReadError::Store(error) => error.into(),
-        NativeReadError::Invalid(
-            NativeReadFault::Depth | NativeReadFault::Allocation | NativeReadFault::Overflow,
-        ) => RSpaceError::HostWorkRejected,
         NativeReadError::Invalid(error) => {
             RSpaceError::InterpreterError(format!("native history: {error:?}"))
         }
@@ -38,8 +29,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + Hash
         + Ord
         + Eq
@@ -50,8 +41,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -59,8 +50,8 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
@@ -68,53 +59,43 @@ where
         + Debug
         + Default
         + Serialize
-        + CloneBacking
         + DeserializeOwned
+        + ColdStoreDecode
         + 'static
         + Sync
         + Send,
     E: NativeReplayEpoch,
 {
-    pub(super) fn read_records<T: DeserializeOwned>(
+    /// Changed by DR-131 S6: the rows of one native history leaf, each
+    /// decoded by `decode`, the cold-store decoder of the leaf's kind
+    /// (`decode_datum`, `decode_join` or `decode_continuation`). The typed
+    /// decoder, its meter and its 128-level stop are deleted (D-A). A row
+    /// that the decoder rejects is a typed-record fault, as before.
+    pub(super) fn read_records<T>(
         &self,
         kind: NativeLeafKind,
-        projection: Blake2b256Hash,
-        reserve: &impl SourceMeter,
+        // Changed by D-C2d (D-S1, DR-96): the projection is the 32 bytes of a
+        // store key's digest, so it needs no conversion.
+        // projection: Blake2b256Hash,
+        projection: &[u8; 32],
+        decode: impl Fn(&[u8]) -> Result<T, ColdStoreDecodeError>,
     ) -> Result<Vec<T>, RSpaceError> {
         let history = self.space.get_history_repository();
-        let projection = projection.0.as_slice().try_into().map_err(|_| {
-            RSpaceError::InterpreterError("native history projection length".to_owned())
-        })?;
-        let meter =
-            Meter(|operations, scanned, backing| reserve.reserve(operations, scanned, backing));
-        let decode_meter = Meter(|operations: usize, scanned: usize, backing| {
-            reserve.reserve(
-                operations
-                    .checked_mul(2)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                scanned
-                    .checked_mul(2)
-                    .ok_or(RSpaceError::HostWorkRejected)?,
-                backing,
-            )
-        });
+        // let projection = projection.0.as_slice().try_into().map_err(|_| {
+        //     RSpaceError::InterpreterError("native history projection
+        // length".to_owned()) })?;
         history
             .native_history_reader(self.root)
-            .with_records(kind, &projection, &meter, |rows| {
-                reserve.reserve(
-                    rows.len()
-                        .checked_mul(2)
-                        .and_then(|count| count.checked_add(1))
-                        .ok_or(RSpaceError::HostWorkRejected)?,
-                    0,
-                    backing::<T>(rows.len())?,
-                )?;
-                let mut values = Vec::new();
-                values
-                    .try_reserve_exact(rows.len())
-                    .map_err(|_| RSpaceError::HostWorkRejected)?;
+            // Changed by D-C2d (D-S1, DR-96): the projection is a reference.
+            // .with_records(kind, &projection, &meter, |rows| {
+            .with_records(kind, projection, |rows| {
+                let mut values = Vec::with_capacity(rows.len());
                 for row in rows.iter() {
-                    values.push(decode_record(row, &decode_meter).map_err(read_error)?);
+                    // Changed by D-S2 (DR-95): the rows decode in History mode,
+                    // which charges each node once and reserves only real
+                    // allocations.
+                    // values.push(decode_record(row, &decode_meter).map_err(read_error)?);
+                    values.push(decode(row).map_err(|error| read_error(error.into()))?);
                 }
                 Ok(values)
             })
@@ -122,81 +103,143 @@ where
             .map(Option::unwrap_or_default)
     }
 
-    pub(super) fn history_reserve(
-        &self,
-        operations: usize,
-        scanned: usize,
-        backing: usize,
-    ) -> Result<(), RSpaceError> {
-        self.epoch.reserve_comparison(operations, scanned)?;
-        self.epoch.reserve_work(0, backing)
-    }
-
+    // Changed by D-C2c (D-S1, DR-96): the native session uses its
+    // digest-keyed store; each reader takes the key of its channel or group.
+    // pub(super) fn read_data_with(
+    //     &self,
+    //     channel: &C,
+    //     reserve: &impl SourceMeter,
+    // ) -> Result<Vec<Datum<A>>, RSpaceError> {
+    //     self.space.get_store().get_data_with_reader(
+    //         channel,
+    //         &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?,
+    // reserve),         reserve,
+    //     )
+    // }
     pub(super) fn read_data_with(
         &self,
         channel: &C,
-        reserve: &impl SourceMeter,
+        key: StoreKey,
     ) -> Result<Vec<Datum<A>>, RSpaceError> {
-        self.space.get_store().get_data_with_reader(
+        self.store.data(
             channel,
-            &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
-            reserve,
+            key,
+            // Changed by D-C2d (D-S1, DR-96): the cold fill reads by the key's
+            // digest instead of hashing the channel again.
+            // &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
+            &|| self.read_records(NativeLeafKind::Data, &key.0, decode_datum::<A>),
         )
     }
 
-    pub(super) fn read_joins(&self, channel: &C) -> Result<Vec<Vec<C>>, RSpaceError> {
-        let reserve =
-            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
-        self.space.get_store().get_joins_with_reader(
+    // pub(super) fn read_joins(&self, channel: &C) -> Result<Vec<Vec<C>>,
+    // RSpaceError> {     let reserve =
+    //         |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
+    //     self.space.get_store().get_joins_with_reader(
+    //         channel,
+    //         &|| self.read_records(NativeLeafKind::Joins, hash(channel,
+    // &reserve)?, &reserve),         &reserve,
+    //     )
+    // }
+    pub(super) fn read_joins(
+        &self,
+        channel: &C,
+        key: StoreKey,
+    ) -> Result<Vec<Vec<C>>, RSpaceError> {
+        self.store.joins(
             channel,
-            &|| self.read_records(NativeLeafKind::Joins, hash(channel, &reserve)?, &reserve),
-            &reserve,
+            key,
+            // Changed by D-C2d (D-S1, DR-96): the cold fill reads by the key's
+            // digest instead of hashing the channel again.
+            // &|| self.read_records(NativeLeafKind::Joins, hash(channel, &reserve)?, &reserve),
+            &|| self.read_records(NativeLeafKind::Joins, &key.0, decode_join::<C>),
         )
     }
 
+    // pub(super) fn read_continuations(
+    //     &self,
+    //     channels: &[C],
+    // ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
+    //     let reserve =
+    //         |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
+    //     self.space.get_store().get_continuations_with_reader(
+    //         channels,
+    //         &|| {
+    //             self.read_records(
+    //                 NativeLeafKind::Continuations,
+    //                 channels_hash(channels, &reserve)?,
+    //                 &reserve,
+    //             )
+    //         },
+    //         &reserve,
+    //     )
+    // }
     pub(super) fn read_continuations(
         &self,
         channels: &[C],
+        keys: &GroupKeys,
     ) -> Result<Vec<WaitingContinuation<P, K>>, RSpaceError> {
-        let reserve =
-            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
-        self.space.get_store().get_continuations_with_reader(
-            channels,
-            &|| {
-                self.read_records(
-                    NativeLeafKind::Continuations,
-                    channels_hash(channels, &reserve)?,
-                    &reserve,
-                )
-            },
-            &reserve,
-        )
+        self.store.continuations(channels, keys, &|| {
+            self.read_records(
+                NativeLeafKind::Continuations,
+                // Changed by D-C2d (D-S1, DR-96): the projection sorts the
+                // channel keys instead of hashing every channel again.
+                // channels_hash(channels, &reserve)?,
+                &channels_hash_from_keys(&keys.channels),
+                decode_continuation::<P, K>,
+            )
+        })
     }
 
+    // /// The continuations of `channels` as shared views (C1, DR-81).
+    // pub(super) fn read_continuation_views(
+    //     &self,
+    //     channels: &[C],
+    // ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError> {
+    //     let reserve =
+    //         |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
+    //     self.space.get_store().get_continuation_views_with_reader(
+    //         channels,
+    //         &|| {
+    //             self.read_records(
+    //                 NativeLeafKind::Continuations,
+    //                 channels_hash(channels, &reserve)?,
+    //                 &reserve,
+    //             )
+    //         },
+    //         &reserve,
+    //     )
+    // }
     /// The continuations of `channels` as shared views (C1, DR-81).
     pub(super) fn read_continuation_views(
         &self,
         channels: &[C],
+        keys: &GroupKeys,
     ) -> Result<Vec<Arc<WaitingContinuation<P, K>>>, RSpaceError> {
-        let reserve =
-            |operations, scanned, backing| self.history_reserve(operations, scanned, backing);
-        self.space.get_store().get_continuation_views_with_reader(
-            channels,
-            &|| {
-                self.read_records(
-                    NativeLeafKind::Continuations,
-                    channels_hash(channels, &reserve)?,
-                    &reserve,
-                )
-            },
-            &reserve,
-        )
+        self.store.continuation_views(channels, keys, &|| {
+            self.read_records(
+                NativeLeafKind::Continuations,
+                // Changed by D-C2d (D-S1, DR-96): the projection sorts the
+                // channel keys instead of hashing every channel again.
+                // channels_hash(channels, &reserve)?,
+                &channels_hash_from_keys(&keys.channels),
+                decode_continuation::<P, K>,
+            )
+        })
     }
 
+    // /// Fills the continuation cache of `channels` without copying a
+    // /// continuation (C1, DR-81).
+    // pub(super) fn prefetch_continuations(&self, channels: &[C]) -> Result<(),
+    // RSpaceError> {     self.read_continuation_views(channels).map(drop)
+    // }
     /// Fills the continuation cache of `channels` without copying a
     /// continuation (C1, DR-81).
-    pub(super) fn prefetch_continuations(&self, channels: &[C]) -> Result<(), RSpaceError> {
-        self.read_continuation_views(channels).map(drop)
+    pub(super) fn prefetch_continuations(
+        &self,
+        channels: &[C],
+        keys: &GroupKeys,
+    ) -> Result<(), RSpaceError> {
+        self.read_continuation_views(channels, keys).map(drop)
     }
 
     // Disabled by C2 (DR-82): the produce path prefetches with prefetch_data,
@@ -208,25 +251,47 @@ where
     //     .map(|_| ())
     // }
 
+    // Changed by D-C2c (D-S1, DR-96): the native session uses its
+    // digest-keyed store.
+    // /// A copy-free view of the cached data of `channel` (C2, DR-82).
+    // pub(super) fn read_data_view_with(
+    //     &self,
+    //     channel: &C,
+    //     reserve: &impl SourceMeter,
+    // ) -> Result<NativeDataView<C, A>, RSpaceError> {
+    //     self.space.get_store().get_data_view_with_reader(
+    //         channel,
+    //         &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?,
+    // reserve),         reserve,
+    //     )
+    // }
     /// A copy-free view of the cached data of `channel` (C2, DR-82).
     pub(super) fn read_data_view_with(
         &self,
         channel: &C,
-        reserve: &impl SourceMeter,
+        key: StoreKey,
     ) -> Result<NativeDataView<C, A>, RSpaceError> {
-        self.space.get_store().get_data_view_with_reader(
+        self.store.data_view(
             channel,
-            &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
-            reserve,
+            key,
+            // Changed by D-C2d (D-S1, DR-96): the cold fill reads by the key's
+            // digest instead of hashing the channel again.
+            // &|| self.read_records(NativeLeafKind::Data, hash(channel, reserve)?, reserve),
+            &|| self.read_records(NativeLeafKind::Data, &key.0, decode_datum::<A>),
         )
     }
 
+    // /// Fills the data cache of `channel` without copying a datum
+    // /// (C2, DR-82).
+    // pub(super) fn prefetch_data(&self, channel: &C) -> Result<(), RSpaceError> {
+    //     self.read_data_view_with(channel, &|operations, scanned, backing| {
+    //         self.history_reserve(operations, scanned, backing)
+    //     })
+    //     .map(drop)
+    // }
     /// Fills the data cache of `channel` without copying a datum
     /// (C2, DR-82).
-    pub(super) fn prefetch_data(&self, channel: &C) -> Result<(), RSpaceError> {
-        self.read_data_view_with(channel, &|operations, scanned, backing| {
-            self.history_reserve(operations, scanned, backing)
-        })
-        .map(drop)
+    pub(super) fn prefetch_data(&self, channel: &C, key: StoreKey) -> Result<(), RSpaceError> {
+        self.read_data_view_with(channel, key).map(drop)
     }
 }

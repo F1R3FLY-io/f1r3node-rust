@@ -266,13 +266,19 @@ fn peek_op_groups() -> impl Strategy<Value = Vec<Vec<Op>>> {
         .prop_map(binds_incoming_once)
 }
 
-// Groups with no repeated channel, for the properties that replay through
-// the host: host replay binds the records of a repeated channel in store
-// order where play binds them in hash order, so it can compute another COMM
-// than the log and fail its assertion (HEAD behavior, see
-// `space_store_handle_host_replay_repeated_channel_control`).
+// Groups for the properties that replay through the host, as in `op_groups`.
+// Changed by decision 89 (DR-129): the groups had no repeated channel, because
+// host replay bound the records of a repeated channel in store order where
+// play bound them in hash order (HEAD behavior). E1 gives a repeated channel
+// one order by source hash in host replay too
+// (`space_store_handle_host_replay_follows_a_repeated_channel`). The remaining
+// failures of host replay over these groups came from its hash-map order among
+// the recorded COMMs of one consume, and the properties draw a fresh host
+// replay for them (`paired_host_replay`).
 fn host_replay_op_groups() -> impl Strategy<Value = Vec<Vec<Op>>> {
-    proptest::collection::vec(proptest::collection::vec(op(false, ODD, 0.0), 1..=4), 1..=5)
+    // proptest::collection::vec(proptest::collection::vec(op(false, ODD, 0.0),
+    // 1..=4), 1..=5)
+    op_groups(false, ODD)
 }
 
 // Volatile and durable channels never share a join group.
@@ -384,12 +390,17 @@ async fn play_trace_equals_host(groups: Vec<Vec<Op>>) -> Result<(), TestCaseErro
 }
 
 // H2, T2: the committed state, and so the checkpoint root, equals the host's.
+// The record lists agree up to permutation, as H2 states
+// (`LogicalState::data_sorted`).
 async fn play_root_equals_host(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let host = play_space().await;
     let txn = play_space().await;
     let (_, receipts) = run_guided(&host, &txn, &groups).await;
     assert_committed(receipts)?;
-    prop_assert_eq!(logical_state(&txn), logical_state(&host));
+    // Changed by decision 89 (DR-129): the host picks at random among
+    // byte-identical records. prop_assert_eq!(logical_state(&txn),
+    // logical_state(&host));
+    prop_assert_eq!(logical_state(&txn).data_sorted(), logical_state(&host).data_sorted());
     let host_checkpoint = checkpoint(&host).await;
     let txn_checkpoint = checkpoint(&txn).await;
     prop_assert_eq!(txn_checkpoint.root, host_checkpoint.root);
@@ -473,14 +484,20 @@ async fn two_block_replay_preserves_roots(
 }
 
 // T1: a host play log replays through transactions and a transaction play
-// log replays through the host; both play logs are equal.
+// log replays through the host; both play logs are equal. The plans come from
+// the host play itself, because host play picks at random (DR-129). The host
+// replay is drawn until it pairs every recorded COMM (`paired_host_replay`,
+// decision 89).
 async fn cross_replay_with_host(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
-    let plans = plan_groups(&groups).await;
+    // Changed by decision 89 (DR-129): a second host run can pick other
+    // candidates than the run that planned the transactions.
+    // let plans = plan_groups(&groups).await;
     let ops = flatten(&groups);
 
     let (host_play, txn_replay) = play_and_replay().await;
     let host_start = checkpoint(&host_play).await;
-    run_host_ops(&host_play, &ops).await;
+    // run_host_ops(&host_play, &ops).await;
+    let (plans, _) = run_guided(&host_play, &play_space().await, &groups).await;
     let host_played = checkpoint(&host_play).await;
     rig(&txn_replay, &host_start.root, &host_played.log).await;
     assert_committed(run_plans(&SpaceStoreHandle::new(txn_replay.clone()), &plans).await)?;
@@ -489,12 +506,20 @@ async fn cross_replay_with_host(groups: Vec<Vec<Op>>) -> Result<(), TestCaseErro
         Err(error) => return Err(TestCaseError::fail(format!("transaction replay: {:?}", error))),
     }
 
-    let (txn_play, host_replay) = play_and_replay().await;
+    // Changed by decision 89 (DR-129): legacy host replay can leave a
+    // recorded COMM of this log unpaired, so the host replay is drawn
+    // (`paired_host_replay`).
+    // let (txn_play, host_replay) = play_and_replay().await;
+    let txn_play = play_space().await;
     let txn_start = checkpoint(&txn_play).await;
     assert_committed(run_plans(&SpaceStoreHandle::new(txn_play.clone()), &plans).await)?;
     let txn_played = checkpoint(&txn_play).await;
-    rig(&host_replay, &txn_start.root, &txn_played.log).await;
-    run_host_ops(&host_replay, &ops).await;
+    // rig(&host_replay, &txn_start.root, &txn_played.log).await;
+    // run_host_ops(&host_replay, &ops).await;
+    let host_replay =
+        paired_host_replay(|| replay_over(&txn_play), &txn_start.root, &txn_played.log, &ops)
+            .await
+            .map_err(TestCaseError::fail)?;
     match host_replay.create_checkpoint().await {
         Ok(replayed) => prop_assert_eq!(replayed.root, txn_played.root.clone()),
         Err(error) => return Err(TestCaseError::fail(format!("host replay: {:?}", error))),
@@ -848,25 +873,56 @@ async fn joins_lockstep(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     Ok(())
 }
 
-fn is_volatile(op: &Op) -> bool {
-    op_channels(op)
+// Disabled by decision 89 (DR-129): the sweep property filtered its host
+// operations with this predicate. It now filters the plans
+// (`is_volatile_plan`), because a second host run can pick other candidates.
+// fn is_volatile(op: &Op) -> bool {
+//     op_channels(op)
+//         .iter()
+//         .any(|channel| VOLATILE.contains(&channel.as_str()))
+// }
+
+// True when the plan `plan` stages an operation on a volatile channel. A
+// rejected plan stages nothing, so it is not volatile.
+fn is_volatile_plan(plan: &Planned) -> bool {
+    let channels = match plan {
+        Planned::Produce { channel, .. } => std::slice::from_ref(channel),
+        Planned::Consume { channels, .. } => channels.as_slice(),
+        Planned::Rejected { .. } => return false,
+    };
+    channels
         .iter()
         .any(|channel| VOLATILE.contains(&channel.as_str()))
 }
 
 // H13–H15, T4: the sweep removes exactly the volatile records, continuations
-// and joins, leaves the durable state, and does not move the root.
+// and joins, leaves the durable state, and does not move the root. The
+// reference runs the durable plans alone: volatile and durable channels never
+// share a join group, so the positions of a durable plan stay valid.
 async fn sweep_exact_and_root_neutral(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let plans = plan_groups(&groups).await;
     let space = play_space().await;
     let handle = SpaceStoreHandle::new(space.clone());
     assert_committed(run_plans(&handle, &plans).await)?;
     let reference = play_space().await;
-    let durable: Vec<Op> = flatten(&groups)
-        .into_iter()
-        .filter(|op| !is_volatile(op))
+    // Changed by decision 89 (DR-129): host play picks at random, so a second
+    // host run can take other records than the plans.
+    // let durable: Vec<Op> = flatten(&groups)
+    //     .into_iter()
+    //     .filter(|op| !is_volatile(op))
+    //     .collect();
+    // run_host_ops(&reference, &durable).await;
+    let durable: Vec<Vec<Planned>> = plans
+        .iter()
+        .map(|group| {
+            group
+                .iter()
+                .filter(|plan| !plan.is_rejected() && !is_volatile_plan(plan))
+                .cloned()
+                .collect()
+        })
         .collect();
-    run_host_ops(&reference, &durable).await;
+    assert_committed(run_plans(&SpaceStoreHandle::new(reference.clone()), &durable).await)?;
 
     let volatile = names(&VOLATILE);
     let mut expected = SweepReport {
@@ -1309,8 +1365,10 @@ fn check_receipt_flags(plans: &[Vec<Planned>], receipts: &[Receipt]) -> Result<(
 // re-produces as next produces of the transaction (`run_guided`,
 // `head_peek_path`): the re-store of each removed stored record and the
 // re-offer of a non-persistent incoming datum. The fire removes what the host
-// removes, so the committed state equals the host's exactly, in list order,
-// and so do the events and the root. Every result keeps the host's flag. The
+// removes, so the committed state equals the host's with the record lists up
+// to permutation (H2: since DR-129 the host can take another copy of a
+// byte-identical record), and the events and the root are equal. Every result
+// keeps the host's flag. The
 // same transactions, re-stores and re-offers included, replay and report
 // from the play log.
 async fn peek_restore(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
@@ -1325,7 +1383,10 @@ async fn peek_restore(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let receipts = assert_committed(receipts)?;
     check_receipt_flags(&plans, &receipts)?;
     prop_assert_eq!(txn_recorder.calls(), host_recorder.calls());
-    prop_assert_eq!(logical_state(&txn), logical_state(&host));
+    // Changed by decision 89 (DR-129): the host picks at random among
+    // byte-identical records. prop_assert_eq!(logical_state(&txn),
+    // logical_state(&host));
+    prop_assert_eq!(logical_state(&txn).data_sorted(), logical_state(&host).data_sorted());
     let host_checkpoint = checkpoint(&host).await;
     let txn_checkpoint = checkpoint(&txn).await;
     prop_assert_eq!(event_bytes(&txn_checkpoint.log), event_bytes(&host_checkpoint.log));
@@ -1356,7 +1417,8 @@ async fn peek_restore(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
 }
 
 // H12: reporting replays exactly like replay and reports what the host
-// reporting space reports.
+// reporting space reports. The host reporting space is drawn until it pairs
+// every recorded COMM (`paired_host_replay`, decision 89).
 async fn reporting_equals_replay(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let plans = plan_groups(&groups).await;
     let play = play_space().await;
@@ -1369,19 +1431,30 @@ async fn reporting_equals_replay(groups: Vec<Vec<Op>>) -> Result<(), TestCaseErr
     let reporting = reporting_over(&play);
     let reporting_recorder = Recorder::new();
     observed(&reporting, &reporting_recorder);
-    let by_host = reporting_over(&play);
+    // Changed by decision 89 (DR-129): the plans come from random host play,
+    // and legacy host replay can then leave a recorded COMM unpaired, so the
+    // host reporting space is drawn (`paired_host_replay`).
+    // let by_host = reporting_over(&play);
     rig(&replay, &start.root, &played.log).await;
-    for space in [&reporting, &by_host] {
-        space
-            .rig_and_reset(start.root.clone(), played.log.clone())
-            .await
-            .expect("rig a reporting space");
-    }
+    // for space in [&reporting, &by_host] {
+    //     space
+    //         .rig_and_reset(start.root.clone(), played.log.clone())
+    //         .await
+    //         .expect("rig a reporting space");
+    // }
+    reporting
+        .rig_and_reset(start.root.clone(), played.log.clone())
+        .await
+        .expect("rig a reporting space");
     let replayed =
         assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
     let reported =
         assert_committed(run_plans(&SpaceStoreHandle::new(reporting.clone()), &plans).await)?;
-    run_host_ops(&by_host, &flatten(&groups)).await;
+    // run_host_ops(&by_host, &flatten(&groups)).await;
+    let by_host =
+        paired_host_replay(|| reporting_over(&play), &start.root, &played.log, &flatten(&groups))
+            .await
+            .map_err(TestCaseError::fail)?;
     prop_assert_eq!(reported, replayed);
     prop_assert_eq!(reporting_recorder.calls(), replay_recorder.calls());
     prop_assert_eq!(
@@ -1430,14 +1503,18 @@ async fn root_leaf_count(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
 // H3: play counts the produce being fired, replay increments before
 // matching; both give the same COMMs, which equal the host's.
 async fn counter_timing(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
-    let plans = plan_groups(&groups).await;
+    // Changed by decision 89 (DR-129): host play picks at random, so the plans
+    // come from the host run whose COMMs the test compares.
+    // let plans = plan_groups(&groups).await;
+    let host = play_space().await;
+    let (plans, _) = run_guided(&host, &play_space().await, &groups).await;
     let (play, replay) = play_and_replay().await;
     let start = checkpoint(&play).await;
     let played_receipts =
         assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
     let played = checkpoint(&play).await;
-    let host = play_space().await;
-    run_host_ops(&host, &flatten(&groups)).await;
+    // let host = play_space().await;
+    // run_host_ops(&host, &flatten(&groups)).await;
     let host_log = host.take_event_log().await;
     rig(&replay, &start.root, &played.log).await;
     let replayed_receipts =
@@ -2397,7 +2474,9 @@ type HostFuture<'a> = Pin<Box<dyn Future<Output = Result<HostOutcome, RSpaceErro
 // (they touch only uncovered channels) or wait for the commit; the final
 // state, event log and root equal the serial order: the operations that
 // completed at once, the transaction, then the waiting operations in their
-// completion order.
+// completion order. The serial order repeats the outcome of each host
+// operation, and its record lists agree up to permutation (H2), because host
+// play picks at random (DR-129).
 async fn rejects_uncovered_channels(case: CoverageCase) -> Result<(), TestCaseError> {
     let CoverageCase {
         covered,
@@ -2406,13 +2485,25 @@ async fn rejects_uncovered_channels(case: CoverageCase) -> Result<(), TestCaseEr
         probes,
         host,
     } = case;
-    let setup_ops = flatten(&setup);
+    // Changed by decision 89 (DR-129): host play picks at random, so four host
+    // runs of the setup can leave four states, and the plans of the planner do
+    // not fit `space`. The setup is planned once, and the substrate stores it in
+    // `space` and in `reference`.
+    // let setup_ops = flatten(&setup);
     let planner_host = play_space().await;
     let planner_txn = play_space().await;
     let space = play_space().await;
     let reference = play_space().await;
+    // for target in [&planner_host, &planner_txn, &space, &reference] {
+    //     run_host_ops(target, &setup_ops).await;
+    //     target.take_event_log().await;
+    // }
+    let (setup_plans, setup_receipts) = run_guided(&planner_host, &planner_txn, &setup).await;
+    assert_committed(setup_receipts)?;
+    for target in [&space, &reference] {
+        assert_committed(run_plans(&SpaceStoreHandle::new(target.clone()), &setup_plans).await)?;
+    }
     for target in [&planner_host, &planner_txn, &space, &reference] {
-        run_host_ops(target, &setup_ops).await;
         target.take_event_log().await;
     }
     let (plans, receipts) = run_guided(&planner_host, &planner_txn, &[plan]).await;
@@ -2431,12 +2522,17 @@ async fn rejects_uncovered_channels(case: CoverageCase) -> Result<(), TestCaseEr
     for staged_plan in &plans[0] {
         staged(staged_plan, &mut txn)?;
     }
-    let mut early: Vec<usize> = Vec::with_capacity(host.len());
+    // Changed by decision 89 (DR-129): the reference repeats the outcome that
+    // each host operation had on `space`, because a host run of its own can
+    // pick other candidates. So the operations keep their outcomes.
+    // let mut early: Vec<usize> = Vec::with_capacity(host.len());
+    let mut early: Vec<(usize, HostOutcome)> = Vec::with_capacity(host.len());
     let mut waiting: Vec<(usize, HostFuture<'_>)> = Vec::with_capacity(host.len());
     for (index, op) in host.iter().enumerate() {
         let mut future: HostFuture<'_> = Box::pin(run_host(&space, op));
         match futures::poll!(&mut future) {
-            std::task::Poll::Ready(Ok(_)) => early.push(index),
+            // std::task::Poll::Ready(Ok(_)) => early.push(index),
+            std::task::Poll::Ready(Ok(outcome)) => early.push((index, outcome)),
             std::task::Poll::Ready(Err(error)) => {
                 return Err(TestCaseError::fail(format!("host operation: {:?}", error)));
             }
@@ -2444,7 +2540,7 @@ async fn rejects_uncovered_channels(case: CoverageCase) -> Result<(), TestCaseEr
         }
     }
     let covered_set: BTreeSet<&String> = covered.iter().collect();
-    for index in &early {
+    for (index, _) in &early {
         let touches_covered = op_channels(&host[*index])
             .iter()
             .any(|channel| covered_set.contains(channel));
@@ -2453,36 +2549,84 @@ async fn rejects_uncovered_channels(case: CoverageCase) -> Result<(), TestCaseEr
     if let Err(error) = txn.commit().await {
         return Err(TestCaseError::fail(format!("commit: {:?}", error)));
     }
-    let completed: RefCell<Vec<usize>> = RefCell::new(Vec::with_capacity(waiting.len()));
-    let results = futures::future::join_all(waiting.into_iter().map(|(index, future)| {
+    // let completed: RefCell<Vec<usize>> =
+    // RefCell::new(Vec::with_capacity(waiting.len())); let results =
+    // futures::future::join_all(waiting.into_iter().map(|(index, future)| {
+    //     let completed = &completed;
+    //     async move {
+    //         let result = future.await;
+    //         completed.borrow_mut().push(index);
+    //         result
+    //     }
+    // }))
+    // .await;
+    // if let Some(error) = results.into_iter().find_map(Result::err) {
+    //     return Err(TestCaseError::fail(format!("host operation: {:?}", error)));
+    // }
+    let completed: RefCell<Vec<(usize, Result<HostOutcome, RSpaceError>)>> =
+        RefCell::new(Vec::with_capacity(waiting.len()));
+    futures::future::join_all(waiting.into_iter().map(|(index, future)| {
         let completed = &completed;
         async move {
             let result = future.await;
-            completed.borrow_mut().push(index);
-            result
+            completed.borrow_mut().push((index, result));
         }
     }))
     .await;
-    if let Some(error) = results.into_iter().find_map(Result::err) {
-        return Err(TestCaseError::fail(format!("host operation: {:?}", error)));
+    let mut serial_tail = Vec::with_capacity(completed.borrow().len());
+    for (index, result) in completed.into_inner() {
+        match result {
+            Ok(outcome) => serial_tail.push((index, outcome)),
+            Err(error) => {
+                return Err(TestCaseError::fail(format!("host operation: {:?}", error)));
+            }
+        }
     }
 
-    for index in &early {
-        run_host(&reference, &host[*index])
-            .await
-            .expect("an early host operation");
+    // for index in &early {
+    //     run_host(&reference, &host[*index])
+    //         .await
+    //         .expect("an early host operation");
+    // }
+    // assert_committed(run_plans(&SpaceStoreHandle::new(reference.clone()),
+    // &plans).await)?; for index in completed.into_inner() {
+    //     run_host(&reference, &host[index])
+    //         .await
+    //         .expect("a waiting host operation");
+    // }
+    // prop_assert_eq!(logical_state(&space), logical_state(&reference));
+    let serial = SpaceStoreHandle::new(reference.clone());
+    for (index, outcome) in &early {
+        commit_host_outcome(&serial, &host[*index], outcome).await?;
     }
-    assert_committed(run_plans(&SpaceStoreHandle::new(reference.clone()), &plans).await)?;
-    for index in completed.into_inner() {
-        run_host(&reference, &host[index])
-            .await
-            .expect("a waiting host operation");
+    assert_committed(run_plans(&serial, &plans).await)?;
+    for (index, outcome) in &serial_tail {
+        commit_host_outcome(&serial, &host[*index], outcome).await?;
     }
-    prop_assert_eq!(logical_state(&space), logical_state(&reference));
+    prop_assert_eq!(logical_state(&space).data_sorted(), logical_state(&reference).data_sorted());
     let (concurrent, serial) = (checkpoint(&space).await, checkpoint(&reference).await);
     prop_assert_eq!(event_bytes(&concurrent.log), event_bytes(&serial.log));
     prop_assert_eq!(concurrent.root, serial.root);
     Ok(())
+}
+
+// Stages, as one transaction of `handle`, the outcome `outcome` that the host
+// operation `op` had on another space, and commits it (decision 89, DR-129).
+// The plan takes the first copy of a byte-identical record, as `run_guided`
+// does, so only the order of the record lists can differ from the host.
+async fn commit_host_outcome(
+    handle: &Handle,
+    op: &Op,
+    outcome: &HostOutcome,
+) -> Result<(), TestCaseError> {
+    let lock_keys = universe();
+    let mut txn = handle.begin(&lock_keys).await.expect("begin a transaction");
+    let plan = plan_from_host(&mut txn, op, outcome);
+    staged(&plan, &mut txn)?;
+    match txn.commit().await {
+        Ok(_) => Ok(()),
+        Err(error) => Err(TestCaseError::fail(format!("commit: {:?}", error))),
+    }
 }
 
 // FR-1': the stored records that a fire binds, by occurrence: exactly one
@@ -2523,9 +2667,13 @@ fn binds_each_record_once(plan: &Planned) -> Result<(), TestCaseError> {
 // accepted. Each occurrence binds its own record: a non-persistent record
 // binds once per COMM, and a produce-side fire binds the incoming datum
 // once. Staged from the host outcomes, such groups give the host's observer
-// calls, events, state and root, and replay through transactions pairs every
-// COMM and reaches the play root. Host replay is not an oracle here: it can
-// fail on such a log (see `host_replay_op_groups`).
+// calls, events, state (the record lists up to permutation, H2) and root, and
+// replay through transactions pairs every COMM and reaches the play root. Host
+// replay is not an oracle here: among byte-identical records it can pair a
+// COMM on another copy and leave recorded COMMs unpaired (see
+// `host_replay_op_groups`).
+// Changed by decision 89 (DR-129): the reason was the store order of host
+// replay before E1 ("it can fail on such a log").
 async fn repeated_channel_groups_equal_host(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let host = play_space().await;
     let host_recorder = Recorder::new();
@@ -2540,7 +2688,10 @@ async fn repeated_channel_groups_equal_host(groups: Vec<Vec<Op>>) -> Result<(), 
         binds_each_record_once(plan)?;
     }
     prop_assert_eq!(txn_recorder.calls(), host_recorder.calls());
-    prop_assert_eq!(logical_state(&txn), logical_state(&host));
+    // Changed by decision 89 (DR-129): the host picks at random among
+    // byte-identical records. prop_assert_eq!(logical_state(&txn),
+    // logical_state(&host));
+    prop_assert_eq!(logical_state(&txn).data_sorted(), logical_state(&host).data_sorted());
     let host_played = checkpoint(&host).await;
     let played = checkpoint(&txn).await;
     prop_assert_eq!(event_bytes(&played.log), event_bytes(&host_played.log));

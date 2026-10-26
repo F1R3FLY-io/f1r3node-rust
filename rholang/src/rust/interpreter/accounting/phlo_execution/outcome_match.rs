@@ -1,7 +1,5 @@
-use std::mem::size_of;
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_obligation::{PhloObligationKeyError, PhloObligationKeyLimits};
 use thiserror::Error;
 
@@ -12,9 +10,8 @@ use super::{
     PhloOutcome, WorkBudget,
 };
 use crate::rust::interpreter::accounting::economic_failure::EvaluationFailureSummary;
-use crate::rust::interpreter::accounting::monetary_allocation::{reserve_work, FundingSearchError};
-use crate::rust::interpreter::accounting::phlo_controls::{CheckedPhloControls, PhloSchedule};
-use crate::rust::interpreter::host_work::HostWorkBudget;
+use crate::rust::interpreter::accounting::monetary_allocation::FundingSearchError;
+use crate::rust::interpreter::accounting::phlo_controls::CheckedPhloControls;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PhloOutcomeMatchLimits {
@@ -64,33 +61,22 @@ struct NormalizedExecution<'a> {
     partitions: Vec<NormalizedPartition>,
 }
 
-fn normalize_outcome(
-    outcome: PhloOutcome<'_>,
-    budget: &HostWorkBudget,
-) -> Result<ObservedOutcome, PhloOutcomeMatchError> {
+fn normalize_outcome(outcome: PhloOutcome<'_>) -> Result<ObservedOutcome, PhloOutcomeMatchError> {
     Ok(match outcome {
         PhloOutcome::AdmissionRejected => ObservedOutcome::Rejected,
-        PhloOutcome::Accepted(failures) => {
-            reserve_work(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                failures.len(),
-            )?;
-            ObservedOutcome::Accepted(
-                failures
-                    .iter()
-                    .fold(EvaluationFailureSummary::default(), |summary, failure| {
-                        summary.union(EvaluationFailureSummary::single(*failure))
-                    }),
-            )
-        }
+        PhloOutcome::Accepted(failures) => ObservedOutcome::Accepted(
+            failures
+                .iter()
+                .fold(EvaluationFailureSummary::default(), |summary, failure| {
+                    summary.union(EvaluationFailureSummary::single(*failure))
+                }),
+        ),
     })
 }
 
 fn normalize_execution<'a>(
     execution: CheckedPhloExecution<'a>,
     limits: PhloOutcomeMatchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<NormalizedExecution<'a>, PhloOutcomeMatchError> {
     let [available, required, used, unused, fresh] = execution.witness().parts();
     let parts = [
@@ -110,11 +96,6 @@ fn normalize_execution<'a>(
             .checked_sub(part.len())
             .ok_or(PhloExecutionError::TooManyResourceEntries)?;
     }
-    reserve_work(
-        budget,
-        HostWorkDimension::SearchStateBytes,
-        6 * size_of::<NormalizedPartition>(),
-    )?;
     let mut partitions = Vec::new();
     partitions
         .try_reserve_exact(6)
@@ -130,7 +111,6 @@ fn normalize_execution<'a>(
             limits.key,
             &mut remaining_bytes,
             &mut keys_work,
-            budget,
         )?);
     }
     Ok(NormalizedExecution {
@@ -139,53 +119,10 @@ fn normalize_execution<'a>(
     })
 }
 
-fn reserve_schedule_comparison(
-    schedule: PhloSchedule<'_>,
-    budget: &HostWorkBudget,
-) -> Result<(), FundingSearchError> {
-    let env = schedule.environment;
-    let mut work = schedule
-        .weights
-        .len()
-        .checked_add(64)
-        .ok_or(FundingSearchError::Overflow)?;
-    for bytes in [env.network, env.shard, env.asset, env.unit] {
-        work = work
-            .checked_add(bytes.len())
-            .ok_or(FundingSearchError::Overflow)?;
-    }
-    reserve_work(budget, HostWorkDimension::VerificationOperations, work)
-}
-
-fn reserve_controls_comparison(
-    controls: CheckedPhloControls<'_>,
-    budget: &HostWorkBudget,
-) -> Result<(), FundingSearchError> {
-    let terms = controls.terms();
-    reserve_work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        terms
-            .required_owner_ceilings
-            .len()
-            .checked_add(terms.permitted_schedules.len())
-            .and_then(|n| n.checked_add(16))
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
-    reserve_schedule_comparison(controls.schedule(), budget)?;
-    for schedule in terms.permitted_schedules {
-        reserve_schedule_comparison(*schedule, budget)?;
-    }
-    Ok(())
-}
-
 fn normalized_executions_equal(
     left: &NormalizedExecution<'_>,
     right: &NormalizedExecution<'_>,
-    budget: &HostWorkBudget,
 ) -> Result<bool, PhloOutcomeMatchError> {
-    reserve_controls_comparison(left.controls, budget)?;
-    reserve_controls_comparison(right.controls, budget)?;
     if left.controls != right.controls {
         return Ok(false);
     }
@@ -198,14 +135,6 @@ fn normalized_executions_equal(
                 return Ok(false);
             }
             let (left, right) = (&left.keys[*l], &right.keys[*r]);
-            reserve_work(
-                budget,
-                HostWorkDimension::VerificationOperations,
-                left.len()
-                    .min(right.len())
-                    .checked_add(1)
-                    .ok_or(FundingSearchError::Overflow)?,
-            )?;
             if left != right {
                 return Ok(false);
             }
@@ -214,70 +143,10 @@ fn normalized_executions_equal(
     Ok(true)
 }
 
-fn reserve_capture_comparison<A>(
-    capture: &NativeScopedPhloFundingCapture<'_, A>,
-    budget: &HostWorkBudget,
-) -> Result<(), FundingSearchError> {
-    let capture = capture.scoped().capture();
-    reserve_work(budget, HostWorkDimension::VerificationOperations, 128)?;
-    for source in capture.sources() {
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            source
-                .source()
-                .custody
-                .len()
-                .checked_add(12)
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-    }
-    for key in capture.obligation_keys() {
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            key.len()
-                .checked_add(1)
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-    }
-    reserve_work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        capture
-            .amounts()
-            .len()
-            .checked_mul(2)
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
-    for row in capture.eligible() {
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            row.len()
-                .checked_add(1)
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-    }
-    for row in capture.assignment() {
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            row.len()
-                .checked_add(1)
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-    }
-    Ok(())
-}
-
 fn equivalent_captures<A>(
     left: &NativeScopedPhloFundingCapture<'_, A>,
     right: &NativeScopedPhloFundingCapture<'_, A>,
-    budget: &HostWorkBudget,
 ) -> Result<bool, PhloOutcomeMatchError> {
-    reserve_capture_comparison(left, budget)?;
-    reserve_capture_comparison(right, budget)?;
     let (left, right) = (left.scoped(), right.scoped());
     let (a, b) = (left.capture(), right.capture());
     Ok(a.sources() == b.sources()
@@ -300,11 +169,10 @@ impl<'a, A> CheckedNativeSignedPhloFamilyPolicy<'a, A> {
         outcome: PhloOutcome<'_>,
         limits: PhloOutcomeMatchLimits,
         capture_limits: PhloCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativeScopedPhloFundingCapture<'a, A>, PhloOutcomeMatchError> {
         let observed =
             super::check_counted_phlo_execution(controls, discharge.witness(), limits.execution)?;
-        self.capture_matching_execution(observed, outcome, limits, capture_limits, budget)
+        self.capture_matching_execution(observed, outcome, limits, capture_limits)
     }
 
     pub fn capture_matching_execution(
@@ -313,7 +181,6 @@ impl<'a, A> CheckedNativeSignedPhloFamilyPolicy<'a, A> {
         outcome: PhloOutcome<'_>,
         limits: PhloOutcomeMatchLimits,
         capture_limits: PhloCaptureLimits,
-        budget: &HostWorkBudget,
     ) -> Result<NativeScopedPhloFundingCapture<'a, A>, PhloOutcomeMatchError> {
         let cases = self
             .policy()
@@ -326,21 +193,20 @@ impl<'a, A> CheckedNativeSignedPhloFamilyPolicy<'a, A> {
         if cases.len() > limits.cases.get() {
             return Err(PhloOutcomeMatchError::TooManyCases);
         }
-        reserve_work(budget, HostWorkDimension::SearchCandidates, cases.len())?;
-        let outcome = normalize_outcome(outcome, budget)?;
-        let observed = normalize_execution(observed, limits, budget)?;
+        let outcome = normalize_outcome(outcome)?;
+        let observed = normalize_execution(observed, limits)?;
         let mut selected = None;
         for (branch, case) in cases.iter().enumerate() {
-            if normalize_outcome(case.obligations.outcome(), budget)? != outcome {
+            if normalize_outcome(case.obligations.outcome())? != outcome {
                 continue;
             }
-            let expected = normalize_execution(case.obligations.execution(), limits, budget)?;
-            if !normalized_executions_equal(&expected, &observed, budget)? {
+            let expected = normalize_execution(case.obligations.execution(), limits)?;
+            if !normalized_executions_equal(&expected, &observed)? {
                 continue;
             }
-            let capture = self.capture_case(branch, capture_limits, budget)?;
+            let capture = self.capture_case(branch, capture_limits)?;
             if let Some(first) = &selected {
-                if !equivalent_captures(first, &capture, budget)? {
+                if !equivalent_captures(first, &capture)? {
                     return Err(PhloOutcomeMatchError::ConflictingMatchingOutcomes);
                 }
             } else {

@@ -1,5 +1,7 @@
 # Observed funding outcome
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Contract
 
 The funding policy contains a prepared family of possible execution outcomes.
@@ -1181,6 +1183,20 @@ The backing allowance combines standard vector growth with the existing tree and
 The allocation tests check successful derived records and every reservation cut against actual requested allocations.
 These bounds apply to derived serde records and standard containers. They do not authorize arbitrary custom deserializers with hidden allocations.
 
+Since DR-95, the history decode sites call `decode_history_record`, which decodes in History mode.
+These sites are the metered data reads of the play and replay spaces, the row reads of the native replay session, and the mergeable pre-state read of offered validation.
+History mode charges each node once, at its deserializer call, with no backing.
+It reserves backing only for the allocations of the decode, and it reserves each one before it occurs:
+
+- vector growth, by the growth rule of `RawVec`;
+- the `tree_growth` increment before each insert into a tagged B-tree set;
+- the key half and the value half of the increment before each map entry;
+- the exact length of each string.
+
+The `ClosedDecode` marker limits History mode to types whose decode makes no other allocation.
+`NativeDecodeBacking.v` proves that every prefix of such a decode is covered.
+`decode_record` keeps the rule above for its other callers.
+
 The decoder limits nested visitor depth to 128. Reaching this local host bound returns `HostWorkRejected` through the session adapter.
 Complete producer and replay conformance still requires compatible write limits before publication.
 A malformed typed record returns a typed-record fault. A rejected reservation preserves the original host error.
@@ -1296,6 +1312,11 @@ Consume selects one greedy tuple combination and evaluates its guard.
 A guard veto permits Store even if another combination could pass.
 Produce evaluates the existing continuation-veto loop across current joins.
 A future accepted COMM binding does not prohibit Store before its data exists.
+
+**Amendment (DR-129, 2026-10-13).** Play shuffles its candidates at random again, as on `dev`.
+Only replay uses the deterministic order, and replay follows the recorded pick.
+A join that names one channel twice orders that channel by source hash in play and replay (E1).
+The Stored check skips a continuation whose commit can veto (E3-a), so a guard no longer decides a Store claim in replay.
 
 Pre-dispatch journal sources and post-dispatch trace metadata have different roles.
 Replay compares actual candidates with the complete pre-dispatch journal fields.

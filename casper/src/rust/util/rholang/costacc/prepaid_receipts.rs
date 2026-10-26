@@ -2,12 +2,9 @@ use std::mem::size_of;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::{ListParWithRandom, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::utils::new_gsys_auth_token_par;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::rho_type::{RhoByteArray, RhoList};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::trace::Log;
 
@@ -77,23 +74,7 @@ impl OwnedPrepaidReceiptChange {
         }
     }
 
-    pub fn copy_from(
-        change: PrepaidReceiptChange<'_>,
-        budget: &HostWorkBudget,
-    ) -> Result<Self, CasperError> {
-        let bytes = size_of::<Self>()
-            .checked_add(change.expected.map_or(0, <[u8]>::len))
-            .and_then(|n| n.checked_add(change.replacement.map_or(0, <[u8]>::len)))
-            .ok_or_else(|| invalid("owned receipt change size overflow"))?;
-        budget
-            .reserve(
-                HostWorkDimension::SearchStateBytes,
-                HostWorkUnits::new(
-                    u64::try_from(bytes)
-                        .map_err(|_| invalid("owned receipt change size overflow"))?,
-                ),
-            )
-            .map_err(|error| invalid(&error.to_string()))?;
+    pub fn copy_from(change: PrepaidReceiptChange<'_>) -> Result<Self, CasperError> {
         let copy = |value: Option<&[u8]>| -> Result<Option<Vec<u8>>, CasperError> {
             value
                 .map(|bytes| {
@@ -230,35 +211,18 @@ fn decode_receipt_data(
     Ok(Some(bytes))
 }
 
-pub(crate) async fn read_live_data_metered(
+/// The read of a settlement channel. DR-131 (DU-8) returned it to `get_data`,
+/// which fills the store. The uncached read of DR-98 (D-C4) existed only for
+/// the host-work charge.
+///
+/// Callers: the mergeable reads (`runtime.rs`, also from
+/// `runtime_manager.rs`), births (`births.rs`), retained records
+/// (`retained_records.rs`) and supply inventories (`consumption.rs`).
+pub(crate) async fn read_live_data(
     runtime: &RuntimeOps,
     channel: &Par,
-    budget: &HostWorkBudget,
-) -> Result<Vec<Datum<ListParWithRandom>>, CasperError> {
-    let reserve = |operations: usize, scanned: usize, backing: usize| {
-        for (dimension, amount) in [
-            (HostWorkDimension::VerificationOperations, operations),
-            (HostWorkDimension::VerificationBytes, scanned),
-            (HostWorkDimension::SearchStateBytes, backing),
-        ] {
-            budget
-                .reserve(
-                    dimension,
-                    HostWorkUnits::new(
-                        u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?,
-                    ),
-                )
-                .map_err(|_| RSpaceError::HostWorkRejected)?;
-        }
-        Ok(())
-    };
-    runtime
-        .runtime
-        .reducer
-        .space
-        .get_data_metered(channel, &reserve)
-        .await
-        .map_err(|error| invalid(&format!("metered live read failed: {error}")))
+) -> Vec<Datum<ListParWithRandom>> {
+    runtime.runtime.reducer.space.get_data(channel).await
 }
 
 impl RuntimeOps {
@@ -276,62 +240,16 @@ impl RuntimeOps {
         Ok(decode_receipt_data(&data, maximum_bytes)?.map(<[u8]>::to_vec))
     }
 
-    pub async fn read_prepaid_receipt_metered(
-        &self,
-        receipt_id: &[u8; 32],
-        maximum_bytes: usize,
-        budget: &HostWorkBudget,
-    ) -> Result<Option<Vec<u8>>, CasperError> {
-        let data = read_live_data_metered(self, &receipt_channel(receipt_id), budget).await?;
-        let bytes = decode_receipt_data(&data, maximum_bytes)?;
-        if let Some(bytes) = bytes {
-            budget
-                .reserve(
-                    HostWorkDimension::SearchStateBytes,
-                    HostWorkUnits::new(
-                        u64::try_from(bytes.len())
-                            .map_err(|_| invalid("metered receipt copy length overflow"))?,
-                    ),
-                )
-                .map_err(|error| invalid(&error.to_string()))?;
-        }
-        Ok(bytes.map(<[u8]>::to_vec))
-    }
-
     pub async fn replace_prepaid_receipts(
         &mut self,
         changes: &[PrepaidReceiptChange<'_>],
         limits: PrepaidReceiptLimits,
     ) -> Result<Log, CasperError> {
-        self.replace_prepaid_receipts_with_budget(changes, limits, None)
-            .await
-    }
-
-    pub async fn replace_prepaid_receipts_metered(
-        &mut self,
-        changes: &[PrepaidReceiptChange<'_>],
-        limits: PrepaidReceiptLimits,
-        budget: &HostWorkBudget,
-    ) -> Result<Log, CasperError> {
-        self.replace_prepaid_receipts_with_budget(changes, limits, Some(budget))
-            .await
-    }
-
-    async fn replace_prepaid_receipts_with_budget(
-        &mut self,
-        changes: &[PrepaidReceiptChange<'_>],
-        limits: PrepaidReceiptLimits,
-        budget: Option<&HostWorkBudget>,
-    ) -> Result<Log, CasperError> {
         let ordered = ordered_changes(changes, limits)?;
         for change in &ordered {
-            let live = if let Some(budget) = budget {
-                self.read_prepaid_receipt_metered(&change.receipt_id, limits.value_bytes, budget)
-                    .await?
-            } else {
-                self.read_prepaid_receipt(&change.receipt_id, limits.value_bytes)
-                    .await?
-            };
+            let live = self
+                .read_prepaid_receipt(&change.receipt_id, limits.value_bytes)
+                .await?;
             if live.as_deref() != change.expected {
                 return Err(invalid("stored value differs from the captured receipt"));
             }

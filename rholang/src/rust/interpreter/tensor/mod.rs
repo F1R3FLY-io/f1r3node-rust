@@ -2,10 +2,8 @@
 //!
 //! - `num`: the exact numbers, the exact vectors and the correctly rounded `f64` values;
 //! - `exact`: the kernels, the scores, the bounds and the exact order of the built-in metrics;
-//! - `costs`: the host-work reservations of both (decision 42);
 //! - `ops`: the operations of `rho:lang:vector` (P6 step 6).
 
-pub mod costs;
 pub mod exact;
 pub mod num;
 pub mod ops;

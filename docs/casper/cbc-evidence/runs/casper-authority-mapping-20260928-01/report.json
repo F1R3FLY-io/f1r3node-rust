@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "status": "source-mapping-complete-live-adapter-pending",
+  "source_head_revision": "2fb0686cf38752a0251af6d1d3e26afebb6d9eb9",
+  "branch": "formal/soak-casper-consensus",
+  "source_digests": {
+    "scripts/casper-soak/src/profiles/authority_finality.rs": "18a1a18cebe632dc5f87483784e08a00c11f3870116f3a3b54766bbf68c45e47",
+    "scripts/casper-soak/tests/authority_finality.rs": "a9c67d88729fa43ebef6b65ce112d223752f35d4395b702139dc19cd71e8f2c8",
+    "scripts/casper-soak/src/authority_observer.rs": "71e960dea70de39f7f532dc3097aef2a6a271d729f3ab1f7ab62bcccb34951de",
+    "docs/claims/casper-soak-authority-finality.md": "1af422a0628c37ffab2150b98701c954a2875bf77df4eb9f3e69ff56d23feff2",
+    "formal/tlaplus/casper_soak/profiles/authority_finality/README.md": "3ac84f95a33760072d7a622e0409b1ce0a043e6c082aeaac80260ae49833f634",
+    "node/src/rust/soak_observer.rs": "5aaf012f08b16c4ac05fdc95713ed364ee0339fb4d95f2173d51a6828bf38ded",
+    "casper/src/rust/soak_observer.rs": "991d388492486a5fb65b8e0be0e2a9fe198b79112d42a2e859be75bb3e70b579",
+    "casper/src/rust/soak_observer/evaluation.rs": "3834185fb6dbcebecf6a676af46bc49d6c7ca8abe1052a53ef10a5115cfdb56f",
+    "casper/src/rust/soak_observer/reference.rs": "f8fa0ee78c6bb51d58b1804c077f3c3dcba97576f30b928f78ed426ab26e8349",
+    "casper/src/rust/api/block_api.rs": "7c1553e367da17fe05b96aec1ce721afcc03e63c1a1c7d10d9ef06d7d2883892",
+    "casper/src/rust/safety/clique_oracle.rs": "a42a10bbefe048652d3c588dc45336a685261c7f23b90dae54ab7e6de53a69bc",
+    "casper/src/rust/engine/multi_parent_casper/dispatch.rs": "e917a68e49d130b99a16a7c446c3409cba9c49c5d6811bea7e7ed66ef422b68a",
+    "casper/src/rust/estimator.rs": "e50c77e854cbf5a93fdd1b8a3964cc551677ba744d11dae74da1538a7ee107f7",
+    "block-storage/src/rust/dag/soak_snapshot.rs": "48e640a9eac4337bd24e3c80cb6a12ca0e956aa998ec27d8e64829574de69cf4",
+    "shared/src/rust/dag/observation_work.rs": "cbecfc9751e5b6254ae0f8843d8346428c7338c842de89c6b68b081f215df731",
+    "models/src/main/protobuf/DeployServiceV1.proto": "5111189f3fdfe184cb980a2bec221c914a9423a1fe447faba1526c6101cec8d9",
+    "models/src/main/protobuf/DeployServiceCommon.proto": "2b0d8d7803d36e2f835c617c5fc464c80a695a0df1470a0fbdeb40e1c78ae3f8"
+  },
+  "external_sources": [
+    {
+      "repository": "F1R3FLY-io/system-integration",
+      "revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
+      "path": "integration-tests/test/infra/node.py",
+      "retained_path": "target/task-017-12-interface-mapping-20260928/external/node.py",
+      "sha256": "26ee175079b5fc2b064de3bdb4c9d0402860ab2388038d380917356b4e89a9bc"
+    },
+    {
+      "repository": "F1R3FLY-io/system-integration",
+      "revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
+      "path": "integration-tests/test/infra/providers/base.py",
+      "retained_path": "target/task-017-12-interface-mapping-20260928/external/providers-base.py",
+      "sha256": "50ee05e50befc4e897fa9cdfea61716d5013b8777a556ee6c9511de000844352"
+    },
+    {
+      "repository": "F1R3FLY-io/system-integration",
+      "revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
+      "path": "integration-tests/test/infra/providers/docker.py",
+      "retained_path": "target/task-017-12-interface-mapping-20260928/external/providers-docker.py",
+      "sha256": "29906538de5921829e50c1911523d0a6e47fa02efc5e3db35c3ae1502251e3a8"
+    },
+    {
+      "repository": "F1R3FLY-io/system-integration",
+      "revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
+      "path": "integration-tests/test/infra/providers/subprocess.py",
+      "retained_path": "target/task-017-12-interface-mapping-20260928/external/providers-subprocess.py",
+      "sha256": "9149e1e272f1504809307cc52c91cfdf88797d38ab3d9d4877bae1a3c52535da"
+    }
+  ],
+  "mapping": [
+    {
+      "requirement": "peer and request identity",
+      "available": "The observer hello and authority envelope bind process identity, request bytes, sequence, and incarnation.",
+      "owner": "TASK-017-12",
+      "action": "Use the existing client and qualify its launch binding on Linux.",
+      "status": "transport-implemented-live-qualification-pending"
+    },
+    {
+      "requirement": "pause and restart receipts",
+      "available": "Docker and owned subprocess providers expose process controls. Docker inspection and wait, and subprocess wait, supply external state evidence.",
+      "owner": "TASK-017-12",
+      "action": "Record the scheduled fault, observed process state, old exit, readiness, and new observer incarnation. Do not treat a successful command alone as a receipt.",
+      "status": "harness-adapter-required",
+      "limits": [
+        "An adopted subprocess does not support restart.",
+        "A node-internal cut point requires separate support. Ordinary process controls do not require it."
+      ]
+    },
+    {
+      "requirement": "paired selected heads",
+      "available": "showMainChain invokes the live estimator. AuthorityResponse and Reference expose oracle and floor comparisons, not paired fork-choice heads.",
+      "owner": "EPIC-019",
+      "action": "Expose measured and reference fork-choice results on the same detached input with the applicable estimator configuration.",
+      "status": "node-observation-extension-required",
+      "limits": [
+        "Separate live API responses have no observer snapshot identity or evaluation mode.",
+        "A finalized floor is not a selected head."
+      ]
+    },
+    {
+      "requirement": "original fault tolerance and display projection",
+      "available": "The observer retains original f32 bits. getBlock returns a display value after subtracting initial fault from live equivocation state.",
+      "owner": "EPIC-019 and TASK-017-12",
+      "action": "Capture the required equivocation inputs for the detached display calculation on the node branch. Define a bit-preserving numeric mapping in the harness.",
+      "status": "node-capture-and-harness-mapping-required",
+      "limits": [
+        "The observer explicitly reports equivocation_snapshot_unavailable.",
+        "A separate getBlock result is not bound to the observer snapshot.",
+        "The profile compares rational values. A rounded float must not be relabeled as its ideal mathematical fraction."
+      ]
+    },
+    {
+      "requirement": "fixture application and input identities",
+      "available": "Deploy and propose support ordinary workloads. The accepted synthetic DAG, electorate, and justification inputs are opaque JSON and are not valid node fixtures.",
+      "owner": "TASK-017-12 with a scoped EPIC-019 dependency if required",
+      "action": "Define executable scenarios and evidence for actual applied inputs. Use provider receipts for supported operations. Specify a detached-input export or a reviewed digest mapping before claiming exact input equality.",
+      "status": "scenario-and-input-contract-required",
+      "limits": [
+        "AuthorityResponse returns capture digests and counts, not the canonical captured DAG and its complete electorate and justification artifacts.",
+        "Normal deploy acceptance cannot establish injection of malformed signatures, duplicate justifications, or missing dependencies.",
+        "No public production fixture-loading endpoint is proposed."
+      ]
+    },
+    {
+      "requirement": "finality decisions and holds",
+      "available": "The observer separates exact oracle decisions, floor outcomes, live derivation events, and persisted observations. Public APIs expose finalized state.",
+      "owner": "TASK-017-12",
+      "action": "Specify which result each scenario measures and correlate the chosen event and target. Preserve unavailable, hold, failed, and persisted states.",
+      "status": "semantic-mapping-required",
+      "limits": [
+        "A true threshold decision alone is not finalized state.",
+        "The profile uses an inclusive threshold comparison. The observer explicitly distinguishes gt and ge."
+      ]
+    },
+    {
+      "requirement": "traversal work",
+      "available": "The observer reports traversal, metadata, oracle, clique, signature, allocation, and per-path work.",
+      "owner": "TASK-017-12 with node instrumentation if exact required counters are absent",
+      "action": "Define counting sites and per-scenario scope. Add missing node counters only after that mapping.",
+      "status": "measurement-contract-required",
+      "limits": [
+        "Traversal operations are not automatically traversed edges. Metadata reads are not automatically distinct visited vertices.",
+        "Paired fork-choice work is absent because the observer does not run those paths."
+      ]
+    },
+    {
+      "requirement": "live profile admission",
+      "available": "The accepted profile explicitly rejects evidence_kind values other than synthetic_fixture.",
+      "owner": "TASK-017-12",
+      "action": "Add a separately verified live path only after the observation and qualification contract is satisfied.",
+      "status": "blocked-pending-contract-and-qualification"
+    }
+  ],
+  "branch_ownership": {
+    "harness": "formal/soak-casper-consensus",
+    "node": "feature/casper-node-observation",
+    "obligation_automation": "ci/soak-obligation-gate"
+  },
+  "verification_scope": "Read-only source review. External Python files parse successfully. No API or provider operation was executed.",
+  "claim_status_changed": false,
+  "profile_contract_changed": false,
+  "live_qualification": "pending",
+  "node_launches": 0,
+  "cloud_launches": 0
+}

@@ -74,9 +74,6 @@
 //! * Decision 45, Rule E: a consume-side peek removes the head record and stores it again with
 //!   the same bytes, so with the same order and level. It is then the head of its level again,
 //!   and the waiters that did not match it before the peek do not match it after the peek.
-//! * Decision 42: every scan reserves the decode of each envelope, each lookup and growth of its
-//!   map of heads, each comparison, each payload decode and each copy before it makes them. The
-//!   matcher reserves its own reads.
 //!
 //! The legacy priority queue (`spaces/collections/basic.rs` of the legacy branch) allocated a
 //! queue for each level up to the priority of a send, in its capacity routine, and kept its
@@ -84,14 +81,13 @@
 
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
-use std::mem::size_of;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par};
 use rspace_plus_plus::rspace::trace::event::Produce;
 use serde::Serialize;
 
-use crate::rust::interpreter::reified::costs::{FireStep, ScanMeter};
+use crate::rust::interpreter::reified::costs::FireStep;
 use crate::rust::interpreter::spaces::agent::{
     ConsumeOp, ProduceOp, QueryParams, SettleOp, SpaceOp, SpaceReissue,
 };
@@ -240,13 +236,12 @@ impl Discipline for PriorityQueueDiscipline {
 
     /// The head of one lane: the entry with the least `(ord, bincode bytes)`, the rule of the
     /// queue discipline. The plans of the priority queue apply it to each lane.
-    fn head_metered<T: Serialize>(
+    fn head<T: Serialize>(
         &self,
         side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        QueueDiscipline.head_metered(side, entries, meter)
+        QueueDiscipline.head(side, entries)
     }
 
     /// A fresh element joins the tail of its lane, so it is the head only of an empty lane.
@@ -255,16 +250,9 @@ impl Discipline for PriorityQueueDiscipline {
         QueueDiscipline.reaches_head(side, queued)
     }
 
-    /// The least order interacts first in a lane, on both sides. The comparison is reserved
-    /// first.
-    fn precedes(
-        &self,
-        side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        QueueDiscipline.precedes(side, ord, head, meter)
+    /// The least order interacts first in a lane, on both sides.
+    fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+        QueueDiscipline.precedes(side, ord, head)
     }
 
     /// The value of a `priority` param of a send or of a query is a `GInt(p)` with `p ≥ 0` and
@@ -277,17 +265,16 @@ impl Discipline for PriorityQueueDiscipline {
         config: &SpaceConfig,
         params: &BTreeMap<String, Par>,
         query: Option<&QueryParams>,
-        meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
-        if let Some(value) = priority_value(params, meter)? {
-            check_priority(config, value, meter)?;
+        if let Some(value) = priority_value(params) {
+            check_priority(config, value)?;
         }
         match query {
             None => Ok(()),
             Some(QueryParams { payload, named }) => match payload.is_empty() {
                 false => Err(SpaceError::PositionalParamsUnsupported),
-                true => match priority_value(named, meter)? {
-                    Some(value) => check_priority(config, value, meter).map(|_| ()),
+                true => match priority_value(named) {
+                    Some(value) => check_priority(config, value).map(|_| ()),
                     None => Ok(()),
                 },
             },
@@ -347,26 +334,20 @@ impl Discipline for PriorityQueueDiscipline {
 
 impl PriorityQueueDiscipline {
     /// The heads of the lanes of `entries`, one side of a collection, by lane in ascending lane
-    /// order. `slots` decodes the order and the lane of an entry. The scan reserves the decode
-    /// of each envelope, one ordered lookup for each entry, the growth of the map for each new
-    /// lane, and for each other entry the comparison with the head of its lane
-    /// (`head_metered` on the pair, with its tie-break). On equal keys the earlier entry stays
-    /// the head, as in a queue scan.
+    /// order. `slots` decodes the order and the lane of an entry. The scan compares each entry
+    /// after the first of its lane with the head of its lane (`head` on the pair, with its
+    /// tie-break). On equal keys the earlier entry stays the head, as in a queue scan.
     pub fn lane_heads<T: Serialize, K: Ord + Copy>(
         &self,
         side: Side,
         entries: &[T],
-        slots: fn(&T, &ScanMeter) -> Result<(i64, K), SpaceError>,
-        meter: &ScanMeter,
+        slots: fn(&T) -> Result<(i64, K), SpaceError>,
     ) -> Result<BTreeMap<K, LaneHead>, SpaceError> {
         let mut heads: BTreeMap<K, LaneHead> = BTreeMap::new();
         for (index, entry) in entries.iter().enumerate() {
-            let (ord, lane) = slots(entry, meter)?;
-            let size = heads.len();
-            meter.ordered_lookup(size, size_of::<K>())?;
+            let (ord, lane) = slots(entry)?;
             match heads.entry(lane) {
                 Entry::Vacant(vacant) => {
-                    meter.tree_growth::<K, LaneHead>(size, 1)?;
                     vacant.insert(LaneHead { index, ord, len: 1 });
                 }
                 Entry::Occupied(mut occupied) => {
@@ -385,7 +366,7 @@ impl PriorityQueueDiscipline {
                         },
                         Ordered { ord, entry },
                     ];
-                    let head = match self.head_metered(side, &pair, meter)? {
+                    let head = match self.head(side, &pair)? {
                         Some(1) => LaneHead { index, ord, len },
                         Some(_) | None => LaneHead { len, ..best },
                     };
@@ -398,16 +379,14 @@ impl PriorityQueueDiscipline {
 
     /// The heads of the levels of the records of the collection in the staged view.
     fn record_heads(&self, cx: &mut Cx<'_, '_>) -> Result<BTreeMap<Level, LaneHead>, SpaceError> {
-        let meter = cx.meter();
         let records = cx.data()?;
-        self.lane_heads(Side::Data, records, record_slots, meter)
+        self.lane_heads(Side::Data, records, record_slots)
     }
 
     /// The heads of the lanes of the waiting continuations of the collection in the staged view.
     fn waiter_heads(&self, cx: &mut Cx<'_, '_>) -> Result<BTreeMap<Lane, LaneHead>, SpaceError> {
-        let meter = cx.meter();
         let waiters = cx.waiters()?;
-        self.lane_heads(Side::Waiters, waiters, waiter_slots, meter)
+        self.lane_heads(Side::Waiters, waiters, waiter_slots)
     }
 
     /// True when the element of an operation reaches the head of its lane, whose head is `head`
@@ -415,45 +394,40 @@ impl PriorityQueueDiscipline {
     /// is `None`) joins the tail of its lane, so it reaches the head only of an empty lane. A
     /// re-issued persistent element re-enters at its FIFO place: at the head when its lane is
     /// empty or its order precedes the order of the head. An element in flight is stored
-    /// nowhere, so a stored entry with its order is `Inconsistent`. Each comparison is reserved.
+    /// nowhere, so a stored entry with its order is `Inconsistent`.
     fn at_lane_head(
         &self,
         side: Side,
         head: Option<&LaneHead>,
         reissued: Option<i64>,
-        meter: &ScanMeter,
     ) -> Result<bool, SpaceError> {
         match (reissued, head) {
             (None, None) => Ok(self.reaches_head(side, 0)),
             (None, Some(head)) => Ok(self.reaches_head(side, head.len)),
             (Some(_), None) => Ok(true),
-            (Some(ord), Some(head)) => {
-                meter.compare(size_of::<i64>(), size_of::<i64>())?;
-                match ord == head.ord {
-                    true => Err(SpaceError::Inconsistent(
-                        "a re-issued element shares its order with a stored entry",
-                    )),
-                    false => self.precedes(side, ord, head.ord, meter),
-                }
-            }
+            (Some(ord), Some(head)) => match ord == head.ord {
+                true => Err(SpaceError::Inconsistent(
+                    "a re-issued element shares its order with a stored entry",
+                )),
+                false => self.precedes(side, ord, head.ord),
+            },
         }
     }
 
     /// The heads of the levels in ascending level order. A settle passes the level and the order
     /// of its record in flight (`flight`). That record counts as the head of its level when its
     /// order is the least of the level: it was the head when the settle lifted it, and the settle
-    /// stores no record while one is in flight. The buffer and each comparison are reserved.
+    /// stores no record while one is in flight.
     fn record_head_list(
         &self,
         cx: &mut Cx<'_, '_>,
         flight: Option<(Level, i64)>,
     ) -> Result<Vec<RecordHead>, SpaceError> {
-        let meter = cx.meter();
         let stored = self.record_heads(cx)?;
         let length = stored.len().checked_add(1).ok_or(SpaceError::Inconsistent(
             "a collection holds too many levels",
         ))?;
-        let mut heads = meter.buffer::<RecordHead>(length)?;
+        let mut heads = Vec::<RecordHead>::with_capacity(length);
         let mut pending = flight;
         for (level, head) in &stored {
             match pending {
@@ -466,7 +440,6 @@ impl PriorityQueueDiscipline {
                     pending = None;
                 }
                 Some((flight_level, flight_ord)) if flight_level == *level => {
-                    meter.compare(size_of::<i64>(), size_of::<i64>())?;
                     heads.push(match flight_ord.cmp(&head.ord) {
                         std::cmp::Ordering::Less => RecordHead {
                             level: flight_level,
@@ -507,9 +480,8 @@ impl PriorityQueueDiscipline {
 
     /// The first head of `heads`, in ascending level order, of a level that `lane` sees and whose
     /// payload matches `pattern`: its position in `heads` and the values of the match. The
-    /// payload of each head is decoded at most once (`payloads`), with the decode reserved, and
-    /// the metered matcher reserves each match. The guard is not part of this test (decision
-    /// 38: the caller checks the guard once on the result).
+    /// payload of each head is decoded at most once (`payloads`). The guard is not part of this
+    /// test (decision 38: the caller checks the guard once on the result).
     fn first_match(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -519,7 +491,6 @@ impl PriorityQueueDiscipline {
         payloads: &mut [Option<ListParWithRandom>],
         in_flight: &InFlight,
     ) -> Result<Option<(usize, ListParWithRandom)>, SpaceError> {
-        let meter = cx.meter();
         for (position, head) in heads.iter().enumerate() {
             if !lane.sees(head.level) {
                 continue;
@@ -529,9 +500,9 @@ impl PriorityQueueDiscipline {
                 .ok_or(SpaceError::Inconsistent("a level head has no payload slot"))?;
             let payload = match slot {
                 Some(payload) => payload,
-                None => slot.insert(head_payload(cx, head.at, in_flight, meter)?),
+                None => slot.insert(head_payload(cx, head.at, in_flight)?),
             };
-            if let Some(matched) = cx.bind(pattern, payload)? {
+            if let Some(matched) = cx.bind(pattern, payload) {
                 return Ok(Some((position, matched)));
             }
         }
@@ -541,7 +512,7 @@ impl PriorityQueueDiscipline {
     /// The waiter of a produce plan: the first head of the candidate lanes `lanes` of the datum
     /// `data`, in ascending order and without the refused lanes, that matches the datum (the
     /// pattern, then the guard). Each head that refuses marks its lane in `refused`. Only the
-    /// tested heads are copied, and each copy, lookup, comparison and match is reserved.
+    /// tested heads are copied.
     fn offer_target(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -549,12 +520,11 @@ impl PriorityQueueDiscipline {
         refused: &mut [bool; 2],
         data: &ListParWithRandom,
     ) -> Result<Option<(ParWaiter, ListParWithRandom)>, SpaceError> {
-        let meter = cx.meter();
         let heads = self.waiter_heads(cx)?;
         let mut candidates: [Option<(usize, LaneHead)>; 2] = [None, None];
         for (slot, (lane, is_refused)) in lanes.iter().zip(refused.iter()).enumerate() {
             if let (Some(lane), false) = (lane, *is_refused) {
-                if let Some(head) = lookup_head(&heads, lane, meter)? {
+                if let Some(head) = lookup_head(&heads, lane) {
                     if let Some(candidate) = candidates.get_mut(slot) {
                         *candidate = Some((slot, *head));
                     }
@@ -562,13 +532,10 @@ impl PriorityQueueDiscipline {
             }
         }
         let order = match candidates {
-            [Some(first), Some(second)] => {
-                meter.compare(size_of::<i64>(), size_of::<i64>())?;
-                match second.1.ord < first.1.ord {
-                    true => [Some(second), Some(first)],
-                    false => [Some(first), Some(second)],
-                }
-            }
+            [Some(first), Some(second)] => match second.1.ord < first.1.ord {
+                true => [Some(second), Some(first)],
+                false => [Some(first), Some(second)],
+            },
             other => other,
         };
         for (slot, head) in order.into_iter().flatten() {
@@ -577,7 +544,7 @@ impl PriorityQueueDiscipline {
                 let stored = waiters.get(head.index).ok_or(SpaceError::Inconsistent(
                     "a lane head is not an entry of its side",
                 ))?;
-                meter.copy(stored)?
+                stored.clone()
             };
             let [pattern] = waiter.patterns.as_slice() else {
                 return Err(SpaceError::Inconsistent(
@@ -597,37 +564,29 @@ impl PriorityQueueDiscipline {
     }
 }
 
-/// The order and the level of a record in the staged view, with the decode of its envelope
-/// reserved.
-fn record_slots(datum: &ParDatum, meter: &ScanMeter) -> Result<(i64, Level), SpaceError> {
-    let (ord, slot) = record::pq_datum_slots_metered(&datum.a, meter)?;
+/// The order and the level of a record in the staged view, decoded from its envelope.
+fn record_slots(datum: &ParDatum) -> Result<(i64, Level), SpaceError> {
+    let (ord, slot) = record::pq_datum_slots(&datum.a)?;
     Ok((ord, Level::of_slot(slot)))
 }
 
-/// The order and the lane of a waiting continuation in the staged view, with the decode of its
-/// envelope reserved.
-fn waiter_slots(waiter: &ParWaiter, meter: &ScanMeter) -> Result<(i64, Lane), SpaceError> {
-    let (ord, slot) = record::pq_continuation_slots_metered(&waiter.continuation, meter)?;
+/// The order and the lane of a waiting continuation in the staged view, decoded from its envelope.
+fn waiter_slots(waiter: &ParWaiter) -> Result<(i64, Lane), SpaceError> {
+    let (ord, slot) = record::pq_continuation_slots(&waiter.continuation)?;
     Ok((ord, Lane::of_slot(slot)))
 }
 
-/// The head of the lane `lane` in `heads`, with the lookup reserved.
-fn lookup_head<'h, K: Ord>(
-    heads: &'h BTreeMap<K, LaneHead>,
-    lane: &K,
-    meter: &ScanMeter,
-) -> Result<Option<&'h LaneHead>, SpaceError> {
-    meter.ordered_lookup(heads.len(), size_of::<K>())?;
-    Ok(heads.get(lane))
+/// The head of the lane `lane` in `heads`.
+fn lookup_head<'h, K: Ord>(heads: &'h BTreeMap<K, LaneHead>, lane: &K) -> Option<&'h LaneHead> {
+    heads.get(lane)
 }
 
 /// The payload of the head record at `at`, decoded from the staged view or from the record in
-/// flight, with the decode reserved.
+/// flight.
 fn head_payload(
     cx: &mut Cx<'_, '_>,
     at: HeadAt,
     in_flight: &InFlight,
-    meter: &ScanMeter,
 ) -> Result<ListParWithRandom, SpaceError> {
     match at {
         HeadAt::Stored(index) => {
@@ -635,10 +594,10 @@ fn head_payload(
             let stored = records.get(index).ok_or(SpaceError::Inconsistent(
                 "a level head is not a record of the collection",
             ))?;
-            Ok(record::unwrap_pq_datum_metered(&stored.a, meter)?.datum)
+            Ok(record::unwrap_pq_datum(&stored.a)?.datum)
         }
         HeadAt::InFlight => match in_flight.record() {
-            Some(lifted) => Ok(record::unwrap_pq_datum_metered(&lifted.datum.a, meter)?.datum),
+            Some(lifted) => Ok(record::unwrap_pq_datum(&lifted.datum.a)?.datum),
             None => Err(SpaceError::Inconsistent(
                 "a level head is in flight, but no record is in flight",
             )),
@@ -676,28 +635,20 @@ fn stored_match<'a>(
     }
 }
 
-/// A copy of the record at the index `index` of the staged view, with the copy reserved.
+/// A copy of the record at the index `index` of the staged view.
 fn stored_record(cx: &mut Cx<'_, '_>, index: usize) -> Result<ParDatum, SpaceError> {
-    let meter = cx.meter();
     let records = cx.data()?;
     let stored = records.get(index).ok_or(SpaceError::Inconsistent(
         "a level head is not a record of the collection",
     ))?;
-    Ok(meter.copy(stored)?)
+    Ok(stored.clone())
 }
 
-/// The value of the param `priority` in `params`, with the lookup reserved. An empty map does no
-/// work.
-fn priority_value<'p>(
-    params: &'p BTreeMap<String, Par>,
-    meter: &ScanMeter,
-) -> Result<Option<&'p Par>, SpaceError> {
+/// The value of the param `priority` in `params`. An empty map gives `None` without a lookup.
+fn priority_value(params: &BTreeMap<String, Par>) -> Option<&Par> {
     match params.is_empty() {
-        true => Ok(None),
-        false => {
-            meter.ordered_lookup(params.len(), PRIORITY_PARAM.len())?;
-            Ok(params.get(PRIORITY_PARAM))
-        }
+        true => None,
+        false => params.get(PRIORITY_PARAM),
     }
 }
 
@@ -709,11 +660,8 @@ fn invalid_priority() -> SpaceError {
 }
 
 /// The level `p` of the value of a `priority` param: a `GInt(p)` with `p ≥ 0` and no connective
-/// flag. Any other value fails with `InvalidParam`. The read of the value and the comparison with
-/// 0 are reserved first.
-fn priority_of(value: &Par, meter: &ScanMeter) -> Result<i64, SpaceError> {
-    meter.inspect(value)?;
-    meter.compare(size_of::<i64>(), size_of::<i64>())?;
+/// flag. Any other value fails with `InvalidParam`.
+fn priority_of(value: &Par) -> Result<i64, SpaceError> {
     match (record::sole_expr(value), value.connective_used) {
         (Some(ExprInstance::GInt(level @ 0..=i64::MAX)), false) => Ok(*level),
         _ => Err(invalid_priority()),
@@ -721,67 +669,52 @@ fn priority_of(value: &Par, meter: &ScanMeter) -> Result<i64, SpaceError> {
 }
 
 /// The bound of the levels of a space: `Some(n)` when its config sets `priorities = n`, and
-/// `None` without the param (FACTORY D3: an absent `priorities` means no bound). The lookup and
-/// the read of the value are reserved first. A value that is not a `GInt` of at least 1 is
-/// `Inconsistent`, because the factory accepts no other value (I-10).
-fn priorities_bound(config: &SpaceConfig, meter: &ScanMeter) -> Result<Option<i64>, SpaceError> {
+/// `None` without the param (FACTORY D3: an absent `priorities` means no bound). A value
+/// that is not a `GInt` of at least 1 is `Inconsistent`, because the factory accepts no
+/// other value (I-10).
+fn priorities_bound(config: &SpaceConfig) -> Result<Option<i64>, SpaceError> {
     match config.params.is_empty() {
         true => Ok(None),
-        false => {
-            meter.ordered_lookup(config.params.len(), PRIORITIES_PARAM.len())?;
-            match config.params.get(PRIORITIES_PARAM) {
-                None => Ok(None),
-                Some(value) => {
-                    meter.inspect(value)?;
-                    match (record::sole_expr(value), value.connective_used) {
-                        (Some(ExprInstance::GInt(bound @ 1..=i64::MAX)), false) => Ok(Some(*bound)),
-                        _ => Err(SpaceError::Inconsistent(
-                            "the priorities param of a space config is not a positive integer",
-                        )),
-                    }
-                }
-            }
-        }
+        false => match config.params.get(PRIORITIES_PARAM) {
+            None => Ok(None),
+            Some(value) => match (record::sole_expr(value), value.connective_used) {
+                (Some(ExprInstance::GInt(bound @ 1..=i64::MAX)), false) => Ok(Some(*bound)),
+                _ => Err(SpaceError::Inconsistent(
+                    "the priorities param of a space config is not a positive integer",
+                )),
+            },
+        },
     }
 }
 
 /// The level of the value of a `priority` param, checked against the bound of the space: below
-/// the bound when the space sets one (I-10). The comparison with the bound is reserved first.
-fn check_priority(config: &SpaceConfig, value: &Par, meter: &ScanMeter) -> Result<i64, SpaceError> {
-    let level = priority_of(value, meter)?;
-    match priorities_bound(config, meter)? {
+/// the bound when the space sets one (I-10).
+fn check_priority(config: &SpaceConfig, value: &Par) -> Result<i64, SpaceError> {
+    let level = priority_of(value)?;
+    match priorities_bound(config)? {
         None => Ok(level),
-        Some(bound) => {
-            meter.compare(size_of::<i64>(), size_of::<i64>())?;
-            match level < bound {
-                true => Ok(level),
-                false => Err(invalid_priority()),
-            }
-        }
+        Some(bound) => match level < bound {
+            true => Ok(level),
+            false => Err(invalid_priority()),
+        },
     }
 }
 
 /// The level of the datum of a send: `Priority(p)` for `priority = p`, and `Unprioritized`
 /// without the param. `check_values` checked the value before the bump.
-pub(crate) fn send_level(
-    params: &BTreeMap<String, Par>,
-    meter: &ScanMeter,
-) -> Result<Level, SpaceError> {
-    match priority_value(params, meter)? {
-        Some(value) => Ok(Level::Priority(priority_of(value, meter)?)),
+pub(crate) fn send_level(params: &BTreeMap<String, Par>) -> Result<Level, SpaceError> {
+    match priority_value(params) {
+        Some(value) => Ok(Level::Priority(priority_of(value)?)),
         None => Ok(Level::Unprioritized),
     }
 }
 
 /// The lane of the continuation of a receive: `Level(p)` for a query with `priority = p`, and
 /// `Any` otherwise. `check_values` checked the query before the bump.
-pub(crate) fn receive_lane(
-    query: &Option<QueryParams>,
-    meter: &ScanMeter,
-) -> Result<Lane, SpaceError> {
+pub(crate) fn receive_lane(query: &Option<QueryParams>) -> Result<Lane, SpaceError> {
     match query {
-        Some(QueryParams { named, .. }) => match priority_value(named, meter)? {
-            Some(value) => Ok(Lane::Level(priority_of(value, meter)?)),
+        Some(QueryParams { named, .. }) => match priority_value(named) {
+            Some(value) => Ok(Lane::Level(priority_of(value)?)),
             None => Ok(Lane::Any),
         },
         None => Ok(Lane::Any),
@@ -801,16 +734,15 @@ fn offer_pq(
     if let Some(reissue) = open_plan(discipline, cx, OpView::Produce(&op))? {
         return Ok(Some(reissue));
     }
-    let meter = cx.meter();
-    let level = send_level(&op.params, meter)?;
-    let record = record::wrap_pq_datum_metered(ord, level.slot(), &op.data, meter)?;
+    let level = send_level(&op.params)?;
+    let record = record::wrap_pq_datum(ord, level.slot(), &op.data);
     let record_heads = discipline.record_heads(cx)?;
-    let head = lookup_head(&record_heads, &level, meter)?;
-    if !discipline.at_lane_head(Side::Data, head, op.reissued_ord, meter)? {
+    let head = lookup_head(&record_heads, &level);
+    if !discipline.at_lane_head(Side::Data, head, op.reissued_ord)? {
         cx.store(record, op.persistent)?;
         return discipline.settle_after(cx, OpView::Produce(&op));
     }
-    let source = Produce::create_metered(cx.data_channel(), &record, op.persistent, meter)?;
+    let source = Produce::create(cx.data_channel(), &record, op.persistent);
     let lanes = level.candidate_lanes();
     let mut refused = [false; 2];
     loop {
@@ -822,7 +754,6 @@ fn offer_pq(
         };
         let spent = !op.persistent && waiter.peeks.is_empty();
         let stays = waiter.persist;
-        record::prepay_continuation_unwrap(&waiter.continuation, meter)?;
         let fire = OfferFire {
             persistent: op.persistent,
             waiter,
@@ -830,16 +761,16 @@ fn offer_pq(
         };
         match cx.rounds().after_fire(spent, stays) {
             FireStep::Continue => {
-                let (data, removed) = (meter.copy(&record)?, meter.copy(&record)?);
-                cx.fire_offer(fire, data, removed, meter.copy(&source)?)?;
+                let (data, removed) = (record.clone(), record.clone());
+                cx.fire_offer(fire, data, removed, source.clone())?;
             }
             FireStep::Done => {
-                let removed = meter.copy(&record)?;
+                let removed = record.clone();
                 cx.fire_offer(fire, record, removed, source)?;
                 return discipline.settle_after(cx, OpView::Produce(&op));
             }
             FireStep::Reissue(cause) => {
-                let removed = meter.copy(&record)?;
+                let removed = record.clone();
                 cx.fire_offer(fire, record, removed, source)?;
                 return Ok(Some(cx.reissue(
                     SpaceOp::Produce(ProduceOp {
@@ -866,26 +797,24 @@ fn receive_pq(
     if let Some(reissue) = open_plan(discipline, cx, OpView::Consume(&op))? {
         return Ok(Some(reissue));
     }
-    let meter = cx.meter();
-    let lane = receive_lane(&op.query, meter)?;
-    let continuation = record::wrap_pq_continuation_metered(
+    let lane = receive_lane(&op.query)?;
+    let continuation = record::wrap_pq_continuation_from_parts(
         ord,
         lane.slot(),
         &op.body,
         &op.guard,
         record::stamped(&op.authority),
-        meter,
     )?;
-    let peeks = peek_set(op.peek, meter)?;
+    let peeks = peek_set(op.peek);
     let waiter_heads = discipline.waiter_heads(cx)?;
-    let head = lookup_head(&waiter_heads, &lane, meter)?;
-    if !discipline.at_lane_head(Side::Waiters, head, op.reissued_ord, meter)? {
+    let head = lookup_head(&waiter_heads, &lane);
+    if !discipline.at_lane_head(Side::Waiters, head, op.reissued_ord)? {
         cx.park(&op, continuation, peeks)?;
         return discipline.settle_after(cx, OpView::Consume(&op));
     }
     loop {
         let heads = discipline.record_head_list(cx, None)?;
-        let mut payloads = meter.buffer::<Option<ListParWithRandom>>(heads.len())?;
+        let mut payloads = Vec::<Option<ListParWithRandom>>::with_capacity(heads.len());
         payloads.resize(heads.len(), None);
         let target = discipline.first_match(
             cx,
@@ -920,11 +849,10 @@ fn receive_pq(
         let stays = head.persist || op.peek;
         let view_index = i32::try_from(index)
             .map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))?;
-        record::prepay_continuation_unwrap(&continuation, meter)?;
         // Rule E (decision 45): the peek fire removes a non-persistent record, as the host COMM
         // does, and the record is stored again right after the fire.
         let restored = match op.peek && !head.persist {
-            true => Some(meter.copy(&head.a)?),
+            true => Some(head.a.clone()),
             false => None,
         };
         let fire = ReceiveFire {
@@ -934,8 +862,8 @@ fn receive_pq(
         };
         match cx.rounds().after_fire(spent, stays) {
             FireStep::Continue => {
-                let fired = meter.copy(&continuation)?;
-                cx.fire_receive(&op, fire, fired, meter.copy(&peeks)?)?;
+                let fired = continuation.clone();
+                cx.fire_receive(&op, fire, fired, peeks.clone())?;
                 if let Some(reissue) = restore_peeked(discipline, cx, restored)? {
                     return Ok(Some(reissue));
                 }
@@ -1005,8 +933,7 @@ impl SettleView for PriorityQueueView<'_> {
     /// The fireable waiter-lane head with the least order, and the record that it fires. A head
     /// of a waiter lane is fireable when the first level head that it sees and whose payload
     /// matches its pattern passes its guard (decision 38). A record in flight counts as the head
-    /// of its level. An empty side plans nothing and reads nothing. The scans, each copy, each
-    /// payload decode, each comparison and each match are reserved.
+    /// of its level. An empty side plans nothing and reads nothing.
     fn next_fire(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -1018,17 +945,16 @@ impl SettleView for PriorityQueueView<'_> {
         if !in_flight.is_some() && cx.side_len(Side::Data)? == 0 {
             return Ok(None);
         }
-        let meter = cx.meter();
         let flight = match in_flight.record() {
             Some(lifted) => {
-                let (ord, slot) = record::pq_datum_slots_metered(&lifted.datum.a, meter)?;
+                let (ord, slot) = record::pq_datum_slots(&lifted.datum.a)?;
                 Some((Level::of_slot(slot), ord))
             }
             None => None,
         };
         let heads = self.discipline.record_head_list(cx, flight)?;
         let waiter_heads = self.discipline.waiter_heads(cx)?;
-        let mut payloads = meter.buffer::<Option<ListParWithRandom>>(heads.len())?;
+        let mut payloads = Vec::<Option<ListParWithRandom>>::with_capacity(heads.len());
         payloads.resize(heads.len(), None);
         let mut chosen: Option<Chosen> = None;
         for (lane, head) in &waiter_heads {
@@ -1037,7 +963,7 @@ impl SettleView for PriorityQueueView<'_> {
                 let stored = waiters.get(head.index).ok_or(SpaceError::Inconsistent(
                     "a lane head is not an entry of its side",
                 ))?;
-                meter.copy(stored)?
+                stored.clone()
             };
             let [pattern] = waiter.patterns.as_slice() else {
                 return Err(SpaceError::Inconsistent(
@@ -1061,10 +987,7 @@ impl SettleView for PriorityQueueView<'_> {
             }
             let older = match &chosen {
                 None => true,
-                Some(best) => {
-                    meter.compare(size_of::<i64>(), size_of::<i64>())?;
-                    head.ord < best.ord
-                }
+                Some(best) => head.ord < best.ord,
             };
             if older {
                 chosen = Some(Chosen {
@@ -1093,9 +1016,9 @@ impl SettleView for PriorityQueueView<'_> {
             },
             None => return Err(SpaceError::Inconsistent("a settle fire has no level head")),
         };
-        let mut group = meter.buffer::<Par>(1)?;
-        group.push(meter.copy(cx.data_channel())?);
-        let mut bound = meter.buffer::<Bound>(1)?;
+        let mut group = Vec::<Par>::with_capacity(1);
+        group.push(cx.data_channel().clone());
+        let mut bound = Vec::<Bound>::with_capacity(1);
         bound.push(Bound { record, matched });
         Ok(Some(FirePlan {
             group,
@@ -1112,10 +1035,8 @@ mod tests {
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use models::rhoapi::tagged_continuation::TaggedCont;
     use models::rhoapi::{CostAuthority, ParWithRandom, TaggedContinuation};
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
     use models::rust::utils::{new_freevar_var, new_gint_par, new_gstring_par};
-    use rspace_plus_plus::rspace::errors::RSpaceError;
     use rspace_plus_plus::rspace::rspace::RSpace;
     use rspace_plus_plus::rspace::rspace_interface::ISpace;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -1125,7 +1046,6 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::RuntimeBudget;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::spaces::agent::{
         run_op, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOutcome,
@@ -1238,24 +1158,15 @@ mod tests {
                     queued == 0
                 );
             }
-            let meter = ScanMeter::new(None);
-            assert_eq!(
-                PriorityQueueDiscipline.precedes(side, 2, 5, &meter),
-                Ok(true)
-            );
-            assert_eq!(
-                PriorityQueueDiscipline.precedes(side, 5, 2, &meter),
-                Ok(false)
-            );
+            assert_eq!(PriorityQueueDiscipline.precedes(side, 2, 5), Ok(true));
+            assert_eq!(PriorityQueueDiscipline.precedes(side, 5, 2), Ok(false));
         }
     }
 
     /// The lane of a test entry, and its order: `(lane, ord, payload)`.
     type Entry3 = (u8, i64, String);
 
-    fn entry_slots(entry: &Entry3, _meter: &ScanMeter) -> Result<(i64, u8), SpaceError> {
-        Ok((entry.1, entry.0))
-    }
+    fn entry_slots(entry: &Entry3) -> Result<(i64, u8), SpaceError> { Ok((entry.1, entry.0)) }
 
     #[test]
     fn space_pq_lane_heads_group_by_lane_and_ignore_the_list_order() {
@@ -1267,7 +1178,7 @@ mod tests {
             (0, 6, "v".into()),
         ];
         let heads = PriorityQueueDiscipline
-            .lane_heads(Side::Data, &entries, entry_slots, &ScanMeter::new(None))
+            .lane_heads(Side::Data, &entries, entry_slots)
             .expect("the heads");
         let summary: Vec<(u8, i64, usize)> = heads
             .iter()
@@ -1283,7 +1194,7 @@ mod tests {
             let mut rotated = entries.clone();
             rotated.rotate_left(shift);
             let rotated_heads = PriorityQueueDiscipline
-                .lane_heads(Side::Waiters, &rotated, entry_slots, &ScanMeter::new(None))
+                .lane_heads(Side::Waiters, &rotated, entry_slots)
                 .expect("the heads");
             for (lane, head) in &rotated_heads {
                 let original = heads.get(lane).expect("the same lanes");
@@ -1291,29 +1202,6 @@ mod tests {
                 assert_eq!(head.len, original.len);
             }
         }
-    }
-
-    #[test]
-    fn space_pq_lane_heads_reserve_their_work_first() {
-        let entries: Vec<Entry3> = vec![(1, 9, "x".into()), (0, 4, "y".into()), (1, 3, "z".into())];
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let meter = ScanMeter::new(Some(budget.clone()));
-        PriorityQueueDiscipline
-            .lane_heads(Side::Data, &entries, entry_slots, &meter)
-            .expect("the heads");
-        let operations = HostWorkDimension::VerificationOperations;
-        let usage = budget.usage(operations).get();
-        assert!(
-            usage > 0,
-            "the lookups, the growth and the comparison are reserved"
-        );
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        limits.set(operations, HostWorkLimit::new(usage - 1));
-        let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
-        assert_eq!(
-            PriorityQueueDiscipline.lane_heads(Side::Data, &entries, entry_slots, &cut),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        );
     }
 
     fn config(priorities: Option<i64>) -> SpaceConfig {
@@ -1340,7 +1228,7 @@ mod tests {
         params: &BTreeMap<String, Par>,
         query: Option<&QueryParams>,
     ) -> Result<(), SpaceError> {
-        PriorityQueueDiscipline.check_values(config, params, query, &ScanMeter::new(None))
+        PriorityQueueDiscipline.check_values(config, params, query)
     }
 
     #[test]
@@ -1443,7 +1331,6 @@ mod tests {
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000_000, "priority queue agent test")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };

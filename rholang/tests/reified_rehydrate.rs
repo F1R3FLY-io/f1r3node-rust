@@ -10,8 +10,7 @@
 //! `reified_restart_rehydrate.rs`.
 //!
 //! A cost vector is the phlo usage of native play, its budget recording (usage, attempts and
-//! journal rows), its authority events and byte observations, and the host work of the play in
-//! each of the 16 dimensions.
+//! journal rows), and its authority events and byte observations.
 //!
 //! | Test | Property |
 //! |---|---|
@@ -19,7 +18,7 @@
 //! | `space_checkpoint_reset` | A reset to the root of block 1 restores the records, the waiters and the counters of block 1. Block 2 then reaches the root and the cost vector of its first play, and a restarted runtime reads the state of block 1 (RH-2). |
 //! | `space_attach_cost` | A handle call `config` and a send on an existing queue have the pinned cost vectors on the warm and on a cold runtime, and the accounting observer receives the cost of each COMM: one journal COMM record for each COMM of the log, each linked to a budget observation of the kind `Comm` (RH-4). |
 //! | `space_attach_warm_cold_cost_equal` | For each of the 24 families, block 2 over the state of the family program gives the same outcome and cost vector on the warm and on a cold runtime (RH-1, RH-4). |
-//! | `prop_attach_warm_cold_cost_equal` | The same equality for generated families, stored records and block-2 operations (NE-2, `view_charge_cache_independent`). |
+//! | `prop_attach_warm_cold_cost_equal` | The same equality for generated families, stored records and block-2 operations (NE-2). |
 //! | `reducer_attach_costs` | A missing durable space (DG-2) fails each entry with one cost vector for any missing space id, on a fresh runtime and on a runtime that holds other spaces (DG-4). The handle calls `config` and `gensym` through a stored handle cost the same on the warm and on a cold runtime. |
 //! | `reified_handle_persisted_restart_replay` | A handle and a name stored in block 1 serve three handle calls on a restarted runtime. The calls reach `HANDLE_OP` through the stored handle continuation, and native replay from the history of the root of block 1 reproduces the play. |
 //! | `reducer_dangling_handle` | Every row of DG-1 and DG-2 fails with its code and names the space id (DG-3): the ids of a `temp` space of an ended deploy, and the ids of a durable space that does not exist. `getSpaceAgent` replies `DanglingHandle` with the space id, and `ann` replies `NotAVectorDbSpace`. Native replay reproduces each deploy. |
@@ -34,7 +33,6 @@ use std::collections::BTreeSet;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
-use models::rust::host_work::HostWorkUsages;
 use proptest::prelude::{prop, prop_oneof, Just, Strategy};
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
@@ -53,16 +51,13 @@ use support::family_programs::{
     space_program, Inner, Outer, StoredFamily, CONFIG_CALL, JOIN, STORED_FAMILIES,
 };
 use support::native::{
-    assert_reproduces, certify, footprint_channels, host_work, is_space_row, native_play_with,
-    NativeChain, Played, AMPLE_LIMIT, OUT,
+    assert_reproduces, certify, footprint_channels, is_space_row, native_play, NativeChain, Played,
+    AMPLE_LIMIT, OUT,
 };
 use support::props::{check, runtime_config, tokio_runtime};
 use support::session::{comms_on, error_codes, injected, native, Injections};
 
 // ─── Plays and cost vectors ────────────────────────────────────────────────────────────────────
-
-/// A native play and the host work that it used.
-type Run = (Played, HostWorkUsages);
 
 /// No injected ids.
 fn none() -> Injections { Injections::new() }
@@ -74,10 +69,9 @@ async fn play_certified(
     term: &str,
     label: &str,
     injections: &Injections,
-) -> Run {
-    let host = host_work();
+) -> Played {
     let played = chain
-        .play_with(term, label, AMPLE_LIMIT, host.clone(), injections.clone())
+        .play_with(term, label, AMPLE_LIMIT, injections.clone())
         .await;
     assert!(
         played.residue.is_empty(),
@@ -86,18 +80,18 @@ async fn play_certified(
     );
     let certification = certify(&played, term, AMPLE_LIMIT).await;
     assert_reproduces(label, &played, &certification);
-    (played, host.usages())
+    played
 }
 
 /// Plays `term` like [`play_certified`] and checks that the deploy has no error.
-async fn play_clean(chain: &mut NativeChain, term: &str, label: &str) -> Run {
-    let run = play_certified(chain, term, label, &none()).await;
+async fn play_clean(chain: &mut NativeChain, term: &str, label: &str) -> Played {
+    let played = play_certified(chain, term, label, &none()).await;
     assert!(
-        run.0.result.errors.is_empty(),
+        played.result.errors.is_empty(),
         "{label}: the deploy fails: {:?}",
-        run.0.result.errors
+        played.result.errors
     );
-    run
+    played
 }
 
 fn recording(played: &Played) -> &NativeBudgetRecording {
@@ -118,8 +112,7 @@ fn journal(played: &Played) -> &[NativeOperationRecord] {
 
 /// Checks that the cold play `cold` equals the warm play `warm` from the same pre-state: the
 /// outcome (errors, post-state root, event log, outputs) and the cost vector (RH-1, RH-4).
-fn assert_same_play(label: &str, warm: &Run, cold: &Run) {
-    let ((warm, warm_host), (cold, cold_host)) = (warm, cold);
+fn assert_same_play(label: &str, warm: &Played, cold: &Played) {
     assert_eq!(cold.result.errors, warm.result.errors, "{label}: errors");
     assert_eq!(cold.root, warm.root, "{label}: post-state root");
     assert_eq!(cold.log, warm.log, "{label}: event log");
@@ -147,23 +140,20 @@ fn assert_same_play(label: &str, warm: &Run, cold: &Run) {
         cold.result.byte_observations, warm.result.byte_observations,
         "{label}: byte observations"
     );
-    assert_eq!(cold_host, warm_host, "{label}: host work");
 }
 
 /// The numeric cost vector of a play, which does not name channels: the phlo usage, the budget
-/// usage, the grant, the kind and the measurement of each budget attempt, the number of journal
-/// rows, and the host work.
+/// usage, the grant, the kind and the measurement of each budget attempt, and the number of
+/// journal rows.
 #[derive(Debug, PartialEq, Eq)]
 struct CostVector {
     phlo: Option<u64>,
     used: u64,
     attempts: Vec<(bool, AuthorityByteEventKind, Option<ByteCharge>)>,
     rows: usize,
-    host: HostWorkUsages,
 }
 
-fn cost_vector(run: &Run) -> CostVector {
-    let (played, host) = run;
+fn cost_vector(played: &Played) -> CostVector {
     let recording = recording(played);
     CostVector {
         phlo: played.result.native_phlo_usage,
@@ -180,12 +170,8 @@ fn cost_vector(run: &Run) -> CostVector {
             })
             .collect(),
         rows: journal(played).len(),
-        host: *host,
     }
 }
-
-/// The host work of `run` in each dimension, in the order of `HostWorkDimension::ALL`.
-fn host_array(run: &Run) -> [u64; 16] { run.1.into_array().map(|usage| usage.get()) }
 
 // ─── Outputs ───────────────────────────────────────────────────────────────────────────────────
 
@@ -312,7 +298,7 @@ async fn stored_chain() -> (
     let mut chain = NativeChain::new().await;
     let mut root = None;
     for family in &STORED_FAMILIES {
-        let (played, _) = play_clean(
+        let played = play_clean(
             &mut chain,
             &family.creation(),
             &format!("create {}", family.label),
@@ -340,10 +326,10 @@ async fn space_lazy_attach() {
         let cold_run = play_clean(&mut cold, &term, &label).await;
         for what in ["config", "take", "fired"] {
             assert_eq!(
-                delivered(&cold_run.0, family.label, what).len(),
+                delivered(&cold_run, family.label, what).len(),
                 1,
                 "{label}: the cold runtime delivers {what}: {:?}",
-                cold_run.0.outputs
+                cold_run.outputs
             );
         }
         assert_same_play(&label, &warm_run, &cold_run);
@@ -357,12 +343,12 @@ async fn space_checkpoint_reset() {
     for family in &STORED_FAMILIES {
         let label = family.label;
         let mut chain = NativeChain::new().await;
-        let (created, _) = play_clean(&mut chain, &family.creation(), "create").await;
+        let created = play_clean(&mut chain, &family.creation(), "create").await;
         let root = created.root.clone();
         // The space channels of block 2, from a play on a restarted runtime that the test then
         // drops.
         let mut probe = chain.restarted(&root).await;
-        let (probed, _) = play_clean(&mut probe, &family.touching(), "touch").await;
+        let probed = play_clean(&mut probe, &family.touching(), "touch").await;
         let channels = space_footprint(&probed);
         assert!(
             !channels.is_empty(),
@@ -399,13 +385,11 @@ async fn space_checkpoint_reset() {
 
 // ─── RH-4: the attach cost ─────────────────────────────────────────────────────────────────────
 
-/// The pinned cost vector of an attach: the phlo usage and the host work in the order of
-/// `HostWorkDimension::ALL`.
+/// The pinned cost of an attach: the phlo usage.
 struct PinnedCost {
     label: &'static str,
     body: &'static str,
     phlo: u64,
-    host: [u64; 16],
 }
 
 /// The attach programs of `space_attach_cost` over the stored queue, with the cost vectors that
@@ -415,17 +399,11 @@ const PINNED: [PinnedCost; 2] = [
         label: "handle call config",
         body: CONFIG_CALL,
         phlo: 13_594,
-        host: [
-            1, 1_414, 9, 1_391, 15, 685, 39, 1_220, 34, 28, 0, 522_199, 0, 0, 182_890, 3_969_620,
-        ],
     },
     PinnedCost {
         label: "send on a stored collection",
         body: "a!(4)",
         phlo: 7_909,
-        host: [
-            1, 848, 4, 459, 2, 4, 14, 285, 20, 16, 0, 472_265, 0, 0, 148_895, 4_226_954,
-        ],
     },
 ];
 
@@ -470,7 +448,7 @@ fn assert_comms_observed(label: &str, played: &Played) {
 async fn space_attach_cost() {
     let family = &STORED_FAMILIES[0];
     let mut warm = NativeChain::new().await;
-    let (created, _) = play_clean(&mut warm, &family.creation(), "create").await;
+    let created = play_clean(&mut warm, &family.creation(), "create").await;
     let root = created.root;
     for pinned in &PINNED {
         let term = family.with_stash(pinned.body);
@@ -479,11 +457,11 @@ async fn space_attach_cost() {
         let mut cold = warm.restarted(&root).await;
         let cold_run = play_clean(&mut cold, &term, pinned.label).await;
         assert_same_play(pinned.label, &warm_run, &cold_run);
-        assert_comms_observed(pinned.label, &cold_run.0);
+        assert_comms_observed(pinned.label, &cold_run);
         assert_eq!(
-            (cold_run.0.result.native_phlo_usage, host_array(&cold_run)),
-            (Some(pinned.phlo), pinned.host),
-            "{}: the pinned cost vector",
+            cold_run.result.native_phlo_usage,
+            Some(pinned.phlo),
+            "{}: the pinned cost",
             pinned.label
         );
     }
@@ -533,7 +511,7 @@ async fn space_attach_warm_cold_cost_equal() {
         for inner in Inner::ALL {
             let label = format!("{}:{}", outer.name(), inner.name());
             let mut warm = NativeChain::new().await;
-            let (created, _) = play_clean(
+            let created = play_clean(
                 &mut warm,
                 &family_creation(outer, inner),
                 &format!("{label} create"),
@@ -650,8 +628,7 @@ fn prop_attach_warm_cold_cost_equal() {
     check(runtime_config(), attach_cases(), |case| {
         tokio_runtime().block_on(async {
             let mut warm = NativeChain::new().await;
-            let (created, _) =
-                play_certified(&mut warm, &case_creation(&case), "create", &none()).await;
+            let created = play_certified(&mut warm, &case_creation(&case), "create", &none()).await;
             proptest::prop_assert!(
                 created.result.errors.is_empty(),
                 "block 1 fails: {:?}",
@@ -732,11 +709,7 @@ async fn reducer_attach_costs() {
             let mut fresh = NativeChain::new().await;
             for chain in [&mut fresh, &mut warm] {
                 let run = play_certified(chain, &term, label, &injections).await;
-                assert_eq!(
-                    codes(&run.0.result.errors),
-                    vec![code.to_string()],
-                    "{label}"
-                );
+                assert_eq!(codes(&run.result.errors), vec![code.to_string()], "{label}");
                 vectors.push(cost_vector(&run));
             }
         }
@@ -794,9 +767,9 @@ new out in {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_handle_persisted_restart_replay() {
     let mut chain = NativeChain::new().await;
-    let (created, _) = play_clean(&mut chain, SETUP, "setup").await;
+    let created = play_clean(&mut chain, SETUP, "setup").await;
     let mut restarted = chain.restarted(&created.root).await;
-    let (played, _) = play_clean(&mut restarted, CALLS, "calls").await;
+    let played = play_clean(&mut restarted, CALLS, "calls").await;
     let handle_op = namespace::gprivate(namespace::op_channel(namespace::HANDLE_OP));
     assert_eq!(
         comms_on(&played.log, &handle_op),
@@ -857,7 +830,7 @@ async fn expect_dangling(
     code: &str,
     sid: SpaceId,
 ) {
-    let (played, _) = play_certified(chain, term, label, injections).await;
+    let played = play_certified(chain, term, label, injections).await;
     assert_eq!(
         codes(&played.result.errors),
         vec![code.to_string()],
@@ -1019,7 +992,7 @@ async fn reducer_dangling_handle() {
         ("DG-1 ann", ann("DG-1 ann", &peek, "handle", "name")),
         ("DG-2 ann", ann("DG-2 ann", MISSING, "h", "n")),
     ] {
-        let (played, _) = play_certified(&mut chain, &term, label, &injections).await;
+        let played = play_certified(&mut chain, &term, label, &injections).await;
         assert!(
             played.result.errors.is_empty(),
             "{label}: {:?}",
@@ -1040,7 +1013,7 @@ async fn reducer_dangling_handle() {
     assert_not_a_vectordb_reply("DG-2 ann", &reply(&chain, "DG-2 ann").await);
 }
 
-// ─── Child metering under two schedules ────────────────────────────────────────────────────────
+// ─── Child work under two schedules ──────────────────────────────────────────────────────────
 
 /// Parallel space work on two spaces and a host channel.
 const PARALLEL: &str = r#"
@@ -1060,10 +1033,9 @@ new queues(`rho:space:hashmap:queue`), bags(`rho:space:hashmap:bag`), out in {
 "#;
 
 /// Native play of [`PARALLEL`] on `runtime`, certified.
-fn parallel_run(runtime: tokio::runtime::Runtime) -> Run {
+fn parallel_run(runtime: tokio::runtime::Runtime) -> Played {
     runtime.block_on(async {
-        let host = host_work();
-        let played = native_play_with(PARALLEL, AMPLE_LIMIT, host.clone()).await;
+        let played = native_play(PARALLEL, AMPLE_LIMIT).await;
         assert!(
             played.result.errors.is_empty(),
             "{:?}",
@@ -1071,7 +1043,7 @@ fn parallel_run(runtime: tokio::runtime::Runtime) -> Run {
         );
         let certification = certify(&played, PARALLEL, AMPLE_LIMIT).await;
         assert_reproduces("parallel space work", &played, &certification);
-        (played, host.usages())
+        played
     })
 }
 
@@ -1090,7 +1062,7 @@ fn reducer_space_costs() {
             .build()
             .expect("build a multi-thread tokio runtime"),
     );
-    assert_eq!(current.0.outputs.len(), 7, "{:?}", current.0.outputs);
+    assert_eq!(current.outputs.len(), 7, "{:?}", current.outputs);
     assert_same_play("current-thread and multi-thread", &current, &multi);
 }
 
@@ -1111,7 +1083,7 @@ async fn reified_factory_ephemeral_staging() {
 }}"#
         );
         let mut chain = NativeChain::new().await;
-        let (played, _) = play_clean(&mut chain, &term, qualifier).await;
+        let played = play_clean(&mut chain, &term, qualifier).await;
         let stash = chain.values(&format!("{STAGED}-{qualifier}")).await;
         let [entry] = stash.as_slice() else {
             panic!("{qualifier}: one handle: {stash:?}");
@@ -1182,9 +1154,9 @@ async fn reified_factory_theory_argument() {
         touch: "Nil",
     };
     let mut chain = NativeChain::new().await;
-    let (created, _) = play_clean(&mut chain, &family.creation(), "create").await;
+    let created = play_clean(&mut chain, &family.creation(), "create").await;
     let mut cold = chain.restarted(&created.root).await;
-    let (admitted, _) = play_clean(
+    let admitted = play_clean(
         &mut cold,
         &family.with_stash(r#"a!(5) | for (@x <- a) { out!(["take", x]) }"#),
         "admitted",
@@ -1193,7 +1165,7 @@ async fn reified_factory_theory_argument() {
     assert_eq!(delivered(&admitted, "nat", "take"), vec![vec![
         models::rust::utils::new_gint_par(1, Vec::new(), false)
     ]]);
-    let (refused, _) = play_certified(
+    let refused = play_certified(
         &mut cold,
         &family.with_stash(r#"a!("five")"#),
         "refused",
@@ -1203,7 +1175,7 @@ async fn reified_factory_theory_argument() {
     assert_eq!(codes(&refused.result.errors), vec![
         "TheoryRefuted".to_string()
     ]);
-    let (configured, _) = play_clean(&mut cold, &family.with_stash(CONFIG_CALL), "config").await;
+    let configured = play_clean(&mut cold, &family.with_stash(CONFIG_CALL), "config").await;
     let configs = delivered(&configured, "nat", "config");
     let [config] = configs.as_slice() else {
         panic!("one config: {configs:?}");
@@ -1218,14 +1190,14 @@ async fn reified_factory_theory_argument() {
     let temp =
         |body: &str| space_program("rho:space:hashmap:queue", r#""temp", free String()"#, body);
     let mut chain = NativeChain::new().await;
-    let (admitted, _) = play_clean(
+    let admitted = play_clean(
         &mut chain,
         &temp(r#"a!("s") | for (@v <- a) { out!(["got", v]) }"#),
         "temp admitted",
     )
     .await;
     assert_eq!(admitted.outputs.len(), 1, "{:?}", admitted.outputs);
-    let (refused, _) = play_certified(&mut chain, &temp("a!(1)"), "temp refused", &none()).await;
+    let refused = play_certified(&mut chain, &temp("a!(1)"), "temp refused", &none()).await;
     assert_eq!(codes(&refused.result.errors), vec![
         "TheoryRefuted".to_string()
     ]);

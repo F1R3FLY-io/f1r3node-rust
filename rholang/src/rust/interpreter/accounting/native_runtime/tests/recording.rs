@@ -178,11 +178,12 @@ fn abandoned_preparation_prevents_evidence_export() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
+    /// Changed by DR-131: the allocation-failure branch went with the
+    /// recorder's allocation hook. The retry failure branch stays.
     #[test]
     fn recording_failure_blocks_other_preparations_before_ticket_drop(
         accepted_count in 1usize..8,
         amount in 1u64..20,
-        allocation_failure in any::<bool>(),
     ) {
         let budget = RuntimeBudget::new(Cost::unsafe_max());
         budget.reset_for_native_execution(config(1000, [0, 0, 1, 0])).unwrap();
@@ -202,15 +203,7 @@ proptest! {
         {
             let mut state = budget.authority_state.lock().unwrap();
             let native = state.native.as_mut().unwrap();
-            let failure = if allocation_failure {
-                native.recording.fail_allocation_after = Some(accepted_count);
-                native.record_charge(&failed)
-            } else {
-                native.record_retry(&failed)
-            };
-            prop_assert!(failure.is_err());
-            prop_assert!(!native.host_work.is_rejected());
-            native.recording.fail_allocation_after = None;
+            prop_assert!(native.record_retry(&failed).is_err());
         }
         {
             let mut state = budget.authority_state.lock().unwrap();
@@ -224,54 +217,6 @@ proptest! {
         drop(failed);
         drop(other);
         prop_assert!(budget.native_budget_recording().is_err());
-    }
-}
-
-#[test]
-fn retry_comparison_reserves_host_work_before_reading_the_observation() {
-    use models::rust::host_work::HostWorkDimension;
-
-    for amount in [1, 2] {
-        let budget = RuntimeBudget::new(Cost::unsafe_max());
-        budget
-            .reset_for_native_execution(config(10, [0, 0, 1, 0]))
-            .unwrap();
-        let accepted = with_operation(&budget, || {
-            budget.prepare_native_observation(&observation(1))
-        })
-        .unwrap()
-        .unwrap();
-        {
-            let mut state = budget.authority_state.lock().unwrap();
-            state
-                .native
-                .as_mut()
-                .unwrap()
-                .record_charge(&accepted)
-                .unwrap();
-        }
-        drop(accepted);
-        let retry = with_operation(&budget, || {
-            budget.prepare_native_observation(&observation(amount))
-        })
-        .unwrap()
-        .unwrap();
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-        limits.set(HostWorkDimension::VerificationBytes, HostWorkLimit::new(0));
-        let host = HostWorkBudget::new(limits);
-        {
-            let mut state = budget.authority_state.lock().unwrap();
-            let native = state.native.as_mut().unwrap();
-            native.host_work = host.clone();
-            assert!(matches!(
-                native.record_retry(&retry),
-                Err(InterpreterError::HostWorkRejected)
-            ));
-        }
-        drop(retry);
-        assert!(host.is_rejected());
-        assert_eq!(budget.native_phlo_usage(), Some(1));
-        assert!(budget.native_budget_recording().is_err());
     }
 }
 
@@ -349,47 +294,4 @@ fn duplicate_occurrence_and_trace_limit_fail_without_extra_debits() {
         assert_eq!(budget.byte_observations().rows.len(), 1);
         assert!(budget.native_budget_recording().is_err());
     }
-}
-
-#[tokio::test]
-async fn native_record_allocation_failure_rolls_back_without_sticky_host_rejection() {
-    use std::collections::HashMap;
-
-    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-
-    use crate::rust::interpreter::rho_runtime::RhoRuntime;
-    use crate::rust::interpreter::test_utils::resources::with_runtime;
-    with_runtime("native-allocation-reject-", |mut runtime| async move {
-        runtime
-            .cost
-            .set_deploy_signature_funded(b"native-allocation-reject", Sig::Ground(vec![7]));
-        let before = runtime.get_hot_changes().await;
-        let mut settings = config(1_000_000, [2, 3, 5, 7]);
-        settings.recording.fail_allocation_after = Some(1);
-        let host = settings.host_work.clone();
-        let result = runtime
-            .evaluate_with_native_phlo(
-                r#"@"first"!(1) | @"second"!(2)"#,
-                HashMap::new(),
-                Blake2b512Random::create_from_bytes(b"native-allocation-reject"),
-                None,
-                settings,
-            )
-            .await;
-        let evaluation = result.expect("host rejection returns a classified evaluation failure");
-        assert_eq!(evaluation.errors, vec![InterpreterError::HostWorkRejected]);
-        assert!(!evaluation.economic_failures.permits_retained_charge());
-        assert!(evaluation.native_phlo_usage.is_none());
-        assert!(evaluation.native_budget_recording.is_none());
-        assert!(evaluation.native_operation_recording.is_none());
-        assert!(evaluation.byte_observations.rows.is_empty());
-        assert!(evaluation.authority_events.is_empty());
-        assert!(evaluation.authority_byte_events.is_empty());
-        assert!(!host.is_rejected());
-        assert!(runtime.cost.native_phlo_usage().unwrap() > 0);
-        assert!(runtime.cost.native_budget_recording().is_err());
-        assert_eq!(runtime.get_hot_changes().await, before);
-        assert!(runtime.take_event_log().await.is_empty());
-    })
-    .await;
 }

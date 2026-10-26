@@ -12,18 +12,16 @@
 //! | `Any` | always |
 //!
 //! So the string `"Nat(42)"` is not in `Nat`: the legacy prefix check on the text of a value is
-//! gone. Each check reserves its one unit of work as one `VerificationOperations` unit before it
-//! reads the value, and it reports the usage `{work_units: 1, evidence_bytes: 0}`. A limit
-//! profile of zero units gives `Undetermined` before any reservation or read. At a match, a
-//! builtin admits each value of the stored payload again, for one unit per stored datum: a
-//! payload that was admitted when it was sent is always `Proven`.
+//! gone. Each check reports the usage `{work_units: 1, evidence_bytes: 0}`. A limit profile of
+//! zero units gives `Undetermined` before any read. At a match, a builtin admits each value of
+//! the stored payload again, for one unit per stored datum: a payload that was admitted when it
+//! was sent is always `Proven`.
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{ListParWithRandom, Par};
 
 use super::identity::{TheoryIdentity, BUILTIN_CATEGORY, BUILTIN_LANGUAGE, STRUCTURAL_ABI};
 use super::{SpaceTheory, TheoryReason, TheoryUsage, TheoryVerdict};
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 
 /// The names of the builtin theories, in bytewise order.
@@ -155,36 +153,34 @@ impl BuiltinTheory {
     /// The kind of the builtin.
     pub const fn kind(&self) -> BuiltinKind { self.kind }
 
-    /// One structural check of `value`, with the work reserved first.
-    fn check(&self, value: &Par, meter: &ScanMeter) -> Result<TheoryVerdict, SpaceError> {
+    /// One structural check of `value`. A limit profile below one unit gives `Undetermined`
+    /// before the read.
+    fn check(&self, value: &Par) -> TheoryVerdict {
         let usage = TheoryUsage::new(STRUCTURAL_WORK_UNITS, 0);
         let available = self.identity.limit_profile.work_units;
         if available < STRUCTURAL_WORK_UNITS {
-            return Ok(TheoryVerdict::Undetermined {
+            return TheoryVerdict::Undetermined {
                 reason: TheoryReason::WorkBudgetExhausted {
                     required: STRUCTURAL_WORK_UNITS,
                     available,
                 },
                 usage,
-            });
+            };
         }
-        meter.charge(1, 0, 0)?;
-        Ok(match self.kind.contains(value) {
+        match self.kind.contains(value) {
             true => TheoryVerdict::Proven(usage),
             false => TheoryVerdict::Refuted {
                 reason: TheoryReason::OutsideTheory,
                 usage,
             },
-        })
+        }
     }
 }
 
 impl SpaceTheory for BuiltinTheory {
     fn identity(&self) -> &TheoryIdentity { &self.identity }
 
-    fn admit(&self, value: &Par, meter: &ScanMeter) -> Result<TheoryVerdict, SpaceError> {
-        self.check(value, meter)
-    }
+    fn admit(&self, value: &Par) -> Result<TheoryVerdict, SpaceError> { Ok(self.check(value)) }
 
     /// The stored payload again, value by value, for one unit of work: a payload that was
     /// admitted is always `Proven`. The captures are part of the payload, so they need no
@@ -193,7 +189,6 @@ impl SpaceTheory for BuiltinTheory {
         &self,
         stored: &ListParWithRandom,
         _captures: &ListParWithRandom,
-        meter: &ScanMeter,
     ) -> Result<TheoryVerdict, SpaceError> {
         let usage = TheoryUsage::new(STRUCTURAL_WORK_UNITS, 0);
         let available = self.identity.limit_profile.work_units;
@@ -206,7 +201,6 @@ impl SpaceTheory for BuiltinTheory {
                 usage,
             });
         }
-        meter.charge(1, 0, 0)?;
         Ok(
             match stored.pars.iter().all(|value| self.kind.contains(value)) {
                 true => TheoryVerdict::Proven(usage),
@@ -222,19 +216,10 @@ impl SpaceTheory for BuiltinTheory {
 #[cfg(test)]
 mod tests {
     use models::rhoapi::{Bundle, Expr, GUnforgeable};
-    use models::rust::host_work::{
-        HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
-    };
     use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::spaces::record::expr_par;
-
-    fn metered() -> (HostWorkBudget, ScanMeter) {
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000)));
-        (budget.clone(), ScanMeter::new(Some(budget)))
-    }
 
     fn theory(name: &str) -> BuiltinTheory {
         BuiltinTheory::of_identity(&TheoryIdentity::builtin(name)).expect("a builtin")
@@ -295,8 +280,7 @@ mod tests {
         ];
         for (value, expected) in cases {
             for (name, admitted) in ["Nat", "Int", "String", "Bool", "Any"].iter().zip(expected) {
-                let (_, meter) = metered();
-                let verdict = theory(name).admit(&value, &meter).expect("a verdict");
+                let verdict = theory(name).admit(&value).expect("a verdict");
                 assert_eq!(verdict.is_proven(), admitted, "{name} {value:?}");
                 assert_eq!(verdict.usage(), TheoryUsage::new(1, 0), "{name}");
                 assert!(
@@ -308,49 +292,38 @@ mod tests {
     }
 
     #[test]
-    fn theory_builtins_reserve_one_operation_per_check() {
-        let (budget, meter) = metered();
+    fn theory_builtins_check_each_stored_value_at_a_match() {
         let nat = theory("Nat");
-        for value in [int(1), int(-1), string("x")] {
-            nat.admit(&value, &meter).expect("a verdict");
+        for (value, admitted) in [(int(1), true), (int(-1), false), (string("x"), false)] {
+            assert_eq!(nat.admit(&value).expect("a verdict").is_proven(), admitted);
         }
         let stored = ListParWithRandom {
             pars: vec![int(1), int(2), int(3)],
             ..ListParWithRandom::default()
         };
         assert!(nat
-            .check_match(&stored, &ListParWithRandom::default(), &meter)
+            .check_match(&stored, &ListParWithRandom::default())
             .expect("a verdict")
             .is_proven());
-        assert_eq!(
-            budget.usage(HostWorkDimension::VerificationOperations),
-            HostWorkUsage::new(4),
-            "one unit per value at a send and one per stored datum at a match"
-        );
-        assert_eq!(
-            budget.usage(HostWorkDimension::VerificationBytes),
-            HostWorkUsage::new(0)
-        );
         let refused = ListParWithRandom {
             pars: vec![int(1), int(-2)],
             ..ListParWithRandom::default()
         };
         assert!(!nat
-            .check_match(&refused, &ListParWithRandom::default(), &meter)
+            .check_match(&refused, &ListParWithRandom::default())
             .expect("a verdict")
             .is_proven());
     }
 
     #[test]
-    fn theory_builtins_with_zero_work_are_undetermined_before_any_read() {
+    fn theory_builtins_with_zero_work_are_undetermined() {
         let identity = TheoryIdentity {
             limit_profile: TheoryUsage::new(0, 0),
             ..TheoryIdentity::builtin("Nat")
         };
         let starved = BuiltinTheory::of_identity(&identity).expect("any limit profile resolves");
-        let (budget, meter) = metered();
         assert_eq!(
-            starved.admit(&int(1), &meter).expect("a verdict"),
+            starved.admit(&int(1)).expect("a verdict"),
             TheoryVerdict::Undetermined {
                 reason: TheoryReason::WorkBudgetExhausted {
                     required: 1,
@@ -360,17 +333,9 @@ mod tests {
             }
         );
         assert!(matches!(
-            starved.check_match(
-                &ListParWithRandom::default(),
-                &ListParWithRandom::default(),
-                &meter
-            ),
+            starved.check_match(&ListParWithRandom::default(), &ListParWithRandom::default()),
             Ok(TheoryVerdict::Undetermined { .. })
         ));
-        assert_eq!(
-            budget.usage(HostWorkDimension::VerificationOperations),
-            HostWorkUsage::new(0)
-        );
     }
 
     #[test]

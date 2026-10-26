@@ -51,8 +51,13 @@ use serde_json::Value;
 
 const PROPERTY_SEED: u64 = 0x0E0D_2026_1004_0002;
 const ORDINARY_CORPUS: &str = "test-vectors/ordinary-execution-v1.json";
-const SCHEMA_PINS: &str = "test-vectors/protobuf-schema-head-4d67b5ccc.json";
-const SCHEMA_BASE: &str = "4d67b5ccc42c4e510162d075f7ed423bf8175563";
+// Changed by decision 89: the merge of feature/cost-accounted-rho at 4c58a925f moves the base.
+// The base changed CasperMessage.proto and RhoTypes.proto (the sized integer forms); the campaign
+// changes no schema file.
+// const SCHEMA_PINS: &str = "test-vectors/protobuf-schema-head-4d67b5ccc.json";
+// const SCHEMA_BASE: &str = "4d67b5ccc42c4e510162d075f7ed423bf8175563";
+const SCHEMA_PINS: &str = "test-vectors/protobuf-schema-head-4c58a925f.json";
+const SCHEMA_BASE: &str = "4c58a925f2b63e4aa3721383a0b885e2f330a145";
 
 /// The 32 keywords of grammar `02cef80`: its word-shaped string tokens (plan decision 27).
 const KEYWORDS_02CEF80: [&str; 32] = [

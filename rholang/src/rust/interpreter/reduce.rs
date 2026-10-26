@@ -13,13 +13,12 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, CostAuthority, CostRegion, CostSignedTerm, CostStack, EAnd, EDiv, EEq,
-    EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr,
-    EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GUnforgeable, If,
-    KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive,
-    ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, CostAuthority, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
+    EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GUnforgeable, If, KeyValuePair,
+    ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
+    TaggedContinuation, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
@@ -34,17 +33,17 @@ use models::rust::utils::{
     new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
 };
 use prost::Message;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
-use shared::rust::clone_backing::{self as clone_backing, BackingError, BackingMeter};
 use tokio::sync::RwLock;
 
 use super::accounting::authority::{
-    cost_region, cost_region_metered, cost_signature_to_sig, cost_signature_to_sig_metered,
-    extend_authority, funding_sig_channel_metered, merge_authorities_metered,
-    sig_to_cost_signature, sig_to_cost_signature_metered, AuthorityError,
+    cost_region, cost_signature_to_sig, extend_authority, resolve_system_residue,
+    sig_to_cost_signature, system_residue_authority, AuthorityError, ResidueContext,
+};
+use super::accounting::byte_accounting::{
+    message_field_bytes, par_with_random_bytes, IntroductionMeasurement,
 };
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
@@ -62,7 +61,6 @@ use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::execution_space::ExecutionSpace;
-use super::host_work::HostWorkBudget;
 use super::matcher::has_locally_free::HasLocallyFree;
 use super::metering::MeteredMachine;
 use super::metrics_constants::{
@@ -95,29 +93,6 @@ const STACK_RED_ZONE: usize = 1024 * 1024; // 1 MB
 /// Size of each new stack segment allocated when the red zone is reached.
 const STACK_GROW_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 const SINGLE_TERM_YIELD_INTERVAL: u64 = 256;
-
-fn reserve_reducer_random_bytes(
-    rand: &Blake2b512Random,
-    backing: &dyn BackingMeter,
-) -> Result<(), InterpreterError> {
-    let count_bytes = rand
-        .count_view
-        .len()
-        .checked_mul(8)
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    let output_bytes = 168usize
-        .checked_add(rand.last_block.len())
-        .and_then(|size| size.checked_add(rand.path_view.len()))
-        .and_then(|size| size.checked_add(count_bytes))
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    let allocation = output_bytes
-        .checked_mul(4)
-        .and_then(|size| size.checked_add(144))
-        .ok_or(InterpreterError::HostWorkRejected)?;
-    backing
-        .reserve(output_bytes, output_bytes, allocation)
-        .map_err(|_| InterpreterError::HostWorkRejected)
-}
 
 /// A Future wrapper that dynamically grows the thread stack during polling.
 ///
@@ -186,6 +161,8 @@ pub struct ReducerCore {
     pub(crate) reduction_coordinator: ReductionCoordinator,
     pub(crate) space_ctx: super::reified::scope::SpaceCtx,
     pub(crate) reified: Arc<super::reified::runtime::ReifiedRuntime>,
+    /// DR-101: set while a system body runs, so its residue keeps the system seal.
+    pub(crate) residue_seal: bool,
 }
 
 type Application = Option<(
@@ -223,29 +200,24 @@ impl ReducerCore {
         self.spawned_eval_tasks.store(0, Ordering::Relaxed);
     }
 
+    /// DR-101: this reducer outside a system body.
+    fn without_residue_seal(&self) -> std::borrow::Cow<'_, Self> {
+        if self.residue_seal {
+            std::borrow::Cow::Owned(ReducerCore {
+                residue_seal: false,
+                ..self.clone()
+            })
+        } else {
+            std::borrow::Cow::Borrowed(self)
+        }
+    }
+
     fn with_metering_child(&self, component: usize) -> Self {
         let metering = self.metering.child(component.min(u32::MAX as usize) as u32);
         let mut child = self.clone();
         child.metering = metering.clone();
         child.substitute = Substitute { metering };
         child
-    }
-
-    fn reserve_host_primitive<M: Message>(&self, input: &M) -> Result<(), InterpreterError> {
-        let input_bytes = u64::try_from(input.encoded_len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "primitive input byte count does not fit in u64".to_string(),
-            )
-        })?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::PrimitiveCalls,
-            HostWorkUnits::new(1),
-        )?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::PrimitiveInputBytes,
-            HostWorkUnits::new(input_bytes),
-        )?;
-        Ok(())
     }
 
     pub fn eval<'a>(
@@ -264,33 +236,6 @@ impl ReducerCore {
                     self.space.clone(),
                     self.metering.budget(),
                     self.reduction_coordinator.clone(),
-                    None,
-                    self.eval_inner(par, env, rand, CostAuthority::default()),
-                )
-                .await;
-                self.finish_detached_errors(result, errors)
-            },
-        })
-    }
-
-    pub fn eval_with_host_work<'a>(
-        &'a self,
-        par: Par,
-        env: &'a Env<Par>,
-        rand: Blake2b512Random,
-        host_work: HostWorkBudget,
-    ) -> Pin<
-        Box<
-            dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
-        >,
-    > {
-        Box::pin(StackGrowingFuture {
-            inner: async move {
-                let (result, _, errors) = deterministic_reduction::root_with_observation(
-                    self.space.clone(),
-                    self.metering.budget(),
-                    self.reduction_coordinator.clone(),
-                    Some(host_work),
                     self.eval_inner(par, env, rand, CostAuthority::default()),
                 )
                 .await;
@@ -316,7 +261,6 @@ impl ReducerCore {
                     self.space.clone(),
                     self.metering.budget(),
                     self.reduction_coordinator.clone(),
-                    None,
                     self.eval_inner(par, env, rand, authority),
                 )
                 .await;
@@ -330,11 +274,19 @@ impl ReducerCore {
         par: Par,
         env: Env<Par>,
         rand: Blake2b512Random,
+        system_body: bool,
     ) -> Result<(), InterpreterError> {
+        let reducer = if system_body == self.residue_seal {
+            self.clone()
+        } else {
+            Arc::new(ReducerCore {
+                residue_seal: system_body,
+                ..(**self).clone()
+            })
+        };
         if deterministic_reduction::current().is_none() {
-            return self.eval(par, &env, rand).await;
+            return reducer.eval(par, &env, rand).await;
         }
-        let reducer = self.clone();
         deterministic_reduction::spawn_detached(async move {
             reducer
                 .eval_inner(par, &env, rand, CostAuthority::default())
@@ -366,7 +318,9 @@ impl ReducerCore {
     ) -> Result<(), InterpreterError> {
         let terms = owned_evaluation_terms(par);
         if terms.len() > i16::MAX as usize {
-            Err(InterpreterError::ReduceError(format!(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(format!(
+            Err(InterpreterError::TermStructureError(format!(
                 "The number of terms in the Par is {}, which exceeds the limit of {}",
                 terms.len(),
                 i16::MAX
@@ -466,7 +420,6 @@ impl ReducerCore {
         &self,
         par: Par,
         rand: Blake2b512Random,
-        host_work: Option<HostWorkBudget>,
     ) -> (
         Result<(), InterpreterError>,
         super::accounting::economic_failure::EvaluationFailureSummary,
@@ -478,7 +431,6 @@ impl ReducerCore {
                 self.space.clone(),
                 self.metering.budget(),
                 self.reduction_coordinator.clone(),
-                host_work,
                 async {
                     let result = self
                         .eval_inner(par, &env, rand, CostAuthority::default())
@@ -498,19 +450,6 @@ impl ReducerCore {
             .await
     }
 
-    pub async fn inj_with_host_work(
-        &self,
-        par: Par,
-        rand: Blake2b512Random,
-        host_work: HostWorkBudget,
-    ) -> Result<(), InterpreterError> {
-        let root = self.begin_root_evaluation();
-        let result = self
-            .eval_with_host_work(par, &Env::new(), rand, host_work)
-            .await;
-        self.end_root_evaluation(root, result).await
-    }
-
     /**
      * Materialize a send in the store, optionally returning the matched continuation.
      *
@@ -524,6 +463,7 @@ impl ReducerCore {
         data: ListParWithRandom,
         persistent: bool,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -532,7 +472,7 @@ impl ReducerCore {
         >,
     > {
         Box::pin(StackGrowingFuture {
-            inner: self.produce_inner(chan, data, persistent, introduction_authority),
+            inner: self.produce_inner(chan, data, persistent, introduction_authority, measurement),
         })
     }
 
@@ -542,13 +482,22 @@ impl ReducerCore {
         data: ListParWithRandom,
         persistent: bool,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
         let source = Produce::create(&chan, &data, persistent);
-        self.metering.budget().register_introduction_authority(
+        // Changed by D-F2 (DR-118): the registration also carries the
+        // measurement of the datum, which the observers reuse.
+        // self.metering.budget().register_introduction_authority(
+        //     super::accounting::byte_accounting::produce_introduction_identity(&source),
+        //     super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
+        //     &introduction_authority,
+        // )?;
+        self.metering.budget().register_introduction(
             super::accounting::byte_accounting::produce_introduction_identity(&source),
             super::accounting::authority::AuthorityByteEventKind::ProduceIntroduction,
             &introduction_authority,
+            measurement,
         )?;
         let produce_result = self
             .space
@@ -568,6 +517,7 @@ impl ReducerCore {
                         produce_event.clone().output_value,
                         produce_event.failed,
                         introduction_authority,
+                        measurement,
                     )
                     .await?;
 
@@ -578,6 +528,24 @@ impl ReducerCore {
                             .mark_as_non_deterministic(output.clone());
                         self.space.update_produce(&produce_event, produce1).await?;
                         Ok(dispatch_type)
+                    }
+
+                    // Added by DR-114 (gap G-A): in native funded execution a
+                    // recorded reply whose produce failed keeps its record, so
+                    // replay produces the same reply and meets the same denial.
+                    // The cause is raised as is, so a signed-limit exhaustion
+                    // stays a charged user failure (DR-113).
+                    DispatchType::FailedNonDeterministicCall(
+                        InterpreterError::ProduceFailureWithOutput {
+                            cause,
+                            output_not_produced,
+                        },
+                    ) if self.metering.budget().native_execution_active() => {
+                        let recorded = produce_event
+                            .clone()
+                            .mark_as_non_deterministic(output_not_produced);
+                        self.space.update_produce(&produce_event, recorded).await?;
+                        Err(*cause)
                     }
 
                     DispatchType::FailedNonDeterministicCall(error) => {
@@ -614,6 +582,7 @@ impl ReducerCore {
         guard: Option<Par>,
         authority: CostAuthority,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Pin<
         Box<
             dyn std::future::Future<Output = Result<DispatchType, InterpreterError>>
@@ -630,6 +599,7 @@ impl ReducerCore {
                 guard,
                 authority,
                 introduction_authority,
+                measurement,
             ),
         })
     }
@@ -643,6 +613,7 @@ impl ReducerCore {
         guard: Option<Par>,
         authority: CostAuthority,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
 
@@ -657,10 +628,18 @@ impl ReducerCore {
             cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
         };
         let source = Consume::create(&sources, &patterns, &continuation, persistent);
-        self.metering.budget().register_introduction_authority(
+        // Changed by D-F2 (DR-118): the registration also carries the
+        // measurement of the body and the guard, which the observers reuse.
+        // self.metering.budget().register_introduction_authority(
+        //     super::accounting::byte_accounting::consume_introduction_identity(&source),
+        //     super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
+        //     &introduction_authority,
+        // )?;
+        self.metering.budget().register_introduction(
             super::accounting::byte_accounting::consume_introduction_identity(&source),
             super::accounting::authority::AuthorityByteEventKind::ConsumeIntroduction,
             &introduction_authority,
+            measurement,
         )?;
         let consume_result = self
             .space
@@ -689,6 +668,7 @@ impl ReducerCore {
             guard,
             authority,
             introduction_authority,
+            measurement,
         )
         .await
     }
@@ -703,6 +683,7 @@ impl ReducerCore {
         previous_output: Vec<Vec<u8>>,
         trace_failed: bool,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         // During replay, if the trace shows a failed non-deterministic process,
         // we cannot replay it - the external service call failed during original execution
@@ -720,6 +701,22 @@ impl ReducerCore {
         match res {
             Some((continuation, data_list, peek)) => {
                 if persistent {
+                    // Added by DR-114 (P2): a recorded external-service call is
+                    // one linear request with one reply. A persistent send to
+                    // one would call the service again on every iteration, and
+                    // no iteration records its reply.
+                    if let Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(
+                        body_ref,
+                    )) = continuation.tagged_cont.as_ref()
+                    {
+                        if super::system_processes::is_native_recorded_op(*body_ref)
+                            && self.metering.budget().native_execution_active()
+                        {
+                            return Err(InterpreterError::SystemProcessShapeError(
+                                "a persistent send to a recorded system process".to_string(),
+                            ));
+                        }
+                    }
                     // dispatchAndRun
                     let self_clone1 = self.with_metering_child(0);
                     let self_clone2 = self.with_metering_child(1);
@@ -767,6 +764,7 @@ impl ReducerCore {
                                 data_clone,
                                 persistent_flag,
                                 introduction_authority_clone,
+                                measurement,
                             )
                             .await
                     })
@@ -835,6 +833,7 @@ impl ReducerCore {
         guard: Option<Par>,
         authority: CostAuthority,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
         let previous_output_as_par = previous_output
             .into_iter()
@@ -899,6 +898,7 @@ impl ReducerCore {
                                 guard_clone,
                                 authority_clone,
                                 introduction_authority_clone,
+                                measurement,
                             )
                             .await
                     })
@@ -1002,11 +1002,30 @@ impl ReducerCore {
             .enumerate()
             .map(|(index, (chan, _, removed_data, _))| {
                 let self_clone = self.with_metering_child(start_component + index);
-                let introduction_authority =
-                    removed_data.cost_authority.clone().unwrap_or_default();
                 Box::pin(async move {
+                    // Changed by DR-101: a restored datum charges its seal as this
+                    // deployment resolves it, so earlier system residue stays free.
+                    // let introduction_authority =
+                    //     removed_data.cost_authority.clone().unwrap_or_default();
+                    let introduction_authority = match removed_data.cost_authority.as_ref() {
+                        Some(seal) => {
+                            let budget = self_clone.metering.budget();
+                            let context =
+                                ResidueContext::new(&budget.signature(), budget.deploy_id())
+                                    .map_err(|error| {
+                                        InterpreterError::ReduceError(error.to_string())
+                                    })?;
+                            resolve_system_residue(seal, &removed_data.random_state, &context)
+                                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+                                .into_owned()
+                        }
+                        None => CostAuthority::default(),
+                    };
+                    // D-F2 (DR-118): a restored datum passes no measurement. A
+                    // datum that this deployment produced keeps its first
+                    // registration, and the observer walks any other one.
                     self_clone
-                        .produce(chan, removed_data, false, introduction_authority)
+                        .produce(chan, removed_data, false, introduction_authority, None)
                         .await
                 })
                     as Pin<
@@ -1132,18 +1151,22 @@ impl ReducerCore {
             err_list
                 if err_list
                     .iter()
-                    .any(|error| matches!(error, InterpreterError::HostWorkRejected)) =>
-            {
-                Err(InterpreterError::HostWorkRejected)
-            }
-
-            err_list
-                if err_list
-                    .iter()
                     .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
                     .is_some() =>
             {
                 Err(InterpreterError::OutOfPhlogistonsError)
+            }
+
+            // Added by DR-113: exhaustion of the signed limit also stops the
+            // whole evaluation. It collapses after the non-user exhaustion, so
+            // a mixed failure still reports the non-user error. The full list
+            // is recorded above for the classification.
+            err_list
+                if err_list
+                    .iter()
+                    .any(|error| matches!(error, InterpreterError::SignedLimitExhausted)) =>
+            {
+                Err(InterpreterError::SignedLimitExhausted)
             }
 
             // Rethrow single error
@@ -1163,19 +1186,6 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::ReductionSteps,
-            HostWorkUnits::new(1),
-        )?;
-        let term_bytes = u64::try_from(term.encoded_len()).map_err(|_| {
-            InterpreterError::BugFoundError(
-                "reduction term byte count does not fit in u64".to_string(),
-            )
-        })?;
-        deterministic_reduction::reserve_host_work(
-            HostWorkDimension::ReductionTermBytes,
-            HostWorkUnits::new(term_bytes),
-        )?;
         match term {
             GeneratedMessage::Send(term) => {
                 metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
@@ -1223,9 +1233,12 @@ impl ReducerCore {
             }
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
+                    // DR-101 (P1 rem:signed-subst): a process held in a variable
+                    // keeps its sender's provenance, so it never runs as a system body.
                     ExprInstance::EVarBody(e) => {
                         let res = self.eval_var(&e.clone().v.unwrap(), env)?;
-                        self.eval_with_authority(res, env, rand, authority.clone())
+                        self.without_residue_seal()
+                            .eval_with_authority(res, env, rand, authority.clone())
                             .await
                     }
                     ExprInstance::EMethodBody(e) => {
@@ -1235,7 +1248,8 @@ impl ReducerCore {
                             },
                             env,
                         )?;
-                        self.eval_with_authority(res, env, rand, authority.clone())
+                        self.without_residue_seal()
+                            .eval_with_authority(res, env, rand, authority.clone())
                             .await
                     }
                     ExprInstance::ETupleBody(t) => self.eval_marker(t, env, rand, authority).await,
@@ -1271,23 +1285,33 @@ impl ReducerCore {
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         self.metering.reserve_primitive(send_eval_cost())?;
-        let authority =
-            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
-                let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                let region = cost_region(&signature, &rand.to_bytes(), 0)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                extend_authority(authority, region)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
-            } else {
-                authority.clone()
-            };
+        let opens_region =
+            authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope();
+        let authority = if opens_region {
+            let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            let region = cost_region(&signature, &rand.to_bytes(), 0)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            extend_authority(authority, region)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            authority.clone()
+        };
+        // DR-101: a system body pays through its payer region but stores system residue.
+        let seal = if opens_region && self.residue_seal {
+            system_residue_authority(&authority, &self.metering.budget().deploy_id())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            authority.clone()
+        };
         let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
         let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
                 if !value.write_flag {
-                    return Err(InterpreterError::ReduceError(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::BundlePermissionError(
                         "Trying to send on non-writeable channel.".to_string(),
                     ));
                 } else {
@@ -1297,25 +1321,45 @@ impl ReducerCore {
             None => sub_chan,
         };
 
-        let subst_data = send
+        // Changed by D-F2 (DR-118): the substitution also returns the prost
+        // length of each datum, and the produce introduction reuses it.
+        // let subst_data = send
+        //     .data
+        //     .iter()
+        //     .map(|expr| {
+        //         let evaluated = self.eval_expr(expr, env)?;
+        //         self.substitute.substitute_and_charge(&evaluated, 0, env)
+        //     })
+        //     .collect::<Result<Vec<_>, InterpreterError>>()?;
+        let measured_data = send
             .data
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
-                self.substitute.substitute_and_charge(&evaluated, 0, env)
+                self.substitute.substitute_and_measure(&evaluated, 0, env)
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
+        let pars = measured_data.iter().try_fold(0_u64, |total, (_, bytes)| {
+            message_field_bytes(1, *bytes)
+                .ok()
+                .and_then(|field| total.checked_add(field))
+        });
+        let subst_data = measured_data
+            .into_iter()
+            .map(|(par, _)| par)
+            .collect::<Vec<_>>();
 
         self.reified_produce(
             unbundled,
             ListParWithRandom {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
-                cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
+                cost_authority: (!seal.regions.is_empty()).then_some(seal),
                 cost_stack: None,
             },
             send.persistent,
             authority,
+            pars.map(|pars| IntroductionMeasurement::Produce { pars }),
         )
         .await?;
         Ok(())
@@ -1340,21 +1384,26 @@ impl ReducerCore {
                 "cost-accounting: a join must sign either every receive clause or none".to_string(),
             ));
         }
-        let introduction_authority =
-            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
-                let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                let region = cost_region(&signature, &entropy, 0)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-                extend_authority(authority, region)
-                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
-            } else {
-                authority.clone()
-            };
-        let authority = if signed_binds == 0 {
-            introduction_authority.clone()
+        let opens_region =
+            authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope();
+        let introduction_authority = if opens_region {
+            let signature = sig_to_cost_signature(&self.metering.budget().signature())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            let region = cost_region(&signature, &entropy, 0)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            extend_authority(authority, region)
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
         } else {
             authority.clone()
+        };
+        let authority = if signed_binds != 0 {
+            authority.clone()
+        } else if opens_region && self.residue_seal {
+            // DR-101: a system body pays through its payer region but stores system residue.
+            system_residue_authority(&introduction_authority, &self.metering.budget().deploy_id())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        } else {
+            introduction_authority.clone()
         };
         let receive_authority =
             receive
@@ -1386,11 +1435,20 @@ impl ReducerCore {
         // stay as free vars for the matcher to fill in. Stored once on
         // the TaggedContinuation so it sees every bound variable across
         // every bind. Plan §7.12.
-        let subst_guard = match receive.condition.as_ref() {
+        // Changed by D-F2 (DR-118): the substitution also returns the guard's
+        // prost length, and the consume introduction reuses it.
+        // let subst_guard = match receive.condition.as_ref() {
+        //     Some(c) if c != &Par::default() => {
+        //         Some(self.substitute.substitute_and_charge(c, 1, env)?)
+        //     }
+        //     _ => None,
+        // };
+        let (subst_guard, guard_bytes) = match receive.condition.as_ref() {
             Some(c) if c != &Par::default() => {
-                Some(self.substitute.substitute_and_charge(c, 1, env)?)
+                let (guard, bytes) = self.substitute.substitute_and_measure(c, 1, env)?;
+                (Some(guard), Some(bytes))
             }
-            _ => None,
+            _ => (None, None),
         };
 
         let binds = receive
@@ -1417,23 +1475,52 @@ impl ReducerCore {
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
-        let subst_body = self.substitute.substitute_no_sort_and_charge(
+        // Changed by D-F2 (DR-118): the substitution also returns the body's
+        // prost length, and the consume introduction reuses it.
+        // let subst_body = self.substitute.substitute_no_sort_and_charge(
+        //     receive.body.as_ref().unwrap(),
+        //     0,
+        //     &env.shift(receive.bind_count),
+        // )?;
+        //
+        // self.consume(
+        //     binds,
+        //     ParWithRandom {
+        //         body: Some(subst_body),
+        //         random_state: rand.to_bytes(),
+        //     },
+        //     receive.persistent,
+        //     receive.peek,
+        //     subst_guard,
+        //     receive_authority,
+        //     introduction_authority,
+        // )
+        // .await?;
+        let (subst_body, body_bytes) = self.substitute.substitute_no_sort_and_measure(
             receive.body.as_ref().unwrap(),
             0,
             &env.shift(receive.bind_count),
         )?;
+        let body = ParWithRandom {
+            body: Some(subst_body),
+            random_state: rand.to_bytes(),
+        };
+        let measurement = par_with_random_bytes(body_bytes, &body.random_state)
+            .ok()
+            .map(|body| IntroductionMeasurement::Consume {
+                body,
+                guard: guard_bytes,
+            });
 
         self.reified_consume(
             binds,
-            ParWithRandom {
-                body: Some(subst_body),
-                random_state: rand.to_bytes(),
-            },
+            body,
             receive.persistent,
             receive.peek,
             subst_guard,
             receive_authority,
             introduction_authority,
+            measurement,
         )
         .await?;
         Ok(())
@@ -1450,7 +1537,6 @@ impl ReducerCore {
      *                  an exception.
      */
     fn eval_var(&self, valproc: &Var, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        self.reserve_host_primitive(valproc)?;
         self.metering.reserve_primitive(var_eval_cost())?;
         match valproc.var_instance {
             Some(VarInstance::BoundVar(level)) => match env.get(&level) {
@@ -1658,7 +1744,9 @@ impl ReducerCore {
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
                 if !value.read_flag {
-                    return Err(InterpreterError::ReduceError(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::BundlePermissionError(
                         "Trying to read from non-readable channel.".to_string(),
                     ));
                 } else {
@@ -1694,69 +1782,15 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let host =
-            deterministic_reduction::current().and_then(|context| context.host_work_budget());
-        let backing = |operations: usize, scanned: usize, bytes: usize| {
-            let Some(host) = host.as_ref() else {
-                return Ok(());
-            };
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-                host.reserve(dimension, HostWorkUnits::new(amount))
-                    .map_err(|_| BackingError::Rejected)?;
-            }
-            Ok(())
-        };
-        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
-            backing(
-                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
-                scanned,
-                bytes,
-            )
-        };
-        let native_error = |error: AuthorityError| match error {
-            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
-            other => InterpreterError::ReduceError(other.to_string()),
-        };
-        if host.is_some() {
-            clone_backing::inspect(&term.signature, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&term.signature, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
+        let native_error = |error: AuthorityError| InterpreterError::ReduceError(error.to_string());
         let signature = unwrap_option_safe(term.signature.clone())?;
-        let signature = if host.is_some() {
-            self.substitute
-                .substitute_cost_signature_metered(signature, 0, env, &backing)?
-        } else {
-            self.substitute
-                .substitute_cost_signature(signature, 0, env)?
-        };
-        let authority = if host.is_some() {
-            reserve_reducer_random_bytes(&rand, &owned_backing)?;
-            let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
-                .map_err(native_error)?;
-            backing(1, 0, std::mem::size_of::<CostRegion>())
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            let singleton = CostAuthority {
-                regions: vec![region],
-            };
-            merge_authorities_metered([authority, &singleton], &owned_backing)
-                .map_err(native_error)?
-        } else {
+        let signature = self
+            .substitute
+            .substitute_cost_signature(signature, 0, env)?;
+        let authority = {
             let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
             extend_authority(authority, region).map_err(native_error)?
         };
-        if host.is_some() {
-            clone_backing::inspect(&term.body, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&term.body, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
         self.eval_with_authority(unwrap_option_safe(term.body.clone())?, env, rand, authority)
             .await
     }
@@ -1768,133 +1802,37 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
-        let host =
-            deterministic_reduction::current().and_then(|context| context.host_work_budget());
-        let backing = |operations: usize, scanned: usize, bytes: usize| {
-            let Some(host) = host.as_ref() else {
-                return Ok(());
-            };
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                let amount = u64::try_from(amount).map_err(|_| BackingError::Overflow)?;
-                host.reserve(dimension, HostWorkUnits::new(amount))
-                    .map_err(|_| BackingError::Rejected)?;
-            }
-            Ok(())
-        };
-        let owned_backing = |operations: usize, scanned: usize, bytes: usize| {
-            backing(
-                operations.checked_mul(2).ok_or(BackingError::Overflow)?,
-                scanned,
-                bytes,
-            )
-        };
-        let source_meter = |operations: usize, scanned: usize, bytes: usize| {
-            let Some(host) = host.as_ref() else {
-                return Ok(());
-            };
-            for (dimension, amount) in [
-                (HostWorkDimension::VerificationOperations, operations),
-                (HostWorkDimension::VerificationBytes, scanned),
-                (HostWorkDimension::SearchStateBytes, bytes),
-            ] {
-                let amount = u64::try_from(amount).map_err(|_| RSpaceError::HostWorkRejected)?;
-                host.reserve(dimension, HostWorkUnits::new(amount))
-                    .map_err(|_| RSpaceError::HostWorkRejected)?;
-            }
-            Ok(())
-        };
-        let native_error = |error: AuthorityError| match error {
-            AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
-            other => InterpreterError::ReduceError(other.to_string()),
-        };
-        if host.is_some() {
-            clone_backing::inspect(&stack.cells, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(&stack.cells, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
+        let native_error = |error: AuthorityError| InterpreterError::ReduceError(error.to_string());
         let stack = CostStack {
             cells: stack
                 .cells
                 .iter()
                 .cloned()
-                .map(|signature| {
-                    if host.is_some() {
-                        self.substitute
-                            .substitute_cost_signature_metered(signature, 0, env, &backing)
-                    } else {
-                        self.substitute.substitute_cost_signature(signature, 0, env)
-                    }
-                })
+                .map(|signature| self.substitute.substitute_cost_signature(signature, 0, env))
                 .collect::<Result<Vec<_>, _>>()?,
         };
         let head = stack.cells.first().ok_or_else(|| {
             InterpreterError::ReduceError("cost-accounting: empty token stack".to_string())
         })?;
         for cell in &stack.cells {
-            let cell_signature = if host.is_some() {
-                cost_signature_to_sig_metered(cell, &backing).map_err(native_error)?
-            } else {
-                cost_signature_to_sig(cell).map_err(native_error)?
-            };
+            let cell_signature = cost_signature_to_sig(cell).map_err(native_error)?;
             if cell_signature == super::accounting::Sig::Unit {
                 return Err(InterpreterError::ReduceError(
                     "cost-accounting: unit cannot be stored as a token-stack cell".to_string(),
                 ));
             }
         }
-        let signature = if host.is_some() {
-            cost_signature_to_sig_metered(head, &backing).map_err(native_error)?
-        } else {
-            cost_signature_to_sig(head).map_err(native_error)?
-        };
-        let authority = if authority.regions.is_empty()
-            && self.metering.budget().has_comm_accounting_scope()
-        {
-            let payer = if let Some(host) = host.as_ref() {
-                self.metering.budget().signature_with_host_work(host)?
-            } else {
-                self.metering.budget().signature()
-            };
-            if host.is_some() {
-                let signature =
-                    sig_to_cost_signature_metered(&payer, &backing).map_err(native_error)?;
-                reserve_reducer_random_bytes(&rand, &owned_backing)?;
-                let region = cost_region_metered(&signature, &rand.to_bytes(), 0, &backing)
-                    .map_err(native_error)?;
-                backing(1, 0, std::mem::size_of::<CostRegion>())
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-                let singleton = CostAuthority {
-                    regions: vec![region],
-                };
-                merge_authorities_metered([authority, &singleton], &owned_backing)
-                    .map_err(native_error)?
-            } else {
+        let signature = cost_signature_to_sig(head).map_err(native_error)?;
+        let authority =
+            if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
+                let payer = self.metering.budget().signature();
                 let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
                 let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
                 extend_authority(authority, region).map_err(native_error)?
-            }
-        } else {
-            if host.is_some() {
-                clone_backing::inspect(authority, &backing)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-                clone_backing::reserve(authority, &owned_backing)
-                    .map_err(|_| InterpreterError::HostWorkRejected)?;
-            }
-            authority.clone()
-        };
-        let channel = if host.is_some() {
-            funding_sig_channel_metered(&signature, &owned_backing).map_err(native_error)?
-        } else {
-            super::accounting::SignatureChannel::from_sig(&signature).par
-        };
-        if host.is_some() {
-            reserve_reducer_random_bytes(&rand, &owned_backing)?;
-        }
+            } else {
+                authority.clone()
+            };
+        let channel = super::accounting::SignatureChannel::from_sig(&signature).par;
         let datum = ListParWithRandom {
             pars: Vec::new(),
             random_state: rand.to_bytes(),
@@ -1902,18 +1840,8 @@ impl ReducerCore {
             cost_stack: Some(stack),
         };
         let datum_cells = &datum.cost_stack.as_ref().expect("cost stack").cells;
-        if host.is_some() {
-            clone_backing::inspect(datum_cells, &backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-            clone_backing::reserve(datum_cells, &owned_backing)
-                .map_err(|_| InterpreterError::HostWorkRejected)?;
-        }
         let cells = datum_cells.clone();
-        let source = if host.is_some() {
-            Produce::create_metered(&channel, &datum, false, &source_meter)?
-        } else {
-            Produce::create(&channel, &datum, false)
-        };
+        let source = Produce::create(&channel, &datum, false);
         let produce_hash: [u8; 32] = source
             .hash
             .bytes()
@@ -1924,19 +1852,13 @@ impl ReducerCore {
             cells,
             &authority,
         )?;
-        self.produce(channel, datum, false, authority).await?;
+        self.produce(channel, datum, false, authority, None).await?;
         reservation.commit();
         Ok(())
     }
 
     // Public here for testing purposes
     pub fn eval_expr_to_par(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        if matches!(
-            expr.expr_instance.as_ref(),
-            Some(ExprInstance::EMethodBody(_))
-        ) {
-            self.reserve_host_primitive(expr)?;
-        }
         match unwrap_option_safe(expr.expr_instance.clone())? {
             ExprInstance::EVarBody(evar) => {
                 let p = self.eval_var(&unwrap_option_safe(evar.v)?, env)?;
@@ -1955,10 +1877,18 @@ impl ReducerCore {
                 let result_par = match self.method_table().get(&emethod.method_name) {
                     Some(_method) => _method.apply(evaled_target, evaled_args, env)?,
                     None => {
-                        return Err(InterpreterError::ReduceError(format!(
-                            "Unimplemented method: {}",
-                            emethod.method_name
-                        )));
+                        // Changed by DR-125 (bug 11008): a method that the
+                        // table lacks is the user failure MethodNotDefined.
+                        // The reducer does not inspect the receiver to name
+                        // its type, so the error adds no unmetered host work.
+                        // return Err(InterpreterError::ReduceError(format!(
+                        //     "Unimplemented method: {}",
+                        //     emethod.method_name
+                        // )));
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: emethod.method_name.clone(),
+                            other_type: "any type".to_string(),
+                        });
                     }
                 };
 
@@ -1979,39 +1909,6 @@ impl ReducerCore {
         expr: &Expr,
         env: &Env<Par>,
     ) -> Result<Expr, InterpreterError> {
-        if matches!(
-            expr.expr_instance.as_ref(),
-            Some(
-                ExprInstance::ENotBody(_)
-                    | ExprInstance::ENegBody(_)
-                    | ExprInstance::EMultBody(_)
-                    | ExprInstance::EDivBody(_)
-                    | ExprInstance::EPlusBody(_)
-                    | ExprInstance::EMinusBody(_)
-                    | ExprInstance::ELtBody(_)
-                    | ExprInstance::ELteBody(_)
-                    | ExprInstance::EGtBody(_)
-                    | ExprInstance::EGteBody(_)
-                    | ExprInstance::EEqBody(_)
-                    | ExprInstance::ENeqBody(_)
-                    | ExprInstance::EAndBody(_)
-                    | ExprInstance::EOrBody(_)
-                    | ExprInstance::EListBody(_)
-                    | ExprInstance::ETupleBody(_)
-                    | ExprInstance::ESetBody(_)
-                    | ExprInstance::EMapBody(_)
-                    | ExprInstance::EMethodBody(_)
-                    | ExprInstance::EPathmapBody(_)
-                    | ExprInstance::EZipperBody(_)
-                    | ExprInstance::EMatchesBody(_)
-                    | ExprInstance::EPercentPercentBody(_)
-                    | ExprInstance::EPlusPlusBody(_)
-                    | ExprInstance::EMinusMinusBody(_)
-                    | ExprInstance::EModBody(_)
-            )
-        ) {
-            self.reserve_host_primitive(expr)?;
-        }
         let relop = |p1: &Par,
                      p2: &Par,
                      relopb: fn(bool, bool) -> bool,
@@ -2035,6 +1932,41 @@ impl ReducerCore {
                     self.metering.reserve_primitive(comparison_cost())?;
                     Ok(Expr {
                         expr_instance: Some(ExprInstance::GBool(relopi(i1, i2))),
+                    })
+                }
+
+                (ExprInstance::GUint64(u1), ExprInstance::GUint64(u2)) => {
+                    self.metering.reserve_primitive(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GInt32(u1), ExprInstance::GInt32(u2)) => {
+                    self.metering.reserve_primitive(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GUint32(u1), ExprInstance::GUint32(u2)) => {
+                    self.metering.reserve_primitive(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GUint16(u1), ExprInstance::GUint16(u2)) => {
+                    self.metering.reserve_primitive(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
+                    })
+                }
+
+                (ExprInstance::GUint8(u1), ExprInstance::GUint8(u2)) => {
+                    self.metering.reserve_primitive(comparison_cost())?;
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::GBool(relopi(u1.cmp(&u2) as i64, 0))),
                     })
                 }
 
@@ -2114,7 +2046,9 @@ impl ReducerCore {
                     })
                 }
 
-                _ => Err(InterpreterError::ReduceError(format!(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(format!(
+                _ => Err(InterpreterError::ValueTypeError(format!(
                     "Unexpected compare: {:?} vs. {:?}",
                     v1, v2
                 ))),
@@ -2129,6 +2063,26 @@ impl ReducerCore {
 
                 ExprInstance::GInt(x) => Ok(Expr {
                     expr_instance: Some(ExprInstance::GInt(*x)),
+                }),
+
+                ExprInstance::GUint64(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint64(*x)),
+                }),
+
+                ExprInstance::GInt32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GInt32(*x)),
+                }),
+
+                ExprInstance::GUint32(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint32(*x)),
+                }),
+
+                ExprInstance::GUint16(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint16(*x)),
+                }),
+
+                ExprInstance::GUint8(x) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::GUint8(*x)),
                 }),
 
                 ExprInstance::GString(x) => Ok(Expr {
@@ -2175,12 +2129,26 @@ impl ReducerCore {
                     match v.expr_instance.unwrap() {
                         ExprInstance::GInt(i) => {
                             let result = i.checked_neg().ok_or_else(|| {
-                                InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // InterpreterError::ReduceError(
+                                InterpreterError::ArithmeticOverflow(
                                     "Arithmetic overflow in negation".to_string(),
                                 )
                             })?;
                             Ok(Expr {
                                 expr_instance: Some(ExprInstance::GInt(result)),
+                            })
+                        }
+                        ExprInstance::GInt32(i) => {
+                            let result = i.checked_neg().ok_or_else(|| {
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // InterpreterError::ReduceError(
+                                InterpreterError::ArithmeticOverflow(
+                                    "Arithmetic overflow in negation".to_string(),
+                                )
+                            })?;
+                            Ok(Expr {
+                                expr_instance: Some(ExprInstance::GInt32(result)),
                             })
                         }
                         ExprInstance::GDouble(bits) => {
@@ -2233,11 +2201,22 @@ impl ReducerCore {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.metering.reserve_primitive(multiplication_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Mul, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.metering.reserve_primitive(multiplication_cost())?;
                             let result = lhs.checked_mul(rhs).ok_or_else(|| {
-                                InterpreterError::ReduceError(format!(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // InterpreterError::ReduceError(format!(
+                                InterpreterError::ArithmeticOverflow(format!(
                                     "Arithmetic overflow in multiplication: {} * {}",
                                     lhs, rhs
                                 ))
@@ -2316,16 +2295,29 @@ impl ReducerCore {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.metering.reserve_primitive(division_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Div, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.metering.reserve_primitive(division_cost())?;
                             if rhs == 0 {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Division by zero".to_string(),
                                 ));
                             }
                             if lhs == i64::MIN && rhs == -1 {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::ArithmeticOverflow(
                                     "Arithmetic overflow in division".to_string(),
                                 ));
                             }
@@ -2351,7 +2343,9 @@ impl ReducerCore {
                             self.metering
                                 .reserve_primitive(bigint_division_cost(b1.len(), b2.len()))?;
                             if is_zero_twos_complement(&b2) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Division by zero".to_string(),
                                 ));
                             }
@@ -2365,7 +2359,9 @@ impl ReducerCore {
                                 r2.denominator.len(),
                             ))?;
                             if is_zero_twos_complement(&r2.numerator) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Division by zero".to_string(),
                                 ));
                             }
@@ -2384,7 +2380,9 @@ impl ReducerCore {
                                 fp2.unscaled.len(),
                             ))?;
                             if is_zero_twos_complement(&fp2.unscaled) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Division by zero".to_string(),
                                 ));
                             }
@@ -2413,16 +2411,29 @@ impl ReducerCore {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
 
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.metering.reserve_primitive(modulo_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Mod, lhs, rhs)?),
+                            });
+                        }
+                    }
+
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
                             self.metering.reserve_primitive(modulo_cost())?;
                             if rhs == 0 {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Modulo by zero".to_string(),
                                 ));
                             }
                             if lhs == i64::MIN && rhs == -1 {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::ArithmeticOverflow(
                                     "Arithmetic overflow in modulo".to_string(),
                                 ));
                             }
@@ -2430,17 +2441,21 @@ impl ReducerCore {
                                 expr_instance: Some(ExprInstance::GInt(lhs % rhs)),
                             })
                         }
-                        (ExprInstance::GDouble(_), ExprInstance::GDouble(_))
-                        | (ExprInstance::GFloat32(_), ExprInstance::GFloat32(_)) => {
-                            Err(InterpreterError::ReduceError(
-                                "Modulus not defined on floating point".to_string(),
-                            ))
-                        }
+                        // Changed by DR-128 (bug 11414): two floats reach the arm of equal
+                        // types below, which raises the user failure `OperatorNotDefined`.
+                        // (ExprInstance::GDouble(_), ExprInstance::GDouble(_))
+                        // | (ExprInstance::GFloat32(_), ExprInstance::GFloat32(_)) => {
+                        //     Err(InterpreterError::ReduceError(
+                        //         "Modulus not defined on floating point".to_string(),
+                        //     ))
+                        // }
                         (ExprInstance::GBigInt(b1), ExprInstance::GBigInt(b2)) => {
                             self.metering
                                 .reserve_primitive(bigint_modulo_cost(b1.len(), b2.len()))?;
                             if is_zero_twos_complement(&b2) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Modulo by zero".to_string(),
                                 ));
                             }
@@ -2448,7 +2463,9 @@ impl ReducerCore {
                         }
                         (ExprInstance::GBigRat(_), ExprInstance::GBigRat(r2)) => {
                             if is_zero_twos_complement(&r2.numerator) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Modulo by zero".to_string(),
                                 ));
                             }
@@ -2474,7 +2491,9 @@ impl ReducerCore {
                                 fp2.unscaled.len(),
                             ))?;
                             if is_zero_twos_complement(&fp2.unscaled) {
-                                return Err(InterpreterError::ReduceError(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // return Err(InterpreterError::ReduceError(
+                                return Err(InterpreterError::DivisionByZero(
                                     "Modulo by zero".to_string(),
                                 ));
                             }
@@ -2511,6 +2530,15 @@ impl ReducerCore {
                 ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.metering.reserve_primitive(sum_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Add, lhs, rhs)?),
+                            });
+                        }
+                    }
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
@@ -2590,6 +2618,11 @@ impl ReducerCore {
                         }
 
                         (ExprInstance::GInt(_), other)
+                        | (ExprInstance::GUint64(_), other)
+                        | (ExprInstance::GInt32(_), other)
+                        | (ExprInstance::GUint32(_), other)
+                        | (ExprInstance::GUint16(_), other)
+                        | (ExprInstance::GUint8(_), other)
                         | (ExprInstance::GDouble(_), other)
                         | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
@@ -2612,6 +2645,15 @@ impl ReducerCore {
                 ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
                     let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
                     let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+
+                    if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
+                        if is_sized_int_pair(lhs, rhs) {
+                            self.metering.reserve_primitive(subtraction_cost())?;
+                            return Ok(Expr {
+                                expr_instance: Some(eval_sized_int_op(SizedIntOp::Sub, lhs, rhs)?),
+                            });
+                        }
+                    }
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GInt(lhs), ExprInstance::GInt(rhs)) => {
@@ -2710,6 +2752,11 @@ impl ReducerCore {
                         }
 
                         (ExprInstance::GInt(_), other)
+                        | (ExprInstance::GUint64(_), other)
+                        | (ExprInstance::GInt32(_), other)
+                        | (ExprInstance::GUint32(_), other)
+                        | (ExprInstance::GUint16(_), other)
+                        | (ExprInstance::GUint8(_), other)
                         | (ExprInstance::GDouble(_), other)
                         | (ExprInstance::GFloat32(_), other)
                         | (ExprInstance::GBigInt(_), other)
@@ -2874,13 +2921,17 @@ impl ReducerCore {
                             // TODO: Add cases for other ground terms as well? Maybe it would be better
                             // to implement cats.Show for all ground terms. - OLD
                             (ExprInstance::GString(_), value) => {
-                                Err(InterpreterError::ReduceError(format!(
+                                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                                // Err(InterpreterError::ReduceError(format!(
+                                Err(InterpreterError::ValueTypeError(format!(
                                     "Error: interpolation doesn't support {:?}",
                                     get_type(value),
                                 )))
                             }
 
-                            _ => Err(InterpreterError::ReduceError(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // _ => Err(InterpreterError::ReduceError(
+                            _ => Err(InterpreterError::ValueTypeError(
                                 "Error: interpolation Map should only contain String keys"
                                     .to_string(),
                             )),
@@ -3256,10 +3307,17 @@ impl ReducerCore {
                             method_function.apply(evaled_target, evaled_args, env)?
                         }
                         None => {
-                            return Err(InterpreterError::ReduceError(format!(
-                                "Unimplemented method: {:?}",
-                                method_name
-                            )));
+                            // Changed by DR-125 (bug 11008): a method that the
+                            // table lacks is the user failure MethodNotDefined,
+                            // as at the call site in process position.
+                            // return Err(InterpreterError::ReduceError(format!(
+                            //     "Unimplemented method: {:?}",
+                            //     method_name
+                            // )));
+                            return Err(InterpreterError::MethodNotDefined {
+                                method: method_name.clone(),
+                                other_type: "any type".to_string(),
+                            });
                         }
                     };
 
@@ -3284,7 +3342,9 @@ impl ReducerCore {
                 if ps.len() > nth {
                     Ok(ps[nth].clone())
                 } else {
-                    Err(InterpreterError::ReduceError(format!(
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // Err(InterpreterError::ReduceError(format!(
+                    Err(InterpreterError::ArgumentOutOfRange(format!(
                         "Error: index out of bound: {}",
                         nth
                     )))
@@ -3322,15 +3382,23 @@ impl ReducerCore {
                             let p = new_gint_par(b as i64, Vec::new(), false);
                             Ok(p)
                         } else {
-                            Err(InterpreterError::ReduceError(format!(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // Err(InterpreterError::ReduceError(format!(
+                            Err(InterpreterError::ArgumentOutOfRange(format!(
                                 "Error: index out of bound: {}",
                                 nth
                             )))
                         }
                     }
-                    _ => Err(InterpreterError::ReduceError(String::from(
-                        "Error: nth applied to something that wasn't a list or tuple.",
-                    ))),
+                    // Changed by DR-128 (bug 11414): the user failure `MethodNotDefined`,
+                    // as other methods raise for a receiver of the wrong type.
+                    // _ => Err(InterpreterError::ReduceError(String::from(
+                    //     "Error: nth applied to something that wasn't a list or tuple.",
+                    // ))),
+                    other => Err(InterpreterError::MethodNotDefined {
+                        method: "nth".to_string(),
+                        other_type: get_type(other),
+                    }),
                 }
             }
         }
@@ -3422,7 +3490,9 @@ impl ReducerCore {
                             }),
                         },
 
-                        None => Err(InterpreterError::ReduceError(String::from(
+                        // Changed by DR-128 (bug 11414): a user failure with the same text.
+                        // None => Err(InterpreterError::ReduceError(String::from(
+                        None => Err(InterpreterError::ValueTypeError(String::from(
                             "Error: Method can only be called on singular expressions.",
                         ))),
                     }
@@ -3471,7 +3541,9 @@ impl ReducerCore {
                             }),
                         },
 
-                        None => Err(InterpreterError::ReduceError(String::from(
+                        // Changed by DR-128 (bug 11414): a user failure with the same text.
+                        // None => Err(InterpreterError::ReduceError(String::from(
+                        None => Err(InterpreterError::ValueTypeError(String::from(
                             "Error: Method can only be called on singular expressions.",
                         ))),
                     }
@@ -3521,7 +3593,9 @@ impl ReducerCore {
                             }),
                         },
 
-                        None => Err(InterpreterError::ReduceError(String::from(
+                        // Changed by DR-128 (bug 11414): a user failure with the same text.
+                        // None => Err(InterpreterError::ReduceError(String::from(
+                        None => Err(InterpreterError::ValueTypeError(String::from(
                             "Error: Method can only be called on singular expressions.",
                         ))),
                     }
@@ -3951,7 +4025,9 @@ impl ReducerCore {
                         let base_rmap =
                             PathMapCrateTypeMapper::e_pathmap_to_rholang_pathmap(&base_pathmap);
                         if n < 0 {
-                            return Err(InterpreterError::ReduceError(format!(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // return Err(InterpreterError::ReduceError(format!(
+                            return Err(InterpreterError::ArgumentOutOfRange(format!(
                                 "dropHead argument must be non-negative, got: {}",
                                 n
                             )));
@@ -7585,14 +7661,18 @@ impl ReducerCore {
             || !p.unforgeables.is_empty()
             || !p.bundles.is_empty()
         {
-            Err(InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(String::from(
+            Err(InterpreterError::ValueTypeError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )))
         } else {
             match p.exprs.as_slice() {
                 [e] => Ok(self.eval_expr_to_expr(e, env)?),
 
-                _ => Err(InterpreterError::ReduceError(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: Multiple expressions given.".to_string(),
                 )),
             }
@@ -7610,14 +7690,18 @@ impl ReducerCore {
             || !p.exprs.is_empty()
             || !p.bundles.is_empty()
         {
-            Err(InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(String::from(
+            Err(InterpreterError::ValueTypeError(String::from(
                 "Error: non unforgeable found where unforgeable expected.",
             )))
         } else {
             match p.unforgeables.as_slice() {
                 [e] => Ok(e),
 
-                _ => Err(InterpreterError::ReduceError(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: Multiple unforgeables given.".to_string(),
                 )),
             }
@@ -7632,7 +7716,9 @@ impl ReducerCore {
             && !p.unforgeables.is_empty()
             && !p.bundles.is_empty()
         {
-            Err(InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(String::from(
+            Err(InterpreterError::ValueTypeError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )))
         } else {
@@ -7655,7 +7741,9 @@ impl ReducerCore {
                         Some(expr_instance) => match expr_instance {
                             ExprInstance::GInt(v) => Ok(v),
 
-                            _ => Err(InterpreterError::ReduceError(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // _ => Err(InterpreterError::ReduceError(
+                            _ => Err(InterpreterError::ValueTypeError(
                                 "Error: expression didn't evaluate to integer.".to_string(),
                             )),
                         },
@@ -7666,7 +7754,9 @@ impl ReducerCore {
                     }
                 }
 
-                _ => Err(InterpreterError::ReduceError(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: Integer expected, or unimplemented expression.".to_string(),
                 )),
             }
@@ -7681,7 +7771,9 @@ impl ReducerCore {
             && !p.unforgeables.is_empty()
             && !p.bundles.is_empty()
         {
-            Err(InterpreterError::ReduceError(String::from(
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // Err(InterpreterError::ReduceError(String::from(
+            Err(InterpreterError::ValueTypeError(String::from(
                 "Error: parallel or non expression found where expression expected.",
             )))
         } else {
@@ -7704,7 +7796,9 @@ impl ReducerCore {
                         Some(expr_instance) => match expr_instance {
                             ExprInstance::GBool(b) => Ok(b),
 
-                            _ => Err(InterpreterError::ReduceError(
+                            // Changed by DR-128 (bug 11414): a user failure with the same text.
+                            // _ => Err(InterpreterError::ReduceError(
+                            _ => Err(InterpreterError::ValueTypeError(
                                 "Error: expression didn't evaluate to boolean.".to_string(),
                             )),
                         },
@@ -7715,7 +7809,9 @@ impl ReducerCore {
                     }
                 }
 
-                _ => Err(InterpreterError::ReduceError(
+                // Changed by DR-128 (bug 11414): a user failure with the same text.
+                // _ => Err(InterpreterError::ReduceError(
+                _ => Err(InterpreterError::ValueTypeError(
                     "Error: Multiple expressions given.".to_string(),
                 )),
             }
@@ -7879,6 +7975,7 @@ impl ReducerCore {
             reduction_coordinator,
             space_ctx: Default::default(),
             reified: super::reified::runtime::unavailable(),
+            residue_seal: false,
         });
 
         reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
@@ -7890,6 +7987,11 @@ fn get_type(expr_instance: ExprInstance) -> String {
     match expr_instance {
         ExprInstance::GBool(_) => String::from("bool"),
         ExprInstance::GInt(_) => String::from("int"),
+        ExprInstance::GUint64(_) => String::from("uint64"),
+        ExprInstance::GInt32(_) => String::from("int32"),
+        ExprInstance::GUint32(_) => String::from("uint32"),
+        ExprInstance::GUint16(_) => String::from("uint16"),
+        ExprInstance::GUint8(_) => String::from("uint8"),
         ExprInstance::GDouble(_) => String::from("float"),
         ExprInstance::GFloat32(_) => String::from("float32"),
         ExprInstance::GBigInt(_) => String::from("bigint"),
@@ -7926,6 +8028,127 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::EMinusMinusBody(_) => String::from("minus minus"),
         ExprInstance::EModBody(_) => String::from("mod"),
     }
+}
+
+#[derive(Clone, Copy)]
+enum SizedIntOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+impl SizedIntOp {
+    fn name(self) -> &'static str {
+        match self {
+            SizedIntOp::Add => "addition",
+            SizedIntOp::Sub => "subtraction",
+            SizedIntOp::Mul => "multiplication",
+            SizedIntOp::Div => "division",
+            SizedIntOp::Mod => "modulo",
+        }
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            SizedIntOp::Add => "+",
+            SizedIntOp::Sub => "-",
+            SizedIntOp::Mul => "*",
+            SizedIntOp::Div => "/",
+            SizedIntOp::Mod => "%",
+        }
+    }
+}
+
+fn is_sized_int_pair(lhs: &ExprInstance, rhs: &ExprInstance) -> bool {
+    matches!(
+        (lhs, rhs),
+        (ExprInstance::GUint64(_), ExprInstance::GUint64(_))
+            | (ExprInstance::GInt32(_), ExprInstance::GInt32(_))
+            | (ExprInstance::GUint32(_), ExprInstance::GUint32(_))
+            | (ExprInstance::GUint16(_), ExprInstance::GUint16(_))
+            | (ExprInstance::GUint8(_), ExprInstance::GUint8(_))
+    )
+}
+
+macro_rules! sized_int_op {
+    ($t:ty, $suffix:literal, $op:expr, $lhs:expr, $rhs:expr) => {{
+        let out_of_range = |v: String| {
+            InterpreterError::ReduceError(format!("Value {} is out of range for {}", v, $suffix))
+        };
+        let a = <$t>::try_from($lhs).map_err(|_| out_of_range($lhs.to_string()))?;
+        let b = <$t>::try_from($rhs).map_err(|_| out_of_range($rhs.to_string()))?;
+        let overflow = || {
+            // Changed by DR-128 (bug 11414): a user failure with the same text.
+            // InterpreterError::ReduceError(format!(
+            InterpreterError::ArithmeticOverflow(format!(
+                "Arithmetic overflow in {}: {}{} {} {}{}",
+                $op.name(),
+                a,
+                $suffix,
+                $op.symbol(),
+                b,
+                $suffix
+            ))
+        };
+        let result: $t = match $op {
+            SizedIntOp::Add => a.wrapping_add(b),
+            SizedIntOp::Sub => a.wrapping_sub(b),
+            SizedIntOp::Mul => a.checked_mul(b).ok_or_else(overflow)?,
+            SizedIntOp::Div => {
+                if b == 0 {
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError(
+                    return Err(InterpreterError::DivisionByZero(
+                        "Division by zero".to_string(),
+                    ));
+                }
+                a.checked_div(b).ok_or_else(overflow)?
+            }
+            SizedIntOp::Mod => {
+                if b == 0 {
+                    // Changed by DR-128 (bug 11414): a user failure with the same text.
+                    // return Err(InterpreterError::ReduceError("Modulo by zero".to_string()));
+                    return Err(InterpreterError::DivisionByZero(
+                        "Modulo by zero".to_string(),
+                    ));
+                }
+                a.checked_rem(b).ok_or_else(overflow)?
+            }
+        };
+        result.into()
+    }};
+}
+
+fn eval_sized_int_op(
+    op: SizedIntOp,
+    lhs: &ExprInstance,
+    rhs: &ExprInstance,
+) -> Result<ExprInstance, InterpreterError> {
+    Ok(match (lhs, rhs) {
+        (ExprInstance::GUint64(a), ExprInstance::GUint64(b)) => {
+            ExprInstance::GUint64(sized_int_op!(u64, "u64", op, *a, *b))
+        }
+        (ExprInstance::GInt32(a), ExprInstance::GInt32(b)) => {
+            ExprInstance::GInt32(sized_int_op!(i32, "i32", op, *a, *b))
+        }
+        (ExprInstance::GUint32(a), ExprInstance::GUint32(b)) => {
+            ExprInstance::GUint32(sized_int_op!(u32, "u32", op, *a, *b))
+        }
+        (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => {
+            ExprInstance::GUint16(sized_int_op!(u16, "u16", op, *a, *b))
+        }
+        (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => {
+            ExprInstance::GUint8(sized_int_op!(u8, "u8", op, *a, *b))
+        }
+        _ => {
+            return Err(InterpreterError::BugFoundError(
+                "eval_sized_int_op called on operands that are not a sized integer pair"
+                    .to_string(),
+            ))
+        }
+    })
 }
 
 fn get_unforgeable_type(inf_instance: &UnfInstance) -> String {
@@ -8179,7 +8402,15 @@ fn describe_par_type(par: &Par) -> String {
         match par.exprs[0].expr_instance.as_ref() {
             Some(ExprInstance::GBool(_)) => "Bool".to_string(),
             Some(ExprInstance::GInt(_)) => "Int".to_string(),
+            Some(ExprInstance::GUint64(_)) => "UInt64".to_string(),
+            Some(ExprInstance::GInt32(_)) => "Int32".to_string(),
+            Some(ExprInstance::GUint32(_)) => "UInt32".to_string(),
+            Some(ExprInstance::GUint16(_)) => "UInt16".to_string(),
+            Some(ExprInstance::GUint8(_)) => "UInt8".to_string(),
+            Some(ExprInstance::GDouble(_)) => "Float".to_string(),
             Some(ExprInstance::GBigInt(_)) => "BigInt".to_string(),
+            Some(ExprInstance::GBigRat(_)) => "BigRat".to_string(),
+            Some(ExprInstance::GFixedPoint(_)) => "FixedPoint".to_string(),
             Some(ExprInstance::GString(_)) => "String".to_string(),
             Some(ExprInstance::GUri(_)) => "Uri".to_string(),
             Some(ExprInstance::GByteArray(_)) => "ByteArray".to_string(),

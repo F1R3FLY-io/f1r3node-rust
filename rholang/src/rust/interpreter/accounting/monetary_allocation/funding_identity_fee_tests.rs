@@ -1,12 +1,6 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-
 use super::*;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 #[test]
 fn named_fee_permissions_and_both_cursors_survive_source_permutations() {
@@ -36,11 +30,10 @@ fn named_fee_permissions_and_both_cursors_survive_source_permutations() {
                 &source_keys,
                 &obligation_keys,
                 limits,
-                &work(),
             )
             .unwrap();
             let selected = canonical
-                .select_with_unit_fee(&fee, 0, 2, limits, &work())
+                .select_with_unit_fee(&fee, 0, 2, limits)
                 .unwrap()
                 .unwrap();
             if let Some(prior) = &reference {
@@ -49,7 +42,7 @@ fn named_fee_permissions_and_both_cursors_survive_source_permutations() {
                 reference = Some(selected.clone());
             }
             let assignment = canonical
-                .restore_assignment(selected.resource_assignment(), &work())
+                .restore_assignment(selected.resource_assignment())
                 .unwrap();
             let mut fee_debits = vec![0; 3];
             for (i, original) in canonical.original_source_positions().iter().enumerate() {
@@ -62,7 +55,7 @@ fn named_fee_permissions_and_both_cursors_survive_source_permutations() {
                 fee_next_cursor: selected.fee().next_cursor,
             };
             assert!(canonical
-                .verify_with_unit_fee(&fee, 0, 2, proposal, limits, &work())
+                .verify_with_unit_fee(&fee, 0, 2, proposal, limits)
                 .unwrap());
             assert!(!canonical
                 .verify_with_unit_fee(
@@ -73,8 +66,7 @@ fn named_fee_permissions_and_both_cursors_survive_source_permutations() {
                         fee_next_cursor: (selected.fee().next_cursor + 1) % 3,
                         ..proposal
                     },
-                    limits,
-                    &work()
+                    limits
                 )
                 .unwrap());
             assert!(!canonical
@@ -86,8 +78,7 @@ fn named_fee_permissions_and_both_cursors_survive_source_permutations() {
                         resource_next_cursor: None,
                         ..proposal
                     },
-                    limits,
-                    &work()
+                    limits
                 )
                 .unwrap());
             for source in 0..3 {
@@ -102,8 +93,7 @@ fn named_fee_permissions_and_both_cursors_survive_source_permutations() {
                             fee_debits: &changed_fee,
                             ..proposal
                         },
-                        limits,
-                        &work()
+                        limits
                     )
                     .unwrap());
                 for target in 0..2 {
@@ -118,14 +108,13 @@ fn named_fee_permissions_and_both_cursors_survive_source_permutations() {
                                 resource_assignment: &changed,
                                 ..proposal
                             },
-                            limits,
-                            &work()
+                            limits
                         )
                         .unwrap());
                 }
             }
             assert!(!canonical
-                .verify_with_unit_fee(&[false; 3], 0, 2, proposal, limits, &work())
+                .verify_with_unit_fee(&[false; 3], 0, 2, proposal, limits)
                 .unwrap());
         }
     }

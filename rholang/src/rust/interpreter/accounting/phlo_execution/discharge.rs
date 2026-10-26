@@ -1,15 +1,12 @@
 use std::cmp::Ordering;
 
-use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_obligation::PhloObligationKeyLimits;
 
 use super::partition::{normalize_partition, PhloPartitionError};
 use super::{
-    push_key_entry, resource_key_with_host_work, CountedPhloExecutionWitness, PhloExecutionError,
+    push_key_entry, resource_key, CountedPhloExecutionWitness, PhloExecutionError,
     PhloExecutionLimits, PhloResourceAmount, ResourceEntries, WorkBudget,
 };
-use crate::rust::interpreter::accounting::monetary_allocation::{reserve_work, FundingSearchError};
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PhloDischargeLimits {
@@ -39,13 +36,12 @@ impl PreparedPhloDischarge<'_> {
     }
 }
 
-struct OutputBudget<'a> {
+struct OutputBudget {
     remaining_entries: usize,
     keys: WorkBudget,
-    host: &'a HostWorkBudget,
 }
 
-impl OutputBudget<'_> {
+impl OutputBudget {
     fn emit<'a>(
         &mut self,
         target: &mut Vec<PhloResourceAmount<'a>>,
@@ -60,9 +56,9 @@ impl OutputBudget<'_> {
             .remaining_entries
             .checked_sub(1)
             .ok_or(PhloExecutionError::TooManyResourceEntries)?;
-        resource_key_with_host_work(entry.resource, &mut self.keys, Some(self.host))?;
+        resource_key(entry.resource, &mut self.keys)?;
         entry.quantity = quantity;
-        push_key_entry(target, reserved, entry, Some(self.host))?;
+        push_key_entry(target, reserved, entry)?;
         Ok(())
     }
 }
@@ -71,7 +67,6 @@ pub fn prepare_counted_phlo_discharge<'a>(
     available: &'a [PhloResourceAmount<'a>],
     required: &'a [PhloResourceAmount<'a>],
     limits: PhloDischargeLimits,
-    budget: &HostWorkBudget,
 ) -> Result<PreparedPhloDischarge<'a>, PhloPartitionError> {
     let remaining_entries = limits
         .execution
@@ -92,7 +87,6 @@ pub fn prepare_counted_phlo_discharge<'a>(
         limits.key,
         &mut remaining_bytes,
         &mut keys_work,
-        budget,
     )?;
     let demand = normalize_partition(
         ResourceEntries {
@@ -102,7 +96,6 @@ pub fn prepare_counted_phlo_discharge<'a>(
         limits.key,
         &mut remaining_bytes,
         &mut keys_work,
-        budget,
     )?;
     let mut output = PreparedPhloDischarge {
         available,
@@ -114,24 +107,14 @@ pub fn prepare_counted_phlo_discharge<'a>(
     let mut output_budget = OutputBudget {
         remaining_entries,
         keys: keys_work,
-        host: budget,
     };
     let (mut used_reserved, mut unused_reserved, mut fresh_reserved) = (0, 0, 0);
     let (mut left, mut right) = (0, 0);
     while left < supply.order.len() || right < demand.order.len() {
-        reserve_work(budget, HostWorkDimension::VerificationOperations, 1)?;
         let a = supply.order.get(left).copied();
         let r = demand.order.get(right).copied();
         let order = match (a, r) {
-            (Some(a), Some(r)) => {
-                let work = supply.keys[a]
-                    .len()
-                    .min(demand.keys[r].len())
-                    .checked_add(1)
-                    .ok_or(FundingSearchError::Overflow)?;
-                reserve_work(budget, HostWorkDimension::VerificationOperations, work)?;
-                supply.keys[a].cmp(&demand.keys[r])
-            }
+            (Some(a), Some(r)) => supply.keys[a].cmp(&demand.keys[r]),
             (Some(_), None) => Ordering::Less,
             (None, Some(_)) => Ordering::Greater,
             (None, None) => break,

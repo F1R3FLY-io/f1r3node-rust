@@ -1,0 +1,112 @@
+{
+ "acceptance": null,
+ "change": {
+  "origin": "Valid findings of the PR #580 multi-agent review (comment 5979192573) on the accepted TASK-021-6 change.",
+  "commit": "345a99a23260be7dfc817b4ef3911842243a9700",
+  "driver": [
+   "The reset roots are named variables, HARNESS_DATA_DIR and HARNESS_ARCHIVE_DIR, instead of positional HARNESS_TELEMETRY_DIRS indices.",
+   "Each deletion runs under the emergency deadline. A failed reset is logged with its root and first error line, and stays non-fatal because the disk guardian enforces the floor.",
+   "A comment at the call site states that the reset must follow the metrics, the failure-evidence copy, and the breach checks."
+  ],
+  "test": [
+   "Scenario 1 asserts that a breach keeps the harness session.",
+   "Scenario 4 asserts that the harness root is empty after the run.",
+   "Scenario 5 makes deletion fail and asserts the logged reset failure and the kept session."
+  ],
+  "rejected_findings": "The empty-list and timestamp finding was not valid. GNU tar 1.34 exits 0 on an empty -T list, and Linux timestamps have nanosecond precision.",
+  "unchanged": "Disk admission, the guardian, the hygiene band, the breach channels, the state file, and the summary contract are unchanged."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "b6d4f83f958af79037c9b938edd52f0a91ef6f4e8858d6a85a2e4aa8b6346faf",
+  "docs/claims/soak-disk-protection.md": "4591986996cb979eb8bb6f17ab71000fbd6d87c82cf4b64ad77f525ba199ed1d"
+ },
+ "claim_discharge": "pending",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "evidence_before_change": {
+  "path": "docs/casper/cbc-evidence/runs/casper-soak-driver-evidence-scope-acceptance-20261004-01/report.json",
+  "sha256": "7ce7d34b7fe5f8233cb764d6b80211625c6677f73acebff27690ba88869d1af2"
+ },
+ "source_digests_before_change": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "b2b986feb1a932eb86aa8d49242953bfc14c9943cc3fdda15e58805d669ce226",
+  "scripts/run-merge-recovery-soak.sh": "5df5d1be14baa228f1ed36ec853e265273aa2ba3b5cb46586744cd8a133f0bee"
+ },
+ "source_digests": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "2baf7e1925f5ff56361cc5f9c0242ba8075da9d99358d83594be6b6c4345815a",
+  "scripts/run-merge-recovery-soak.sh": "8135af2bf0a704f2d79af74392110387b0be0f2ef7939a542a203b4860bec44f"
+ },
+ "verification": {
+  "driver_suite_local": {
+   "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+   "environment": "Linux container with the casper-soak harness binary built from the same tree",
+   "exit": 0,
+   "scenarios": [
+    "fail-closed",
+    "deadline",
+    "disk-band",
+    "evidence scope",
+    "failed reset",
+    "restart state"
+   ]
+  },
+  "regression_controls": [
+   {
+    "mutation": "the previous silent reset",
+    "exit": 1,
+    "failed_assertion": "scenario 5: the failed archive reset was not logged"
+   },
+   {
+    "mutation": "the reset moved before the failure evidence and breach checks",
+    "exit": 1,
+    "failed_assertion": "scenario 1: the breach session was deleted"
+   }
+  ],
+  "harness_models": {
+   "command": "scripts/ci/check-casper-soak-models.sh",
+   "exit": 0,
+   "clean_no_error": 1,
+   "negative_controls_violated_as_expected": 10,
+   "tla_tools_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+  },
+  "claims_audit_local": {
+   "command": "check-casper-claims",
+   "exit": 0
+  }
+ },
+ "hosted": {
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tested_sha": "3ec0561fcad7c140db958d1708db654e3ddab178",
+  "note": "3ec0561fc contains the change commit 345a99a23, two dev merges, and a docs/ToDos.md edit. The driver and test bytes equal the source digests.",
+  "full_suite": {
+   "run_id": 37201812923,
+   "job_summary": "All test, lint, coverage, and the six Heavy Pipeline integration jobs passed (ci-heavy).",
+   "steps": {
+    "Verify soak fail-closed driver": "success",
+    "Verify isolated disk admission and emergency scenarios": "success"
+   }
+  },
+  "claims_and_bindings": {
+   "run_id": 37200929278,
+   "conclusion": "success",
+   "jobs": [
+    "Casper driver binding fixtures",
+    "Formal verification gate"
+   ]
+  }
+ },
+ "expected_gate_state": "check-casper-claims passes because docs/claims/casper-soak-harness.md has status pending. The two ledger records stay at the first acceptance digests until the maintainer accepts this package.",
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-driver-evidence-scope",
+ "soak": "pending",
+ "status": "change-verified-pending-acceptance",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-04",
+ "waiver": null
+}

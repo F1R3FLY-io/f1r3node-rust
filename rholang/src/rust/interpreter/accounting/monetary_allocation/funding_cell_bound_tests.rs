@@ -1,11 +1,6 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn limits(query: FundingCellQuery<'_>) -> FundingSearchLimits {
     FundingSearchLimits {
@@ -42,9 +37,7 @@ fn validate(query: FundingCellQuery<'_>, result: FundingFeasibility) -> bool {
             assert_eq!(assignment.len(), query.exact.capacities.len());
             assert_eq!(totals.source_debits(), query.exact.capacities);
             assert_eq!(
-                query
-                    .exact
-                    .check_assignment(&assignment, limits(query), &work()),
+                query.exact.check_assignment(&assignment, limits(query)),
                 Ok(totals)
             );
             assert!(assignment[query.source][query.obligation] <= query.maximum);
@@ -53,13 +46,9 @@ fn validate(query: FundingCellQuery<'_>, result: FundingFeasibility) -> bool {
         FundingFeasibility::Infeasible {
             selected_obligations,
         } => {
-            assert!(check_funding_cell_deficit(
-                query,
-                &selected_obligations,
-                limits(query),
-                &work()
-            )
-            .unwrap());
+            assert!(
+                check_funding_cell_deficit(query, &selected_obligations, limits(query)).unwrap()
+            );
             false
         }
     }
@@ -83,7 +72,7 @@ fn entry_bounds_preserve_wallet_totals_without_forcing_exact_entry_amounts() {
                 };
                 assert!(validate(
                     query,
-                    solve_funding_cell_bound(query, limits(query), &work()).unwrap()
+                    solve_funding_cell_bound(query, limits(query)).unwrap()
                 ));
             }
         }
@@ -105,13 +94,11 @@ fn a_deficit_is_bound_to_the_exact_entry_and_does_not_relax_eligibility() {
     };
     let FundingFeasibility::Infeasible {
         selected_obligations,
-    } = solve_funding_cell_bound(query, limits(query), &work()).unwrap()
+    } = solve_funding_cell_bound(query, limits(query)).unwrap()
     else {
         panic!("the diagonal entry requires two units");
     };
-    assert!(
-        check_funding_cell_deficit(query, &selected_obligations, limits(query), &work()).unwrap()
-    );
+    assert!(check_funding_cell_deficit(query, &selected_obligations, limits(query)).unwrap());
     for alternative in [FundingCellQuery { source: 1, ..query }, FundingCellQuery {
         maximum: 2,
         ..query
@@ -119,17 +106,16 @@ fn a_deficit_is_bound_to_the_exact_entry_and_does_not_relax_eligibility() {
         assert!(!check_funding_cell_deficit(
             alternative,
             &selected_obligations,
-            limits(alternative),
-            &work()
+            limits(alternative)
         )
         .unwrap());
         assert!(validate(
             alternative,
-            solve_funding_cell_bound(alternative, limits(alternative), &work()).unwrap()
+            solve_funding_cell_bound(alternative, limits(alternative)).unwrap()
         ));
     }
     assert_eq!(
-        check_funding_cell_deficit(query, &[], limits(query), &work()),
+        check_funding_cell_deficit(query, &[], limits(query)),
         Err(FundingAssignmentError::InvalidDimensions.into())
     );
 }
@@ -170,8 +156,7 @@ fn exhaustive_balanced_graphs_match_the_complete_entry_bound_oracle() {
                                         0,
                                     );
                                     let actual =
-                                        solve_funding_cell_bound(query, limits(query), &work())
-                                            .unwrap();
+                                        solve_funding_cell_bound(query, limits(query)).unwrap();
                                     assert_eq!(validate(query, actual), expected, "{query:?}");
                                     queries += 1;
                                 }
@@ -203,7 +188,7 @@ fn wide_totals_and_arbitrary_cohorts_do_not_create_an_extra_wallet() {
                 obligation: 0,
                 maximum,
             };
-            let result = solve_funding_cell_bound(query, limits(query), &work()).unwrap();
+            let result = solve_funding_cell_bound(query, limits(query)).unwrap();
             assert_eq!(validate(query, result), maximum >= u64::MAX - 1);
         }
     }
@@ -227,7 +212,7 @@ fn malformed_inputs_and_nonexact_contributions_are_errors_not_deficits() {
         ..query
     }] {
         assert_eq!(
-            solve_funding_cell_bound(altered, limits(altered), &work()),
+            solve_funding_cell_bound(altered, limits(altered)),
             Err(FundingSearchError::InvalidAssignmentCell)
         );
     }
@@ -239,7 +224,7 @@ fn malformed_inputs_and_nonexact_contributions_are_errors_not_deficits() {
         ..query
     };
     assert_eq!(
-        solve_funding_cell_bound(wrong, limits(wrong), &work()),
+        solve_funding_cell_bound(wrong, limits(wrong)),
         Err(FundingSearchError::UnequalFundingTotals)
     );
     let wrong = FundingCellQuery {
@@ -250,7 +235,7 @@ fn malformed_inputs_and_nonexact_contributions_are_errors_not_deficits() {
         ..query
     };
     assert_eq!(
-        solve_funding_cell_bound(wrong, limits(wrong), &work()),
+        solve_funding_cell_bound(wrong, limits(wrong)),
         Err(FundingAssignmentError::InvalidDimensions.into())
     );
     let wrong = FundingCellQuery {
@@ -262,49 +247,9 @@ fn malformed_inputs_and_nonexact_contributions_are_errors_not_deficits() {
         ..query
     };
     assert_eq!(
-        solve_funding_cell_bound(wrong, limits(wrong), &work()),
+        solve_funding_cell_bound(wrong, limits(wrong)),
         Err(FundingAssignmentError::Overflow.into())
     );
-}
-
-#[test]
-fn interrupted_queries_never_return_partial_assignments_or_false_deficits() {
-    let problem = FundingMinimaxProblem {
-        capacities: &[1],
-        obligations: &[1],
-        eligible: &[vec![true]],
-    };
-    for maximum in [0, 1] {
-        let query = FundingCellQuery {
-            exact: problem,
-            source: 0,
-            obligation: 0,
-            maximum,
-        };
-        let measured = work();
-        let expected = solve_funding_cell_bound(query, limits(query), &measured).unwrap();
-        for dimension in [
-            HostWorkDimension::SearchCandidates,
-            HostWorkDimension::SearchStateBytes,
-            HostWorkDimension::VerificationOperations,
-        ] {
-            let full = measured.usage(dimension).get();
-            for prefix in 0..=full {
-                let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000));
-                bounds.set(dimension, HostWorkLimit::new(prefix));
-                let actual =
-                    solve_funding_cell_bound(query, limits(query), &HostWorkBudget::new(bounds));
-                if prefix == full {
-                    assert_eq!(actual, Ok(expected.clone()));
-                } else {
-                    assert!(
-                        matches!(actual, Err(FundingSearchError::HostWork(_))),
-                        "{maximum} {dimension:?} {prefix}/{full}: {actual:?}"
-                    );
-                }
-            }
-        }
-    }
 }
 
 proptest! {
@@ -324,7 +269,7 @@ proptest! {
         let problem = FundingMinimaxProblem { capacities: &capacities, obligations: &demand, eligible: &eligible };
         let query = FundingCellQuery { exact: problem, source: source_index % sources, obligation: obligation_index % obligations, maximum };
         let expected = oracle(query, &mut capacities.clone(), &mut demand.clone(), 0);
-        let result = solve_funding_cell_bound(query, limits(query), &work()).unwrap();
+        let result = solve_funding_cell_bound(query, limits(query)).unwrap();
         prop_assert_eq!(validate(query, result), expected);
         let reversed_capacity: Vec<_> = capacities.iter().rev().copied().collect();
         let reversed_demand: Vec<_> = demand.iter().rev().copied().collect();
@@ -333,7 +278,7 @@ proptest! {
             exact: FundingMinimaxProblem { capacities: &reversed_capacity, obligations: &reversed_demand, eligible: &reversed_edges },
             source: sources - 1 - query.source, obligation: obligations - 1 - query.obligation, maximum,
         };
-        let result = solve_funding_cell_bound(reversed, limits(reversed), &work()).unwrap();
+        let result = solve_funding_cell_bound(reversed, limits(reversed)).unwrap();
         prop_assert_eq!(validate(reversed, result), expected);
     }
 }

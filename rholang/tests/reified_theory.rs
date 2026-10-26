@@ -22,7 +22,7 @@
 //! | `space_guard_match` | TH-6: a stored datum that the guard and the theory admit fires its receive, and the same receive with a refusing guard parks, on each collection, a join and a prefix receive. |
 //! | `prop_theory_builtin_decidable` | `builtin_decidable_structural` (`TheoryAdmission.v`): each builtin decides every value by its shape, never `Undetermined` with the structural limits, with one unit of work. |
 //! | `prop_theory_fail_closed` | `fail_closed`: a send is admitted only when every value is `Proven`. Otherwise it fails with the index of its first value that is not. |
-//! | `prop_theory_usage_cache_transparent` | `usage_cache_transparent`: the verdict, the usage and the reserved work of a check depend only on the identity and the value, not on earlier checks or on a fresh resolution. |
+//! | `prop_theory_usage_cache_transparent` | `usage_cache_transparent`: the verdict and the usage of a check depend only on the identity and the value, not on earlier checks or on a fresh resolution. |
 //! | `prop_resolve_identity_deterministic` | `resolve_identity_deterministic`: the resolution is a pure function of the identity, and it resolves exactly the structural builtin identities. |
 //! | `prop_replay_preserves_theory_admission` | `replay_preserves_theory_admission`: native replay reproduces the admission or the refusal of every generated send, with the errors, the phlo and the root of play. |
 
@@ -36,12 +36,9 @@ use std::collections::BTreeSet;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, ListParWithRandom, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use proptest::prelude::{any, prop_oneof, Just, Strategy};
 use proptest::sample::select;
 use proptest::test_runner::TestCaseError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
-use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
 use rholang::rust::interpreter::spaces::theory::builtin::BUILTIN_NAMES;
 use rholang::rust::interpreter::spaces::theory::identity::{TheoryIdentity, STRUCTURAL_LIMITS};
@@ -339,8 +336,7 @@ async fn theory_nat_accepts_bigint_nonneg() {
         ("Int", naturals.iter().chain(&negatives).copied().collect()),
     ] {
         let receive = r#"for (@x <= a) { out!(["took", x]) }"#;
-        // A handle call costs far more host work than a routed send, so the handle variant runs
-        // three calls in each deploy, within the v6 limits of replay.
+        // The handle variant runs three calls in each deploy.
         for (via, width) in [("routed", values.len()), ("handle", 3)] {
             for chunk in values.chunks(width) {
                 let body = match via {
@@ -675,24 +671,9 @@ fn arb_value() -> impl Strategy<Value = Par> {
     ]
 }
 
-/// A metered meter over an ample budget.
-fn metered() -> (HostWorkBudget, ScanMeter) {
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
-    (budget.clone(), ScanMeter::new(Some(budget)))
-}
-
-/// The work that `budget` reserved, in every dimension.
-fn work(budget: &HostWorkBudget) -> Vec<u64> {
-    HostWorkDimension::ALL
-        .iter()
-        .map(|dimension| budget.usage(*dimension).get())
-        .collect()
-}
-
 /// `builtin_decidable_structural`: with the structural limits, each builtin gives `Proven` or
-/// `Refuted` on every value, exactly as the structural predicate says, with the usage
-/// `{1, 0}` and one reserved `VerificationOperations` unit. A match checks every value of the
-/// stored payload.
+/// `Refuted` on every value, exactly as the structural predicate says, with the usage `{1, 0}`.
+/// A match checks every value of the stored payload.
 #[test]
 fn prop_theory_builtin_decidable() {
     check(
@@ -705,9 +686,8 @@ fn prop_theory_builtin_decidable() {
             let checker = theory::resolve(&TheoryIdentity::builtin(name))
                 .map_err(|error| TestCaseError::fail(format!("{name}: {error:?}")))?;
             for value in &values {
-                let (budget, meter) = metered();
                 let verdict = checker
-                    .admit(value, &meter)
+                    .admit(value)
                     .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
                 proptest::prop_assert!(
                     !matches!(verdict, TheoryVerdict::Undetermined { .. }),
@@ -715,23 +695,13 @@ fn prop_theory_builtin_decidable() {
                 );
                 proptest::prop_assert_eq!(verdict.is_proven(), in_builtin(name, value));
                 proptest::prop_assert_eq!(verdict.usage(), TheoryUsage::new(1, 0));
-                let mut expected = vec![0; HostWorkDimension::ALL.len()];
-                expected[HostWorkDimension::ALL
-                    .iter()
-                    .position(|d| *d == HostWorkDimension::VerificationOperations)
-                    .expect("a dimension")] = 1;
-                proptest::prop_assert_eq!(work(&budget), expected);
             }
             let stored = ListParWithRandom {
                 pars: values.clone(),
                 ..ListParWithRandom::default()
             };
             let verdict = checker
-                .check_match(
-                    &stored,
-                    &ListParWithRandom::default(),
-                    &ScanMeter::new(None),
-                )
+                .check_match(&stored, &ListParWithRandom::default())
                 .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
             proptest::prop_assert_eq!(
                 verdict.is_proven(),
@@ -770,8 +740,7 @@ fn prop_theory_fail_closed() {
             };
             let checker = theory::resolve(&identity)
                 .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
-            let result = admit_values(checker.as_ref(), &values, &ScanMeter::new(None))
-                .map(|leases| leases.len());
+            let result = admit_values(checker.as_ref(), &values).map(|leases| leases.len());
             let first = values.iter().position(|value| !in_builtin(name, value));
             let expected = match (starved, values.is_empty(), first) {
                 (true, false, _) => Err(SpaceError::TheoryUndetermined {
@@ -803,9 +772,9 @@ fn prop_theory_fail_closed() {
     );
 }
 
-/// `usage_cache_transparent`: the verdict, the usage and the work of each check depend only on
-/// the identity and the value. A check repeated after other checks, and a check by a checker of
-/// a fresh resolution, give the same verdict, usage and reserved work as the first check.
+/// `usage_cache_transparent`: the verdict and the usage of each check depend only on the identity
+/// and the value. A check repeated after other checks, and a check by a checker of a fresh
+/// resolution, give the same verdict and usage as the first check.
 #[test]
 fn prop_theory_usage_cache_transparent() {
     check(
@@ -825,11 +794,7 @@ fn prop_theory_usage_cache_transparent() {
             };
             let shared = theory::resolve(&identity)
                 .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
-            let check_one = |checker: &dyn SpaceTheory, value: &Par| {
-                let (budget, meter) = metered();
-                let verdict = checker.admit(value, &meter);
-                (verdict, work(&budget))
-            };
+            let check_one = |checker: &dyn SpaceTheory, value: &Par| checker.admit(value);
             let first: Vec<_> = values
                 .iter()
                 .map(|value| check_one(shared.as_ref(), value))
@@ -849,7 +814,7 @@ fn prop_theory_usage_cache_transparent() {
             let reversed: Vec<_> = again.into_iter().rev().collect();
             proptest::prop_assert_eq!(&first, &reversed);
             proptest::prop_assert_eq!(&first, &fresh);
-            for (verdict, _) in &first {
+            for verdict in &first {
                 let usage = verdict
                     .as_ref()
                     .map_err(|error| TestCaseError::fail(format!("{error:?}")))?

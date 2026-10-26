@@ -1,11 +1,6 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
-
-fn budget() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn limits() -> RetainedCellBackingLimits {
     RetainedCellBackingLimits {
@@ -15,14 +10,7 @@ fn limits() -> RetainedCellBackingLimits {
 }
 
 fn check(quantity: u64, value: u64, sources: &[u64]) -> CellBacking {
-    let actual = split_backing(
-        quantity,
-        value,
-        sources.iter().copied(),
-        limits(),
-        &budget(),
-    )
-    .unwrap();
+    let actual = split_backing(quantity, value, sources.iter().copied(), limits()).unwrap();
     assert_eq!(actual.offsets.len(), quantity as usize + 1);
     let mut totals = vec![0u64; sources.len()];
     for (cell, bounds) in actual.offsets.windows(2).enumerate() {
@@ -85,7 +73,7 @@ fn retained_cell_backing_rejects_amount_mismatch_overflow_and_limits() {
         (0, 0, vec![]),
         (u64::MAX, 0, vec![0]),
     ] {
-        assert!(split_backing(quantity, value, sources.into_iter(), limits(), &budget()).is_err());
+        assert!(split_backing(quantity, value, sources.into_iter(), limits()).is_err());
     }
     for bound in [
         RetainedCellBackingLimits {
@@ -97,21 +85,13 @@ fn retained_cell_backing_rejects_amount_mismatch_overflow_and_limits() {
             ..limits()
         },
     ] {
-        assert!(split_backing(3, 5, [4, 7, 4].into_iter(), bound, &budget()).is_err());
+        assert!(split_backing(3, 5, [4, 7, 4].into_iter(), bound).is_err());
     }
-    assert!(split_backing(
-        3,
-        5,
-        [4, 7, 4].into_iter(),
-        limits(),
-        &HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)))
-    )
-    .is_err());
     let exact = RetainedCellBackingLimits {
         cells: 3,
         contributions: 5,
     };
-    assert!(split_backing(3, 5, [4, 7, 4].into_iter(), exact, &budget()).is_ok());
+    assert!(split_backing(3, 5, [4, 7, 4].into_iter(), exact).is_ok());
 }
 
 proptest! {

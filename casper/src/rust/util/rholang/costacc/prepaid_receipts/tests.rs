@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
@@ -46,8 +45,11 @@ fn change<'a>(
     }
 }
 
+/// Changed by DR-131: the metered read and its rejections went with host
+/// work. The test keeps its check that a cold and a warm read return the same
+/// receipt.
 #[tokio::test]
-async fn metered_receipt_read_has_cold_warm_parity_and_rejects_before_mutation() {
+async fn receipt_read_has_cold_warm_parity() {
     let mut runtime = runtime().await;
     let receipt_id = [91; 32];
     runtime
@@ -55,50 +57,23 @@ async fn metered_receipt_read_has_cold_warm_parity_and_rejects_before_mutation()
         .await
         .unwrap();
     let checkpoint = runtime.runtime.create_checkpoint().await;
-    let ample = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
     let cold = runtime
-        .read_prepaid_receipt_metered(&receipt_id, LIMITS.value_bytes, &ample)
+        .read_prepaid_receipt(&receipt_id, LIMITS.value_bytes)
         .await
         .unwrap();
     let warm = runtime
-        .read_prepaid_receipt_metered(&receipt_id, LIMITS.value_bytes, &ample)
+        .read_prepaid_receipt(&receipt_id, LIMITS.value_bytes)
         .await
         .unwrap();
     assert_eq!(cold, Some(b"funded".to_vec()));
     assert_eq!(warm, cold);
-    assert_eq!(
-        runtime
-            .read_prepaid_receipt(&receipt_id, LIMITS.value_bytes)
-            .await
-            .unwrap(),
-        cold
-    );
-
-    let exhausted = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(runtime
-        .read_prepaid_receipt_metered(&receipt_id, LIMITS.value_bytes, &exhausted)
-        .await
-        .is_err());
-    assert!(runtime
-        .replace_prepaid_receipts_metered(
-            &[change(91, Some(b"funded"), Some(b"spent"))],
-            LIMITS,
-            &HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0))),
-        )
-        .await
-        .is_err());
     assert_eq!(runtime.runtime.get_root().await, checkpoint.root);
-    assert_eq!(
-        runtime
-            .read_prepaid_receipt(&receipt_id, LIMITS.value_bytes)
-            .await
-            .unwrap(),
-        cold
-    );
 }
 
+/// Changed by DR-131: the metered read and its rejection went with host work.
+/// The test keeps its check that replay reads the cold and the warm history.
 #[tokio::test]
-async fn metered_receipt_replay_reads_cold_and_warm_history() {
+async fn receipt_replay_reads_cold_and_warm_history() {
     let store = InMemoryStoreManager::new().r_space_stores().await.unwrap();
     let (play, replay, _) = create_runtimes(store, false, &mut Vec::new()).await;
     let mut play = RuntimeOps::new(play);
@@ -108,22 +83,16 @@ async fn metered_receipt_replay_reads_cold_and_warm_history() {
         .unwrap();
     let root = play.runtime.create_checkpoint().await.root;
     replay.runtime.reset(&root).await.unwrap();
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
     let cold = replay
-        .read_prepaid_receipt_metered(&[92; 32], LIMITS.value_bytes, &budget)
+        .read_prepaid_receipt(&[92; 32], LIMITS.value_bytes)
         .await
         .unwrap();
     let warm = replay
-        .read_prepaid_receipt_metered(&[92; 32], LIMITS.value_bytes, &budget)
+        .read_prepaid_receipt(&[92; 32], LIMITS.value_bytes)
         .await
         .unwrap();
     assert_eq!(cold, Some(b"backed".to_vec()));
     assert_eq!(warm, cold);
-    let exhausted = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(replay
-        .read_prepaid_receipt_metered(&[92; 32], LIMITS.value_bytes, &exhausted)
-        .await
-        .is_err());
     assert_eq!(replay.runtime.get_root().await, root);
 }
 

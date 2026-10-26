@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "claim": "CLAIM-CASPER-SOAK-007",
+  "model": "formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla",
+  "scope": "bounded-version-phlo-profile-classification-only",
+  "construction": "not-applicable",
+  "bounds": {"scenarios": 2, "observations_per_scenario": 3},
+  "assumptions": [
+    "Each scenario abstracts one controlled transcript with three observation steps.",
+    "Version labels abstract the distinct Casper protocol and accounting authority fields.",
+    "Field capture abstracts the presence of both signed Phlo fields, not signature verification.",
+    "A refund mismatch is independently observed, even when signed-field capture is incomplete.",
+    "Other measurements, provenance, ordering, capabilities, and fault receipts are valid.",
+    "Executable fixtures separately test malformed inputs, unknown measurements, correlations, and fault receipts.",
+    "The model neither executes a node nor proves settlement arithmetic or protocol activation."
+  ],
+  "positive_control": {
+    "configuration": "MC_VersionPhlo.cfg",
+    "expected_exit": 0,
+    "properties": ["VersionLabelsSeparate", "BothPhloFieldsCaptured", "SettlementOutcomeClassified"]
+  },
+  "negative_controls": [
+    {"configuration": "MC_VersionPhlo_versions_unsafe.cfg", "expected_exit": 12, "property": "VersionLabelsSeparate", "knob": "ConflateAuthorityVersions", "fixture": "phlo_version_labels"},
+    {"configuration": "MC_VersionPhlo_fields_unsafe.cfg", "expected_exit": 12, "property": "BothPhloFieldsCaptured", "knob": "OmitPhloPrice", "fixture": "phlo_signed_field_missing"},
+    {"configuration": "MC_VersionPhlo_refund_unsafe.cfg", "expected_exit": 12, "property": "SettlementOutcomeClassified", "knob": "IgnoreRefundMismatch", "fixture": "phlo_refund_mismatch"}
+  ]
+}

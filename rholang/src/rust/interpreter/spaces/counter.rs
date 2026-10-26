@@ -25,12 +25,7 @@
 //! A collection with two counter records, a persistent counter record, or a missing space
 //! counter is `Inconsistent`. A counter at `i64::MAX` fails with `CounterOverflow`.
 //!
-//! The bump reserves its reads and copies on the meter of the job before it makes them
-//! (decision 42): it copies only the counter record that it consumes, and it moves that copy
-//! into the fire. The pattern and the continuation are built from templates, whose reserved
-//! copies cover their allocations. As in the reducer of `feature/cost-accounted-rho`, a split of
-//! a random state is not charged (`util::evaluation_random`), and its encode is
-//! (`ScanMeter::random_bytes`).
+//! The bump copies only the counter record that it consumes, and it moves that copy into the fire.
 
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
@@ -94,11 +89,6 @@ fn continuation_with(
 /// The template of the counter pattern.
 static COUNTER_PATTERN: LazyLock<BindPattern> = LazyLock::new(counter_pattern);
 
-/// The template of a counter continuation: its body, without random state bytes and without a
-/// cost authority. The value is an inline integer, so every counter continuation has its shape.
-static COUNTER_CONTINUATION: LazyLock<TaggedContinuation> =
-    LazyLock::new(|| continuation_with(0, Vec::new(), None));
-
 /// An operation that a bump stages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CounterOp {
@@ -136,8 +126,8 @@ pub struct CounterChannels<'a> {
 
 /// What the staging of a bump needs from its operation.
 pub struct BumpContext<'a> {
-    /// The matcher of the job, with its meter.
-    pub matcher: &'a SpaceMatcher<'a>,
+    /// The matcher of the job.
+    pub matcher: &'a SpaceMatcher,
     /// The random state of the operation.
     pub random: &'a Blake2b512Random,
     /// The authorities of the operation (P4 design B.7).
@@ -149,12 +139,11 @@ pub struct BumpContext<'a> {
 fn only_record(
     txn: &mut ParSpaceTxn,
     channel: &Par,
-    context: &BumpContext<'_>,
     two: &'static str,
 ) -> Result<Option<Datum<ListParWithRandom>>, SpaceError> {
     match txn.data(channel)? {
         [] => Ok(None),
-        [stored] => Ok(Some(context.matcher.meter().copy(stored)?)),
+        [stored] => Ok(Some(stored.clone())),
         _ => Err(SpaceError::Inconsistent(two)),
     }
 }
@@ -168,23 +157,16 @@ pub fn bump(
     context: &BumpContext<'_>,
     legacy: &mut LegacyChain,
 ) -> Result<Bump, SpaceError> {
-    let meter = context.matcher.meter();
     let collection = only_record(
         txn,
         channels.collection,
-        context,
         "a collection has two counter records",
     )?;
     match collection {
         None => {
-            let stored = only_record(
-                txn,
-                channels.space,
-                context,
-                "a space has two space counters",
-            )?
-            .ok_or(SpaceError::Inconsistent("a space has no space counter"))?;
-            let value = record::counter_value_metered(&stored.a, meter)?;
+            let stored = only_record(txn, channels.space, "a space has two space counters")?
+                .ok_or(SpaceError::Inconsistent("a space has no space counter"))?;
+            let value = record::counter_value(&stored.a)?;
             let next = value.checked_add(1).ok_or(SpaceError::CounterOverflow)?;
             take(
                 txn,
@@ -217,7 +199,7 @@ pub fn bump(
             })
         }
         Some(stored) => {
-            let value = record::counter_value_metered(&stored.a, meter)?;
+            let value = record::counter_value(&stored.a)?;
             let next = value.checked_add(1).ok_or(SpaceError::CounterOverflow)?;
             take(
                 txn,
@@ -260,31 +242,24 @@ pub(crate) fn take(
     if stored.persist {
         return Err(SpaceError::Inconsistent("a counter record is persistent"));
     }
-    let meter = context.matcher.meter();
     let matched =
         context
             .matcher
-            .bind(&COUNTER_PATTERN, &stored.a)?
+            .bind(&COUNTER_PATTERN, &stored.a)
             .ok_or(SpaceError::Inconsistent(
                 "a counter record does not match the counter pattern",
             ))?;
     let random = purpose.derive(context.random).split_byte(0);
-    meter.reserve_copy(&*COUNTER_CONTINUATION)?;
-    meter.random_bytes(&random)?;
-    let cost_authority = context
-        .authority
-        .continuation
-        .map(|authority| meter.copy(authority))
-        .transpose()?;
+    let cost_authority = context.authority.continuation.cloned();
     let continuation = counter_continuation(value, &random, cost_authority);
-    let mut channels = meter.buffer::<Par>(1)?;
-    channels.push(meter.copy(channel)?);
-    let mut patterns = meter.buffer::<BindPattern>(1)?;
-    patterns.push(meter.copy(&*COUNTER_PATTERN)?);
-    let mut data = meter.buffer::<ConsumeCandidate<Par, ListParWithRandom>>(1)?;
+    let mut channels = Vec::<Par>::with_capacity(1);
+    channels.push(channel.clone());
+    let mut patterns = Vec::<BindPattern>::with_capacity(1);
+    patterns.push((*COUNTER_PATTERN).clone());
+    let mut data = Vec::<ConsumeCandidate<Par, ListParWithRandom>>::with_capacity(1);
     let Datum { a, persist, source } = stored;
     data.push(ConsumeCandidate {
-        channel: meter.copy(channel)?,
+        channel: channel.clone(),
         datum: Datum {
             a: matched,
             persist,
@@ -302,8 +277,7 @@ pub(crate) fn take(
         outcome: ConsumeOutcome::Fire { data },
         before_observe: Some(record::register_introduction(
             context.authority.introduction,
-            meter,
-        )?),
+        )),
     };
     legacy.consume(txn, op)
 }
@@ -318,20 +292,18 @@ pub(crate) fn put(
     context: &BumpContext<'_>,
     legacy: &mut LegacyChain,
 ) -> Result<(), SpaceError> {
-    let meter = context.matcher.meter();
     let introduction = context.authority.introduction;
-    let cost_authority = record::cost_authority_metered(introduction.authority(), meter)?;
+    let cost_authority = record::cost_authority(introduction.authority());
     let op = SpaceProduce {
-        channel: meter.copy(channel)?,
-        data: record::counter_record_metered(
+        channel: channel.clone(),
+        data: record::counter_record(
             value,
             &purpose.derive(context.random).split_byte(1),
             cost_authority,
-            meter,
-        )?,
+        ),
         persist: false,
         outcome: ProduceOutcome::Store,
-        before_observe: Some(record::register_introduction(introduction, meter)?),
+        before_observe: Some(record::register_introduction(introduction)),
     };
     legacy.produce(txn, op)
 }
@@ -342,10 +314,6 @@ mod tests {
 
     use models::rhoapi::cost_signature::Value as CostSignatureValue;
     use models::rhoapi::{CostRegion, CostSignature};
-    use models::rust::host_work::{
-        HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
-    };
-    use rspace_plus_plus::rspace::errors::RSpaceError;
     use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use rspace_plus_plus::rspace::hashing::stable_hash_provider;
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -358,9 +326,7 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::RuntimeBudget;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
-    use crate::rust::interpreter::reified::costs::ScanMeter;
     use crate::rust::interpreter::spaces::agent::SpaceEnv;
     use crate::rust::interpreter::spaces::namespace::{
         self, CollectionKey, Durability, NativeSpace, SID_LEN,
@@ -404,7 +370,6 @@ mod tests {
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000, "space counter test")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };
@@ -442,7 +407,7 @@ mod tests {
             .await?;
         let matcher = SpaceMatcher::new(env);
         let continuation = region(1);
-        let introduction = Introduction::new(&env.budget, &region(2), &env.meter)?;
+        let introduction = Introduction::new(&env.budget, &region(2));
         let random = random();
         let bump = bump(
             &mut txn,
@@ -687,89 +652,5 @@ mod tests {
 
     async fn record_count(space: &ParRSpace, channel: &Par) -> usize {
         space.get_data(channel).await.len()
-    }
-
-    /// The dimensions that a space job charges (decision 42).
-    const CHARGED: [HostWorkDimension; 3] = [
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::VerificationBytes,
-        HostWorkDimension::SearchStateBytes,
-    ];
-
-    /// A host-work budget with the limit `limit` in every dimension.
-    fn uniform(limit: u64) -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(limit)))
-    }
-
-    /// Stages and commits one first bump with the meter `meter`, and returns the bump result.
-    async fn bump_with(meter: ScanMeter) -> (ParRSpace, Result<Bump, SpaceError>) {
-        let (space, mut env) = host().await;
-        env.meter = meter;
-        store(&env, &space_counter(), vec![(counter(0, 0), false)]).await;
-        space.take_event_log().await;
-        let result = match run_bump(&env).await {
-            Ok((bump, mut txn)) => {
-                txn.commit().await.expect("the bump commits");
-                Ok(bump)
-            }
-            Err(error) => Err(error),
-        };
-        (space, result)
-    }
-
-    #[tokio::test]
-    async fn space_counter_bump_reserves_its_work_on_the_branch_dimensions() {
-        let host_work = uniform(100_000_000);
-        let (space, result) = bump_with(ScanMeter::new(Some(host_work.clone()))).await;
-        assert!(result.is_ok(), "{result:?}");
-        assert_eq!(
-            host_work.usage(HostWorkDimension::SearchCandidates),
-            HostWorkUsage::ZERO,
-            "the branch charges candidates only in its funding search"
-        );
-        for dimension in CHARGED {
-            assert!(
-                host_work.usage(dimension) > HostWorkUsage::ZERO,
-                "{dimension:?}"
-            );
-        }
-        assert_eq!(values(&space, &collection_counter()).await, vec![1]);
-        let (_, rejected) = bump_with(ScanMeter::new(Some(uniform(0)))).await;
-        assert_eq!(
-            rejected,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        );
-    }
-
-    #[tokio::test]
-    async fn space_counter_bump_cut_budget_rejects_without_effect() {
-        let measured = uniform(100_000_000);
-        let (_, result) = bump_with(ScanMeter::new(Some(measured.clone()))).await;
-        assert!(result.is_ok(), "{result:?}");
-        let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        for dimension in CHARGED {
-            exact.set(
-                dimension,
-                HostWorkLimit::new(measured.usage(dimension).get()),
-            );
-        }
-        let (_, accepted) = bump_with(ScanMeter::new(Some(HostWorkBudget::new(exact)))).await;
-        assert!(accepted.is_ok(), "the exact usage suffices: {accepted:?}");
-        for dimension in CHARGED {
-            let mut cut = exact;
-            cut.set(
-                dimension,
-                HostWorkLimit::new(measured.usage(dimension).get() - 1),
-            );
-            let (space, rejected) = bump_with(ScanMeter::new(Some(HostWorkBudget::new(cut)))).await;
-            assert_eq!(
-                rejected,
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                "{dimension:?}"
-            );
-            assert!(space.take_event_log().await.is_empty(), "{dimension:?}");
-            assert_eq!(values(&space, &space_counter()).await, vec![0]);
-            assert!(values(&space, &collection_counter()).await.is_empty());
-        }
     }
 }

@@ -20,7 +20,6 @@
 //! and each case removes its directory when it ends.
 
 #[path = "../tests/support/mod.rs"]
-#[allow(dead_code)]
 mod support;
 
 #[allow(dead_code)]
@@ -235,7 +234,6 @@ fn bench_merge(c: &mut Criterion) {
         result: vec![],
         phlo: None,
         root: hex::encode(merged.bytes()),
-        host_work: BTreeMap::new(),
     };
     check(&format!("merge/{}", case.id), &observed);
     record(
@@ -286,7 +284,6 @@ fn bench_replay(c: &mut Criterion) {
         result: vec!["reproduced".to_string()],
         phlo: second_played.result.native_phlo_usage,
         root: hex::encode(second_played.root.bytes()),
-        host_work: BTreeMap::new(),
     };
     check("replay/queue_two_blocks/10", &observed);
     record(

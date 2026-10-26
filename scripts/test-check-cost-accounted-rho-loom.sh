@@ -17,16 +17,6 @@ cargo() {
         filtered) printf '%s\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s' ;;
         *) printf '%s\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
       esac ;;
-    'test --locked -p rspace_plus_plus --test native_history_loom' | \
-    'test --locked -p rspace_plus_plus --test native_cache_loom' | \
-    'test --locked -p rspace_plus_plus --test native_source_loom')
-      [[ "$GATE_CASE" != empty && "$GATE_CASE" != zero ]] || return 0
-      printf '%s\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
-    'test --locked -p rspace_plus_plus --lib rspace::striped_locks::native::tests::loom_')
-      printf '%s\n' \
-        'test rspace::striped_locks::native::tests::loom_lock_preparation_respects_atomic_shared_budget ... ok' \
-        'test rspace::striped_locks::native::tests::loom_separate_budget_check_and_update_allows_unpaid_lock_preparation - should panic ... ok' \
-        'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s' ;;
     *) return 97 ;;
   esac
 }

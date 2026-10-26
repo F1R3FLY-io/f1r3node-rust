@@ -1,9 +1,7 @@
-use std::mem::size_of;
-
 use super::*;
 use crate::rust::interpreter::accounting::monetary_allocation::{
-    canonicalize_funding_problem, filled_vec, reserve_work, FundingIdentityError,
-    FundingMinimaxProblem, FundingPolicyResult, FundingSearchError, FundingSearchLimits,
+    canonicalize_funding_problem, filled_vec, FundingIdentityError, FundingMinimaxProblem,
+    FundingPolicyResult, FundingSearchError, FundingSearchLimits,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -60,19 +58,10 @@ impl CheckedPhloObligations<'_> {
         input: PhloObligationFundingInput<'_>,
         proposed: PhloObligationFundingProposal<'_>,
         limits: PhloObligationFundingLimits,
-        budget: &HostWorkBudget,
     ) -> Result<bool, PhloObligationFundingError> {
-        let Some(selected) = self.select_funding(input, limits, budget)? else {
+        let Some(selected) = self.select_funding(input, limits)? else {
             return Ok(false);
         };
-        let cells = input
-            .capacities
-            .len()
-            .checked_mul(self.amounts.len())
-            .and_then(|cells| cells.checked_add(input.capacities.len()))
-            .and_then(|cells| cells.checked_add(2))
-            .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(budget, HostWorkDimension::VerificationOperations, cells)?;
         Ok(selected.assignment() == proposed.assignment
             && selected.resource_next_cursor() == proposed.resource_next_cursor
             && selected.fee_next_cursor() == proposed.fee_next_cursor)
@@ -82,7 +71,6 @@ impl CheckedPhloObligations<'_> {
         &self,
         input: PhloObligationFundingInput<'_>,
         limits: PhloObligationFundingLimits,
-        budget: &HostWorkBudget,
     ) -> Result<Option<PhloObligationFunding>, PhloObligationFundingError> {
         let count = input.capacities.len();
         let columns = self.amounts.len();
@@ -97,7 +85,6 @@ impl CheckedPhloObligations<'_> {
                 FundingSearchError::from(FundingAssignmentError::TooManyObligations).into(),
             );
         }
-        reserve_work(budget, HostWorkDimension::VerificationOperations, count)?;
         if input.eligible.len() != count || input.eligible.iter().any(|row| row.len() != columns) {
             return Err(FundingSearchError::from(FundingAssignmentError::InvalidDimensions).into());
         }
@@ -109,24 +96,6 @@ impl CheckedPhloObligations<'_> {
         {
             return Err(FundingSearchError::InvalidResult.into());
         }
-        let cells = count
-            .checked_mul(columns)
-            .ok_or(FundingSearchError::Overflow)?;
-        let bytes = count
-            .checked_mul(size_of::<Vec<bool>>() + size_of::<Vec<u64>>() + size_of::<u64>() + 1)
-            .and_then(|bytes| {
-                cells
-                    .checked_mul(1 + size_of::<u64>())
-                    .and_then(|cells| bytes.checked_add(cells))
-            })
-            .and_then(|bytes| {
-                columns
-                    .checked_mul(size_of::<&[u8]>())
-                    .and_then(|keys| bytes.checked_add(keys))
-            })
-            .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-        reserve_work(budget, HostWorkDimension::SearchCandidates, cells)?;
         let mut resource_edges = filled_vec(count, Vec::new())?;
         let mut fee_eligible = filled_vec(count, false)?;
         for i in 0..count {
@@ -134,8 +103,7 @@ impl CheckedPhloObligations<'_> {
             resource_edges[i].copy_from_slice(&input.eligible[i][1..]);
             fee_eligible[i] = input.eligible[i][0];
         }
-        let encoded =
-            self.encoded_keys_with_budget(limits.keys, limits.aggregate_key_bytes, budget)?;
+        let encoded = self.encoded_keys(limits.keys, limits.aggregate_key_bytes)?;
         let mut keys = filled_vec(columns - 1, &[][..])?;
         for (key, encoded) in keys.iter_mut().zip(&encoded[1..]) {
             *key = encoded;
@@ -149,7 +117,6 @@ impl CheckedPhloObligations<'_> {
             input.source_keys,
             &keys,
             limits.search,
-            budget,
         )?;
         let (resource_assignment, fee, resource_next_cursor, fee_next_cursor) =
             if self.amounts[0] == 1 {
@@ -158,25 +125,24 @@ impl CheckedPhloObligations<'_> {
                     input.canonical_resource_cursor,
                     input.canonical_fee_cursor,
                     limits.search,
-                    budget,
                 )?
                 else {
                     return Ok(None);
                 };
                 (
-                    problem.restore_assignment(selected.resource_assignment(), budget)?,
+                    problem.restore_assignment(selected.resource_assignment())?,
                     Some(selected.fee().debits.clone()),
                     selected.resource_next_cursor(),
                     Some(selected.fee().next_cursor),
                 )
             } else {
                 let FundingPolicyResult::Selected(selected) =
-                    problem.select(input.canonical_resource_cursor, limits.search, budget)?
+                    problem.select(input.canonical_resource_cursor, limits.search)?
                 else {
                     return Ok(None);
                 };
                 (
-                    problem.restore_assignment(selected.assignment(), budget)?,
+                    problem.restore_assignment(selected.assignment())?,
                     None,
                     selected.next_cursor(),
                     None,
@@ -193,22 +159,6 @@ impl CheckedPhloObligations<'_> {
             assignment[original][0] = fee.as_ref().map_or(0, |debits| debits[canonical]);
             assignment[original][1..].copy_from_slice(&resource_assignment[original]);
         }
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            cells
-                .checked_add(count)
-                .and_then(|value| value.checked_add(columns))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchStateBytes,
-            count
-                .checked_add(columns)
-                .and_then(|value| value.checked_mul(size_of::<u64>()))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         let totals = self
             .check_assignment(
                 input.capacities,

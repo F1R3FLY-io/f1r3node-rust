@@ -113,7 +113,6 @@ impl ByteObservationSnapshot {
 pub(super) struct ByteObservationLog {
     rows: Vec<Arc<ByteObservation>>,
     history_lost: bool,
-    native_capacity: usize,
 }
 
 impl Clone for ByteObservationLog {
@@ -121,7 +120,6 @@ impl Clone for ByteObservationLog {
         Self {
             rows: self.rows.clone(),
             history_lost: self.history_lost,
-            native_capacity: self.native_capacity.min(self.rows.len()),
         }
     }
 }
@@ -137,27 +135,7 @@ impl Eq for ByteObservationLog {}
 impl ByteObservationLog {
     pub(super) fn has_complete_history(&self) -> bool { !self.history_lost }
 
-    pub(super) fn rows(&self) -> &[Arc<ByteObservation>] { &self.rows }
-
-    pub(super) fn reserve_native(
-        &mut self,
-        additional: usize,
-        host: &crate::rust::interpreter::host_work::HostWorkBudget,
-    ) -> Result<(), crate::rust::interpreter::errors::InterpreterError> {
-        super::native_runtime::index::reserve_vector(
-            &mut self.rows,
-            &mut self.native_capacity,
-            additional,
-            host,
-        )
-    }
-
-    pub(super) fn try_reserve(
-        &mut self,
-        additional: usize,
-    ) -> Result<(), std::collections::TryReserveError> {
-        self.rows.try_reserve(additional)
-    }
+    pub(super) fn reserve(&mut self, additional: usize) { self.rows.reserve(additional); }
 
     pub(super) fn push(&mut self, row: Arc<ByteObservation>) { self.rows.push(row); }
 
@@ -179,7 +157,6 @@ impl ByteObservationLog {
     pub(super) fn reset(&mut self) {
         self.rows.clear();
         self.history_lost = false;
-        self.native_capacity = 0;
     }
 }
 

@@ -38,9 +38,7 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::expr::ExprInstance;
 use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedUserDeploy};
-use models::rust::cost_protocol_limits::{
-    offered_funded_v6_host_work_limits, offered_funded_v6_limits,
-};
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::phlo_wire::PhloWireLimits;
 use models::rust::utils::new_gstring_par;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
@@ -51,7 +49,6 @@ use rholang::rust::interpreter::accounting::{
     encode_native_operation_journal, NativeBudgetRecording, NativeOperationRecord,
     NativeRecordingWireLimits,
 };
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rspace_plus_plus::rspace::space_store_handle::SUB_OPERATION_TAG;
 
 // Changed by decision 84 (the revert of the DR-119 backport): the payers need no bucket search.
@@ -486,12 +483,10 @@ fn with_forged_space_row(block: &BlockMessage) -> BlockMessage {
         .evidence(protocol.evidence)
         .expect("the evidence decodes");
     let wire = recording_limits();
-    let decoder = HostWorkBudget::new(offered_funded_v6_host_work_limits());
-    let mut recording = decode_native_budget_recording(evidence.budget_recording, wire, &decoder)
+    let mut recording = decode_native_budget_recording(evidence.budget_recording, wire)
         .expect("the recording decodes");
-    let journal =
-        decode_native_operation_journal(evidence.operation_journal, &mut recording, wire, &decoder)
-            .expect("the journal decodes");
+    let journal = decode_native_operation_journal(evidence.operation_journal, &mut recording, wire)
+        .expect("the journal decodes");
     let mut rows: Vec<NativeOperationRecord> = journal.to_vec();
     let (target, channel) = (0..rows.len())
         .filter(|&target| is_space_row(&recording, &rows[target]))
@@ -514,9 +509,8 @@ fn with_forged_space_row(block: &BlockMessage) -> BlockMessage {
     footprint.dedup();
     rows[target].footprint = footprint.into();
     derive_predecessors(&mut rows);
-    let encoder = HostWorkBudget::new(offered_funded_v6_host_work_limits());
     let rows: Arc<[NativeOperationRecord]> = rows.into();
-    let journal_bytes = encode_native_operation_journal(&rows, &recording.paths, wire, &encoder)
+    let journal_bytes = encode_native_operation_journal(&rows, &recording.paths, wire)
         .expect("the forged journal encodes");
     let mut altered_evidence = evidence.clone();
     altered_evidence.operation_journal = &journal_bytes;

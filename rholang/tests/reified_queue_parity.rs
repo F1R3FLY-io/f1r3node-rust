@@ -4,9 +4,8 @@
 //! plans, and later batches add other disciplines. This suite pins what the engine does on a
 //! fixed set of deploys, as captured at the commit of decision 45 (Option P). For each deploy
 //! it pins every event identity in order (the Produce, Consume and COMM hashes, the peeks and
-//! `times_repeated`), the phlo cost, the error codes, and the root after the deploy. A deploy
-//! of a token budget also pins its host-work usage under a metered budget. A deploy of a
-//! legacy budget pins its storage charges in order and all its legacy charges as a multiset.
+//! `times_repeated`), the phlo cost, the error codes, and the root after the deploy. A deploy of
+//! a legacy budget pins its storage charges in order and all its legacy charges as a multiset.
 //! P5 must leave every value unchanged for the queue.
 //!
 //! The scenarios are the FIFO order with a peek and its re-store (decision 45, Rule E), a
@@ -32,12 +31,10 @@ use std::path::{Component, Path, PathBuf};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use reified_strategies::gstring;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkReport;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
@@ -162,42 +159,22 @@ impl Session {
 
     /// Runs `step` as Casper runs a user deploy: a soft checkpoint, the evaluation, the event
     /// log, and the revert of a failed deploy. Then it creates a checkpoint, so each record
-    /// holds the root after its deploy. With `host_work`, the evaluation runs under a metered
-    /// host-work budget with no binding limit.
-    async fn deploy(&mut self, step: &Step, host_work: bool) -> Deployed {
+    /// holds the root after its deploy.
+    async fn deploy(&mut self, step: &Step) -> Deployed {
         let fallback = self.play.create_soft_checkpoint().await;
         let source = Self::source(step);
         let phlo = Cost::create(step.phlo, step.label.clone());
         let random = Blake2b512Random::create_from_bytes(step.label.as_bytes());
-        let (result, report) = match host_work {
-            true => {
-                let limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX / 4));
-                let (result, report) = self
-                    .play
-                    .evaluate_with_host_work(&source, phlo, self.injections.clone(), random, limits)
-                    .await
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "{}: the evaluation returns no result: {error:?}",
-                            step.label
-                        )
-                    });
-                (result, Some(report))
-            }
-            false => {
-                let result = self
-                    .play
-                    .evaluate(&source, phlo, self.injections.clone(), random)
-                    .await
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "{}: the evaluation returns no result: {error:?}",
-                            step.label
-                        )
-                    });
-                (result, None)
-            }
-        };
+        let result = self
+            .play
+            .evaluate(&source, phlo, self.injections.clone(), random)
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{}: the evaluation returns no result: {error:?}",
+                    step.label
+                )
+            });
         let legacy = self.play.cost.get_log();
         let log = self.play.take_event_log().await;
         if !result.errors.is_empty() {
@@ -206,7 +183,6 @@ impl Session {
         let root = self.play.create_checkpoint().await.root;
         Deployed {
             result,
-            report,
             legacy,
             log,
             root,
@@ -217,7 +193,6 @@ impl Session {
 /// The observations of one deploy.
 struct Deployed {
     result: EvaluateResult,
-    report: Option<HostWorkReport>,
     legacy: Vec<Cost>,
     log: Vec<Event>,
     root: Blake2b256Hash,
@@ -313,8 +288,8 @@ const STORAGE_LABELS: [&str; 6] = [
 
 fn charge_value(charge: &Cost) -> Value { json!([charge.operation.to_string(), charge.value]) }
 
-/// The record of one deploy: the token-budget fields, and the host-work usage or the legacy
-/// charges.
+/// The record of one deploy: the token-budget fields, and the legacy charges of a deploy of a
+/// legacy budget.
 fn record(step: &Step, deployed: &Deployed, budget: Budget) -> Value {
     let mut fields = Map::new();
     fields.insert("label".to_owned(), json!(step.label));
@@ -335,24 +310,7 @@ fn record(step: &Step, deployed: &Deployed, budget: Budget) -> Value {
     );
     fields.insert("root".to_owned(), json!(hex_of(&deployed.root)));
     match budget {
-        Budget::Token => {
-            let report = deployed
-                .report
-                .as_ref()
-                .expect("a token deploy runs under a metered host-work budget");
-            let mut usage = Map::new();
-            for dimension in HostWorkDimension::ALL {
-                usage.insert(
-                    format!("{dimension:?}"),
-                    json!(report.usages.get(dimension).get()),
-                );
-            }
-            fields.insert("host_work".to_owned(), Value::Object(usage));
-            fields.insert(
-                "host_work_rejected".to_owned(),
-                json!(report.rejection.is_some()),
-            );
-        }
+        Budget::Token => {}
         Budget::Legacy => {
             let storage: Vec<Value> = deployed
                 .legacy
@@ -382,43 +340,13 @@ fn record(step: &Step, deployed: &Deployed, budget: Budget) -> Value {
 
 /// Runs the deploys of a scenario and returns their records.
 ///
-/// A token scenario runs twice on fresh sessions: once with the plain evaluation of a user
-/// deploy, and once under a metered host-work budget. The two runs must make the same events,
-/// costs, errors and roots, and the record takes the host-work usage of the metered run.
+/// Each deploy runs as the plain evaluation of a user deploy.
 async fn run_scenario(steps: &[Step], budget: Budget) -> Value {
     let mut plain = Session::new().await;
     let _legacy = (budget == Budget::Legacy).then(|| plain.play.cost.enter_legacy_scope());
-    let mut metered = match budget {
-        Budget::Token => Some(Session::new().await),
-        Budget::Legacy => None,
-    };
     let mut records = Vec::with_capacity(steps.len());
     for step in steps {
-        let mut deployed = plain.deploy(step, false).await;
-        if let Some(metered) = metered.as_mut() {
-            let measured = metered.deploy(step, true).await;
-            assert_eq!(
-                measured.log.iter().map(event_text).collect::<Vec<_>>(),
-                deployed.log.iter().map(event_text).collect::<Vec<_>>(),
-                "{}: the metered run makes other events",
-                step.label
-            );
-            assert_eq!(
-                (
-                    measured.result.cost.value,
-                    error_codes(&measured.result.errors),
-                    hex_of(&measured.root)
-                ),
-                (
-                    deployed.result.cost.value,
-                    error_codes(&deployed.result.errors),
-                    hex_of(&deployed.root)
-                ),
-                "{}: the metered run has another cost, error or root",
-                step.label
-            );
-            deployed.report = measured.report;
-        }
+        let deployed = plain.deploy(step).await;
         records.push(record(step, &deployed, budget));
     }
     Value::Array(records)

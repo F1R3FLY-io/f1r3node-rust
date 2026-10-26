@@ -136,12 +136,27 @@ impl KeyValueDeployStorage {
 
     pub fn contains_sig(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
         let key: ByteString = sig.to_vec();
-        Ok(self
+        // Changed by DR-116 (gap G6): a lookup identity can also name a
+        // protocol-6 envelope.
+        // Ok(self
+        //     .store
+        //     .contains(vec![key])?
+        //     .into_iter()
+        //     .next()
+        //     .unwrap_or(false))
+        if self
             .store
             .contains(vec![key])?
             .into_iter()
             .next()
-            .unwrap_or(false))
+            .unwrap_or(false)
+        {
+            return Ok(true);
+        }
+        match DeployIdV6::try_from(sig) {
+            Ok(deploy_id) => self.contains_envelope_id(&deploy_id),
+            Err(_) => Ok(false),
+        }
     }
 
     pub fn contains_envelope_id(&self, deploy_id: &DeployIdV6) -> Result<bool, KvStoreError> {
@@ -240,7 +255,13 @@ impl KeyValueDeployStorage {
             .next()
             .unwrap_or(false);
         if !exists {
-            return Ok(false);
+            // Changed by DR-116 (gap G6): a lookup identity can also name a
+            // protocol-6 envelope.
+            // return Ok(false);
+            return match DeployIdV6::try_from(sig) {
+                Ok(deploy_id) => self.remove_envelope_by_id(&deploy_id),
+                Err(_) => Ok(false),
+            };
         }
         self.store.delete(vec![key])?;
         Ok(true)
@@ -262,7 +283,7 @@ impl KeyValueDeployStorage {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::num::NonZeroUsize;
     use std::sync::{Arc, Barrier};
 
@@ -297,7 +318,7 @@ mod tests {
         .unwrap()
     }
 
-    fn envelope_limits() -> DeployEnvelopeLimits {
+    pub(crate) fn envelope_limits() -> DeployEnvelopeLimits {
         let wire = PhloWireLimits {
             total_bytes: 1_048_576,
             field_bytes: 524_288,
@@ -323,7 +344,7 @@ mod tests {
         }
     }
 
-    fn body_envelope() -> DeployEnvelope {
+    pub(crate) fn body_envelope() -> DeployEnvelope {
         let body = CostDeployData {
             term: "Nil".to_string(),
             language: "rholang".to_string(),
@@ -371,6 +392,28 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// DR-116 (gap G6): the identity lookups take a deploy identity. A 32-byte
+    /// key names the envelope table.
+    #[tokio::test]
+    async fn the_identity_lookups_name_an_envelope_by_its_deploy_id() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let legacy = deploy(5);
+        let envelope = body_envelope();
+        let DeployLookupId::V6(id) = envelope.identity() else {
+            panic!("expected v6 identity")
+        };
+        let id = *id;
+        storage.add_if_absent(legacy.clone()).unwrap();
+        assert!(storage.add_envelope_if_absent(&envelope).unwrap());
+        assert!(storage.contains_sig(id.as_ref()).unwrap());
+        assert!(!storage.contains_sig(&[7; 32]).unwrap());
+        assert!(storage.remove_by_sig(id.as_ref()).unwrap());
+        assert!(!storage.contains_sig(id.as_ref()).unwrap());
+        assert!(!storage.remove_by_sig(id.as_ref()).unwrap());
+        assert!(storage.contains_sig(&legacy.sig).unwrap());
     }
 
     fn rejection(deploy_id: DeployIdV6, reason: &str) -> EnvelopeRejection {

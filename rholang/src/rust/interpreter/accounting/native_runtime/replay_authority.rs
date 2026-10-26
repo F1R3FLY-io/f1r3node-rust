@@ -2,18 +2,15 @@ use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 
 use models::rhoapi::CostAuthority;
-use shared::rust::clone_backing::BackingError;
 
 use super::*;
 use crate::rust::interpreter::accounting::authority::{
     self, AuthorityByteEventKind, ResourceMultiset,
 };
 use crate::rust::interpreter::accounting::byte_receipts::ByteObservationLog;
-use crate::rust::interpreter::accounting::AuthorityRuntimeEvent;
+use crate::rust::interpreter::accounting::{AuthorityRuntimeEvent, IntroductionRecord};
 
 mod sparse_ledger;
-mod backing;
-mod result;
 
 #[derive(Clone)]
 pub(super) struct ReplayAuthorityBinding {
@@ -43,48 +40,28 @@ pub(crate) struct NativeAuthorityCheckpoint {
     reserved: ResourceMultiset<[u8; 32]>,
     frontier: BTreeMap<[u8; 32], CostAuthority>,
     births: BTreeMap<[u8; 32], authority::AuthorityStackBirth>,
-    introductions: BTreeMap<([u8; 32], AuthorityByteEventKind), CostAuthority>,
+    // Changed by D-F2 (DR-118): a registry entry is an introduction record.
+    // introductions: BTreeMap<([u8; 32], AuthorityByteEventKind), CostAuthority>,
+    introductions: BTreeMap<([u8; 32], AuthorityByteEventKind), IntroductionRecord>,
 }
 
 fn invalid() -> InterpreterError {
     recording_error("native replay authority state differs from the authenticated execution")
 }
 
-fn metered_demand(
+fn replay_demand(
     authority: &CostAuthority,
-    host: &HostWorkBudget,
 ) -> Result<ResourceMultiset<[u8; 32]>, InterpreterError> {
-    let backing = |operations, scanned, bytes| {
-        for (dimension, amount) in [
-            (
-                models::rust::host_work::HostWorkDimension::VerificationOperations,
-                operations,
-            ),
-            (
-                models::rust::host_work::HostWorkDimension::VerificationBytes,
-                scanned,
-            ),
-            (
-                models::rust::host_work::HostWorkDimension::SearchStateBytes,
-                bytes,
-            ),
-        ] {
-            let amount = u64::try_from(amount).map_err(|_| BackingError::Rejected)?;
-            host.reserve(
-                dimension,
-                models::rust::host_work::HostWorkUnits::new(amount),
-            )
-            .map_err(|_| BackingError::Rejected)?;
-        }
-        Ok(())
-    };
-    authority::authority_demand_metered(authority, &backing).map_err(|error| match error {
-        authority::AuthorityError::HostWorkRejected => InterpreterError::HostWorkRejected,
-        other => recording_error(&other.to_string()),
-    })
+    authority::authority_demand(authority).map_err(|error| recording_error(&error.to_string()))
 }
 
 impl ReplayAuthorityBinding {
+    /// DR-101: the payer and deployment that resolve residue seals.
+    pub(super) fn residue_context(&self) -> Result<authority::ResidueContext, InterpreterError> {
+        authority::ResidueContext::new(&self.budget.signature(), self.budget.deploy_id())
+            .map_err(|error| recording_error(&error.to_string()))
+    }
+
     pub(super) fn new(budget: RuntimeBudget, session: [u8; 32]) -> Result<Self, InterpreterError> {
         let mut state = budget.authority_state.lock().expect("authority state");
         let native = state.native.as_ref().ok_or_else(invalid)?;
@@ -126,11 +103,6 @@ impl ReplayAuthorityBinding {
         {
             return Err(invalid());
         }
-        let host = state
-            .native
-            .as_ref()
-            .expect("checked native configuration")
-            .host_work();
         let mut rows = [None, None];
         let mut event = None;
         let mut frontier = None;
@@ -140,7 +112,6 @@ impl ReplayAuthorityBinding {
                 // Changed by C14 (DR-79): the lookup is charged at the live sizes
                 // of the three identity maps.
                 // backing::reserve_event_lookup(&host)?;
-                backing::reserve_event_lookup(&state, &host)?;
                 // Disabled by D-O5 (DR-89): only the retry branch compares the
                 // recorded observation, and only the (None, false) branch copies
                 // the authority; each branch reserves its own reads and copies.
@@ -155,9 +126,10 @@ impl ReplayAuthorityBinding {
                 match (state.events.get(&id), row.retry) {
                     (Some(existing), true) if row.granted => {
                         let saved = existing.byte_observation.as_deref().ok_or_else(invalid)?;
-                        clone_backing::inspect(saved, &host)?;
-                        // D-O5 (DR-89): the comparison reads the recorded observation.
-                        clone_backing::inspect(row.observation.as_ref(), &host)?;
+                        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                        // clone_backing::inspect(saved, &host)?;
+                        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                        // clone_backing::inspect(row.observation.as_ref(), &host)?;
                         if saved != row.observation.as_ref() {
                             return Err(invalid());
                         }
@@ -166,10 +138,11 @@ impl ReplayAuthorityBinding {
                         // D-O5 (DR-89): the granted event copies the authority now;
                         // a frontier row copies it at publication. Both keep a
                         // shared pointer to the recorded observation.
-                        clone_backing::reserve_copy_and_cleanup(&row.observation.authority, &host)?;
-                        clone_backing::reserve(&row.observation, &host)?;
+                        // Changed by D-O1 (DR-94): block accounting charges inline bytes once per enclosing block.
+                        // clone_backing::reserve_copy_and_cleanup(&row.observation.authority, &host)?;
+                        // clone_backing::reserve(&row.observation, &host)?;
                         if row.granted {
-                            let demand = metered_demand(&row.observation.authority, &host)?;
+                            let demand = replay_demand(&row.observation.authority)?;
                             event = Some((id, AuthorityRuntimeEvent {
                                 authority: row.observation.authority.clone(),
                                 debit: demand,
@@ -186,12 +159,6 @@ impl ReplayAuthorityBinding {
                 rows[slot] = Some(row.observation);
             }
         }
-        backing::reserve_changes(
-            &state,
-            event.as_ref().map(|(_, event)| &event.debit),
-            frontier.is_some(),
-            &host,
-        )?;
         if let Some((_, event)) = &event {
             sparse_ledger::validate_add(
                 &state.reserved.0,
@@ -207,9 +174,7 @@ impl ReplayAuthorityBinding {
             .pending_replay_rows
             .checked_add(count)
             .ok_or_else(invalid)?;
-        state
-            .byte_observations
-            .reserve_native(pending_rows, &host)?;
+        state.byte_observations.reserve(pending_rows);
         let event_id = event.map(|(id, event)| {
             sparse_ledger::add_assign(&mut state.reserved.0, &event.debit.0)
                 .expect("validated replay authority reservation");
@@ -317,14 +282,18 @@ impl RuntimeBudget {
         {
             return Err(invalid());
         }
-        let host = native.host_work();
-        clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
-        clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.reserved, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.frontier, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&*introductions, &host)?;
+        // Changed by D-O1 (DR-110): block accounting charges inline bytes once
+        // per enclosing block. The events and the rows hold shared byte
+        // observations whose payloads were prepaid at birth, so the cleanup of
+        // their copies visits each shared pointer but not its payload (the C5
+        // rule, DR-83).
+        // clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
+        // clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&state.reserved, &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&state.frontier, &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
+        // clone_backing::reserve_copy_and_cleanup(&*introductions, &host)?;
         Ok(NativeAuthorityCheckpoint {
             generation: Arc::clone(&native.generation),
             events: state.events.clone(),
@@ -335,37 +304,6 @@ impl RuntimeBudget {
             births: state.stack_births.clone(),
             introductions: introductions.clone(),
         })
-    }
-
-    // Changed by D-O4 (DR-89): the backing charges only the copies that
-    // capture_result makes; a replay with evidence copies no rows.
-    // pub(crate) fn reserve_native_result_backing(&self) -> Result<(), InterpreterError> {
-    pub(crate) fn reserve_native_result_backing(
-        &self,
-        copies_rows: bool,
-    ) -> Result<(), InterpreterError> {
-        let state = self.authority_state.lock().expect("authority state");
-        let Some(native) = &state.native else {
-            return Ok(());
-        };
-        let host = native.host_work();
-        // Disabled by D-O4 (DR-89): authority_events copies the id, the
-        // authority and the debit of each event, not the map, its tree backing
-        // or the shared byte-observation payloads.
-        // clone_backing::reserve_copy_and_cleanup(&state.events, &host)?;
-        backing::reserve_event_copies(&state, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.realized, &host)?;
-        clone_backing::reserve_copy_and_cleanup(&state.stack_births, &host)?;
-        // Disabled by D-O4 (DR-89): a replay with evidence copies no rows, and
-        // play copies shared pointers whose payload releases were prepaid when
-        // the rows were born (the C5 rule, DR-83).
-        // clone_backing::reserve_slice_copy_and_cleanup(state.byte_observations.rows(), &host)?;
-        if copies_rows {
-            let rows = state.byte_observations.rows();
-            clone_backing::reserve_slice(rows, &host)?;
-            clone_backing::inspect_shared_pointer_slice(rows, &host)?;
-        }
-        backing::reserve_result_vectors(&state, &host)
     }
 
     pub(crate) fn restore_native_authority(

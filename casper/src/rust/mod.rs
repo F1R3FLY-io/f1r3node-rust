@@ -58,3 +58,5 @@ pub type ProposeFunction = dyn Fn(
     ) -> Pin<Box<dyn Future<Output = Result<ProposerResult, CasperError>> + Send>>
     + Send
     + Sync;
+
+pub mod soak_observer;

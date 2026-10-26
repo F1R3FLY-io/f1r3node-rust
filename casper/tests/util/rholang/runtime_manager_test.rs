@@ -752,37 +752,45 @@ async fn compute_state_then_compute_bonds_should_be_replayable_after_all() {
     .unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing() {
-    with_runtime_manager(
-        |mut runtime_manager, genesis_context, genesis_block| async move {
-            let bad_rholang =
-                r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi") "#;
-            let deploy = construct_deploy::source_deploy_now_full(
-                bad_rholang.to_string(),
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-
-            let result = compute_state(
-                &mut runtime_manager,
-                &genesis_context,
-                deploy,
-                &genesis_block.body.state.post_state_hash,
-            )
-            .await;
-
-            assert!(result.1.is_failed);
-            assert!(result.1.cost.cost == bad_rholang.len() as u64);
-        },
-    )
-    .await
-    .unwrap();
-}
+// Disabled by I6 (epic 8946, D3): legacy accounting is forbidden under v6.
+// This test asserted the legacy charge of the source length for a failed
+// legacy body-only deploy. Its term parses and fails at run time with
+// `OperatorExpectedError` (`1 + "hi"`). The offered forms are
+// `an_operator_error_after_a_join_is_published_as_a_charged_user_failure` and,
+// for a term that does not parse,
+// `a_term_that_does_not_parse_is_rejected_at_submission_without_charge` in
+// `casper/tests/api/offered_funded_api_test.rs`.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing() {
+//     with_runtime_manager(
+//         |mut runtime_manager, genesis_context, genesis_block| async move {
+//             let bad_rholang =
+//                 r#" for(@x <- @"x" & @y <- @"y"){ @"xy"!(x + y) } | @"x"!(1) | @"y"!("hi") "#;
+//             let deploy = construct_deploy::source_deploy_now_full(
+//                 bad_rholang.to_string(),
+//                 None,
+//                 None,
+//                 None,
+//                 None,
+//                 None,
+//             )
+//             .unwrap();
+//
+//             let result = compute_state(
+//                 &mut runtime_manager,
+//                 &genesis_context,
+//                 deploy,
+//                 &genesis_block.body.state.post_state_hash,
+//             )
+//             .await;
+//
+//             assert!(result.1.is_failed);
+//             assert!(result.1.cost.cost == bad_rholang.len() as u64);
+//         },
+//     )
+//     .await
+//     .unwrap();
+// }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn compute_state_should_charge_for_parsing_and_execution() {
@@ -1058,6 +1066,80 @@ async fn compute_state_should_be_replayed_by_replay_compute_state() {
                 .unwrap();
 
             assert!(play_post_state == replay_compute_state_result);
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn replay_attribution_preserves_success_failure_and_cache_paths() {
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    with_runtime_manager(
+        |mut runtime_manager, genesis_context, genesis_block| async move {
+            let deploy = construct_deploy::source_deploy_now_full(
+                "@\"attribution\"!(1)".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let initial = genesis_block.body.state.post_state_hash;
+            let (expected, processed) =
+                compute_state(&mut runtime_manager, &genesis_context, deploy, &initial).await;
+            runtime_manager
+                .delete_mergeable_channels(
+                    &expected,
+                    genesis_context.validator_pks()[0].bytes.clone(),
+                    0,
+                )
+                .unwrap();
+            for attempt in 0..3 {
+                let mut candidate = processed.clone();
+                if attempt == 0 {
+                    candidate.cost.cost -= 1;
+                }
+                let recorder = DebuggingRecorder::new();
+                let snapshotter = recorder.snapshotter();
+                let guard = metrics::set_default_local_recorder(&recorder);
+                let result = replay_compute_state(
+                    &mut runtime_manager,
+                    &genesis_context,
+                    candidate,
+                    &initial,
+                )
+                .await;
+                drop(guard);
+                if attempt == 0 {
+                    assert!(result.is_err());
+                } else {
+                    assert_eq!(result.unwrap(), expected);
+                }
+                let snapshot = snapshotter.snapshot().into_vec();
+                for (stage, count) in [
+                    ("lock-wait", usize::from(attempt != 2)),
+                    ("execute", usize::from(attempt != 2)),
+                    ("save-mergeable", usize::from(attempt == 1)),
+                ] {
+                    let name = format!("block.replay.runtime.{stage}.time");
+                    let actual: usize = snapshot
+                        .iter()
+                        .filter(|(key, _, _, _)| key.key().name() == name)
+                        .map(|(_, _, _, value)| match value {
+                            DebugValue::Histogram(values) => {
+                                assert!(values.iter().all(|value| value.into_inner().is_finite()
+                                    && value.into_inner() >= 0.0));
+                                values.len()
+                            }
+                            _ => 0,
+                        })
+                        .sum();
+                    assert_eq!(actual, count, "{name}, attempt={attempt}");
+                }
+            }
         },
     )
     .await

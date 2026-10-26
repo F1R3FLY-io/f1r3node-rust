@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-CASPER-NODE-OBSERVATION-001",
+  "scope": "batch-a-local-capability-interface",
+  "status": "local-tests-passed-claim-pending",
+  "branch_base": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+  "execution_base": "877cea722b22fc5fbb81cc46ee2bc0d048cfc652",
+  "working_tree": true,
+  "source_inventory": [
+    {
+      "sha256": "f6f87b910641bf46ef6efa03ad4e72383a6a1868921bff68147cf4db3254365a",
+      "path": "node/src/rust/soak_observer.rs"
+    },
+    {
+      "sha256": "d646e91b1b330e262234bc2bf7e2352432826ebe43f424f71c0bccf021c7c0b6",
+      "path": "node/src/rust/mod.rs"
+    },
+    {
+      "sha256": "d8a535de8232f11b927168c32c7480202776f884ae37d0ae23b38d4e2a70ea34",
+      "path": "node/src/rust/configuration/model.rs"
+    },
+    {
+      "sha256": "82ade24cf0692646abb7027a2119138d72f359f909900d86ebcb2ada5659cc6b",
+      "path": "node/src/rust/configuration/commandline/options.rs"
+    },
+    {
+      "sha256": "a98c91ec5d9571e363fb1a619bd71fb2e4341f252ad58b5707f4c3eff5eb246d",
+      "path": "node/src/rust/configuration/commandline/config_mapper.rs"
+    },
+    {
+      "sha256": "5693c79ab4c22e9e2db0789bd431469402eead825b760e75cc4d6c82b0f08559",
+      "path": "node/src/rust/configuration/mod.rs"
+    },
+    {
+      "sha256": "c024d89a2a3497aa22d95e88c7c15eefd22086cef9be5512d2c3e4a422d0fe1f",
+      "path": "node/src/rust/runtime/node_runtime.rs"
+    },
+    {
+      "sha256": "3d4f27d59b161457a588305fda368b9b82173c2dcddda375b841aae6888abdfc",
+      "path": "node/src/rust/diagnostics/tests.rs"
+    },
+    {
+      "sha256": "6918aac044d126b485f2864a23e3974d4843ebbb430f38b039c5079c857d35d2",
+      "path": "node/tests/soak_observer.rs"
+    }
+  ],
+  "specification_at_execution": {
+    "path": "docs/claims/casper-node-observation.md",
+    "commit": "877cea722b22fc5fbb81cc46ee2bc0d048cfc652",
+    "sha256": "798d198e781bd3dc0144edce4134822cb51a61d139f4a9e123c6583785385a53"
+  },
+  "current_specification": {
+    "path": "docs/claims/casper-node-observation.md",
+    "sha256": "2789f1d27536b64bbe62839f09b1063fc2d1e5cef75a2dafcb21d35a39dc562f",
+    "usage_documentation_added_after_tests": true
+  },
+  "native": {
+    "library_tests_passed": 255,
+    "integration_tests_passed": 17,
+    "integration_helpers_ignored_by_default": 1,
+    "ignored_helper_invoked_by_parent": true,
+    "exit": 0
+  },
+  "isolated": {
+    "integration_tests_passed": 17,
+    "integration_helpers_ignored_by_default": 1,
+    "ignored_helper_invoked_by_parent": true,
+    "exit": 0,
+    "host_built_binary": true,
+    "architecture": "linux/arm64",
+    "image_id": "sha256:1c2c98ecdcf58c03cf8035f06dd3a9f51c0e72a6d7aaaf59f0ce7ef46ec7e89b",
+    "executable_sha256": "ee4cd0dcf7a147ba3cf5b9176af2a524906ec6b03f6cf6ed8e7ac39172d1a383",
+    "network": "none",
+    "read_only_root": true,
+    "capabilities": [],
+    "no_new_privileges": true,
+    "user": "65534:65534",
+    "memory_bytes": 536870912,
+    "cpus": 2,
+    "pids_limit": 64,
+    "tmpfs_bytes": 134217728,
+    "container_removed": true
+  },
+  "checks": {
+    "format_exit": 0,
+    "clippy_all_node_targets_exit": 0,
+    "lsp_paths": 9,
+    "lsp_inconclusive": 0
+  },
+  "retained_failures": [
+    {
+      "kind": "missing-interface-compile",
+      "exit": 101,
+      "contemporaneous_source_snapshot_retained": false
+    },
+    {
+      "kind": "clippy-collapsible-if",
+      "exit": 101
+    }
+  ],
+  "evidence_root": "target/node-observer-batch-a-bbMyzm/",
+  "evidence_kind": "local-library-and-transport-tests",
+  "node_launch_count": 0,
+  "cloud_launch_count": 0,
+  "live_adapters_qualified": false,
+  "proof_execution": false,
+  "hosted_verification": false,
+  "claim_discharge": "pending",
+  "task_complete": false
+}

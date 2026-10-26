@@ -195,6 +195,13 @@ new physical introduction sponsored by the active deploy. This charges work
 without granting authority and prevents a stored payer field from redirecting
 the current deploy's byte debit.
 
+**Amendment (DR-101).** The restoration charges the stored authority as the
+current deployment resolves it. A residue region that the current deployment
+stored charges its payer region again. The residue of a system body from any
+other deployment stays a Unit region and adds no demand. The restored datum
+keeps its stored seal unchanged. See
+[DR-101](../cost-accounting-decision-records.md#dr-101--system-residue-is-never-charged-to-an-earlier-deployment).
+
 ## Located lollipop funding lifecycle
 
 The lollipop operator uses two distinct located purses. The **outer purse** pays

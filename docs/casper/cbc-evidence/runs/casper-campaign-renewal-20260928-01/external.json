@@ -1,0 +1,21 @@
+{
+ "schema_version": 2,
+ "package": "casper-campaign-renewal-20260928-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-campaign-renewal-20260928-01.metadata.tar.gz",
+   "sha256": "aaf70bcd3136339cc49d99535b29eafe9454e2cfc3a360030956f5759a5fcf01",
+   "bytes": 486,
+   "members": 1,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

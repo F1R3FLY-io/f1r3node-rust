@@ -1,14 +1,9 @@
-use std::mem::size_of;
-
-use models::rust::host_work::HostWorkDimension;
-
-use super::funding_feasibility::{filled_vec, reserve_work};
+use super::funding_feasibility::filled_vec;
 use super::{
     check_funding_cell_deficit, solve_funding_cell_bound, solve_funding_feasibility,
     FundingAssignmentError, FundingAssignmentTotals, FundingCellQuery, FundingFeasibility,
     FundingMinimaxProblem, FundingSearchError, FundingSearchLimits,
 };
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FundingEntryMinimum {
@@ -44,30 +39,9 @@ struct WitnessResidual {
 }
 
 impl WitnessResidual {
-    fn new(
-        problem: FundingMinimaxProblem<'_>,
-        budget: &HostWorkBudget,
-    ) -> Result<Self, FundingSearchError> {
+    fn new(problem: FundingMinimaxProblem<'_>) -> Result<Self, FundingSearchError> {
         let n = problem.capacities.len();
         let m = problem.obligations.len();
-        let cells = n.checked_mul(m).ok_or(FundingSearchError::Overflow)?;
-        let bytes = n
-            .checked_mul(size_of::<u64>() + size_of::<Vec<bool>>())
-            .and_then(|x| {
-                m.checked_mul(size_of::<u64>())
-                    .and_then(|y| x.checked_add(y))
-            })
-            .and_then(|x| x.checked_add(cells))
-            .ok_or(FundingSearchError::Overflow)?;
-        reserve_work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-        reserve_work(
-            budget,
-            HostWorkDimension::SearchCandidates,
-            cells
-                .checked_add(n)
-                .and_then(|x| x.checked_add(m))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         let mut contributions = filled_vec(n, 0_u64)?;
         let mut obligations = filled_vec(m, 0_u64)?;
         let mut eligible = filled_vec(n, Vec::new())?;
@@ -114,7 +88,6 @@ impl WitnessResidual {
 fn validate_exact_totals(
     problem: FundingMinimaxProblem<'_>,
     limits: FundingSearchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<usize, FundingSearchError> {
     let n = problem.capacities.len();
     let m = problem.obligations.len();
@@ -127,11 +100,6 @@ fn validate_exact_totals(
     if m > limits.obligation_cap.get() {
         return Err(FundingAssignmentError::TooManyObligations.into());
     }
-    reserve_work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        n.checked_add(m).ok_or(FundingSearchError::Overflow)?,
-    )?;
     if problem.eligible.len() != n || problem.eligible.iter().any(|row| row.len() != m) {
         return Err(FundingAssignmentError::InvalidDimensions.into());
     }
@@ -156,18 +124,16 @@ pub fn check_fixed_funding_witness(
     assignment: &[Vec<u64>],
     entries: &[FundingEntryMinimum],
     limits: FundingSearchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<bool, FundingSearchError> {
-    let cells = validate_exact_totals(problem, limits, budget)?;
-    let totals = problem.check_assignment(assignment, limits, budget)?;
+    let cells = validate_exact_totals(problem, limits)?;
+    let totals = problem.check_assignment(assignment, limits)?;
     if entries.len() != cells || totals.source_debits() != problem.capacities {
         return Ok(false);
     }
-    let mut residual = WitnessResidual::new(problem, budget)?;
+    let mut residual = WitnessResidual::new(problem)?;
     let mut proofs = entries.iter();
     for (i, row) in assignment.iter().enumerate() {
         for (j, amount) in row.iter().copied().enumerate() {
-            reserve_work(budget, HostWorkDimension::VerificationOperations, 1)?;
             match proofs.next().ok_or(FundingSearchError::InvalidResult)? {
                 FundingEntryMinimum::Zero => {
                     if amount != 0 {
@@ -186,7 +152,7 @@ pub fn check_fixed_funding_witness(
                         obligation: j,
                         maximum: amount - 1,
                     };
-                    if !check_funding_cell_deficit(query, selected_obligations, limits, budget)? {
+                    if !check_funding_cell_deficit(query, selected_obligations, limits)? {
                         return Ok(false);
                     }
                 }
@@ -194,15 +160,6 @@ pub fn check_fixed_funding_witness(
             residual.freeze(i, j, amount)?;
         }
     }
-    reserve_work(
-        budget,
-        HostWorkDimension::VerificationOperations,
-        problem
-            .capacities
-            .len()
-            .checked_add(problem.obligations.len())
-            .ok_or(FundingSearchError::Overflow)?,
-    )?;
     Ok(residual
         .contributions
         .iter()
@@ -213,15 +170,13 @@ pub fn check_fixed_funding_witness(
 pub fn select_fixed_funding_witness(
     problem: FundingMinimaxProblem<'_>,
     limits: FundingSearchLimits,
-    budget: &HostWorkBudget,
 ) -> Result<FundingWitnessResult, FundingSearchError> {
-    let cells = validate_exact_totals(problem, limits, budget)?;
+    let cells = validate_exact_totals(problem, limits)?;
     let mut working = match solve_funding_feasibility(
         problem.capacities,
         problem.obligations,
         problem.eligible,
         limits,
-        budget,
     )? {
         FundingFeasibility::Feasible { assignment, .. } => assignment,
         FundingFeasibility::Infeasible {
@@ -234,16 +189,7 @@ pub fn select_fixed_funding_witness(
     };
     let n = problem.capacities.len();
     let m = problem.obligations.len();
-    let mut residual = WitnessResidual::new(problem, budget)?;
-    let bytes = cells
-        .checked_mul(size_of::<u64>() + size_of::<FundingEntryMinimum>())
-        .and_then(|x| {
-            n.checked_mul(size_of::<Vec<u64>>())
-                .and_then(|y| x.checked_add(y))
-        })
-        .ok_or(FundingSearchError::Overflow)?;
-    reserve_work(budget, HostWorkDimension::SearchStateBytes, bytes)?;
-    reserve_work(budget, HostWorkDimension::SearchCandidates, cells)?;
+    let mut residual = WitnessResidual::new(problem)?;
     let mut assignment = filled_vec(n, Vec::new())?;
     for row in &mut assignment {
         *row = filled_vec(m, 0_u64)?;
@@ -254,7 +200,6 @@ pub fn select_fixed_funding_witness(
         .map_err(|_| FundingSearchError::AllocationFailed)?;
     for (i, row) in assignment.iter_mut().enumerate() {
         for (j, selected) in row.iter_mut().enumerate() {
-            reserve_work(budget, HostWorkDimension::SearchCandidates, 1)?;
             let mut lower = 0;
             let mut upper = working[i][j];
             while lower < upper {
@@ -265,7 +210,7 @@ pub fn select_fixed_funding_witness(
                     obligation: j,
                     maximum: middle,
                 };
-                match solve_funding_cell_bound(query, limits, budget)? {
+                match solve_funding_cell_bound(query, limits)? {
                     FundingFeasibility::Feasible {
                         assignment: next, ..
                     } => {
@@ -292,7 +237,7 @@ pub fn select_fixed_funding_witness(
                     obligation: j,
                     maximum: lower - 1,
                 };
-                match solve_funding_cell_bound(query, limits, budget)? {
+                match solve_funding_cell_bound(query, limits)? {
                     FundingFeasibility::Infeasible {
                         selected_obligations,
                     } => FundingEntryMinimum::Deficit {
@@ -309,8 +254,8 @@ pub fn select_fixed_funding_witness(
             residual.freeze(i, j, lower)?;
         }
     }
-    let totals = problem.check_assignment(&assignment, limits, budget)?;
-    if !check_fixed_funding_witness(problem, &assignment, &entries, limits, budget)? {
+    let totals = problem.check_assignment(&assignment, limits)?;
+    if !check_fixed_funding_witness(problem, &assignment, &entries, limits)? {
         return Err(FundingSearchError::InvalidResult);
     }
     Ok(FundingWitnessResult::Canonical {

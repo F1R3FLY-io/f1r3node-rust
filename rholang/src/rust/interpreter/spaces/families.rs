@@ -1,10 +1,10 @@
 //! The space agent of every family (P5 design v3, A.3.4).
 //!
 //! [`FamilyAgent`] is the [`SpaceAgent`] of the native spaces. A collection operation opens its
-//! transaction over the channels of its collection and reads the config of its space once
-//! (decision 42). The agent of the family that the config names then runs the operation in that
-//! transaction ([`FamilySpace::run_with`]). The dispatch is static, as the agent factory of the
-//! legacy branch was. A family that is not wired fails with `FamilyUnavailable`.
+//! transaction over the channels of its collection and reads the config of its space once. The
+//! agent of the family that the config names then runs the operation in that transaction
+//! ([`FamilySpace::run_with`]). The dispatch is static, as the agent factory of the legacy branch
+//! was. A family that is not wired fails with `FamilyUnavailable`.
 //!
 //! [`Family`] is the one source of truth for the wired families. It gives the agent of each
 //! family, its send params and its query params. The factory and the handle method `produce`
@@ -15,12 +15,11 @@
 //! operation opens the same first transaction to read the config. The PathMap store then runs it
 //! in a new transaction over the lock keys of its prefix scope (`pathmap::join`).
 //!
-//! Each arm of the dispatch reserves the comparison of the config names with its family before
-//! it compares them. So `hashmap:queue`, the first arm, reserves exactly the one comparison of
-//! the P4 agent, and the host work of a queue operation does not change. The other arms follow
-//! in ascending family index, then the PathMap arms of P5e, then the VectorDB arms of P6, then
-//! the HashSet arms of P7. So the arm at dispatch position `i` reserves `i + 1` comparisons, and
-//! a later phase changes the dispatch of no earlier family.
+//! Each arm of the dispatch compares the config names with its family. The first arm is
+//! `hashmap:queue`, the family of the P4 agent. The other arms follow in ascending family index,
+//! then the PathMap arms of P5e, then the VectorDB arms of P6, then the HashSet arms of P7. So the
+//! arm at dispatch position `i` makes `i + 1` comparisons, and a later phase changes the dispatch
+//! of no earlier family.
 
 use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -51,7 +50,6 @@ use super::outer::hashset::HashSetOuter;
 use super::outer::pathmap::PathMapOuter;
 use super::outer::vector::VectorOuter;
 use super::types::config::SpaceConfig;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 
 /// The agent of the family `hashmap:queue`.
 static HASHMAP_QUEUE: GenericSpace<HashMapOuter, QueueDiscipline> =
@@ -253,8 +251,8 @@ pub enum Family {
 impl Family {
     /// The wired families, in dispatch order: `hashmap:queue` first, then ascending family index,
     /// then the PathMap families of P5e, the VectorDB families of P6, and the HashSet families of
-    /// P7 last. So the dispatch of each family that a later phase found wired reserves the
-    /// comparisons that it reserved before.
+    /// P7 last. So the dispatch of each family that a later phase found wired makes the comparisons
+    /// that it made before.
     pub const WIRED: [Family; 32] = [
         Family::HashMapQueue,
         Family::HashMapBag,
@@ -339,68 +337,58 @@ impl Family {
         }
     }
 
-    /// The family that `config` names, or `None` when it is not wired. Each arm reserves the
-    /// comparison of the config names with its family before it compares them.
-    pub fn of_config(
-        config: &SpaceConfig,
-        meter: &ScanMeter,
-    ) -> Result<Option<Family>, SpaceError> {
-        for family in Family::WIRED {
-            if family.is_named_by(config, meter)? {
-                return Ok(Some(family));
-            }
-        }
-        Ok(None)
+    /// The family that `config` names, or `None` when it is not wired. Each arm compares the
+    /// config names with its family.
+    pub fn of_config(config: &SpaceConfig) -> Option<Family> {
+        Family::WIRED
+            .into_iter()
+            .find(|family| family.is_named_by(config))
     }
 
-    /// True when `config` names this family. The comparison is reserved first.
-    fn is_named_by(self, config: &SpaceConfig, meter: &ScanMeter) -> Result<bool, SpaceError> {
+    /// True when `config` names this family.
+    fn is_named_by(self, config: &SpaceConfig) -> bool {
         match self {
-            Family::HashMapQueue => family_matches::<HashMapOuter, QueueDiscipline>(config, meter),
-            Family::HashMapBag => family_matches::<HashMapOuter, BagDiscipline>(config, meter),
-            Family::HashMapStack => family_matches::<HashMapOuter, StackDiscipline>(config, meter),
-            Family::HashMapSet => family_matches::<HashMapOuter, SetDiscipline>(config, meter),
-            Family::HashMapCell => family_matches::<HashMapOuter, CellDiscipline>(config, meter),
+            Family::HashMapQueue => family_matches::<HashMapOuter, QueueDiscipline>(config),
+            Family::HashMapBag => family_matches::<HashMapOuter, BagDiscipline>(config),
+            Family::HashMapStack => family_matches::<HashMapOuter, StackDiscipline>(config),
+            Family::HashMapSet => family_matches::<HashMapOuter, SetDiscipline>(config),
+            Family::HashMapCell => family_matches::<HashMapOuter, CellDiscipline>(config),
             Family::HashMapPriorityQueue => {
-                family_matches::<HashMapOuter, PriorityQueueDiscipline>(config, meter)
+                family_matches::<HashMapOuter, PriorityQueueDiscipline>(config)
             }
-            Family::ArrayBag => family_matches::<ArrayOuter, BagDiscipline>(config, meter),
-            Family::ArrayQueue => family_matches::<ArrayOuter, QueueDiscipline>(config, meter),
-            Family::ArrayStack => family_matches::<ArrayOuter, StackDiscipline>(config, meter),
-            Family::ArraySet => family_matches::<ArrayOuter, SetDiscipline>(config, meter),
-            Family::ArrayCell => family_matches::<ArrayOuter, CellDiscipline>(config, meter),
+            Family::ArrayBag => family_matches::<ArrayOuter, BagDiscipline>(config),
+            Family::ArrayQueue => family_matches::<ArrayOuter, QueueDiscipline>(config),
+            Family::ArrayStack => family_matches::<ArrayOuter, StackDiscipline>(config),
+            Family::ArraySet => family_matches::<ArrayOuter, SetDiscipline>(config),
+            Family::ArrayCell => family_matches::<ArrayOuter, CellDiscipline>(config),
             Family::ArrayPriorityQueue => {
-                family_matches::<ArrayOuter, PriorityQueueDiscipline>(config, meter)
+                family_matches::<ArrayOuter, PriorityQueueDiscipline>(config)
             }
-            Family::VectorBag => family_matches::<VectorOuter, BagDiscipline>(config, meter),
-            Family::VectorQueue => family_matches::<VectorOuter, QueueDiscipline>(config, meter),
-            Family::VectorStack => family_matches::<VectorOuter, StackDiscipline>(config, meter),
-            Family::VectorSet => family_matches::<VectorOuter, SetDiscipline>(config, meter),
-            Family::VectorCell => family_matches::<VectorOuter, CellDiscipline>(config, meter),
+            Family::VectorBag => family_matches::<VectorOuter, BagDiscipline>(config),
+            Family::VectorQueue => family_matches::<VectorOuter, QueueDiscipline>(config),
+            Family::VectorStack => family_matches::<VectorOuter, StackDiscipline>(config),
+            Family::VectorSet => family_matches::<VectorOuter, SetDiscipline>(config),
+            Family::VectorCell => family_matches::<VectorOuter, CellDiscipline>(config),
             Family::VectorPriorityQueue => {
-                family_matches::<VectorOuter, PriorityQueueDiscipline>(config, meter)
+                family_matches::<VectorOuter, PriorityQueueDiscipline>(config)
             }
-            Family::PathMapBag => family_matches::<PathMapOuter, BagDiscipline>(config, meter),
-            Family::PathMapQueue => family_matches::<PathMapOuter, QueueDiscipline>(config, meter),
-            Family::PathMapStack => family_matches::<PathMapOuter, StackDiscipline>(config, meter),
-            Family::PathMapSet => family_matches::<PathMapOuter, SetDiscipline>(config, meter),
-            Family::PathMapCell => family_matches::<PathMapOuter, CellDiscipline>(config, meter),
+            Family::PathMapBag => family_matches::<PathMapOuter, BagDiscipline>(config),
+            Family::PathMapQueue => family_matches::<PathMapOuter, QueueDiscipline>(config),
+            Family::PathMapStack => family_matches::<PathMapOuter, StackDiscipline>(config),
+            Family::PathMapSet => family_matches::<PathMapOuter, SetDiscipline>(config),
+            Family::PathMapCell => family_matches::<PathMapOuter, CellDiscipline>(config),
             Family::PathMapPriorityQueue => {
-                family_matches::<PathMapOuter, PriorityQueueDiscipline>(config, meter)
+                family_matches::<PathMapOuter, PriorityQueueDiscipline>(config)
             }
-            Family::HashMapVectorDb => {
-                family_matches::<HashMapOuter, VectorDbDiscipline>(config, meter)
-            }
-            Family::VectorVectorDb => {
-                family_matches::<VectorOuter, VectorDbDiscipline>(config, meter)
-            }
-            Family::HashSetBag => family_matches::<HashSetOuter, BagDiscipline>(config, meter),
-            Family::HashSetQueue => family_matches::<HashSetOuter, QueueDiscipline>(config, meter),
-            Family::HashSetStack => family_matches::<HashSetOuter, StackDiscipline>(config, meter),
-            Family::HashSetSet => family_matches::<HashSetOuter, SetDiscipline>(config, meter),
-            Family::HashSetCell => family_matches::<HashSetOuter, CellDiscipline>(config, meter),
+            Family::HashMapVectorDb => family_matches::<HashMapOuter, VectorDbDiscipline>(config),
+            Family::VectorVectorDb => family_matches::<VectorOuter, VectorDbDiscipline>(config),
+            Family::HashSetBag => family_matches::<HashSetOuter, BagDiscipline>(config),
+            Family::HashSetQueue => family_matches::<HashSetOuter, QueueDiscipline>(config),
+            Family::HashSetStack => family_matches::<HashSetOuter, StackDiscipline>(config),
+            Family::HashSetSet => family_matches::<HashSetOuter, SetDiscipline>(config),
+            Family::HashSetCell => family_matches::<HashSetOuter, CellDiscipline>(config),
             Family::HashSetPriorityQueue => {
-                family_matches::<HashSetOuter, PriorityQueueDiscipline>(config, meter)
+                family_matches::<HashSetOuter, PriorityQueueDiscipline>(config)
             }
         }
     }
@@ -542,7 +530,7 @@ async fn dispatch(
     opened: CollectionTxn,
     op: SpaceOp,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
-    match Family::of_config(&opened.config, &env.meter)? {
+    match Family::of_config(&opened.config) {
         Some(family) => prepare_collection_op(family.agent(), env, opened, op).await,
         None => Err(family_unavailable(opened.config)),
     }
@@ -590,7 +578,7 @@ impl SpaceAgent for FamilyAgent {
 
     async fn allocate(&self, env: &SpaceEnv, op: AllocOp) -> Result<Allocation, SpaceError> {
         let opened = begin_allocation(env, op.space).await?;
-        match Family::of_config(&opened.config, &env.meter)? {
+        match Family::of_config(&opened.config) {
             Some(family) => family.agent().run_allocate(env, opened, &op),
             None => Err(family_unavailable(opened.config)),
         }
@@ -627,12 +615,8 @@ impl SpaceAgent for FamilyAgent {
 
 #[cfg(test)]
 mod tests {
-    use models::rust::host_work::{
-        HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
-    };
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::spaces::namespace::SID_LEN;
     use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 
@@ -869,13 +853,7 @@ mod tests {
     }
 
     #[test]
-    fn space_families_dispatch_by_config_reserves_one_comparison_per_arm() {
-        let arm_bytes = |arms: usize| -> u64 {
-            WIRED_NAMES[..arms]
-                .iter()
-                .map(|(_, outer, inner)| (outer.len() + inner.len()) as u64)
-                .sum()
-        };
+    fn space_families_dispatch_by_config() {
         // Changed by P7 step 3 (design v3 HS-7): `hashset:set` is wired. The unsupported pair
         // `hashset:vectordb` takes its place.
         // let unwired = [
@@ -891,35 +869,16 @@ mod tests {
             ("hashset", "vectordb"),
         ];
         let mut cases = Vec::with_capacity(WIRED_NAMES.len() + unwired.len());
-        for (position, (family, outer, inner)) in WIRED_NAMES.into_iter().enumerate() {
-            cases.push((outer, inner, Some(family), position + 1));
+        for (family, outer, inner) in WIRED_NAMES {
+            cases.push((outer, inner, Some(family)));
         }
         for (outer, inner) in unwired {
-            cases.push((outer, inner, None, WIRED_NAMES.len()));
+            cases.push((outer, inner, None));
         }
-        for (outer, inner, expected, arms) in cases {
-            // Changed by P7 step 3: the 32 arms of the HashSet families need more than 1,000
-            // bytes. The budget bounds nothing that the test checks.
-            // let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000)));
-            let host_work =
-                HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(10_000)));
-            let meter = ScanMeter::new(Some(host_work.clone()));
+        for (outer, inner, expected) in cases {
             assert_eq!(
-                Family::of_config(&config(outer, inner), &meter),
-                Ok(expected),
-                "{outer}:{inner}"
-            );
-            // Each arm that the dispatch tries reserves one comparison, which reads the names of
-            // the config and of the arm. The first arm costs what the P4 agent reserves.
-            let config_bytes = (outer.len() + inner.len()) as u64;
-            assert_eq!(
-                host_work.usage(HostWorkDimension::VerificationOperations),
-                HostWorkUsage::new(arms as u64),
-                "{outer}:{inner}"
-            );
-            assert_eq!(
-                host_work.usage(HostWorkDimension::VerificationBytes),
-                HostWorkUsage::new(arms as u64 * config_bytes + arm_bytes(arms)),
+                Family::of_config(&config(outer, inner)),
+                expected,
                 "{outer}:{inner}"
             );
         }

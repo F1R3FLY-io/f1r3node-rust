@@ -138,6 +138,13 @@ The [COMM observer](../../../../rholang/src/rust/interpreter/rho_runtime.rs) ide
 This distinction prevents repeated firings from being treated as one installed authority occurrence.
 It does not alone establish funding, unique native event delivery, or settlement correctness.
 
+**Amendment (DR-101).** The observer resolves each stored seal before it derives these regions.
+A system body stores a residue region, which charges its payer only inside the deployment that stored it.
+In every later deployment, the residue region is a cost-free Unit region.
+A reader of shared system state is therefore never liable for the storage that an earlier deployment caused.
+Data that user code stores keeps the seal of its writer, as before.
+See [DR-101](../cost-accounting-decision-records.md#dr-101--system-residue-is-never-charged-to-an-earlier-deployment).
+
 The [runtime budget](../../../../rholang/src/rust/interpreter/accounting/mod.rs) deduplicates persistent introductions within its current accounting scope.
 It clears that set during budget reset.
 The regression `persistent_introduction_identity_is_reset_between_deploys` explicitly exercises that reset behavior.

@@ -4,8 +4,9 @@
 //!
 //! The example tests are the bag tests of the P5 design v2 (section 2.8.4) with the changes of
 //! v3 A.12: `peek_keeps_record` became `space_disciplines_bag_peek_restores_record`, and the
-//! suite adds `peek_restore_fires_guarded_waiter`, `legacy_charges_equal_host`,
-//! `reservation_cut_rejects_without_effect` and `persistent_reissue_keeps_identity`.
+//! suite adds `peek_restore_fires_guarded_waiter`, `legacy_charges_equal_host` and
+//! `persistent_reissue_keeps_identity`. Decision 89 adds
+//! `persistent_twin_binds_the_canonical_record`.
 //!
 //! The property tests check the invariants of the formal model on the agent. Each property
 //! names its headline in `DataCollection.v` or `ContinuationCollection.v`:
@@ -18,7 +19,6 @@
 //! | F4 `bag_removal_keeps_equal_duplicate` | `prop_bag_removal_keeps_equal_duplicate` |
 //! | F5 `bag_persistent_match_not_removed` | `prop_bag_persistent_match_not_removed` |
 //! | `bag_peek_restore_is_host_second_send` | `prop_bag_legacy_charges_equal_host`, `prop_bag_restore_registers_the_record_authority` |
-//! | `scan_trace_covered` | `prop_bag_reservation_cut_rejects_without_effect` |
 //! | F12 `waiter_removal_by_record_identity` | `prop_bag_waiter_removal_by_record_identity` |
 //! | F13 `pattern_equality_removal_can_remove_another_waiter` | `prop_bag_equal_pattern_waiters_stay_distinct` |
 //! | F14 `park_byte_identity_idempotent` | `prop_bag_park_byte_identity_idempotent` |
@@ -29,15 +29,19 @@
 //! call of each operation, and the calls that the reducer makes after a fire (the re-produce of
 //! a persistent send, the re-consume of a persistent receive, and `produce_peeks`). The host
 //! space stores the same record bytes on the same channel, and its matcher matches the payload
-//! of a record without its envelope, as the agent does. So both run the canonical order of
-//! DR-75 over the same entries.
+//! of a record without its envelope, as the agent does. Host play picks at random among
+//! candidates since DR-129. So before each host call, the program pins the matcher to the
+//! choice of the canonical order of decision 41 on the host records. A consume binds only the
+//! first record that its pattern binds, and a produce fires only the first waiter that takes
+//! its record. A pin names a record by its bytes only. So the program makes a consume again
+//! until it binds the record with the canonical persist flag (decision 89).
 
 #[path = "support/mod.rs"]
 mod support;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
@@ -48,7 +52,6 @@ use models::rhoapi::{
     BindPattern, CostAuthority, CostRegion, CostSignature, EEq, EVar, Expr, ListParWithRandom, Par,
     TaggedContinuation, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::new_gbool_par;
 use proptest::collection::vec;
@@ -60,9 +63,8 @@ use rholang::rust::interpreter::accounting::byte_accounting::{
 };
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::rho_runtime::RhoISpace;
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, ProduceOp, SpaceEnv, SpaceOp, SpaceOutcome, SpaceReissue,
@@ -77,20 +79,23 @@ use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rholang::rust::interpreter::storage::charging_rspace::ChargingRSpace;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::space_store_handle::canonical_data_order;
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, COMM};
 use support::agent::{
     any, body_name, budget, config_of, counter, counter_channel, create, creation, data_channel,
     env_over, exactly, fired, int, play, play_and_replay, receive_on, records_on, run, send_on,
-    space_counter_channel, string, unbounded_host_work, ParRSpace,
+    space_counter_channel, string, ParRSpace,
 };
-use support::legacy::{host_consume, host_produce};
+use support::legacy::{
+    drawn_consume, host_consume, host_produce, waiter_choice, WaiterPin, TWIN_RUNS,
+};
 use support::props::{check, pure_config, tokio_runtime};
 
 // ─── The rig ─────────────────────────────────────────────────────────────────────────────
@@ -144,17 +149,6 @@ impl Rig {
         create(&Bag::default(), &env, creation(SPACE, config, bag_family())).await;
         host.take_event_log().await;
         Rig { host, env }
-    }
-
-    /// The same rig with a meter that charges `host_work`.
-    fn metered(self, host_work: &HostWorkBudget) -> Rig {
-        Rig {
-            host: self.host,
-            env: SpaceEnv {
-                meter: ScanMeter::new(Some(host_work.clone())),
-                ..self.env
-            },
-        }
     }
 
     async fn run(&self, op: SpaceOp) -> Result<SpaceOutcome, SpaceError> {
@@ -915,19 +909,112 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for EnvelopeMatch
     }
 }
 
-/// A `ChargingRSpace` over a fresh in-memory space with the [`EnvelopeMatcher`], which charges
-/// `budget`.
-async fn envelope_host(
+/// The pins of a [`ChosenMatcher`]: the records that a consume may bind, or `None` for every
+/// record, and the waiter that a produce may fire.
+struct Pins {
+    records: Option<Vec<ListParWithRandom>>,
+    waiter: WaiterPin,
+}
+
+/// The pins of a host program, shared with its matcher.
+type HostPins = Arc<Mutex<Pins>>;
+
+/// The [`EnvelopeMatcher`] under the pins of the canonical choice (decision 89, DR-129). Host
+/// play picks at random among candidates, so the host program pins each call to the choice of
+/// the canonical order of decision 41. A consume binds only the pinned records, and a produce
+/// fires only the pinned waiter.
+#[derive(Clone)]
+struct ChosenMatcher {
+    pins: HostPins,
+}
+
+impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for ChosenMatcher {
+    fn get(&self, pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
+        let allowed = match &self.pins.lock().expect("the pin lock").records {
+            Some(pinned) => pinned.contains(data),
+            None => true,
+        };
+        match allowed {
+            true => EnvelopeMatcher.get(pattern, data),
+            false => None,
+        }
+    }
+
+    fn check_commit(
+        &self,
+        continuation: &TaggedContinuation,
+        matched: &[ListParWithRandom],
+    ) -> bool {
+        let allowed = self
+            .pins
+            .lock()
+            .expect("the pin lock")
+            .waiter
+            .admits(continuation);
+        allowed && EnvelopeMatcher.check_commit(continuation, matched)
+    }
+}
+
+/// The pins of a host call that has no choice: every record and every waiter.
+fn open_pins() -> Pins {
+    Pins {
+        records: None,
+        waiter: WaiterPin::Any,
+    }
+}
+
+/// Sets the pins of a host program to `records` and `waiter`.
+fn set_pins(pins: &HostPins, records: Option<Vec<ListParWithRandom>>, waiter: WaiterPin) {
+    *pins.lock().expect("the pin lock") = Pins { records, waiter };
+}
+
+// Changed by decision 89 (DR-129): host play picks at random among candidates, so the host of a
+// program matches with the pins of the canonical choice (`chosen_host`).
+//
+// /// A `ChargingRSpace` over a fresh in-memory space with the [`EnvelopeMatcher`], which charges
+// /// `budget`.
+// async fn envelope_host(
+//     budget: &RuntimeBudget,
+// ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+//     let mut stores = InMemoryStoreManager::new();
+//     let space = ParRSpace::create(
+//         stores.r_space_stores().await.expect("in-memory stores"),
+//         Arc::new(Box::new(EnvelopeMatcher)),
+//     )
+//     .expect("an in-memory space");
+//     let host: RhoISpace = Arc::new(Box::new(space));
+//     ChargingRSpace::charging_rspace(host, budget.clone())
+// }
+
+/// A `ChargingRSpace` over a fresh in-memory space with the [`ChosenMatcher`] of `pins`, which
+/// charges `budget`.
+async fn chosen_host(
     budget: &RuntimeBudget,
+    pins: &HostPins,
 ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
     let mut stores = InMemoryStoreManager::new();
     let space = ParRSpace::create(
         stores.r_space_stores().await.expect("in-memory stores"),
-        Arc::new(Box::new(EnvelopeMatcher)),
+        Arc::new(Box::new(ChosenMatcher { pins: pins.clone() })),
     )
     .expect("an in-memory space");
     let host: RhoISpace = Arc::new(Box::new(space));
     ChargingRSpace::charging_rspace(host, budget.clone())
+}
+
+/// The stored record that a consume of `receive` binds on `host` under the canonical order of
+/// decision 41: the first record in canonical order whose payload the pattern binds. The guard
+/// is checked once on it (decision 37). `None` means that no record binds.
+async fn record_choice(
+    host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    receive: &ConsumeOp,
+) -> Option<Datum<ListParWithRandom>> {
+    let records = host.get_data(&data()).await;
+    canonical_data_order(&records)
+        .into_iter()
+        .map(|index| &records[index])
+        .find(|stored| EnvelopeMatcher.get(&receive.pattern, &stored.a).is_some())
+        .cloned()
 }
 
 /// One call of a host program.
@@ -959,12 +1046,15 @@ fn host_fire(
 /// Runs the host program of `op` on `host`: the host call of the operation, then the calls of
 /// the reducer after each fire. A persistent send produces again, a persistent receive consumes
 /// again, and a fire of a peek sends each removed non-persistent record again
-/// (`produce_peeks`). It returns the fires in order.
+/// (`produce_peeks`). Each call is pinned first to the canonical choice on the host records
+/// (decision 89, DR-129). It returns the legacy log entries of the calls and the fires, in
+/// order.
 async fn host_program(
     host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     budget: &RuntimeBudget,
+    pins: &HostPins,
     op: &SpaceOp,
-) -> Vec<(String, Vec<Par>)> {
+) -> Result<(Vec<Cost>, Vec<(String, Vec<Par>)>), TestCaseError> {
     let mut calls = VecDeque::from([match op {
         SpaceOp::Produce(send) => HostCall::Send {
             record: record::wrap_datum(0, &send.data),
@@ -974,11 +1064,15 @@ async fn host_program(
         SpaceOp::Settle(_) => panic!("a bag issues no settle"),
         SpaceOp::Join(_) => panic!("the bag programs of this suite issue no join"),
     }]);
+    let mut entries = Vec::new();
     let mut fires = Vec::new();
     while let Some(call) = calls.pop_front() {
         let (fired, again, reproduced) = match call {
             HostCall::Send { record, persist } => {
+                let waiter = waiter_choice(host, &data(), &record).await;
+                set_pins(pins, None, waiter);
                 let run = host_produce(host, budget, data(), record.clone(), persist).await;
+                entries.extend(run.entries);
                 let again = match (&run.fired, persist) {
                     (Some(_), true) => Some(HostCall::Send { record, persist }),
                     _ => None,
@@ -986,16 +1080,35 @@ async fn host_program(
                 (run.fired, again, run.reproduced)
             }
             HostCall::Receive(receive) => {
-                let run = host_consume(
-                    host,
-                    budget,
-                    vec![data()],
-                    vec![receive.pattern.clone()],
-                    parked(&receive),
-                    receive.persistent,
-                    receive.peek,
-                )
-                .await;
+                // Changed by decision 89 (DR-129): the consume binds the canonical record.
+                // let run = host_consume(
+                //     host,
+                //     budget,
+                //     vec![data()],
+                //     vec![receive.pattern.clone()],
+                //     parked(&receive),
+                //     receive.persistent,
+                //     receive.peek,
+                // )
+                // .await;
+                let choice = record_choice(host, &receive).await;
+                let expected: Vec<bool> = choice.iter().map(|stored| stored.persist).collect();
+                let pinned = choice.into_iter().map(|stored| stored.a).collect();
+                set_pins(pins, Some(pinned), WaiterPin::Any);
+                let run = drawn_consume(host, &expected, || {
+                    host_consume(
+                        host,
+                        budget,
+                        vec![data()],
+                        vec![receive.pattern.clone()],
+                        parked(&receive),
+                        receive.persistent,
+                        receive.peek,
+                    )
+                })
+                .await
+                .map_err(TestCaseError::fail)?;
+                entries.extend(run.entries);
                 let again = match (&run.fired, receive.persistent) {
                     (Some(_), true) => Some(HostCall::Receive(receive)),
                     _ => None,
@@ -1018,7 +1131,7 @@ async fn host_program(
             calls.push_front(call);
         }
     }
-    fires
+    Ok((entries, fires))
 }
 
 /// The records and the waiting continuations on the data channel of `space`, each as its
@@ -1045,14 +1158,18 @@ async fn store_bytes(
 
 /// The agent and the host program of the operations `ops`, compared operation by operation:
 /// the new legacy log entries (value and label), the fires, and at the end the stores. Each
-/// side runs inside the legacy scope of its own budget.
+/// side runs inside the legacy scope of its own budget. The host program pins each call to the
+/// canonical choice (decision 89, DR-129), so the comparison stays exact.
 async fn compare_with_host(ops: &[SpaceOp]) -> Result<(), TestCaseError> {
     let agent_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs bag agent"));
     let _agent_scope = agent_budget.enter_legacy_scope();
     let rig = Rig::with_budget(&agent_budget).await;
     let host_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs bag host"));
     let _host_scope = host_budget.enter_legacy_scope();
-    let host = envelope_host(&host_budget).await;
+    // Changed by decision 89 (DR-129): the host matches under the pins of the canonical choice.
+    // let host = envelope_host(&host_budget).await;
+    let pins: HostPins = Arc::new(Mutex::new(open_pins()));
+    let host = chosen_host(&host_budget, &pins).await;
     for (index, op) in ops.iter().enumerate() {
         let agent_before = agent_budget.get_log().len();
         let outcome = rig
@@ -1060,9 +1177,12 @@ async fn compare_with_host(ops: &[SpaceOp]) -> Result<(), TestCaseError> {
             .await
             .map_err(|error| TestCaseError::fail(format!("operation {index} fails: {error}")))?;
         let agent_entries = agent_budget.get_log()[agent_before..].to_vec();
-        let host_before = host_budget.get_log().len();
-        let host_fires = host_program(&host, &host_budget, op).await;
-        let host_entries = host_budget.get_log()[host_before..].to_vec();
+        // Changed by decision 89 (DR-129): a reverted draw leaves its charges in the log of the
+        // budget, so the host program returns the entries of the calls that it keeps.
+        // let host_before = host_budget.get_log().len();
+        // let host_fires = host_program(&host, &host_budget, op).await;
+        // let host_entries = host_budget.get_log()[host_before..].to_vec();
+        let (host_entries, host_fires) = host_program(&host, &host_budget, &pins, op).await?;
         prop_assert!(!agent_entries.is_empty(), "operation {} charges", index);
         prop_assert_eq!(
             &agent_entries,
@@ -1801,49 +1921,25 @@ async fn space_disciplines_bag_legacy_charges_equal_host() {
         .unwrap_or_else(|failure| panic!("{failure}"));
 }
 
-/// A budget one unit below the usage of a bag operation in any dimension rejects the operation
-/// before the commit, so it has no effect. The exact budget gives the outcome of an unlimited
-/// one (decision 42, `scan_trace_covered`).
-#[tokio::test]
-async fn space_disciplines_bag_reservation_cut_rejects_without_effect() {
-    let setup = || async {
-        let rig = Rig::new().await;
-        for send in ordered_sends(&[(1, false), (2, false)]) {
-            rig.send(send).await;
-        }
-        rig.receive(guarded(receiving("g", any()), equals(2))).await;
-        rig.log().await;
-        rig
-    };
-    let peek = || SpaceOp::Consume(peeking(receiving("p", exactly(2))));
-    let measured = unbounded_host_work();
-    let unlimited = setup().await.metered(&measured);
-    let expected = unlimited.run(peek()).await.expect("the peek commits");
-    assert_eq!(expected.fires.len(), 2);
-    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for dimension in AGENT_DIMENSIONS {
-        exact.set(
-            dimension,
-            HostWorkLimit::new(measured.usage(dimension).get()),
-        );
-    }
-    let fitting = setup().await.metered(&HostWorkBudget::new(exact));
-    assert_eq!(fitting.run(peek()).await, Ok(expected));
-    for dimension in AGENT_DIMENSIONS {
-        let usage = measured.usage(dimension).get();
-        assert!(usage > 0, "the operation charges {dimension}");
-        let mut cut = exact;
-        cut.set(dimension, HostWorkLimit::new(usage - 1));
-        let rig = setup().await.metered(&HostWorkBudget::new(cut));
-        let (values, waiters) = (rig.values().await, rig.waiters().await);
-        assert_eq!(
-            rig.run(peek()).await,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            "{dimension}"
-        );
-        assert!(rig.log().await.is_empty(), "{dimension}");
-        assert_eq!(rig.values().await, values, "{dimension}");
-        assert_eq!(rig.waiters().await, waiters, "{dimension}");
+/// A persistent record and a non-persistent record with equal bytes have two source hashes, and
+/// a receive binds the first of them in canonical order (decision 41). The pin of the host
+/// program names a record only by its bytes, and host play picks between the two at random
+/// (DR-129). So the program makes its consume again until it binds the record with the
+/// canonical persist flag (decision 89). The test runs the program `TWIN_RUNS` times.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_disciplines_bag_persistent_twin_binds_the_canonical_record() {
+    let twin = salted(1, 0, true);
+    let record = salted(1, 0, false);
+    assert_eq!(twin.data, record.data, "the two records have equal bytes");
+    let ops = vec![
+        SpaceOp::Produce(twin),
+        SpaceOp::Produce(record),
+        SpaceOp::Consume(receiving("t", exactly(1))),
+    ];
+    for _ in 0..TWIN_RUNS {
+        compare_with_host(&ops)
+            .await
+            .unwrap_or_else(|failure| panic!("{failure}"));
     }
 }
 
@@ -1872,13 +1968,6 @@ async fn space_disciplines_bag_waiter_removal_by_identity_not_pattern() {
     )]);
     assert!(rig.waiters().await.is_empty());
 }
-
-/// The dimensions that a space agent charges.
-const AGENT_DIMENSIONS: [HostWorkDimension; 3] = [
-    HostWorkDimension::VerificationOperations,
-    HostWorkDimension::VerificationBytes,
-    HostWorkDimension::SearchStateBytes,
-];
 
 // ─── Property tests: the invariants of DataCollection.v and ContinuationCollection.v ───────
 
@@ -2223,77 +2312,6 @@ async fn authority_case(program: Vec<BagOp>) -> Result<(), TestCaseError> {
                 Event::Comm(_) => {}
             }
         }
-    }
-    Ok(())
-}
-
-/// `scan_trace_covered` (decision 42): after a generated program, a budget one unit below the
-/// usage of the next operation in any dimension rejects it before the commit, with no effect,
-/// and the exact budget gives the outcome of an unlimited one.
-#[test]
-fn prop_bag_reservation_cut_rejects_without_effect() {
-    let strategy = (arb_program(6), arb_program(1));
-    check(pure_config(), strategy, |(setup, last)| {
-        tokio_runtime().block_on(cut_case(setup, last))
-    });
-}
-
-async fn cut_case(setup: Vec<BagOp>, last: Vec<BagOp>) -> Result<(), TestCaseError> {
-    let op = match last.into_iter().next() {
-        Some(BagOp::Receive {
-            pat,
-            guard,
-            persistent,
-            peek,
-            ..
-        }) => BagOp::Receive {
-            name: 100,
-            pat,
-            guard,
-            persistent,
-            peek,
-        },
-        Some(send) => send,
-        None => return Err(failure("a program of one operation")),
-    };
-    let prepare = || async {
-        let rig = Rig::new().await;
-        for step in &setup {
-            rig.run(step.space_op())
-                .await
-                .expect("the setup operation commits");
-        }
-        rig.log().await;
-        rig
-    };
-    let measured = unbounded_host_work();
-    let expected = prepare().await.metered(&measured).run(op.space_op()).await;
-    prop_assert!(expected.is_ok(), "the operation commits: {:?}", expected);
-    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for dimension in AGENT_DIMENSIONS {
-        exact.set(
-            dimension,
-            HostWorkLimit::new(measured.usage(dimension).get()),
-        );
-    }
-    let fitting = prepare().await.metered(&HostWorkBudget::new(exact));
-    prop_assert_eq!(&fitting.run(op.space_op()).await, &expected);
-    for dimension in AGENT_DIMENSIONS {
-        let usage = measured.usage(dimension).get();
-        prop_assert!(usage > 0, "the operation charges {}", dimension);
-        let mut cut = exact;
-        cut.set(dimension, HostWorkLimit::new(usage - 1));
-        let rig = prepare().await.metered(&HostWorkBudget::new(cut));
-        let (values, waiters) = (rig.values().await, rig.waiters().await);
-        prop_assert_eq!(
-            rig.run(op.space_op()).await,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            "{}",
-            dimension
-        );
-        prop_assert!(rig.log().await.is_empty(), "{}", dimension);
-        prop_assert_eq!(rig.values().await, values, "{}", dimension);
-        prop_assert_eq!(rig.waiters().await, waiters, "{}", dimension);
     }
     Ok(())
 }

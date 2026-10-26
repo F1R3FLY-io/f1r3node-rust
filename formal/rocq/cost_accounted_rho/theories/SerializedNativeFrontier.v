@@ -1,3 +1,8 @@
+(* DR-131: host work is removed. The field frontier_host_charge and the
+   results on host charges, host_work_prefix_bounded and
+   accepted_serial_execution_has_no_host_budget_prefix_failure, describe
+   deleted code. The file stays because NativeFrontierArrival requires it. *)
+
 From Stdlib Require Import Lists.List Arith.PeanoNat Lia.
 From CostAccountedRho Require Import StateBoundCandidateFunding.
 Import ListNotations.

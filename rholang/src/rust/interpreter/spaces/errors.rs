@@ -2,10 +2,10 @@
 //! (readiness review S8).
 //!
 //! A [`SpaceError`] aborts the deploy with `InterpreterError::ReduceError("reified:<Code>: …")`.
-//! A host error passes through unchanged, so `OutOfPhlogistons` and `HostWorkRejected` keep
-//! their class. The reducer-level codes are in `reified::errors::ReifiedReduceError`. A protocol
-//! error of a handle call is a typed reply with a [`SpaceReplyCode`], not an abort. Message
-//! text is not consensus state.
+//! A host error passes through unchanged, so `OutOfPhlogistons` keeps its class. The
+//! reducer-level codes are in `reified::errors::ReifiedReduceError`. A protocol error of a handle
+//! call is a typed reply with a [`SpaceReplyCode`], not an abort. Message text is not consensus
+//! state.
 
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::space_store_handle::SpaceTxnError;
@@ -210,7 +210,6 @@ impl SpaceError {
             NumError::MixedScores => {
                 SpaceError::Inconsistent("two scores of different metrics meet")
             }
-            NumError::HostWork(error) => SpaceError::Host(error),
         }
     }
 }
@@ -592,10 +591,6 @@ mod tests {
             SpaceError::of_number(NumError::MixedScores, "q"),
             SpaceError::Inconsistent(_)
         ));
-        assert_eq!(
-            SpaceError::of_number(NumError::HostWork(RSpaceError::HostWorkRejected), "q"),
-            SpaceError::Host(RSpaceError::HostWorkRejected)
-        );
     }
 
     #[test]
@@ -603,10 +598,6 @@ mod tests {
         assert_eq!(
             InterpreterError::from(SpaceError::Host(RSpaceError::OutOfPhlogistons)),
             InterpreterError::OutOfPhlogistonsError
-        );
-        assert_eq!(
-            InterpreterError::from(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            InterpreterError::HostWorkRejected
         );
         assert_eq!(
             InterpreterError::from(SpaceError::from(RSpaceError::BugFoundError("b".into()))),

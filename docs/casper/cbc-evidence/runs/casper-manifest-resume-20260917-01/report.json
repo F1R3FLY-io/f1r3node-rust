@@ -1,0 +1,68 @@
+{
+  "run_id": "casper-manifest-resume-20260917-01",
+  "status": "partial-binding",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "cycle": "H01",
+  "phase": "pre_pr216_merge",
+  "source_revision": "03d9834409b930bc68bcb19de64db5a72a4306b7",
+  "dirty_source_tree": true,
+  "evidence_kind": "synthetic_fixture",
+  "construction": "not-applicable",
+  "claim_discharge": "none",
+  "node_executed": false,
+  "binding": "manifest-resume-identity-only",
+  "red": {
+    "exit": 1,
+    "accepted_changed_fields": 27,
+    "accepted_missing_manifest": true
+  },
+  "green": {
+    "exit": 0,
+    "unittest_methods": 2,
+    "driver_invocations": 47,
+    "rejected_invocations": 45,
+    "expired_window_positive_invocations": 2
+  },
+  "regression": {
+    "legacy_driver_scenarios": 3,
+    "numeric_state_cases": 6,
+    "disk_scenarios": 42,
+    "runner_unit_tests": 12,
+    "linux_pyright_exit": 0
+  },
+  "model": {
+    "positive": 1,
+    "negative": 10,
+    "seed": 1,
+    "workers": 1,
+    "heap_mb": 512,
+    "timeout_seconds_per_configuration": 120,
+    "clean_distinct_states": 43424
+  },
+  "artifacts": {
+    "path": "artifacts.json",
+    "sha256": "7859180dfe4176fa4e1a4af0cf9b58c407277f1f0781363d99dcb90664667432",
+    "count": 1245
+  },
+  "source_manifest": {
+    "path": "source-manifest.json",
+    "sha256": "1b76f6e007711f1da60e6dc0d3398c617f9bf2f49e41bc79a34e4057968fde7b",
+    "count": 64
+  },
+  "implementation_patch": {
+    "path": "implementation.patch.txt",
+    "sha256": "5bbf30f07c31fc028de8d826577517fb9bfe9f2f73516de0a81f17dd32c728c8"
+  },
+  "limits": [
+    "Matching resume uses an expired window and launches no workload.",
+    "The guard validates identity syntax and exact retained bytes, not capability qualifications or running binary identity.",
+    "Input vectors and assertions are retained in fixture source. Individual successful subprocess transcripts and temporary checkpoints are not retained.",
+    "The final fixture adds malformed-input and missing-seal/checkpoint cases after the original RED run.",
+    "The initial RED fixture used an OCI-prefixed image digest. GREEN uses the contract hexadecimal digest representation.",
+    "Profile dispatch remains blocked. No profile adapter, observation correlation, or conformance publication is implemented here.",
+    "Native root/systemd fixtures were not executed. Linux-targeted static checks do not establish runtime containment.",
+    "All full claim tiers and TASK-017-4 remain pending."
+  ]
+}

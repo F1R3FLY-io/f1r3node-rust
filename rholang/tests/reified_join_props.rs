@@ -40,7 +40,7 @@
 //! | `join_seams_keyed_differential` | the keyed engine is unchanged by the store seams (joins plan 9) |
 //!
 //! The keyed differential is not a property. It runs a fixed corpus of generated programs over a
-//! metered recording host and compares the digest of each run with the golden
+//! recording host and compares the digest of each run with the golden
 //! `test-vectors/reified-join-seams-v1.json`. To capture the golden, set
 //! `RRS_CAPTURE_JOIN_SEAMS_OUT` to an absolute directory under `target/` and copy the file that
 //! the run writes there.
@@ -62,7 +62,6 @@ use proptest::strategy::ValueTree;
 use proptest::test_runner::{TestCaseError, TestRunner};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::spaces::agent::{
     CascadeState, ConsumeOp, JoinOp, ProduceOp, QueryParams, SettleOp, SpaceEnv, SpaceOp,
@@ -96,8 +95,8 @@ use rspace_plus_plus::rspace::space_store_handle::{ConsumeOutcome, ProduceOutcom
 use rspace_plus_plus::rspace::trace::event::{Event, Produce};
 use support::agent::{
     body_name, budget, config_of, counter_channel, create, creation, data_channel, env_over, int,
-    join_on, metered_env, play, receive_on, run, send_on, string, unbounded_host_work, HostRecord,
-    ParRSpace, RecordingHost, SharedRecord, StagedCopy,
+    join_on, play, receive_on, run, send_on, string, HostRecord, ParRSpace, RecordingHost,
+    SharedRecord, StagedCopy,
 };
 use support::props::{check, pure_config, tokio_runtime};
 
@@ -232,16 +231,6 @@ impl Rig {
         let host = play().await;
         let (recording, record) = RecordingHost::new(host.clone());
         let env = env_over(recording, &budget());
-        Rig::recorded(host, env, record, kind).await
-    }
-
-    /// A rig of `hashmap:<kind>` whose agent works over a metered recording host: the meter of
-    /// the agent charges `host_work`, and the record holds the usage of the agent at each begin,
-    /// staged operation and commit. The record starts after the creation of the space.
-    async fn recording_metered(kind: Kind, host_work: &HostWorkBudget) -> (Rig, SharedRecord) {
-        let host = play().await;
-        let (recording, record) = RecordingHost::metered(host.clone(), host_work);
-        let env = metered_env(recording, &budget(), host_work);
         Rig::recorded(host, env, record, kind).await
     }
 
@@ -4303,7 +4292,7 @@ where
         })),
     });
     let mut opened = begin_collection(&HashMapOuter, env, SPACE, &key(coll), &ch(coll)).await?;
-    let JoinRoute::Join(scope) = agent.classify(env, &mut opened, &settle)? else {
+    let JoinRoute::Join(scope) = agent.classify(&mut opened, &settle)? else {
         return Err(SpaceError::Inconsistent(
             "a settle with a cascade classifies as a join",
         ));
@@ -4336,9 +4325,9 @@ fn arb_join_free_program() -> impl Strategy<Value = Program> {
 
 /// The engine anchor (joins plan 7.3). Take a collection without joins, below the cap. The join
 /// engine, forced on the state, stages what the driver of the discipline stages. It gives the
-/// same outcome, the same events, the same legacy charges and the same root. Host work is outside
-/// the statement. On the set, the pre-state has no fireable waiter, because the receives of the
-/// programs have no guard (decision 50).
+/// same outcome, the same events, the same legacy charges and the same root. On the set, the
+/// pre-state has no fireable waiter, because the receives of the programs have no guard
+/// (decision 50).
 #[test]
 fn prop_join_engine_agrees_with_drivers_without_joins() {
     let strategy = arb_join_free_program().prop_flat_map(|program| {
@@ -4500,13 +4489,12 @@ fn staged_text(staged: &StagedCopy) -> String {
     }
 }
 
-/// Runs `program` over a metered recording host, each step with every re-issue that follows it,
-/// and returns the text of the run. For each job, the text holds its result, its legacy log, its
-/// phlo and its events. Then it holds each begin, each staged operation and each commit, the
-/// host-work usage of the agent at each of these points, and the root at the end.
+/// Runs `program` over a recording host, each step with every re-issue that follows it, and
+/// returns the text of the run. For each job, the text holds its result, its legacy log, its phlo
+/// and its events. Then it holds each begin, each staged operation and each commit, and the root
+/// at the end.
 async fn seams_text(program: &Program) -> String {
-    let host_work = unbounded_host_work();
-    let (rig, record) = Rig::recording_metered(program.kind, &host_work).await;
+    let (rig, record) = Rig::recording(program.kind).await;
     let mut text = format!("{program:?}\n");
     for (index, step) in program.steps.iter().enumerate() {
         let mut next = Some(space_op(step, index));
@@ -4556,9 +4544,6 @@ async fn seams_text(program: &Program) -> String {
             ));
         }
         text.push_str(&format!("commits {:?}\n", seen.commits));
-        for (point, usage) in &seen.usages {
-            text.push_str(&format!("usage {point:?} {usage:?}\n"));
-        }
     }
     text.push_str(&format!("root {:?}\n", rig.root().await));
     text
@@ -4615,9 +4600,11 @@ fn seams_capture_directory() -> Option<PathBuf> {
 /// The keyed differential of the store seams (joins plan section 9). The store seams of the
 /// PathMap source must leave the join engine of the keyed stores unchanged. For every program of
 /// a fixed corpus, the engine must stage the same operations in the same order, with the same
-/// results, legacy charges, phlo, events, lock keys and root, and with the same host-work usage
-/// at every begin, staged operation and commit. The golden holds the digest of the text of each
-/// run (`seams_text`), captured at the commit `930b1d64c`, before the seams.
+/// results, legacy charges, phlo, events, lock keys and root. The golden holds the digest of the
+/// text of each run (`seams_text`), captured at the commit `930b1d64c`, before the seams. The
+/// capture also held the host-work usage of the agent at each begin, staged operation and commit.
+/// DR-131 removed host work, so the golden holds the digests of the captured texts without their
+/// `usage` lines.
 #[test]
 fn join_seams_keyed_differential() {
     let runtime = tokio_runtime();

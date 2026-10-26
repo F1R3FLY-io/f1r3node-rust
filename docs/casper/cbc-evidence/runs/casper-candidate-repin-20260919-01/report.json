@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "scope": "candidate-identity-only",
+  "status": "identities-verified-not-dispatchable",
+  "phase": "pre_pr216_merge",
+  "node_revision": "6940a5beb4aa806d3d75f6df3be9f238512fcc2f",
+  "harness_revision": "1f749aa831f54f2c5b3a7c79be27581c89e55f46",
+  "external_harness_revision": "b3d14b27e3c6276b1eb4ab9ccef04e02b0c4e283",
+  "image_tag": "f1r3flyindustries/f1r3fly-rust:dev-v0.4.46-canary.1758-183-g6940a5be",
+  "registry_index_digest": "sha256:ef479b9203bb12dc93eda849f22b588ca45956a8f37a3fd38e78a3d1bee95c34",
+  "ci_run_id": 35423285859,
+  "ci_event": "push",
+  "ci_branch": "dev",
+  "ci_conclusion": "success",
+  "ci_workflow_sha256": "e999cfbcf88cb59e904a935ddf3ebdf19eda58068fcf775f8b82aecc4c0da87c",
+  "earlier_preparation_ci_run": {
+    "id": 35423287293,
+    "event": "pull_request",
+    "candidate_image_artifacts_present": false
+  },
+  "provenance_kind": "github-actions-run-and-workflow-source",
+  "artifact_attestation_verified": false,
+  "candidates": [
+    {
+      "candidate_id": "dev-amd64",
+      "platform": "linux/amd64",
+      "artifact_id": 10578996716,
+      "artifact_archive_digest": "sha256:751dd27097d3b4c3fe360eac2070138221b874bf4fb708f383048d39c6c39662",
+      "artifact_archive_bytes": 93420701,
+      "ci_image_manifest_digest": "sha256:13516397af00566f6fb2d0c7da97cfb684cb9086e7f5af32a7c7c2070842cfa9",
+      "image_digest": "sha256:607751b4db7ecf3e1e3354b2163bf84b5cfb918ad1a780539b374f3ada368663",
+      "image_digest_kind": "registry-platform-manifest",
+      "image_media_type": "application/vnd.docker.distribution.manifest.v2+json",
+      "image_config_digest": "sha256:bd1d291e690f256a022bb7c684cd7cb5fbdc17056ec1fe4cce60bdb606b18cc2",
+      "node_binary_digest": "sha256:5e3c3b3181fb24e04ee1e1da183c4bf03069bbca31e7ad9e4bbda7e3215863af",
+      "node_binary_bytes": 76260512,
+      "node_binary_path": "opt/docker/bin/node",
+      "verified_ci_blobs": 10,
+      "verified_uncompressed_layers": 8,
+      "ci_and_registry_config_match": true,
+      "ci_and_registry_layer_identities_match": true,
+      "ci_and_registry_node_bytes_match": true,
+      "workload_configuration_digest": null,
+      "admission": "blocked"
+    },
+    {
+      "candidate_id": "dev-arm64",
+      "platform": "linux/arm64",
+      "artifact_id": 10578617001,
+      "artifact_archive_digest": "sha256:5a9744afad805deb3ed0bc94b1dbf458f5592704253f759b607876e2d0657a2c",
+      "artifact_archive_bytes": 91815112,
+      "ci_image_manifest_digest": "sha256:044b2102b7209bb543d1954e4e2aa2cb7f61b9732a6b96ff004133c1f61ffaef",
+      "image_digest": "sha256:4f944006f0f5288bc10fe0a2ee1bea7b60728982c2a2ca4278d5aa43d12f743c",
+      "image_digest_kind": "registry-platform-manifest",
+      "image_media_type": "application/vnd.docker.distribution.manifest.v2+json",
+      "image_config_digest": "sha256:6af530f8c3b0291dce60003f4dae04cf67295aca8036f113f6668fdb5ea6ed73",
+      "node_binary_digest": "sha256:b078605600cbfda69922cbf32adb60512d93c9917c07fa56669b7ba03d4936f3",
+      "node_binary_bytes": 74792168,
+      "node_binary_path": "opt/docker/bin/node",
+      "verified_ci_blobs": 10,
+      "verified_uncompressed_layers": 8,
+      "ci_and_registry_config_match": true,
+      "ci_and_registry_layer_identities_match": true,
+      "ci_and_registry_node_bytes_match": true,
+      "workload_configuration_digest": null,
+      "admission": "blocked"
+    }
+  ],
+  "manifest_identity_boundary": "CI archives use OCI manifests. Registry images use Docker v2 manifests. Their manifest digests remain distinct.",
+  "previous_matrix": {
+    "revision": "1f749aa831f54f2c5b3a7c79be27581c89e55f46",
+    "path": "docs/casper/design/soak-candidate-matrix.jsonc",
+    "sha256": "eb940026a7adb4919b5cf9d53a414d6ff77d7d884325a2e2377d64fbebaec19d"
+  },
+  "existing_matrix_source_pins": {
+    "count": 179,
+    "initial_check_exit": 1,
+    "stale_paths": [
+      "formal/tlaplus/casper_soak/verification-plan.jsonc",
+      "docs/casper/design/soak-interface-contract.md"
+    ],
+    "refreshed_manifest_sha256": "a48fb8e88fd7e860b93db216fd2b87110592254efa558d57a72c6ec33b48c003",
+    "refreshed_check_exit": 0,
+    "campaign_inventory_complete": false
+  },
+  "local_evidence": {
+    "directory": "target/task-017-12/repin-20260919-01",
+    "verifier": "verify-images.sh",
+    "verifier_sha256": "41a7a7820c1416062f367db6d0d17815002c1b54431a5246df6ec3064c068b32",
+    "validation_sha256": "2f20813d5394fd90cdaf9cf97d3c69a5e0c25ab0e3f07a2c42bb9636def657d9",
+    "bulk_evidence_uploaded": false
+  },
+  "live_adapters_qualified": false,
+  "node_launch_count": 0,
+  "workflow_dispatch_count": 0,
+  "cloud_runners_launched": 0,
+  "soak_verdict": "pending",
+  "task_complete": false
+}

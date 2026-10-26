@@ -1,9 +1,9 @@
 //! The properties of the engine of the native spaces (P5a, batch ENGINE-FORMAL).
 //!
 //! Each property states one invariant of `GenericRSpace.tla` (V1 to V8) or one headline of
-//! `Match.v`, `GenericRSpace.v` or `AgentReadCoverage.v`, and checks it over random scripts of
-//! space operations. The scripts run the real agents of the engine spine S1 over an in-memory
-//! host store, through the shared agent environment of `support/`.
+//! `Match.v` or `GenericRSpace.v`, and checks it over random scripts of space operations. The
+//! scripts run the real agents of the engine spine S1 over an in-memory host store, through the
+//! shared agent environment of `support/`.
 //!
 //! The families under test:
 //!
@@ -37,16 +37,13 @@ use models::rhoapi::{
     BindPattern, CostAuthority, CostRegion, CostSignature, EEq, EVar, Expr, ListParWithRandom, Par,
     ParWithRandom, TaggedContinuation, Var,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::space_factory_urn::SpaceFactoryUrn;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use rholang::rust::interpreter::accounting::byte_accounting::produce_introduction_identity;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, JoinOp, ProduceOp, SpaceEnv, SpaceOp, SpaceOutcome,
 };
@@ -66,8 +63,6 @@ use rholang::rust::interpreter::spaces::namespace::{Durability, NativeSpace, SID
 use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rspace_plus_plus::rspace::errors::RSpaceError;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
@@ -75,7 +70,7 @@ use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::space_store_handle::{
-    canonical_continuation_order, canonical_data_order, SpaceStoreHandle,
+    canonical_continuation_order, canonical_data_order,
 };
 // Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used it.
 // use rspace_plus_plus::rspace::space_store_handle::metered_encode;
@@ -83,8 +78,8 @@ use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 // Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used it.
 // use serde::Serialize;
 use support::agent::{
-    any, budget, config_of, create, creation, data_channel, env_over, exactly, int, key_of,
-    metered_env, named, run, string, unbounded_host_work, ParRSpace,
+    any, budget, config_of, create, creation, data_channel, env_over, exactly, int, key_of, named,
+    run, string, ParRSpace,
 };
 use support::props::{check, pure_config, tokio_runtime};
 
@@ -234,16 +229,6 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for RefusingMatch
         None
     }
 
-    fn get_metered(
-        &self,
-        _pattern: &BindPattern,
-        _data: &ListParWithRandom,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        meter.reserve(1, 0, 0)?;
-        Ok(None)
-    }
-
     fn check_commit(
         &self,
         continuation: &TaggedContinuation,
@@ -252,13 +237,16 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for RefusingMatch
         Matcher.check_commit(continuation, matched)
     }
 
-    fn check_commit_metered(
+    fn commit_may_veto(&self, continuation: &TaggedContinuation) -> bool {
+        Matcher.commit_may_veto(continuation)
+    }
+
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        Matcher.check_commit_metered(continuation, matched, meter)
+    ) -> bool {
+        Matcher.check_commit_by_reference(continuation, matched)
     }
 }
 
@@ -271,16 +259,6 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for WildcardMatch
         Some(data.clone())
     }
 
-    fn get_metered(
-        &self,
-        _pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        meter.reserve(1, 0, 0)?;
-        Ok(Some(data.clone()))
-    }
-
     fn check_commit(
         &self,
         continuation: &TaggedContinuation,
@@ -289,13 +267,16 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for WildcardMatch
         Matcher.check_commit(continuation, matched)
     }
 
-    fn check_commit_metered(
+    fn commit_may_veto(&self, continuation: &TaggedContinuation) -> bool {
+        Matcher.commit_may_veto(continuation)
+    }
+
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        Matcher.check_commit_metered(continuation, matched, meter)
+    ) -> bool {
+        Matcher.check_commit_by_reference(continuation, matched)
     }
 }
 
@@ -1030,7 +1011,7 @@ fn check_offer_choices(
         .iter()
         .map(|waiter| waiter.raw.clone())
         .collect();
-    let order = canonical_continuation_order(&raw, &ScanMeter::new(None)).expect("an order");
+    let order = canonical_continuation_order(&raw);
     let mut remaining: Vec<&Wtr> = order
         .iter()
         .map(|&index| &obs.before.waiters[index])
@@ -1083,7 +1064,7 @@ fn check_receive_choice(
         .iter()
         .map(|record| record.raw.clone())
         .collect();
-    let order = canonical_data_order(&raw, &ScanMeter::new(None)).expect("an order");
+    let order = canonical_data_order(&raw);
     let first = order
         .iter()
         .map(|&index| &obs.before.records[index])
@@ -1557,151 +1538,6 @@ async fn reissued_order_rejected<D: Discipline>(
     run(&agent, env, SpaceOp::Produce(op)).await
 }
 
-// ── AgentReadCoverage.v: the primitives of the engine ───────────────────────────────────────
-
-/// The last operation of a script: its result, its events, and the collection before and after
-/// it.
-struct LastRun {
-    result: Result<SpaceOutcome, SpaceError>,
-    events: Vec<Event>,
-    before: Snapshot,
-    after: Snapshot,
-}
-
-/// Runs `script` on a fresh host for the family `family`, the last operation under the meter
-/// `meter` and every earlier operation without a host-work budget.
-async fn last_under(family: Family, script: &[Step], meter: Option<HostWorkBudget>) -> LastRun {
-    match family {
-        Family::Queue => last_with::<QueueDiscipline>(script, meter).await,
-        Family::Bag => last_with::<BagDiscipline>(script, meter).await,
-        Family::Cell => last_with::<CellDiscipline>(script, meter).await,
-        Family::Set => last_with::<SetDiscipline>(script, meter).await,
-    }
-}
-
-/// [`last_under`] for the discipline `D`.
-async fn last_with<D: Discipline>(script: &[Step], meter: Option<HostWorkBudget>) -> LastRun {
-    let host = host_with(Injected::Real).await;
-    let budget = budget();
-    let env = env_over(host.clone(), &budget);
-    let agent = GenericSpace::<HashMapOuter, D>::default();
-    let config = config_of(SPACE, HashMapOuter::NAME, D::NAME, SpaceQualifier::Default);
-    create(
-        &agent,
-        &env,
-        creation(SPACE, config, SpaceFactoryUrn::HASHMAP_QUEUE),
-    )
-    .await;
-    let channel = string("rrs-engine");
-    let data = data_channel(SPACE, &channel);
-    let mut pending = VecDeque::new();
-    let mut receivers = BTreeMap::new();
-    let mut sent = BTreeMap::new();
-    let (last, prefix) = script.split_last().expect("a script has a step");
-    for (index, step) in prefix.iter().enumerate() {
-        if let Some(op) = op_of(
-            *step,
-            index,
-            &channel,
-            &mut pending,
-            &mut receivers,
-            &mut sent,
-        ) {
-            if let Ok(SpaceOutcome {
-                reissue: Some(reissue),
-                ..
-            }) = run(&agent, &env, op).await
-            {
-                pending.push_back(reissue.op);
-            }
-        }
-    }
-    let op = op_of(
-        *last,
-        prefix.len(),
-        &channel,
-        &mut pending,
-        &mut receivers,
-        &mut sent,
-    )
-    .unwrap_or_else(|| SpaceOp::Produce(send_op(&channel, prefix.len(), 1, false)));
-    host.take_event_log().await;
-    let before = snapshot(&host, &data).await;
-    let metered = match &meter {
-        Some(host_work) => metered_env(host.clone(), &budget, host_work),
-        None => SpaceEnv {
-            store: SpaceStoreHandle::new(host.clone()),
-            budget: budget.clone(),
-            meter: ScanMeter::new(None),
-            volatile: Default::default(),
-            origin: Default::default(),
-        },
-    };
-    let result = run(&agent, &metered, op).await;
-    let events = host.take_event_log().await;
-    let after = snapshot(&host, &data).await;
-    LastRun {
-        result,
-        events,
-        before,
-        after,
-    }
-}
-
-/// The host-work budget whose dimension `dimension` allows `limit` units and whose other
-/// dimensions allow every charge.
-fn cut_at(dimension: HostWorkDimension, limit: u64) -> HostWorkBudget {
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    limits.set(dimension, HostWorkLimit::new(limit));
-    HostWorkBudget::new(limits)
-}
-
-/// The engine headline of `AgentReadCoverage.v` (`engine_primitives_trace_covered`): every
-/// operation, with its capacity checks, group fires, prefix outcomes and staged-list growth,
-/// reserves its work before it makes it. A budget one unit below the usage of the operation in
-/// any dimension rejects it before the commit, so it stages nothing and changes nothing.
-#[test]
-fn prop_engine_primitives_reserve_before_they_read() {
-    let cuts = Hits::new();
-    let strategy = (script(), prop_oneof![
-        Just(Family::Queue),
-        Just(Family::Bag),
-        Just(Family::Cell),
-        Just(Family::Set)
-    ]);
-    check(pure_config(), strategy, |(script, family)| {
-        let measured = unbounded_host_work();
-        let full = tokio_runtime().block_on(last_under(family, &script, Some(measured.clone())));
-        if full.result.is_err() {
-            return Ok(());
-        }
-        for dimension in HostWorkDimension::ALL {
-            let used = measured.usage(dimension).get();
-            if used == 0 {
-                continue;
-            }
-            let cut = cut_at(dimension, used - 1);
-            cuts.hit();
-            let last = tokio_runtime().block_on(last_under(family, &script, Some(cut.clone())));
-            prop_assert_eq!(
-                last.result,
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                "{:?}: a budget below the usage rejects",
-                dimension
-            );
-            prop_assert!(cut.is_rejected());
-            prop_assert!(
-                last.events.is_empty(),
-                "a rejected operation stages nothing"
-            );
-            prop_assert_eq!(last.before.tokens(), last.after.tokens());
-            prop_assert_eq!(last.before.waiters.len(), last.after.waiters.len());
-        }
-        Ok(())
-    });
-    cuts.assert_at_least(64, "a cut budget rejects an operation");
-}
-
 // ── V2 to V8: GenericRSpace.tla ─────────────────────────────────────────────────────────────
 
 /// V2 (`PatternEnforcement`): every fire binds a value that its pattern binds and that its
@@ -1995,15 +1831,14 @@ fn prop_engine_peek_restores_record() {
     });
 }
 
-// ── A deterministic case: the reserved growth of the staged list ────────────────────────────
+// ── A deterministic case: the growth of the staged list ────────────────────────────────────
 
 /// A set with seventy stored members of one class, one record of another class first in the
 /// canonical order, and a guarded waiter that refused that record. A send of the class fires the
 /// waiter and retires the seventy members, so the operation stages more than the head-only room
-/// of the staged list. The growth is reserved: the operation commits under an unbounded meter,
-/// and one operation less rejects it before the commit with no effect.
+/// of the staged list. The operation commits, and only the record of the other class remains.
 #[test]
-fn engine_set_retirement_grows_the_staged_list_with_reserved_work() {
+fn engine_set_retirement_grows_the_staged_list() {
     const MEMBERS: usize = 70;
     let runtime = tokio_runtime();
     let build = || async {
@@ -2045,7 +1880,7 @@ fn engine_set_retirement_grows_the_staged_list_with_reserved_work() {
             .await
             .expect("the other record stores");
             let stored: Vec<_> = host.get_data(&data).await;
-            let order = canonical_data_order(&stored, &ScanMeter::new(None)).expect("an order");
+            let order = canonical_data_order(&stored);
             let first = record::unwrap_datum(&stored[order[0]].a)
                 .expect("a record")
                 .datum;
@@ -2084,11 +1919,10 @@ fn engine_set_retirement_grows_the_staged_list_with_reserved_work() {
         (host, budget, agent, channel, data, index + 2)
     };
     let (host, budget, agent, channel, data, next) = runtime.block_on(build());
-    let measured = unbounded_host_work();
     let outcome = runtime
         .block_on(run(
             &agent,
-            &metered_env(host.clone(), &budget, &measured),
+            &env_over(host.clone(), &budget),
             SpaceOp::Produce(send_op(&channel, next, 1, false)),
         ))
         .expect("the send fires and retires the class");
@@ -2106,27 +1940,6 @@ fn engine_set_retirement_grows_the_staged_list_with_reserved_work() {
     let left = runtime.block_on(snapshot(&host, &data));
     assert_eq!(left.records.len(), 1, "only the record of value 2 remains");
     assert_eq!(left.records[0].value, 2);
-    let operations = measured
-        .usage(HostWorkDimension::VerificationOperations)
-        .get();
-    let (host, budget, agent, channel, data, next) = runtime.block_on(build());
-    let cut = cut_at(HostWorkDimension::VerificationOperations, operations - 1);
-    let before = runtime.block_on(snapshot(&host, &data));
-    let rejected = runtime.block_on(run(
-        &agent,
-        &metered_env(host.clone(), &budget, &cut),
-        SpaceOp::Produce(send_op(&channel, next, 1, false)),
-    ));
-    assert_eq!(
-        rejected,
-        Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-    );
-    assert!(
-        runtime.block_on(host.take_event_log()).is_empty(),
-        "nothing is staged"
-    );
-    let after = runtime.block_on(snapshot(&host, &data));
-    assert_eq!(before.tokens(), after.tokens(), "nothing changes");
 }
 
 // ── A deterministic case: the second send fires a guarded waiter (Rule E) ───────────────────
@@ -2167,7 +1980,7 @@ async fn reoffer_witness<D: Discipline>() -> (Vec<Fired>, Snapshot) {
         .await
         .expect("a record of value 1 stores");
         let stored = host.get_data(&data).await;
-        let order = canonical_data_order(&stored, &ScanMeter::new(None)).expect("an order");
+        let order = canonical_data_order(&stored);
         let first = record::unwrap_datum(&stored[order[0]].a)
             .expect("a record")
             .datum;

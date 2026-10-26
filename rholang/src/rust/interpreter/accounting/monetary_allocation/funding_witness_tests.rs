@@ -1,14 +1,9 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
 use crate::rust::interpreter::accounting::monetary_allocation::check_funding_deficit;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000)))
-}
 
 fn limits(problem: FundingMinimaxProblem<'_>) -> FundingSearchLimits {
     FundingSearchLimits {
@@ -65,7 +60,7 @@ fn oracle(problem: FundingMinimaxProblem<'_>) -> Vec<Vec<Vec<u64>>> {
 
 fn assert_matches_oracle(problem: FundingMinimaxProblem<'_>) {
     let assignments = oracle(problem);
-    let result = select_fixed_funding_witness(problem, limits(problem), &work()).unwrap();
+    let result = select_fixed_funding_witness(problem, limits(problem)).unwrap();
     match result {
         FundingWitnessResult::Canonical {
             assignment,
@@ -75,7 +70,7 @@ fn assert_matches_oracle(problem: FundingMinimaxProblem<'_>) {
             assert_eq!(Some(&assignment), assignments.iter().min(), "{problem:?}");
             assert_eq!(totals.source_debits(), problem.capacities);
             assert_eq!(
-                problem.check_assignment(&assignment, limits(problem), &work()),
+                problem.check_assignment(&assignment, limits(problem)),
                 Ok(totals)
             );
             for alternative in &assignments {
@@ -84,14 +79,13 @@ fn assert_matches_oracle(problem: FundingMinimaxProblem<'_>) {
                         problem,
                         alternative,
                         certificate.entries(),
-                        limits(problem),
-                        &work()
+                        limits(problem)
                     )
                     .unwrap(),
                     alternative == &assignment
                 );
             }
-            let mut residual = WitnessResidual::new(problem, &work()).unwrap();
+            let mut residual = WitnessResidual::new(problem).unwrap();
             let mut remainder = assignment.clone();
             for i in 0..assignment.len() {
                 for j in 0..assignment[i].len() {
@@ -99,7 +93,7 @@ fn assert_matches_oracle(problem: FundingMinimaxProblem<'_>) {
                     remainder[i][j] = 0;
                     let totals = residual
                         .problem()
-                        .check_assignment(&remainder, limits(problem), &work())
+                        .check_assignment(&remainder, limits(problem))
                         .unwrap();
                     assert_eq!(totals.source_debits(), residual.contributions);
                     assert_eq!(totals.total(), residual.obligations.iter().sum::<u64>());
@@ -132,7 +126,7 @@ fn entry_selection_changes_the_witness_without_changing_wallet_totals() {
         eligible: &[vec![true; 2], vec![true; 2]],
     };
     let FundingWitnessResult::Canonical { assignment, .. } =
-        select_fixed_funding_witness(problem, limits(problem), &work()).unwrap()
+        select_fixed_funding_witness(problem, limits(problem)).unwrap()
     else {
         panic!("the complete graph is feasible");
     };
@@ -159,7 +153,7 @@ fn certificate_cannot_freeze_future_entries_to_justify_a_nonminimum_prefix() {
     };
     let FundingFeasibility::Infeasible {
         selected_obligations,
-    } = solve_funding_cell_bound(query, limits(problem), &work()).unwrap()
+    } = solve_funding_cell_bound(query, limits(problem)).unwrap()
     else {
         panic!("freezing future entries can fabricate this deficit");
     };
@@ -177,8 +171,7 @@ fn certificate_cannot_freeze_future_entries_to_justify_a_nonminimum_prefix() {
         problem,
         &[vec![1, 0], vec![0, 1]],
         &forged,
-        limits(problem),
-        &work()
+        limits(problem)
     )
     .unwrap());
 }
@@ -194,21 +187,16 @@ fn missing_extra_and_false_entry_certificates_are_rejected() {
         assignment,
         certificate,
         ..
-    } = select_fixed_funding_witness(problem, limits(problem), &work()).unwrap()
+    } = select_fixed_funding_witness(problem, limits(problem)).unwrap()
     else {
         panic!("the complete graph is feasible");
     };
     for i in 0..certificate.entries().len() {
         let mut altered = certificate.entries().to_vec();
         altered.remove(i);
-        assert!(!check_fixed_funding_witness(
-            problem,
-            &assignment,
-            &altered,
-            limits(problem),
-            &work()
-        )
-        .unwrap());
+        assert!(
+            !check_fixed_funding_witness(problem, &assignment, &altered, limits(problem)).unwrap()
+        );
         let mut altered = certificate.entries().to_vec();
         altered[i] = match &altered[i] {
             FundingEntryMinimum::Zero => FundingEntryMinimum::Deficit {
@@ -216,21 +204,13 @@ fn missing_extra_and_false_entry_certificates_are_rejected() {
             },
             FundingEntryMinimum::Deficit { .. } => FundingEntryMinimum::Zero,
         };
-        assert!(!check_fixed_funding_witness(
-            problem,
-            &assignment,
-            &altered,
-            limits(problem),
-            &work()
-        )
-        .unwrap());
+        assert!(
+            !check_fixed_funding_witness(problem, &assignment, &altered, limits(problem)).unwrap()
+        );
     }
     let mut extra = certificate.entries().to_vec();
     extra.push(FundingEntryMinimum::Zero);
-    assert!(
-        !check_fixed_funding_witness(problem, &assignment, &extra, limits(problem), &work())
-            .unwrap()
-    );
+    assert!(!check_fixed_funding_witness(problem, &assignment, &extra, limits(problem)).unwrap());
 }
 
 #[test]
@@ -284,7 +264,7 @@ fn empty_obligations_and_large_cohorts_retain_physical_source_positions() {
             assignment,
             totals,
             certificate,
-        } = select_fixed_funding_witness(problem, limits(problem), &work()).unwrap()
+        } = select_fixed_funding_witness(problem, limits(problem)).unwrap()
         else {
             panic!("the final physical source covers both obligations");
         };
@@ -299,8 +279,7 @@ fn empty_obligations_and_large_cohorts_retain_physical_source_positions() {
             problem,
             &assignment,
             certificate.entries(),
-            limits(problem),
-            &work()
+            limits(problem)
         )
         .unwrap());
     }
@@ -314,7 +293,7 @@ fn exact_contribution_validation_precedes_economic_results() {
         eligible: &[vec![false]],
     };
     assert_eq!(
-        select_fixed_funding_witness(problem, limits(problem), &work()),
+        select_fixed_funding_witness(problem, limits(problem)),
         Err(FundingSearchError::UnequalFundingTotals)
     );
     let malformed = FundingMinimaxProblem {
@@ -322,7 +301,7 @@ fn exact_contribution_validation_precedes_economic_results() {
         ..problem
     };
     assert_eq!(
-        select_fixed_funding_witness(malformed, limits(malformed), &work()),
+        select_fixed_funding_witness(malformed, limits(malformed)),
         Err(FundingAssignmentError::InvalidDimensions.into())
     );
     let empty = FundingMinimaxProblem {
@@ -331,47 +310,9 @@ fn exact_contribution_validation_precedes_economic_results() {
         eligible: &[],
     };
     assert_eq!(
-        select_fixed_funding_witness(empty, limits(empty), &work()),
+        select_fixed_funding_witness(empty, limits(empty)),
         Err(FundingAssignmentError::EmptySources.into())
     );
-}
-
-#[test]
-fn every_budget_prefix_preserves_the_original_inputs_and_rejects_partial_results() {
-    let problem = FundingMinimaxProblem {
-        capacities: &[1],
-        obligations: &[1],
-        eligible: &[vec![true]],
-    };
-    let measured = work();
-    let expected = select_fixed_funding_witness(problem, limits(problem), &measured).unwrap();
-    for dimension in [
-        HostWorkDimension::SearchCandidates,
-        HostWorkDimension::SearchStateBytes,
-        HostWorkDimension::VerificationOperations,
-    ] {
-        let full = measured.usage(dimension).get();
-        for prefix in 0..=full {
-            let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(1_000_000_000));
-            bounds.set(dimension, HostWorkLimit::new(prefix));
-            let actual = select_fixed_funding_witness(
-                problem,
-                limits(problem),
-                &HostWorkBudget::new(bounds),
-            );
-            if prefix == full {
-                assert_eq!(actual, Ok(expected.clone()));
-            } else {
-                assert!(
-                    matches!(actual, Err(FundingSearchError::HostWork(_))),
-                    "{dimension:?} {prefix}/{full}: {actual:?}"
-                );
-            }
-            assert_eq!(problem.capacities, &[1]);
-            assert_eq!(problem.obligations, &[1]);
-            assert_eq!(problem.eligible, &[vec![true]]);
-        }
-    }
 }
 
 #[test]
@@ -381,13 +322,11 @@ fn parallel_witness_selection_has_no_shared_assignment_state() {
         obligations: &[1, 2],
         eligible: &[vec![true; 2], vec![true; 2]],
     };
-    let expected = select_fixed_funding_witness(problem, limits(problem), &work()).unwrap();
+    let expected = select_fixed_funding_witness(problem, limits(problem)).unwrap();
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..3)
             .map(|_| {
-                scope.spawn(|| {
-                    select_fixed_funding_witness(problem, limits(problem), &work()).unwrap()
-                })
+                scope.spawn(|| select_fixed_funding_witness(problem, limits(problem)).unwrap())
             })
             .collect();
         for handle in handles {

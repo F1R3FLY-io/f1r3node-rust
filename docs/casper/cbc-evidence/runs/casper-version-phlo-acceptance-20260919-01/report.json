@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "status": "accepted-bounded-protocol-phlo-binding",
+  "claim_discharge": "discharged",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-007"
+  ],
+  "phase": "pre_pr216_merge",
+  "scope": "harness-profile",
+  "recorded_at": "2026-09-19T19:15:26Z",
+  "base_commit": "3d9eb38f6710d871cd73464a6fdd04456ad4c4ea",
+  "working_tree": true,
+  "source_digests": {
+    ".github/workflows/casper-version-phlo.yml": "f0b66b1183d12b318b3d62066c4044155a90eba4e332f938c7b51ec752f3583d",
+    "scripts/casper-soak/check-version-phlo.sh": "39399af4f440489cbc05177607b0a80c142115ad4d6977fac1f372af93d9d794",
+    "scripts/casper-soak/src/bin/casper-version-phlo.rs": "ae9211deb4c0d519c241463209a01ed3ebb301e4bf1f3a8037663dab2c50db40",
+    "scripts/casper-soak/src/profiles/version_phlo.rs": "a43d719598ecce30c5be73a91db8bfe3d5930566e6ed22742aeb7fdc43a5f843",
+    "scripts/casper-soak/tests/version_phlo.rs": "519a9b89407871ef86bf45d0c6bd16a91e3bb78efb9246a319b8e065e719c02c",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/Cargo.toml": "f6082e839d8bb20e5b2988a9ed92ffe5d1cd79a0e578e10d68582593ea3d13cb",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "Cargo.lock": "318659f6c97ee6030ac0b128b6e2ba0a6a86e07314c2761ecd73052830bb0c4e",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "docs/claims/casper-soak-version-phlo.md": "05e750fc023dd55ed869c1175b0e6639ecfd7e2be22ded37f32175003aa6757a",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/README.md": "a2b26626b3381df7ee8d73dffe1ac8e4c070310646a6464efae70c40060af48d",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg": "dd37bde379ba078b0b1590cac85750b7541fa731153cd4a80762a820fa7220d5",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg": "cdcd43f3e8c0fcff6e8a4f8371077f2da2d4a0f6729c5d4e63a611fcc8c0948c",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg": "a95c28b5428af60f30e64da099992276cbe95b868663763727396263d022cf2e",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg": "f0f26703779277e62daa8aa573a4a5aa14b70e9e130b735e96601f8736ca1015",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc": "ac854ed435ff7bda246ef2fb0160e138d3ffc86881a3499f6ea11e77387c25ad"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-version-phlo.md": "05e750fc023dd55ed869c1175b0e6639ecfd7e2be22ded37f32175003aa6757a"
+  },
+  "artifact_inventory": [
+    "scripts/casper-soak/src/profiles/version_phlo.rs",
+    "scripts/casper-soak/src/bin/casper-version-phlo.rs",
+    "scripts/casper-soak/tests/version_phlo.rs",
+    "scripts/casper-soak/check-version-phlo.sh",
+    ".github/workflows/casper-version-phlo.yml",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/VersionPhlo.tla",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo.cfg",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_versions_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_fields_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/MC_VersionPhlo_refund_unsafe.cfg",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/verification-plan.jsonc",
+    "formal/tlaplus/casper_soak/profiles/version_phlo/README.md"
+  ],
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "approval": {
+    "binding": "I accept Claim007’s bounded protocol/Phlo harness binding",
+    "workflow_tag": "ratify: .github/workflows/casper-version-phlo.yml cbc=mandatory cbc-weight=high",
+    "upload": "I authorize upload of the two sanitized evidence archives to the existing draft evidence release.",
+    "scope": "bounded-pre-merge-claim007-binding-and-exact-workflow-tag",
+    "recorded_at": "2026-09-19T19:15:26Z"
+  },
+  "review": {
+    "report": "docs/casper/cbc-evidence/runs/casper-version-phlo-20260919-01/report.json",
+    "sha256": "8baf8000334926228ead092e369c969d5d6ae8397afcc59ec6b41ed14d7facb2",
+    "validation": "docs/casper/cbc-evidence/runs/casper-version-phlo-20260919-01/validation.json",
+    "validation_sha256": "c8fc7c29889eb2a9e5d9039502b14cd387b126ab9832b1e4ef6feb630c787661",
+    "previous_spec_sha256": "2a6167b965f804533e9ce45b1f665303d022b0af144126db103ff421be532c98",
+    "historical_hosted_head": "807bf94dcb0389fdd57100bc32f64eea20f64ea6",
+    "retained_failures_preserved": true
+  },
+  "previous_metadata": {
+    "path": "docs/casper/cbc-evidence/runs/casper-version-phlo-acceptance-20260919-01/previous-metadata.tar.gz",
+    "sha256": "fb6c4fb15eeb121a2ffc01f1efd715aceddd9fbb7936a8a4524091d8b195aaae",
+    "ledger_count": 12,
+    "claim_member": "prior/claim.md",
+    "attributes_member": "prior/gitattributes"
+  },
+  "workflow_tag": {
+    "path": ".github/workflows/casper-version-phlo.yml",
+    "cbc": "mandatory",
+    "weight": "high",
+    "ratified": true,
+    "attributes_sha256": "bfd4ace8d73070682b925a2663daeddff868d75ed3327ca3705af0649c66c224"
+  },
+  "upload_receipt": {
+    "path": "docs/casper/cbc-evidence/runs/casper-version-phlo-acceptance-20260919-01/upload-receipt.json",
+    "sha256": "5f721bdaa341e2e43922760b2684d4df58ec3517c7d5f7a3badeab5115528657"
+  },
+  "fresh_native": {
+    "summary": {
+      "scope": "controlled-version-phlo-profile",
+      "checks": "passed",
+      "exit": 0,
+      "claim_discharge": "pending",
+      "node_execution": false,
+      "required_rust_tests": 15,
+      "required_cases": 102,
+      "required_invocations": 103,
+      "required_model_controls": 4
+    },
+    "model_results": [
+      {
+        "configuration": "MC_VersionPhlo.cfg",
+        "exit": 0,
+        "expected_property": null,
+        "model_sha256": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+        "configuration_sha256": "dd37bde379ba078b0b1590cac85750b7541fa731153cd4a80762a820fa7220d5",
+        "log_sha256": "1dc8daca2330bfd44b2fa058ddc4212175ed7922275b5fbca954a11633e76ba6",
+        "states_generated": 1201,
+        "distinct_states": 625
+      },
+      {
+        "configuration": "MC_VersionPhlo_versions_unsafe.cfg",
+        "exit": 12,
+        "expected_property": "VersionLabelsSeparate",
+        "model_sha256": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+        "configuration_sha256": "f0f26703779277e62daa8aa573a4a5aa14b70e9e130b735e96601f8736ca1015",
+        "log_sha256": "30d29c486b75a59d3aea6db390176414c4c282bdb74e85825be336ffbf552939",
+        "states_generated": 834,
+        "distinct_states": 450
+      },
+      {
+        "configuration": "MC_VersionPhlo_fields_unsafe.cfg",
+        "exit": 12,
+        "expected_property": "BothPhloFieldsCaptured",
+        "model_sha256": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+        "configuration_sha256": "cdcd43f3e8c0fcff6e8a4f8371077f2da2d4a0f6729c5d4e63a611fcc8c0948c",
+        "log_sha256": "f7e1271d9462fbc6660071324e2aaf42201f65d0b9a80a2759606b1b0467a9e7",
+        "states_generated": 462,
+        "distinct_states": 254
+      },
+      {
+        "configuration": "MC_VersionPhlo_refund_unsafe.cfg",
+        "exit": 12,
+        "expected_property": "SettlementOutcomeClassified",
+        "model_sha256": "8e62735f8a321cc6ed2687558f1913f9bdf3a747a6c0119a4c3da77ec531f570",
+        "configuration_sha256": "a95c28b5428af60f30e64da099992276cbe95b868663763727396263d022cf2e",
+        "log_sha256": "74fbb834a5fbd3795ce894ba1f924c9f9c4765f3d09c09b0ecbd6c80714c37f3",
+        "states_generated": 544,
+        "distinct_states": 304
+      }
+    ]
+  },
+  "reviewed_artifacts_unchanged": true,
+  "metadata_only_specification_change": true,
+  "private_supplement": {
+    "binary_copies_retrieved_after_review": true,
+    "binary_sha256": [
+      "5bc527a1d424113bc4e902ca83c2fe34117f5eb1c8f3a94ecd71925b14fcf58d",
+      "4679aed3c217ea861825ef9e10d97b312c5a563105b3defa5699f70e5ac35e74"
+    ],
+    "uploaded": false,
+    "original_container_inspection": "not-retained"
+  },
+  "other_claims": "outside-this-acceptance",
+  "task_closure": "requires-separate-strict-integrity-check",
+  "release_published": false,
+  "live_adapters": "unqualified",
+  "post_merge_execution": "blocked",
+  "policy_activation": false,
+  "node_execution": false,
+  "soak": "pending",
+  "waiver": null
+}

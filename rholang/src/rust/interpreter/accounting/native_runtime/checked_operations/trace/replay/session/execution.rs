@@ -4,6 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::replay_rspace::native_session::space::NativeSpaceHost;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;
 use rspace_plus_plus::rspace::space_store_handle::SpaceStoreHandle;
@@ -37,12 +38,14 @@ impl Session {
     }
 
     /// The space store of this session for the Reified RSpaces runtime of native replay
-    /// (decision 47). A space operation gets its introduction authority from `budget`, as
-    /// `NativeExecution` gives one to a host operation.
+    /// (decision 47). A space operation gets its introduction record from `budget`, as
+    /// `NativeExecution` gives one to a host operation (DR-118). `installed` holds the keys of
+    /// the channels that the session installs for its system processes (R2).
     pub(crate) fn space_store(
         self: &Arc<Self>,
         budget: RuntimeBudget,
-    ) -> Result<ParSpaceStore, RSpaceError> {
+        installed: BTreeSet<Blake2b256Hash>,
+    ) -> ParSpaceStore {
         let host = NativeSpaceHost::new(
             Arc::clone(self),
             |session: &Self| &session.inner,
@@ -57,12 +60,16 @@ impl Session {
                         AuthorityByteEventKind::ConsumeIntroduction,
                     ),
                 };
-                budget
-                    .introduction_authority(identity, kind)
-                    .map_err(Into::into)
+                // Changed by decision 89 (DR-118): the resolved introduction is the
+                // record, as for a host operation.
+                // budget
+                //     .introduction_authority(identity, kind)
+                //     .map_err(Into::into)
+                budget.introduction(identity, kind).map_err(Into::into)
             }),
-        )?;
-        Ok(SpaceStoreHandle::new(host))
+            installed,
+        );
+        SpaceStoreHandle::new(host)
     }
 }
 
@@ -84,9 +91,19 @@ impl ExecutionBackend for NativeExecution {
                 continuation,
                 persistent,
                 peeks,
+                // Changed by D-F2 (DR-118): the resolved introduction is the
+                // record, so the observer can reuse the reducer's measurement.
+                // |source| {
+                //     self.budget
+                //         .introduction_authority(
+                //             consume_introduction_identity(source),
+                //             AuthorityByteEventKind::ConsumeIntroduction,
+                //         )
+                //         .map_err(Into::into)
+                // },
                 |source| {
                     self.budget
-                        .introduction_authority(
+                        .introduction(
                             consume_introduction_identity(source),
                             AuthorityByteEventKind::ConsumeIntroduction,
                         )
@@ -102,17 +119,46 @@ impl ExecutionBackend for NativeExecution {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<ProduceResult, RSpaceError> {
-        self.session
+        // Changed by DR-114: the result is checked before it is returned.
+        let result = self
+            .session
             .inner
+            // Changed by D-F2 (DR-118): the resolved introduction is the record,
+            // so the observer can reuse the reducer's measurement.
+            // .produce_with_authority(channel, data, persistent, |source| {
+            //     self.budget
+            //         .introduction_authority(
+            //             produce_introduction_identity(source),
+            //             AuthorityByteEventKind::ProduceIntroduction,
+            //         )
+            //         .map_err(Into::into)
+            // })
             .produce_with_authority(channel, data, persistent, |source| {
                 self.budget
-                    .introduction_authority(
+                    .introduction(
                         produce_introduction_identity(source),
                         AuthorityByteEventKind::ProduceIntroduction,
                     )
                     .map_err(Into::into)
             })
-            .await
+            .await?;
+        // Added by DR-114 (E2): a returned produce may carry a record only when
+        // it fires a non-persistent call of a recorded process. Otherwise a
+        // block could hand a forged record to the user's code.
+        if let Some((continuation, _, produce)) = result.as_ref() {
+            let recorded_call = !persistent
+                && matches!(
+                    continuation.continuation.tagged_cont.as_ref(),
+                    Some(models::rhoapi::tagged_continuation::TaggedCont::ScalaBodyRef(body_ref))
+                        if crate::rust::interpreter::system_processes::is_native_recorded_op(*body_ref)
+                );
+            if !produce.output_value.is_empty() && !recorded_call {
+                return Err(RSpaceError::InterpreterError(
+                    "native replay found a recorded output on an unrecorded call".to_string(),
+                ));
+            }
+        }
+        Ok(result)
     }
 
     async fn get_joins(&self, channel: Par) -> Result<Vec<Vec<Par>>, RSpaceError> {

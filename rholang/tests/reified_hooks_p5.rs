@@ -24,15 +24,14 @@ use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::utils::{new_gint_par, new_gstring_par};
 use proptest::prelude::{prop_assert, prop_assert_eq, prop_oneof, Just, Strategy};
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
-    native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
-    NativePhloExecutionContract, NativePhloRegionLimits,
+    native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
+    NativePhloDimension, NativePhloExecutionContract, NativePhloRegionLimits,
 };
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
@@ -44,7 +43,6 @@ use rholang::rust::interpreter::accounting::{
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
@@ -74,8 +72,12 @@ const QUEUE: &str = "rho:space:hashmap:queue";
 /// The constructor of every space of this suite, as Rholang source.
 const DEFAULT: &str = r#""default""#;
 
-/// The text of HEAD for a receive on a bundle without the read flag (`unbundle_receive`).
-const NOT_READABLE: &str = "Trying to read from non-readable channel.";
+/// The code of HEAD for a receive on a bundle without the read flag (`unbundle_receive`): the
+/// debug text of its `BundlePermissionError`.
+// Changed by decision 89 (DR-128): HEAD raises the text as a `BundlePermissionError`, a user
+// failure, so its code is the debug text of that error.
+// const NOT_READABLE: &str = "Trying to read from non-readable channel.";
+const NOT_READABLE: &str = r#"BundlePermissionError("Trying to read from non-readable channel.")"#;
 
 fn gint(value: i64) -> Par { new_gint_par(value, Vec::new(), false) }
 
@@ -733,7 +735,8 @@ fn with_contract<T>(action: impl FnOnce(NativePhloExecutionContract<'_>) -> T) -
     )
     .expect("the test controls check");
     let contract =
-        NativePhloExecutionContract::new(controls, &binding).expect("the test contract builds");
+        NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+            .expect("the test contract builds");
     action(contract)
 }
 
@@ -748,12 +751,8 @@ fn native_budget_limits() -> NativeBudgetTraceLimits {
     }
 }
 
-fn native_host_work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
-
-fn native_config(host: HostWorkBudget) -> NativeRuntimeConfig {
-    with_contract(|contract| NativeRuntimeConfig::new(contract, native_budget_limits(), host))
+fn native_config() -> NativeRuntimeConfig {
+    with_contract(|contract| NativeRuntimeConfig::new(contract, native_budget_limits()))
 }
 
 fn native_random() -> Blake2b512Random { Blake2b512Random::create_from_bytes(NATIVE_SEED) }
@@ -802,7 +801,7 @@ async fn native_play(term: &str) -> NativePlay {
             missing_injections(),
             native_random(),
             None,
-            native_config(native_host_work()),
+            native_config(),
         )
         .await
         .expect("native play evaluates");
@@ -844,7 +843,6 @@ async fn native_replay(
         .native_operation_recording
         .clone()
         .expect("native play records its operations");
-    let host = native_host_work();
     let trace = with_contract(|contract| {
         contract.check_operation_journal(
             recording.session,
@@ -859,32 +857,26 @@ async fn native_replay(
                 footprint_bytes: 10_000_000,
                 predecessor_edges: 1_000_000,
             },
-            &host,
         )
     })
     .expect("the play journal checks")
-    .bind_trace(
-        played.log.clone().into(),
-        NativeOperationTraceLimits {
-            events: 100_000,
-            source_entries: 1_000_000,
-            source_bytes: 10_000_000,
-            telemetry_items: 100_000,
-            telemetry_bytes: 10_000_000,
-        },
-        &host,
-    )
+    .bind_trace(played.log.clone().into(), NativeOperationTraceLimits {
+        events: 100_000,
+        source_entries: 1_000_000,
+        source_bytes: 10_000_000,
+        telemetry_items: 100_000,
+        telemetry_bytes: 10_000_000,
+    })
     .expect("the play log binds to the journal");
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget.set_deploy_signature_funded(NATIVE_DEPLOY, native_funding());
     budget
-        .reset_for_native_execution(native_config(host.clone()))
+        .reset_for_native_execution(native_config())
         .expect("the replay budget enters native execution");
     let mut environment = create_native_replay_env(
         trace,
         played.history.clone(),
         Arc::new(Box::new(Matcher)),
-        host,
         Arc::new(RwLock::new(HashMap::new())),
         Arc::new(default_mergeable_tags()),
         &mut Vec::new(),

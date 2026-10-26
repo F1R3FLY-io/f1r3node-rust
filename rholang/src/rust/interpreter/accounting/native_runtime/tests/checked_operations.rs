@@ -1,4 +1,3 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
@@ -18,10 +17,6 @@ use crate::rust::interpreter::accounting::native_runtime::{
     NativeBudgetRetry, NativeCommRecord, NativeCommSource, NativeConsumeSource,
     NativeOperationOccurrence, NativeProduceSource,
 };
-
-fn host() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn occurrence(id: u64, stage: NativeAttemptStage) -> NativeBudgetOccurrence {
     NativeBudgetOccurrence {
@@ -203,7 +198,7 @@ fn check(
     rows: Arc<[NativeOperationRecord]>,
 ) -> Result<CheckedNativeOperationJournal, NativeOperationJournalError> {
     with_contract(100, [0, 0, 1, 0], |contract| {
-        contract.check_operation_journal([0; 32], recording, rows, journal_limits(), &host())
+        contract.check_operation_journal([0; 32], recording, rows, journal_limits())
     })
 }
 
@@ -314,7 +309,7 @@ fn journal_bounds_all_variable_collections_before_import() {
             _ => unreachable!(),
         }
         let result = with_contract(100, [0, 0, 1, 0], |contract| {
-            contract.check_operation_journal([0; 32], &recording, rows, limits, &host())
+            contract.check_operation_journal([0; 32], &recording, rows, limits)
         });
         assert!(
             matches!(result, Err(NativeOperationJournalError::Limit)),
@@ -517,7 +512,6 @@ fn journal_completion_matches_every_proven_lifecycle_case() {
                         &recording,
                         Arc::from([row]),
                         journal_limits(),
-                        &host(),
                     )
                 });
                 let valid = matches!(
@@ -566,7 +560,6 @@ fn journal_preserves_overflow_denial_and_rejects_retry_of_denied_attempt() {
                     &recording,
                     Arc::from([row.clone()]),
                     journal_limits(),
-                    &host()
                 )
                 .unwrap()
                 .total(),
@@ -586,7 +579,6 @@ fn journal_preserves_overflow_denial_and_rejects_retry_of_denied_attempt() {
                 &invalid,
                 Arc::from([row, retry]),
                 journal_limits(),
-                &host()
             ),
             Err(NativeOperationJournalError::Retry)
         ));
@@ -641,18 +633,5 @@ proptest! {
         reference.sort_unstable();
         let expected = reference == (0..total).collect::<Vec<_>>();
         prop_assert_eq!(check(&recording, rows.into()).is_ok(), expected);
-    }
-
-    #[test]
-    fn journal_host_rejection_never_changes_input_evidence(limit in 0u64..10000) {
-        let (recording, rows) = fixture();
-        let before = format!("{recording:?}{rows:?}");
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(limit)));
-        let result = with_contract(100, [0, 0, 1, 0], |contract| {
-            contract.check_operation_journal([0; 32], &recording, Arc::clone(&rows), journal_limits(), &budget)
-        });
-        prop_assert_eq!(before, format!("{recording:?}{rows:?}"));
-        if budget.is_rejected() { prop_assert!(result.is_err()); }
-        if let Ok(checked) = result { prop_assert_eq!(checked.total(), 3); }
     }
 }

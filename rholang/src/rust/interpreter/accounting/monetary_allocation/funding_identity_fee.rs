@@ -16,14 +16,11 @@ impl CanonicalFundingProblem<'_> {
         canonical_resource_cursor: usize,
         canonical_fee_cursor: usize,
         limits: FundingSearchLimits,
-        budget: &HostWorkBudget,
     ) -> Result<Option<FundingFeeSelection>, FundingSearchError> {
         let count = self.sources.len();
         if original_fee_eligible.len() != count {
             return Err(FundingAssignmentError::InvalidDimensions.into());
         }
-        reserve_work(budget, HostWorkDimension::SearchStateBytes, count)?;
-        reserve_work(budget, HostWorkDimension::SearchCandidates, count)?;
         let mut fee_eligible = filled_vec(count, false)?;
         for (position, original) in self.source_order.iter().copied().enumerate() {
             fee_eligible[position] = original_fee_eligible[original];
@@ -34,7 +31,6 @@ impl CanonicalFundingProblem<'_> {
             canonical_resource_cursor,
             canonical_fee_cursor,
             limits,
-            budget,
         )
     }
 
@@ -45,11 +41,9 @@ impl CanonicalFundingProblem<'_> {
         canonical_fee_cursor: usize,
         proposed: FundingFeeProposal<'_>,
         limits: FundingSearchLimits,
-        budget: &HostWorkBudget,
     ) -> Result<bool, FundingSearchError> {
         let n = self.sources.len();
         let m = self.obligations.len();
-        reserve_work(budget, HostWorkDimension::VerificationOperations, n)?;
         if proposed.resource_assignment.len() != n
             || proposed.fee_debits.len() != n
             || proposed
@@ -64,18 +58,10 @@ impl CanonicalFundingProblem<'_> {
             canonical_resource_cursor,
             canonical_fee_cursor,
             limits,
-            budget,
         )?
         else {
             return Ok(false);
         };
-        reserve_work(
-            budget,
-            HostWorkDimension::VerificationOperations,
-            n.checked_mul(m.checked_add(1).ok_or(FundingSearchError::Overflow)?)
-                .and_then(|count| count.checked_add(2))
-                .ok_or(FundingSearchError::Overflow)?,
-        )?;
         if selected.resource_next_cursor() != proposed.resource_next_cursor
             || selected.fee().next_cursor != proposed.fee_next_cursor
         {

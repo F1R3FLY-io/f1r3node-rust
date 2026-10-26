@@ -52,9 +52,7 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::reified::encoding::{split_trailing_params, SendParams};
 use models::rust::rholang::implicits::single_bundle;
 use models::rust::utils::{new_boundvar_par, new_bundle_par, new_gint_par, union};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 
-use super::costs::ScanMeter;
 // Disabled by P8 step 3: the consume method no longer fails closed with a reducer code, so the
 // library code of this module raises none.
 // use super::errors::ReifiedReduceError;
@@ -64,7 +62,6 @@ use super::system_channels::{handle_of, HANDLE_OP_PROCESS};
 use super::user_agent::{matcher_state_of, MatcherState};
 use super::vectordb_services::collection_name;
 use crate::rust::interpreter::contract_call::ContractCall;
-use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::dispatch::{DispatchType, RhoDispatch};
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::reduce::ReducerCore;
@@ -553,14 +550,10 @@ fn consume_method(
     else {
         return Ok(MethodEffect::Reply(bad_argument(method, "body")));
     };
-    let meter = ScanMeter::new(
-        deterministic_reduction::current().and_then(|context| context.host_work_budget()),
-    );
     let mut states = Vec::with_capacity(pairs.len());
-    meter.reserve_buffer::<MatcherState>(pairs.len())?;
     for (index, (matcher, _)) in pairs.iter().enumerate() {
         let state = match capability_par(matcher) {
-            Some(id) => matcher_state_of(id, &meter)?,
+            Some(id) => matcher_state_of(id)?,
             None => None,
         };
         match state {
@@ -595,7 +588,7 @@ fn consume_method(
     }
     let total = states.first().map(|state| state.total).unwrap_or(0);
     let continuation = ParWithRandom {
-        body: Some(env_forwarder(body_id, total, &meter)?),
+        body: Some(env_forwarder(body_id, total)?),
         random_state: call.random_state.clone(),
     };
     let authority = call.cost_authority.clone().unwrap_or_default();
@@ -640,8 +633,7 @@ fn consume_method(
     Ok(MethodEffect::Operation(op))
 }
 
-/// The bare id of a capability: the body of one bundle, or the value itself. It copies
-/// nothing, so a matcher id is reserved by its decode before any copy.
+/// The bare id of a capability: the body of one bundle, or the value itself. It copies nothing.
 fn capability_par(capability: &Par) -> Option<&Par> {
     match sole_bundle(capability) {
         Some(Bundle { body, .. }) => body.as_ref(),
@@ -693,15 +685,13 @@ fn readable_channel(ch: &Par) -> Option<Par> {
 /// The body of a native receive that a translation describes (design v2 HC-3): the send of the
 /// env map `{"g": BoundVar(total - 1 - g) | g < total}` to `bundle+{b}`. When the receive fires,
 /// `BoundVar(total - 1 - g)` holds the value of the binder at the global position `g`, so the
-/// body capability gets the env map of TR-6. Each key, entry and insertion is reserved first.
-fn env_forwarder(body_id: &Par, total: u32, meter: &ScanMeter) -> Result<Par, InterpreterError> {
-    let count = usize::try_from(total).map_err(|_| RSpaceError::HostWorkRejected)?;
-    let mut pairs = meter.buffer::<(Par, Par)>(count)?;
+/// body capability gets the env map of TR-6.
+fn env_forwarder(body_id: &Par, total: u32) -> Result<Par, InterpreterError> {
+    let count = usize::try_from(total)
+        .map_err(|_| SpaceError::Inconsistent("a binder count does not fit"))?;
+    let mut pairs = Vec::<(Par, Par)>::with_capacity(count);
     for position in 0..total {
         let key = position.to_string();
-        meter.charge(1, key.len(), key.len())?;
-        meter.reserve_buffer::<Par>(2)?;
-        meter.ordered_lookup(pairs.len(), key.len())?;
         let level = total - 1 - position;
         let index = i32::try_from(level)
             .map_err(|_| SpaceError::Inconsistent("a binder level does not fit"))?;
@@ -709,8 +699,6 @@ fn env_forwarder(body_id: &Par, total: u32, meter: &ScanMeter) -> Result<Par, In
             .map_err(|_| SpaceError::Inconsistent("a binder level does not fit"))?]);
         pairs.push((string_par(&key), new_boundvar_par(index, bound, false)));
     }
-    meter.tree_growth::<Par, Par>(0, pairs.len())?;
-    meter.reserve_copy(body_id)?;
     let env = map_par(pairs);
     let locally_free = env.locally_free.clone();
     Ok(Par::default()
@@ -982,7 +970,6 @@ pub(crate) mod alloc_harness {
     use models::rust::utils::new_freevar_var;
     use rspace_plus_plus::rspace::internal::Datum;
 
-    use crate::rust::interpreter::reified::costs::ScanMeter;
     use crate::rust::interpreter::spaces::agent::{
         AllocOp, Allocation, ConsumeOp, JoinOp, Prepared, ProduceOp, SettleOp, SpaceAgent,
         SpaceCreation, SpaceEnv, SpaceOutcome,
@@ -1028,14 +1015,12 @@ pub(crate) mod alloc_harness {
             space: NativeSpace,
             random: &Blake2b512Random,
             authority: &CostAuthority,
-            meter: &ScanMeter,
         ) -> Result<Vec<(Par, ListParWithRandom)>, SpaceError> {
-            let record = record::counter_record_metered(
+            let record = record::counter_record(
                 0,
                 &RandomPurpose::Allocator.derive(random).split_byte(1),
-                record::cost_authority_metered(authority, meter)?,
-                meter,
-            )?;
+                record::cost_authority(authority),
+            );
             Ok(vec![(
                 namespace::gprivate(namespace::allocator_channel(space)),
                 record,
@@ -1051,7 +1036,7 @@ pub(crate) mod alloc_harness {
             let stored = cx.allocator_record()?.ok_or(SpaceError::Inconsistent(
                 "a space without an allocator record",
             ))?;
-            let value = record::counter_value_metered(&stored.a, cx.meter())?;
+            let value = record::counter_value(&stored.a)?;
             let count = i64::try_from(op.count).map_err(|_| SpaceError::OutOfNames)?;
             let next = value.checked_add(count).ok_or(SpaceError::OutOfNames)?;
             cx.take(stored, value)?;
@@ -1119,9 +1104,9 @@ pub(crate) mod alloc_harness {
 
         async fn allocate(&self, env: &SpaceEnv, op: AllocOp) -> Result<Allocation, SpaceError> {
             let opened = begin_allocation(env, op.space).await?;
-            match family_matches::<Counted, QueueDiscipline>(&opened.config, &env.meter)? {
+            match family_matches::<Counted, QueueDiscipline>(&opened.config) {
                 true => COUNTED.run_allocate(env, opened, &op),
-                false => match Family::of_config(&opened.config, &env.meter)? {
+                false => match Family::of_config(&opened.config) {
                     Some(family) => family.agent().run_allocate(env, opened, &op),
                     None => Err(family_unavailable(opened.config)),
                 },
@@ -1790,9 +1775,7 @@ mod tests {
             },
             guard,
         };
-        let bytes = state
-            .encode(&ScanMeter::new(None))
-            .expect("a translation state encodes");
+        let bytes = state.encode().expect("a translation state encodes");
         namespace::gprivate(namespace::matcher_channel(&bytes))
     }
 

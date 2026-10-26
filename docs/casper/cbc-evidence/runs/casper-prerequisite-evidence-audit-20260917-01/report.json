@@ -1,0 +1,1087 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-3",
+  "scope": "historical-reference-integrity-only",
+  "observed_at": "2026-09-17T02:21:59.469506+00:00",
+  "checkout_revision": "7d362bb9b0ca992417edd5eeab2a17deddfdd829",
+  "ledger_revision": "65f7f6daa832c0acb6fddf2b462db1b9d5461729",
+  "ledger_digests": {
+    "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md": "7cc3f157cb68a5dfe17e96065e14638ebf7fc453274752eefdaf5d4c14e62f0c",
+    "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md": "0aa564b1f65b136429ef9f3291021c31a121c9555180e9958c5432d7bc4e1d7b"
+  },
+  "historical_tree_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+  "manifest_references": [
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-probe-2026-09-08/manifest.jsonc",
+      "expected_sha256": "3f1a1697d34f4696f877bcb5138942ecba5a9cd2754f8ad1e43d70a4e05870c7",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "3f1a1697d34f4696f877bcb5138942ecba5a9cd2754f8ad1e43d70a4e05870c7",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-sample-2026-09-09/manifest.jsonc",
+      "expected_sha256": "167d3a6bb8025d2d80615b4c178d0961fd433f83e5840d3aa038336c4bbeb137",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "167d3a6bb8025d2d80615b4c178d0961fd433f83e5840d3aa038336c4bbeb137",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-emergency-2026-09-09/manifest.jsonc",
+      "expected_sha256": "36c75832006ecdf4d1b7bd4f14cfdf02c73ae8663b562afbbbcdd8cf24ef7773",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "36c75832006ecdf4d1b7bd4f14cfdf02c73ae8663b562afbbbcdd8cf24ef7773",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-stop-2026-09-09/manifest.jsonc",
+      "expected_sha256": "1f0ec6ca4b469fbfff33ae939221da8a2845e1bf5744f1c8d54f783aa9b55006",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "1f0ec6ca4b469fbfff33ae939221da8a2845e1bf5744f1c8d54f783aa9b55006",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-boundary-2026-09-09/manifest.jsonc",
+      "expected_sha256": "9ea2de48dcc9e353454a8451453fdb69772d827fdb9a689a26491b130ffae3ae",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "9ea2de48dcc9e353454a8451453fdb69772d827fdb9a689a26491b130ffae3ae",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-benchmark-2026-09-09/manifest.jsonc",
+      "expected_sha256": "871daa99255006420b61cf4c8d70f0164312f009fa138a1e220e5c0a1b2ffb4f",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "871daa99255006420b61cf4c8d70f0164312f009fa138a1e220e5c0a1b2ffb4f",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-benchmark-band-2026-09-09/manifest.jsonc",
+      "expected_sha256": "bff43e225d2de7d2a5b92559b093a36436be27ef80ba305293be99af7b4e0280",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "bff43e225d2de7d2a5b92559b093a36436be27ef80ba305293be99af7b4e0280",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-benchmark-monitor-2026-09-09/manifest.jsonc",
+      "expected_sha256": "79b4505f9dbe2a7f2341430356ac63b75c1c5956244c83cfa66b7dfbbaca7323",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "79b4505f9dbe2a7f2341430356ac63b75c1c5956244c83cfa66b7dfbbaca7323",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-hygiene-2026-09-09/manifest.jsonc",
+      "expected_sha256": "17bc0ec164978c3b8f6ba4b59394bd666b650d3f29234ca5110aab7bb8b58bff",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "17bc0ec164978c3b8f6ba4b59394bd666b650d3f29234ca5110aab7bb8b58bff",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-settings-2026-09-10/manifest.jsonc",
+      "expected_sha256": "0f8ed4935155b3ca96d133e656a19da4edd2f340c192c77395a03cedc4d4db8b",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "0f8ed4935155b3ca96d133e656a19da4edd2f340c192c77395a03cedc4d4db8b",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-cleanup-session-2026-09-10/manifest.jsonc",
+      "expected_sha256": "0c7926aa4f0872c592321457ac2bbd797689198f4139e1d333db1475bb1171a4",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "0c7926aa4f0872c592321457ac2bbd797689198f4139e1d333db1475bb1171a4",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-cleanup-outcome-2026-09-10/manifest.jsonc",
+      "expected_sha256": "cce080274ac1cc657e7465e60c9a252f9aae023173d473d1b89043fb17610fb0",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "cce080274ac1cc657e7465e60c9a252f9aae023173d473d1b89043fb17610fb0",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-real-system-2026-09-10/manifest.jsonc",
+      "expected_sha256": "5918cd78b803d9e6566afdb46ba10cd21360b2341326d54a4766bfd2bde2df88",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "5918cd78b803d9e6566afdb46ba10cd21360b2341326d54a4766bfd2bde2df88",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-owned-stop-2026-09-10/manifest.jsonc",
+      "expected_sha256": "a576182e25d3c133092d87cb74dc97a9cc865d3c4d76eaef8871f5c0f574344d",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "a576182e25d3c133092d87cb74dc97a9cc865d3c4d76eaef8871f5c0f574344d",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-host-stop-2026-09-11/manifest.jsonc",
+      "expected_sha256": "4fca82d3605cf6430017b9d5d74847942050dfc1ed0502966bc22e45b36868b5",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "4fca82d3605cf6430017b9d5d74847942050dfc1ed0502966bc22e45b36868b5",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-oom-ownership-2026-09-11/manifest.jsonc",
+      "expected_sha256": "0071d1d4f27410cd1a40583e89ac79496abfe4512be5f0ba9b713a5dace835b5",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "0071d1d4f27410cd1a40583e89ac79496abfe4512be5f0ba9b713a5dace835b5",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-container-preference-2026-09-11/manifest.jsonc",
+      "expected_sha256": "56d8f6bd841fa14bc593fb5f779cd2681f50e496827b366c24c43e83735d1b9c",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "56d8f6bd841fa14bc593fb5f779cd2681f50e496827b366c24c43e83735d1b9c",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-durable-record-2026-09-12/manifest.jsonc",
+      "expected_sha256": "dc84e7dbb11c34348bbfa52724fa048dfc8f78f294ba85072d8d06eacade66da",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "dc84e7dbb11c34348bbfa52724fa048dfc8f78f294ba85072d8d06eacade66da",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-emergency-deadline-2026-09-12/manifest.jsonc",
+      "expected_sha256": "8df215463b99ceb39fb035656ba08e0c835d91b54d9e628075f1bf2015e8a086",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "8df215463b99ceb39fb035656ba08e0c835d91b54d9e628075f1bf2015e8a086",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-native-control-2026-09-12/manifest.jsonc",
+      "expected_sha256": "ab727a76c4237512eda361f9d97f24c515c4808ed0fd2d4ad3f4e2798c1163a6",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "ab727a76c4237512eda361f9d97f24c515c4808ed0fd2d4ad3f4e2798c1163a6",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-breach-record-2026-09-12/manifest.jsonc",
+      "expected_sha256": "c23dbff5912647a401f783d8ed82754d73d128cf6de860145d1ebd9393a7b477",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "c23dbff5912647a401f783d8ed82754d73d128cf6de860145d1ebd9393a7b477",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-native-admission-2026-09-12/manifest.jsonc",
+      "expected_sha256": "d4f19c4fb3b58e6b57f19ccaa69353ee39764d59b58abed27f540595886f145e",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "d4f19c4fb3b58e6b57f19ccaa69353ee39764d59b58abed27f540595886f145e",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-record-identity-2026-09-12/manifest.jsonc",
+      "expected_sha256": "9d72b7531e3b471be5661912bd6280f5fa36aa80ddbad91d521d2f05fbc4377d",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "9d72b7531e3b471be5661912bd6280f5fa36aa80ddbad91d521d2f05fbc4377d",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-run-domain-2026-09-12/manifest.jsonc",
+      "expected_sha256": "dc9e64bc3de1600fb89902d28fdca64dc4fdfe452684fae4522ea6992f37a404",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "dc9e64bc3de1600fb89902d28fdca64dc4fdfe452684fae4522ea6992f37a404",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-native-containment-2026-09-11/manifest.jsonc",
+      "expected_sha256": "0adc428a2a6f043c4dd850974691e25825fe865704b32107a9270cad867748d9",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "0adc428a2a6f043c4dd850974691e25825fe865704b32107a9270cad867748d9",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-shutdown-2026-09-11/manifest.jsonc",
+      "expected_sha256": "d933830ef7d8fdbe96394b4b5902d17085a77048cfa303c5449e1579d33c73cf",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "d933830ef7d8fdbe96394b4b5902d17085a77048cfa303c5449e1579d33c73cf",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-monitor-death-2026-09-11/manifest.jsonc",
+      "expected_sha256": "63b8f9208df32d362a7542f144f786e748185437c8c687e1346775704f4e94f3",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "63b8f9208df32d362a7542f144f786e748185437c8c687e1346775704f4e94f3",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-crash-stop-2026-09-11/manifest.jsonc",
+      "expected_sha256": "4079c17dbe113294e1a3fe202c4eb952fc5b94c012a13a80c1570060c7e21921",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "4079c17dbe113294e1a3fe202c4eb952fc5b94c012a13a80c1570060c7e21921",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-benchmark-crash-2026-09-11/manifest.jsonc",
+      "expected_sha256": "e404d259df47730d6b16abe90a213f8cd1a8a8a645bfb16fa929a4c9ef94b9b0",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "e404d259df47730d6b16abe90a213f8cd1a8a8a645bfb16fa929a4c9ef94b9b0",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-guardian-progress-2026-09-09/manifest.jsonc",
+      "expected_sha256": "310280a8df04bcba0d34cc6d0bd3d8b6b8899bb87e85f5ff945be7f1ffb8618b",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "310280a8df04bcba0d34cc6d0bd3d8b6b8899bb87e85f5ff945be7f1ffb8618b",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-benchmark-supervision-2026-09-09/manifest.jsonc",
+      "expected_sha256": "33be0710c7d724988fa1e07797a6537f3ba5ae9f962eacce784cabe0a0d348fe",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "33be0710c7d724988fa1e07797a6537f3ba5ae9f962eacce784cabe0a0d348fe",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-run-merge-recovery-soak-sh.md",
+      "path": "docs/cbc-evidence/soak-d2-benchmark-cases-2026-09-09/manifest.jsonc",
+      "expected_sha256": "c7671619622336d2ca493ea5b7597414b28f18a43bb5e4b3a659c50c9565661b",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "c7671619622336d2ca493ea5b7597414b28f18a43bb5e4b3a659c50c9565661b",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+      "path": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
+      "expected_sha256": "b4e857a74cf4e091c7cff84a495e0db77d6a5ea3f2234f81078c2bdbe4ce0cde",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "b4e857a74cf4e091c7cff84a495e0db77d6a5ea3f2234f81078c2bdbe4ce0cde",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+      "path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "expected_sha256": "2e132518c37579b90c0c0a143e0ee553278e4b763562ee3b54eb3f6c1ea68a0e",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "2e132518c37579b90c0c0a143e0ee553278e4b763562ee3b54eb3f6c1ea68a0e",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+      "path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "expected_sha256": "b73351d1b39df729dcc01014462249ddf456df896bacfa3865f10ea88810c28e",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "b73351d1b39df729dcc01014462249ddf456df896bacfa3865f10ea88810c28e",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+      "path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "expected_sha256": "0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": true,
+      "actual_sha256": "0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6",
+      "digest_match": true
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+      "path": "docs/cbc-evidence/g0-hosted-d6aaba962-2026-09-08/manifest.json",
+      "expected_sha256": "618bd14f61760e12959e97636a6c7a46a4e8cd2c7f15381859058d305db634c8",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": false
+    },
+    {
+      "ledger": "docs/cbc-evidence/scripts-ci-check-tla-invariants-sh.md",
+      "path": "docs/cbc-evidence/repin-962effd-2026-09-08/manifest.json",
+      "expected_sha256": "3858c683327fd88fff364fb1974adcadc748cea0464d1e26ea0989e406ca3e9e",
+      "history_revision": "2388a8eedf33d07018f0630bced51a6e054ba439",
+      "available": false
+    }
+  ],
+  "gate_nested_references": [
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "MC_CarrierIndex.log",
+      "expected_sha256": "188cfd3165715b5ed67993fe370bbaae41867bd247ed94311d23745b8363e0c3",
+      "resolved_path": "docs/cbc-evidence/soak-g0-2026-09-08/MC_CarrierIndex.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "188cfd3165715b5ed67993fe370bbaae41867bd247ed94311d23745b8363e0c3",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "MC_CarrierIndex_dag_first_pre_fix.log",
+      "expected_sha256": "1f1e86b20b24ad71d4e58d5184abe0269819074f7a38f7d881dcff5470379bb8",
+      "resolved_path": "docs/cbc-evidence/soak-g0-2026-09-08/MC_CarrierIndex_dag_first_pre_fix.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "1f1e86b20b24ad71d4e58d5184abe0269819074f7a38f7d881dcff5470379bb8",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "MC_CarrierIndex_read_failure_pre_fix.log",
+      "expected_sha256": "006a3853c2857fc0505f6e76fb990a01507263145df85edd8d9efda99c79091b",
+      "resolved_path": "docs/cbc-evidence/soak-g0-2026-09-08/MC_CarrierIndex_read_failure_pre_fix.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "006a3853c2857fc0505f6e76fb990a01507263145df85edd8d9efda99c79091b",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "gate-green.log",
+      "expected_sha256": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+      "resolved_path": "docs/cbc-evidence/soak-g0-2026-09-08/gate-green.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "gate-red.log",
+      "expected_sha256": "79fefd2ce87b9d9e882168821cf102762307a5a9760ffccfe67548ac6a847098",
+      "resolved_path": "docs/cbc-evidence/soak-g0-2026-09-08/gate-red.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "79fefd2ce87b9d9e882168821cf102762307a5a9760ffccfe67548ac6a847098",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "release-workflows.log",
+      "expected_sha256": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+      "resolved_path": "docs/cbc-evidence/soak-g0-2026-09-08/release-workflows.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "workflow-security.log",
+      "expected_sha256": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
+      "resolved_path": "docs/cbc-evidence/soak-g0-2026-09-08/workflow-security.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "b1-regression.log",
+      "expected_sha256": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/b1-regression.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "carrier_index-MC_CarrierIndex.log",
+      "expected_sha256": "f6abbcec51fa06fb03f9bdc6a89582dc0c7e723f3a1d8b03915b97b397e0ecf5",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/carrier_index-MC_CarrierIndex.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "f6abbcec51fa06fb03f9bdc6a89582dc0c7e723f3a1d8b03915b97b397e0ecf5",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "carrier_index-MC_CarrierIndex_dag_first_pre_fix.log",
+      "expected_sha256": "344949da03e216b4e852be5fb5f6dccf46736ef8fc111c8548fd10190a8645bb",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/carrier_index-MC_CarrierIndex_dag_first_pre_fix.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "344949da03e216b4e852be5fb5f6dccf46736ef8fc111c8548fd10190a8645bb",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "carrier_index-MC_CarrierIndex_read_failure_pre_fix.log",
+      "expected_sha256": "3aa870af96411d35f6d6314094aae4a2d5d186a9ff4a4e5bbd62b4935dab9f26",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/carrier_index-MC_CarrierIndex_read_failure_pre_fix.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "3aa870af96411d35f6d6314094aae4a2d5d186a9ff4a4e5bbd62b4935dab9f26",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "forbidden-exhaustive.log",
+      "expected_sha256": "a493c0b027d3ab657896d93433fade6f93c1634ce47d693d17dd407bbf4349b6",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/forbidden-exhaustive.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "a493c0b027d3ab657896d93433fade6f93c1634ce47d693d17dd407bbf4349b6",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "green.log",
+      "expected_sha256": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/green.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "real-gate.log",
+      "expected_sha256": "2e5a94583adfe5b8081631e554c29ae7437b3c4b9e1be35025b14d677be65d6d",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/real-gate.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "2e5a94583adfe5b8081631e554c29ae7437b3c4b9e1be35025b14d677be65d6d",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "red.log",
+      "expected_sha256": "e1fd6c977271e23832e45f5717aea6a0b31ba3cff6af6c4addd18721b04743e5",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/red.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "e1fd6c977271e23832e45f5717aea6a0b31ba3cff6af6c4addd18721b04743e5",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "release-gates.log",
+      "expected_sha256": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/release-gates.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "release-workflows.log",
+      "expected_sha256": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/release-workflows.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "replay_liveness-MC_ReplayHotLoop.log",
+      "expected_sha256": "b64524e0d14b287a1d7d938e2cc8cb7bb59175d018d027ebb8d16c047186438c",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/replay_liveness-MC_ReplayHotLoop.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "b64524e0d14b287a1d7d938e2cc8cb7bb59175d018d027ebb8d16c047186438c",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b2-2026-09-08/manifest.jsonc",
+      "field": "log_sha256",
+      "recorded_name": "workflow-security.log",
+      "expected_sha256": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b2-2026-09-08/workflow-security.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "b1-regression.log",
+      "expected_sha256": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/b1-regression.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "7c164485b09885d34fb6fa5cad90ff4c6bab602d8e04d2fc701fb2d620ea16ac",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "b2-regression.log",
+      "expected_sha256": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/b2-regression.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "5bf9a0d60c04a9d56eb1eb237609c5639bec78b1bb44e905e72def58e8a55bc7",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "dev-required-checks.json",
+      "expected_sha256": "c104ef2dce9c1ec7e6b4aecc78e2971f2a7de655e448bfa282e4d26870362de1",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/dev-required-checks.jsonc",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "c104ef2dce9c1ec7e6b4aecc78e2971f2a7de655e448bfa282e4d26870362de1",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "green.log",
+      "expected_sha256": "a25059e56410a6f6144528b6c9c6b76b5271049619efc354d1bbe6783ac3d5e9",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/green.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "a25059e56410a6f6144528b6c9c6b76b5271049619efc354d1bbe6783ac3d5e9",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "hosted-artifacts.json",
+      "expected_sha256": "e110ae3fd6a077aa2a5de3e2b1ea1ca06dc4c00dba3616c4d75446ac8b8933f4",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-artifacts.jsonc",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "e110ae3fd6a077aa2a5de3e2b1ea1ca06dc4c00dba3616c4d75446ac8b8933f4",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "hosted-job.json",
+      "expected_sha256": "a0a8e22b55f123b1fef0dd32f03ed79c547006368494667a75ce69efc3e5f48c",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-job.jsonc",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "a0a8e22b55f123b1fef0dd32f03ed79c547006368494667a75ce69efc3e5f48c",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "hosted-observation.json",
+      "expected_sha256": "0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "0c28cb6b5f83a005845153f0edc28fbc069d7fb85822b643f6faa9afd55927f6",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "hosted-run.json",
+      "expected_sha256": "1b7769b7164eba9653a08080c0cc1f5e689a346012f93e2ca3c0f3405217ee32",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-run.jsonc",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "1b7769b7164eba9653a08080c0cc1f5e689a346012f93e2ca3c0f3405217ee32",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "red.exit",
+      "expected_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/red.exit",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "red.log",
+      "expected_sha256": "644b358bc3a6913dc12761b05510b1ee60dd2b9720ca4447d6cfb465ba4d8f3a",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/red.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "644b358bc3a6913dc12761b05510b1ee60dd2b9720ca4447d6cfb465ba4d8f3a",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "rejection-checks.log",
+      "expected_sha256": "0b1bcc931d9ef93e90156fc2446994410d340b6ca546bb17477069e5fa2580e3",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/rejection-checks.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "0b1bcc931d9ef93e90156fc2446994410d340b6ca546bb17477069e5fa2580e3",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "release-gates.log",
+      "expected_sha256": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/release-gates.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "cfe6567acc34cb3ac6b04d1b1fc407615684a85d34e48f05d93777dece12ae2b",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "release-workflows.log",
+      "expected_sha256": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/release-workflows.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "a55ff24e1452a38de29ad829c85bbb561ac396d848ec6526a97b394f6e16a82f",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "tlc-carrier_index-MC_CarrierIndex.log",
+      "expected_sha256": "8830d18c8b4df3e2ab2bd5469e07275c1599701776fcc0ccaea49e53c56cef7a",
+      "resolved_path": "tlc-carrier_index-MC_CarrierIndex.log",
+      "location": "github-artifact-10056856375",
+      "available": true,
+      "actual_sha256": "8830d18c8b4df3e2ab2bd5469e07275c1599701776fcc0ccaea49e53c56cef7a",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log",
+      "expected_sha256": "bc3efd682bde71f944dd810d3920480f79bf96ee611e0144625bef0a16761ec4",
+      "resolved_path": "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log",
+      "location": "github-artifact-10056856375",
+      "available": true,
+      "actual_sha256": "bc3efd682bde71f944dd810d3920480f79bf96ee611e0144625bef0a16761ec4",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log",
+      "expected_sha256": "0a53c3af73068820850076408449e054288163582f2a0fc93f3743bb2226b03a",
+      "resolved_path": "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log",
+      "location": "github-artifact-10056856375",
+      "available": true,
+      "actual_sha256": "0a53c3af73068820850076408449e054288163582f2a0fc93f3743bb2226b03a",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "tlc-replay_liveness-MC_ReplayHotLoop.log",
+      "expected_sha256": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
+      "resolved_path": "tlc-replay_liveness-MC_ReplayHotLoop.log",
+      "location": "github-artifact-10056856375",
+      "available": true,
+      "actual_sha256": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/manifest.jsonc",
+      "field": "evidence_sha256",
+      "recorded_name": "workflow-security.log",
+      "expected_sha256": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/workflow-security.log",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "58aaa9d3aa8ec252a7e93ba60dea09172058b7c4e30e5a36e54a8b57657424ab",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "field": "retained_sha256",
+      "recorded_name": "dev-required-checks.json",
+      "expected_sha256": "c104ef2dce9c1ec7e6b4aecc78e2971f2a7de655e448bfa282e4d26870362de1",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/dev-required-checks.jsonc",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "c104ef2dce9c1ec7e6b4aecc78e2971f2a7de655e448bfa282e4d26870362de1",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "field": "retained_sha256",
+      "recorded_name": "hosted-artifacts.json",
+      "expected_sha256": "e110ae3fd6a077aa2a5de3e2b1ea1ca06dc4c00dba3616c4d75446ac8b8933f4",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-artifacts.jsonc",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "e110ae3fd6a077aa2a5de3e2b1ea1ca06dc4c00dba3616c4d75446ac8b8933f4",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "field": "retained_sha256",
+      "recorded_name": "hosted-job.json",
+      "expected_sha256": "a0a8e22b55f123b1fef0dd32f03ed79c547006368494667a75ce69efc3e5f48c",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-job.jsonc",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "a0a8e22b55f123b1fef0dd32f03ed79c547006368494667a75ce69efc3e5f48c",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "field": "retained_sha256",
+      "recorded_name": "hosted-run.json",
+      "expected_sha256": "1b7769b7164eba9653a08080c0cc1f5e689a346012f93e2ca3c0f3405217ee32",
+      "resolved_path": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-run.jsonc",
+      "location": "historical-tree",
+      "available": true,
+      "actual_sha256": "1b7769b7164eba9653a08080c0cc1f5e689a346012f93e2ca3c0f3405217ee32",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "field": "retained_sha256",
+      "recorded_name": "tlc-carrier_index-MC_CarrierIndex.log",
+      "expected_sha256": "8830d18c8b4df3e2ab2bd5469e07275c1599701776fcc0ccaea49e53c56cef7a",
+      "resolved_path": "tlc-carrier_index-MC_CarrierIndex.log",
+      "location": "github-artifact-10056856375",
+      "available": true,
+      "actual_sha256": "8830d18c8b4df3e2ab2bd5469e07275c1599701776fcc0ccaea49e53c56cef7a",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "field": "retained_sha256",
+      "recorded_name": "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log",
+      "expected_sha256": "bc3efd682bde71f944dd810d3920480f79bf96ee611e0144625bef0a16761ec4",
+      "resolved_path": "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log",
+      "location": "github-artifact-10056856375",
+      "available": true,
+      "actual_sha256": "bc3efd682bde71f944dd810d3920480f79bf96ee611e0144625bef0a16761ec4",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "field": "retained_sha256",
+      "recorded_name": "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log",
+      "expected_sha256": "0a53c3af73068820850076408449e054288163582f2a0fc93f3743bb2226b03a",
+      "resolved_path": "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log",
+      "location": "github-artifact-10056856375",
+      "available": true,
+      "actual_sha256": "0a53c3af73068820850076408449e054288163582f2a0fc93f3743bb2226b03a",
+      "digest_match": true
+    },
+    {
+      "manifest": "docs/cbc-evidence/soak-g0-b3-2026-09-08/hosted-observation.jsonc",
+      "field": "retained_sha256",
+      "recorded_name": "tlc-replay_liveness-MC_ReplayHotLoop.log",
+      "expected_sha256": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
+      "resolved_path": "tlc-replay_liveness-MC_ReplayHotLoop.log",
+      "location": "github-artifact-10056856375",
+      "available": true,
+      "actual_sha256": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
+      "digest_match": true
+    }
+  ],
+  "hosted_artifacts": [
+    {
+      "id": 10056856375,
+      "run_id": 34228660038,
+      "run_head_sha": "43af06dab41ddf81b8dd1fcc5cf9e1303027aab7",
+      "run_attempt": 1,
+      "run_event": "pull_request",
+      "run_conclusion": "success",
+      "workflow_path": ".github/workflows/slashing-tests.yml",
+      "api_archive_digest": "sha256:eebdcb4b8805c1a1fa77c17b56266c5e758402b835b61fc1386576bfe91c3944",
+      "downloaded_archive_sha256": "eebdcb4b8805c1a1fa77c17b56266c5e758402b835b61fc1386576bfe91c3944",
+      "api_digest_match": true,
+      "expired": false,
+      "expires_at": "2026-12-07T12:53:22Z",
+      "logs": [
+        {
+          "original_name": "tlc-carrier_index-MC_CarrierIndex.log",
+          "retained_path": "10056856375/tlc-carrier_index-MC_CarrierIndex.txt",
+          "original_sha256": "8830d18c8b4df3e2ab2bd5469e07275c1599701776fcc0ccaea49e53c56cef7a",
+          "retained_sha256": "8d4a0a893c4a32efef8040cf4bd4977f8440e0f852a0629a35bb04412f25c977",
+          "redaction": "CI workspace prefix replaced with [WORKSPACE].",
+          "tlc_version_line": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+          "fingerprint_index": 62,
+          "seed": "435165504072982900",
+          "workers": 2,
+          "completed_search_marker": true,
+          "observed_invariants": [],
+          "trace_present": false,
+          "last_reported_state_counts": {
+            "generated": 1713,
+            "distinct": 222,
+            "queue": 0
+          },
+          "tlc_exit_code": null,
+          "exit_code_limit": "The uploaded TLC transcript does not independently record its process exit code."
+        },
+        {
+          "original_name": "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log",
+          "retained_path": "10056856375/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt",
+          "original_sha256": "bc3efd682bde71f944dd810d3920480f79bf96ee611e0144625bef0a16761ec4",
+          "retained_sha256": "c38aa4d69d6e5083043fdf6304aa9f2c6fafe9ca8ce93ac54fe291871c51a50c",
+          "redaction": "CI workspace prefix replaced with [WORKSPACE].",
+          "tlc_version_line": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+          "fingerprint_index": 118,
+          "seed": "1692709035259455505",
+          "workers": 2,
+          "completed_search_marker": false,
+          "observed_invariants": [
+            "IndexCompleteForWindow"
+          ],
+          "trace_present": true,
+          "last_reported_state_counts": {
+            "generated": 11,
+            "distinct": 9,
+            "queue": 5
+          },
+          "tlc_exit_code": null,
+          "exit_code_limit": "The uploaded TLC transcript does not independently record its process exit code."
+        },
+        {
+          "original_name": "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log",
+          "retained_path": "10056856375/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt",
+          "original_sha256": "0a53c3af73068820850076408449e054288163582f2a0fc93f3743bb2226b03a",
+          "retained_sha256": "072ec7d2008a1833ae3ad1fbdf3b36ec6887116556ca1ccd0e97d85c751801d1",
+          "redaction": "CI workspace prefix replaced with [WORKSPACE].",
+          "tlc_version_line": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+          "fingerprint_index": 88,
+          "seed": "-1714889949570307977",
+          "workers": 2,
+          "completed_search_marker": false,
+          "observed_invariants": [
+            "AbsenceProofSound"
+          ],
+          "trace_present": true,
+          "last_reported_state_counts": {
+            "generated": 110,
+            "distinct": 41,
+            "queue": 26
+          },
+          "tlc_exit_code": null,
+          "exit_code_limit": "The uploaded TLC transcript does not independently record its process exit code."
+        },
+        {
+          "original_name": "tlc-replay_liveness-MC_ReplayHotLoop.log",
+          "retained_path": "10056856375/tlc-replay_liveness-MC_ReplayHotLoop.txt",
+          "original_sha256": "dba9cdcb9ea16f449a848d367cd07a303cb13c35960696cc039359fb53ed7ad3",
+          "retained_sha256": "b9932e4892926b8006bc4575ea331aca36ac88bf3698444cbdc93dd5a49334f7",
+          "redaction": "CI workspace prefix replaced with [WORKSPACE].",
+          "tlc_version_line": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+          "fingerprint_index": 31,
+          "seed": "3744946492707770740",
+          "workers": 2,
+          "completed_search_marker": true,
+          "observed_invariants": [],
+          "trace_present": false,
+          "last_reported_state_counts": {
+            "generated": 10,
+            "distinct": 9,
+            "queue": 0
+          },
+          "tlc_exit_code": null,
+          "exit_code_limit": "The uploaded TLC transcript does not independently record its process exit code."
+        }
+      ],
+      "historical_observation_archive_sha256": "eebdcb4b8805c1a1fa77c17b56266c5e758402b835b61fc1386576bfe91c3944",
+      "historical_observation_digest_match": true,
+      "recorded_checkout_sha": "bad72c4c299b73ede9abb1b5adc0f70fbdfb8e7b",
+      "workflow_control_sha": null
+    },
+    {
+      "id": 10063312912,
+      "run_id": 34244230926,
+      "run_head_sha": "d6aaba9628536245fc42183d1682539583d6550b",
+      "run_attempt": 1,
+      "run_event": "pull_request",
+      "run_conclusion": "success",
+      "workflow_path": ".github/workflows/slashing-tests.yml",
+      "api_archive_digest": "sha256:67c33849b3cd439fb5e6ded2fd8294b29413086562b66d52d19b9045298252e0",
+      "downloaded_archive_sha256": "67c33849b3cd439fb5e6ded2fd8294b29413086562b66d52d19b9045298252e0",
+      "api_digest_match": true,
+      "expired": false,
+      "expires_at": "2026-12-07T15:21:34Z",
+      "logs": [
+        {
+          "original_name": "tlc-carrier_index-MC_CarrierIndex.log",
+          "retained_path": "10063312912/tlc-carrier_index-MC_CarrierIndex.txt",
+          "original_sha256": "ef3781f9e0611bd647a976f61a6fb53a2f4b22e70d78f6aa364eac0c76e5a813",
+          "retained_sha256": "beb57c8b531ce2c8d34cde1d00600dd5154fa762ebdf0ef7f69d0ca0e228dd40",
+          "redaction": "CI workspace prefix replaced with [WORKSPACE].",
+          "tlc_version_line": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+          "fingerprint_index": 72,
+          "seed": "-6951382973092388340",
+          "workers": 2,
+          "completed_search_marker": true,
+          "observed_invariants": [],
+          "trace_present": false,
+          "last_reported_state_counts": {
+            "generated": 1713,
+            "distinct": 222,
+            "queue": 0
+          },
+          "tlc_exit_code": null,
+          "exit_code_limit": "The uploaded TLC transcript does not independently record its process exit code."
+        },
+        {
+          "original_name": "tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.log",
+          "retained_path": "10063312912/tlc-carrier_index-MC_CarrierIndex_dag_first_pre_fix.txt",
+          "original_sha256": "a9ee123af53042e36bbc15ba61bb48e651effbd158ee232a4027c453df4f8bb5",
+          "retained_sha256": "51b0c9bb00ecf3d86f64977a2f83f4f374d4eb298fb29527d2f73165947721a9",
+          "redaction": "CI workspace prefix replaced with [WORKSPACE].",
+          "tlc_version_line": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+          "fingerprint_index": 37,
+          "seed": "6760552925580036238",
+          "workers": 2,
+          "completed_search_marker": false,
+          "observed_invariants": [
+            "IndexCompleteForWindow"
+          ],
+          "trace_present": true,
+          "last_reported_state_counts": {
+            "generated": 11,
+            "distinct": 9,
+            "queue": 5
+          },
+          "tlc_exit_code": null,
+          "exit_code_limit": "The uploaded TLC transcript does not independently record its process exit code."
+        },
+        {
+          "original_name": "tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.log",
+          "retained_path": "10063312912/tlc-carrier_index-MC_CarrierIndex_read_failure_pre_fix.txt",
+          "original_sha256": "e61315cca5cc3f418d9d8138ad294b7f1842c978532ae66a0e01eb29ddd56df1",
+          "retained_sha256": "e1cfa9198c8fd4026930a368a7c8ca473fda8309ee8e49e3673f64e8490a4cca",
+          "redaction": "CI workspace prefix replaced with [WORKSPACE].",
+          "tlc_version_line": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+          "fingerprint_index": 124,
+          "seed": "7567760296193990256",
+          "workers": 2,
+          "completed_search_marker": false,
+          "observed_invariants": [
+            "AbsenceProofSound"
+          ],
+          "trace_present": true,
+          "last_reported_state_counts": {
+            "generated": 110,
+            "distinct": 41,
+            "queue": 26
+          },
+          "tlc_exit_code": null,
+          "exit_code_limit": "The uploaded TLC transcript does not independently record its process exit code."
+        },
+        {
+          "original_name": "tlc-replay_liveness-MC_ReplayHotLoop.log",
+          "retained_path": "10063312912/tlc-replay_liveness-MC_ReplayHotLoop.txt",
+          "original_sha256": "f0f3a348b7146cbf31ec5112f6be9a23994c5a3eead2fe34b4eeed817557d81e",
+          "retained_sha256": "6b29b66e04e31f04f29defbe997d972bbcfa8dc8e38f3073e1f5a42eaff1223b",
+          "redaction": "CI workspace prefix replaced with [WORKSPACE].",
+          "tlc_version_line": "TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)",
+          "fingerprint_index": 10,
+          "seed": "217756679679066595",
+          "workers": 2,
+          "completed_search_marker": true,
+          "observed_invariants": [],
+          "trace_present": false,
+          "last_reported_state_counts": {
+            "generated": 10,
+            "distinct": 9,
+            "queue": 0
+          },
+          "tlc_exit_code": null,
+          "exit_code_limit": "The uploaded TLC transcript does not independently record its process exit code."
+        }
+      ],
+      "ledger_archive_sha256": "67c33849b3cd439fb5e6ded2fd8294b29413086562b66d52d19b9045298252e0",
+      "ledger_digest_match": true
+    }
+  ],
+  "counts": {
+    "manifest_references": 38,
+    "manifests_retrieved": 36,
+    "manifest_digest_matches": 36,
+    "nested_reference_checks": 45,
+    "nested_digest_matches": 45,
+    "nested_unique_paths": 37,
+    "downloaded_archives": 2,
+    "retained_transcripts": 8
+  },
+  "limits": [
+    "Two referenced manifests were not present at the examined historical tree revision. This does not establish global absence.",
+    "The raw driver evidence stores and all nested driver outputs were not audited.",
+    "JSONC manifests were hashed as exact bytes, without a semantic conformance claim.",
+    "Uploaded TLC logs do not independently establish exact process exit codes.",
+    "Historical run heads and the recorded synthetic checkout are not the current harness revision.",
+    "Workflow-control identity remains unverified.",
+    "Archive integrity and retained transcripts do not discharge any current Casper claim."
+  ],
+  "new_model_or_node_execution": false,
+  "claim_discharge": "none"
+}

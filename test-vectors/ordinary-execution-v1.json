@@ -1,7 +1,7 @@
 {
-  "capture_command": "git archive 4d67b5ccc | tar -x -C target/scratch/base-4d67b5ccc && cp rholang/tests/reified_ordinary_regression.rs target/scratch/base-4d67b5ccc/rholang/tests/ && cd target/scratch/base-4d67b5ccc && export TMPDIR=$PWD/target/tmp RRS_CAPTURE_ORDINARY_OUT=$PWD/target/capture/ordinary-fragments && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- env CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo test --offline -p rholang --test reified_ordinary_regression > target/capture/ordinary.log 2>&1",
-  "captured_at_revision": "4d67b5ccc42c4e510162d075f7ed423bf8175563",
-  "code_identical_to": "4d67b5ccc42c4e510162d075f7ed423bf8175563, the tip of feature/cost-accounted-rho that the campaign merged on 2026-10-05: the capture ran in a clean export of that commit (git archive), with the campaign's harness file copied in, so no Reified code was present",
+  "capture_command": "git archive 4c58a925f | tar -x -C target/scratch/base-4c58a925f && cp rholang/tests/reified_ordinary_regression.rs rholang/tests/reified_source_normalization.rs target/scratch/base-4c58a925f/rholang/tests/ && cd target/scratch/base-4c58a925f && export TMPDIR=$PWD/target/tmp RRS_CAPTURE_ORDINARY_OUT=$PWD/target/capture/ordinary-fragments && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- env CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo test --offline -p rholang --test reified_ordinary_regression > target/capture/ordinary.log 2>&1",
+  "captured_at_revision": "4c58a925f2b63e4aa3721383a0b885e2f330a145",
+  "code_identical_to": "4c58a925f2b63e4aa3721383a0b885e2f330a145, the tip of feature/cost-accounted-rho that the campaign merged on 2026-10-16: the capture ran in a clean export of that commit (git archive), with the campaign's harness files copied in, so no Reified code was present",
   "deterministic_candidates": {
     "continuations": {
       "bodies": [
@@ -48,13 +48,13 @@
           "has_cost_authority": true
         }
       ],
-      "fired": [
-        "5186eb5d4c4c013a65330881b788ad3095797d18962a65517904955dfbb10074",
-        "b4768bd1a0d6b793360d4f5bf4da4d6edb150aff72fd10001b84567e804e9d64",
-        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded",
+      "fired_sorted": [
         "33c8a50c1975eea1faa0b44e55cea94c3a06741f17b00ae631d3fab64dc79051",
+        "5186eb5d4c4c013a65330881b788ad3095797d18962a65517904955dfbb10074",
+        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5",
+        "b4768bd1a0d6b793360d4f5bf4da4d6edb150aff72fd10001b84567e804e9d64",
         "c631d4f1e7b7e657e6a2d2e87a7d762fb26e50a97ce71e28bbf230e9d6824047",
-        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5"
+        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded"
       ],
       "ranked_hashes": [
         "5186eb5d4c4c013a65330881b788ad3095797d18962a65517904955dfbb10074",
@@ -85,13 +85,13 @@
       ],
       "source": "@\"rrs-dc-data\"!(0) | @\"rrs-dc-data\"!(1) | @\"rrs-dc-data\"!(2) | @\"rrs-dc-data\"!(3) | @\"rrs-dc-data\"!(4) | @\"rrs-dc-data\"!(5)",
       "take_source": "for (@x <- @\"rrs-dc-data\") { Nil }",
-      "taken": [
-        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
-        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
+      "taken_sorted": [
+        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096",
         "62e19a4a55f4c8bca6252ad314aa9e31f294745b6cb4d5923559e8c30841d060",
         "71c4bc3c65b81515e627110dfbff22d5183546ea16573598ca21d2c3777d0214",
-        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4",
-        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096"
+        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
+        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
+        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4"
       ],
       "values": [
         [
@@ -1446,51 +1446,9 @@
   "r6_cost_vectors": {
     "programs": {
       "arithmetic": {
-        "host_work": {
-          "cost": 703,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 5,
-            "PrimitiveInputBytes": 192,
-            "ReductionSteps": 1,
-            "ReductionTermBytes": 90,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 139,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 0,
-            "SubstitutionBytes": 25,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [],
           "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 2,
-            "AuthorityNodes": 2,
-            "PrimitiveCalls": 5,
-            "PrimitiveInputBytes": 192,
-            "ReductionSteps": 1,
-            "ReductionTermBytes": 90,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 20614,
-            "StructuralBytes": 210,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 0,
-            "SubstitutionBytes": 25,
-            "VerificationBytes": 55227,
-            "VerificationOperations": 7973,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 2109,
           "operation_count": 1
         },
@@ -1510,53 +1468,11 @@
         }
       },
       "join": {
-        "host_work": {
-          "cost": 4421,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 3,
-            "PrimitiveInputBytes": 35,
-            "ReductionSteps": 4,
-            "ReductionTermBytes": 274,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 361,
-            "StructuralItems": 3,
-            "SubstitutionBindings": 4,
-            "SubstitutionBytes": 209,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [
             4
           ],
           "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 10,
-            "AuthorityNodes": 14,
-            "PrimitiveCalls": 3,
-            "PrimitiveInputBytes": 35,
-            "ReductionSteps": 4,
-            "ReductionTermBytes": 274,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 149054,
-            "StructuralBytes": 858,
-            "StructuralItems": 3,
-            "SubstitutionBindings": 4,
-            "SubstitutionBytes": 209,
-            "VerificationBytes": 648115,
-            "VerificationOperations": 68554,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 32130,
           "operation_count": 4
         },
@@ -1576,51 +1492,9 @@
         }
       },
       "match": {
-        "host_work": {
-          "cost": 698,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 6,
-            "PrimitiveInputBytes": 118,
-            "ReductionSteps": 2,
-            "ReductionTermBytes": 286,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 272,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 6,
-            "SubstitutionBytes": 96,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [],
           "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 2,
-            "AuthorityNodes": 2,
-            "PrimitiveCalls": 6,
-            "PrimitiveInputBytes": 118,
-            "ReductionSteps": 2,
-            "ReductionTermBytes": 286,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 20594,
-            "StructuralBytes": 343,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 6,
-            "SubstitutionBytes": 96,
-            "VerificationBytes": 55182,
-            "VerificationOperations": 7973,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 2094,
           "operation_count": 1
         },
@@ -1640,53 +1514,11 @@
         }
       },
       "new": {
-        "host_work": {
-          "cost": 2986,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 3,
-            "PrimitiveInputBytes": 6,
-            "ReductionSteps": 4,
-            "ReductionTermBytes": 280,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 165,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 12,
-            "SubstitutionBytes": 186,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [
             2
           ],
           "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 8,
-            "AuthorityNodes": 10,
-            "PrimitiveCalls": 3,
-            "PrimitiveInputBytes": 6,
-            "ReductionSteps": 4,
-            "ReductionTermBytes": 280,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 115356,
-            "StructuralBytes": 520,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 12,
-            "SubstitutionBytes": 186,
-            "VerificationBytes": 405310,
-            "VerificationOperations": 46553,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 14693,
           "operation_count": 3
         },
@@ -1706,31 +1538,6 @@
         }
       },
       "out_of_phlo": {
-        "host_work": {
-          "cost": 20000,
-          "errors": [
-            "OutOfPhlogistonsError"
-          ],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 28,
-            "PrimitiveInputBytes": 316,
-            "ReductionSteps": 16,
-            "ReductionTermBytes": 1220,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 194,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 31,
-            "SubstitutionBytes": 775,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [
             2,
@@ -1739,25 +1546,6 @@
           "errors": [
             "OutOfPhlogistonsError"
           ],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 13,
-            "AuthorityNodes": 17,
-            "PrimitiveCalls": 4,
-            "PrimitiveInputBytes": 28,
-            "ReductionSteps": 4,
-            "ReductionTermBytes": 320,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 216225,
-            "StructuralBytes": 762,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 7,
-            "SubstitutionBytes": 199,
-            "VerificationBytes": 751997,
-            "VerificationOperations": 76313,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 14738,
           "operation_count": 4
         },
@@ -1779,53 +1567,11 @@
         }
       },
       "peek": {
-        "host_work": {
-          "cost": 3596,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 1,
-            "PrimitiveInputBytes": 2,
-            "ReductionSteps": 3,
-            "ReductionTermBytes": 144,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 185,
-            "StructuralItems": 2,
-            "SubstitutionBindings": 2,
-            "SubstitutionBytes": 114,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [
             2
           ],
           "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 10,
-            "AuthorityNodes": 12,
-            "PrimitiveCalls": 1,
-            "PrimitiveInputBytes": 2,
-            "ReductionSteps": 3,
-            "ReductionTermBytes": 144,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 133479,
-            "StructuralBytes": 611,
-            "StructuralItems": 2,
-            "SubstitutionBindings": 2,
-            "SubstitutionBytes": 114,
-            "VerificationBytes": 505053,
-            "VerificationOperations": 56539,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 16523,
           "operation_count": 4
         },
@@ -1845,54 +1591,12 @@
         }
       },
       "persistent_receive": {
-        "host_work": {
-          "cost": 5128,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 2,
-            "PrimitiveInputBytes": 4,
-            "ReductionSteps": 5,
-            "ReductionTermBytes": 289,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 342,
-            "StructuralItems": 3,
-            "SubstitutionBindings": 4,
-            "SubstitutionBytes": 243,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [
             2,
             2
           ],
           "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 20,
-            "AuthorityNodes": 24,
-            "PrimitiveCalls": 2,
-            "PrimitiveInputBytes": 4,
-            "ReductionSteps": 5,
-            "ReductionTermBytes": 289,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 272544,
-            "StructuralBytes": 1123,
-            "StructuralItems": 3,
-            "SubstitutionBindings": 4,
-            "SubstitutionBytes": 243,
-            "VerificationBytes": 1028482,
-            "VerificationOperations": 111957,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 26854,
           "operation_count": 7
         },
@@ -1912,53 +1616,11 @@
         }
       },
       "persistent_send": {
-        "host_work": {
-          "cost": 2943,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 1,
-            "PrimitiveInputBytes": 2,
-            "ReductionSteps": 3,
-            "ReductionTermBytes": 188,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 251,
-            "StructuralItems": 2,
-            "SubstitutionBindings": 2,
-            "SubstitutionBytes": 158,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [
             2
           ],
           "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 8,
-            "AuthorityNodes": 10,
-            "PrimitiveCalls": 1,
-            "PrimitiveInputBytes": 2,
-            "ReductionSteps": 3,
-            "ReductionTermBytes": 188,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 124474,
-            "StructuralBytes": 606,
-            "StructuralItems": 2,
-            "SubstitutionBindings": 2,
-            "SubstitutionBytes": 158,
-            "VerificationBytes": 437489,
-            "VerificationOperations": 46857,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 14564,
           "operation_count": 3
         },
@@ -1978,51 +1640,9 @@
         }
       },
       "receive": {
-        "host_work": {
-          "cost": 714,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 0,
-            "PrimitiveInputBytes": 0,
-            "ReductionSteps": 1,
-            "ReductionTermBytes": 41,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 80,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 0,
-            "SubstitutionBytes": 29,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [],
           "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 2,
-            "AuthorityNodes": 2,
-            "PrimitiveCalls": 0,
-            "PrimitiveInputBytes": 0,
-            "ReductionSteps": 1,
-            "ReductionTermBytes": 41,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 21050,
-            "StructuralBytes": 151,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 0,
-            "SubstitutionBytes": 29,
-            "VerificationBytes": 64435,
-            "VerificationOperations": 8145,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 2142,
           "operation_count": 1
         },
@@ -2042,51 +1662,9 @@
         }
       },
       "send": {
-        "host_work": {
-          "cost": 697,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 0,
-            "PrimitiveInputBytes": 0,
-            "ReductionSteps": 1,
-            "ReductionTermBytes": 23,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 43,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 0,
-            "SubstitutionBytes": 19,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [],
           "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 2,
-            "AuthorityNodes": 2,
-            "PrimitiveCalls": 0,
-            "PrimitiveInputBytes": 0,
-            "ReductionSteps": 1,
-            "ReductionTermBytes": 23,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 20590,
-            "StructuralBytes": 114,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 0,
-            "SubstitutionBytes": 19,
-            "VerificationBytes": 55181,
-            "VerificationOperations": 7973,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
           "native_phlo_usage": 2091,
           "operation_count": 1
         },
@@ -2106,55 +1684,11 @@
         }
       },
       "system_process": {
-        "host_work": {
-          "cost": 1478,
-          "errors": [],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 0,
-            "AuthorityNodes": 0,
-            "PrimitiveCalls": 1,
-            "PrimitiveInputBytes": 2,
-            "ReductionSteps": 2,
-            "ReductionTermBytes": 112,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 0,
-            "StructuralBytes": 137,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 2,
-            "SubstitutionBytes": 41,
-            "VerificationBytes": 0,
-            "VerificationOperations": 0,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          }
-        },
         "native": {
           "comm_identity_counts": [
             2
           ],
-          "errors": [
-            "ReduceError(\"native funded execution forbids external service calls\")"
-          ],
-          "host_work_rejection": "None",
-          "host_work_usage": {
-            "AuthorityDepth": 4,
-            "AuthorityNodes": 4,
-            "PrimitiveCalls": 1,
-            "PrimitiveInputBytes": 2,
-            "ReductionSteps": 2,
-            "ReductionTermBytes": 112,
-            "SearchCandidates": 0,
-            "SearchStateBytes": 68741,
-            "StructuralBytes": 279,
-            "StructuralItems": 1,
-            "SubstitutionBindings": 2,
-            "SubstitutionBytes": 41,
-            "VerificationBytes": 173930,
-            "VerificationOperations": 19085,
-            "WitnessBytes": 0,
-            "WitnessFields": 0
-          },
+          "errors": [],
           "native_phlo_usage": 6223,
           "operation_count": 1
         },

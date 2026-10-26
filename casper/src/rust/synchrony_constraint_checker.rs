@@ -1,17 +1,19 @@
 // See casper/src/main/scala/coop/rchain/casper/SynchronyConstraintChecker.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Instant;
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use lazy_static::lazy_static;
+use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
 
 use super::blocks::proposer::propose_result::CheckProposeConstraintsResult;
 use super::casper::{CasperShardConf, CasperSnapshot};
 use super::errors::CasperError;
+use super::safety::clique_oracle::CliqueOracle;
 use super::validator_identity::ValidatorIdentity;
 
 #[derive(Debug)]
@@ -335,8 +337,22 @@ pub async fn check(
 
                 let main_parent_meta = snapshot.dag.lookup_unsafe(&main_parent.block_hash)?;
 
+                // A validator that bonded after genesis and has not produced a block
+                // yet cannot send anything to be seen; counting its stake would block
+                // proposing the same way it blocks finalization (#18). This check is
+                // local to the proposer, so this node's own latest messages decide.
+                let latest_messages: BTreeMap<Validator, BlockHash> = snapshot
+                    .dag
+                    .latest_messages_map
+                    .iter()
+                    .map(|(validator, hash)| (validator.clone(), hash.clone()))
+                    .collect();
                 let validator_weight_map: HashMap<Validator, i64> =
-                    main_parent_meta.weight_map.into_iter().collect();
+                    CliqueOracle::participating_weight_map(
+                        main_parent_meta.weight_map.into_iter().collect(),
+                        &snapshot.dag,
+                        &latest_messages,
+                    )?;
 
                 // Guaranteed to be present since last proposed block was present
                 let seen_senders = calculate_seen_senders_since(

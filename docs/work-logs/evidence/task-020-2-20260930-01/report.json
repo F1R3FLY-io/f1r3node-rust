@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "task": "TASK-020-2",
+  "status": "implemented-and-strictly-completed-with-local-evidence",
+  "recorded_at": "2026-09-30T01:52:20Z",
+  "branch": "fix/node-log-and-accept-backoff",
+  "initial_head": "350f24f5964f40bb6632a034fa647956ff8a8b13",
+  "reviewed_head": "b0afbe724c058c2357bf833f6f9ea1ac585f112a",
+  "worktree_sources_uncommitted": true,
+  "platform": "aarch64-apple-darwin",
+  "configuration": {
+    "max_file_size_bytes": 104857600,
+    "max_total_size_bytes": 2147483648,
+    "embedded_rotation": "daily",
+    "embedded_retention": 14,
+    "fallback_rotation": "never",
+    "fallback_retention": 0,
+    "retention_zero": "Count limit disabled. Byte limits still apply.",
+    "values": "Positive signed-range integers, with total >= file."
+  },
+  "implementation": {
+    "size_rotation": true,
+    "period_rotation": true,
+    "oldest_first_eviction_before_append": true,
+    "startup_budget_enforcement": true,
+    "cooperating_writer_lock": true,
+    "oversized_managed_files_removed_on_startup": true,
+    "unrelated_regular_files_preserved_and_counted": true,
+    "unsupported_entries_refused": true,
+    "no_new_dependencies": true,
+    "no_new_node_configuration_type": true
+  },
+  "verification": {
+    "nextest": {
+      "exit": 0,
+      "passed": 781,
+      "skipped": 0,
+      "crates": {
+        "comm": 399,
+        "node": 259,
+        "shared": 123
+      },
+      "logging_tests": 28,
+      "command": "cargo nextest run --locked --release --no-fail-fast -p shared -p node -p comm"
+    },
+    "doctests": {
+      "exit": 0,
+      "passed": 1,
+      "shared": 0,
+      "comm": 0,
+      "node": 1
+    },
+    "direct_clippy": {
+      "exit": 0,
+      "command": "cargo clippy --locked --release -p shared -p node --all-targets -- -D warnings"
+    },
+    "rustfmt": {
+      "exit": 0,
+      "scope": "Three changed Rust files."
+    },
+    "module_check": {
+      "exit": 0,
+      "command": "cargo check --locked --release -p shared"
+    },
+    "red": {
+      "exit": 101,
+      "fault": "Existing writer ignored the new configuration fields. The test observed a 40000-byte log against a 128-byte limit."
+    },
+    "initial_node_failure": {
+      "exit": 100,
+      "passed": 12,
+      "failed": 1,
+      "fault": "Negative HOCON integer was accepted by unsigned deserialization. Signed positive-byte decoder corrected this result."
+    },
+    "tools": {
+      "rustc": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)",
+      "cargo": "cargo 1.95.0-nightly (fe2f314ae 2026-01-30)",
+      "nextest": "cargo-nextest 0.9.143\nrelease: 0.9.143\nhost: aarch64-apple-darwin"
+    }
+  },
+  "completion": {
+    "strict": true,
+    "force": false,
+    "exit": 0,
+    "grade": "full",
+    "gaps": [],
+    "completed_date": "2026-09-30",
+    "helper_sha256": "924a1cde6ae61d15a72dda276687b0d63d9df0dd75d7b7f1aba4e8300f502d2e",
+    "tracker_copy_matches_live": true,
+    "unit_tests": [
+      "shared/src/rust/tracing_init/mod.rs",
+      "shared/src/rust/tracing_init/bounded_file.rs",
+      "node/src/rust/configuration/mod.rs"
+    ],
+    "legacy_status_parser_compatibility": true,
+    "only_task_020_2_closed": true
+  },
+  "diagnostics": {
+    "fresh_primary_lsp_errors": 0,
+    "initial_module_finding": "Resolved after bounded_file.rs creation. Fresh compilation and probes pass.",
+    "automatic_clippy_adapter": "Unknown state, cached evidence inconclusive. The direct Clippy check passed independently.",
+    "auxiliary": "Rust 2024 syntax suggestions and an unchanged node re-export warning. Cached wider sweep has stale locations.",
+    "all_analyzers_clean_claim": false
+  },
+  "assumptions": [
+    "Trusted data directory and no noncooperating filesystem modifications after startup.",
+    "Logical file byte budgets exclude metadata, allocation overhead, and externally held deleted files.",
+    "Existing nonblocking writer may lose output under queue pressure or I/O failure.",
+    "Writes larger than the per-file limit can span files. Normal complete records within that limit remain intact at file boundaries."
+  ],
+  "limits": [
+    "Local macOS results do not establish Linux execution. Linux-only comm descriptor test is not compiled, not reported as a skipped runnable test.",
+    "No hosted CI, live campaign, container log cap, or full disk-protection discharge is inferred.",
+    "No executable CbC inventory or evidence was renewed. The changed source paths have no cbc attribute."
+  ],
+  "history": {
+    "prior_task_020_1_records_unchanged": true,
+    "raw_logs_directory": "target/task-020-2-byte-bounded-logging/",
+    "raw_log_sha256": {
+      "red.txt": "a5e653eddb058c8256fc00f14de3d3fed680c98a0c3b1d06c2832ed130a24da6",
+      "green-initial.txt": "e9f027b3fd830724f3745a8c906948d1dbc5bd0c3d01180003f8ae481e14e8df",
+      "node-config-initial-failure.txt": "156c3bcce365c9ce48b2f810479c1286a1ecfef69e789a270a119ffc891fde5f",
+      "full-tests-final.txt": "6e0f9416d1525d51d67e94ba87b13143c47d6e13b5d9b1971bc5541a25833c5c",
+      "clippy-final.txt": "e84d15416a0e8e261e8d92e1b3aa655a7d1c310bb18221ad28f0eb6927896e85",
+      "doctests.txt": "d39623aa39752413ce0750ddc267ed5b2617adcc7c08e96178a9b792332a66c4",
+      "module-check.txt": "6d1e9e5b71459eb3c15bbe84509ad076edfd5133baaa81ff1b7fd773638c9ef8"
+    }
+  },
+  "commit": false,
+  "push": false,
+  "merge": false,
+  "live_deployment": false,
+  "waiver": false
+}

@@ -1,5 +1,5 @@
 //! The delivery planner of a PathMap space (P5e: plan "PathMap delivery", decisions 9.3, 37, 40,
-//! 41, 42 and 45, F4, P5 design v2 3.4 and v3 A.11).
+//! 41 and 45, F4, P5 design v2 3.4 and v3 A.11).
 //!
 //! The planner holds the pure parts of a PathMap delivery. It reads a staged view that the caller
 //! passes in ([`PrefixView`]), and it stages nothing. The engine of the space (the prefix source
@@ -53,17 +53,12 @@
 //! the path keys, the source hashes, the view indices only as the last tie-break, and the order
 //! of the discipline, which DR-75 or the orders of the envelopes give. So play and replay plan the
 //! same delivery.
-//!
-//! **Metering (decision 42).** The planner reserves each marker decode, each path-key encode,
-//! each key comparison, each suffix copy and each buffer on the meter of the job before it makes
-//! it. The orders of the disciplines reserve their own work.
 
 use std::cmp::Ordering;
-use std::mem::size_of;
+use std::convert::Infallible;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{CostAuthority, ListParWithRandom, Par};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::space_store_handle::{
     canonical_continuation_order, canonical_data_order,
@@ -72,12 +67,9 @@ use serde::Serialize;
 use shared::rust::fallible_sort;
 
 use super::adapter::EPathMapAdapter;
-use super::markers::{
-    decode_marker_metered, marker_authority, marker_random, marker_record_metered, SOURCE_LEN,
-};
+use super::markers::{decode_marker, marker_authority, marker_random, marker_record};
 use super::path_codec::{compare_keys, path_key, EncodedPath};
 use super::reroot::reroot_payload;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{Discipline, Ordered, ParDatum, ParWaiter, Side};
 
@@ -154,7 +146,7 @@ pub enum Retired {
 
 /// The order of the records of one path or of the waiters of one prefix: a function from the
 /// entries of one channel to the indices that the discipline offers, in its order.
-pub type EntryOrder<'o, T> = dyn FnMut(&[T], &ScanMeter) -> Result<Vec<usize>, SpaceError> + 'o;
+pub type EntryOrder<'o, T> = dyn FnMut(&[T]) -> Result<Vec<usize>, SpaceError> + 'o;
 
 /// A decoded marker of one index channel with its key: the path key of its suffix.
 struct KeyedMarker {
@@ -176,37 +168,34 @@ pub fn consume_candidates<V: PrefixView>(
     view: &mut V,
     prefix_key: &[u8],
     data_order: &mut EntryOrder<'_, ParDatum>,
-    meter: &ScanMeter,
 ) -> Result<Vec<PathCandidates>, SpaceError> {
-    consume_candidates_excluding(view, prefix_key, &[], data_order, meter)
+    consume_candidates_excluding(view, prefix_key, &[], data_order)
 }
 
 /// [`consume_candidates`] without the datums whose source hash is one of `excluded`: the datums
 /// in flight of the transaction (seams arbitration, section 5). A second send or a lifted
 /// element keeps its record and some of its markers in the store while it is in flight, and a
 /// peek or a lift removed one of its markers. So the planner leaves out every record and every
-/// marker of such a datum, and the marker invariant holds for the other datums. Each comparison
-/// with an excluded hash is reserved first.
+/// marker of such a datum, and the marker invariant holds for the other datums.
 pub fn consume_candidates_excluding<V: PrefixView>(
     view: &mut V,
     prefix_key: &[u8],
     excluded: &[Blake2b256Hash],
     data_order: &mut EntryOrder<'_, ParDatum>,
-    meter: &ScanMeter,
 ) -> Result<Vec<PathCandidates>, SpaceError> {
-    let mut keyed = keyed_markers(view.markers(prefix_key)?, meter)?;
+    let mut keyed = keyed_markers(view.markers(prefix_key)?)?;
     if !excluded.is_empty() {
-        let mut kept = meter.buffer::<KeyedMarker>(keyed.len())?;
+        let mut kept = Vec::<KeyedMarker>::with_capacity(keyed.len());
         for marker in keyed {
-            if !is_excluded(&marker.source, excluded, meter)? {
+            if !is_excluded(&marker.source, excluded) {
                 kept.push(marker);
             }
         }
         keyed = kept;
     }
-    sort_by_key(&mut keyed, meter)?;
-    let groups = group_bounds(&keyed, meter)?;
-    let mut paths = meter.buffer::<PathCandidates>(groups.len())?;
+    sort_by_key(&mut keyed);
+    let groups = group_bounds(&keyed);
+    let mut paths = Vec::<PathCandidates>::with_capacity(groups.len());
     for (start, end) in groups {
         let group = keyed.get(start..end).ok_or(SpaceError::Inconsistent(
             "a marker group lies outside the markers of a prefix",
@@ -219,13 +208,13 @@ pub fn consume_candidates_excluding<V: PrefixView>(
             let record = markers.get(first.index).ok_or(SpaceError::Inconsistent(
                 "a marker index lies outside the markers of a prefix",
             ))?;
-            meter.copy_slice(decode_marker_metered(&record.a, meter)?.suffix)?
+            decode_marker(&record.a)?.suffix.to_vec()
         };
-        let path_key = joined_key(prefix_key, &first.key, meter)?;
+        let path_key = joined_key(prefix_key, &first.key);
         let records = view.records(&path_key)?;
-        let pairs = pair_records(group, records, excluded, meter)?;
-        let order = data_order(records, meter)?;
-        let mut entries = meter.buffer::<PathEntry>(order.len())?;
+        let pairs = pair_records(group, records, excluded)?;
+        let order = data_order(records)?;
+        let mut entries = Vec::<PathEntry>::with_capacity(order.len());
         for record_index in order {
             let paired = pairs.get(record_index).ok_or(SpaceError::Inconsistent(
                 "a discipline order names a record outside its path",
@@ -236,7 +225,7 @@ pub fn consume_candidates_excluding<V: PrefixView>(
             entries.push(PathEntry {
                 record_index,
                 marker_index: marker.index,
-                source: meter.copy(&marker.source)?,
+                source: marker.source.clone(),
             });
         }
         paths.push(PathCandidates {
@@ -248,14 +237,12 @@ pub fn consume_candidates_excluding<V: PrefixView>(
     Ok(paths)
 }
 
-/// The decoded markers of one index channel with the path keys of their suffixes. Each decode and
-/// each encode is reserved first.
-fn keyed_markers(markers: &[ParDatum], meter: &ScanMeter) -> Result<Vec<KeyedMarker>, SpaceError> {
-    let mut keyed = meter.buffer::<KeyedMarker>(markers.len())?;
+/// The decoded markers of one index channel with the path keys of their suffixes.
+fn keyed_markers(markers: &[ParDatum]) -> Result<Vec<KeyedMarker>, SpaceError> {
+    let mut keyed = Vec::<KeyedMarker>::with_capacity(markers.len());
     for (index, record) in markers.iter().enumerate() {
-        let view = decode_marker_metered(&record.a, meter)?;
-        let key = path_key(view.suffix, meter)?;
-        meter.reserve_buffer::<u8>(SOURCE_LEN)?;
+        let view = decode_marker(&record.a)?;
+        let key = path_key(view.suffix)?;
         keyed.push(KeyedMarker {
             key,
             index,
@@ -266,37 +253,20 @@ fn keyed_markers(markers: &[ParDatum], meter: &ScanMeter) -> Result<Vec<KeyedMar
 }
 
 /// Sorts the markers of one index channel by the key of their suffix, then by their view index.
-/// The moves and each comparison are reserved, as the adapter reserves its sort.
-fn sort_by_key(keyed: &mut [KeyedMarker], meter: &ScanMeter) -> Result<(), SpaceError> {
-    let moves = size_of::<KeyedMarker>()
-        .checked_mul(2)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.charge(
-        keyed.len(),
-        keyed
-            .len()
-            .checked_mul(moves)
-            .ok_or(RSpaceError::HostWorkRejected)?,
-        0,
-    )?;
-    fallible_sort::sort(keyed, |left, right| {
-        Ok::<_, SpaceError>(
-            compare_keys(&left.key, &right.key, meter)?.then(left.index.cmp(&right.index)),
-        )
-    })
+/// The sort is the heap sort of `fallible_sort` with a comparator that cannot fail.
+fn sort_by_key(keyed: &mut [KeyedMarker]) {
+    let Ok(()) = fallible_sort::sort(keyed, |left, right| {
+        Ok::<_, Infallible>(compare_keys(&left.key, &right.key).then(left.index.cmp(&right.index)))
+    });
 }
 
-/// The bounds of the runs of equal keys in the sorted markers `keyed`. Each comparison of two
-/// neighbors is reserved first.
-fn group_bounds(
-    keyed: &[KeyedMarker],
-    meter: &ScanMeter,
-) -> Result<Vec<(usize, usize)>, SpaceError> {
-    let mut bounds = meter.buffer::<(usize, usize)>(keyed.len())?;
+/// The bounds of the runs of equal keys in the sorted markers `keyed`.
+fn group_bounds(keyed: &[KeyedMarker]) -> Vec<(usize, usize)> {
+    let mut bounds = Vec::<(usize, usize)>::with_capacity(keyed.len());
     let mut start = 0;
     for index in 1..=keyed.len() {
         let boundary = match (keyed.get(index - 1), keyed.get(index)) {
-            (Some(left), Some(right)) => compare_keys(&left.key, &right.key, meter)?.is_ne(),
+            (Some(left), Some(right)) => compare_keys(&left.key, &right.key).is_ne(),
             _ => true,
         };
         if boundary {
@@ -304,21 +274,17 @@ fn group_bounds(
             start = index;
         }
     }
-    Ok(bounds)
+    bounds
 }
 
-/// The key `left ++ right` in one reserved buffer: the path key of `p = q ++ s` from the prefix
+/// The key `left ++ right` in one buffer: the path key of `p = q ++ s` from the prefix
 /// key of `q` and the path key of `s` (`PathMapPrefix.v`, `path_key_app`).
-fn joined_key(left: &[u8], right: &[u8], meter: &ScanMeter) -> Result<Vec<u8>, SpaceError> {
-    let length = left
-        .len()
-        .checked_add(right.len())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut key = meter.buffer::<u8>(length)?;
-    meter.charge(1, length, 0)?;
+fn joined_key(left: &[u8], right: &[u8]) -> Vec<u8> {
+    let length = left.len() + right.len();
+    let mut key = Vec::<u8>::with_capacity(length);
     key.extend_from_slice(left);
     key.extend_from_slice(right);
-    Ok(key)
+    key
 }
 
 /// The marker of each record of one path, by the position of the record in `records`, or `None`
@@ -326,26 +292,24 @@ fn joined_key(left: &[u8], right: &[u8], meter: &ScanMeter) -> Result<Vec<u8>, S
 /// hashes of the datums of the path, and the group holds no marker of an excluded datum. Each
 /// other record pairs with an unused marker of its source hash, in view order, so a repeated
 /// identity pairs once for each record. A record without a marker, or a marker left over, is
-/// `Inconsistent`. Each comparison is reserved first.
+/// `Inconsistent`.
 fn pair_records<'g>(
     group: &'g [KeyedMarker],
     records: &[ParDatum],
     excluded: &[Blake2b256Hash],
-    meter: &ScanMeter,
 ) -> Result<Vec<Option<&'g KeyedMarker>>, SpaceError> {
     let unpaired =
         SpaceError::Inconsistent("the markers of a prefix differ from the datums of a path");
-    let mut used = meter.buffer::<bool>(group.len())?;
+    let mut used = Vec::<bool>::with_capacity(group.len());
     used.resize(group.len(), false);
-    let mut pairs = meter.buffer::<Option<&KeyedMarker>>(records.len())?;
+    let mut pairs = Vec::<Option<&KeyedMarker>>::with_capacity(records.len());
     for record in records {
-        if is_excluded(&record.source.hash, excluded, meter)? {
+        if is_excluded(&record.source.hash, excluded) {
             pairs.push(None);
             continue;
         }
         let mut found = None;
         for (position, marker) in group.iter().enumerate() {
-            meter.compare(SOURCE_LEN, SOURCE_LEN)?;
             let free = !used.get(position).copied().unwrap_or(true);
             if free && marker.source == record.source.hash {
                 found = Some(position);
@@ -364,19 +328,14 @@ fn pair_records<'g>(
     }
 }
 
-/// True when `source` is one of `excluded`. Each comparison is reserved first.
-pub fn is_excluded(
-    source: &Blake2b256Hash,
-    excluded: &[Blake2b256Hash],
-    meter: &ScanMeter,
-) -> Result<bool, SpaceError> {
+/// True when `source` is one of `excluded`.
+pub fn is_excluded(source: &Blake2b256Hash, excluded: &[Blake2b256Hash]) -> bool {
     for other in excluded {
-        meter.compare(source.0.len(), other.0.len())?;
         if other == source {
-            return Ok(true);
+            return true;
         }
     }
-    Ok(false)
+    false
 }
 
 /// The waiters that a send on the path `path` meets (PRODUCE-WAITERS): the waiters of `I(p)`,
@@ -391,18 +350,14 @@ pub fn produce_waiters<V: PrefixView>(
     path: &[Par],
     encoded: &EncodedPath,
     waiter_order: &mut EntryOrder<'_, ParWaiter>,
-    meter: &ScanMeter,
 ) -> Result<Vec<PrefixWaiters>, SpaceError> {
     if encoded.depth() != path.len() {
         return Err(SpaceError::Inconsistent(
             "an encoded path has another depth than its path",
         ));
     }
-    let count = path
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut prefixes = meter.buffer::<PrefixWaiters>(count)?;
+    let count = path.len() + 1;
+    let mut prefixes = Vec::<PrefixWaiters>::with_capacity(count);
     for depth in (0..=path.len()).rev() {
         let prefix_key = encoded.prefix_key(depth).ok_or(SpaceError::Inconsistent(
             "an encoded path has no prefix key of a depth",
@@ -411,7 +366,7 @@ pub fn produce_waiters<V: PrefixView>(
         if waiters.is_empty() {
             continue;
         }
-        let order = waiter_order(waiters, meter)?;
+        let order = waiter_order(waiters)?;
         if order.iter().any(|index| *index >= waiters.len()) {
             return Err(SpaceError::Inconsistent(
                 "a discipline order names a waiter outside its prefix",
@@ -422,8 +377,8 @@ pub fn produce_waiters<V: PrefixView>(
             .ok_or(SpaceError::Inconsistent("a prefix is deeper than its path"))?;
         prefixes.push(PrefixWaiters {
             depth,
-            prefix_key: meter.copy_slice(prefix_key)?,
-            suffix: meter.copy_slice(suffix)?,
+            prefix_key: prefix_key.to_vec(),
+            suffix: suffix.to_vec(),
             waiters: order,
         });
     }
@@ -432,12 +387,11 @@ pub fn produce_waiters<V: PrefixView>(
 
 /// The datum `datum` as a receive on a prefix sees it (REROOT): `R(suffix, v)` for each argument
 /// `v`, with the random state, the cost authority and the cost stack of `datum`. The payload moves
-/// into the re-rooting, and the adapter reserves its work (`reroot_payload`).
+/// into the re-rooting (`reroot_payload`).
 pub fn rerooted<A: EPathMapAdapter>(
     suffix: &[Par],
     datum: ListParWithRandom,
     adapter: &A,
-    meter: &ScanMeter,
 ) -> Result<ListParWithRandom, SpaceError> {
     let ListParWithRandom {
         pars,
@@ -446,7 +400,7 @@ pub fn rerooted<A: EPathMapAdapter>(
         cost_stack,
     } = datum;
     Ok(ListParWithRandom {
-        pars: reroot_payload(suffix, pars, adapter, meter)?,
+        pars: reroot_payload(suffix, pars, adapter)?,
         random_state,
         cost_authority,
         cost_stack,
@@ -456,31 +410,21 @@ pub fn rerooted<A: EPathMapAdapter>(
 /// The markers that the store of a datum on the path `path` adds (STORE-MARKERS), in depth
 /// order: the marker of the prefix of depth `k` holds the suffix `path[k..]`, the random state
 /// `marker_random(datum_random, k)` and the cost authority `cost_authority`. `source` is the
-/// source hash of the datum on `D(p)`. Each suffix copy and each marker is reserved first.
+/// source hash of the datum on `D(p)`.
 pub fn store_markers(
     path: &[Par],
     source: &Blake2b256Hash,
     datum_random: &Blake2b512Random,
     cost_authority: Option<&CostAuthority>,
-    meter: &ScanMeter,
 ) -> Result<Vec<PlannedMarker>, SpaceError> {
-    let count = path
-        .len()
-        .checked_add(1)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut planned = meter.buffer::<PlannedMarker>(count)?;
+    let count = path.len() + 1;
+    let mut planned = Vec::<PlannedMarker>::with_capacity(count);
     for depth in 0..=path.len() {
         let suffix = path
             .get(depth..)
             .ok_or(SpaceError::Inconsistent("a prefix is deeper than its path"))?;
         let random = marker_random(datum_random, depth)?;
-        let record = marker_record_metered(
-            source,
-            meter.copy_slice(suffix)?,
-            &random,
-            cost_authority,
-            meter,
-        )?;
+        let record = marker_record(source, suffix.to_vec(), &random, cost_authority.cloned());
         planned.push(PlannedMarker { depth, record });
     }
     Ok(planned)
@@ -495,42 +439,33 @@ pub fn datum_markers(
     path: &[Par],
     source: &Blake2b256Hash,
     datum_record: &ListParWithRandom,
-    meter: &ScanMeter,
 ) -> Result<Vec<PlannedMarker>, SpaceError> {
     let datum_random = Blake2b512Random::from_bytes(&datum_record.random_state);
-    store_markers(
-        path,
-        source,
-        &datum_random,
-        marker_authority(datum_record),
-        meter,
-    )
+    store_markers(path, source, &datum_random, marker_authority(datum_record))
 }
 
 /// The marker of depth `depth` of the datum whose record on `D(p)` is `datum_record` and whose
 /// source hash is `source`, on the path `path`: the marker that [`datum_markers`] stores at that
 /// depth, built again. A peek or a lift removed it, and the second send restores it with these
-/// bytes, so the restored marker keeps its produce identity. The suffix copy and the marker are
-/// reserved first. A depth below the path is `Inconsistent`.
+/// bytes, so the restored marker keeps its produce identity. A depth below the path is
+/// `Inconsistent`.
 pub fn datum_marker(
     path: &[Par],
     source: &Blake2b256Hash,
     datum_record: &ListParWithRandom,
     depth: usize,
-    meter: &ScanMeter,
 ) -> Result<ListParWithRandom, SpaceError> {
     let suffix = path
         .get(depth..)
         .ok_or(SpaceError::Inconsistent("a prefix is deeper than its path"))?;
     let datum_random = Blake2b512Random::from_bytes(&datum_record.random_state);
     let random = marker_random(&datum_random, depth)?;
-    marker_record_metered(
+    Ok(marker_record(
         source,
-        meter.copy_slice(suffix)?,
+        suffix.to_vec(),
         &random,
-        marker_authority(datum_record),
-        meter,
-    )
+        (marker_authority(datum_record)).cloned(),
+    ))
 }
 
 /// The records that the removal of a datum on a path of `depth` elements retires (RETIRE-PLAN),
@@ -551,16 +486,10 @@ pub fn retire_plan(depth: usize, delivered: Option<usize>) -> Vec<Retired> {
 }
 
 /// The view index of the marker of the datum `source` among the markers `markers` of one index
-/// channel, for its retirement. Each decode and each comparison is reserved first. A missing
-/// marker breaks the marker invariant and is `Inconsistent`.
-pub fn marker_index(
-    markers: &[ParDatum],
-    source: &Blake2b256Hash,
-    meter: &ScanMeter,
-) -> Result<usize, SpaceError> {
+/// channel, for its retirement. A missing marker breaks the marker invariant and is `Inconsistent`.
+pub fn marker_index(markers: &[ParDatum], source: &Blake2b256Hash) -> Result<usize, SpaceError> {
     for (index, record) in markers.iter().enumerate() {
-        let view = decode_marker_metered(&record.a, meter)?;
-        meter.compare(SOURCE_LEN, SOURCE_LEN)?;
+        let view = decode_marker(&record.a)?;
         if view.is_of(source) {
             return Ok(index);
         }
@@ -572,33 +501,32 @@ pub fn marker_index(
 
 /// The first `need` entries of `entries` in the head order of `discipline` on `side`: the head,
 /// then the head of the other entries, and so on. It is the order within one path or one prefix
-/// of a head-only discipline. `ord_of` decodes the order of an entry and reserves the decode. The
-/// buffers and the head scans reserve their work, and the order depends on the entry set only.
+/// of a head-only discipline. `ord_of` decodes the order of an entry. The order depends on the
+/// entry set only.
 pub fn head_order<D: Discipline, T: Serialize>(
     discipline: &D,
     side: Side,
     entries: &[T],
-    ord_of: impl Fn(&T, &ScanMeter) -> Result<i64, SpaceError>,
+    ord_of: impl Fn(&T) -> Result<i64, SpaceError>,
     need: usize,
-    meter: &ScanMeter,
 ) -> Result<Vec<usize>, SpaceError> {
-    let mut ords = meter.buffer::<i64>(entries.len())?;
+    let mut ords = Vec::<i64>::with_capacity(entries.len());
     for entry in entries {
-        ords.push(ord_of(entry, meter)?);
+        ords.push(ord_of(entry)?);
     }
     let taken = need.min(entries.len());
-    let mut order = meter.buffer::<usize>(taken)?;
-    let mut remaining = meter.buffer::<usize>(entries.len())?;
+    let mut order = Vec::<usize>::with_capacity(taken);
+    let mut remaining = Vec::<usize>::with_capacity(entries.len());
     remaining.extend(0..entries.len());
     while order.len() < taken {
-        let mut ordered = meter.buffer::<Ordered<'_, T>>(remaining.len())?;
+        let mut ordered = Vec::<Ordered<'_, T>>::with_capacity(remaining.len());
         for index in &remaining {
             let (Some(ord), Some(entry)) = (ords.get(*index), entries.get(*index)) else {
                 return Err(SpaceError::Inconsistent("a head scan lost an entry"));
             };
             ordered.push(Ordered { ord: *ord, entry });
         }
-        let Some(head) = discipline.head_metered(side, &ordered, meter)? else {
+        let Some(head) = discipline.head(side, &ordered)? else {
             break;
         };
         if head >= remaining.len() {
@@ -610,29 +538,20 @@ pub fn head_order<D: Discipline, T: Serialize>(
 }
 
 /// The order of the records of one path for a bag or a set: every record in the canonical order
-/// of DR-75 (decision 41), with the work reserved as the substrate reserves it.
-pub fn scan_data_order(records: &[ParDatum], meter: &ScanMeter) -> Result<Vec<usize>, SpaceError> {
-    Ok(canonical_data_order(records, meter)?)
-}
+/// of DR-75 (decision 41).
+pub fn scan_data_order(records: &[ParDatum]) -> Vec<usize> { canonical_data_order(records) }
 
 /// The order of the waiters of one prefix for a bag or a set: every waiter in the canonical order
-/// of DR-75 (decision 41), with the work reserved as the substrate reserves it.
-pub fn scan_waiter_order(
-    waiters: &[ParWaiter],
-    meter: &ScanMeter,
-) -> Result<Vec<usize>, SpaceError> {
-    Ok(canonical_continuation_order(waiters, meter)?)
+/// of DR-75 (decision 41).
+pub fn scan_waiter_order(waiters: &[ParWaiter]) -> Vec<usize> {
+    canonical_continuation_order(waiters)
 }
 
 /// The byte order of two candidates of a receive: by the path key, then by the rank of the
 /// discipline within the path. It is the order `cand_lt` of `PathMapPrefix.v`, which
-/// [`consume_candidates`] produces. The comparison of the keys is reserved first.
-pub fn candidate_cmp(
-    left: (&[u8], usize),
-    right: (&[u8], usize),
-    meter: &ScanMeter,
-) -> Result<Ordering, SpaceError> {
-    Ok(compare_keys(left.0, right.0, meter)?.then(left.1.cmp(&right.1)))
+/// [`consume_candidates`] produces.
+pub fn candidate_cmp(left: (&[u8], usize), right: (&[u8], usize)) -> Ordering {
+    compare_keys(left.0, right.0).then(left.1.cmp(&right.1))
 }
 
 #[cfg(test)]
@@ -703,10 +622,10 @@ mod tests {
         source: Produce,
     }
 
-    fn key_of(path: &[Par]) -> Vec<u8> { path_key(path, &unmetered()).expect("a path key") }
+    fn key_of(path: &[Par]) -> Vec<u8> { path_key(path).expect("a path key") }
 
     fn prefix_of(path: &[Par], depth: usize) -> Vec<u8> {
-        prefix_key(&path[..depth], &unmetered()).expect("a prefix key")
+        prefix_key(&path[..depth]).expect("a prefix key")
     }
 
     fn datum(value: i64, seed: u64) -> ListParWithRandom {
@@ -730,9 +649,7 @@ mod tests {
                 source: source.clone(),
             });
             let random = Blake2b512Random::from_bytes(&sent.random_state);
-            for planned in
-                store_markers(path, &source.hash, &random, None, &unmetered()).expect("markers")
-            {
+            for planned in store_markers(path, &source.hash, &random, None).expect("markers") {
                 let key = prefix_of(path, planned.depth);
                 let index = PathMapOuter::index(SPACE, &key);
                 let marker_source = Produce::create(&index, &planned.record, false);
@@ -782,8 +699,8 @@ mod tests {
                 .index
                 .get_mut(&prefix_of(&stored.path, depth))
                 .expect("the prefix holds markers");
-            let position = marker_index(markers, &stored.source.hash, &unmetered())
-                .expect("the marker is stored");
+            let position =
+                marker_index(markers, &stored.source.hash).expect("the marker is stored");
             markers.remove(position)
         }
 
@@ -859,8 +776,12 @@ mod tests {
         }
     }
 
-    fn all_data(records: &[ParDatum], meter: &ScanMeter) -> Result<Vec<usize>, SpaceError> {
-        scan_data_order(records, meter)
+    fn all_data(records: &[ParDatum]) -> Result<Vec<usize>, SpaceError> {
+        Ok(scan_data_order(records))
+    }
+
+    fn all_waiters(waiters: &[ParWaiter]) -> Result<Vec<usize>, SpaceError> {
+        Ok(scan_waiter_order(waiters))
     }
 
     fn ints(values: &[i64]) -> Vec<Par> { values.iter().map(|value| gint(*value)).collect() }
@@ -872,13 +793,8 @@ mod tests {
         let there = view.store(&ints(&[0, 1, 3]), &datum(7, 2), 0);
         let exact = view.store(&ints(&[0, 1]), &datum(5, 3), 0);
         let elsewhere = view.store(&ints(&[0, 2]), &datum(9, 4), 0);
-        let paths = consume_candidates(
-            &mut view,
-            &prefix_of(&ints(&[0, 1]), 2),
-            &mut all_data,
-            &unmetered(),
-        )
-        .expect("the candidates of [0,1]");
+        let paths = consume_candidates(&mut view, &prefix_of(&ints(&[0, 1]), 2), &mut all_data)
+            .expect("the candidates of [0,1]");
         let suffixes: Vec<Vec<Par>> = paths.iter().map(|path| path.suffix.clone()).collect();
         assert_eq!(suffixes, vec![Vec::new(), ints(&[2]), ints(&[3])]);
         let sources: Vec<Blake2b256Hash> = paths
@@ -895,17 +811,11 @@ mod tests {
         let payload = record::unwrap_datum(&hi.record)
             .expect("a datum record")
             .datum;
-        let seen = rerooted(
-            &paths[1].suffix,
-            payload,
-            &HeadEPathMapAdapter,
-            &unmetered(),
-        )
-        .expect("the datum re-roots");
+        let seen =
+            rerooted(&paths[1].suffix, payload, &HeadEPathMapAdapter).expect("the datum re-roots");
         assert_eq!(seen.pars, vec![glist(ints(&[2, 42]))]);
         assert_eq!(seen.random_state, datum(42, 1).random_state);
-        let root = consume_candidates(&mut view, &[], &mut all_data, &unmetered())
-            .expect("the candidates of ε");
+        let root = consume_candidates(&mut view, &[], &mut all_data).expect("the candidates of ε");
         assert_eq!(root.len(), 4);
         assert_eq!(root[0].suffix, ints(&[0, 1]));
     }
@@ -918,15 +828,9 @@ mod tests {
         view.park(&ints(&[0, 1]), 2);
         view.park(&ints(&[0, 1, 2]), 3);
         view.park(&ints(&[0, 2]), 4);
-        let encoded = encode_path(&path, &unmetered()).expect("the path encodes");
-        let prefixes = produce_waiters(
-            &mut view,
-            &path,
-            &encoded,
-            &mut scan_waiter_order,
-            &unmetered(),
-        )
-        .expect("the waiters of the send");
+        let encoded = encode_path(&path).expect("the path encodes");
+        let prefixes = produce_waiters(&mut view, &path, &encoded, &mut all_waiters)
+            .expect("the waiters of the send");
         let depths: Vec<usize> = prefixes.iter().map(|prefix| prefix.depth).collect();
         assert_eq!(depths, vec![3, 2, 0]);
         assert_eq!(prefixes[0].suffix, Vec::<Par>::new());
@@ -966,12 +870,7 @@ mod tests {
         let mut missing = view.clone();
         missing.take_marker(&stored, 1);
         assert_eq!(
-            consume_candidates(
-                &mut missing,
-                &prefix_of(&ints(&[0, 1]), 1),
-                &mut all_data,
-                &unmetered()
-            ),
+            consume_candidates(&mut missing, &prefix_of(&ints(&[0, 1]), 1), &mut all_data),
             Err(SpaceError::Inconsistent(
                 "the markers of a prefix differ from the datums of a path"
             ))
@@ -979,13 +878,13 @@ mod tests {
         let mut orphan = view.clone();
         orphan.data.clear();
         assert_eq!(
-            consume_candidates(&mut orphan, &[], &mut all_data, &unmetered()),
+            consume_candidates(&mut orphan, &[], &mut all_data),
             Err(SpaceError::Inconsistent(
                 "the markers of a prefix differ from the datums of a path"
             ))
         );
         assert_eq!(
-            marker_index(&[], &stored.source.hash, &unmetered()),
+            marker_index(&[], &stored.source.hash),
             Err(SpaceError::Inconsistent(
                 "a stored datum has no marker on a prefix of its path"
             ))
@@ -999,8 +898,7 @@ mod tests {
         let older = view.store(&path, &datum(1, 1), 3);
         let newer = view.store(&path, &datum(2, 2), 8);
         let middle = view.store(&path, &datum(3, 3), 5);
-        let ord_of =
-            |datum: &ParDatum, meter: &ScanMeter| record::datum_ord_metered(&datum.a, meter);
+        let ord_of = |datum: &ParDatum| record::datum_ord(&datum.a).map_err(SpaceError::from);
         let records = view.data.get(&key_of(&path)).expect("the path").clone();
         let sources = |order: Vec<usize>| -> Vec<Produce> {
             order
@@ -1008,71 +906,25 @@ mod tests {
                 .map(|index| records[index].source.clone())
                 .collect()
         };
-        let queue = head_order(
-            &QueueDiscipline,
-            Side::Data,
-            &records,
-            ord_of,
-            2,
-            &unmetered(),
-        )
-        .expect("a queue order");
+        let queue =
+            head_order(&QueueDiscipline, Side::Data, &records, ord_of, 2).expect("a queue order");
         assert_eq!(sources(queue), vec![
             older.source.clone(),
             middle.source.clone()
         ]);
-        let stack = head_order(
-            &StackDiscipline,
-            Side::Data,
-            &records,
-            ord_of,
-            5,
-            &unmetered(),
-        )
-        .expect("a stack order");
+        let stack =
+            head_order(&StackDiscipline, Side::Data, &records, ord_of, 5).expect("a stack order");
         assert_eq!(sources(stack), vec![
             newer.source.clone(),
             middle.source.clone(),
             older.source.clone()
         ]);
-        let mut queue_heads = |records: &[ParDatum], meter: &ScanMeter| {
-            head_order(&QueueDiscipline, Side::Data, records, ord_of, 1, meter)
-        };
-        let paths = consume_candidates(&mut view, &[], &mut queue_heads, &unmetered())
-            .expect("the heads of ε");
+        let mut queue_heads =
+            |records: &[ParDatum]| head_order(&QueueDiscipline, Side::Data, records, ord_of, 1);
+        let paths = consume_candidates(&mut view, &[], &mut queue_heads).expect("the heads of ε");
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].entries.len(), 1);
         assert_eq!(paths[0].entries[0].source, older.source.hash);
-    }
-
-    #[test]
-    fn the_planner_reserves_its_work() {
-        let mut view = MemoryView::default();
-        view.store(&ints(&[0, 1, 2]), &datum(42, 1), 0);
-        view.store(&ints(&[0, 1]), &datum(5, 3), 0);
-        view.park(&ints(&[0, 1]), 2);
-        let path = ints(&[0, 1, 2]);
-        assert_cut(|meter| {
-            let mut copy = view.clone();
-            consume_candidates(&mut copy, &prefix_of(&path, 1), &mut all_data, meter)
-        });
-        assert_cut(|meter| {
-            let mut copy = view.clone();
-            let encoded = encode_path(&path, meter)?;
-            produce_waiters(&mut copy, &path, &encoded, &mut scan_waiter_order, meter)
-        });
-        let random = Blake2b512Random::create_from_bytes(b"datum");
-        let hash = Blake2b256Hash::from_bytes(vec![1; SOURCE_LEN]);
-        assert_cut(|meter| store_markers(&path, &hash, &random, None, meter));
-        assert_cut(|meter| rerooted(&ints(&[2]), datum(42, 1), &HeadEPathMapAdapter, meter));
-        let records = view
-            .data
-            .get(&key_of(&ints(&[0, 1])))
-            .expect("a path")
-            .clone();
-        let ord_of =
-            |datum: &ParDatum, meter: &ScanMeter| record::datum_ord_metered(&datum.a, meter);
-        assert_cut(|meter| head_order(&QueueDiscipline, Side::Data, &records, ord_of, 1, meter));
     }
 
     /// One step of a random history of a PathMap space.
@@ -1154,7 +1006,7 @@ mod tests {
                     .collect();
                 let q = ints(&prefix);
                 let q_key = prefix_of(&q, q.len());
-                let candidates = consume_candidates(&mut view, &q_key, &mut all_data, &unmetered())
+                let candidates = consume_candidates(&mut view, &q_key, &mut all_data)
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let mut seen = Vec::new();
                 let mut previous: Option<(Vec<u8>, usize)> = None;
@@ -1172,12 +1024,7 @@ mod tests {
                         let here = (path.path_key.clone(), rank);
                         if let Some(before) = &previous {
                             ensure(
-                                candidate_cmp(
-                                    (&before.0, before.1),
-                                    (&here.0, here.1),
-                                    &unmetered(),
-                                )
-                                .map_err(|error| TestCaseError::fail(error.to_string()))?
+                                candidate_cmp((&before.0, before.1), (&here.0, here.1))
                                     == Ordering::Less,
                                 "the candidates ascend",
                             )?;
@@ -1230,16 +1077,10 @@ mod tests {
                     view.park(&ints(prefix), tag as i64);
                 }
                 let p = ints(&path);
-                let encoded = encode_path(&p, &unmetered())
+                let encoded =
+                    encode_path(&p).map_err(|error| TestCaseError::fail(error.to_string()))?;
+                let prefixes = produce_waiters(&mut view, &p, &encoded, &mut all_waiters)
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
-                let prefixes = produce_waiters(
-                    &mut view,
-                    &p,
-                    &encoded,
-                    &mut scan_waiter_order,
-                    &unmetered(),
-                )
-                .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let depths: Vec<usize> = prefixes.iter().map(|prefix| prefix.depth).collect();
                 let wanted: Vec<usize> = (0..=p.len())
                     .rev()
@@ -1285,11 +1126,11 @@ mod tests {
                     cost_authority: None,
                     cost_stack: None,
                 };
-                let seen = rerooted(&suffix, sent.clone(), &HeadEPathMapAdapter, &unmetered())
+                let seen = rerooted(&suffix, sent.clone(), &HeadEPathMapAdapter)
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 let wanted: Result<Vec<Par>, SpaceError> = payload
                     .into_iter()
-                    .map(|value| reroot(&suffix, value, &HeadEPathMapAdapter, &unmetered()))
+                    .map(|value| reroot(&suffix, value, &HeadEPathMapAdapter))
                     .collect();
                 ensure(
                     seen.pars == wanted.map_err(|error| TestCaseError::fail(error.to_string()))?,
@@ -1334,7 +1175,7 @@ mod tests {
         let checked = |path: &[Par]| -> Result<(), SpaceError> {
             let channel = glist(path.to_vec());
             let key = CollectionKey::of_channel(&channel)?;
-            PathMapOuter.check_key(&config, &channel, &key, &unmetered())
+            PathMapOuter.check_key(&config, &channel, &key)
         };
         check(
             pure_config(),
@@ -1373,9 +1214,8 @@ mod tests {
     #[test]
     fn the_index_channels_of_the_model_are_the_store_channels() {
         let path = ints(&[0, 1]);
-        let encoded = encode_path(&path, &unmetered()).expect("the path encodes");
-        let channels =
-            PathMapOuter::path_channels(SPACE, &encoded, &unmetered()).expect("the channels");
+        let encoded = encode_path(&path).expect("the path encodes");
+        let channels = PathMapOuter::path_channels(SPACE, &encoded).expect("the channels");
         for depth in 0..=path.len() {
             assert_eq!(
                 channels.index(depth),

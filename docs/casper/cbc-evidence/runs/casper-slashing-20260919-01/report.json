@@ -1,0 +1,9 @@
+{
+  "status": "retention-check-failed",
+  "exit": 2,
+  "reason": "The private-path scan matched its own generic regular expression in the archived retention script. The sole match contains no personal path.",
+  "claim_discharge": "pending",
+  "source_archive_sha256": "c25e5056df379f0b9eb86faddd9c55abc676d132a70e479ad5f90842f7665a21",
+  "evidence_archive_sha256": "a8f4cd4d51256fa23ed2d28c481779ec806d864f2db800fd18e105a24e8fedbd",
+  "node_execution": false
+}

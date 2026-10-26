@@ -24,7 +24,8 @@ x-rnode-env: &rnode-env
   MALLOC_ARENA_MAX: "2"
   MALLOC_TRIM_THRESHOLD_: "131072"
   MALLOC_MMAP_THRESHOLD_: "131072"
-  # Passed only when set, so logging.filter in the node config applies by default.
+  # Passed only when set, so logging.filter in the node config
+  # applies by default.
   RUST_LOG:
 
 x-rnode-logging: &rnode-logging
@@ -35,13 +36,15 @@ x-rnode-logging: &rnode-logging
 
 services:
   validator1:
-    image: ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    image: >-
+      ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
     user: root
     restart: always
     container_name: rnode.validator1
     environment: *rnode-env
     logging: *rnode-logging
     command:
+      - --log-sink=stdout
       - run
       - --host=${VPS2_PUBLIC_HOST}
       - --allow-private-addresses
@@ -66,13 +69,15 @@ services:
       - ./certs/validator1/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
   validator2:
-    image: ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    image: >-
+      ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
     user: root
     restart: always
     container_name: rnode.validator2
     environment: *rnode-env
     logging: *rnode-logging
     command:
+      - --log-sink=stdout
       - run
       - --host=${VPS2_PUBLIC_HOST}
       - --allow-private-addresses
@@ -97,13 +102,15 @@ services:
       - ./certs/validator2/node.key.pem:/var/lib/rnode/node.key.pem:ro
 
   readonly:
-    image: ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
+    image: >-
+      ${F1R3FLY_IMAGE:-us-sanjose-1.ocir.io/axd0qezqa9z3/f1r3fly-rust:latest}
     user: root
     restart: always
     container_name: rnode.readonly
     environment: *rnode-env
     logging: *rnode-logging
     command:
+      - --log-sink=stdout
       - run
       - --host=${VPS2_PUBLIC_HOST}
       - --allow-private-addresses

@@ -1,14 +1,9 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
 use crate::rust::interpreter::accounting::monetary_allocation::check_funding_deficit;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn limits(problem: FundingBoxProblem<'_>) -> FundingSearchLimits {
     FundingSearchLimits {
@@ -116,10 +111,7 @@ fn validate_result(problem: FundingBoxProblem<'_>, result: FundingBoxFeasibility
             false
         }
         FundingBoxFeasibility::LowerDeficit { selected_sources } => {
-            assert!(
-                check_lower_funding_cut(problem, &selected_sources, limits(problem), &work())
-                    .unwrap()
-            );
+            assert!(check_lower_funding_cut(problem, &selected_sources, limits(problem)).unwrap());
             let requested: u128 = problem
                 .lower
                 .iter()
@@ -175,9 +167,9 @@ fn exact_lower_bounds_require_alternating_reassignment_through_a_full_source() {
     };
     let initial = vec![vec![0, 0], vec![1, 0], vec![0, 1]];
     let totals = problem
-        .verify_assignment(&initial, limits(problem), &work())
+        .verify_assignment(&initial, limits(problem))
         .unwrap();
-    let result = rebalance(problem, initial, totals, limits(problem), &work()).unwrap();
+    let result = rebalance(problem, initial, totals, limits(problem)).unwrap();
     let FundingBoxFeasibility::Feasible { assignment, totals } = result else {
         panic!("the two-edge alternating path must satisfy both lower bounds");
     };
@@ -194,19 +186,17 @@ fn unrelated_obligations_cannot_satisfy_a_source_lower_bound() {
         eligible: &[vec![true, false], vec![false, true]],
     };
     assert_eq!(
-        solve_box_funding_feasibility(problem, limits(problem), &work()),
+        solve_box_funding_feasibility(problem, limits(problem)),
         Ok(FundingBoxFeasibility::LowerDeficit {
             selected_sources: vec![true, false]
         })
     );
-    assert!(!check_lower_funding_cut(problem, &[true, true], limits(problem), &work()).unwrap());
+    assert!(!check_lower_funding_cut(problem, &[true, true], limits(problem)).unwrap());
     let sufficient = FundingBoxProblem {
         lower: &[1, 0],
         ..problem
     };
-    assert!(
-        !check_lower_funding_cut(sufficient, &[true, false], limits(problem), &work()).unwrap()
-    );
+    assert!(!check_lower_funding_cut(sufficient, &[true, false], limits(problem)).unwrap());
 }
 
 #[test]
@@ -230,12 +220,9 @@ fn exhaustive_two_source_boxes_match_independent_unit_oracle() {
                                     eligible: &edges,
                                 };
                                 let expected = oracle(problem, &mut [0, 0], &mut [q0, q1]);
-                                let result = solve_box_funding_feasibility(
-                                    problem,
-                                    limits(problem),
-                                    &work(),
-                                )
-                                .unwrap();
+                                let result =
+                                    solve_box_funding_feasibility(problem, limits(problem))
+                                        .unwrap();
                                 assert_eq!(
                                     validate_result(problem, result),
                                     expected,
@@ -254,7 +241,6 @@ fn exhaustive_two_source_boxes_match_independent_unit_oracle() {
 
 #[test]
 fn full_width_amounts_do_not_expand_to_per_token_work() {
-    let mut usages = None;
     for amount in [1, 1_000_000, u64::MAX / 2] {
         let problem = FundingBoxProblem {
             lower: &[amount, amount, 0],
@@ -264,22 +250,10 @@ fn full_width_amounts_do_not_expand_to_per_token_work() {
         };
         let initial = vec![vec![0, 0], vec![amount, 0], vec![0, amount]];
         let totals = problem
-            .verify_assignment(&initial, limits(problem), &work())
+            .verify_assignment(&initial, limits(problem))
             .unwrap();
-        let budget = work();
-        let result = rebalance(problem, initial, totals, limits(problem), &budget).unwrap();
+        let result = rebalance(problem, initial, totals, limits(problem)).unwrap();
         assert!(validate_result(problem, result));
-        let counts: Vec<_> = [
-            HostWorkDimension::SearchCandidates,
-            HostWorkDimension::SearchStateBytes,
-            HostWorkDimension::VerificationOperations,
-        ]
-        .map(|dimension| budget.usage(dimension).get())
-        .into();
-        if let Some(previous) = &usages {
-            assert_eq!(&counts, previous);
-        }
-        usages = Some(counts);
     }
 }
 
@@ -295,14 +269,13 @@ fn wide_lower_sums_empty_demands_and_arbitrary_cohorts_are_supported() {
             obligations: &[u64::MAX],
             eligible: &eligible,
         };
-        let result = solve_box_funding_feasibility(problem, limits(problem), &work()).unwrap();
+        let result = solve_box_funding_feasibility(problem, limits(problem)).unwrap();
         assert!(validate_result(problem, result));
         let impossible = FundingBoxProblem {
             lower: &upper,
             ..problem
         };
-        let result =
-            solve_box_funding_feasibility(impossible, limits(impossible), &work()).unwrap();
+        let result = solve_box_funding_feasibility(impossible, limits(impossible)).unwrap();
         assert_eq!(validate_result(impossible, result), count == 1);
         let zeros = vec![0; count];
         let empty_edges = vec![vec![]; count];
@@ -312,53 +285,14 @@ fn wide_lower_sums_empty_demands_and_arbitrary_cohorts_are_supported() {
             obligations: &[],
             eligible: &empty_edges,
         };
-        let result = solve_box_funding_feasibility(empty, limits(empty), &work()).unwrap();
+        let result = solve_box_funding_feasibility(empty, limits(empty)).unwrap();
         assert!(validate_result(empty, result));
         let impossible = FundingBoxProblem {
             lower: &upper,
             ..empty
         };
-        let result =
-            solve_box_funding_feasibility(impossible, limits(impossible), &work()).unwrap();
+        let result = solve_box_funding_feasibility(impossible, limits(impossible)).unwrap();
         assert!(!validate_result(impossible, result));
-    }
-}
-
-#[test]
-fn every_budget_prefix_returns_an_error_not_a_different_funding_result() {
-    for lower in [[1, 0], [2, 0]] {
-        let problem = FundingBoxProblem {
-            lower: &lower,
-            upper: &[2, 2],
-            obligations: &[1, 1],
-            eligible: &[vec![true, false], vec![true, true]],
-        };
-        let measured = work();
-        let expected = solve_box_funding_feasibility(problem, limits(problem), &measured).unwrap();
-        for dimension in [
-            HostWorkDimension::SearchCandidates,
-            HostWorkDimension::SearchStateBytes,
-            HostWorkDimension::VerificationOperations,
-        ] {
-            let full = measured.usage(dimension).get();
-            for prefix in 0..=full {
-                let mut bounds = HostWorkLimits::uniform(HostWorkLimit::new(100_000_000));
-                bounds.set(dimension, HostWorkLimit::new(prefix));
-                let actual = solve_box_funding_feasibility(
-                    problem,
-                    limits(problem),
-                    &HostWorkBudget::new(bounds),
-                );
-                if prefix == full {
-                    assert_eq!(actual, Ok(expected.clone()));
-                } else {
-                    assert!(
-                        matches!(actual, Err(FundingSearchError::HostWork(_))),
-                        "{dimension:?} {prefix}/{full}: {actual:?}"
-                    );
-                }
-            }
-        }
     }
 }
 
@@ -376,8 +310,7 @@ fn malformed_bounds_and_amount_overflow_are_input_errors() {
                 lower: &[2],
                 ..problem
             },
-            limits(problem),
-            &work()
+            limits(problem)
         ),
         Err(FundingSearchError::InvalidSourceBounds)
     );
@@ -387,13 +320,12 @@ fn malformed_bounds_and_amount_overflow_are_input_errors() {
                 lower: &[],
                 ..problem
             },
-            limits(problem),
-            &work()
+            limits(problem)
         ),
         Err(FundingAssignmentError::InvalidDimensions.into())
     );
     assert_eq!(
-        check_lower_funding_cut(problem, &[], limits(problem), &work()),
+        check_lower_funding_cut(problem, &[], limits(problem)),
         Err(FundingAssignmentError::InvalidDimensions.into())
     );
     let overflow = FundingBoxProblem {
@@ -403,7 +335,7 @@ fn malformed_bounds_and_amount_overflow_are_input_errors() {
         eligible: &[vec![true; 2]],
     };
     assert_eq!(
-        solve_box_funding_feasibility(overflow, limits(overflow), &work()),
+        solve_box_funding_feasibility(overflow, limits(overflow)),
         Err(FundingAssignmentError::Overflow.into())
     );
 }
@@ -427,8 +359,8 @@ proptest! {
         let lower: Vec<_> = upper.iter().zip(raw_lower).map(|(upper, lower)| lower % (upper + 1)).collect();
         let demand: Vec<u64> = (0..width).map(|j| initial.iter().map(|row| row[j]).sum()).collect();
         let problem = FundingBoxProblem { lower: &lower, upper: &upper, obligations: &demand, eligible: &eligible };
-        let totals = problem.verify_assignment(&initial, limits(problem), &work()).unwrap();
-        let result = rebalance(problem, initial, totals, limits(problem), &work()).unwrap();
+        let totals = problem.verify_assignment(&initial, limits(problem)).unwrap();
+        let result = rebalance(problem, initial, totals, limits(problem)).unwrap();
         let actual = validate_result(problem, result);
         let mut every_cut = true;
         for mask in 0..(1_usize << count) {
@@ -436,7 +368,7 @@ proptest! {
             let requested: u64 = lower.iter().zip(&selected).filter(|(_, chosen)| **chosen).map(|(value, _)| *value).sum();
             let supplied: u64 = demand.iter().enumerate().filter(|(j, _)| (0..count).any(|i| selected[i] && eligible[i][*j])).map(|(_, value)| *value).sum();
             let failed = requested > supplied;
-            prop_assert_eq!(check_lower_funding_cut(problem, &selected, limits(problem), &work()).unwrap(), failed);
+            prop_assert_eq!(check_lower_funding_cut(problem, &selected, limits(problem)).unwrap(), failed);
             every_cut &= !failed;
         }
         prop_assert_eq!(actual, every_cut);
@@ -453,14 +385,14 @@ proptest! {
         let eligible: Vec<Vec<_>> = (0..upper.len()).map(|i| (0..demand.len()).map(|j| bits[i * 3 + j]).collect()).collect();
         let problem = FundingBoxProblem { lower: &lower, upper: &upper, obligations: &demand, eligible: &eligible };
         let expected = oracle(problem, &mut vec![0; upper.len()], &mut demand.clone());
-        let result = solve_box_funding_feasibility(problem, limits(problem), &work()).unwrap();
+        let result = solve_box_funding_feasibility(problem, limits(problem)).unwrap();
         prop_assert_eq!(validate_result(problem, result), expected);
         let reversed_upper: Vec<_> = upper.iter().rev().copied().collect();
         let reversed_lower: Vec<_> = lower.iter().rev().copied().collect();
         let reversed_demand: Vec<_> = demand.iter().rev().copied().collect();
         let reversed_edges: Vec<Vec<_>> = eligible.iter().rev().map(|row| row.iter().rev().copied().collect()).collect();
         let reversed = FundingBoxProblem { lower: &reversed_lower, upper: &reversed_upper, obligations: &reversed_demand, eligible: &reversed_edges };
-        let result = solve_box_funding_feasibility(reversed, limits(reversed), &work()).unwrap();
+        let result = solve_box_funding_feasibility(reversed, limits(reversed)).unwrap();
         prop_assert_eq!(validate_result(reversed, result), expected);
     }
 }

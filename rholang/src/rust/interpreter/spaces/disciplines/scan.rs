@@ -59,10 +59,9 @@
 //! the record can fire. At the round cap, the restore re-issues the produce of the payload of
 //! the record, which has the same identity because its `ord` is 0.
 //!
-//! **Metering (decision 42).** Each plan reserves every read and copy before it makes it: the
-//! canonical order (as the substrate reserves it), one payload decode for each tested record,
-//! one pattern copy for each tested waiter, the metered matcher calls, and the copies of the
-//! selected entries and of the staged operations. A fire that ends a plan moves its values.
+//! **Copies.** A plan decodes the payload of each record that it tests and copies the pattern of
+//! each waiter that it tests. It also copies the entries that it selects and the operations that
+//! it stages. A fire that ends a plan moves its values.
 //!
 //! **The tested prefix.** Within one plan the incoming element does not change, so a candidate
 //! that failed to match it fails again. A fire that continues the plan removes its partner, and
@@ -79,13 +78,11 @@ use models::rhoapi::{
     BindPattern, CostAuthority, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
 };
 use models::rust::utils::{new_freevar_var, new_gbytearray_par};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
-use rspace_plus_plus::rspace::space_store_handle::metered_hash;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
-use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, FIRE_ROUND_CAP};
 use crate::rust::interpreter::spaces::agent::{ConsumeOp, ProduceOp, SpaceOp, SpaceReissue};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{
@@ -93,7 +90,7 @@ use crate::rust::interpreter::spaces::generic::{
     Side, StoredMatch,
 };
 use crate::rust::interpreter::spaces::namespace::{CollectionKey, RandomPurpose};
-use crate::rust::interpreter::spaces::record::{self, Introduction};
+use crate::rust::interpreter::spaces::record::{self, bincode_digest, Introduction};
 
 /// A discipline whose plans are the scan driver of this module: the bag and the set (P5a).
 ///
@@ -107,20 +104,13 @@ pub trait ScanDiscipline: Discipline {
     /// Two records with equal keys are members of one class. A non-peek receive binds every
     /// member of the class of the record that it takes, and a non-peek produce-side fire
     /// retires the stored members of the class of its datum (F3, decision 37). The driver
-    /// compares two keys by their metered hashes, and it compares the full keys only when the
-    /// hashes are equal (DR-90).
+    /// compares two keys by their hashes, and it compares the full keys only when the hashes
+    /// are equal (DR-90).
     ///
     /// The key depends on the payload only, never on the random state, the cost authority or
-    /// the cost stack of the record (F5). The method reserves each read and each encode on
-    /// `meter` before it makes them. A payload without a key fails with a typed error before any
-    /// staging, never with empty bytes. The default gives `None` and does no work.
-    fn class_key(
-        &self,
-        _payload: &[Par],
-        _meter: &ScanMeter,
-    ) -> Result<Option<Vec<u8>>, SpaceError> {
-        Ok(None)
-    }
+    /// the cost stack of the record (F5). A payload without a key fails with a typed error
+    /// before any staging, never with empty bytes. The default gives `None`.
+    fn class_key(&self, _payload: &[Par]) -> Result<Option<Vec<u8>>, SpaceError> { Ok(None) }
 }
 
 /// The pattern of a retire consume: one remainder that binds the whole payload, as the handle
@@ -163,15 +153,8 @@ fn continuation_with(
     }
 }
 
-/// The template of the retire pattern. A reserved copy of it covers its allocations.
+/// The template of the retire pattern.
 pub(crate) static RETIRE_PATTERN: LazyLock<BindPattern> = LazyLock::new(retire_pattern);
-
-/// The template of a retire continuation: its body without the bytes of the source hash, no
-/// random state bytes and no cost authority. The reserved copy of the template, the reserved
-/// buffer of the hash bytes, the reserved random bytes and the reserved copy of the authority
-/// cover the allocations of a retire continuation.
-pub(crate) static RETIRE_CONTINUATION: LazyLock<TaggedContinuation> =
-    LazyLock::new(|| continuation_with(Vec::new(), Vec::new(), None));
 
 /// The produce plan of a scan discipline: OFFER-SCAN of the datum of `op` with the order `ord`,
 /// which is 0. A re-issue moves `op` and carries no order (decision 43). The settle hooks of `D`
@@ -194,9 +177,8 @@ pub fn offer<D: ScanDiscipline>(
     if let Some(reissue) = open_plan(discipline, cx, OpView::Produce(&op))? {
         return Ok(Some(reissue));
     }
-    let meter = cx.meter();
-    let record = record::wrap_datum_metered(ord, &op.data, meter)?;
-    let source = Produce::create_metered(cx.data_channel(), &record, op.persistent, meter)?;
+    let record = record::wrap_datum(ord, &op.data);
+    let source = Produce::create(cx.data_channel(), &record, op.persistent);
     let element = InFlight {
         record,
         source,
@@ -244,15 +226,13 @@ pub fn receive<D: ScanDiscipline>(
     if let Some(reissue) = open_plan(discipline, cx, OpView::Consume(&op))? {
         return Ok(Some(reissue));
     }
-    let meter = cx.meter();
-    let continuation = record::wrap_continuation_metered(
+    let continuation = record::wrap_continuation_from_parts(
         ord,
         &op.body,
         &op.guard,
         record::stamped(&op.authority),
-        meter,
     )?;
-    let peeks = peek_set(op.peek, meter)?;
+    let peeks = peek_set(op.peek);
     // Disabled by I-21 (one fire count for each transaction, `Cx::rounds`):
     // let mut rounds = FireRounds::new();
     let mut tested = 0;
@@ -281,16 +261,15 @@ pub fn receive<D: ScanDiscipline>(
         // does, and RESTORE-SCAN sends the record again right after the fire.
         let restored = match class.as_slice() {
             [representative] if op.peek && !representative.record.persist => {
-                Some(meter.copy(&representative.record.a)?)
+                Some(representative.record.a.clone())
             }
             _ => None,
         };
-        record::prepay_continuation_unwrap(&continuation, meter)?;
         let step = cx.rounds().after_fire(spent, stays);
         match step {
             FireStep::Continue => {
-                let fired = meter.copy(&continuation)?;
-                fire_class(cx, &op, fired, meter.copy(&peeks)?, class)?;
+                let fired = continuation.clone();
+                fire_class(cx, &op, fired, peeks.clone(), class)?;
                 if let Some(reissue) = restore_in(discipline, cx, restored, &op)? {
                     return Ok(Some(reissue));
                 }
@@ -411,18 +390,11 @@ fn offer_scan<D: ScanDiscipline>(
     element: InFlight<'_>,
     payload: &ListParWithRandom,
 ) -> Result<OfferEnd, SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
     let mut class: Option<Option<Retiring>> = None;
     let mut tested = 0;
     loop {
         let Some(found) = first_admitting_waiter(cx, payload, tested)? else {
-            // A metered job stores only a record whose class key exists under its metering, so
-            // a later class operation never meets a record without a class. Without a budget the
-            // host sorter keys every payload, and a fire above already computed the key.
-            if class.is_none() && meter.is_metered() {
-                discipline.class_key(&payload.pars, meter)?;
-            }
             cx.check_capacity::<D>(Side::Data)?;
             cx.store_on(data, element.record, element.persist, element.introduction)?;
             return Ok(OfferEnd::Settled);
@@ -441,12 +413,11 @@ fn offer_scan<D: ScanDiscipline>(
             false => {
                 let cached = match class.take() {
                     Some(cached) => cached,
-                    None => retiring_of(discipline, payload, &element.record, meter)?,
+                    None => retiring_of(discipline, payload, &element.record)?,
                 };
                 class.insert(cached).as_ref()
             }
         };
-        record::prepay_continuation_unwrap(&waiter.continuation, meter)?;
         let fire = OfferFire {
             persistent: element.persist,
             waiter,
@@ -455,9 +426,9 @@ fn offer_scan<D: ScanDiscipline>(
         let step = cx.rounds().after_fire(spent, stays);
         match step {
             FireStep::Continue => {
-                let staged = meter.copy(&element.record)?;
-                let removed = meter.copy(&element.record)?;
-                let source = meter.copy(&element.source)?;
+                let staged = element.record.clone();
+                let removed = element.record.clone();
+                let source = element.source.clone();
                 cx.fire_offer_on(data, fire, staged, removed, source, element.introduction)?;
                 if let Some(retiring) = retiring {
                     retire_class(discipline, cx, retiring)?;
@@ -465,7 +436,7 @@ fn offer_scan<D: ScanDiscipline>(
                 tested = position;
             }
             FireStep::Done => {
-                let removed = meter.copy(&element.record)?;
+                let removed = element.record.clone();
                 cx.fire_offer_on(
                     data,
                     fire,
@@ -480,7 +451,7 @@ fn offer_scan<D: ScanDiscipline>(
                 return Ok(OfferEnd::Settled);
             }
             FireStep::Reissue(cause) => {
-                let removed = meter.copy(&element.record)?;
+                let removed = element.record.clone();
                 cx.fire_offer_on(
                     data,
                     fire,
@@ -506,18 +477,13 @@ fn retiring_of<D: ScanDiscipline>(
     discipline: &D,
     payload: &ListParWithRandom,
     record: &ListParWithRandom,
-    meter: &ScanMeter,
 ) -> Result<Option<Retiring>, SpaceError> {
-    let Some(key) = discipline.class_key(&payload.pars, meter)? else {
+    let Some(key) = discipline.class_key(&payload.pars)? else {
         return Ok(None);
     };
-    let key_hash = metered_hash(&key, meter)?;
+    let key_hash = bincode_digest(&key)?;
     let random = RandomPurpose::Retire.derive(&Blake2b512Random::from_bytes(&record.random_state));
-    let authority = record
-        .cost_authority
-        .as_ref()
-        .map(|authority| meter.copy(authority))
-        .transpose()?;
+    let authority = record.cost_authority.as_ref().cloned();
     Ok(Some(Retiring {
         key,
         key_hash,
@@ -528,14 +494,13 @@ fn retiring_of<D: ScanDiscipline>(
 
 /// The first waiter of the collection, in canonical order from the position `tested`, whose
 /// pattern binds `payload` and whose guard admits the bound values. A waiter whose guard
-/// refuses is skipped (decision 37). Each tested waiter costs one reserved copy of its pattern
-/// and one metered match, and only a waiter that binds is copied whole.
+/// refuses is skipped (decision 37). The pattern of each tested waiter is copied and matched
+/// once, and only a waiter that binds is copied whole.
 fn first_admitting_waiter(
     cx: &mut Cx<'_, '_>,
     payload: &ListParWithRandom,
     tested: usize,
 ) -> Result<Option<FoundWaiter>, SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
     let order = cx.canonical_waiter_order(data)?;
     for (position, &index) in order.iter().enumerate().skip(tested) {
@@ -546,12 +511,12 @@ fn first_admitting_waiter(
                     "a waiting continuation of a collection has several binds",
                 ));
             };
-            meter.copy(pattern)?
+            pattern.clone()
         };
-        let Some(matched) = cx.bind(&pattern, payload)? else {
+        let Some(matched) = cx.bind(&pattern, payload) else {
             continue;
         };
-        let waiter = meter.copy(waiter_at(cx, index)?)?;
+        let waiter = waiter_at(cx, index)?.clone();
         // The element is in flight, so the theory checks no stored data here (P7, TH-6).
         if cx.admits(&waiter.continuation, &matched, &[])? {
             return Ok(Some(FoundWaiter {
@@ -565,19 +530,18 @@ fn first_admitting_waiter(
 }
 
 /// The first record of the collection, in canonical order from the position `tested`, whose
-/// payload `pattern` binds. Each tested record costs one reserved payload decode and one
-/// metered match. Nothing is copied whole.
+/// payload `pattern` binds. The payload of each tested record is decoded and matched once.
+/// Nothing is copied whole.
 fn first_bound_record(
     cx: &mut Cx<'_, '_>,
     pattern: &BindPattern,
     tested: usize,
 ) -> Result<Option<FoundRecord>, SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
     let order = cx.canonical_data_order(data)?;
     for (position, &index) in order.iter().enumerate().skip(tested) {
-        let payload = record::unwrap_datum_metered(&record_at(cx, index)?.a, meter)?.datum;
-        if let Some(matched) = cx.bind(pattern, &payload)? {
+        let payload = record::unwrap_datum(&record_at(cx, index)?.a)?.datum;
+        if let Some(matched) = cx.bind(pattern, &payload) {
             return Ok(Some(FoundRecord {
                 position,
                 index,
@@ -600,7 +564,6 @@ fn class_of<D: ScanDiscipline>(
     op: &ConsumeOp,
     found: FoundRecord,
 ) -> Result<Vec<Member>, SpaceError> {
-    let meter = cx.meter();
     let FoundRecord {
         position,
         index,
@@ -608,46 +571,46 @@ fn class_of<D: ScanDiscipline>(
         matched,
     } = found;
     let representative = Member {
-        record: meter.copy(record_at(cx, index)?)?,
+        record: record_at(cx, index)?.clone(),
         matched,
         view_index: view_index(index)?,
     };
     let key = match op.peek {
         true => None,
-        false => discipline.class_key(&payload.pars, meter)?,
+        false => discipline.class_key(&payload.pars)?,
     };
     let Some(key) = key else {
-        let mut class = meter.buffer::<Member>(1)?;
+        let mut class = Vec::<Member>::with_capacity(1);
         class.push(representative);
         return Ok(class);
     };
-    let key_hash = metered_hash(&key, meter)?;
+    let key_hash = bincode_digest(&key)?;
     let data = cx.data_channel();
     let order = cx.canonical_data_order(data)?;
-    let mut class = meter.buffer::<Member>(1)?;
+    let mut class = Vec::<Member>::with_capacity(1);
     class.push(representative);
     let next = position.checked_add(1).ok_or(SpaceError::Inconsistent(
         "a candidate position overflows usize",
     ))?;
     for &other in order.iter().skip(next) {
-        let payload = record::unwrap_datum_metered(&record_at(cx, other)?.a, meter)?.datum;
-        let Some(other_key) = discipline.class_key(&payload.pars, meter)? else {
+        let payload = record::unwrap_datum(&record_at(cx, other)?.a)?.datum;
+        let Some(other_key) = discipline.class_key(&payload.pars)? else {
             continue;
         };
-        if !same_class(&key, &key_hash, &other_key, meter)? {
+        if !same_class(&key, &key_hash, &other_key)? {
             continue;
         }
         let matched = cx
-            .bind(&op.pattern, &payload)?
+            .bind(&op.pattern, &payload)
             .ok_or(SpaceError::Inconsistent(
                 "a member of a class does not bind the pattern of its representative",
             ))?;
         let member = Member {
-            record: meter.copy(record_at(cx, other)?)?,
+            record: record_at(cx, other)?.clone(),
             matched,
             view_index: view_index(other)?,
         };
-        push_reserved(&mut class, member, meter)?;
+        class.push(member);
     }
     Ok(class)
 }
@@ -662,16 +625,15 @@ fn fire_class(
     peeks: BTreeSet<i32>,
     class: Vec<Member>,
 ) -> Result<(), SpaceError> {
-    let meter = cx.meter();
     let data = cx.data_channel();
     let width = class.len();
-    let mut channels = meter.buffer::<Par>(width)?;
-    let mut patterns = meter.buffer::<BindPattern>(width)?;
-    let mut candidates = meter.buffer::<ParCandidate>(width)?;
+    let mut channels = Vec::<Par>::with_capacity(width);
+    let mut patterns = Vec::<BindPattern>::with_capacity(width);
+    let mut candidates = Vec::<ParCandidate>::with_capacity(width);
     for member in class {
-        channels.push(meter.copy(data)?);
-        patterns.push(meter.copy(&op.pattern)?);
-        candidates.push(stored_candidate(meter.copy(data)?, member));
+        channels.push(data.clone());
+        patterns.push(op.pattern.clone());
+        candidates.push(stored_candidate(data.clone(), member));
     }
     cx.fire_receive_group(
         channels,
@@ -733,10 +695,9 @@ fn restore_scan<D: ScanDiscipline>(
     record: ListParWithRandom,
     origin: Option<&ConsumeOp>,
 ) -> Result<Option<SpaceReissue>, SpaceError> {
-    let meter = cx.meter();
-    let payload = record::unwrap_datum_metered(&record, meter)?.datum;
-    let source = Produce::create_metered(cx.data_channel(), &record, false, meter)?;
-    let introduction = cx.introduction().for_record(&record, meter)?;
+    let payload = record::unwrap_datum(&record)?.datum;
+    let source = Produce::create(cx.data_channel(), &record, false);
+    let introduction = cx.introduction().for_record(&record)?;
     let element = InFlight {
         record,
         source,
@@ -751,7 +712,7 @@ fn restore_scan<D: ScanDiscipline>(
         OfferEnd::Settled => Ok(None),
         OfferEnd::Reissue(cause) => match origin {
             Some(op) => {
-                let send = restored_send(op, payload, meter)?;
+                let send = restored_send(op, payload)?;
                 Ok(Some(cx.reissue(SpaceOp::Produce(send), cause)))
             }
             None => Err(SpaceError::Inconsistent(
@@ -763,23 +724,18 @@ fn restore_scan<D: ScanDiscipline>(
 
 /// The produce that re-issues a restored record whose payload is `payload`: the collection and
 /// the channel of the receive `op`, not persistent, no params, the authority of the record, and
-/// no carried order. Its record is the restored record, because the `ord` is 0. The copies are
-/// reserved before they are made.
-fn restored_send(
-    op: &ConsumeOp,
-    payload: ListParWithRandom,
-    meter: &ScanMeter,
-) -> Result<ProduceOp, SpaceError> {
-    let key = CollectionKey::from_bytes(meter.copy_slice(op.key.as_bytes())?)
+/// no carried order. Its record is the restored record, because the `ord` is 0.
+fn restored_send(op: &ConsumeOp, payload: ListParWithRandom) -> Result<ProduceOp, SpaceError> {
+    let key = CollectionKey::from_bytes(op.key.as_bytes().to_vec())
         .ok_or(SpaceError::Inconsistent("a collection key is empty"))?;
     let authority = match &payload.cost_authority {
-        Some(authority) => meter.copy(authority)?,
+        Some(authority) => authority.clone(),
         None => CostAuthority::default(),
     };
     Ok(ProduceOp {
         space: op.space,
         key,
-        channel: meter.copy(&op.channel)?,
+        channel: op.channel.clone(),
         data: payload,
         persistent: false,
         params: BTreeMap::new(),
@@ -804,12 +760,12 @@ fn retire_class<D: ScanDiscipline>(
         &retiring.key_hash,
         &retiring.random,
         retiring.authority.as_ref(),
-        |payload, meter| discipline.class_key(payload, meter),
+        |payload| discipline.class_key(payload),
     )
 }
 
 /// RETIRE-CLASS on the collection whose data channel is `channel`: stages the retire of each
-/// stored member of the class `key`, whose metered hash is `key_hash`, that is not persistent,
+/// stored member of the class `key`, whose hash is `key_hash`, that is not persistent,
 /// in canonical order. `class_key` gives the class of a stored payload. Each retire is the
 /// consume of `K_retire(m)` over `[channel]` with the record `m`, with the random state `random`
 /// and the cost authority `authority`. It is never dispatched, and it is not a fire round. A
@@ -823,9 +779,8 @@ pub(crate) fn retire_class_on(
     key_hash: &Blake2b256Hash,
     random: &Blake2b512Random,
     authority: Option<&CostAuthority>,
-    class_key: impl Fn(&[Par], &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError>,
+    class_key: impl Fn(&[Par]) -> Result<Option<Vec<u8>>, SpaceError>,
 ) -> Result<(), SpaceError> {
-    let meter = cx.meter();
     let order = cx.canonical_data_order(channel)?;
     let mut members: Vec<(ParDatum, ListParWithRandom)> = Vec::new();
     for &index in &order {
@@ -834,41 +789,36 @@ pub(crate) fn retire_class_on(
             let stored = record_on(cx, channel, index)?;
             match stored.persist {
                 true => None,
-                false => Some(record::unwrap_datum_metered(&stored.a, meter)?.datum),
+                false => Some(record::unwrap_datum(&stored.a)?.datum),
             }
         };
         let Some(payload) = payload else {
             continue;
         };
-        let Some(member_key) = class_key(&payload.pars, meter)? else {
+        let Some(member_key) = class_key(&payload.pars)? else {
             continue;
         };
-        if !same_class(key, key_hash, &member_key, meter)? {
+        if !same_class(key, key_hash, &member_key)? {
             continue;
         }
-        let member = meter.copy(record_on(cx, channel, index)?)?;
-        push_reserved(&mut members, (member, payload), meter)?;
+        let member = record_on(cx, channel, index)?.clone();
+        members.push((member, payload));
     }
     for (member, payload) in members {
         let index = located(cx, channel, &member.source.hash)?;
         let matched = cx
-            .bind(&RETIRE_PATTERN, &payload)?
+            .bind(&RETIRE_PATTERN, &payload)
             .ok_or(SpaceError::Inconsistent(
                 "a retired member does not bind the retire pattern",
             ))?;
-        meter.reserve_copy(&*RETIRE_CONTINUATION)?;
-        meter.reserve_buffer::<u8>(member.source.hash.0.len())?;
-        meter.random_bytes(random)?;
-        let authority = authority
-            .map(|authority| meter.copy(authority))
-            .transpose()?;
+        let authority = authority.cloned();
         let continuation = retire_continuation(&member.source.hash, random, authority);
-        let mut channels = meter.buffer::<Par>(1)?;
-        channels.push(meter.copy(channel)?);
-        let mut patterns = meter.buffer::<BindPattern>(1)?;
-        patterns.push(meter.copy(&*RETIRE_PATTERN)?);
-        let mut candidates = meter.buffer::<ParCandidate>(1)?;
-        candidates.push(stored_candidate(meter.copy(channel)?, Member {
+        let mut channels = Vec::<Par>::with_capacity(1);
+        channels.push(channel.clone());
+        let mut patterns = Vec::<BindPattern>::with_capacity(1);
+        patterns.push((*RETIRE_PATTERN).clone());
+        let mut candidates = Vec::<ParCandidate>::with_capacity(1);
+        candidates.push(stored_candidate(channel.clone(), Member {
             record: member,
             matched,
             view_index: view_index(index)?,
@@ -878,38 +828,29 @@ pub(crate) fn retire_class_on(
     Ok(())
 }
 
-/// True when the key `other` equals `key`, whose metered hash is `key_hash` (DR-90): the hashes
-/// are compared first, and the full keys only when the hashes are equal. Each hash and each
-/// comparison is reserved before it is made.
+/// True when the key `other` equals `key`, whose hash is `key_hash` (DR-90): the hashes are
+/// compared first, and the full keys only when the hashes are equal.
 pub(crate) fn same_class(
     key: &[u8],
     key_hash: &Blake2b256Hash,
     other: &[u8],
-    meter: &ScanMeter,
 ) -> Result<bool, SpaceError> {
-    let other_hash = metered_hash(other, meter)?;
-    meter.compare(key_hash.0.len(), other_hash.0.len())?;
+    let other_hash = bincode_digest(other)?;
     match *key_hash == other_hash {
         false => Ok(false),
-        true => {
-            meter.compare(key.len(), other.len())?;
-            Ok(key == other)
-        }
+        true => Ok(key == other),
     }
 }
 
 /// The index in the staged view of `channel` of the first record whose source hash is `hash`.
-/// Each comparison of two hashes is reserved first. Two records with one source hash are
-/// byte-identical, so either one is the member.
+/// Two records with one source hash are byte-identical, so either one is the member.
 pub(crate) fn located(
     cx: &mut Cx<'_, '_>,
     channel: &Par,
     hash: &Blake2b256Hash,
 ) -> Result<usize, SpaceError> {
-    let meter = cx.meter();
     let records = cx.data_on(channel)?;
     for (index, stored) in records.iter().enumerate() {
-        meter.compare(hash.0.len(), stored.source.hash.0.len())?;
         if stored.source.hash == *hash {
             return Ok(index);
         }
@@ -951,25 +892,6 @@ pub(crate) fn view_index(index: usize) -> Result<i32, SpaceError> {
     i32::try_from(index).map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))
 }
 
-/// Appends `value` to `values`. A list at its capacity reserves its growth on `meter` before it
-/// grows, as `Vec` doubles its buffer (decision 42), with the rule of the staged list of the
-/// engine.
-fn push_reserved<T>(values: &mut Vec<T>, value: T, meter: &ScanMeter) -> Result<(), SpaceError> {
-    if values.len() == values.capacity() {
-        let grown = values
-            .capacity()
-            .checked_mul(2)
-            .ok_or(RSpaceError::HostWorkRejected)?
-            .max(1);
-        meter.reserve_buffer::<T>(grown)?;
-        values
-            .try_reserve_exact(grown - values.len())
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-    }
-    values.push(value);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -977,7 +899,6 @@ mod tests {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::var::VarInstance;
     use models::rhoapi::{EEq, EVar, Expr, Var};
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
     use models::rust::utils::{new_freevar_par, new_gint_par, new_gstring_par};
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -991,7 +912,6 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::RuntimeBudget;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::reified::costs::FIRE_ROUND_CAP;
     use crate::rust::interpreter::spaces::agent::{
@@ -1001,6 +921,7 @@ mod tests {
     use crate::rust::interpreter::spaces::generic::{GenericSpace, Ordered, OuterStore};
     use crate::rust::interpreter::spaces::namespace::{self, Durability, NativeSpace, SID_LEN};
     use crate::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
+    use crate::rust::interpreter::spaces::record::bincode_bytes;
     use crate::rust::interpreter::spaces::types::config::SpaceConfig;
     use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 
@@ -1008,12 +929,11 @@ mod tests {
     fn least_head<T: Serialize>(
         side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        QueueDiscipline.head_metered(side, entries, meter)
+        QueueDiscipline.head(side, entries)
     }
 
-    /// A scan discipline whose class key is the metered bincode of the payload, so two records
+    /// A scan discipline whose class key is the bincode of the payload, so two records
     /// with equal payloads are one class. It exercises RETIRE-CLASS and the `[D; n]` fire of the
     /// driver, which the set discipline reuses (P5a, F3). The SET batch owns the real set key.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1024,25 +944,18 @@ mod tests {
         const USES_COUNTER: bool = false;
         const SEND_PARAMS: &'static [&'static str] = &[];
 
-        fn head_metered<T: Serialize>(
+        fn head<T: Serialize>(
             &self,
             side: Side,
             entries: &[Ordered<'_, T>],
-            meter: &ScanMeter,
         ) -> Result<Option<usize>, SpaceError> {
-            least_head(side, entries, meter)
+            least_head(side, entries)
         }
 
         fn reaches_head(&self, _side: Side, _queued: usize) -> bool { true }
 
-        fn precedes(
-            &self,
-            side: Side,
-            ord: i64,
-            head: i64,
-            meter: &ScanMeter,
-        ) -> Result<bool, SpaceError> {
-            QueueDiscipline.precedes(side, ord, head, meter)
+        fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+            QueueDiscipline.precedes(side, ord, head)
         }
 
         fn offer(
@@ -1073,12 +986,8 @@ mod tests {
     }
 
     impl ScanDiscipline for Classed {
-        fn class_key(
-            &self,
-            payload: &[Par],
-            meter: &ScanMeter,
-        ) -> Result<Option<Vec<u8>>, SpaceError> {
-            Ok(Some(meter.encode(payload)?))
+        fn class_key(&self, payload: &[Par]) -> Result<Option<Vec<u8>>, SpaceError> {
+            Ok(Some(bincode_bytes(payload)?))
         }
     }
 
@@ -1094,25 +1003,18 @@ mod tests {
         const USES_COUNTER: bool = false;
         const SEND_PARAMS: &'static [&'static str] = &[];
 
-        fn head_metered<T: Serialize>(
+        fn head<T: Serialize>(
             &self,
             side: Side,
             entries: &[Ordered<'_, T>],
-            meter: &ScanMeter,
         ) -> Result<Option<usize>, SpaceError> {
-            least_head(side, entries, meter)
+            least_head(side, entries)
         }
 
         fn reaches_head(&self, _side: Side, _queued: usize) -> bool { true }
 
-        fn precedes(
-            &self,
-            side: Side,
-            ord: i64,
-            head: i64,
-            meter: &ScanMeter,
-        ) -> Result<bool, SpaceError> {
-            QueueDiscipline.precedes(side, ord, head, meter)
+        fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+            QueueDiscipline.precedes(side, ord, head)
         }
 
         fn offer(
@@ -1189,7 +1091,6 @@ mod tests {
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(10_000_000, "scan driver test")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };
@@ -1430,26 +1331,12 @@ mod tests {
     }
 
     #[test]
-    fn scan_same_class_compares_full_keys_only_on_equal_hashes() {
+    fn scan_same_class_is_the_equality_of_the_full_keys() {
         let key = vec![1, 2, 3];
-        let meter = ScanMeter::new(None);
-        let key_hash = metered_hash(&key, &meter).expect("an unmetered hash");
-        assert_eq!(same_class(&key, &key_hash, &[1, 2, 3], &meter), Ok(true));
-        assert_eq!(same_class(&key, &key_hash, &[1, 2, 4], &meter), Ok(false));
-        let operations = |other: &[u8]| {
-            let host_work =
-                HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-            let metered = ScanMeter::new(Some(host_work.clone()));
-            same_class(&key, &key_hash, other, &metered).expect("the comparison fits");
-            host_work
-                .usage(HostWorkDimension::VerificationOperations)
-                .get()
-        };
-        assert_eq!(
-            operations(&[1, 2, 3]),
-            operations(&[9, 9, 9]) + 1,
-            "equal hashes add exactly the one comparison of the full keys"
-        );
+        let key_hash = bincode_digest(&key).expect("the hash of the key");
+        assert_eq!(same_class(&key, &key_hash, &[1, 2, 3]), Ok(true));
+        assert_eq!(same_class(&key, &key_hash, &[1, 2, 4]), Ok(false));
+        assert_eq!(same_class(&key, &key_hash, &[9, 9, 9]), Ok(false));
     }
 
     #[tokio::test]

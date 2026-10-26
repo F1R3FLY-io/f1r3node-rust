@@ -16,11 +16,10 @@
 use std::path::{Path, PathBuf};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
 use super::native::{
-    decode_evidence, decode_log, encode_log, evidence_bytes, finish_injected, host_work,
+    decode_evidence, decode_log, encode_log, evidence_bytes, finish_injected,
     replay_environment_from, NativeChain, Played,
 };
 use super::session::Injections;
@@ -103,8 +102,6 @@ pub struct DeployRecord {
     pub phlo: Option<u64>,
     /// The usage of its budget recording.
     pub used: u64,
-    /// The host work of native play in each dimension.
-    pub host: Vec<u64>,
     /// The evidence bytes of the budget recording.
     pub budget_bytes: Vec<u8>,
     /// The evidence bytes of the operation journal.
@@ -122,7 +119,6 @@ type RecordFields = (
     Vec<String>,
     Option<u64>,
     u64,
-    Vec<u64>,
     Vec<u8>,
     Vec<u8>,
     Vec<u8>,
@@ -138,7 +134,6 @@ impl DeployRecord {
             self.outputs.clone(),
             self.phlo,
             self.used,
-            self.host.clone(),
             self.budget_bytes.clone(),
             self.journal_bytes.clone(),
             self.log.clone(),
@@ -154,7 +149,6 @@ impl DeployRecord {
             outputs,
             phlo,
             used,
-            host,
             budget_bytes,
             journal_bytes,
             log,
@@ -167,7 +161,6 @@ impl DeployRecord {
             outputs,
             phlo,
             used,
-            host,
             budget_bytes,
             journal_bytes,
             log,
@@ -209,10 +202,7 @@ pub async fn play_recorded(
     limit: u64,
 ) -> (Played, DeployRecord) {
     let pre_root = chain.history().root();
-    let host = host_work();
-    let played = chain
-        .play_with(term, label, limit, host.clone(), Injections::new())
-        .await;
+    let played = chain.play_with(term, label, limit, Injections::new()).await;
     assert!(
         played.result.errors.is_empty(),
         "{label}: the deploy fails: {:?}",
@@ -223,19 +213,12 @@ pub async fn play_recorded(
         "{label}: the sweep leaves no volatile channel: {:?}",
         played.residue
     );
-    let record = record_of(&played, term, label, &pre_root, &host);
+    let record = record_of(&played, term, label, &pre_root);
     (played, record)
 }
 
-/// The record of the deploy `term` with the label `label`, played as `played` from `pre_root`
-/// with the host-work budget `host`.
-fn record_of(
-    played: &Played,
-    term: &str,
-    label: &str,
-    pre_root: &Blake2b256Hash,
-    host: &HostWorkBudget,
-) -> DeployRecord {
+/// The record of the deploy `term` with the label `label`, played as `played` from `pre_root`.
+fn record_of(played: &Played, term: &str, label: &str, pre_root: &Blake2b256Hash) -> DeployRecord {
     let (budget_bytes, journal_bytes) = evidence_bytes(played);
     DeployRecord {
         label: label.to_string(),
@@ -250,12 +233,6 @@ fn record_of(
             .as_ref()
             .expect("native play records its budget")
             .used,
-        host: host
-            .usages()
-            .into_array()
-            .iter()
-            .map(|usage| usage.get())
-            .collect(),
         budget_bytes,
         journal_bytes,
         log: encode_log(&played.log),
@@ -280,7 +257,6 @@ pub async fn certify_record(chain: &mut NativeChain, record: &DeployRecord, limi
         limit,
         &recording,
         journal,
-        host_work(),
     )
     .await
     .unwrap_or_else(|error| panic!("{label}: the committed evidence checks: {error}"));

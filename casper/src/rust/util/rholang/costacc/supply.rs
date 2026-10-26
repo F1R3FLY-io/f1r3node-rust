@@ -4,7 +4,6 @@ use rholang::rust::interpreter::accounting::authority::{
     canonical_cost_signature, cost_signature_to_sig,
 };
 use rholang::rust::interpreter::accounting::{Sig, SignatureChannel};
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rspace_plus_plus::rspace::internal::Datum;
 
@@ -153,24 +152,6 @@ pub async fn apply_stack_pops(
     stacks: &[PurseStack],
     stack_pops: &std::collections::BTreeMap<[u8; 32], u64>,
 ) -> Result<(), CasperError> {
-    apply_stack_pops_with_budget(runtime_ops, stacks, stack_pops, None).await
-}
-
-pub async fn apply_stack_pops_metered(
-    runtime_ops: &mut RuntimeOps,
-    stacks: &[PurseStack],
-    stack_pops: &std::collections::BTreeMap<[u8; 32], u64>,
-    budget: &HostWorkBudget,
-) -> Result<(), CasperError> {
-    apply_stack_pops_with_budget(runtime_ops, stacks, stack_pops, Some(budget)).await
-}
-
-async fn apply_stack_pops_with_budget(
-    runtime_ops: &mut RuntimeOps,
-    stacks: &[PurseStack],
-    stack_pops: &std::collections::BTreeMap<[u8; 32], u64>,
-    budget: Option<&HostWorkBudget>,
-) -> Result<(), CasperError> {
     let by_id = stacks
         .iter()
         .map(|stack| (stack.instance_id, stack))
@@ -232,11 +213,7 @@ async fn apply_stack_pops_with_budget(
         channel_removals.sort_by(|left, right| right.datum_index.cmp(&left.datum_index));
     }
     for (channel, channel_removals) in removals.values() {
-        let live = if let Some(budget) = budget {
-            super::prepaid_receipts::read_live_data_metered(runtime_ops, channel, budget).await?
-        } else {
-            runtime_ops.runtime.reducer.space.get_data(channel).await
-        };
+        let live = runtime_ops.runtime.reducer.space.get_data(channel).await;
         check_stack_captures(&live, channel_removals)?;
     }
     let checkpoint = runtime_ops.runtime.create_soft_checkpoint().await;

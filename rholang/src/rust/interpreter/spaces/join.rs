@@ -11,8 +11,7 @@
 //! * every settle with a cascade state (`SettleOp::cascade`).
 //!
 //! [`classify`] decides the route. An operation on a collection without a join group keeps its
-//! driver, and the classification reserves exactly the reads of the join check of P4, so the host
-//! work of such an operation does not change.
+//! driver.
 //!
 //! # Scope, then lock, then plan
 //!
@@ -110,29 +109,16 @@
 //! The engine reaches the discipline and the windows of a store through the trait
 //! [`JoinSource`]. P5c implements it for the keyed stores (HashMap, Array, Vector) with
 //! [`KeyedSource`]. The PathMap store adds its own source in W4.
-//!
-//! # Metering (decision 42)
-//!
-//! Every read and copy of the engine is reserved on the meter of the job before it is made: the
-//! closure reads, the names of the lock keys, the envelope decodes of the windows and heads, each
-//! payload decode and match, each class key, each comparison, each buffer and each copy of a
-//! staged operation. The outcome after the commit only moves values out of its receipt, and the
-//! engine prepays that work at staging.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::mem::size_of;
 use std::sync::{Arc, LazyLock};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{
-    BindPattern, CostAuthority, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
-};
-use rspace_plus_plus::rspace::errors::RSpaceError;
+use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
-use rspace_plus_plus::rspace::space_store_handle::{incoming_candidate, metered_hash};
+use rspace_plus_plus::rspace::space_store_handle::incoming_candidate;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
 use super::agent::{
@@ -148,13 +134,14 @@ use super::errors::SpaceError;
 use super::generic::{
     self, operation_ord, peek_set, peek_set_all, receive_candidate, Admission, CollectionTxn, Cx,
     Discipline, GenericSpace, JoinWindow, Ordered, OuterStore, ParCandidate, ParDatum, ParWaiter,
-    ReceiveFire, Side, SideBound, StoredMatch, GPRIVATE,
+    ReceiveFire, Side, SideBound, StoredMatch,
 };
 use super::namespace::{self, CollectionKey, NativeSpace, RandomPurpose, ReifiedId};
 use super::record::{self, Introduction, JoinSlot, OperationAuthority, WaiterPolicy};
-use super::settle::{lift_body, lift_continuation, lift_pattern, settle_operation};
+use super::settle::{lift_continuation, lift_pattern, settle_operation};
 use super::types::config::SpaceConfig;
-use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, FIRE_ROUND_CAP};
+use crate::rust::interpreter::spaces::record::bincode_digest;
 use crate::rust::interpreter::tensor::exact::Score;
 use crate::rust::interpreter::tensor::num::ExactVector;
 
@@ -210,8 +197,7 @@ pub struct JoinScope {
 impl JoinScope {
     /// The scope of an operation of a store with a source of its own (joins plan section 9): the
     /// collections of the closure in ascending key order, the own collections, the bind positions
-    /// in canonical group order, the space counter and the lock keys. The caller reserves the
-    /// buffers and the copies, as `join_scope` reserves them.
+    /// in canonical group order, the space counter and the lock keys.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         space: NativeSpace,
@@ -237,31 +223,28 @@ impl JoinScope {
     pub fn lock_keys(&self) -> &[Par] { &self.lock_keys }
 
     /// True when every collection of the scope is one of `locked`: a transaction that locked
-    /// `locked` covers the closure, so the engine runs in it with no escalation. Each comparison
-    /// of two keys is reserved first.
-    pub fn covers(&self, locked: &[CollectionKey], meter: &ScanMeter) -> Result<bool, SpaceError> {
+    /// `locked` covers the closure, so the engine runs in it with no escalation.
+    pub fn covers(&self, locked: &[CollectionKey]) -> bool {
         if self.collections.len() > locked.len() {
-            return Ok(false);
+            return false;
         }
         for collection in &self.collections {
             let mut found = false;
             for key in locked {
-                meter.compare(collection.key.as_bytes().len(), key.as_bytes().len())?;
                 if collection.key == *key {
                     found = true;
                     break;
                 }
             }
             if !found {
-                return Ok(false);
+                return false;
             }
         }
-        Ok(true)
+        true
     }
 
-    /// The index of the collection `key` in the scope. The lookup is reserved first.
-    fn index_of_key(&self, key: &CollectionKey, meter: &ScanMeter) -> Result<usize, SpaceError> {
-        meter.ordered_lookup(self.collections.len(), key.as_bytes().len())?;
+    /// The index of the collection `key` in the scope.
+    fn index_of_key(&self, key: &CollectionKey) -> Result<usize, SpaceError> {
         self.collections
             .binary_search_by(|collection| collection.key.cmp(key))
             .map_err(|_| SpaceError::Inconsistent("a collection is outside its join scope"))
@@ -269,39 +252,26 @@ impl JoinScope {
 
     /// The index of the collection whose data channel is `channel`: a data channel of the space,
     /// or in the scope of a PathMap operation an index channel `I(q)` of the space, whose key is
-    /// `[0x49] ‖ prefix_key(q)`. The read of the channel and the lookup are reserved first.
+    /// `[0x49] ‖ prefix_key(q)`.
     /// Another channel is `Inconsistent`.
-    fn index_of_channel(&self, channel: &Par, meter: &ScanMeter) -> Result<usize, SpaceError> {
-        meter.inspect(channel)?;
+    fn index_of_channel(&self, channel: &Par) -> Result<usize, SpaceError> {
         match namespace::reified_id_of(channel) {
-            Some(ReifiedId::PathIndex(owner, tail)) if self.prefixes && owner == self.space => {
-                let length = tail
-                    .len()
-                    .checked_add(1)
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                meter.ordered_lookup(self.collections.len(), length)?;
-                self.collections
-                    .binary_search_by(|collection| match collection.key.as_bytes().split_first() {
-                        Some((&PREFIX_KEY_TAG, rest)) => rest.cmp(tail),
-                        Some((&first, _)) => first.cmp(&PREFIX_KEY_TAG),
-                        None => std::cmp::Ordering::Less,
-                    })
-                    .map_err(|_| {
-                        SpaceError::Inconsistent(
-                            "a join group holds a collection outside its scope",
-                        )
-                    })
-            }
-            Some(ReifiedId::Data(owner, tail)) if !self.prefixes && owner == self.space => {
-                meter.ordered_lookup(self.collections.len(), tail.len())?;
-                self.collections
-                    .binary_search_by(|collection| collection.key.as_bytes().cmp(tail))
-                    .map_err(|_| {
-                        SpaceError::Inconsistent(
-                            "a join group holds a collection outside its scope",
-                        )
-                    })
-            }
+            Some(ReifiedId::PathIndex(owner, tail)) if self.prefixes && owner == self.space => self
+                .collections
+                .binary_search_by(|collection| match collection.key.as_bytes().split_first() {
+                    Some((&PREFIX_KEY_TAG, rest)) => rest.cmp(tail),
+                    Some((&first, _)) => first.cmp(&PREFIX_KEY_TAG),
+                    None => std::cmp::Ordering::Less,
+                })
+                .map_err(|_| {
+                    SpaceError::Inconsistent("a join group holds a collection outside its scope")
+                }),
+            Some(ReifiedId::Data(owner, tail)) if !self.prefixes && owner == self.space => self
+                .collections
+                .binary_search_by(|collection| collection.key.as_bytes().cmp(tail))
+                .map_err(|_| {
+                    SpaceError::Inconsistent("a join group holds a collection outside its scope")
+                }),
             _ => Err(SpaceError::Inconsistent(
                 "a collection channel is part of a foreign join",
             )),
@@ -314,67 +284,40 @@ impl JoinScope {
 pub(crate) const PREFIX_KEY_TAG: u8 = 0x49;
 
 /// The channels of the collection `key` of `space` in the outer store `outer`: the counter and
-/// the data channel, with their names reserved before they are made (decision 42).
+/// the data channel.
 pub(crate) fn scoped_collection<S: OuterStore>(
     outer: &S,
     space: NativeSpace,
     key: CollectionKey,
-    meter: &ScanMeter,
-) -> Result<ScopedCollection, SpaceError> {
-    let keyed = namespace::SPACE_ID_PREFIX_LEN
-        .checked_add(key.as_bytes().len())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    for _ in 0..2 {
-        meter.reserve_copy(&*GPRIVATE)?;
-        meter.reserve_buffer::<u8>(keyed)?;
-    }
-    Ok(ScopedCollection {
+) -> ScopedCollection {
+    ScopedCollection {
         data: outer.data_channel(space, &key),
         counter: outer.counter_channel(space, &key),
         key,
-    })
+    }
 }
 
-/// The distinct collections of the binds of the join `op`, in ascending key order. Each copy of
-/// a key, each lookup and each growth of the set is reserved first.
-pub(crate) fn distinct_bind_keys(
-    op: &JoinOp,
-    meter: &ScanMeter,
-) -> Result<Vec<CollectionKey>, SpaceError> {
+/// The distinct collections of the binds of the join `op`, in ascending key order.
+pub(crate) fn distinct_bind_keys(op: &JoinOp) -> Vec<CollectionKey> {
     let mut keys: BTreeSet<CollectionKey> = BTreeSet::new();
     for bind in &op.binds {
-        meter.ordered_lookup(keys.len(), bind.key.as_bytes().len())?;
         if !keys.contains(&bind.key) {
-            meter.tree_growth::<CollectionKey, ()>(keys.len(), 1)?;
-            meter.reserve_copy_slice(bind.key.as_bytes())?;
             keys.insert(bind.key.clone());
         }
     }
-    let mut ordered = meter.buffer::<CollectionKey>(keys.len())?;
+    let mut ordered = Vec::<CollectionKey>::with_capacity(keys.len());
     ordered.extend(keys);
-    Ok(ordered)
-}
-
-/// The key `key` copied, with the copy of its bytes reserved.
-fn copy_key(key: &CollectionKey, meter: &ScanMeter) -> Result<CollectionKey, SpaceError> {
-    meter.reserve_copy_slice(key.as_bytes())?;
-    Ok(key.clone())
+    ordered
 }
 
 /// CLASSIFY (joins plan section 4.1): `Single` for a produce, a consume or a settle without a
 /// cascade whose data channel holds no join group other than `[D(sid,k)]`, and otherwise `Join`
-/// with the closure. A collection with no group reserves nothing, and a collection with its own
-/// group only reserves the read of the group, the read of the channel and one comparison, as the
-/// join check of P4 did. A collection with more groups reserves the read of the channel and one
-/// comparison, and the closure then reads every group, so the reservation does not depend on the
-/// list order of the groups in the store.
+/// with the closure.
 pub(crate) fn classify<S: OuterStore, D: Discipline>(
     agent: &GenericSpace<S, D>,
-    env: &SpaceEnv,
     opened: &mut CollectionTxn,
     op: &SpaceOp,
 ) -> Result<JoinRoute, SpaceError> {
-    let meter = &env.meter;
     let always = match op {
         SpaceOp::Join(_) => true,
         SpaceOp::Settle(settle) => settle.cascade.is_some(),
@@ -384,23 +327,14 @@ pub(crate) fn classify<S: OuterStore, D: Discipline>(
         let data = opened.channels.data();
         let single = match opened.txn.joins(data)? {
             [] => true,
-            [group] => {
-                meter.inspect(group)?;
-                meter.inspect(data)?;
-                meter.charge(1, 0, 0)?;
-                group.as_slice() == std::slice::from_ref(data)
-            }
-            [_, _, ..] => {
-                meter.inspect(data)?;
-                meter.charge(1, 0, 0)?;
-                false
-            }
+            [group] => group.as_slice() == std::slice::from_ref(data),
+            [_, _, ..] => false,
         };
         if single {
             return Ok(JoinRoute::Single);
         }
     }
-    join_scope(agent, opened, op, meter).map(JoinRoute::Join)
+    join_scope(agent, opened, op).map(JoinRoute::Join)
 }
 
 /// The checks of an operation before any staging: the routed key of each bind with the outer
@@ -413,29 +347,22 @@ fn validate<S: OuterStore, D: Discipline>(
     agent: &GenericSpace<S, D>,
     config: &SpaceConfig,
     op: &SpaceOp,
-    meter: &ScanMeter,
 ) -> Result<(), SpaceError> {
     let no_params = BTreeMap::new();
     match op {
         SpaceOp::Produce(op) => {
-            agent
-                .outer()
-                .check_key(config, &op.channel, &op.key, meter)?;
-            agent.outer().check_payload(&op.data, meter)?;
-            agent.check_params(config, &op.params, None, meter)
+            agent.outer().check_key(config, &op.channel, &op.key)?;
+            agent.outer().check_payload(&op.data)?;
+            agent.check_params(config, &op.params, None)
         }
         SpaceOp::Consume(op) => {
-            agent
-                .outer()
-                .check_key(config, &op.channel, &op.key, meter)?;
-            agent.outer().check_patterns(&op.pattern, meter)?;
-            agent.check_params(config, &no_params, op.query.as_ref(), meter)
+            agent.outer().check_key(config, &op.channel, &op.key)?;
+            agent.outer().check_patterns(&op.pattern)?;
+            agent.check_params(config, &no_params, op.query.as_ref())
         }
         SpaceOp::Settle(op) => {
-            agent
-                .outer()
-                .check_key(config, &op.channel, &op.key, meter)?;
-            agent.check_params(config, &no_params, None, meter)
+            agent.outer().check_key(config, &op.channel, &op.key)?;
+            agent.check_params(config, &no_params, None)
         }
         SpaceOp::Join(op) => {
             if op.binds.len() < 2 {
@@ -452,15 +379,13 @@ fn validate<S: OuterStore, D: Discipline>(
                 }
             }
             for bind in &op.binds {
-                agent
-                    .outer()
-                    .check_key(config, &bind.channel, &bind.key, meter)?;
-                agent.outer().check_patterns(&bind.pattern, meter)?;
-                agent.check_params(config, &no_params, bind.query.as_ref(), meter)?;
+                agent.outer().check_key(config, &bind.channel, &bind.key)?;
+                agent.outer().check_patterns(&bind.pattern)?;
+                agent.check_params(config, &no_params, bind.query.as_ref())?;
                 // A list is one value of one bind (decision 66): a VectorDB bind of a join is in
                 // single mode.
                 if let (JoinWindow::Similarity, Some(query)) = (D::JOIN_WINDOW, &bind.query) {
-                    if vectordb::is_list_query(query, meter)? {
+                    if vectordb::is_list_query(query) {
                         return Err(SpaceError::ListModeInJoin);
                     }
                 }
@@ -471,91 +396,51 @@ fn validate<S: OuterStore, D: Discipline>(
 }
 
 /// The positions of the binds of `op` in canonical group order (FR-1'): ascending by the stable
-/// hash of the data channel of the collection of each bind, then by bind index. Each hash and
-/// each comparison is reserved first. A produce, a consume and a settle have one position.
-fn group_order<S: OuterStore>(
-    outer: &S,
-    op: &SpaceOp,
-    meter: &ScanMeter,
-) -> Result<Vec<usize>, SpaceError> {
+/// hash of the data channel of the collection of each bind, then by bind index. A produce, a
+/// consume and a settle have one position.
+fn group_order<S: OuterStore>(outer: &S, op: &SpaceOp) -> Result<Vec<usize>, SpaceError> {
     let SpaceOp::Join(join) = op else {
-        let mut group = meter.buffer::<usize>(1)?;
+        let mut group = Vec::<usize>::with_capacity(1);
         group.push(0);
         return Ok(group);
     };
-    let mut hashed = meter.buffer::<(Blake2b256Hash, usize)>(join.binds.len())?;
+    let mut hashed = Vec::<(Blake2b256Hash, usize)>::with_capacity(join.binds.len());
     for (index, bind) in join.binds.iter().enumerate() {
-        let keyed = namespace::SPACE_ID_PREFIX_LEN
-            .checked_add(bind.key.as_bytes().len())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        meter.reserve_copy(&*GPRIVATE)?;
-        meter.reserve_buffer::<u8>(keyed)?;
         let data = outer.data_channel(join.space, &bind.key);
-        hashed.push((metered_hash(&data, meter)?, index));
+        hashed.push((bincode_digest(&data)?, index));
     }
-    sort_reserved(&mut hashed, |(hash, _)| hash.0.len(), meter)?;
-    let mut group = meter.buffer::<usize>(hashed.len())?;
+    hashed.sort();
+    let mut group = Vec::<usize>::with_capacity(hashed.len());
     group.extend(hashed.into_iter().map(|(_, index)| index));
     Ok(group)
 }
 
-/// Sorts `values` ascending with a reserved comparison for each comparison that the sort makes:
-/// an insertion sort, whose comparisons and moves depend on the values only. `bytes` gives the
-/// bytes that one comparison of a value reads.
-fn sort_reserved<T: Ord>(
-    values: &mut [T],
-    bytes: impl Fn(&T) -> usize,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    for next in 1..values.len() {
-        let mut at = next;
-        while at > 0 {
-            meter.compare(bytes(&values[at - 1]), bytes(&values[at]))?;
-            match values[at - 1] > values[at] {
-                true => {
-                    values.swap(at - 1, at);
-                    at -= 1;
-                }
-                false => break,
-            }
-        }
-    }
-    Ok(())
-}
-
 /// JOIN-SCOPE (joins plan section 4.1): the checks of the operation, then the closure of the own
 /// collections and the seeds under the join groups of their data channels, and the lock keys of
-/// the closure. Every read of a group and of a channel, every key copy, every lookup and growth
-/// of the sets, and every name is reserved first. A group channel that is not a data channel of
-/// the space is `Inconsistent`.
+/// the closure. A group channel that is not a data channel of the space is `Inconsistent`.
 fn join_scope<S: OuterStore, D: Discipline>(
     agent: &GenericSpace<S, D>,
     opened: &mut CollectionTxn,
     op: &SpaceOp,
-    meter: &ScanMeter,
 ) -> Result<JoinScope, SpaceError> {
-    validate(agent, &opened.config, op, meter)?;
+    validate(agent, &opened.config, op)?;
     let space = op.space();
-    let group = group_order(agent.outer(), op, meter)?;
-    let mut own = meter.buffer::<CollectionKey>(group.len())?;
+    let group = group_order(agent.outer(), op)?;
+    let mut own = Vec::<CollectionKey>::with_capacity(group.len());
     let mut seeds: Vec<CollectionKey> = Vec::new();
     match op {
-        SpaceOp::Produce(produce) => own.push(copy_key(&produce.key, meter)?),
-        SpaceOp::Consume(consume) => own.push(copy_key(&consume.key, meter)?),
+        SpaceOp::Produce(produce) => own.push(produce.key.clone()),
+        SpaceOp::Consume(consume) => own.push(consume.key.clone()),
         SpaceOp::Settle(settle) => {
-            own.push(copy_key(&settle.key, meter)?);
+            own.push(settle.key.clone());
             if let Some(cascade) = &settle.cascade {
-                let extra = cascade
-                    .seeds
-                    .len()
-                    .checked_add(cascade.pending.len())
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                seeds = meter.buffer::<CollectionKey>(extra)?;
+                let extra = cascade.seeds.len() + cascade.pending.len();
+                seeds = Vec::<CollectionKey>::with_capacity(extra);
                 for key in &cascade.seeds {
-                    seeds.push(copy_key(key, meter)?);
+                    seeds.push(key.clone());
                 }
                 for pending in &cascade.pending {
-                    seeds.push(copy_key(&pending.key, meter)?);
+                    seeds.push(pending.key.clone());
                 }
             }
         }
@@ -567,44 +452,37 @@ fn join_scope<S: OuterStore, D: Discipline>(
                     .ok_or(SpaceError::Inconsistent("a group position names no bind"))?;
                 let mut seen = false;
                 for key in own.iter() {
-                    meter.compare(key.as_bytes().len(), bind.key.as_bytes().len())?;
                     if *key == bind.key {
                         seen = true;
                         break;
                     }
                 }
                 if !seen {
-                    own.push(copy_key(&bind.key, meter)?);
+                    own.push(bind.key.clone());
                 }
             }
         }
     }
     let mut todo: BTreeSet<CollectionKey> = BTreeSet::new();
     for key in own.iter().chain(seeds.iter()) {
-        meter.ordered_lookup(todo.len(), key.as_bytes().len())?;
         if !todo.contains(key) {
-            meter.tree_growth::<CollectionKey, ()>(todo.len(), 1)?;
-            todo.insert(copy_key(key, meter)?);
+            todo.insert(key.clone());
         }
     }
     let mut closure: BTreeMap<CollectionKey, ScopedCollection> = BTreeMap::new();
     while let Some(key) = todo.pop_first() {
-        meter.ordered_lookup(closure.len(), key.as_bytes().len())?;
         if closure.contains_key(&key) {
             continue;
         }
-        let collection = scoped_collection(agent.outer(), space, copy_key(&key, meter)?, meter)?;
+        let collection = scoped_collection(agent.outer(), space, key.clone());
         let mut reached: Vec<CollectionKey> = Vec::new();
         for group in opened.txn.joins(&collection.data)? {
-            meter.inspect(group)?;
             for channel in group {
-                meter.inspect(channel)?;
                 match namespace::reified_id_of(channel) {
                     Some(ReifiedId::Data(owner, tail)) if owner == space => {
-                        meter.reserve_copy_slice(tail)?;
                         let reached_key = CollectionKey::from_bytes(tail.to_vec())
                             .ok_or(SpaceError::Inconsistent("a collection key is empty"))?;
-                        generic::push_reserved(&mut reached, reached_key, meter)?;
+                        reached.push(reached_key);
                     }
                     _ => {
                         return Err(SpaceError::Inconsistent(
@@ -614,35 +492,27 @@ fn join_scope<S: OuterStore, D: Discipline>(
                 }
             }
         }
-        meter.tree_growth::<CollectionKey, ScopedCollection>(closure.len(), 1)?;
         closure.insert(key, collection);
         for reached_key in reached {
-            meter.ordered_lookup(closure.len(), reached_key.as_bytes().len())?;
             if closure.contains_key(&reached_key) {
                 continue;
             }
-            meter.ordered_lookup(todo.len(), reached_key.as_bytes().len())?;
             if !todo.contains(&reached_key) {
-                meter.tree_growth::<CollectionKey, ()>(todo.len(), 1)?;
                 todo.insert(reached_key);
             }
         }
     }
-    let lock_length = closure
-        .len()
-        .checked_mul(2)
-        .and_then(|length| length.checked_add(2))
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut lock_keys = meter.buffer::<Par>(lock_length)?;
-    lock_keys.push(meter.copy(opened.channels.config())?);
-    lock_keys.push(meter.copy(opened.channels.space_counter())?);
-    let mut collections = meter.buffer::<ScopedCollection>(closure.len())?;
+    let lock_length = closure.len() * 2 + 2;
+    let mut lock_keys = Vec::<Par>::with_capacity(lock_length);
+    lock_keys.push(opened.channels.config().clone());
+    lock_keys.push(opened.channels.space_counter().clone());
+    let mut collections = Vec::<ScopedCollection>::with_capacity(closure.len());
     for (_, collection) in closure {
-        lock_keys.push(meter.copy(&collection.counter)?);
-        lock_keys.push(meter.copy(&collection.data)?);
+        lock_keys.push(collection.counter.clone());
+        lock_keys.push(collection.data.clone());
         collections.push(collection);
     }
-    let space_counter = meter.copy(opened.channels.space_counter())?;
+    let space_counter = opened.channels.space_counter().clone();
     Ok(JoinScope::new(
         space,
         collections,
@@ -690,13 +560,12 @@ pub(crate) fn run_join_with<Src: JoinSource>(
     op: SpaceOp,
     source: &Src,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
-    let meter = &env.meter;
     let CollectionTxn { txn, config, .. } = opened;
-    let authority = meter.copy(introduction_authority(&op))?;
+    let authority = introduction_authority(&op).clone();
     let first = scope.own.first().ok_or(SpaceError::Inconsistent(
         "a join scope has no own collection",
     ))?;
-    let own_index = scope.index_of_key(first, meter)?;
+    let own_index = scope.index_of_key(first)?;
     let data = &scope
         .collections
         .get(own_index)
@@ -705,10 +574,10 @@ pub(crate) fn run_join_with<Src: JoinSource>(
         ))?
         .data;
     // TH-5: the theory admits the values of a send before any staging or bump.
-    let admission = Admission::of(&config, &op, meter)?;
+    let admission = Admission::of(&config, &op)?;
     let seq = own_claims(env, &config, &scope, &op)?;
     generic::run_plan(env, txn, data, &config, &authority, seq, admission, |cx| {
-        let engine = Engine::new(source, &scope, &op, cx.config(), cx.meter())?;
+        let engine = Engine::new(source, &scope, &op, cx.config())?;
         engine.run(cx, op)
     })
 }
@@ -717,41 +586,33 @@ pub(crate) fn run_join_with<Src: JoinSource>(
 /// first, or `None` for every other job. A send claims the home of its datum, the data channel
 /// `D(sid, key)` of its key (the data channel of its path in a PathMap space). A receive or a
 /// join claims the channel of each own collection as a waiter channel: `D(sid, k)` of a keyed
-/// store, `I(sid, q)` of a PathMap prefix. A settle job is internal. Each name is reserved
-/// before it is made.
+/// store, `I(sid, q)` of a PathMap prefix. A settle job is internal.
 fn own_claims(
     env: &SpaceEnv,
     config: &SpaceConfig,
     scope: &JoinScope,
     op: &SpaceOp,
 ) -> Result<Option<SeqClaims>, SpaceError> {
-    let meter = &env.meter;
     let internal = matches!(op, SpaceOp::Settle(_)) || env.origin == OpOrigin::Internal;
-    let Some(mut claims) =
-        SeqClaims::open(&env.volatile, op.space(), config.qualifier, internal, meter)?
+    let Some(mut claims) = SeqClaims::open(&env.volatile, op.space(), config.qualifier, internal)?
     else {
         return Ok(None);
     };
     match op {
         SpaceOp::Produce(produce) => {
-            meter.reserve_copy(&*GPRIVATE)?;
-            let length = namespace::SPACE_ID_PREFIX_LEN
-                .checked_add(produce.key.as_bytes().len())
-                .ok_or(RSpaceError::HostWorkRejected)?;
-            meter.reserve_buffer::<u8>(length)?;
             let home = namespace::gprivate(namespace::data_channel(produce.space, &produce.key));
-            claims.claim(&home, ClaimRole::Data, meter)?;
+            claims.claim(&home, ClaimRole::Data)?;
         }
         SpaceOp::Consume(_) | SpaceOp::Join(_) => {
             for key in &scope.own {
-                let index = scope.index_of_key(key, meter)?;
+                let index = scope.index_of_key(key)?;
                 let collection = scope
                     .collections
                     .get(index)
                     .ok_or(SpaceError::Inconsistent(
                         "a collection is outside its join scope",
                     ))?;
-                claims.claim(&collection.data, ClaimRole::Waiter, meter)?;
+                claims.claim(&collection.data, ClaimRole::Waiter)?;
             }
         }
         SpaceOp::Settle(_) => {}
@@ -830,7 +691,7 @@ pub(crate) struct Incoming {
 pub(crate) enum Claim {
     /// The record at `at` of the collection `coll`.
     Record { coll: usize, at: EntryAt },
-    /// The class `key` of the collection `coll`, with the metered hash of the key (DR-90).
+    /// The class `key` of the collection `coll`, with the hash of the key (DR-90).
     Class {
         coll: usize,
         key: Vec<u8>,
@@ -896,13 +757,8 @@ pub(crate) trait JoinSource {
     // fn capacity(&self) -> Option<usize>;
 
     /// The bound of `side` of a collection of a space with the config `config`, or `None` (F15,
-    /// P6). The reads of the bound are reserved on `meter`.
-    fn bound(
-        &self,
-        config: &SpaceConfig,
-        side: Side,
-        meter: &ScanMeter,
-    ) -> Result<Option<SideBound>, SpaceError>;
+    /// P6).
+    fn bound(&self, config: &SpaceConfig, side: Side) -> Result<Option<SideBound>, SpaceError>;
 
     /// Bumps the counter of the collection `coll` (decision 31) with the random state `random`
     /// and the authorities `authority`, and returns the value before the bump, or `None` for a
@@ -922,31 +778,17 @@ pub(crate) trait JoinSource {
         ord: i64,
         level: Option<Level>,
         data: &ListParWithRandom,
-        meter: &ScanMeter,
     ) -> Result<ListParWithRandom, SpaceError>;
 
     /// The order and the level of the record `record`.
-    fn record_slots(
-        &self,
-        record: &ListParWithRandom,
-        meter: &ScanMeter,
-    ) -> Result<(i64, Option<Level>), SpaceError>;
+    fn record_slots(&self, record: &ListParWithRandom) -> Result<(i64, Option<Level>), SpaceError>;
 
     /// The payload of the record `record`, for matching.
-    fn payload_of(
-        &self,
-        record: &ListParWithRandom,
-        meter: &ScanMeter,
-    ) -> Result<ListParWithRandom, SpaceError>;
+    fn payload_of(&self, record: &ListParWithRandom) -> Result<ListParWithRandom, SpaceError>;
 
     /// The slots of a stored waiter whose group has `width` channels: one slot for each group
     /// position.
-    fn waiter_slots(
-        &self,
-        waiter: &ParWaiter,
-        width: usize,
-        meter: &ScanMeter,
-    ) -> Result<Vec<JoinSlot>, SpaceError>;
+    fn waiter_slots(&self, waiter: &ParWaiter, width: usize) -> Result<Vec<JoinSlot>, SpaceError>;
 
     /// The window of `need` binds on the collection `coll` (joins plan section 3.2), with the
     /// element in flight `incoming` at its place when it belongs to `coll`. `pending` are the
@@ -968,7 +810,6 @@ pub(crate) trait JoinSource {
         coll: usize,
         at: EntryAt,
         payload: &ListParWithRandom,
-        meter: &ScanMeter,
     ) -> Result<Claim, SpaceError>;
 
     /// The waiters that the element `incoming` meets, in the order in which it meets them: the
@@ -1026,7 +867,7 @@ pub(crate) trait JoinSource {
 
     /// The class of the payload `payload` in a join window, or `None` when every record is a
     /// class of its own.
-    fn class_key(&self, payload: &[Par], meter: &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError>;
+    fn class_key(&self, payload: &[Par]) -> Result<Option<Vec<u8>>, SpaceError>;
 
     /// The stored entry `index` of the window of `coll` as a bind sees it: its payload, its
     /// persistence and its claim. `missing` is the error of an index outside the staged view.
@@ -1088,7 +929,7 @@ pub(crate) trait JoinSource {
     ) -> Result<Option<Work>, SpaceError>;
 
     /// The identity of the incoming side of a fire of the element `x` at a position on `coll`:
-    /// the produce that the fire stages there. The copy is reserved first.
+    /// the produce that the fire stages there.
     fn incoming_source(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -1097,8 +938,7 @@ pub(crate) trait JoinSource {
         coll: usize,
     ) -> Result<Produce, SpaceError>;
 
-    /// The data of the incoming side of a fire of the element `x` at a position on `coll`. The
-    /// copy is reserved first.
+    /// The data of the incoming side of a fire of the element `x` at a position on `coll`.
     fn incoming_record(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -1108,14 +948,8 @@ pub(crate) trait JoinSource {
     ) -> Result<ListParWithRandom, SpaceError>;
 
     /// True when the element `x` enters the window of `coll`: its own collection, or on a
-    /// PathMap space every prefix of its path. A check that reads keys reserves its work.
-    fn enters(
-        &self,
-        scope: &JoinScope,
-        x: &Incoming,
-        coll: usize,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError>;
+    /// PathMap space every prefix of its path.
+    fn enters(&self, scope: &JoinScope, x: &Incoming, coll: usize) -> Result<bool, SpaceError>;
 
     /// The payload of the element `x` as a bind on `coll` sees it: its own payload, or on a
     /// PathMap space the payload re-rooted under the suffix of its path below the prefix `coll`.
@@ -1124,7 +958,6 @@ pub(crate) trait JoinSource {
         scope: &JoinScope,
         x: &'x Incoming,
         coll: usize,
-        meter: &ScanMeter,
     ) -> Result<Cow<'x, ListParWithRandom>, SpaceError>;
 
     /// True when a refusal by a waiter of the offer order stores the element: the head of a
@@ -1246,37 +1079,31 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
     }
 
     /// The collection of each channel of `group`.
-    fn group_colls(
-        &self,
-        scope: &JoinScope,
-        group: &[Par],
-        meter: &ScanMeter,
-    ) -> Result<Vec<usize>, SpaceError> {
-        let mut colls = meter.buffer::<usize>(group.len())?;
+    fn group_colls(&self, scope: &JoinScope, group: &[Par]) -> Result<Vec<usize>, SpaceError> {
+        let mut colls = Vec::<usize>::with_capacity(group.len());
         for channel in group {
-            colls.push(scope.index_of_channel(channel, meter)?);
+            colls.push(scope.index_of_channel(channel)?);
         }
         Ok(colls)
     }
 
     /// The seats of the waiters of `coll`: each waiter of each join group of its data channel,
-    /// with its order and its lanes on `coll`. Each copy, decode and comparison is reserved.
+    /// with its order and its lanes on `coll`.
     fn seats(
         &self,
         cx: &mut Cx<'_, '_>,
         scope: &JoinScope,
         coll: usize,
     ) -> Result<Seats, SpaceError> {
-        let meter = cx.meter();
         let channel = &collection(scope, coll)?.data;
         let groups: Vec<Vec<Par>> = {
             let joins = cx.joins_on(channel)?;
-            meter.copy_slice(joins)?
+            joins.to_vec()
         };
         let mut seats: Vec<Seat> = Vec::new();
         for (group_index, group) in groups.iter().enumerate() {
-            let colls = self.group_colls(scope, group, meter)?;
-            let mut positions = meter.buffer::<usize>(colls.len())?;
+            let colls = self.group_colls(scope, group)?;
+            let mut positions = Vec::<usize>::with_capacity(colls.len());
             positions.extend(
                 colls
                     .iter()
@@ -1296,15 +1123,13 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                     let waiter = waiters.get(index).ok_or(SpaceError::Inconsistent(
                         "a waiter index is outside the staged view",
                     ))?;
-                    let slots = self.waiter_slots(waiter, group.len(), meter)?;
-                    meter.reserve_copy(&waiter.source.hash)?;
+                    let slots = self.waiter_slots(waiter, group.len())?;
                     (slots, waiter.source.hash.clone())
                 };
                 let ord = slot_at(&slots, first)?.ord;
                 let mut lanes: Vec<Option<Lane>> = Vec::new();
                 for &position in &positions {
                     let slot = slot_at(&slots, position)?;
-                    meter.compare(size_of::<i64>(), size_of::<i64>())?;
                     if slot.ord != ord {
                         return Err(SpaceError::Inconsistent(
                             "a waiter has two orders in one collection",
@@ -1312,34 +1137,25 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                     }
                     let lane = self.lane_of(slot);
                     if !lanes.contains(&lane) {
-                        generic::push_reserved(&mut lanes, lane, meter)?;
+                        lanes.push(lane);
                     }
                 }
-                generic::push_reserved(
-                    &mut seats,
-                    Seat {
-                        group: group_index,
-                        index,
-                        source,
-                        ord,
-                        lanes,
-                    },
-                    meter,
-                )?;
+                seats.push(Seat {
+                    group: group_index,
+                    index,
+                    source,
+                    ord,
+                    lanes,
+                });
             }
         }
         Ok(Seats { groups, seats })
     }
 
     /// The head of the seats in the lane `lane` (every seat for `None`): the seat whose order
-    /// interacts first by the head rule of the discipline (`head_metered`).
-    fn head_seat(
-        &self,
-        seats: &[Seat],
-        lane: Option<Lane>,
-        meter: &ScanMeter,
-    ) -> Result<Option<usize>, SpaceError> {
-        let mut members = meter.buffer::<usize>(seats.len())?;
+    /// interacts first by the head rule of the discipline (`head`).
+    fn head_seat(&self, seats: &[Seat], lane: Option<Lane>) -> Result<Option<usize>, SpaceError> {
+        let mut members = Vec::<usize>::with_capacity(seats.len());
         members.extend(
             seats
                 .iter()
@@ -1347,7 +1163,7 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                 .filter(|(_, seat)| lane.is_none() || seat.lanes.contains(&lane))
                 .map(|(index, _)| index),
         );
-        let mut ordered = meter.buffer::<Ordered<'_, usize>>(members.len())?;
+        let mut ordered = Vec::<Ordered<'_, usize>>::with_capacity(members.len());
         for member in &members {
             let seat = seats
                 .get(*member)
@@ -1357,19 +1173,12 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                 entry: member,
             });
         }
-        let head = self
-            .discipline
-            .head_metered(Side::Waiters, &ordered, meter)?;
+        let head = self.discipline.head(Side::Waiters, &ordered)?;
         Ok(head.and_then(|position| members.get(position).copied()))
     }
 
     /// The reference of the seat `seat`.
-    fn reference(
-        &self,
-        seats: &Seats,
-        seat: usize,
-        meter: &ScanMeter,
-    ) -> Result<WaiterRef, SpaceError> {
+    fn reference(&self, seats: &Seats, seat: usize) -> Result<WaiterRef, SpaceError> {
         let seat = seats
             .seats
             .get(seat)
@@ -1379,21 +1188,15 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
             .get(seat.group)
             .ok_or(SpaceError::Inconsistent("a seat names no group"))?;
         Ok(WaiterRef {
-            group: meter.copy(group)?,
+            group: group.clone(),
             index: seat.index,
-            source: meter.copy(&seat.source)?,
+            source: seat.source.clone(),
         })
     }
 
     /// The lanes of the slots `slots` on the collection `coll` of the positions `colls`, each
     /// once.
-    fn lanes_on(
-        &self,
-        slots: &[JoinSlot],
-        colls: &[usize],
-        coll: usize,
-        meter: &ScanMeter,
-    ) -> Result<Vec<Option<Lane>>, SpaceError> {
+    fn lanes_on(&self, slots: &[JoinSlot], colls: &[usize], coll: usize) -> Vec<Option<Lane>> {
         let mut lanes: Vec<Option<Lane>> = Vec::new();
         for (slot, &other) in slots.iter().zip(colls) {
             if other != coll {
@@ -1401,24 +1204,23 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
             }
             let lane = self.lane_of(slot);
             if !lanes.contains(&lane) {
-                generic::push_reserved(&mut lanes, lane, meter)?;
+                lanes.push(lane);
             }
         }
-        Ok(lanes)
+        lanes
     }
 
     /// The order of the place of an element with the order `ord` in a side whose stored orders
     /// are `stored` (joins plan section 3.1): a fresh element is the head when
     /// `Discipline::reaches_head` says so, else the tail. An element with a carried order is
     /// placed after every stored entry that it does not precede. An equal order is
-    /// `Inconsistent`. Each comparison is reserved.
+    /// `Inconsistent`.
     fn place(
         &self,
         side: Side,
         placement: Placement,
         ord: i64,
         stored: &[i64],
-        meter: &ScanMeter,
     ) -> Result<usize, SpaceError> {
         match placement {
             Placement::Fresh => Ok(match self.discipline.reaches_head(side, stored.len()) {
@@ -1428,13 +1230,12 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
             Placement::Carried => {
                 let mut ahead = 0;
                 for &other in stored {
-                    meter.compare(size_of::<i64>(), size_of::<i64>())?;
                     if other == ord {
                         return Err(SpaceError::Inconsistent(
                             "an element in flight shares its order with a stored entry",
                         ));
                     }
-                    if !self.discipline.precedes(side, ord, other, meter)? {
+                    if !self.discipline.precedes(side, ord, other)? {
                         ahead += 1;
                     }
                 }
@@ -1444,24 +1245,19 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
     }
 
     /// The first `need` entries of `entries` (order, index) in the head order of the discipline:
-    /// the head, then the head of the rest, and so on. Each scan is reserved.
-    fn head_order(
-        &self,
-        entries: &[(i64, usize)],
-        need: usize,
-        meter: &ScanMeter,
-    ) -> Result<Vec<usize>, SpaceError> {
+    /// the head, then the head of the rest, and so on.
+    fn head_order(&self, entries: &[(i64, usize)], need: usize) -> Result<Vec<usize>, SpaceError> {
         let rounds = need.min(entries.len());
-        let mut taken = meter.buffer::<bool>(entries.len())?;
+        let mut taken = Vec::<bool>::with_capacity(entries.len());
         taken.resize(entries.len(), false);
-        let mut order = meter.buffer::<usize>(rounds)?;
+        let mut order = Vec::<usize>::with_capacity(rounds);
         for _ in 0..rounds {
-            let mut remaining = meter.buffer::<usize>(entries.len())?;
+            let mut remaining = Vec::<usize>::with_capacity(entries.len());
             remaining.extend(
                 (0..entries.len())
                     .filter(|&position| !taken.get(position).copied().unwrap_or(true)),
             );
-            let mut ordered = meter.buffer::<Ordered<'_, usize>>(remaining.len())?;
+            let mut ordered = Vec::<Ordered<'_, usize>>::with_capacity(remaining.len());
             for position in &remaining {
                 let (ord, index) = entries.get(*position).ok_or(SpaceError::Inconsistent(
                     "an entry index is outside its list",
@@ -1471,7 +1267,7 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                     entry: index,
                 });
             }
-            let Some(head) = self.discipline.head_metered(Side::Data, &ordered, meter)? else {
+            let Some(head) = self.discipline.head(Side::Data, &ordered)? else {
                 break;
             };
             let position = *remaining
@@ -1495,22 +1291,18 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
         records: &[(i64, usize)],
         need: usize,
         incoming: Option<&Incoming>,
-        meter: &ScanMeter,
     ) -> Result<Vec<Entry>, SpaceError> {
-        let order = self.head_order(records, need, meter)?;
-        let length = order
-            .len()
-            .checked_add(1)
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let mut window = meter.buffer::<Entry>(length)?;
+        let order = self.head_order(records, need)?;
+        let length = order.len() + 1;
+        let mut window = Vec::<Entry>::with_capacity(length);
         window.extend(order.into_iter().map(|index| Entry {
             at: EntryAt::Stored(index),
             level: None,
         }));
         if let Some(x) = incoming {
-            let mut ords = meter.buffer::<i64>(records.len())?;
+            let mut ords = Vec::<i64>::with_capacity(records.len());
             ords.extend(records.iter().map(|(ord, _)| *ord));
-            let place = self.place(Side::Data, x.placement, x.ord, &ords, meter)?;
+            let place = self.place(Side::Data, x.placement, x.ord, &ords)?;
             if place < need && place <= window.len() {
                 window.insert(place, Entry {
                     at: EntryAt::Incoming,
@@ -1543,13 +1335,8 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
     // Replaced by P6 (design v3 4.0): the bound of the discipline under the config.
     // fn capacity(&self) -> Option<usize> { D::CAPACITY }
 
-    fn bound(
-        &self,
-        config: &SpaceConfig,
-        side: Side,
-        meter: &ScanMeter,
-    ) -> Result<Option<SideBound>, SpaceError> {
-        self.discipline.bound(config, side, meter)
+    fn bound(&self, config: &SpaceConfig, side: Side) -> Result<Option<SideBound>, SpaceError> {
+        self.discipline.bound(config, side)
     }
 
     fn touch(
@@ -1576,17 +1363,11 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         ord: i64,
         level: Option<Level>,
         data: &ListParWithRandom,
-        meter: &ScanMeter,
     ) -> Result<ListParWithRandom, SpaceError> {
         match (D::JOIN_WINDOW, level) {
-            (JoinWindow::Lanes, Some(level)) => Ok(record::wrap_pq_datum_metered(
-                ord,
-                level.slot(),
-                data,
-                meter,
-            )?),
+            (JoinWindow::Lanes, Some(level)) => Ok(record::wrap_pq_datum(ord, level.slot(), data)),
             (JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes, None) => {
-                Ok(record::wrap_datum_metered(ord, data, meter)?)
+                Ok(record::wrap_datum(ord, data))
             }
             // A VectorDB record holds the vector of its send (P6, design v3 4.3), so the engine
             // builds it from the params of the send (`vectordb::vdb_record`), never from the data
@@ -1600,49 +1381,35 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         }
     }
 
-    fn record_slots(
-        &self,
-        record: &ListParWithRandom,
-        meter: &ScanMeter,
-    ) -> Result<(i64, Option<Level>), SpaceError> {
+    fn record_slots(&self, record: &ListParWithRandom) -> Result<(i64, Option<Level>), SpaceError> {
         match D::JOIN_WINDOW {
             JoinWindow::Lanes => {
-                let (ord, slot) = record::pq_datum_slots_metered(record, meter)?;
+                let (ord, slot) = record::pq_datum_slots(record)?;
                 Ok((ord, Some(Level::of_slot(slot))))
             }
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
-                Ok((record::datum_ord_metered(record, meter)?, None))
+                Ok((record::datum_ord(record)?, None))
             }
-            JoinWindow::Similarity => Ok((record::vdb_datum_slots_metered(record, meter)?.0, None)),
+            JoinWindow::Similarity => Ok((record::vdb_datum_slots(record)?.0, None)),
         }
     }
 
-    fn payload_of(
-        &self,
-        record: &ListParWithRandom,
-        meter: &ScanMeter,
-    ) -> Result<ListParWithRandom, SpaceError> {
+    fn payload_of(&self, record: &ListParWithRandom) -> Result<ListParWithRandom, SpaceError> {
         match D::JOIN_WINDOW {
-            JoinWindow::Lanes => Ok(record::unwrap_pq_datum_metered(record, meter)?.datum),
+            JoinWindow::Lanes => Ok(record::unwrap_pq_datum(record)?.datum),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
-                Ok(record::unwrap_datum_metered(record, meter)?.datum)
+                Ok(record::unwrap_datum(record)?.datum)
             }
-            JoinWindow::Similarity => vectordb::payload_of(record, meter),
+            JoinWindow::Similarity => vectordb::payload_of(record),
         }
     }
 
-    fn waiter_slots(
-        &self,
-        waiter: &ParWaiter,
-        width: usize,
-        meter: &ScanMeter,
-    ) -> Result<Vec<JoinSlot>, SpaceError> {
+    fn waiter_slots(&self, waiter: &ParWaiter, width: usize) -> Result<Vec<JoinSlot>, SpaceError> {
         match width {
             1 => {
                 let slot = match D::JOIN_WINDOW {
                     JoinWindow::Lanes => {
-                        let (ord, priority) =
-                            record::pq_continuation_slots_metered(&waiter.continuation, meter)?;
+                        let (ord, priority) = record::pq_continuation_slots(&waiter.continuation)?;
                         JoinSlot {
                             ord,
                             bind: 0,
@@ -1650,13 +1417,13 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                         }
                     }
                     JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => JoinSlot {
-                        ord: record::continuation_ord_metered(&waiter.continuation, meter)?,
+                        ord: record::continuation_ord(&waiter.continuation)?,
                         bind: 0,
                         policy: WaiterPolicy::None,
                     },
                     JoinWindow::Similarity => {
                         let (ord, policy) =
-                            record::continuation_policy_slots_metered(&waiter.continuation, meter)?;
+                            record::continuation_policy_slots(&waiter.continuation)?;
                         JoinSlot {
                             ord,
                             bind: 0,
@@ -1664,12 +1431,12 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                         }
                     }
                 };
-                let mut slots = meter.buffer::<JoinSlot>(1)?;
+                let mut slots = Vec::<JoinSlot>::with_capacity(1);
                 slots.push(slot);
                 Ok(slots)
             }
             _ => {
-                let slots = record::join_continuation_slots_metered(&waiter.continuation, meter)?;
+                let slots = record::join_continuation_slots(&waiter.continuation)?;
                 let lanes_fit = match D::JOIN_WINDOW {
                     JoinWindow::Lanes => true,
                     JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes => {
@@ -1699,64 +1466,49 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         incoming: Option<&Incoming>,
         _pending: &[Work],
     ) -> Result<Vec<Entry>, SpaceError> {
-        let meter = cx.meter();
         let channel = &collection(scope, coll)?.data;
         let incoming = incoming.filter(|x| x.coll == coll);
         match D::JOIN_WINDOW {
             JoinWindow::Head => {
                 let records: Vec<(i64, usize)> = {
                     let stored = cx.data_on(channel)?;
-                    let mut records = meter.buffer::<(i64, usize)>(stored.len())?;
+                    let mut records = Vec::<(i64, usize)>::with_capacity(stored.len());
                     for (index, datum) in stored.iter().enumerate() {
-                        records.push((self.record_slots(&datum.a, meter)?.0, index));
+                        records.push((self.record_slots(&datum.a)?.0, index));
                     }
                     records
                 };
-                self.head_window(&records, need, incoming, meter)
+                self.head_window(&records, need, incoming)
             }
             JoinWindow::Lanes => {
                 let mut levels: BTreeMap<Level, Vec<(i64, usize)>> = BTreeMap::new();
                 {
                     let stored = cx.data_on(channel)?;
                     for (index, datum) in stored.iter().enumerate() {
-                        let (ord, level) = self.record_slots(&datum.a, meter)?;
+                        let (ord, level) = self.record_slots(&datum.a)?;
                         let level = level.ok_or(SpaceError::Inconsistent(
                             "a record of a priority queue has no level",
                         ))?;
-                        meter.ordered_lookup(levels.len(), size_of::<Level>())?;
-                        if !levels.contains_key(&level) {
-                            meter.tree_growth::<Level, Vec<(i64, usize)>>(levels.len(), 1)?;
-                        }
-                        generic::push_reserved(
-                            levels.entry(level).or_default(),
-                            (ord, index),
-                            meter,
-                        )?;
+                        levels.entry(level).or_default().push((ord, index));
                     }
                 }
                 if let Some(x) = incoming {
                     let level = x.level.ok_or(SpaceError::Inconsistent(
                         "an element of a priority queue has no level",
                     ))?;
-                    meter.ordered_lookup(levels.len(), size_of::<Level>())?;
                     if !levels.contains_key(&level) {
-                        meter.tree_growth::<Level, Vec<(i64, usize)>>(levels.len(), 1)?;
                         levels.insert(level, Vec::new());
                     }
                 }
                 let mut window = Vec::new();
                 for (level, records) in &levels {
                     let in_level = incoming.filter(|x| x.level == Some(*level));
-                    let entries = self.head_window(records, need, in_level, meter)?;
+                    let entries = self.head_window(records, need, in_level)?;
                     for entry in entries {
-                        generic::push_reserved(
-                            &mut window,
-                            Entry {
-                                at: entry.at,
-                                level: Some(*level),
-                            },
-                            meter,
-                        )?;
+                        window.push(Entry {
+                            at: entry.at,
+                            level: Some(*level),
+                        });
                     }
                 }
                 Ok(window)
@@ -1767,11 +1519,8 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                 // Every stored record is in the window. An element in flight always lies in the
                 // window of a scan, so it joins it at the end: no stored record takes its place.
                 let order = cx.canonical_data_order(channel)?;
-                let length = order
-                    .len()
-                    .checked_add(usize::from(incoming.is_some()))
-                    .ok_or(RSpaceError::HostWorkRejected)?;
-                let mut window = meter.buffer::<Entry>(length)?;
+                let length = order.len() + usize::from(incoming.is_some());
+                let mut window = Vec::<Entry>::with_capacity(length);
                 window.extend(order.into_iter().map(|index| Entry {
                     at: EntryAt::Stored(index),
                     level: None,
@@ -1792,12 +1541,11 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         coll: usize,
         at: EntryAt,
         payload: &ListParWithRandom,
-        meter: &ScanMeter,
     ) -> Result<Claim, SpaceError> {
         match D::JOIN_WINDOW {
-            JoinWindow::Classes => match self.discipline.join_class_key(&payload.pars, meter)? {
+            JoinWindow::Classes => match self.discipline.join_class_key(&payload.pars)? {
                 Some(key) => {
-                    let hash = metered_hash(&key, meter)?;
+                    let hash = bincode_digest(&key)?;
                     Ok(Claim::Class { coll, key, hash })
                 }
                 None => Ok(Claim::Record { coll, at }),
@@ -1814,12 +1562,11 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         scope: &JoinScope,
         incoming: &Incoming,
     ) -> Result<Vec<WaiterRef>, SpaceError> {
-        let meter = cx.meter();
         match D::JOIN_WINDOW {
             JoinWindow::Head => {
                 let seats = self.seats(cx, scope, incoming.coll)?;
-                match self.head_seat(&seats.seats, None, meter)? {
-                    Some(head) => Ok(vec![self.reference(&seats, head, meter)?]),
+                match self.head_seat(&seats.seats, None)? {
+                    Some(head) => Ok(vec![self.reference(&seats, head)?]),
                     None => Ok(Vec::new()),
                 }
             }
@@ -1830,13 +1577,13 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                 let seats = self.seats(cx, scope, incoming.coll)?;
                 let mut heads: Vec<usize> = Vec::new();
                 for lane in level.candidate_lanes().into_iter().flatten() {
-                    if let Some(head) = self.head_seat(&seats.seats, Some(lane), meter)? {
+                    if let Some(head) = self.head_seat(&seats.seats, Some(lane))? {
                         if !heads.contains(&head) {
-                            generic::push_reserved(&mut heads, head, meter)?;
+                            heads.push(head);
                         }
                     }
                 }
-                self.oldest_first(&seats, heads, meter)
+                self.oldest_first(&seats, heads)
             }
             JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
                 self.union_order(cx, scope, incoming.coll)
@@ -1850,12 +1597,11 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         scope: &JoinScope,
         coll: usize,
     ) -> Result<Vec<WaiterRef>, SpaceError> {
-        let meter = cx.meter();
         match D::JOIN_WINDOW {
             JoinWindow::Head => {
                 let seats = self.seats(cx, scope, coll)?;
-                match self.head_seat(&seats.seats, None, meter)? {
-                    Some(head) => Ok(vec![self.reference(&seats, head, meter)?]),
+                match self.head_seat(&seats.seats, None)? {
+                    Some(head) => Ok(vec![self.reference(&seats, head)?]),
                     None => Ok(Vec::new()),
                 }
             }
@@ -1865,19 +1611,19 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                 for seat in &seats.seats {
                     for lane in &seat.lanes {
                         if !lanes.contains(lane) {
-                            generic::push_reserved(&mut lanes, *lane, meter)?;
+                            lanes.push(*lane);
                         }
                     }
                 }
                 let mut heads: Vec<usize> = Vec::new();
                 for lane in lanes {
-                    if let Some(head) = self.head_seat(&seats.seats, lane, meter)? {
+                    if let Some(head) = self.head_seat(&seats.seats, lane)? {
                         if !heads.contains(&head) {
-                            generic::push_reserved(&mut heads, head, meter)?;
+                            heads.push(head);
                         }
                     }
                 }
-                self.oldest_first(&seats, heads, meter)
+                self.oldest_first(&seats, heads)
             }
             // Decision 50: a set cascades over every waiter of the collection, in canonical order,
             // because a class can move when its first member leaves (F-JF-1). A bag needs none.
@@ -1897,12 +1643,11 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         colls: &[usize],
         coll: usize,
     ) -> Result<bool, SpaceError> {
-        let meter = cx.meter();
         match D::JOIN_WINDOW {
             JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => Ok(true),
             JoinWindow::Head | JoinWindow::Lanes => {
                 let seats = self.seats(cx, scope, coll)?;
-                for lane in self.lanes_on(slots, colls, coll, meter)? {
+                for lane in self.lanes_on(slots, colls, coll) {
                     let filter = match D::JOIN_WINDOW {
                         JoinWindow::Lanes => lane,
                         JoinWindow::Head
@@ -1910,14 +1655,13 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                         | JoinWindow::Classes
                         | JoinWindow::Similarity => None,
                     };
-                    let Some(head) = self.head_seat(&seats.seats, filter, meter)? else {
+                    let Some(head) = self.head_seat(&seats.seats, filter)? else {
                         return Ok(false);
                     };
                     let seat = seats
                         .seats
                         .get(head)
                         .ok_or(SpaceError::Inconsistent("a seat index is outside its list"))?;
-                    meter.compare(seat.source.0.len(), waiter.source.0.len())?;
                     if seat.source != waiter.source {
                         return Ok(false);
                     }
@@ -1936,12 +1680,11 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         coll: usize,
         carried: Option<i64>,
     ) -> Result<bool, SpaceError> {
-        let meter = cx.meter();
         match D::JOIN_WINDOW {
             JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => Ok(true),
             JoinWindow::Head | JoinWindow::Lanes => {
                 let seats = self.seats(cx, scope, coll)?;
-                for lane in self.lanes_on(slots, colls, coll, meter)? {
+                for lane in self.lanes_on(slots, colls, coll) {
                     let filter = match D::JOIN_WINDOW {
                         JoinWindow::Lanes => lane,
                         JoinWindow::Head
@@ -1958,7 +1701,7 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                                 .count();
                             self.discipline.reaches_head(Side::Waiters, queued)
                         }
-                        Some(ord) => match self.head_seat(&seats.seats, filter, meter)? {
+                        Some(ord) => match self.head_seat(&seats.seats, filter)? {
                             None => true,
                             Some(head) => {
                                 let head_ord = seats
@@ -1968,17 +1711,13 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
                                         "a seat index is outside its list",
                                     ))?
                                     .ord;
-                                meter.compare(size_of::<i64>(), size_of::<i64>())?;
                                 match head_ord == ord {
                                     true => return Err(SpaceError::Inconsistent(
                                         "a re-issued element shares its order with a stored entry",
                                     )),
-                                    false => self.discipline.precedes(
-                                        Side::Waiters,
-                                        ord,
-                                        head_ord,
-                                        meter,
-                                    )?,
+                                    false => {
+                                        self.discipline.precedes(Side::Waiters, ord, head_ord)?
+                                    }
                                 }
                             }
                         },
@@ -1998,11 +1737,10 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         scope: &JoinScope,
         coll: usize,
     ) -> Result<usize, SpaceError> {
-        let meter = cx.meter();
         let channel = &collection(scope, coll)?.data;
         let groups: Vec<Vec<Par>> = {
             let joins = cx.joins_on(channel)?;
-            meter.copy_slice(joins)?
+            joins.to_vec()
         };
         let mut count = 0usize;
         for group in &groups {
@@ -2013,8 +1751,8 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         Ok(count)
     }
 
-    fn class_key(&self, payload: &[Par], meter: &ScanMeter) -> Result<Option<Vec<u8>>, SpaceError> {
-        self.discipline.join_class_key(payload, meter)
+    fn class_key(&self, payload: &[Par]) -> Result<Option<Vec<u8>>, SpaceError> {
+        self.discipline.join_class_key(payload)
     }
 
     fn stored_entry(
@@ -2025,15 +1763,14 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         index: usize,
         missing: &'static str,
     ) -> Result<StoredEntry, SpaceError> {
-        let meter = cx.meter();
         let (payload, persist) = {
             let records = cx.data_on(&collection(scope, coll)?.data)?;
             let datum = records
                 .get(index)
                 .ok_or(SpaceError::Inconsistent(missing))?;
-            (self.payload_of(&datum.a, meter)?, datum.persist)
+            (self.payload_of(&datum.a)?, datum.persist)
         };
-        let claim = self.claim(coll, EntryAt::Stored(index), &payload, meter)?;
+        let claim = self.claim(coll, EntryAt::Stored(index), &payload)?;
         Ok(StoredEntry {
             payload,
             persist,
@@ -2049,12 +1786,11 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         index: usize,
         missing: &'static str,
     ) -> Result<ListParWithRandom, SpaceError> {
-        let meter = cx.meter();
         let records = cx.data_on(&collection(scope, coll)?.data)?;
         let datum = records
             .get(index)
             .ok_or(SpaceError::Inconsistent(missing))?;
-        self.payload_of(&datum.a, meter)
+        self.payload_of(&datum.a)
     }
 
     fn members(
@@ -2078,22 +1814,21 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         index: usize,
         in_flight: bool,
     ) -> Result<(Incoming, ParDatum), SpaceError> {
-        let meter = cx.meter();
         let datum = {
             let records = cx.data_on(&collection(scope, coll)?.data)?;
             let datum = records.get(index).ok_or(SpaceError::Inconsistent(
                 "a bound index is outside the staged view",
             ))?;
-            meter.copy(datum)?
+            datum.clone()
         };
-        let (ord, level) = self.record_slots(&datum.a, meter)?;
-        let payload = self.payload_of(&datum.a, meter)?;
-        let introduction = cx.introduction().for_record(&datum.a, meter)?;
+        let (ord, level) = self.record_slots(&datum.a)?;
+        let payload = self.payload_of(&datum.a)?;
+        let introduction = cx.introduction().for_record(&datum.a)?;
         let x = Incoming {
             coll,
-            record: meter.copy(&datum.a)?,
+            record: datum.a.clone(),
             payload,
-            source: meter.copy(&datum.source)?,
+            source: datum.source.clone(),
             persist: datum.persist,
             ord,
             level,
@@ -2117,13 +1852,12 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         if entry.persist {
             return Ok(None);
         }
-        let meter = cx.meter();
         let record = {
             let records = cx.data_on(&collection(scope, coll)?.data)?;
             let datum = records.get(index).ok_or(SpaceError::Inconsistent(
                 "a bound index is outside the staged view",
             ))?;
-            meter.copy(&datum.a)?
+            datum.a.clone()
         };
         Ok(Some(Work {
             coll,
@@ -2136,31 +1870,25 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
 
     fn incoming_source(
         &self,
-        cx: &mut Cx<'_, '_>,
+        _cx: &mut Cx<'_, '_>,
         _scope: &JoinScope,
         x: &Incoming,
         _coll: usize,
     ) -> Result<Produce, SpaceError> {
-        Ok(cx.meter().copy(&x.source)?)
+        Ok(x.source.clone())
     }
 
     fn incoming_record(
         &self,
-        cx: &mut Cx<'_, '_>,
+        _cx: &mut Cx<'_, '_>,
         _scope: &JoinScope,
         x: &Incoming,
         _coll: usize,
     ) -> Result<ListParWithRandom, SpaceError> {
-        Ok(cx.meter().copy(&x.record)?)
+        Ok(x.record.clone())
     }
 
-    fn enters(
-        &self,
-        _scope: &JoinScope,
-        x: &Incoming,
-        coll: usize,
-        _meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
+    fn enters(&self, _scope: &JoinScope, x: &Incoming, coll: usize) -> Result<bool, SpaceError> {
         Ok(coll == x.coll)
     }
 
@@ -2169,7 +1897,6 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
         _scope: &JoinScope,
         x: &'x Incoming,
         _coll: usize,
-        _meter: &ScanMeter,
     ) -> Result<Cow<'x, ListParWithRandom>, SpaceError> {
         Ok(Cow::Borrowed(&x.payload))
     }
@@ -2215,7 +1942,7 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
 
     fn before_fire(
         &self,
-        cx: &mut Cx<'_, '_>,
+        _cx: &mut Cx<'_, '_>,
         _scope: &JoinScope,
         site: FireSite,
         _colls: &[usize],
@@ -2227,9 +1954,7 @@ impl<S: OuterStore, D: Discipline> JoinSource for KeyedSource<'_, S, D> {
             // A single-bind class fire removes the whole class over [D; n], so it retires
             // nothing afterwards (F3, F20).
             FireSite::Single => Ok(Vec::new()),
-            FireSite::Offer | FireSite::Join | FireSite::Cascade => {
-                self.class_claims(bound, cx.meter())
-            }
+            FireSite::Offer | FireSite::Join | FireSite::Cascade => Ok(self.class_claims(bound)),
         }
     }
 
@@ -2267,17 +1992,16 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
         if D::JOIN_WINDOW != JoinWindow::Classes {
             return Ok(());
         }
-        let meter = cx.meter();
         let retire_random = RandomPurpose::Retire.derive(random);
         let mut retired: Vec<Claim> = Vec::new();
         for (claim, &coll) in claims.iter().zip(colls) {
             let Claim::Class { key, hash, .. } = claim else {
                 continue;
             };
-            if is_claimed(&retired, claim, meter)? {
+            if is_claimed(&retired, claim)? {
                 continue;
             }
-            generic::push_reserved(&mut retired, claim.clone(), meter)?;
+            retired.push(claim.clone());
             retire_class_on(
                 cx,
                 &collection(scope, coll)?.data,
@@ -2285,7 +2009,7 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                 hash,
                 &retire_random,
                 authority,
-                |payload, meter| self.class_key(payload, meter),
+                |payload| self.class_key(payload),
             )?;
         }
         Ok(())
@@ -2293,48 +2017,42 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
 
     /// The claims of the bound entries `bound`, for RETIRE-SET-BINDS after the fire moved the
     /// entries into its candidates. Only a discipline with classes retires, so the other
-    /// disciplines copy nothing. The copy of each class key and hash is reserved.
-    fn class_claims(&self, bound: &[Bound], meter: &ScanMeter) -> Result<Vec<Claim>, SpaceError> {
+    /// disciplines copy nothing.
+    fn class_claims(&self, bound: &[Bound]) -> Vec<Claim> {
         if D::JOIN_WINDOW != JoinWindow::Classes {
-            return Ok(Vec::new());
+            return Vec::new();
         }
-        let mut claims = meter.buffer::<Claim>(bound.len())?;
+        let mut claims = Vec::<Claim>::with_capacity(bound.len());
         for entry in bound {
-            if let Claim::Class { key, hash, .. } = &entry.claim {
-                meter.reserve_copy_slice(key)?;
-                meter.reserve_copy(hash)?;
-            }
             claims.push(entry.claim.clone());
         }
-        Ok(claims)
+        claims
     }
 
     /// Every waiter of the collection `coll`, in the canonical order of DR-75 of the union of its
     /// join groups: a merge of the canonical orders of the groups by the source hash of each
     /// consume (decision 41). Two waiters of distinct groups have distinct consumes, so a tie
-    /// across groups is `Inconsistent`. Each copy and comparison is reserved.
+    /// across groups is `Inconsistent`.
     fn union_order(
         &self,
         cx: &mut Cx<'_, '_>,
         scope: &JoinScope,
         coll: usize,
     ) -> Result<Vec<WaiterRef>, SpaceError> {
-        let meter = cx.meter();
         let channel = &collection(scope, coll)?.data;
         let groups: Vec<Vec<Par>> = {
             let joins = cx.joins_on(channel)?;
-            meter.copy_slice(joins)?
+            joins.to_vec()
         };
-        let mut sequences: Vec<Vec<(Blake2b256Hash, usize)>> = meter.buffer(groups.len())?;
+        let mut sequences: Vec<Vec<(Blake2b256Hash, usize)>> = Vec::with_capacity(groups.len());
         for group in &groups {
             let order = cx.canonical_group_order(group)?;
             let waiters = cx.group_waiters(group)?;
-            let mut sequence = meter.buffer::<(Blake2b256Hash, usize)>(order.len())?;
+            let mut sequence = Vec::<(Blake2b256Hash, usize)>::with_capacity(order.len());
             for index in order {
                 let waiter = waiters.get(index).ok_or(SpaceError::Inconsistent(
                     "a canonical index is outside the staged view",
                 ))?;
-                meter.reserve_copy(&waiter.source.hash)?;
                 sequence.push((waiter.source.hash.clone(), index));
             }
             sequences.push(sequence);
@@ -2343,9 +2061,8 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
         // each consume. Two waiters of distinct groups have distinct consumes, so a tie
         // across groups is `Inconsistent`.
         let total: usize = sequences.iter().map(Vec::len).sum();
-        let mut merged = meter.buffer::<WaiterRef>(total)?;
-        let mut cursors = meter.buffer::<usize>(sequences.len())?;
-        cursors.resize(sequences.len(), 0);
+        let mut merged = Vec::<WaiterRef>::with_capacity(total);
+        let mut cursors = vec![0usize; sequences.len()];
         for _ in 0..total {
             let mut least: Option<(usize, &Blake2b256Hash)> = None;
             for (group, sequence) in sequences.iter().enumerate() {
@@ -2355,18 +2072,15 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                 };
                 least = match least {
                     None => Some((group, hash)),
-                    Some((best, best_hash)) => {
-                        meter.compare(best_hash.0.len(), hash.0.len())?;
-                        match hash.cmp(best_hash) {
-                            std::cmp::Ordering::Less => Some((group, hash)),
-                            std::cmp::Ordering::Greater => Some((best, best_hash)),
-                            std::cmp::Ordering::Equal => {
-                                return Err(SpaceError::Inconsistent(
-                                    "two waiters of distinct groups share a consume",
-                                ))
-                            }
+                    Some((best, best_hash)) => match hash.cmp(best_hash) {
+                        std::cmp::Ordering::Less => Some((group, hash)),
+                        std::cmp::Ordering::Greater => Some((best, best_hash)),
+                        std::cmp::Ordering::Equal => {
+                            return Err(SpaceError::Inconsistent(
+                                "two waiters of distinct groups share a consume",
+                            ))
                         }
-                    }
+                    },
                 };
             }
             let (group, _) = least.ok_or(SpaceError::Inconsistent(
@@ -2386,23 +2100,21 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                 .get(group)
                 .ok_or(SpaceError::Inconsistent("a merge names no group"))?;
             merged.push(WaiterRef {
-                group: meter.copy(channels)?,
+                group: channels.clone(),
                 index: *index,
-                source: meter.copy(hash)?,
+                source: hash.clone(),
             });
         }
         Ok(merged)
     }
 
     /// The references of the seats `heads`, in ascending order of the seats (the older first).
-    /// Each comparison is reserved.
     fn oldest_first(
         &self,
         seats: &Seats,
         mut heads: Vec<usize>,
-        meter: &ScanMeter,
     ) -> Result<Vec<WaiterRef>, SpaceError> {
-        let mut keyed = meter.buffer::<(i64, usize)>(heads.len())?;
+        let mut keyed = Vec::<(i64, usize)>::with_capacity(heads.len());
         for head in heads.drain(..) {
             let seat = seats
                 .seats
@@ -2410,10 +2122,10 @@ impl<S: OuterStore, D: Discipline> KeyedSource<'_, S, D> {
                 .ok_or(SpaceError::Inconsistent("a seat index is outside its list"))?;
             keyed.push((seat.ord, head));
         }
-        sort_reserved(&mut keyed, |_| size_of::<i64>(), meter)?;
-        let mut references = meter.buffer::<WaiterRef>(keyed.len())?;
+        keyed.sort();
+        let mut references = Vec::<WaiterRef>::with_capacity(keyed.len());
         for (_, head) in keyed {
-            references.push(self.reference(seats, head, meter)?);
+            references.push(self.reference(seats, head)?);
         }
         Ok(references)
     }
@@ -2503,17 +2215,6 @@ enum Own {
 /// The template of the lift pattern.
 static LIFT_PATTERN: LazyLock<BindPattern> = LazyLock::new(lift_pattern);
 
-/// The template of a `K_lift` continuation without random state bytes and without a cost
-/// authority: a reserved copy of it covers the allocations of a new one.
-static LIFT_CONTINUATION: LazyLock<TaggedContinuation> = LazyLock::new(|| TaggedContinuation {
-    tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
-        body: Some(lift_body(0, 0)),
-        random_state: Vec::new(),
-    })),
-    guard: None,
-    cost_authority: None,
-});
-
 /// The transaction of the join engine.
 struct Engine<'r, Src> {
     source: &'r Src,
@@ -2553,10 +2254,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         scope: &'r JoinScope,
         op: &SpaceOp,
         config: &SpaceConfig,
-        meter: &ScanMeter,
     ) -> Result<Self, SpaceError> {
         let vdb = match source.shape() {
-            JoinWindow::Similarity => Some(vectordb::vdb_config(config, meter)?),
+            JoinWindow::Similarity => Some(vectordb::vdb_config(config)?),
             JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Classes => None,
         };
         let (random_state, authority): (&[u8], Option<&CostAuthority>) = match op {
@@ -2566,11 +2266,11 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             SpaceOp::Join(op) => (&op.body.random_state, record::stamped(&op.authority)),
         };
         let width = scope.collections.len();
-        let mut bumps = meter.buffer::<Option<Option<i64>>>(width)?;
+        let mut bumps = Vec::<Option<Option<i64>>>::with_capacity(width);
         bumps.resize(width, None);
-        let mut dirty = meter.buffer::<bool>(width)?;
+        let mut dirty = Vec::<bool>::with_capacity(width);
         dirty.resize(width, false);
-        let mut ords = meter.buffer::<Option<i64>>(width)?;
+        let mut ords = Vec::<Option<i64>>::with_capacity(width);
         ords.resize(width, None);
         let own_placement = match op {
             SpaceOp::Produce(ProduceOp {
@@ -2585,9 +2285,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             source,
             scope,
             random: Blake2b512Random::from_bytes(random_state),
-            authority: authority
-                .map(|authority| meter.copy(authority))
-                .transpose()?,
+            authority: authority.cloned(),
             lift_random: None,
             bumps,
             shared_bump: None,
@@ -2658,7 +2356,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let mut distinct: Vec<usize> = Vec::new();
         for &coll in colls {
             if !distinct.contains(&coll) {
-                generic::push_reserved(&mut distinct, coll, cx.meter())?;
+                distinct.push(coll);
             }
         }
         distinct.sort_unstable();
@@ -2683,17 +2381,16 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
 
     /// RUN-JOIN.
     fn run(mut self, cx: &mut Cx<'_, '_>, op: SpaceOp) -> Result<Option<SpaceReissue>, SpaceError> {
-        let meter = cx.meter();
-        let mut own_colls = meter.buffer::<usize>(self.scope.own.len())?;
+        let mut own_colls = Vec::<usize>::with_capacity(self.scope.own.len());
         for key in &self.scope.own {
-            own_colls.push(self.scope.index_of_key(key, meter)?);
+            own_colls.push(self.scope.index_of_key(key)?);
         }
         for &coll in &own_colls {
             self.touch(cx, coll)?;
         }
-        let carried = self.carried_ords(&op, &own_colls, meter)?;
+        let carried = self.carried_ords(&op, &own_colls)?;
         for (&coll, &carried_ord) in own_colls.iter().zip(&carried) {
-            let ord = operation_ord(carried_ord, self.bumped(coll)?, meter)?;
+            let ord = operation_ord(carried_ord, self.bumped(coll)?)?;
             if let Some(slot) = self.ords.get_mut(coll) {
                 *slot = Some(ord);
             }
@@ -2707,9 +2404,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             self.own = Own::Settled;
             if let Some(cascade) = settle.cascade.as_mut() {
                 let pending = std::mem::take(&mut cascade.pending);
-                let mut work = meter.buffer::<Work>(pending.len())?;
+                let mut work = Vec::<Work>::with_capacity(pending.len());
                 for pending in pending.into_iter().rev() {
-                    let coll = self.scope.index_of_key(&pending.key, meter)?;
+                    let coll = self.scope.index_of_key(&pending.key)?;
                     work.push(Work {
                         coll,
                         record: pending.record,
@@ -2751,13 +2448,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             }
             SpaceOp::Consume(consume) => {
                 self.own = Own::InFlight;
-                let waiter = self.consume_waiter(cx, &consume, &own_colls, &carried)?;
+                let waiter = self.consume_waiter(&consume, &own_colls, &carried)?;
                 self.receive(cx, waiter)?;
                 SpaceOp::Consume(consume)
             }
             SpaceOp::Join(join) => {
                 self.own = Own::InFlight;
-                let waiter = self.join_waiter(cx, &join, &own_colls, &carried)?;
+                let waiter = self.join_waiter(&join, &own_colls, &carried)?;
                 self.receive(cx, waiter)?;
                 SpaceOp::Join(join)
             }
@@ -2777,9 +2474,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         &self,
         op: &SpaceOp,
         own_colls: &[usize],
-        meter: &ScanMeter,
     ) -> Result<Vec<Option<i64>>, SpaceError> {
-        let mut carried = meter.buffer::<Option<i64>>(own_colls.len())?;
+        let mut carried = Vec::<Option<i64>>::with_capacity(own_colls.len());
         match op {
             SpaceOp::Produce(produce) => carried.push(produce.reissued_ord),
             SpaceOp::Consume(consume) => carried.push(consume.reissued_ord),
@@ -2788,7 +2484,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 carried.resize(own_colls.len(), None);
                 if let Some(ords) = &join.reissued_ords {
                     for (bind, ord) in join.binds.iter().zip(ords) {
-                        let coll = self.scope.index_of_key(&bind.key, meter)?;
+                        let coll = self.scope.index_of_key(&bind.key)?;
                         let position = own_colls
                             .iter()
                             .position(|&own| own == coll)
@@ -2796,7 +2492,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         let slot = carried
                             .get_mut(position)
                             .ok_or(SpaceError::Inconsistent("a carried order has no slot"))?;
-                        meter.compare(size_of::<i64>(), size_of::<i64>())?;
                         match slot {
                             None => *slot = Some(*ord),
                             Some(other) if *other == *ord => {}
@@ -2829,10 +2524,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         op: &ProduceOp,
         coll: usize,
     ) -> Result<Incoming, SpaceError> {
-        let meter = cx.meter();
         let ord = self.ord_on(coll)?;
         let level = match self.source.shape() {
-            JoinWindow::Lanes => Some(send_level(&op.params, meter)?),
+            JoinWindow::Lanes => Some(send_level(&op.params)?),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
                 None
             }
@@ -2840,23 +2534,17 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let record = match self.source.shape() {
             // The record of a VectorDB send holds its vector (P6, design v3 4.3).
             JoinWindow::Similarity => {
-                let cfg = vectordb::vdb_config(cx.config(), meter)?;
-                vectordb::vdb_record(&cfg, &op.params, &op.data, meter)?.0
+                let cfg = vectordb::vdb_config(cx.config())?;
+                vectordb::vdb_record(&cfg, &op.params, &op.data)?.0
             }
             JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Classes => {
-                self.source.wrap_record(ord, level, &op.data, meter)?
+                self.source.wrap_record(ord, level, &op.data)?
             }
         };
-        let source = Produce::create_metered(
-            self.source.home(self.scope, coll)?,
-            &record,
-            op.persistent,
-            meter,
-        )?;
-        meter.shared(1)?;
+        let source = Produce::create(self.source.home(self.scope, coll)?, &record, op.persistent);
         Ok(Incoming {
             coll,
-            payload: meter.copy(&op.data)?,
+            payload: op.data.clone(),
             record,
             source,
             persist: op.persistent,
@@ -2874,57 +2562,52 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// 1.
     fn consume_waiter(
         &self,
-        cx: &mut Cx<'_, '_>,
         op: &ConsumeOp,
         own_colls: &[usize],
         carried: &[Option<i64>],
     ) -> Result<NewWaiter, SpaceError> {
-        let meter = cx.meter();
         let coll = *own_colls
             .first()
             .ok_or(SpaceError::Inconsistent("a consume has no collection"))?;
         let ord = self.ord_on(coll)?;
         let lane = match self.source.shape() {
-            JoinWindow::Lanes => Some(receive_lane(&op.query, meter)?),
+            JoinWindow::Lanes => Some(receive_lane(&op.query)?),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
                 None
             }
         };
         // A VectorDB waiter keeps its query in its policy slot (P6, design v3 4.3).
         let query_policy = match self.source.shape() {
-            JoinWindow::Similarity => Some(vectordb::policy_of_query(op.query.as_ref(), meter)?),
+            JoinWindow::Similarity => Some(vectordb::policy_of_query(op.query.as_ref())),
             JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Classes => None,
         };
         let continuation = match (lane, &query_policy) {
-            (Some(lane), _) => record::wrap_pq_continuation_metered(
+            (Some(lane), _) => record::wrap_pq_continuation_from_parts(
                 ord,
                 lane.slot(),
                 &op.body,
                 &op.guard,
                 record::stamped(&op.authority),
-                meter,
             )?,
-            (None, Some(policy)) => record::wrap_policy_continuation_metered(
+            (None, Some(policy)) => record::wrap_policy_continuation_from_parts(
                 ord,
                 policy,
                 &op.body,
                 &op.guard,
                 record::stamped(&op.authority),
-                meter,
             )?,
-            (None, None) => record::wrap_continuation_metered(
+            (None, None) => record::wrap_continuation_from_parts(
                 ord,
                 &op.body,
                 &op.guard,
                 record::stamped(&op.authority),
-                meter,
             )?,
         };
-        let mut group = meter.buffer::<Par>(1)?;
-        group.push(meter.copy(self.channel(coll)?)?);
-        let mut colls = meter.buffer::<usize>(1)?;
+        let mut group = Vec::<Par>::with_capacity(1);
+        group.push(self.channel(coll)?.clone());
+        let mut colls = Vec::<usize>::with_capacity(1);
         colls.push(coll);
-        let mut slots = meter.buffer::<JoinSlot>(1)?;
+        let mut slots = Vec::<JoinSlot>::with_capacity(1);
         slots.push(JoinSlot {
             ord,
             bind: 0,
@@ -2933,9 +2616,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 None => WaiterPolicy::of_level(lane.and_then(Lane::slot)),
             },
         });
-        let mut patterns = meter.buffer::<BindPattern>(1)?;
-        patterns.push(meter.copy(&op.pattern)?);
-        let mut carried_by_coll = meter.buffer::<Option<i64>>(self.scope.collections.len())?;
+        let mut patterns = Vec::<BindPattern>::with_capacity(1);
+        patterns.push(op.pattern.clone());
+        let mut carried_by_coll = Vec::<Option<i64>>::with_capacity(self.scope.collections.len());
         carried_by_coll.resize(self.scope.collections.len(), None);
         if let (Some(slot), Some(ord)) = (carried_by_coll.get_mut(coll), carried.first()) {
             *slot = *ord;
@@ -2947,7 +2630,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             patterns,
             continuation,
             persist: op.persistent,
-            peeks: peek_set(op.peek, meter)?,
+            peeks: peek_set(op.peek),
             carried: carried_by_coll,
         })
     }
@@ -2956,25 +2639,23 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// 2 with one slot for each position.
     fn join_waiter(
         &self,
-        cx: &mut Cx<'_, '_>,
         op: &JoinOp,
         own_colls: &[usize],
         carried: &[Option<i64>],
     ) -> Result<NewWaiter, SpaceError> {
-        let meter = cx.meter();
         let width = self.scope.group.len();
-        let mut group = meter.buffer::<Par>(width)?;
-        let mut colls = meter.buffer::<usize>(width)?;
-        let mut slots = meter.buffer::<JoinSlot>(width)?;
-        let mut patterns = meter.buffer::<BindPattern>(width)?;
+        let mut group = Vec::<Par>::with_capacity(width);
+        let mut colls = Vec::<usize>::with_capacity(width);
+        let mut slots = Vec::<JoinSlot>::with_capacity(width);
+        let mut patterns = Vec::<BindPattern>::with_capacity(width);
         for &position in &self.scope.group {
             let bind = op
                 .binds
                 .get(position)
                 .ok_or(SpaceError::Inconsistent("a group position names no bind"))?;
-            let coll = self.scope.index_of_key(&bind.key, meter)?;
+            let coll = self.scope.index_of_key(&bind.key)?;
             let lane = match self.source.shape() {
-                JoinWindow::Lanes => Some(receive_lane(&bind.query, meter)?),
+                JoinWindow::Lanes => Some(receive_lane(&bind.query)?),
                 JoinWindow::Head
                 | JoinWindow::Scan
                 | JoinWindow::Classes
@@ -2982,32 +2663,31 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             };
             // A VectorDB bind keeps its query in its slot (P6, design v3 4.6).
             let policy = match self.source.shape() {
-                JoinWindow::Similarity => vectordb::policy_of_query(bind.query.as_ref(), meter)?,
+                JoinWindow::Similarity => vectordb::policy_of_query(bind.query.as_ref()),
                 JoinWindow::Head | JoinWindow::Lanes | JoinWindow::Scan | JoinWindow::Classes => {
                     WaiterPolicy::of_level(lane.and_then(Lane::slot))
                 }
             };
-            group.push(meter.copy(self.channel(coll)?)?);
+            group.push(self.channel(coll)?.clone());
             colls.push(coll);
             slots.push(JoinSlot {
                 ord: self.ord_on(coll)?,
                 bind: position,
                 policy,
             });
-            patterns.push(meter.copy(&bind.pattern)?);
+            patterns.push(bind.pattern.clone());
         }
-        let continuation = record::wrap_join_continuation_metered(
+        let continuation = record::wrap_join_continuation_from_parts(
             &slots,
             &op.body,
             &op.guard,
             record::stamped(&op.authority),
-            meter,
         )?;
         let peeks = match op.peek {
-            true => peek_set_all(width, meter)?,
+            true => peek_set_all(width)?,
             false => BTreeSet::new(),
         };
-        let mut carried_by_coll = meter.buffer::<Option<i64>>(self.scope.collections.len())?;
+        let mut carried_by_coll = Vec::<Option<i64>>::with_capacity(self.scope.collections.len());
         carried_by_coll.resize(self.scope.collections.len(), None);
         for (&coll, &ord) in own_colls.iter().zip(carried) {
             if let Some(slot) = carried_by_coll.get_mut(coll) {
@@ -3028,19 +2708,18 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
 
     /// Loads the stored waiter `at`: its copy, the collection of each position and its slots.
     fn load(&self, cx: &mut Cx<'_, '_>, at: WaiterRef) -> Result<Waiter, SpaceError> {
-        let meter = cx.meter();
-        let mut colls = meter.buffer::<usize>(at.group.len())?;
+        let mut colls = Vec::<usize>::with_capacity(at.group.len());
         for channel in &at.group {
-            colls.push(self.scope.index_of_channel(channel, meter)?);
+            colls.push(self.scope.index_of_channel(channel)?);
         }
         let waiting = {
             let waiters = cx.group_waiters(&at.group)?;
             let waiter = waiters.get(at.index).ok_or(SpaceError::Inconsistent(
                 "a waiter index is outside the staged view",
             ))?;
-            meter.copy(waiter)?
+            waiter.clone()
         };
-        let slots = self.source.waiter_slots(&waiting, at.group.len(), meter)?;
+        let slots = self.source.waiter_slots(&waiting, at.group.len())?;
         Ok(Waiter {
             at,
             colls,
@@ -3049,20 +2728,16 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         })
     }
 
-    /// The lanes of the positions of a waiter with the slots `slots`. The buffer is reserved.
-    fn lanes(
-        &self,
-        slots: &[JoinSlot],
-        meter: &ScanMeter,
-    ) -> Result<Vec<Option<Lane>>, SpaceError> {
-        let mut lanes = meter.buffer::<Option<Lane>>(slots.len())?;
+    /// The lanes of the positions of a waiter with the slots `slots`.
+    fn lanes(&self, slots: &[JoinSlot]) -> Vec<Option<Lane>> {
+        let mut lanes = Vec::<Option<Lane>>::with_capacity(slots.len());
         lanes.extend(slots.iter().map(|slot| match self.source.shape() {
             JoinWindow::Lanes => Some(Lane::of_slot(slot.policy.level())),
             JoinWindow::Head | JoinWindow::Scan | JoinWindow::Classes | JoinWindow::Similarity => {
                 None
             }
         }));
-        Ok(lanes)
+        lanes
     }
 
     /// True when the stored waiter `waiter` is the head of each head-only collection of its
@@ -3073,7 +2748,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             if checked.contains(&coll) {
                 continue;
             }
-            generic::push_reserved(&mut checked, coll, cx.meter())?;
+            checked.push(coll);
             if !self.source.at_head(
                 cx,
                 self.scope,
@@ -3101,21 +2776,18 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         slots: &[JoinSlot],
         fixed: Option<(usize, &Incoming, ListParWithRandom)>,
     ) -> Result<Option<Vec<Bound>>, SpaceError> {
-        let meter = cx.meter();
         let width = colls.len();
         if patterns.len() != width || lanes.len() != width {
             return Err(SpaceError::Inconsistent(
                 "a waiter has not one pattern and one lane for each position",
             ));
         }
-        let mut bound: Vec<Option<Bound>> = meter.buffer(width)?;
+        let mut bound: Vec<Option<Bound>> = Vec::with_capacity(width);
         bound.resize(width, None);
-        let mut claimed: Vec<Claim> = meter.buffer(width)?;
+        let mut claimed: Vec<Claim> = Vec::with_capacity(width);
         let incoming = fixed.as_ref().map(|(_, x, _)| *x);
         if let Some((position, x, matched)) = fixed {
-            let claim = self
-                .source
-                .claim(x.coll, EntryAt::Incoming, &x.payload, meter)?;
+            let claim = self.source.claim(x.coll, EntryAt::Incoming, &x.payload)?;
             claimed.push(claim.clone());
             if let Some(slot) = bound.get_mut(position) {
                 *slot = Some(Bound {
@@ -3144,19 +2816,17 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 else {
                     return Ok(None);
                 };
-                generic::push_reserved(&mut claimed, found.claim.clone(), meter)?;
+                claimed.push(found.claim.clone());
                 if let Some(entry) = bound.get_mut(position) {
                     *entry = Some(found);
                 }
                 continue;
             }
-            meter.ordered_lookup(windows.len(), size_of::<usize>())?;
             if !windows.contains_key(&coll) {
                 let need = colls.iter().filter(|&&other| other == coll).count();
                 let window = self
                     .source
                     .window(cx, self.scope, coll, need, incoming, &self.work)?;
-                meter.tree_growth::<usize, Vec<Entry>>(windows.len(), 1)?;
                 windows.insert(coll, window);
             }
             let window = windows
@@ -3183,10 +2853,10 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     index,
                     "a window index is outside the staged view",
                 )?;
-                if is_claimed(&claimed, &stored.claim, meter)? {
+                if is_claimed(&claimed, &stored.claim)? {
                     continue;
                 }
-                if let Some(matched) = cx.bind(pattern, &stored.payload)? {
+                if let Some(matched) = cx.bind(pattern, &stored.payload) {
                     found = Some(Bound {
                         at: entry.at,
                         matched,
@@ -3199,7 +2869,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             let Some(found) = found else {
                 return Ok(None);
             };
-            generic::push_reserved(&mut claimed, found.claim.clone(), meter)?;
+            claimed.push(found.claim.clone());
             if let Some(slot) = bound.get_mut(position) {
                 *slot = Some(found);
             }
@@ -3221,8 +2891,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         colls: &[usize],
         bound: &[Bound],
     ) -> Result<bool, SpaceError> {
-        let meter = cx.meter();
-        let mut by_bind: Vec<Option<usize>> = meter.buffer(bound.len())?;
+        let mut by_bind: Vec<Option<usize>> = Vec::with_capacity(bound.len());
         by_bind.resize(bound.len(), None);
         for (position, slot) in slots.iter().enumerate() {
             let place = by_bind.get_mut(slot.bind).ok_or(SpaceError::Inconsistent(
@@ -3230,13 +2899,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             ))?;
             *place = Some(position);
         }
-        let mut values = meter.buffer::<ListParWithRandom>(bound.len())?;
+        let mut values = Vec::<ListParWithRandom>::with_capacity(bound.len());
         for position in by_bind {
             let position = position.ok_or(SpaceError::Inconsistent("a bind has no position"))?;
             let entry = bound
                 .get(position)
                 .ok_or(SpaceError::Inconsistent("a position has no bound entry"))?;
-            values.push(meter.copy(&entry.matched)?);
+            values.push(entry.matched.clone());
         }
         if !cx.admits_all(continuation, &values, &[])? {
             return Ok(false);
@@ -3248,7 +2917,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             .iter()
             .filter(|entry| matches!(entry.at, EntryAt::Stored(_)))
             .count();
-        let mut payloads = meter.buffer::<(ListParWithRandom, usize)>(count)?;
+        let mut payloads = Vec::<(ListParWithRandom, usize)>::with_capacity(count);
         for (position, entry) in bound.iter().enumerate() {
             let EntryAt::Stored(index) = entry.at else {
                 continue;
@@ -3265,7 +2934,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             )?;
             payloads.push((payload, position));
         }
-        let mut stored = meter.buffer::<StoredMatch<'_>>(payloads.len())?;
+        let mut stored = Vec::<StoredMatch<'_>>::with_capacity(payloads.len());
         for (payload, position) in &payloads {
             let entry = bound
                 .get(*position)
@@ -3291,12 +2960,11 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         if !self.all_at_head(cx, waiter)? {
             return Ok(None);
         }
-        let meter = cx.meter();
-        let lanes = self.lanes(&waiter.slots, meter)?;
+        let lanes = self.lanes(&waiter.slots);
         // Whether `x` lies in the window of each collection that it enters, computed at the first
         // position on the collection. A keyed element enters its own collection only, so it
         // asks for one window, as the search of P5c always did. The list of the other
-        // collections is reserved when a second collection is entered.
+        // collections grows when a second collection is entered.
         let mut first: Option<(usize, bool)> = None;
         let mut others: Vec<(usize, bool)> = Vec::new();
         for position in 0..waiter.colls.len() {
@@ -3304,7 +2972,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 .colls
                 .get(position)
                 .ok_or(SpaceError::Inconsistent("a position has no collection"))?;
-            if !self.source.enters(self.scope, x, coll, meter)? {
+            if !self.source.enters(self.scope, x, coll)? {
                 continue;
             }
             // P6: `x` enters a VectorDB position when the query of the position makes it
@@ -3338,7 +3006,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 Some(_) => {
                     let mut known = None;
                     for &(seen, in_window) in &others {
-                        meter.compare(size_of::<usize>(), size_of::<usize>())?;
                         if seen == coll {
                             known = Some(in_window);
                             break;
@@ -3358,7 +3025,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     let in_window = window.iter().any(|entry| entry.at == EntryAt::Incoming);
                     match first {
                         None => first = Some((coll, in_window)),
-                        Some(_) => generic::push_reserved(&mut others, (coll, in_window), meter)?,
+                        Some(_) => others.push((coll, in_window)),
                     }
                     in_window
                 }
@@ -3377,8 +3044,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 .patterns
                 .get(position)
                 .ok_or(SpaceError::Inconsistent("a position has no pattern"))?;
-            let payload = self.source.incoming_payload(self.scope, x, coll, meter)?;
-            let Some(matched) = cx.bind(pattern, &payload)? else {
+            let payload = self.source.incoming_payload(self.scope, x, coll)?;
+            let Some(matched) = cx.bind(pattern, &payload) else {
                 continue;
             };
             if let Some(bound) = self.search(
@@ -3409,13 +3076,12 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         pattern: &BindPattern,
         claimed: &[Claim],
     ) -> Result<Option<Bound>, SpaceError> {
-        let meter = cx.meter();
         let channel = self.channel(coll)?;
-        let query = vectordb::policy_query(cfg, policy, meter)?;
+        let query = vectordb::policy_query(cfg, policy)?;
         let entries: Vec<(usize, Option<Score>)> = match &query {
             None => {
                 let order = cx.canonical_data_order(channel)?;
-                let mut entries = meter.buffer::<(usize, Option<Score>)>(order.len())?;
+                let mut entries = Vec::<(usize, Option<Score>)>::with_capacity(order.len());
                 entries.extend(order.into_iter().map(|index| (index, None)));
                 entries
             }
@@ -3427,7 +3093,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 }
                 Mode::Single => {
                     let eligible = vectordb::eligible(cx, cfg, query, channel, None)?;
-                    let mut entries = meter.buffer::<(usize, Option<Score>)>(eligible.len())?;
+                    let mut entries = Vec::<(usize, Option<Score>)>::with_capacity(eligible.len());
                     for entry in eligible {
                         let index = entry.index.ok_or(SpaceError::Inconsistent(
                             "a search met an element in flight",
@@ -3446,7 +3112,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 index,
                 "a window index is outside the staged view",
             )?;
-            if is_claimed(claimed, &stored.claim, meter)? {
+            if is_claimed(claimed, &stored.claim)? {
                 continue;
             }
             let data = match &query {
@@ -3454,11 +3120,10 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     query,
                     &stored.payload,
                     score.as_ref(),
-                    meter,
                 )?),
                 None => Cow::Borrowed(&stored.payload),
             };
-            if let Some(matched) = cx.bind(pattern, &data)? {
+            if let Some(matched) = cx.bind(pattern, &data) {
                 return Ok(Some(Bound {
                     at: EntryAt::Stored(index),
                     matched,
@@ -3482,9 +3147,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         x: &Incoming,
         x_vector: Option<&ExactVector>,
     ) -> Result<Option<ListParWithRandom>, SpaceError> {
-        let meter = cx.meter();
-        let Some(query) = vectordb::policy_query(cfg, policy, meter)? else {
-            return cx.bind(pattern, &x.payload);
+        let Some(query) = vectordb::policy_query(cfg, policy)? else {
+            return Ok(cx.bind(pattern, &x.payload));
         };
         if let Mode::List(_) = query.mode {
             return Err(SpaceError::Inconsistent(
@@ -3498,11 +3162,11 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             persist: x.persist,
             vector: x_vector,
         };
-        match vectordb::flight_eligibility(&query, &flight, meter)? {
+        match vectordb::flight_eligibility(&query, &flight)? {
             None => Ok(None),
             Some(score) => {
-                let data = vectordb::single_data(&query, &x.payload, score.as_ref(), meter)?;
-                cx.bind(pattern, &data)
+                let data = vectordb::single_data(&query, &x.payload, score.as_ref())?;
+                Ok(cx.bind(pattern, &data))
             }
         }
     }
@@ -3512,13 +3176,12 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// 66, a list waiter always parks on `[D]`). Every other waiter is `None`.
     fn list_waiter(
         &self,
-        cx: &mut Cx<'_, '_>,
         slots: &[JoinSlot],
     ) -> Result<Option<(vectordb::VdbQuery, Option<usize>)>, SpaceError> {
         let (Some(cfg), [slot]) = (&self.vdb, slots) else {
             return Ok(None);
         };
-        match vectordb::policy_query(cfg, &slot.policy, cx.meter())? {
+        match vectordb::policy_query(cfg, &slot.policy)? {
             Some(query) => match query.mode {
                 Mode::List(k) => Ok(Some((query, k))),
                 Mode::Single => Ok(None),
@@ -3540,10 +3203,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         x: Option<&Incoming>,
         shift: Option<(usize, usize)>,
     ) -> Result<Vec<ParCandidate>, SpaceError> {
-        let meter = cx.meter();
-        let mut candidates = meter.buffer::<ParCandidate>(bound.len())?;
+        let mut candidates = Vec::<ParCandidate>::with_capacity(bound.len());
         for (entry, &coll) in bound.into_iter().zip(colls) {
-            let channel = meter.copy(self.channel(coll)?)?;
+            let channel = self.channel(coll)?.clone();
             match entry.at {
                 EntryAt::Incoming => {
                     let x = x.ok_or(SpaceError::Inconsistent(
@@ -3573,7 +3235,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         let datum = records.get(index).ok_or(SpaceError::Inconsistent(
                             "a bound index is outside the staged view",
                         ))?;
-                        meter.copy(datum)?
+                        datum.clone()
                     };
                     let view_index = i32::try_from(index)
                         .map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))?;
@@ -3603,8 +3265,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         x: Option<&Incoming>,
         incoming_at: Option<usize>,
     ) -> Result<Vec<Work>, SpaceError> {
-        let meter = cx.meter();
-        let mut sends = meter.buffer::<Work>(bound.len())?;
+        let mut sends = Vec::<Work>::with_capacity(bound.len());
         for (position, (entry, &coll)) in bound.iter().zip(colls).enumerate().rev() {
             let at = match incoming_at == Some(position) {
                 true => EntryAt::Incoming,
@@ -3618,7 +3279,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     if x.in_flight {
                         sends.push(Work {
                             coll: x.coll,
-                            record: meter.copy(&x.record)?,
+                            record: x.record.clone(),
                             persist: x.persist,
                             own: x.own,
                             restore: x.restore,
@@ -3639,11 +3300,10 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     }
 
     /// Pushes the second sends `sends` onto the work stack.
-    fn push_work(&mut self, sends: Vec<Work>, meter: &ScanMeter) -> Result<(), SpaceError> {
+    fn push_work(&mut self, sends: Vec<Work>) {
         for send in sends {
-            generic::push_reserved(&mut self.work, send, meter)?;
+            self.work.push(send);
         }
-        Ok(())
     }
 
     /// The element of the work item `work` in flight: its slots, its payload, its identity, and
@@ -3651,22 +3311,17 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// the operation. A second send registers the record's own authority
     /// (`Introduction::for_record`) and takes its place by its carried order.
     fn incoming_of(&self, cx: &mut Cx<'_, '_>, work: Work) -> Result<Incoming, SpaceError> {
-        let meter = cx.meter();
-        let (ord, level) = self.source.record_slots(&work.record, meter)?;
-        let payload = self.source.payload_of(&work.record, meter)?;
-        let source = Produce::create_metered(
+        let (ord, level) = self.source.record_slots(&work.record)?;
+        let payload = self.source.payload_of(&work.record)?;
+        let source = Produce::create(
             self.source.home(self.scope, work.coll)?,
             &work.record,
             work.persist,
-            meter,
-        )?;
+        );
         let (introduction, placement) = match work.own {
-            true => {
-                meter.shared(1)?;
-                (Arc::clone(cx.introduction()), self.own_placement)
-            }
+            true => (Arc::clone(cx.introduction()), self.own_placement),
             false => (
-                cx.introduction().for_record(&work.record, meter)?,
+                cx.introduction().for_record(&work.record)?,
                 Placement::Carried,
             ),
         };
@@ -3691,9 +3346,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     fn store(&mut self, cx: &mut Cx<'_, '_>, x: Incoming) -> Result<(), SpaceError> {
         // Replaced by P6 (design v3 4.0): the bound of the data side under the config.
         // if let Some(capacity) = self.source.capacity() {
-        if let Some(bound) = self.source.bound(cx.config(), Side::Data, cx.meter())? {
+        if let Some(bound) = self.source.bound(cx.config(), Side::Data)? {
             let held = self.source.held(cx, self.scope, &x)?;
-            cx.meter().compare(size_of::<usize>(), size_of::<usize>())?;
             if held >= bound.limit() {
                 return Err(bound.full());
             }
@@ -3715,10 +3369,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// fires. On a head-only collection the head blocks: a refusal stores `x`. Otherwise a refusal
     /// moves on to the next waiter (decisions 37 and 38).
     fn offer(&mut self, cx: &mut Cx<'_, '_>, mut x: Incoming) -> Result<(), SpaceError> {
-        let meter = cx.meter();
         // P6: the vector of a VectorDB element, read once for every waiter that it meets.
         let x_vector = match &self.vdb {
-            Some(cfg) => vectordb::record_vector(&x.record, cfg, meter)?,
+            Some(cfg) => vectordb::record_vector(&x.record, cfg)?,
             None => None,
         };
         loop {
@@ -3726,7 +3379,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             let mut fire: Option<(Waiter, usize, Vec<Bound>, Option<Vec<ParDatum>>)> = None;
             for at in order {
                 let waiter = self.load(cx, at)?;
-                let found = match self.list_waiter(cx, &waiter.slots)? {
+                let found = match self.list_waiter(&waiter.slots)? {
                     Some((query, k)) => {
                         self.offer_list(cx, &waiter, &x, x_vector.as_ref(), &query, k)?
                     }
@@ -3796,11 +3449,11 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     Some(&x),
                 )?),
             };
-            let colls = meter.copy_slice(&waiter.colls)?;
+            let colls = waiter.colls.to_vec();
             let channel = self.channel(fired_coll)?;
             let step = cx.rounds().after_fire(spent, stays);
             let candidates = self.candidates(cx, &waiter.colls, bound, Some(&x), None)?;
-            let group = meter.copy(&waiter.at.group)?;
+            let group = waiter.at.group.clone();
             let data = self
                 .source
                 .incoming_record(cx, self.scope, &x, fired_coll)?;
@@ -3815,7 +3468,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             )?;
             self.mark_dirty(&colls);
             if peeks {
-                self.push_work(sends, meter)?;
+                self.push_work(sends);
                 return Ok(());
             }
             if let Some(fired) = fired {
@@ -3864,7 +3517,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                                 own: false,
                                 restore: x.restore,
                             };
-                            generic::push_reserved(&mut self.work, send, meter)?;
+                            self.work.push(send);
                             self.stop = Some(cause);
                         }
                     }
@@ -3889,7 +3542,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         query: &vectordb::VdbQuery,
         k: Option<usize>,
     ) -> Result<Option<(usize, Vec<Bound>, Option<Vec<ParDatum>>)>, SpaceError> {
-        let meter = cx.meter();
         let cfg = self.vdb.as_ref().ok_or(SpaceError::Inconsistent(
             "a list waiter outside a VectorDB space",
         ))?;
@@ -3929,10 +3581,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         )? {
             return Ok(None);
         }
-        let claim = self
-            .source
-            .claim(x.coll, EntryAt::Incoming, &x.payload, meter)?;
-        let mut bound = meter.buffer::<Bound>(1)?;
+        let claim = self.source.claim(x.coll, EntryAt::Incoming, &x.payload)?;
+        let mut bound = Vec::<Bound>::with_capacity(1);
         bound.push(Bound {
             at: EntryAt::Incoming,
             matched,
@@ -3952,7 +3602,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         pattern: &BindPattern,
         representative: Bound,
     ) -> Result<(Vec<ParCandidate>, bool), SpaceError> {
-        let meter = cx.meter();
         let EntryAt::Stored(rep_index) = representative.at else {
             return Err(SpaceError::Inconsistent(
                 "a consume binds an element in flight",
@@ -3963,14 +3612,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let mut candidates = Vec::new();
         let rep = self.candidates(cx, &[coll], vec![representative], None, None)?;
         for candidate in rep {
-            generic::push_reserved(&mut candidates, candidate, meter)?;
+            candidates.push(candidate);
         }
         if !matches!(class, Claim::Class { .. }) {
             return Ok((candidates, persistent));
         }
         let order = self.source.members(cx, self.scope, coll)?;
         for index in order {
-            meter.compare(size_of::<usize>(), size_of::<usize>())?;
             if index == rep_index {
                 continue;
             }
@@ -3981,11 +3629,11 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 index,
                 "a canonical index is outside the staged view",
             )?;
-            if !is_claimed(std::slice::from_ref(&class), &stored.claim, meter)? {
+            if !is_claimed(std::slice::from_ref(&class), &stored.claim)? {
                 continue;
             }
             let matched = cx
-                .bind(pattern, &stored.payload)?
+                .bind(pattern, &stored.payload)
                 .ok_or(SpaceError::Inconsistent(
                     "a member of a class does not bind the pattern of its representative",
                 ))?;
@@ -4003,7 +3651,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 None,
             )?;
             for candidate in member {
-                generic::push_reserved(&mut candidates, candidate, meter)?;
+                candidates.push(candidate);
             }
         }
         Ok((candidates, persistent))
@@ -4016,11 +3664,10 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// continues the loop (a persistent waiter whose partner left) copies them.
     fn receive(&mut self, cx: &mut Cx<'_, '_>, mut w: NewWaiter) -> Result<(), SpaceError> {
         // P6 (decision 66): a list-mode receive binds one list from the records of its one bind.
-        if let Some((query, k)) = self.list_waiter(cx, &w.slots)? {
+        if let Some((query, k)) = self.list_waiter(&w.slots)? {
             return self.receive_list(cx, w, &query, k);
         }
-        let meter = cx.meter();
-        let lanes = self.lanes(&w.slots, meter)?;
+        let lanes = self.lanes(&w.slots);
         let width = w.colls.len();
         loop {
             let mut reaches = true;
@@ -4029,7 +3676,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 if checked.contains(&coll) {
                     continue;
                 }
-                generic::push_reserved(&mut checked, coll, meter)?;
+                checked.push(coll);
                 let carried = w.carried.get(coll).copied().flatten();
                 if !self
                     .source
@@ -4061,11 +3708,11 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         .colls
                         .first()
                         .ok_or(SpaceError::Inconsistent("a consume has no collection"))?;
-                    let pattern = meter.copy(
-                        w.patterns
-                            .first()
-                            .ok_or(SpaceError::Inconsistent("a consume has no pattern"))?,
-                    )?;
+                    let pattern = (w
+                        .patterns
+                        .first()
+                        .ok_or(SpaceError::Inconsistent("a consume has no pattern"))?)
+                    .clone();
                     let representative = bound
                         .into_iter()
                         .next()
@@ -4083,13 +3730,12 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         false => self.class_candidates(cx, coll, &pattern, representative)?,
                     };
                     let step = cx.rounds().after_fire(spent, peek || persistent);
-                    record::prepay_continuation_unwrap(&w.continuation, meter)?;
                     let members = candidates.len();
-                    let mut channels = meter.buffer::<Par>(members)?;
-                    let mut patterns = meter.buffer::<BindPattern>(members)?;
+                    let mut channels = Vec::<Par>::with_capacity(members);
+                    let mut patterns = Vec::<BindPattern>::with_capacity(members);
                     for _ in 0..members {
-                        channels.push(meter.copy(self.channel(coll)?)?);
-                        patterns.push(meter.copy(&pattern)?);
+                        channels.push(self.channel(coll)?.clone());
+                        patterns.push(pattern.clone());
                     }
                     let ends = !matches!(step, FireStep::Continue);
                     let (continuation, peeks) = match ends {
@@ -4097,7 +3743,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                             std::mem::take(&mut w.continuation),
                             std::mem::take(&mut w.peeks),
                         ),
-                        false => (meter.copy(&w.continuation)?, meter.copy(&w.peeks)?),
+                        false => (w.continuation.clone(), w.peeks.clone()),
                     };
                     if !peek && candidates.iter().any(|candidate| !candidate.datum.persist) {
                         self.changed = true;
@@ -4125,7 +3771,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     )?;
                     self.mark_dirty(&w.colls);
                     if peek {
-                        self.push_work(sends, meter)?;
+                        self.push_work(sends);
                     }
                     if let Some(fired) = fired {
                         self.source.retire_spent(
@@ -4170,10 +3816,10 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                             std::mem::take(&mut w.peeks),
                         ),
                         false => (
-                            meter.copy(&w.group)?,
-                            meter.copy(&w.patterns)?,
-                            meter.copy(&w.continuation)?,
-                            meter.copy(&w.peeks)?,
+                            w.group.clone(),
+                            w.patterns.clone(),
+                            w.continuation.clone(),
+                            w.peeks.clone(),
                         ),
                     };
                     cx.fire_join(
@@ -4186,7 +3832,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     )?;
                     self.mark_dirty(&w.colls);
                     match retire {
-                        None => self.push_work(sends, meter)?,
+                        None => self.push_work(sends),
                         Some(fired) => {
                             let random = self.random.clone();
                             let authority = self.authority.clone();
@@ -4222,7 +3868,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         query: &vectordb::VdbQuery,
         k: Option<usize>,
     ) -> Result<(), SpaceError> {
-        let meter = cx.meter();
         let cfg = self.vdb.ok_or(SpaceError::Inconsistent(
             "a list waiter outside a VectorDB space",
         ))?;
@@ -4250,9 +3895,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             )? {
                 return self.park(cx, w);
             }
-            let pattern = meter.copy(pattern)?;
+            let pattern = pattern.clone();
             let width = members.len();
-            let mut records = meter.buffer::<(ParDatum, usize)>(width)?;
+            let mut records = Vec::<(ParDatum, usize)>::with_capacity(width);
             for member in members {
                 records.push(member.ok_or(SpaceError::Inconsistent(
                     "a receive met an element in flight",
@@ -4261,13 +3906,13 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             let peek = !w.peeks.is_empty();
             // Rule E (decision 45): the second sends of the non-persistent members, pushed in
             // reverse, so the first member runs first.
-            let mut sends = meter.buffer::<Work>(width)?;
+            let mut sends = Vec::<Work>::with_capacity(width);
             if peek {
                 for (record, _) in records.iter().rev() {
                     if !record.persist {
                         sends.push(Work {
                             coll,
-                            record: meter.copy(&record.a)?,
+                            record: record.a.clone(),
                             persist: false,
                             own: false,
                             restore: None,
@@ -4278,35 +3923,34 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             let spent = !w.persist;
             let persistent = records.iter().any(|(record, _)| record.persist);
             let step = cx.rounds().after_fire(spent, peek || persistent);
-            record::prepay_continuation_unwrap(&w.continuation, meter)?;
             if !peek && records.iter().any(|(record, _)| !record.persist) {
                 self.changed = true;
             }
-            let mut channels = meter.buffer::<Par>(width)?;
-            let mut patterns = meter.buffer::<BindPattern>(width)?;
-            let mut candidates = meter.buffer::<ParCandidate>(width)?;
+            let mut channels = Vec::<Par>::with_capacity(width);
+            let mut patterns = Vec::<BindPattern>::with_capacity(width);
+            let mut candidates = Vec::<ParCandidate>::with_capacity(width);
             let mut first = Some(matched);
             for (record, index) in records {
                 let matched = match first.take() {
                     Some(matched) => matched,
-                    None => vectordb::payload_of(&record.a, meter)?,
+                    None => vectordb::payload_of(&record.a)?,
                 };
                 let view_index = i32::try_from(index)
                     .map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))?;
-                channels.push(meter.copy(channel)?);
-                patterns.push(meter.copy(&pattern)?);
-                candidates.push(receive_candidate(meter.copy(channel)?, ReceiveFire {
+                channels.push(channel.clone());
+                patterns.push(pattern.clone());
+                candidates.push(receive_candidate(channel.clone(), ReceiveFire {
                     head: record,
                     matched,
                     view_index,
                 }));
             }
             let peeks = match peek {
-                true => peek_set_all(width, meter)?,
+                true => peek_set_all(width)?,
                 false => BTreeSet::new(),
             };
             let continuation = match step {
-                FireStep::Continue => meter.copy(&w.continuation)?,
+                FireStep::Continue => w.continuation.clone(),
                 FireStep::Done | FireStep::Reissue(_) => std::mem::take(&mut w.continuation),
             };
             cx.fire_receive_group(
@@ -4319,7 +3963,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 1,
             )?;
             self.mark_dirty(&w.colls);
-            self.push_work(sends, meter)?;
+            self.push_work(sends);
             if !self.after_receive(step) {
                 return Ok(());
             }
@@ -4352,15 +3996,14 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     fn park(&mut self, cx: &mut Cx<'_, '_>, w: NewWaiter) -> Result<(), SpaceError> {
         // Replaced by P6 (design v3 4.0): the bound of the waiter side under the config.
         // if let Some(capacity) = self.source.capacity() {
-        if let Some(bound) = self.source.bound(cx.config(), Side::Waiters, cx.meter())? {
+        if let Some(bound) = self.source.bound(cx.config(), Side::Waiters)? {
             let mut checked: Vec<usize> = Vec::new();
             for &coll in &w.colls {
                 if checked.contains(&coll) {
                     continue;
                 }
-                generic::push_reserved(&mut checked, coll, cx.meter())?;
+                checked.push(coll);
                 let held = self.source.waiter_count(cx, self.scope, coll)?;
-                cx.meter().compare(size_of::<usize>(), size_of::<usize>())?;
                 if held >= bound.limit() {
                     return Err(bound.full());
                 }
@@ -4401,7 +4044,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 if !self.all_at_head(cx, &waiter)? {
                     continue;
                 }
-                let lanes = self.lanes(&waiter.slots, cx.meter())?;
+                let lanes = self.lanes(&waiter.slots);
                 let Some(bound) = self.search(
                     cx,
                     &waiter.colls,
@@ -4435,7 +4078,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         cx: &mut Cx<'_, '_>,
         waiter: &Waiter,
     ) -> Result<Option<ListFire>, SpaceError> {
-        let Some((query, k)) = self.list_waiter(cx, &waiter.slots)? else {
+        let Some((query, k)) = self.list_waiter(&waiter.slots)? else {
             return Ok(None);
         };
         let cfg = self.vdb.ok_or(SpaceError::Inconsistent(
@@ -4513,13 +4156,12 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         waiter: Waiter,
         fire: ListFire,
     ) -> Result<(), SpaceError> {
-        let meter = cx.meter();
         let ListFire { matched, members } = fire;
         let coll = *waiter
             .colls
             .first()
             .ok_or(SpaceError::Inconsistent("a list waiter has no collection"))?;
-        let mut records = meter.buffer::<(ParDatum, usize)>(members.len())?;
+        let mut records = Vec::<(ParDatum, usize)>::with_capacity(members.len());
         for member in members {
             records.push(member.ok_or(SpaceError::Inconsistent(
                 "a cascade list holds an element in flight",
@@ -4549,10 +4191,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let spent = !x.persist && !peeks;
         let stays = waiter.waiting.persist;
         let step = cx.rounds().after_fire(spent, stays);
-        let claim = self
-            .source
-            .claim(coll, EntryAt::Incoming, &x.payload, meter)?;
-        let mut bound = meter.buffer::<Bound>(1)?;
+        let claim = self.source.claim(coll, EntryAt::Incoming, &x.payload)?;
+        let mut bound = Vec::<Bound>::with_capacity(1);
         bound.push(Bound {
             at: EntryAt::Incoming,
             matched,
@@ -4560,8 +4200,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             claim,
         });
         let candidates = self.candidates(cx, &waiter.colls, bound, Some(&x), None)?;
-        let colls = meter.copy_slice(&waiter.colls)?;
-        let group = meter.copy(&waiter.at.group)?;
+        let colls = waiter.colls.to_vec();
+        let group = waiter.at.group.clone();
         let channel = self.channel(coll)?;
         let data = self.source.incoming_record(cx, self.scope, &x, coll)?;
         cx.fire_offer_group(
@@ -4579,16 +4219,16 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 if x.in_flight {
                     let send = Work {
                         coll,
-                        record: meter.copy(&x.record)?,
+                        record: x.record.clone(),
                         persist: x.persist,
                         own: false,
                         restore: None,
                     };
-                    generic::push_reserved(&mut self.work, send, meter)?;
+                    self.work.push(send);
                 }
             }
             false => {
-                let mut others = meter.buffer::<ParDatum>(records.len())?;
+                let mut others = Vec::<ParDatum>::with_capacity(records.len());
                 others.extend(records.into_iter().map(|(record, _)| record));
                 vectordb::retire_members(cx, channel, others, &x.record)?;
             }
@@ -4610,7 +4250,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         waiter: Waiter,
         bound: Vec<Bound>,
     ) -> Result<(), SpaceError> {
-        let meter = cx.meter();
         let lifted = bound.iter().position(|entry| !entry.persist);
         let position = lifted.unwrap_or(0);
         let entry = bound
@@ -4669,8 +4308,8 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         let stays = waiter.waiting.persist;
         let step = cx.rounds().after_fire(spent, stays);
         let candidates = self.candidates(cx, &waiter.colls, fired, Some(&x), shift)?;
-        let colls = meter.copy_slice(&waiter.colls)?;
-        let group = meter.copy(&waiter.at.group)?;
+        let colls = waiter.colls.to_vec();
+        let group = waiter.at.group.clone();
         let channel = self.channel(coll)?;
         let data = self.source.incoming_record(cx, self.scope, &x, coll)?;
         cx.fire_offer_group(
@@ -4684,7 +4323,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         )?;
         self.mark_dirty(&colls);
         match retiring {
-            None => self.push_work(sends, meter)?,
+            None => self.push_work(sends),
             Some(retiring) => {
                 // The re-offered record is the element whose fire retires the bound set classes,
                 // as the datum of a produce-side fire is (decision 50).
@@ -4712,7 +4351,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// `counter` of the transaction and the step `step`, as the settle does. A collection without
     /// a counter (the set, decision 50) keys it by the source hash of the record, as `K_retire` is
     /// keyed (F3), so every lift of a set has an identity of its own also when a re-issue repeats
-    /// the random state and the step. Each copy and the random bytes are reserved first.
+    /// the random state and the step.
     fn lift(
         &mut self,
         cx: &mut Cx<'_, '_>,
@@ -4722,10 +4361,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         counter: Option<i64>,
         step: i64,
     ) -> Result<(), SpaceError> {
-        let meter = cx.meter();
         let channel = self.channel(coll)?;
         let matched = cx
-            .bind(&LIFT_PATTERN, &datum.a)?
+            .bind(&LIFT_PATTERN, &datum.a)
             .ok_or(SpaceError::Inconsistent(
                 "a stored record does not match the lift pattern",
             ))?;
@@ -4733,35 +4371,26 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
             .lift_random
             .get_or_insert_with(|| RandomPurpose::Lift.derive(&self.random))
             .clone();
-        meter.reserve_copy(&*LIFT_CONTINUATION)?;
-        meter.random_bytes(&random)?;
-        let cost_authority = self
-            .authority
-            .as_ref()
-            .map(|authority| meter.copy(authority))
-            .transpose()?;
+        let cost_authority = self.authority.as_ref().cloned();
         let continuation = match counter {
             Some(counter) => lift_continuation(counter, step, &random, cost_authority),
-            None => {
-                meter.reserve_buffer::<u8>(datum.source.hash.0.len())?;
-                retire_continuation(&datum.source.hash, &random, cost_authority)
-            }
+            None => retire_continuation(&datum.source.hash, &random, cost_authority),
         };
         let view_index = i32::try_from(index)
             .map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))?;
-        let mut channels = meter.buffer::<Par>(1)?;
-        channels.push(meter.copy(channel)?);
-        let mut patterns = meter.buffer::<BindPattern>(1)?;
-        patterns.push(meter.copy(&*LIFT_PATTERN)?);
-        let mut candidates = meter.buffer::<ParCandidate>(1)?;
+        let mut channels = Vec::<Par>::with_capacity(1);
+        channels.push(channel.clone());
+        let mut patterns = Vec::<BindPattern>::with_capacity(1);
+        patterns.push((*LIFT_PATTERN).clone());
+        let mut candidates = Vec::<ParCandidate>::with_capacity(1);
         candidates.push(ConsumeCandidate {
-            channel: meter.copy(channel)?,
+            channel: channel.clone(),
             datum: Datum {
                 a: matched,
                 persist: datum.persist,
-                source: meter.copy(&datum.source)?,
+                source: datum.source.clone(),
             },
-            removed_datum: meter.copy(&datum.a)?,
+            removed_datum: datum.a.clone(),
             datum_index: view_index,
         });
         cx.lift(channels, patterns, continuation, candidates)
@@ -4781,20 +4410,19 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
         };
         self.source
             .finish(cx, self.scope, self.changed, &self.random, authority)?;
-        let meter = cx.meter();
         let pending: Vec<Work> = {
             let mut pending = Vec::new();
             for work in std::mem::take(&mut self.work).into_iter().rev() {
                 match work.own {
                     true => self.own = Own::InFlight,
-                    false => generic::push_reserved(&mut pending, work, meter)?,
+                    false => pending.push(work),
                 }
             }
             pending
         };
         let owed = !pending.is_empty() || (self.cascades() && self.dirty.iter().any(|&mark| mark));
         let settle_fields = match (&self.stop, owed) {
-            (Some(_), true) => Some(self.settle_fields(&op, meter)?),
+            (Some(_), true) => Some(self.settle_fields(&op)?),
             (Some(_), false) | (None, _) => None,
         };
         let resume = self.resume(cx, op)?;
@@ -4808,17 +4436,16 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                             continue;
                         }
                         let key = &collection(self.scope, coll)?.key;
-                        meter.compare(key.as_bytes().len(), settle.key.as_bytes().len())?;
                         if *key == settle.key {
                             continue;
                         }
-                        generic::push_reserved(&mut seeds, copy_key(key, meter)?, meter)?;
+                        seeds.push(key.clone());
                     }
                 }
-                let mut pending_produces = meter.buffer::<PendingProduce>(pending.len())?;
+                let mut pending_produces = Vec::<PendingProduce>::with_capacity(pending.len());
                 for work in pending {
                     pending_produces.push(PendingProduce {
-                        key: copy_key(&collection(self.scope, work.coll)?.key, meter)?,
+                        key: collection(self.scope, work.coll)?.key.clone(),
                         record: work.record,
                         persist: work.persist,
                         restore: work.restore,
@@ -4836,18 +4463,18 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
 
     /// The fields of the settle job that continues a stopped transaction of `op`: the space, the
     /// key and the channel of the operation (of the first bind of a join), its random state, its
-    /// cost authority and its introduction authority. Each copy is reserved first.
-    fn settle_fields(&self, op: &SpaceOp, meter: &ScanMeter) -> Result<SettleOp, SpaceError> {
+    /// cost authority and its introduction authority.
+    fn settle_fields(&self, op: &SpaceOp) -> Result<SettleOp, SpaceError> {
         match op {
-            SpaceOp::Produce(produce) => settle_operation(generic::OpView::Produce(produce), meter),
-            SpaceOp::Consume(consume) => settle_operation(generic::OpView::Consume(consume), meter),
+            SpaceOp::Produce(produce) => Ok(settle_operation(generic::OpView::Produce(produce))),
+            SpaceOp::Consume(consume) => Ok(settle_operation(generic::OpView::Consume(consume))),
             SpaceOp::Settle(settle) => Ok(SettleOp {
                 space: settle.space,
-                key: copy_key(&settle.key, meter)?,
-                channel: meter.copy(&settle.channel)?,
-                random_state: meter.copy(&settle.random_state)?,
-                authority: meter.copy(&settle.authority)?,
-                introduction_authority: meter.copy(&settle.introduction_authority)?,
+                key: settle.key.clone(),
+                channel: settle.channel.clone(),
+                random_state: settle.random_state.clone(),
+                authority: settle.authority.clone(),
+                introduction_authority: settle.introduction_authority.clone(),
                 cascade: None,
             }),
             SpaceOp::Join(join) => {
@@ -4857,11 +4484,11 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                     .ok_or(SpaceError::Inconsistent("a join has no bind"))?;
                 Ok(SettleOp {
                     space: join.space,
-                    key: copy_key(&first.key, meter)?,
-                    channel: meter.copy(&first.channel)?,
-                    random_state: meter.copy(&join.body.random_state)?,
-                    authority: meter.copy(&join.authority)?,
-                    introduction_authority: meter.copy(&join.introduction_authority)?,
+                    key: first.key.clone(),
+                    channel: first.channel.clone(),
+                    random_state: join.body.random_state.clone(),
+                    authority: join.authority.clone(),
+                    introduction_authority: join.introduction_authority.clone(),
                     cascade: None,
                 })
             }
@@ -4872,7 +4499,6 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
     /// produce and a consume keep the order of their first round when they are persistent, and
     /// a join keeps the order of each bind. A settle re-issues the re-issue that it carries.
     fn resume(&self, cx: &mut Cx<'_, '_>, op: SpaceOp) -> Result<Option<SpaceReissue>, SpaceError> {
-        let meter = cx.meter();
         let cause = self
             .own_cause
             .or(self.stop)
@@ -4887,7 +4513,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                 Own::NotStarted | Own::InFlight => {
                     let reissued = match op {
                         SpaceOp::Produce(produce) => {
-                            let coll = self.scope.index_of_key(&produce.key, meter)?;
+                            let coll = self.scope.index_of_key(&produce.key)?;
                             let ord = self.ord_on(coll)?;
                             SpaceOp::Produce(ProduceOp {
                                 reissued_ord: produce.persistent.then_some(ord),
@@ -4895,7 +4521,7 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                             })
                         }
                         SpaceOp::Consume(consume) => {
-                            let coll = self.scope.index_of_key(&consume.key, meter)?;
+                            let coll = self.scope.index_of_key(&consume.key)?;
                             let ord = self.ord_on(coll)?;
                             SpaceOp::Consume(ConsumeOp {
                                 reissued_ord: consume.persistent.then_some(ord),
@@ -4905,9 +4531,9 @@ impl<'r, Src: JoinSource> Engine<'r, Src> {
                         SpaceOp::Join(join) => {
                             let reissued_ords = match join.persistent {
                                 true => {
-                                    let mut ords = meter.buffer::<i64>(join.binds.len())?;
+                                    let mut ords = Vec::<i64>::with_capacity(join.binds.len());
                                     for bind in &join.binds {
-                                        let coll = self.scope.index_of_key(&bind.key, meter)?;
+                                        let coll = self.scope.index_of_key(&bind.key)?;
                                         ords.push(self.ord_on(coll)?);
                                     }
                                     Some(ords)
@@ -4940,11 +4566,9 @@ fn visible(lane: Option<Lane>, level: Option<Level>) -> Result<bool, SpaceError>
 }
 
 /// True when `claim` is one of `claimed`. Two record claims compare their places. Two class
-/// claims of one collection compare their keys, the hashes first (DR-90). Each comparison is
-/// reserved.
-fn is_claimed(claimed: &[Claim], claim: &Claim, meter: &ScanMeter) -> Result<bool, SpaceError> {
+/// claims of one collection compare their keys, the hashes first (DR-90).
+fn is_claimed(claimed: &[Claim], claim: &Claim) -> Result<bool, SpaceError> {
     for other in claimed {
-        meter.compare(size_of::<Claim>(), size_of::<Claim>())?;
         let same = match (other, claim) {
             (Claim::Record { coll, at }, Claim::Record { coll: c, at: a }) => coll == c && at == a,
             (
@@ -4952,7 +4576,7 @@ fn is_claimed(claimed: &[Claim], claim: &Claim, meter: &ScanMeter) -> Result<boo
                 Claim::Class {
                     coll: c, key: k, ..
                 },
-            ) => *coll == *c && same_class(key, hash, k, meter)?,
+            ) => *coll == *c && same_class(key, hash, k)?,
             (Claim::Record { .. }, Claim::Class { .. })
             | (Claim::Class { .. }, Claim::Record { .. }) => false,
         };
@@ -4969,7 +4593,8 @@ mod tests {
     use std::sync::Arc;
 
     use models::rhoapi::expr::ExprInstance;
-    use models::rhoapi::Expr;
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    use models::rhoapi::{Expr, ParWithRandom};
     use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
     use models::rust::utils::{new_freevar_par, new_freevar_var, new_gint_par, new_gstring_par};
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -5053,7 +4678,6 @@ mod tests {
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(host.clone()),
             budget: RuntimeBudget::new(Cost::create(10_000_000, "join engine test")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };
@@ -5304,9 +4928,6 @@ mod tests {
 
     // ── White-box tests of the classification, the scope and the windows ────────────────────
 
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
     use crate::rust::interpreter::spaces::disciplines::stack::StackDiscipline;
     use crate::rust::interpreter::spaces::generic::begin_collection;
@@ -5314,66 +4935,29 @@ mod tests {
 
     type Queue = GenericSpace<HashMapOuter, QueueDiscipline>;
 
-    fn unbounded() -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
-    }
-
-    /// The usage of the three dimensions that a space job charges.
-    fn usage(host_work: &HostWorkBudget) -> [u64; 3] {
-        [
-            HostWorkDimension::VerificationOperations,
-            HostWorkDimension::VerificationBytes,
-            HostWorkDimension::SearchStateBytes,
-        ]
-        .map(|dimension| host_work.usage(dimension).get())
-    }
-
-    /// The route of `op` on the collection of `channel`, and the host work of the
-    /// classification alone.
-    async fn classified(env: &SpaceEnv, channel: &Par, op: &SpaceOp) -> (JoinRoute, [u64; 3]) {
-        let host_work = unbounded();
-        let metered = SpaceEnv {
-            meter: ScanMeter::new(Some(host_work.clone())),
-            ..env.clone()
-        };
-        let mut opened =
-            begin_collection(&HashMapOuter, &metered, SPACE, &key_of(channel), channel)
-                .await
-                .expect("the collection opens");
-        let before = usage(&host_work);
-        let route = classify(&Queue::default(), &metered, &mut opened, op)
-            .expect("the operation classifies");
-        let after = usage(&host_work);
-        (route, [
-            after[0] - before[0],
-            after[1] - before[1],
-            after[2] - before[2],
-        ])
+    /// The route of `op` on the collection of `channel`.
+    async fn classified(env: &SpaceEnv, channel: &Par, op: &SpaceOp) -> JoinRoute {
+        let mut opened = begin_collection(&HashMapOuter, env, SPACE, &key_of(channel), channel)
+            .await
+            .expect("the collection opens");
+        classify(&Queue::default(), &mut opened, op).expect("the operation classifies")
     }
 
     #[tokio::test]
-    async fn space_join_engine_classification_reserves_the_join_check_of_p4() {
+    async fn space_join_engine_classification_routes_a_collection_without_other_groups_alone() {
         let (_host, env) = space_of(SpaceInner::Queue).await;
         let a = string("a");
-        // No join group: the single route, and nothing is reserved.
-        let (route, spent) = classified(&env, &a, &send(&a, 1, false)).await;
-        assert_eq!(route, JoinRoute::Single);
-        assert_eq!(spent, [0, 0, 0]);
-        // The own group only: the single route, and the reads of the P4 join check.
+        // No join group: the single route.
+        assert_eq!(
+            classified(&env, &a, &send(&a, 1, false)).await,
+            JoinRoute::Single
+        );
+        // The own group only: the single route.
         run(&env, receive(&a, "w", exactly(9))).await;
-        let (route, spent) = classified(&env, &a, &send(&a, 1, false)).await;
-        assert_eq!(route, JoinRoute::Single);
-        let expected = {
-            let host_work = unbounded();
-            let meter = ScanMeter::new(Some(host_work.clone()));
-            let data = data_of(&a);
-            let group = vec![data.clone()];
-            meter.inspect(&group).expect("an unbounded read");
-            meter.inspect(&data).expect("an unbounded read");
-            meter.charge(1, 0, 0).expect("an unbounded charge");
-            usage(&host_work)
-        };
-        assert_eq!(spent, expected);
+        assert_eq!(
+            classified(&env, &a, &send(&a, 1, false)).await,
+            JoinRoute::Single
+        );
     }
 
     #[tokio::test]
@@ -5383,7 +4967,7 @@ mod tests {
         // W1 joins a and b, and W2 joins b and c. A send on a reaches c through b.
         run(&env, join(&[(&a, any()), (&b, exactly(5))], "w1", false)).await;
         run(&env, join(&[(&b, exactly(6)), (&c, any())], "w2", false)).await;
-        let (route, _) = classified(&env, &a, &send(&a, 1, false)).await;
+        let route = classified(&env, &a, &send(&a, 1, false)).await;
         let JoinRoute::Join(scope) = route else {
             panic!("a send on a joined collection runs in the join engine");
         };
@@ -5398,9 +4982,8 @@ mod tests {
             keys
         );
         assert_eq!(scope.own, vec![key_of(&a)]);
-        let meter = ScanMeter::new(None);
-        assert_eq!(scope.covers(&scope.own, &meter), Ok(false));
-        assert_eq!(scope.covers(&keys, &meter), Ok(true));
+        assert!(!scope.covers(&scope.own));
+        assert!(scope.covers(&keys));
         // The lock keys: the config and the space counter, then the counter and the data channel
         // of each collection in ascending key order.
         assert_eq!(scope.lock_keys().len(), 2 + 2 * keys.len());
@@ -5411,10 +4994,10 @@ mod tests {
             ]);
         }
         // A collection outside every join keeps the single route.
-        let (route, _) = classified(&env, &d, &send(&d, 1, false)).await;
+        let route = classified(&env, &d, &send(&d, 1, false)).await;
         assert_eq!(route, JoinRoute::Single);
         // A join always classifies as a join, with its binds as its own collections.
-        let (route, _) = classified(&env, &d, &join(&[(&d, any()), (&a, any())], "j", false)).await;
+        let route = classified(&env, &d, &join(&[(&d, any()), (&a, any())], "j", false)).await;
         let JoinRoute::Join(scope) = route else {
             panic!("a join runs in the join engine");
         };
@@ -5424,7 +5007,6 @@ mod tests {
 
     #[test]
     fn space_join_engine_place_follows_the_head_rule() {
-        let meter = ScanMeter::new(None);
         let queue: KeyedSource<'_, HashMapOuter, QueueDiscipline> = KeyedSource {
             outer: std::marker::PhantomData,
             discipline: &QueueDiscipline,
@@ -5435,38 +5017,29 @@ mod tests {
         };
         let stored = [2, 5, 8];
         // A fresh element joins the tail of a queue and the top of a stack.
-        assert_eq!(
-            queue.place(Side::Data, Placement::Fresh, 9, &stored, &meter),
-            Ok(3)
-        );
-        assert_eq!(
-            queue.place(Side::Data, Placement::Fresh, 9, &[], &meter),
-            Ok(0)
-        );
-        assert_eq!(
-            stack.place(Side::Data, Placement::Fresh, 9, &stored, &meter),
-            Ok(0)
-        );
+        assert_eq!(queue.place(Side::Data, Placement::Fresh, 9, &stored), Ok(3));
+        assert_eq!(queue.place(Side::Data, Placement::Fresh, 9, &[]), Ok(0));
+        assert_eq!(stack.place(Side::Data, Placement::Fresh, 9, &stored), Ok(0));
         // A carried order takes its place: behind the lesser orders of a queue, below the
         // greater orders of a stack.
         assert_eq!(
-            queue.place(Side::Data, Placement::Carried, 6, &stored, &meter),
+            queue.place(Side::Data, Placement::Carried, 6, &stored),
             Ok(2)
         );
         assert_eq!(
-            queue.place(Side::Data, Placement::Carried, 1, &stored, &meter),
+            queue.place(Side::Data, Placement::Carried, 1, &stored),
             Ok(0)
         );
         assert_eq!(
-            stack.place(Side::Data, Placement::Carried, 6, &stored, &meter),
+            stack.place(Side::Data, Placement::Carried, 6, &stored),
             Ok(1)
         );
         assert_eq!(
-            stack.place(Side::Data, Placement::Carried, 9, &stored, &meter),
+            stack.place(Side::Data, Placement::Carried, 9, &stored),
             Ok(0)
         );
         assert_eq!(
-            queue.place(Side::Data, Placement::Carried, 5, &stored, &meter),
+            queue.place(Side::Data, Placement::Carried, 5, &stored),
             Err(SpaceError::Inconsistent(
                 "an element in flight shares its order with a stored entry"
             ))
@@ -5475,7 +5048,6 @@ mod tests {
 
     #[test]
     fn space_join_engine_head_window_places_the_element_in_flight() {
-        let meter = ScanMeter::new(None);
         let queue: KeyedSource<'_, HashMapOuter, QueueDiscipline> = KeyedSource {
             outer: std::marker::PhantomData,
             discipline: &QueueDiscipline,
@@ -5491,11 +5063,11 @@ mod tests {
             level: None,
         };
         assert_eq!(
-            queue.head_window(&records, 2, None, &meter),
+            queue.head_window(&records, 2, None),
             Ok(vec![stored(1), stored(2)])
         );
         assert_eq!(
-            queue.head_window(&records, 5, None, &meter),
+            queue.head_window(&records, 5, None),
             Ok(vec![stored(1), stored(2), stored(0)])
         );
         let element = |ord, placement| Incoming {
@@ -5510,54 +5082,24 @@ mod tests {
             introduction: Introduction::new(
                 &RuntimeBudget::new(Cost::create(1_000, "window test")),
                 &CostAuthority::default(),
-                &ScanMeter::new(None),
-            )
-            .expect("an unmetered introduction"),
+            ),
             own: true,
             in_flight: true,
             restore: None,
         };
         // A fresh element of a queue is at the tail: it is in a window of four entries only.
         assert_eq!(
-            queue.head_window(&records, 2, Some(&element(9, Placement::Fresh)), &meter),
+            queue.head_window(&records, 2, Some(&element(9, Placement::Fresh))),
             Ok(vec![stored(1), stored(2)])
         );
         assert_eq!(
-            queue.head_window(&records, 4, Some(&element(9, Placement::Fresh)), &meter),
+            queue.head_window(&records, 4, Some(&element(9, Placement::Fresh))),
             Ok(vec![stored(1), stored(2), stored(0), incoming])
         );
         // A carried order 3 takes the second place of the head order.
         assert_eq!(
-            queue.head_window(&records, 2, Some(&element(3, Placement::Carried)), &meter),
+            queue.head_window(&records, 2, Some(&element(3, Placement::Carried))),
             Ok(vec![stored(1), incoming])
-        );
-    }
-
-    #[test]
-    fn space_join_engine_reserved_sort_orders_and_reserves_each_comparison() {
-        let host_work = unbounded();
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        let mut values = vec![5, 1, 4, 2, 3];
-        sort_reserved(&mut values, |_| 8, &meter).expect("an unbounded sort");
-        assert_eq!(values, vec![1, 2, 3, 4, 5]);
-        assert!(
-            host_work
-                .usage(HostWorkDimension::VerificationOperations)
-                .get()
-                > 0
-        );
-        let mut sorted = vec![1, 2, 3];
-        let before = host_work
-            .usage(HostWorkDimension::VerificationOperations)
-            .get();
-        sort_reserved(&mut sorted, |_| 8, &meter).expect("an unbounded sort");
-        // A sorted list costs one comparison for each adjacent pair.
-        assert_eq!(
-            host_work
-                .usage(HostWorkDimension::VerificationOperations)
-                .get()
-                - before,
-            2
         );
     }
 
@@ -5757,29 +5299,5 @@ mod tests {
             .get_waiting_continuations(vec![data_of(&s), data_of(&s)])
             .await
             .is_empty());
-    }
-
-    /// The types that the engine reserves by size keep their sizes. `ScanMeter::buffer::<T>(n)`
-    /// reserves `n * size_of::<T>()` bytes, and `is_claimed` reserves comparisons of
-    /// `size_of::<Claim>()` bytes. So a field that grows one of these types changes the host work
-    /// of every keyed join, also when the field is never used there. The store seams of the
-    /// PathMap engine (joins plan section 9) must keep these values.
-    #[cfg(target_pointer_width = "64")]
-    #[test]
-    fn space_join_engine_reserved_types_keep_their_sizes() {
-        use std::mem::size_of;
-
-        use crate::rust::interpreter::spaces::agent::PendingProduce;
-
-        assert_eq!(size_of::<Work>(), 112, "Work");
-        assert_eq!(size_of::<Incoming>(), 320, "Incoming");
-        assert_eq!(size_of::<Bound>(), 176, "Bound");
-        assert_eq!(size_of::<Option<Bound>>(), 176, "Option<Bound>");
-        assert_eq!(size_of::<Claim>(), 56, "Claim");
-        assert_eq!(size_of::<Entry>(), 32, "Entry");
-        assert_eq!(size_of::<WaiterRef>(), 56, "WaiterRef");
-        assert_eq!(size_of::<ScopedCollection>(), 616, "ScopedCollection");
-        assert_eq!(size_of::<Seat>(), 72, "Seat");
-        assert_eq!(size_of::<PendingProduce>(), 128, "PendingProduce");
     }
 }

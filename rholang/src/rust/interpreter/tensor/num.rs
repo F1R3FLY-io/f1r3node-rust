@@ -29,10 +29,6 @@
 //!
 //! The last line of SQRT-ROUND compares `√(n/d)` with the midpoint `s + 1/2` by squaring both
 //! sides. Both sides are positive, so the comparison is exact.
-//!
-//! Every function that does work proportional to its inputs reserves that work on the meter of
-//! the job before it makes it (decision 42). Without a budget the meter accepts every
-//! reservation.
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -43,10 +39,7 @@ use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_rational::BigRational;
 use num_traits::{One, Signed, ToPrimitive, Zero};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 
-use super::costs;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::record::sole_expr;
 
 /// The greatest scale of a fixed-point decimal that the numeric core accepts. A scale is a
@@ -73,12 +66,6 @@ pub enum NumError {
     /// Two scores of different metrics in one comparison. The scores of one query share its
     /// metric, so a caller that meets this error has mixed two queries.
     MixedScores,
-    /// A rejection of a reservation by the host-work budget.
-    HostWork(RSpaceError),
-}
-
-impl From<RSpaceError> for NumError {
-    fn from(error: RSpaceError) -> Self { NumError::HostWork(error) }
 }
 
 /// An exact number of the core: a reduced rational with a positive denominator.
@@ -97,11 +84,8 @@ pub struct Dyadic {
 }
 
 impl Dyadic {
-    /// The exact value as a reduced rational. The work is reserved first.
-    pub fn value(&self, meter: &ScanMeter) -> Result<Exact, NumError> {
-        costs::reserve_dyadic_value(&self.mantissa, self.exponent, meter)?;
-        Ok(scaled(self.mantissa.clone(), self.exponent))
-    }
+    /// The exact value as a reduced rational.
+    pub fn value(&self) -> Exact { scaled(self.mantissa.clone(), self.exponent) }
 }
 
 /// A number of the core.
@@ -135,17 +119,16 @@ impl ExactVector {
     /// True for a vector without elements.
     pub fn is_empty(&self) -> bool { self.len() == 0 }
 
-    /// The elements as reduced rationals: borrowed, or converted with the work reserved first.
-    pub fn rationals(&self, meter: &ScanMeter) -> Result<Cow<'_, [Exact]>, NumError> {
+    /// The elements as reduced rationals: borrowed, or converted.
+    pub fn rationals(&self) -> Cow<'_, [Exact]> {
         match self {
-            ExactVector::Rational(values) => Ok(Cow::Borrowed(values)),
+            ExactVector::Rational(values) => Cow::Borrowed(values),
             ExactVector::Dyadic(forms) => {
-                meter.reserve_buffer::<Exact>(forms.len())?;
                 let mut values = Vec::with_capacity(forms.len());
                 for form in forms {
-                    values.push(form.value(meter)?);
+                    values.push(form.value());
                 }
-                Ok(Cow::Owned(values))
+                Cow::Owned(values)
             }
         }
     }
@@ -237,10 +220,8 @@ pub fn is_number(par: &Par) -> bool {
 
 /// The number of a `Par`.
 ///
-/// A number is a `Par` with exactly one expression of a numeric kind and no connective. The
-/// work of a big integer, a big rational and a fixed-point decimal grows with its size, and it
-/// is reserved first.
-pub fn number_of(par: &Par, meter: &ScanMeter) -> Result<Number, NumError> {
+/// A number is a `Par` with exactly one expression of a numeric kind and no connective.
+pub fn number_of(par: &Par) -> Result<Number, NumError> {
     if par.connective_used {
         return Err(NumError::NotANumber);
     }
@@ -253,61 +234,46 @@ pub fn number_of(par: &Par, meter: &ScanMeter) -> Result<Number, NumError> {
             mantissa: BigInt::from(u8::from(*value)),
             exponent: 0,
         })),
-        Some(ExprInstance::GDouble(bits)) => {
-            costs::reserve_float_ingress(meter)?;
-            Ok(Number::Dyadic(dyadic_of_f64(*bits)?))
-        }
-        Some(ExprInstance::GFloat32(bits)) => {
-            costs::reserve_float_ingress(meter)?;
-            Ok(Number::Dyadic(dyadic_of_f32(*bits)?))
-        }
-        Some(ExprInstance::GBigInt(bytes)) => {
-            costs::reserve_bytes_decode(bytes.len(), meter)?;
-            Ok(Number::Dyadic(Dyadic {
-                mantissa: integer_of(bytes),
-                exponent: 0,
-            }))
-        }
+        Some(ExprInstance::GDouble(bits)) => Ok(Number::Dyadic(dyadic_of_f64(*bits)?)),
+        Some(ExprInstance::GFloat32(bits)) => Ok(Number::Dyadic(dyadic_of_f32(*bits)?)),
+        Some(ExprInstance::GBigInt(bytes)) => Ok(Number::Dyadic(Dyadic {
+            mantissa: integer_of(bytes),
+            exponent: 0,
+        })),
         Some(ExprInstance::GBigRat(rational)) => {
-            costs::reserve_bytes_decode(rational.numerator.len(), meter)?;
-            costs::reserve_bytes_decode(rational.denominator.len(), meter)?;
             let denominator = integer_of(&rational.denominator);
             if !denominator.is_positive() {
                 return Err(NumError::MalformedNumber);
             }
-            rational_number(integer_of(&rational.numerator), denominator, meter)
+            Ok(rational_number(
+                integer_of(&rational.numerator),
+                denominator,
+            ))
         }
         Some(ExprInstance::GFixedPoint(fixed)) => {
             if fixed.scale > MAX_FIXED_POINT_SCALE {
                 return Err(NumError::ValueOutOfRange);
             }
-            costs::reserve_bytes_decode(fixed.unscaled.len(), meter)?;
-            costs::reserve_power_of_ten(fixed.scale, meter)?;
             let scale = usize::try_from(fixed.scale).map_err(|_| NumError::ValueOutOfRange)?;
             let denominator = num_traits::pow::pow(BigInt::from(10u8), scale);
-            rational_number(integer_of(&fixed.unscaled), denominator, meter)
+            Ok(rational_number(integer_of(&fixed.unscaled), denominator))
         }
         _ => Err(NumError::NotANumber),
     }
 }
 
 /// The number `n / d` for `d > 0`: dyadic when its reduced denominator is a power of two.
-fn rational_number(
-    numerator: BigInt,
-    denominator: BigInt,
-    meter: &ScanMeter,
-) -> Result<Number, NumError> {
-    costs::reserve_gcd(&numerator, &denominator, meter)?;
+fn rational_number(numerator: BigInt, denominator: BigInt) -> Number {
     let value = Exact::new(numerator, denominator);
     match power_of_two(value.denom()) {
         Some(exponent) => {
             let (mantissa, _) = value.into_raw();
-            Ok(Number::Dyadic(Dyadic {
+            Number::Dyadic(Dyadic {
                 mantissa,
                 exponent: -exponent,
-            }))
+            })
         }
-        None => Ok(Number::Rational(value)),
+        None => Number::Rational(value),
     }
 }
 
@@ -321,12 +287,8 @@ fn power_of_two(denominator: &BigInt) -> Option<i64> {
 }
 
 /// The vector of a `Par` that is one list of numbers. With `dimensions`, its length must be
-/// that dimension. The buffers are reserved before they are made.
-pub fn vector_of(
-    par: &Par,
-    dimensions: Option<usize>,
-    meter: &ScanMeter,
-) -> Result<ExactVector, NumError> {
+/// that dimension.
+pub fn vector_of(par: &Par, dimensions: Option<usize>) -> Result<ExactVector, NumError> {
     let elements = match (sole_expr(par), par.connective_used) {
         (
             Some(ExprInstance::EListBody(EList {
@@ -346,13 +308,12 @@ pub fn vector_of(
             });
         }
     }
-    meter.reserve_buffer::<Dyadic>(elements.len())?;
     let mut forms = Vec::with_capacity(elements.len());
     for (index, element) in elements.iter().enumerate() {
-        match number_of(element, meter)? {
+        match number_of(element)? {
             Number::Dyadic(form) => forms.push(form),
             Number::Rational(value) => {
-                return rational_vector(forms, value, &elements[index + 1..], meter);
+                return rational_vector(forms, value, &elements[index + 1..]);
             }
         }
     }
@@ -364,18 +325,16 @@ fn rational_vector(
     forms: Vec<Dyadic>,
     value: Exact,
     rest: &[Par],
-    meter: &ScanMeter,
 ) -> Result<ExactVector, NumError> {
     let length = forms.len() + 1 + rest.len();
-    meter.reserve_buffer::<Exact>(length)?;
     let mut values = Vec::with_capacity(length);
     for form in &forms {
-        values.push(form.value(meter)?);
+        values.push(form.value());
     }
     values.push(value);
     for element in rest {
-        values.push(match number_of(element, meter)? {
-            Number::Dyadic(form) => form.value(meter)?,
+        values.push(match number_of(element)? {
+            Number::Dyadic(form) => form.value(),
             Number::Rational(value) => value,
         });
     }
@@ -461,27 +420,25 @@ fn compose(negative: bool, mantissa: BigUint, quantum: i64) -> Result<f64, NumEr
 }
 
 /// `RN_53(x)`: the `f64` nearest to the rational `x`, with ties to even, or `ValueOutOfRange`
-/// beyond the finite range of `f64`. The work is reserved first.
-pub fn round_to_f64(x: &Exact, meter: &ScanMeter) -> Result<f64, NumError> {
+/// beyond the finite range of `f64`.
+pub fn round_to_f64(x: &Exact) -> Result<f64, NumError> {
     if x.is_zero() {
         return Ok(0.0);
     }
     let (numerator, denominator) = (x.numer().magnitude(), x.denom().magnitude());
-    costs::reserve_log2(x, meter)?;
     let exponent = floor_log2(numerator, denominator)?;
     if exponent > 1023 {
         return Err(NumError::ValueOutOfRange);
     }
     let quantum = (exponent - 52).max(-1074);
-    costs::reserve_rounding(x, quantum, meter)?;
     let (numerator, denominator) = scale_by_power_of_two(numerator, denominator, -quantum);
     let mantissa = round_half_even(&numerator, &denominator);
     compose(x.is_negative(), mantissa, quantum)
 }
 
 /// `RN_53(√x)` for a rational `x ≥ 0`: the `f64` nearest to the square root, with ties to even.
-/// A negative `x` is `NotANumber`. The work is reserved first.
-pub fn sqrt_to_f64(x: &Exact, meter: &ScanMeter) -> Result<f64, NumError> {
+/// A negative `x` is `NotANumber`.
+pub fn sqrt_to_f64(x: &Exact) -> Result<f64, NumError> {
     if x.is_negative() {
         return Err(NumError::NotANumber);
     }
@@ -489,13 +446,11 @@ pub fn sqrt_to_f64(x: &Exact, meter: &ScanMeter) -> Result<f64, NumError> {
         return Ok(0.0);
     }
     let (numerator, denominator) = (x.numer().magnitude(), x.denom().magnitude());
-    costs::reserve_log2(x, meter)?;
     let exponent = floor_log2(numerator, denominator)?.div_euclid(2);
     if exponent > 1023 {
         return Err(NumError::ValueOutOfRange);
     }
     let quantum = (exponent - 52).max(-1074);
-    costs::reserve_square_root(x, quantum, meter)?;
     let (numerator, denominator) = scale_by_power_of_two(numerator, denominator, -2 * quantum);
     let root = (numerator.as_ref() / denominator.as_ref()).sqrt();
     let odd = (&root << 1u8) + 1u8;
@@ -513,11 +468,9 @@ pub fn sqrt_to_f64(x: &Exact, meter: &ScanMeter) -> Result<f64, NumError> {
 #[cfg(test)]
 mod tests {
     use models::rhoapi::{Expr, GBigRational, GFixedPoint};
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use proptest::prelude::*;
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
 
     fn expr(instance: ExprInstance) -> Par {
         Par {
@@ -557,8 +510,6 @@ mod tests {
         }))
     }
 
-    fn unmetered() -> ScanMeter { ScanMeter::new(None) }
-
     fn ratio(numerator: i64, denominator: i64) -> Exact {
         Exact::new(BigInt::from(numerator), BigInt::from(denominator))
     }
@@ -566,8 +517,8 @@ mod tests {
     fn power(exponent: i64) -> Exact { scaled(BigInt::one(), exponent) }
 
     fn value_of(par: &Par) -> Result<Exact, NumError> {
-        match number_of(par, &unmetered())? {
-            Number::Dyadic(form) => form.value(&unmetered()),
+        match number_of(par)? {
+            Number::Dyadic(form) => Ok(form.value()),
             Number::Rational(value) => Ok(value),
         }
     }
@@ -575,13 +526,10 @@ mod tests {
     fn exact_f64(value: f64) -> Exact {
         dyadic_of_f64(value.to_bits())
             .expect("a finite value")
-            .value(&unmetered())
-            .expect("an unmetered value")
+            .value()
     }
 
-    fn is_dyadic(par: &Par) -> bool {
-        matches!(number_of(par, &unmetered()), Ok(Number::Dyadic(_)))
-    }
+    fn is_dyadic(par: &Par) -> bool { matches!(number_of(par), Ok(Number::Dyadic(_))) }
 
     #[test]
     fn tensor_ingress_keeps_the_exact_value_of_each_number() {
@@ -673,10 +621,7 @@ mod tests {
     fn tensor_negative_zero_enters_as_zero() {
         assert_eq!(value_of(&double(-0.0)), Ok(Exact::zero()));
         assert_eq!(value_of(&float32(-0.0)), Ok(Exact::zero()));
-        assert_eq!(
-            round_to_f64(&Exact::zero(), &unmetered()).map(f64::to_bits),
-            Ok(0)
-        );
+        assert_eq!(round_to_f64(&Exact::zero()).map(f64::to_bits), Ok(0));
     }
 
     #[test]
@@ -703,36 +648,33 @@ mod tests {
 
     #[test]
     fn tensor_vector_of_checks_the_dimension_and_keeps_exact_values() {
-        let dyadic = vector_of(&list(vec![int(1), double(0.5)]), Some(2), &unmetered())
-            .expect("a dyadic vector");
+        let dyadic = vector_of(&list(vec![int(1), double(0.5)]), Some(2)).expect("a dyadic vector");
         assert!(matches!(dyadic, ExactVector::Dyadic(_)));
-        assert_eq!(
-            dyadic.rationals(&unmetered()).expect("values").into_owned(),
-            vec![ratio(1, 1), ratio(1, 2)]
-        );
+        assert_eq!(dyadic.rationals().into_owned(), vec![
+            ratio(1, 1),
+            ratio(1, 2)
+        ]);
         let rational = vector_of(
             &list(vec![int(1), double(2.5), big_rat(1, 3), int(4)]),
             None,
-            &unmetered(),
         )
         .expect("a rational vector");
         assert!(matches!(rational, ExactVector::Rational(_)));
+        assert_eq!(rational.rationals().into_owned(), vec![
+            ratio(1, 1),
+            ratio(5, 2),
+            ratio(1, 3),
+            ratio(4, 1)
+        ]);
         assert_eq!(
-            rational
-                .rationals(&unmetered())
-                .expect("values")
-                .into_owned(),
-            vec![ratio(1, 1), ratio(5, 2), ratio(1, 3), ratio(4, 1)]
-        );
-        assert_eq!(
-            vector_of(&list(vec![int(1)]), Some(2), &unmetered()).map(|vector| vector.len()),
+            vector_of(&list(vec![int(1)]), Some(2)).map(|vector| vector.len()),
             Err(NumError::DimensionMismatch {
                 expected: 2,
                 found: 1
             })
         );
         assert_eq!(
-            vector_of(&int(1), None, &unmetered()).map(|vector| vector.len()),
+            vector_of(&int(1), None).map(|vector| vector.len()),
             Err(NumError::NotAVector)
         );
         let tail = list(vec![int(1)]);
@@ -741,24 +683,22 @@ mod tests {
             body.remainder = Some(models::rhoapi::Var::default());
         }
         assert_eq!(
-            vector_of(&open, None, &unmetered()).map(|vector| vector.len()),
+            vector_of(&open, None).map(|vector| vector.len()),
             Err(NumError::NotAVector)
         );
         assert_eq!(
-            vector_of(&list(vec![int(1), double(f64::NAN)]), None, &unmetered())
-                .map(|vector| vector.len()),
+            vector_of(&list(vec![int(1), double(f64::NAN)]), None).map(|vector| vector.len()),
             Err(NumError::NonFiniteValue)
         );
         assert_eq!(
             vector_of(
                 &list(vec![int(1), expr(ExprInstance::GString("a".into()))]),
-                None,
-                &unmetered()
+                None
             )
             .map(|vector| vector.len()),
             Err(NumError::NotANumber)
         );
-        assert!(vector_of(&list(Vec::new()), Some(0), &unmetered())
+        assert!(vector_of(&list(Vec::new()), Some(0))
             .expect("an empty vector")
             .is_empty());
     }
@@ -767,118 +707,55 @@ mod tests {
     fn tensor_rounding_breaks_ties_to_even() {
         let two_53 = BigInt::one() << 53u8;
         let at = |offset: i64| Exact::from_integer(&two_53 + BigInt::from(offset));
-        assert_eq!(
-            round_to_f64(&at(1), &unmetered()),
-            Ok(9_007_199_254_740_992.0)
-        );
-        assert_eq!(
-            round_to_f64(&at(3), &unmetered()),
-            Ok(9_007_199_254_740_996.0)
-        );
-        assert_eq!(
-            round_to_f64(&at(-1), &unmetered()),
-            Ok(9_007_199_254_740_991.0)
-        );
+        assert_eq!(round_to_f64(&at(1)), Ok(9_007_199_254_740_992.0));
+        assert_eq!(round_to_f64(&at(3)), Ok(9_007_199_254_740_996.0));
+        assert_eq!(round_to_f64(&at(-1)), Ok(9_007_199_254_740_991.0));
         // Ties at the subnormal end: 2^-1075 rounds to 0, 3·2^-1075 to 2·2^-1074.
-        assert_eq!(round_to_f64(&power(-1075), &unmetered()), Ok(0.0));
+        assert_eq!(round_to_f64(&power(-1075)), Ok(0.0));
         assert_eq!(
-            round_to_f64(&(power(-1075) * ratio(3, 1)), &unmetered()),
+            round_to_f64(&(power(-1075) * ratio(3, 1))),
             Ok(f64::from_bits(2))
         );
         assert_eq!(
-            round_to_f64(&-(power(-1075) * ratio(3, 1)), &unmetered()),
+            round_to_f64(&-(power(-1075) * ratio(3, 1))),
             Ok(-f64::from_bits(2))
         );
         // A value just below the least normal carries into it.
         let below = power(-1022) - power(-1080);
-        assert_eq!(round_to_f64(&below, &unmetered()), Ok(f64::MIN_POSITIVE));
-        assert_eq!(round_to_f64(&ratio(1, 3), &unmetered()), Ok(1.0 / 3.0));
-        assert_eq!(round_to_f64(&ratio(-2, 3), &unmetered()), Ok(-2.0 / 3.0));
+        assert_eq!(round_to_f64(&below), Ok(f64::MIN_POSITIVE));
+        assert_eq!(round_to_f64(&ratio(1, 3)), Ok(1.0 / 3.0));
+        assert_eq!(round_to_f64(&ratio(-2, 3)), Ok(-2.0 / 3.0));
     }
 
     #[test]
     fn tensor_rounding_rejects_values_beyond_the_f64_range() {
         let max = exact_f64(f64::MAX);
-        assert_eq!(round_to_f64(&max, &unmetered()), Ok(f64::MAX));
-        assert_eq!(round_to_f64(&-max.clone(), &unmetered()), Ok(f64::MIN));
+        assert_eq!(round_to_f64(&max), Ok(f64::MAX));
+        assert_eq!(round_to_f64(&-max.clone()), Ok(f64::MIN));
         // The midpoint between f64::MAX and 2^1024 rounds to the even 2^1024, beyond the range.
         let midpoint = &max + power(970);
-        assert_eq!(
-            round_to_f64(&midpoint, &unmetered()),
-            Err(NumError::ValueOutOfRange)
-        );
-        assert_eq!(
-            round_to_f64(&(&midpoint - power(900)), &unmetered()),
-            Ok(f64::MAX)
-        );
-        assert_eq!(
-            round_to_f64(&power(1024), &unmetered()),
-            Err(NumError::ValueOutOfRange)
-        );
-        assert_eq!(
-            round_to_f64(&-power(1100), &unmetered()),
-            Err(NumError::ValueOutOfRange)
-        );
+        assert_eq!(round_to_f64(&midpoint), Err(NumError::ValueOutOfRange));
+        assert_eq!(round_to_f64(&(&midpoint - power(900))), Ok(f64::MAX));
+        assert_eq!(round_to_f64(&power(1024)), Err(NumError::ValueOutOfRange));
+        assert_eq!(round_to_f64(&-power(1100)), Err(NumError::ValueOutOfRange));
     }
 
     #[test]
     fn tensor_square_roots_are_correctly_rounded() {
-        assert_eq!(sqrt_to_f64(&ratio(9, 4), &unmetered()), Ok(1.5));
+        assert_eq!(sqrt_to_f64(&ratio(9, 4)), Ok(1.5));
+        assert_eq!(sqrt_to_f64(&ratio(2, 1)), Ok(std::f64::consts::SQRT_2));
         assert_eq!(
-            sqrt_to_f64(&ratio(2, 1), &unmetered()),
-            Ok(std::f64::consts::SQRT_2)
-        );
-        assert_eq!(
-            sqrt_to_f64(&ratio(1, 2), &unmetered()),
+            sqrt_to_f64(&ratio(1, 2)),
             Ok(std::f64::consts::FRAC_1_SQRT_2)
         );
-        assert_eq!(sqrt_to_f64(&Exact::zero(), &unmetered()), Ok(0.0));
-        assert_eq!(sqrt_to_f64(&power(2046), &unmetered()), Ok(2f64.powi(1023)));
-        assert_eq!(
-            sqrt_to_f64(&power(2048), &unmetered()),
-            Err(NumError::ValueOutOfRange)
-        );
-        assert_eq!(
-            sqrt_to_f64(&power(-2148), &unmetered()),
-            Ok(f64::from_bits(1))
-        );
-        assert_eq!(sqrt_to_f64(&power(-2150), &unmetered()), Ok(0.0));
-        assert_eq!(
-            sqrt_to_f64(&ratio(-1, 4), &unmetered()),
-            Err(NumError::NotANumber)
-        );
+        assert_eq!(sqrt_to_f64(&Exact::zero()), Ok(0.0));
+        assert_eq!(sqrt_to_f64(&power(2046)), Ok(2f64.powi(1023)));
+        assert_eq!(sqrt_to_f64(&power(2048)), Err(NumError::ValueOutOfRange));
+        assert_eq!(sqrt_to_f64(&power(-2148)), Ok(f64::from_bits(1)));
+        assert_eq!(sqrt_to_f64(&power(-2150)), Ok(0.0));
+        assert_eq!(sqrt_to_f64(&ratio(-1, 4)), Err(NumError::NotANumber));
         // √(25/36) is exactly 5/6, and RN_53(5/6) is the rounded quotient.
-        assert_eq!(sqrt_to_f64(&ratio(25, 36), &unmetered()), Ok(5.0 / 6.0));
-    }
-
-    #[test]
-    fn tensor_numeric_core_reserves_its_work_first() {
-        let unbounded =
-            || HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let operations = HostWorkDimension::VerificationOperations;
-        let vector = list(vec![
-            big_rat(1, 3),
-            double(0.1),
-            fixed(7, 2),
-            big_int(&BigInt::from(9)),
-        ]);
-        let run = |meter: &ScanMeter| -> Result<(f64, f64), NumError> {
-            let values = vector_of(&vector, Some(4), meter)?;
-            let values = values.rationals(meter)?;
-            Ok((
-                round_to_f64(&values[0], meter)?,
-                sqrt_to_f64(&values[1], meter)?,
-            ))
-        };
-        let budget = unbounded();
-        let expected = run(&ScanMeter::new(Some(budget.clone()))).expect("an unbounded run");
-        assert_eq!(run(&unmetered()), Ok(expected));
-        let usage = budget.usage(operations).get();
-        assert!(usage > 0, "the core reserves its work");
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        limits.set(operations, HostWorkLimit::new(usage - 1));
-        let cut = ScanMeter::new(Some(HostWorkBudget::new(limits)));
-        assert!(matches!(run(&cut), Err(NumError::HostWork(_))));
+        assert_eq!(sqrt_to_f64(&ratio(25, 36)), Ok(5.0 / 6.0));
     }
 
     fn finite_f64() -> impl Strategy<Value = f64> {
@@ -901,7 +778,7 @@ mod tests {
 
         #[test]
         fn tensor_rounding_is_the_identity_on_f64_values(value in finite_f64()) {
-            let rounded = round_to_f64(&exact_f64(value), &unmetered()).expect("a value in range");
+            let rounded = round_to_f64(&exact_f64(value)).expect("a value in range");
             // -0 enters as 0, and every other value comes back with its bits.
             let expected = if value == 0.0 { 0.0 } else { value };
             prop_assert_eq!(rounded.to_bits(), expected.to_bits());
@@ -914,7 +791,7 @@ mod tests {
         ) {
             // Both operands are exact f64 values, and IEEE division rounds correctly.
             let expected = numerator as f64 / denominator as f64;
-            let rounded = round_to_f64(&ratio(numerator, denominator), &unmetered())
+            let rounded = round_to_f64(&ratio(numerator, denominator))
                 .expect("a value in range");
             prop_assert_eq!(rounded, expected);
         }
@@ -922,7 +799,7 @@ mod tests {
         #[test]
         fn tensor_square_root_equals_the_ieee_square_root(value in finite_f64()) {
             let value = value.abs();
-            let root = sqrt_to_f64(&exact_f64(value), &unmetered()).expect("a value in range");
+            let root = sqrt_to_f64(&exact_f64(value)).expect("a value in range");
             prop_assert_eq!(root.to_bits(), value.sqrt().to_bits());
         }
 

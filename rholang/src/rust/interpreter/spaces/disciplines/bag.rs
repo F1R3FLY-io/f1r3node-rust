@@ -23,7 +23,6 @@ use serde::Serialize;
 
 use super::queue::QueueDiscipline;
 use super::scan::{self, ScanDiscipline};
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::{ConsumeOp, ProduceOp, SpaceReissue};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{Cx, Discipline, JoinWindow, Ordered, Side};
@@ -42,29 +41,22 @@ impl Discipline for BagDiscipline {
     /// The entry with the least `(ord, bincode bytes)`, as for the queue. Every entry of a bag
     /// has the `ord` 0, so it is the entry with the least bytes. Only the head driver uses a
     /// head, and a bag does not use the head driver: its plans are the scan driver.
-    fn head_metered<T: Serialize>(
+    fn head<T: Serialize>(
         &self,
         side: Side,
         entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
     ) -> Result<Option<usize>, SpaceError> {
-        QueueDiscipline.head_metered(side, entries, meter)
+        QueueDiscipline.head(side, entries)
     }
 
     /// Every entry of a bag can meet an incoming element, so an incoming element always reaches
     /// the head. Only the head driver asks, and a bag does not use it.
     fn reaches_head(&self, _side: Side, _queued: usize) -> bool { true }
 
-    /// The lesser order interacts first, as for the queue. The comparison is reserved first.
-    /// Only the re-entry check of the head driver asks, and a bag does not use it.
-    fn precedes(
-        &self,
-        side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError> {
-        QueueDiscipline.precedes(side, ord, head, meter)
+    /// The lesser order interacts first, as for the queue. Only the re-entry check of the head
+    /// driver asks, and a bag does not use it.
+    fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+        QueueDiscipline.precedes(side, ord, head)
     }
 
     /// OFFER-SCAN of the scan driver ([`scan::offer`]).
@@ -109,7 +101,6 @@ mod tests {
 
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use models::rhoapi::{BindPattern, CostAuthority, Par, TaggedContinuation};
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
     use models::rust::utils::{new_freevar_par, new_gint_par};
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -121,7 +112,6 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::RuntimeBudget;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::spaces::agent::{
         run_op, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
@@ -162,7 +152,6 @@ mod tests {
         let env = SpaceEnv {
             store: SpaceStoreHandle::new(space.clone()),
             budget: RuntimeBudget::new(Cost::create(1_000_000, "bag discipline test")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         };
@@ -300,35 +289,18 @@ mod tests {
 
     #[test]
     fn space_bag_reaches_every_entry_and_orders_by_ord() {
-        let meter = ScanMeter::new(None);
         for side in [Side::Data, Side::Waiters] {
             for queued in [0, 1, usize::MAX] {
                 assert!(BagDiscipline.reaches_head(side, queued));
             }
-            assert_eq!(BagDiscipline.precedes(side, 0, 1, &meter), Ok(true));
-            assert_eq!(BagDiscipline.precedes(side, 1, 0, &meter), Ok(false));
+            assert_eq!(BagDiscipline.precedes(side, 0, 1), Ok(true));
+            assert_eq!(BagDiscipline.precedes(side, 1, 0), Ok(false));
         }
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000)));
-        let metered = ScanMeter::new(Some(host_work.clone()));
-        assert_eq!(BagDiscipline.precedes(Side::Data, 0, 1, &metered), Ok(true));
-        assert_eq!(
-            (
-                host_work
-                    .usage(HostWorkDimension::VerificationOperations)
-                    .get(),
-                host_work.usage(HostWorkDimension::VerificationBytes).get()
-            ),
-            (1, 16),
-            "the one comparison of two orders is reserved"
-        );
     }
 
     #[test]
     fn space_bag_payloads_have_no_class() {
-        assert_eq!(
-            BagDiscipline.class_key(&[int(1)], &ScanMeter::new(None)),
-            Ok(None)
-        );
+        assert_eq!(BagDiscipline.class_key(&[int(1)]), Ok(None));
     }
 
     #[tokio::test]

@@ -10,8 +10,8 @@
 //!
 //! * [`MirrorCapture`] records each store that a plan stages on a data channel of the space.
 //!   After the commit, [`MirrorCapture::writes`] turns the receipt of the transaction into its
-//!   net writes. Capture has no meter, no error path and no await, so it never changes the
-//!   outcome of the transaction.
+//!   net writes. Capture has no error path and no await, so it never changes the outcome of the
+//!   transaction.
 //! * [`MirrorJournal`] keeps the last write of each record id of each collection, in deploy
 //!   order. The runtime publishes it when the final result of the deploy has no errors, and it
 //!   drops it otherwise (M1, decision 66).
@@ -42,7 +42,6 @@ use super::factory::defaults::MIRROR_PARAM;
 use super::namespace::{self, CollectionKey, ReifiedId, SpaceId};
 use super::record::{self, sole_expr};
 use super::types::config::SpaceConfig;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::reified::vectordb_services::{channel_digest, collection_name};
 use crate::rust::interpreter::tensor::exact::Metric;
 use crate::rust::interpreter::tensor::num;
@@ -186,13 +185,12 @@ impl MirrorCapture {
 
     /// The capture of a plan over the space of `config`: active for a VectorDB space with the
     /// param `mirror` and a metric that the mirror supports. The config was validated when the
-    /// factory created the space, so its reads here are not metered.
+    /// factory created the space.
     pub fn of(config: &SpaceConfig) -> Self {
         if !config.params.contains_key(MIRROR_PARAM) {
             return Self::inactive();
         }
-        let unmetered = ScanMeter::new(None);
-        let active = match (family_of(config), vdb_config(config, &unmetered)) {
+        let active = match (family_of(config), vdb_config(config)) {
             (Ok(family), Ok(vdb)) if family.inner == SpaceInner::VectorDb => {
                 MirrorMetric::of(vdb.metric).map(|metric| ActiveCapture {
                     space: config.space_id,
@@ -370,12 +368,11 @@ pub fn record_of_datum(
 /// The `f32` values of the numeric vector `par`, each rounded to `f64` and then to `f32`, or
 /// `None` when a value is not a number or not finite as an `f32` value.
 fn f32_embedding(par: &Par) -> Option<Vec<f32>> {
-    let unmetered = ScanMeter::new(None);
-    let vector = num::vector_of(par, None, &unmetered).ok()?;
-    let values = vector.rationals(&unmetered).ok()?;
+    let vector = num::vector_of(par, None).ok()?;
+    let values = vector.rationals();
     let mut embedding = Vec::with_capacity(values.len());
     for value in values.iter() {
-        let element = num::round_to_f64(value, &unmetered).ok()? as f32;
+        let element = num::round_to_f64(value).ok()? as f32;
         if !element.is_finite() {
             return None;
         }

@@ -1,5 +1,7 @@
 # Remaining authority-allocation decisions
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Status and purpose
 
 This proposal defines authority allocation policy.

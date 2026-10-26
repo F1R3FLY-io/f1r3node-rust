@@ -33,7 +33,7 @@
 //! | `space_joins_replay_equal` | replay reproduces play: events, roots, cost and the legacy log |
 //! | `space_joins_restart` | join waiters, records of version 2 and join groups survive a checkpoint and a reset |
 //!
-//! The tests of the joins plan, section 7.2 (decisions 42, 43, 45, 46, 49 and 50):
+//! The tests of the joins plan, section 7.2 (decisions 43, 45, 46, 49 and 50):
 //!
 //! | Test | What it shows |
 //! |---|---|
@@ -44,8 +44,7 @@
 //! | `space_joins_settle_before_cap_resumes_the_operation` | the settle before the plan fills the transaction, and the operation resumes later |
 //! | `space_joins_txn_fires_bounded_at_the_cap` | no transaction makes more than `FIRE_ROUND_CAP` fires |
 //! | `space_joins_legacy_charges_equal_host` | Option P: each staged shape charges what `ChargingRSpace` charges for its host call |
-//! | `space_joins_reservation_cut_rejects_without_effect` | decision 42: a host-work cut at any reserved step has no effect |
-//! | `space_joins_classification_reserves_check_joins` | a collection without joins reserves what it reserved at the second-wave commit |
+//! | `space_joins_classification_fires_as_check_joins` | a collection without joins fires as it fired at the second-wave commit |
 //! | `space_joins_native_execution_fails_closed` | decision 46: a join fails before any space work |
 //! | `space_joins_set_join_cascade_fires_exposed_waiter` | decision 50: a set waiter that a class move exposes fires in the same transaction |
 //!
@@ -66,7 +65,6 @@ use models::rhoapi::{
     BindPattern, CostAuthority, CostRegion, CostSignature, EGt, EList, ELt, Expr,
     ListParWithRandom, Par, TaggedContinuation,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::{new_boundvar_par, new_gbool_par};
@@ -76,8 +74,8 @@ use rholang::rust::interpreter::accounting::byte_accounting::{
 };
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
-    native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
-    NativePhloExecutionContract, NativePhloRegionLimits,
+    native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
+    NativePhloDimension, NativePhloExecutionContract, NativePhloRegionLimits,
 };
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
@@ -86,9 +84,8 @@ use rholang::rust::interpreter::accounting::{
     funding_sig_compound, NativeRuntimeConfig, RuntimeBudget, Sig,
 };
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::reified::legacy_charges::{consume_charges, produce_charges};
 use rholang::rust::interpreter::reified::runtime;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
@@ -108,7 +105,6 @@ use rholang::rust::interpreter::spaces::settle::{lift_continuation, lift_pattern
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
 use rspace_plus_plus::rspace::merger::merging_logic::{
@@ -125,8 +121,8 @@ use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, C
 use support::agent::{
     any, budget, config_of, counter_channel, create, creation, data_channel, env_over, exactly,
     fired, int, join_group, join_on, join_waiters_on, joins_on, play, play_and_replay, play_with,
-    receive_on, run, send_on, string, unbounded_host_work, AnyRecord, AnyWaiter, CountingMatcher,
-    HostRecord, JoinWaiterRow, ParRSpace, RecordingHost, SharedRecord, StagedCopy,
+    receive_on, run, send_on, string, AnyRecord, AnyWaiter, CountingMatcher, HostRecord,
+    JoinWaiterRow, ParRSpace, RecordingHost, SharedRecord, StagedCopy,
 };
 use support::legacy::{lone_host_consume, lone_host_produce, split};
 use support::session::{with_space, Session};
@@ -153,13 +149,6 @@ const DEFAULT: &str = "\"default\"";
 
 /// The public channel of the outputs of the receive bodies of the Rholang tests.
 const OUT: &str = "rrs-join-out";
-
-/// The host-work dimensions that a space agent charges (decision 42).
-const AGENT_DIMENSIONS: [HostWorkDimension; 3] = [
-    HostWorkDimension::VerificationOperations,
-    HostWorkDimension::VerificationBytes,
-    HostWorkDimension::SearchStateBytes,
-];
 
 /// The family `hashmap:<inner>`.
 fn family(inner: SpaceInner) -> SpaceFactoryUrn {
@@ -221,17 +210,6 @@ impl Rig {
         host.take_event_log().await;
         *record.lock().expect("the record lock") = HostRecord::default();
         (Rig { host, env }, record)
-    }
-
-    /// The same rig with a meter that charges `host_work`.
-    fn metered(self, host_work: &HostWorkBudget) -> Rig {
-        Rig {
-            env: SpaceEnv {
-                meter: ScanMeter::new(Some(host_work.clone())),
-                ..self.env
-            },
-            ..self
-        }
     }
 
     /// Runs `op` in one job.
@@ -522,8 +500,7 @@ fn ordered_sends(channel: &Par, entries: &[(i64, bool)]) -> Vec<ProduceOp> {
 /// The values of the records of the collection of `channel` in the canonical order of DR-75.
 async fn canonical_values(host: &ParRSpace, channel: &Par) -> Vec<i64> {
     let records = host.get_data(&data(channel)).await;
-    canonical_data_order(&records, &ScanMeter::new(None))
-        .expect("a canonical order")
+    canonical_data_order(&records)
         .into_iter()
         .map(|index| number_of(&records[index].a))
         .collect()
@@ -2724,7 +2701,11 @@ async fn space_joins_produce_side_peek_reproduces_in_receipt_order() {
     let host_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs join a9 host"));
     let _host_scope = host_budget.enter_legacy_scope();
     let pin: support::legacy::Pin = Arc::new(std::sync::Mutex::new(None));
-    let host = support::legacy::pinned_charging_host(&host_budget, &pin).await;
+    // Changed by decision 89 (DR-129): host play picks a waiter at random, so the matcher of the
+    // host also holds a waiter pin.
+    // let host = support::legacy::pinned_charging_host(&host_budget, &pin).await;
+    let waiter = support::legacy::open_waiter();
+    let host = support::legacy::pinned_charging_host(&host_budget, &pin, &waiter).await;
     let group = join_group(SPACE, &[&b, &c]);
     let channels = [&b, &c];
     let parked = |op: &JoinOp| {
@@ -2774,9 +2755,16 @@ async fn space_joins_produce_side_peek_reproduces_in_receipt_order() {
     agent_fires.extend(fired(&outcome));
     let mut calls = vec![(data(&b), record::wrap_datum(0, &incoming.data))];
     let mut entries = Vec::new();
+    // Added by decision 89 (DR-129): the incoming x completes both P and W, and P comes first in
+    // canonical order. So the first call fires only P. The later calls have one waiter at most.
+    support::legacy::set_waiter(
+        &waiter,
+        support::legacy::WaiterPin::Only(Box::new(parked(&ordered[0]))),
+    );
     while !calls.is_empty() {
         let (channel, record) = calls.remove(0);
         let run = support::legacy::host_produce(&host, &host_budget, channel, record, false).await;
+        support::legacy::set_waiter(&waiter, support::legacy::WaiterPin::Any);
         entries.extend(run.entries);
         if let Some((cont, results)) = &run.fired {
             let name = support::agent::body_name(
@@ -3409,7 +3397,7 @@ async fn space_joins_txn_fires_bounded_at_the_cap() {
     assert_eq!(fire_counts(&outcomes), vec![cap, 1]);
 }
 
-// ─── 7.2: Option P and decision 42 ───────────────────────────────────────────────────────────
+// ─── 7.2: Option P ───────────────────────────────────────────────────────────────────────────
 
 /// The legacy log entries of the charges of the staged operation `staged` (decision 45,
 /// Option P): the pre-charge, then the post-charges.
@@ -3617,166 +3605,6 @@ async fn space_joins_legacy_charges_equal_host() {
     }
 }
 
-/// Runs the operation `op` on rigs that `setup` builds, and checks decision 42 for it. With the
-/// exact usage as its limits, the operation gives the outcome of an unlimited run. A limit below
-/// the usage in one dimension rejects the operation with `HostWorkRejected` before the commit. So
-/// the job logs no event and the root stays. The cuts sweep each dimension from 0 to one unit
-/// below the usage, so they meet each reserved step of the operation.
-async fn cut_case<F, Fut>(label: &str, setup: F, op: SpaceOp)
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Rig>,
-{
-    let measured = unbounded_host_work();
-    let expected = setup()
-        .await
-        .metered(&measured)
-        .run(op.clone())
-        .await
-        .unwrap_or_else(|error| panic!("{label}: the operation commits: {error:?}"));
-    let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    for dimension in AGENT_DIMENSIONS {
-        exact.set(
-            dimension,
-            HostWorkLimit::new(measured.usage(dimension).get()),
-        );
-    }
-    assert_eq!(
-        setup()
-            .await
-            .metered(&HostWorkBudget::new(exact))
-            .run(op.clone())
-            .await,
-        Ok(expected),
-        "{label}: the exact budget"
-    );
-    for dimension in AGENT_DIMENSIONS {
-        let usage = measured.usage(dimension).get();
-        assert!(usage > 0, "{label}: the operation charges {dimension}");
-        let step = usize::try_from((usage / 48).max(1)).expect("a small step");
-        let limits: BTreeSet<u64> = (0..usage).step_by(step).chain([usage - 1]).collect();
-        for limit in limits {
-            let mut cut = exact;
-            cut.set(dimension, HostWorkLimit::new(limit));
-            let rig = setup().await.metered(&HostWorkBudget::new(cut));
-            let before = rig.root().await;
-            assert_eq!(
-                rig.run(op.clone()).await,
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                "{label}: {dimension} at {limit} of {usage}"
-            );
-            assert!(
-                rig.log().await.is_empty(),
-                "{label}: {dimension} at {limit}: nothing commits"
-            );
-            assert_eq!(
-                rig.root().await,
-                before,
-                "{label}: {dimension} at {limit}: the state stays"
-            );
-        }
-    }
-}
-
-/// Decision 42 for joins (joins plan 4.12). Each reservation of the join engine comes before the
-/// work that it covers. So a host-work cut at any step rejects the job before it stages. The
-/// cases reach these reserved steps:
-///
-/// * the closure read and the escalation, and the window scans,
-/// * the wrap of a record of version 2 and the guard buffer,
-/// * the fires, the lifts, the second sends and the retires.
-#[tokio::test]
-async fn space_joins_reservation_cut_rejects_without_effect() {
-    let (q1, q2, q3) = (ch("q1"), ch("q2"), ch("q3"));
-    cut_case(
-        "an escalated join that parks",
-        || async {
-            let rig = Rig::new(SpaceInner::Queue).await;
-            rig.ok(joined(join(&[(&ch("q1"), any()), (&ch("q2"), any())], "w")))
-                .await;
-            rig.log().await;
-            rig
-        },
-        joined(join(&[(&q2, any()), (&q3, any())], "u")),
-    )
-    .await;
-    cut_case(
-        "a queue cascade after a produce-side fire",
-        || async {
-            let rig = Rig::new(SpaceInner::Queue).await;
-            let (q1, q2) = (ch("q1"), ch("q2"));
-            rig.ok(put(&q2, 10)).await;
-            rig.ok(joined(join(&[(&q1, any()), (&q2, any())], "w")))
-                .await;
-            rig.ok(take(&q2, "v", any())).await;
-            rig.ok(put(&q2, 20)).await;
-            rig.log().await;
-            rig
-        },
-        put(&q1, 1),
-    )
-    .await;
-    let (a, b) = (ch("a"), ch("b"));
-    cut_case(
-        "a guarded join fire on a bag",
-        || async {
-            let rig = Rig::new(SpaceInner::Bag).await;
-            for value in [1, 2, 3] {
-                rig.ok(put_salted(&ch("a"), value, 1)).await;
-            }
-            rig.ok(put(&ch("b"), 10)).await;
-            rig.log().await;
-            rig
-        },
-        joined(guarded(
-            join(&[(&a, any()), (&b, any())], "g"),
-            gt(bound(0), bound(1)),
-        )),
-    )
-    .await;
-    cut_case(
-        "a peek join and its second send",
-        || async {
-            let rig = Rig::new(SpaceInner::Bag).await;
-            rig.ok(put_salted(&ch("a"), 1, 1)).await;
-            rig.ok(put_forever(&ch("b"), 2)).await;
-            rig.log().await;
-            rig
-        },
-        joined(peeking(join(&[(&a, any()), (&b, any())], "p"))),
-    )
-    .await;
-    let (s, t) = (ch("s"), ch("t"));
-    cut_case(
-        "a set join fire and its retire",
-        || async {
-            let rig = Rig::new(SpaceInner::Set).await;
-            rig.ok(put_salted(&ch("s"), 1, 1)).await;
-            rig.ok(put_salted(&ch("s"), 1, 2)).await;
-            rig.ok(put(&ch("t"), 5)).await;
-            rig.log().await;
-            rig
-        },
-        joined(join(&[(&s, exactly(1)), (&t, any())], "r")),
-    )
-    .await;
-    let (c, d) = (ch("c"), ch("d"));
-    cut_case(
-        "a stack cascade after a consume-side fire",
-        || async {
-            let rig = Rig::new(SpaceInner::Stack).await;
-            rig.ok(put(&ch("c"), 1)).await;
-            rig.ok(put(&ch("c"), 2)).await;
-            rig.ok(take(&ch("c"), "v", exactly(1))).await;
-            rig.ok(put(&ch("d"), 5)).await;
-            rig.log().await;
-            rig
-        },
-        joined(join(&[(&c, exactly(2)), (&d, any())], "w")),
-    )
-    .await;
-}
-
 // ─── 7.2: decision 46 ────────────────────────────────────────────────────────────────────────
 
 /// The phlo schedule of a native deploy of the test.
@@ -3822,19 +3650,16 @@ fn native_config() -> NativeRuntimeConfig {
     )
     .expect("the test controls check");
     let contract =
-        NativePhloExecutionContract::new(controls, &binding).expect("the test contract builds");
-    NativeRuntimeConfig::new(
-        contract,
-        NativeBudgetTraceLimits {
-            attempts: 100_000,
-            path_segments: 4096,
-            regions: NativePhloRegionLimits {
-                regions: 1000,
-                encoded_authority_bytes: 10_000_000,
-            },
+        NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+            .expect("the test contract builds");
+    NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+        attempts: 100_000,
+        path_segments: 4096,
+        regions: NativePhloRegionLimits {
+            regions: 1000,
+            encoded_authority_bytes: 10_000_000,
         },
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000))),
-    )
+    })
 }
 
 // Disabled by decision 47: native execution runs joins, so no operation fails with
@@ -3897,8 +3722,8 @@ fn native_config() -> NativeRuntimeConfig {
 // ```
 
 /// The outcomes of the operations of `space_joins_native_play_commits_as_legacy`, the events of
-/// the play space, its root, and the record of the host of the runtime.
-type JoinRun = (Vec<SpaceOutcome>, Vec<Event>, Blake2b256Hash, Vec<bool>);
+/// the play space, its root, and the number of transactions that the host of the runtime saw.
+type JoinRun = (Vec<SpaceOutcome>, Vec<Event>, Blake2b256Hash, usize);
 
 /// Runs a join, a send on a joined collection and a settle job with a cascade over a fresh queue
 /// space, in a host runtime whose deploy charges `deploy`. The space holds 1 on `a`, 2 on `b`
@@ -3931,14 +3756,13 @@ async fn join_run(deploy: RuntimeBudget) -> JoinRun {
     }
     let log = rig.log().await;
     let root = rig.root().await;
-    let metered = record.lock().expect("the record lock").metered.clone();
-    (outcomes, log, root, metered)
+    let transactions = record.lock().expect("the record lock").begins.len();
+    (outcomes, log, root, transactions)
 }
 
 /// Decision 47: native play runs joins. A join, a send on a joined collection and a settle job
 /// with a cascade commit in a host runtime whose deploy runs natively as they commit in legacy
-/// execution: the same outcomes, the same events and the same root. Each transaction of the
-/// native run reads through the metered reads of the substrate, and no legacy transaction does.
+/// execution: the same outcomes, the same events and the same root, with as many transactions.
 /// A native replay runtime that is not bound yet fails each operation closed with
 /// `RuntimeUnavailable`.
 #[tokio::test]
@@ -3952,15 +3776,13 @@ async fn space_joins_native_play_commits_as_legacy() {
         .reset_for_native_execution(native_config())
         .expect("the budget enters native execution");
     assert!(native.native_execution_active());
-    let (legacy_outcomes, legacy_log, legacy_root, legacy_metered) = join_run(budget()).await;
-    let (native_outcomes, native_log, native_root, native_metered) = join_run(native).await;
+    let (legacy_outcomes, legacy_log, legacy_root, legacy_transactions) = join_run(budget()).await;
+    let (native_outcomes, native_log, native_root, native_transactions) = join_run(native).await;
     assert_eq!(native_outcomes, legacy_outcomes);
     assert_eq!(native_log, legacy_log);
     assert_eq!(native_root, legacy_root);
-    assert!(!legacy_metered.is_empty());
-    assert_eq!(native_metered.len(), legacy_metered.len());
-    assert!(legacy_metered.iter().all(|metered| !metered));
-    assert!(native_metered.iter().all(|metered| *metered));
+    assert!(legacy_transactions > 0);
+    assert_eq!(native_transactions, legacy_transactions);
 
     let (rig, _) = Rig::recording(SpaceInner::Queue, &budget()).await;
     let a = ch("a");
@@ -4119,15 +3941,13 @@ async fn space_joins_set_join_cascade_fires_exposed_waiter() {
 // ─── 7.2: the parity of the classification ───────────────────────────────────────────────────
 
 /// The join-free scripts of the classification parity (joins plan 4.1 and 7.2) and their runner.
-/// The capture of the second-wave golden runs this module, unchanged, at the commit of the second
-/// wave, with the support harness of that commit. So the module uses only items that both
-/// commits have.
+/// The golden fires come from a capture that ran this module at the commit of the second wave,
+/// with the support harness of that commit.
 mod classification_scripts {
     use std::collections::BTreeMap;
 
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use models::rhoapi::{BindPattern, Par};
-    use models::rust::host_work::HostWorkDimension;
     use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
     use rholang::rust::interpreter::spaces::agent::{ConsumeOp, ProduceOp, SpaceOp};
     use rholang::rust::interpreter::spaces::disciplines::priority_queue::PRIORITY_PARAM;
@@ -4136,8 +3956,8 @@ mod classification_scripts {
     use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 
     use crate::support::agent::{
-        any, budget, config_of, create, creation, env_over, exactly, int, metered_env, play,
-        receive_on, run, send_on, string, unbounded_host_work,
+        any, budget, config_of, create, creation, env_over, exactly, int, play, receive_on, run,
+        send_on, string,
     };
 
     /// The space of every script.
@@ -4145,13 +3965,6 @@ mod classification_scripts {
         sid: [0x4B; SID_LEN],
         durability: Durability::Durable,
     };
-
-    /// The host-work dimensions that a space agent charges (decision 42).
-    const DIMENSIONS: [HostWorkDimension; 3] = [
-        HostWorkDimension::VerificationOperations,
-        HostWorkDimension::VerificationBytes,
-        HostWorkDimension::SearchStateBytes,
-    ];
 
     /// The inner channel of every script.
     fn channel() -> Par { string("rrs-join-classification") }
@@ -4245,10 +4058,9 @@ mod classification_scripts {
         ]
     }
 
-    /// Runs `script` on a fresh space of `hashmap:<inner>`, each operation with a fresh unbounded
-    /// host-work budget. It returns, for each operation, its usage in each dimension of
-    /// [`DIMENSIONS`] and its number of fires.
-    pub async fn usage(inner: SpaceInner, script: &[SpaceOp]) -> Vec<[u64; 4]> {
+    /// Runs `script` on a fresh space of `hashmap:<inner>`, each operation in an environment of its
+    /// own. It returns the number of fires of each operation.
+    pub async fn fires(inner: SpaceInner, script: &[SpaceOp]) -> Vec<u64> {
         let host = play().await;
         let budget = budget();
         let env = env_over(host.clone(), &budget);
@@ -4263,96 +4075,92 @@ mod classification_scripts {
             inner,
         };
         create(&FamilyAgent, &env, creation(SPACE, config, family)).await;
-        let mut usages = Vec::with_capacity(script.len());
+        let mut fires = Vec::with_capacity(script.len());
         for op in script {
-            let host_work = unbounded_host_work();
-            let metered = metered_env(host.clone(), &budget, &host_work);
-            let outcome = run(&FamilyAgent, &metered, op.clone())
+            let op_env = env_over(host.clone(), &budget);
+            let outcome = run(&FamilyAgent, &op_env, op.clone())
                 .await
                 .unwrap_or_else(|error| panic!("a join-free operation commits: {error:?}: {op:?}"));
-            let fires = u64::try_from(outcome.fires.len()).expect("a small count");
-            let [operations, bytes, search] =
-                DIMENSIONS.map(|dimension| host_work.usage(dimension).get());
-            usages.push([operations, bytes, search, fires]);
+            fires.push(u64::try_from(outcome.fires.len()).expect("a small count"));
         }
-        usages
+        fires
     }
 }
 
-/// The usage of each operation of the classification scripts at the commit of the second wave
-/// (`5b45574a9`), before the join engine. Each row holds the verification operations, the
-/// verification bytes, the search-state bytes and the number of fires. The capture harness of the
-/// batch ran the module `classification_scripts` unchanged at that commit.
-const CLASSIFICATION_GOLDEN: &[(&str, [u64; 4])] = &[
-    ("queue 0", [33272, 2441010, 191020, 0]),
-    ("queue 1", [28836, 2376602, 180472, 0]),
-    ("queue 2", [41022, 2977372, 254437, 1]),
-    ("queue 3", [44468, 3037798, 261688, 1]),
-    ("queue 4", [40713, 2945546, 253525, 1]),
-    ("queue 5", [29037, 2397096, 182138, 0]),
-    ("queue 6", [46697, 2993911, 261392, 1]),
-    ("queue 7", [33111, 2381436, 184696, 0]),
-    ("queue 8", [40713, 2945546, 253525, 1]),
-    ("stack 0", [33274, 2441056, 191020, 0]),
-    ("stack 1", [33113, 2381482, 184696, 0]),
-    ("stack 2", [41024, 2977418, 254437, 1]),
-    ("stack 3", [44470, 3037844, 261688, 1]),
-    ("stack 4", [40715, 2945592, 253525, 1]),
-    ("stack 5", [29039, 2397142, 182138, 0]),
-    ("stack 6", [46699, 2993957, 261392, 1]),
-    ("stack 7", [33113, 2381482, 184696, 0]),
-    ("stack 8", [40715, 2945592, 253525, 1]),
-    ("bag 0", [15478, 1060092, 45743, 0]),
-    ("bag 1", [15478, 1060092, 45743, 0]),
-    ("bag 2", [23822, 1405385, 71116, 1]),
-    ("bag 3", [14393, 1179578, 51289, 0]),
-    ("bag 4", [27049, 1378067, 72719, 1]),
-    ("bag 5", [33420, 1742718, 130583, 1]),
-    ("bag 6", [15478, 1060092, 45743, 0]),
-    ("bag 7", [20806, 1301727, 63396, 1]),
-    ("set 0", [15679, 1072751, 48741, 0]),
-    ("set 1", [15679, 1072751, 48741, 0]),
-    ("set 2", [15679, 1072751, 48741, 0]),
-    ("set 3", [34721, 1625912, 99280, 1]),
-    ("set 4", [23145, 1606273, 117770, 1]),
-    ("set 5", [11376, 1075578, 43185, 0]),
-    ("set 6", [27414, 1390892, 75773, 1]),
-    ("set 7", [15679, 1072751, 48741, 0]),
-    ("set 8", [33621, 1755377, 133581, 1]),
-    ("cell 0", [33277, 2441098, 191018, 0]),
-    ("cell 1", [40717, 2945618, 253523, 1]),
-    ("cell 2", [29042, 2397184, 182136, 0]),
-    ("cell 3", [46701, 2993983, 261390, 1]),
-    ("cell 4", [33116, 2381524, 184694, 0]),
-    ("cell 5", [44472, 3037870, 261686, 1]),
-    ("cell 6", [40717, 2945618, 253523, 1]),
-    ("priorityqueue 0", [33493, 2471986, 192404, 0]),
-    ("priorityqueue 1", [33668, 2451182, 187588, 0]),
-    ("priorityqueue 2", [41117, 3011391, 255945, 1]),
-    ("priorityqueue 3", [40781, 2972485, 254913, 1]),
-    ("priorityqueue 4", [29044, 2397419, 182194, 0]),
-    ("priorityqueue 5", [46971, 3038823, 263972, 1]),
-    ("priorityqueue 6", [33332, 2412412, 186080, 0]),
-    ("priorityqueue 7", [44564, 3077985, 263676, 1]),
-    ("priorityqueue 8", [40781, 2972485, 254913, 1]),
+/// The number of fires of each operation of the classification scripts at the commit of the
+/// second wave (`5b45574a9`), before the join engine. The capture harness of the batch ran the
+/// module `classification_scripts` at that commit, with the host-work usage of each operation in
+/// three more columns. DR-131 removed host work, so the table keeps the column of the fires.
+const CLASSIFICATION_GOLDEN: &[(&str, u64)] = &[
+    ("queue 0", 0),
+    ("queue 1", 0),
+    ("queue 2", 1),
+    ("queue 3", 1),
+    ("queue 4", 1),
+    ("queue 5", 0),
+    ("queue 6", 1),
+    ("queue 7", 0),
+    ("queue 8", 1),
+    ("stack 0", 0),
+    ("stack 1", 0),
+    ("stack 2", 1),
+    ("stack 3", 1),
+    ("stack 4", 1),
+    ("stack 5", 0),
+    ("stack 6", 1),
+    ("stack 7", 0),
+    ("stack 8", 1),
+    ("bag 0", 0),
+    ("bag 1", 0),
+    ("bag 2", 1),
+    ("bag 3", 0),
+    ("bag 4", 1),
+    ("bag 5", 1),
+    ("bag 6", 0),
+    ("bag 7", 1),
+    ("set 0", 0),
+    ("set 1", 0),
+    ("set 2", 0),
+    ("set 3", 1),
+    ("set 4", 1),
+    ("set 5", 0),
+    ("set 6", 1),
+    ("set 7", 0),
+    ("set 8", 1),
+    ("cell 0", 0),
+    ("cell 1", 1),
+    ("cell 2", 0),
+    ("cell 3", 1),
+    ("cell 4", 0),
+    ("cell 5", 1),
+    ("cell 6", 1),
+    ("priorityqueue 0", 0),
+    ("priorityqueue 1", 0),
+    ("priorityqueue 2", 1),
+    ("priorityqueue 3", 1),
+    ("priorityqueue 4", 0),
+    ("priorityqueue 5", 1),
+    ("priorityqueue 6", 0),
+    ("priorityqueue 7", 1),
+    ("priorityqueue 8", 1),
 ];
 
 /// The parity guard of the classification (joins plan 4.1, risk table of section 10). On a
-/// collection without joins, the classification reserves exactly what `check_joins` reserved. So
-/// every join-free operation of every `hashmap` family uses the host work of the second wave, and
-/// fires the same. The scripts store, fire on both sides, peek, park and send persistent records.
+/// collection without joins, every join-free operation of every `hashmap` family fires as it fired
+/// at the second wave, before the join engine. The scripts store, fire on both sides, peek, park
+/// and send persistent records.
 #[tokio::test]
-async fn space_joins_classification_reserves_check_joins() {
-    let mut measured: Vec<(String, [u64; 4])> = Vec::with_capacity(CLASSIFICATION_GOLDEN.len());
+async fn space_joins_classification_fires_as_check_joins() {
+    let mut measured: Vec<(String, u64)> = Vec::with_capacity(CLASSIFICATION_GOLDEN.len());
     for (label, inner, script) in classification_scripts::scripts() {
-        let usages = classification_scripts::usage(inner, &script).await;
-        for (index, usage) in usages.into_iter().enumerate() {
-            measured.push((format!("{label} {index}"), usage));
+        let fires = classification_scripts::fires(inner, &script).await;
+        for (index, fired) in fires.into_iter().enumerate() {
+            measured.push((format!("{label} {index}"), fired));
         }
     }
-    let golden: Vec<(String, [u64; 4])> = CLASSIFICATION_GOLDEN
+    let golden: Vec<(String, u64)> = CLASSIFICATION_GOLDEN
         .iter()
-        .map(|(label, usage)| (label.to_string(), *usage))
+        .map(|(label, fired)| (label.to_string(), *fired))
         .collect();
     assert_eq!(measured, golden);
 }

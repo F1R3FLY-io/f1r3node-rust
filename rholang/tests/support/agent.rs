@@ -21,14 +21,11 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
     BindPattern, CostAuthority, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
 };
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits, HostWorkUsages};
 use models::rust::space_factory_urn::SpaceFactoryUrn;
 use models::rust::utils::{new_freevar_par, new_freevar_var, new_gint_par, new_gstring_par};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::legacy_charges::{ParSpaceConsume, ParSpaceProduce};
 use rholang::rust::interpreter::spaces::agent::{
     run_op, ConsumeOp, JoinBind, JoinOp, ProduceOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp,
@@ -39,9 +36,7 @@ use rholang::rust::interpreter::spaces::namespace::{self, CollectionKey, NativeS
 use rholang::rust::interpreter::spaces::record::{self, JoinSlot};
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
@@ -67,11 +62,6 @@ pub fn budget() -> RuntimeBudget {
     RuntimeBudget::new(Cost::create(1_000_000, "rrs p5 agent test"))
 }
 
-/// A host-work budget that accepts every charge and records the usage.
-pub fn unbounded_host_work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
-}
-
 /// A play space over a fresh in-memory store.
 pub async fn play() -> ParRSpace {
     let mut stores = InMemoryStoreManager::new();
@@ -92,25 +82,12 @@ pub async fn play_and_replay() -> (ParRSpace, ParReplay) {
     .expect("an in-memory play and replay space")
 }
 
-/// The environment of a job over `host` with the phlo budget `budget` and no host-work budget.
+/// The environment of a job over `host` with the phlo budget `budget`.
 pub fn env_over<H>(host: H, budget: &RuntimeBudget) -> SpaceEnv
 where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation> + 'static {
     SpaceEnv {
         store: SpaceStoreHandle::new(host),
         budget: budget.clone(),
-        meter: ScanMeter::new(None),
-        volatile: Default::default(),
-        origin: Default::default(),
-    }
-}
-
-/// The environment of a job over `host` whose meter charges `host_work`.
-pub fn metered_env<H>(host: H, budget: &RuntimeBudget, host_work: &HostWorkBudget) -> SpaceEnv
-where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation> + 'static {
-    SpaceEnv {
-        store: SpaceStoreHandle::new(host),
-        budget: budget.clone(),
-        meter: ScanMeter::new(Some(host_work.clone())),
         volatile: Default::default(),
         origin: Default::default(),
     }
@@ -544,32 +521,15 @@ impl StagedCopy {
     }
 }
 
-/// A point of the timeline of a metered [`RecordingHost`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecordPoint {
-    /// The begin of the transaction with this index.
-    Begin(usize),
-    /// The staged operation with this index in [`HostRecord::staged`], before the host stages it.
-    Staged(usize),
-    /// The commit of the transaction with this index, before the host commits it.
-    Commit(usize),
-}
-
 /// What a [`RecordingHost`] saw, in order.
 #[derive(Default)]
 pub struct HostRecord {
     /// The lock keys of each transaction, in the order of the begins.
     pub begins: Vec<Vec<Par>>,
-    /// Whether each transaction reads through the metered reads of native execution (decision
-    /// 47), in the order of the begins.
-    pub metered: Vec<bool>,
     /// Each staged operation with the index of its transaction, in staging order.
     pub staged: Vec<(usize, StagedCopy)>,
     /// The index of each transaction that committed, in commit order.
     pub commits: Vec<usize>,
-    /// The host-work usage of the agent at each begin, staged operation and commit, in order.
-    /// Only a metered host ([`RecordingHost::metered`]) fills it.
-    pub usages: Vec<(RecordPoint, HostWorkUsages)>,
 }
 
 /// The shared record of a [`RecordingHost`].
@@ -581,7 +541,6 @@ pub type SharedRecord = Arc<Mutex<HostRecord>>;
 pub struct RecordingHost<H> {
     inner: H,
     record: SharedRecord,
-    host_work: Option<HostWorkBudget>,
 }
 
 impl<H> RecordingHost<H> {
@@ -592,30 +551,9 @@ impl<H> RecordingHost<H> {
             Self {
                 inner,
                 record: Arc::clone(&record),
-                host_work: None,
             },
             record,
         )
-    }
-
-    /// A recording host over `inner` that also records the usage of `host_work`, the host-work
-    /// budget of the agent, at each begin, staged operation and commit.
-    pub fn metered(inner: H, host_work: &HostWorkBudget) -> (Self, SharedRecord) {
-        let (host, record) = Self::new(inner);
-        (
-            Self {
-                host_work: Some(host_work.clone()),
-                ..host
-            },
-            record,
-        )
-    }
-}
-
-/// Records the usage of `host_work` at `point`, when the host is metered.
-fn note_usage(record: &mut HostRecord, host_work: Option<&HostWorkBudget>, point: RecordPoint) {
-    if let Some(host_work) = host_work {
-        record.usages.push((point, host_work.usages()));
     }
 }
 
@@ -659,25 +597,16 @@ where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         registration: TxnRegistration,
     ) -> Result<BoxedSpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation>, SpaceTxnError>
     {
-        let metered = registration.is_metered();
         let inner = self.inner.begin(lock_keys, registration).await?;
         let index = {
             let mut record = self.record.lock().expect("the record lock");
             record.begins.push(lock_keys.to_vec());
-            record.metered.push(metered);
-            let index = record.begins.len() - 1;
-            note_usage(
-                &mut record,
-                self.host_work.as_ref(),
-                RecordPoint::Begin(index),
-            );
-            index
+            record.begins.len() - 1
         };
         Ok(Box::new(RecordingTxn {
             inner,
             record: Arc::clone(&self.record),
             index,
-            host_work: self.host_work.clone(),
         }))
     }
 
@@ -700,24 +629,16 @@ struct RecordingTxn {
     inner: BoxedSpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     record: SharedRecord,
     index: usize,
-    host_work: Option<HostWorkBudget>,
 }
 
 impl RecordingTxn {
-    /// The usage of the agent before the host stages an operation, when the host is metered.
-    fn usage(&self) -> Option<HostWorkUsages> {
-        self.host_work.as_ref().map(HostWorkBudget::usages)
-    }
-
-    /// Records the copy `copy` of a staged operation, with the usage `usage` that the agent had
-    /// before the host staged it.
-    fn note_staged(&self, copy: StagedCopy, usage: Option<HostWorkUsages>) {
-        let mut record = self.record.lock().expect("the record lock");
-        let position = record.staged.len();
-        if let Some(usage) = usage {
-            record.usages.push((RecordPoint::Staged(position), usage));
-        }
-        record.staged.push((self.index, copy));
+    /// Records the copy `copy` of a staged operation.
+    fn note_staged(&self, copy: StagedCopy) {
+        self.record
+            .lock()
+            .expect("the record lock")
+            .staged
+            .push((self.index, copy));
     }
 }
 
@@ -765,9 +686,8 @@ impl SpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Recor
         op: SpaceProduce<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     ) -> Result<StagedOp, SpaceTxnError> {
         let copy = copy_produce(&op);
-        let usage = self.usage();
         let staged = self.inner.produce(op)?;
-        self.note_staged(StagedCopy::Produce(Box::new(copy)), usage);
+        self.note_staged(StagedCopy::Produce(Box::new(copy)));
         Ok(staged)
     }
 
@@ -776,9 +696,8 @@ impl SpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Recor
         op: SpaceConsume<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     ) -> Result<StagedOp, SpaceTxnError> {
         let copy = copy_consume(&op);
-        let usage = self.usage();
         let staged = self.inner.consume(op)?;
-        self.note_staged(StagedCopy::Consume(Box::new(copy)), usage);
+        self.note_staged(StagedCopy::Consume(Box::new(copy)));
         Ok(staged)
     }
 
@@ -788,14 +707,6 @@ impl SpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Recor
         SpaceTxnReceipt<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
         SpaceTxnError,
     > {
-        {
-            let mut record = self.record.lock().expect("the record lock");
-            note_usage(
-                &mut record,
-                self.host_work.as_ref(),
-                RecordPoint::Commit(self.index),
-            );
-        }
         let receipt = self.inner.commit().await?;
         self.record
             .lock()
@@ -809,7 +720,7 @@ impl SpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Recor
 // ─── A counting matcher ──────────────────────────────────────────────────────────────────────
 
 /// The matcher of a test that counts the guard checks. It is the Rholang matcher. Each call of
-/// `check_commit` or `check_commit_metered` on a continuation with a guard adds one count.
+/// `check_commit` or `check_commit_by_reference` on a continuation with a guard adds one count.
 #[derive(Clone, Default)]
 pub struct CountingMatcher {
     /// The guard checks so far.
@@ -833,15 +744,6 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for CountingMatch
         Matcher.get(pattern, data)
     }
 
-    fn get_metered(
-        &self,
-        pattern: &BindPattern,
-        data: &ListParWithRandom,
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<Option<ListParWithRandom>, RSpaceError> {
-        Matcher.get_metered(pattern, data, meter)
-    }
-
     fn check_commit(
         &self,
         continuation: &TaggedContinuation,
@@ -851,14 +753,17 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for CountingMatch
         Matcher.check_commit(continuation, matched)
     }
 
-    fn check_commit_metered(
+    fn commit_may_veto(&self, continuation: &TaggedContinuation) -> bool {
+        Matcher.commit_may_veto(continuation)
+    }
+
+    fn check_commit_by_reference(
         &self,
         continuation: &TaggedContinuation,
         matched: &[&ListParWithRandom],
-        meter: &(dyn SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
+    ) -> bool {
         self.note(continuation);
-        Matcher.check_commit_metered(continuation, matched, meter)
+        Matcher.check_commit_by_reference(continuation, matched)
     }
 }
 

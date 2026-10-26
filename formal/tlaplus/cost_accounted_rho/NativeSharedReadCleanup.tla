@@ -1,4 +1,8 @@
 ---------------------- MODULE NativeSharedReadCleanup ----------------------
+\* DR-131: host work is removed. LivePrepaid, EntriesPrepaid,
+\* EveryReleasePrepaid and the prepayment variables model the deleted
+\* prepayment of shared reads. These invariants are no longer checked, and
+\* their refutation configurations are deleted.
 (***************************************************************************)
 (* C1 (epic 8946, B1 phase B; DR-81): shared native continuation reads.    *)
 (*                                                                         *)
@@ -13,7 +17,7 @@
 (*   ColdRead   hot_store/native.rs native_continuation_views (cold path:  *)
 (*              reserve_cleanup, Arc::new, native_insert_new)              *)
 (*   WarmRead   native_continuation_views (warm path: Arc::clone)          *)
-(*   DropView   the end of a view's life in native_candidate/metered.rs    *)
+(*   DropView   the end of a view's life in native_candidate/selection.rs  *)
 (*   Evict      the release of a cache entry                               *)
 (* C2 (DR-82): a data view is an O(1) snapshot of the persistent shard, so  *)
 (* WarmRead and DropView also stand for the data views of                  *)

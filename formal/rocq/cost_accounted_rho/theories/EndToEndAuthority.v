@@ -605,6 +605,79 @@ Proof.
   lia.
 Qed.
 
+(** Added by G1-4b (DR-123): the hold of an incomplete estimate is its known
+    demand, the componentwise maximum of the branches, plus the remainder. It
+    dominates each branch, as [left_branch_fits_pointwise_max] and
+    [right_branch_fits_pointwise_max] state for the known demand alone. *)
+Theorem left_branch_fits_held_limit :
+  forall (authority : Type)
+         (left right remainder : authority_multiset authority),
+    dominates (multiset_add (multiset_max left right) remainder) left.
+Proof.
+  intros authority left right remainder key.
+  unfold multiset_add, multiset_max.
+  pose proof (Nat.le_max_l (left key) (right key)).
+  lia.
+Qed.
+
+Theorem right_branch_fits_held_limit :
+  forall (authority : Type)
+         (left right remainder : authority_multiset authority),
+    dominates (multiset_add (multiset_max left right) remainder) right.
+Proof.
+  intros authority left right remainder key.
+  unfold multiset_add, multiset_max.
+  pose proof (Nat.le_max_r (left key) (right key)).
+  lia.
+Qed.
+
+(** Added by G1-4b (DR-123): the known holds of an incomplete estimate,
+    estimate * price + 1, and its remainder, (limit - estimate) * price,
+    complete the hold of the signed limit, limit * price + 1. *)
+Theorem remainder_hold_completes_limit :
+  forall estimate limit price,
+    estimate <= limit ->
+    estimate * price + 1 + (limit - estimate) * price = limit * price + 1.
+Proof.
+  intros estimate limit price Hwithin.
+  rewrite Nat.mul_sub_distr_r.
+  assert (estimate * price <= limit * price)
+    by (apply Nat.mul_le_mono_r; exact Hwithin).
+  lia.
+Qed.
+
+(** Added by G1-4b (DR-123): settlement debits the measured use directly, so
+    the unused part of a hold never leaves the purse. The balance after the
+    debit equals the balance after the hold plus the refund of the unused
+    part, as [refund_is_unused_reservation] states for the refund alone. *)
+Theorem implicit_refund_never_leaves_purse :
+  forall balance hold debit,
+    debit <= hold ->
+    hold <= balance ->
+    balance - debit = balance - hold + (hold - debit).
+Proof.
+  intros balance hold debit Hdebit Hhold.
+  lia.
+Qed.
+
+(** Added by G1-4b (DR-123): the pointwise form, which extends
+    [pointwise_refund_is_unused_reservation]. *)
+Theorem pointwise_implicit_refund_never_leaves_purse :
+  forall (authority : Type)
+         (available reservation realized : authority_multiset authority),
+    dominates available reservation ->
+    dominates reservation realized ->
+    forall key,
+      available key - realized key =
+      available key - reservation key + refund reservation realized key.
+Proof.
+  intros authority available reservation realized Havailable Hrealized key.
+  specialize (Havailable key).
+  specialize (Hrealized key).
+  unfold refund.
+  lia.
+Qed.
+
 Print Assumptions admitted_witness_is_funded.
 Print Assumptions left_branch_fits_reservation.
 Print Assumptions pointwise_funded_realized_is_funded.
@@ -634,3 +707,8 @@ Print Assumptions state_bound_certificate_funds_committed_cost.
 Print Assumptions state_bound_chain_preserves_adjacent_roots.
 Print Assumptions admitted_costs_are_funded.
 Print Assumptions state_bound_exact_settlement_conserves.
+Print Assumptions left_branch_fits_held_limit.
+Print Assumptions right_branch_fits_held_limit.
+Print Assumptions remainder_hold_completes_limit.
+Print Assumptions implicit_refund_never_leaves_purse.
+Print Assumptions pointwise_implicit_refund_never_leaves_purse.

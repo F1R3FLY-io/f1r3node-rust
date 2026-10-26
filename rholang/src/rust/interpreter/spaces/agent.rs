@@ -24,9 +24,9 @@
 //!   transaction.
 //! * A method that stages work returns a [`Prepared`]. The job commits it exactly once with
 //!   [`Prepared::commit`]. Nothing awaits between `begin` and the commit, except `begin`.
-//! * Matching uses only the metered matcher calls, with [`SpaceEnv::meter`]. The agent also
-//!   reserves its own decodes, copies and tie-breaks on that meter before it makes them, and it
-//!   prepays at staging the work of the outcome after the commit (decision 42).
+//! * Matching uses the injected matcher of the host ([`super::matching::SpaceMatcher`]). A space
+//!   operation meters only its COMMs and the bytes that it stores, through the observer calls
+//!   of the host (DR-131).
 //! * A collection operation fires in at most `costs::FIRE_ROUND_CAP` rounds. It re-issues the
 //!   rest with the A10 rule of `costs::FireRounds`. A re-issued persistent operation keeps the
 //!   `ord` of its first round (decision 43).
@@ -49,7 +49,7 @@ use models::rhoapi::{
 use models::rust::space_factory_urn::SpaceFactoryUrn;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceResult;
 use rspace_plus_plus::rspace::space_store_handle::{
-    BoxedSpaceTxn, NativeViewReads, SpaceStoreHandle, SpaceTxnError, SpaceTxnReceipt,
+    BoxedSpaceTxn, SpaceStoreHandle, SpaceTxnError, SpaceTxnReceipt,
 };
 
 use super::ephemeral::VolatileRegistry;
@@ -57,7 +57,7 @@ use super::errors::SpaceError;
 use super::mirror::MirrorWrites;
 use super::namespace::{CollectionKey, NativeSpace};
 use crate::rust::interpreter::accounting::RuntimeBudget;
-use crate::rust::interpreter::reified::costs::{ReissueCause, ScanMeter};
+use crate::rust::interpreter::reified::costs::ReissueCause;
 
 /// The substrate handle over the host store of a Rholang runtime.
 pub type ParSpaceStore = SpaceStoreHandle<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
@@ -76,9 +76,6 @@ pub struct SpaceEnv {
     /// The phlo budget of the deploy. The `before_observe` closures register the introduction
     /// authority of each staged operation with it (P4 design B.7).
     pub budget: RuntimeBudget,
-    /// The host-work meter of the job (readiness review S5, decision 42): the matcher and the
-    /// agent reserve each read and copy on it before they make it.
-    pub meter: ScanMeter,
     /// The book of the ephemeral spaces of the root evaluation (P7, VR-1). `begin` records the
     /// volatile lock keys of each transaction in it (VR-2).
     pub volatile: Arc<VolatileRegistry>,
@@ -101,23 +98,15 @@ pub enum OpOrigin {
 }
 
 impl SpaceEnv {
-    /// Opens the transaction of a method over `lock_keys`. In native execution the transaction
-    /// reads through the metered reads of the substrate on [`SpaceEnv::meter`]: each key and
-    /// each value that it reads is charged, the same on a cache hit and a miss (decision 47,
-    /// I-12). In legacy execution it reads as the host does.
+    /// Opens the transaction of a method over `lock_keys`. The transaction reads the store as
+    /// the host does.
     ///
     /// The lock keys with an ephemeral KIND go into the book of the evaluation first, so the
     /// sweep at the end of the evaluation removes every volatile channel that the transaction
     /// can write (VR-2).
     pub async fn begin(&self, lock_keys: &[Par]) -> Result<ParSpaceTxn, SpaceTxnError> {
         self.volatile.record_locked(lock_keys);
-        match self.budget.native_execution_active() {
-            true => {
-                let reads = Arc::new(NativeViewReads::new(self.meter.clone()));
-                self.store.begin_metered(lock_keys, reads).await
-            }
-            false => self.store.begin(lock_keys).await,
-        }
+        self.store.begin(lock_keys).await
     }
 }
 
@@ -556,7 +545,6 @@ mod tests {
         SpaceEnv {
             store: SpaceStoreHandle::new(host),
             budget: RuntimeBudget::new(Cost::create(1_000, "space agent test")),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         }

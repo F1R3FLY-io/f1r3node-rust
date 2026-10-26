@@ -1,5 +1,7 @@
 # Numeric merge authority preservation
 
+**Note (DR-131).** Host-work metering is removed (`75de2dc39`). The host-work content of this document is historical. Restore: `git revert 75de2dc39`.
+
 ## Status and scope
 
 The September 10, 2026 investigation demonstrates accounting metadata loss in numeric merge reconstruction.
@@ -102,6 +104,13 @@ The next COMM would require the authorities of all retained numeric outputs.
 The user approved that economic consequence because numeric aggregation requires an explicit accounting rule.
 The existing COMM authority combiner supports this representation.
 The aggregation policy depends on the explicit user approval recorded above, not solely on that implementation mechanism.
+
+**Amendment (DR-101).** A numeric datum that a system body writes, such as a vault balance, carries residue regions.
+A residue region is a Unit region whose identity is bound to the paying deployment.
+The union rule retains it like any other Unit region (`UnitProvenance`).
+A later deployment never resolves it, because its deployment identity differs, so it adds no demand.
+The economic consequence above therefore applies only to non-Unit regions, which come from data that user code writes.
+See [DR-101](../cost-accounting-decision-records.md#dr-101--system-residue-is-never-charged-to-an-earlier-deployment).
 
 Native resource-stack outputs have an empty `pars` list and a populated `cost_stack` field.
 They are not numeric outputs.

@@ -36,14 +36,31 @@ fn concurrent_rspace_architecture_repro_ispace_mutations_must_use_shared_access(
     }
 }
 
+// Superseded by DR-129: restored dev's randomized candidate order (user
+// decision 2026-10-12). This guard read only rspace.rs, while the shuffle
+// lives in rspace/ops_produce.rs, so it passed without checking anything.
+// Native replay follows the recorded pick in its own canonical order, so play
+// needs no deterministic order. The guard below requires dev's shuffle instead.
+// #[test]
+// fn concurrent_rspace_architecture_repro_candidate_ordering_must_be_content_hash_deterministic() {
+//     let rspace = source("src/rspace/rspace.rs");
+//
+//     assert!(
+//         !rspace.contains("thread_rng()") && !rspace.contains(".shuffle("),
+//         "RSpace production matching still uses random shuffle ordering;
+// consensus requires \          deterministic content-hash ordering"
+//     );
+// }
+
+/// Added by DR-129: play shuffles the candidates of an operation at random,
+/// as dev does (`RSpace::shuffle_with_index`).
 #[test]
-fn concurrent_rspace_architecture_repro_candidate_ordering_must_be_content_hash_deterministic() {
-    let rspace = source("src/rspace/rspace.rs");
+fn concurrent_rspace_architecture_repro_play_candidate_order_is_devs_random_shuffle() {
+    let produce = source("src/rspace/rspace/ops_produce.rs");
 
     assert!(
-        !rspace.contains("thread_rng()") && !rspace.contains(".shuffle("),
-        "RSpace production matching still uses random shuffle ordering; consensus requires \
-         deterministic content-hash ordering"
+        produce.contains("indexed_vec.shuffle(&mut rand::rng());"),
+        "play no longer shuffles its candidates at random as dev does (DR-129)"
     );
 }
 

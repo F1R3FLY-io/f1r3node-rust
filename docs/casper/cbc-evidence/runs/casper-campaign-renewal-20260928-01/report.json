@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "task": "TASK-017-12",
+  "scope": "local-campaign-control-renewal",
+  "source_head_revision": "2fb0686cf38752a0251af6d1d3e26afebb6d9eb9",
+  "working_tree": true,
+  "verification": "passed",
+  "claim_discharge": "pending",
+  "binding": "pending",
+  "soak": "pending",
+  "source_digests": {
+    "scripts/casper-soak/Cargo.toml": "0389290c18cb725d108ce3709018f92d9f04fdf84a62eb97d905c53874f43139",
+    "Cargo.toml": "7c5397136932d04c6e72a04a593249dea347a0f13c4cbd2d7e04c7d6a69f9e88",
+    "Cargo.lock": "9da684952a74e56706dfd0fcc9165a02e05529443d963f5040aec61b2a6a0f75",
+    "rust-toolchain.toml": "cef5cc010fbd237ab34a4d07129372406e11ff8595c2efc1126d9c93e039aed4",
+    ".cargo/config.toml": "da7e626941c437575405e8eade493a1994483236d0f775c39800b2b2e93f230f",
+    "scripts/casper-soak/src/campaign_control/mod.rs": "1131012be392236d3ccaaf0e3df4bc36cc8686d3fdd019342b5fc5d465a5662b",
+    "scripts/casper-soak/src/campaign_control/models.rs": "872945c189eb45c8845c22088e7697203ab80216f24cf7be533baf987e84da78",
+    "scripts/casper-soak/src/campaign_control/operations.rs": "a4e9d61ab8acedb102f34c4df58fdb25ef0ea593d11592885160bafad20b3358",
+    "scripts/casper-soak/src/campaign_control/results.rs": "499553cb313edd93b363a134eddac3a7b49dba29a07ed3bef8e69b9d893ee8fb",
+    "scripts/casper-soak/src/campaign_control/transport.rs": "e0b8843bb7d9fe2f0e1580441ba6e89c09a21bdabaa52c21c9b97e7fc0530f64",
+    "scripts/casper-soak/src/bin/casper-campaign-control.rs": "dbf6d2e263744217e66ada6cca0f8308b534e9e22e5a7f3065bc29999f48c515",
+    "scripts/casper-soak/src/bin/casper-campaign-models.rs": "c1b825ef51102de1331825c887366396ca4ccde31e83acdf7db8f561713b4bc6",
+    "scripts/casper-soak/src/bin/casper-campaign-reservation.rs": "e4dddfadbb59809be991522ebc5360226b17248487016045e30489ff4990a778",
+    "scripts/casper-soak/src/bin/casper-campaign-supervisor.rs": "33015a2fd6765f55301ac04540f842eb3cdb59ace9c53b09b8c19a9773b7305e",
+    "scripts/casper-soak/src/authority_observer.rs": "71e960dea70de39f7f532dc3097aef2a6a271d729f3ab1f7ab62bcccb34951de",
+    "scripts/casper-soak/src/host_control.rs": "933e9cd7d05e763fea581d53f255ddba08fe3737c2046d3bbe6e996a06859aa9",
+    "scripts/casper-soak/src/lib.rs": "a70f76a28de8ef8010eb7f8876b5e947ce94bf35752bbd70b086983383ee7a8f",
+    "scripts/casper-soak/src/main.rs": "23d092ca695cde2aa3a78b242c13435c2f1cf73ac3532b8a0a96688b441696e8",
+    "scripts/casper-soak/src/manifest.rs": "d9606d542cfb9bc058f691196244ae2e6055e6c84c02b5c2581ee07e70c03000",
+    "scripts/casper-soak/src/models.rs": "99e3f736aa9e753b73edced77049ab206f993d612870bb1d866f6d5c0655983f",
+    "scripts/casper-soak/src/runtime.rs": "7fd98a56a01d42af70d2c0a988da27a9ef35b861c1d164663d75ac675743f85a",
+    "scripts/casper-soak/tests/campaign_control.rs": "747558394babc26d3996392ebf8d8196197f61a77e3caa0957803c13f23333a4",
+    "scripts/casper-soak/tests/campaign_models.rs": "582d352dff1e054cd8269b576b9a9e07d81b77f5e4c4399076b54845eee8e41a",
+    "scripts/casper-soak/tests/campaign_reservation.rs": "405b2f6f4c4b332e3d3d9da4801b1cb43242def27582f682f93686c44f4e0d20",
+    "scripts/casper-soak/campaign-bootstrap.sh": "c0724db2eb037e9207a04c8d4bfb687fdf47c79af18c468d08a4f4e9d11c9d10",
+    "scripts/casper-soak/campaign-control.sh": "d96ea4f407e2ea42f64b8662bfd5d26d34a8fa0e65307bd6384f5197f71d3ae2",
+    "scripts/casper-soak/campaign-finish.sh": "046de2b4899bdc157bf93af54dfad63c500cfadc527ea4551e2f1ccf5f80ced3",
+    "scripts/casper-soak/campaign-host-guard.sh": "da2137160392aa51269d42112becae441cd878715a20bb7782e6dc6f9377fbfa",
+    "scripts/casper-soak/campaign-host.sh": "5102612396534f34810c46460d0826101909834b665124158f07a977591c5ce2",
+    "scripts/casper-soak/campaign-job.sh": "06f5eaa138f1559691b41a76e9e4f9fa9e81b372d5077a57c833590a8453fe1d",
+    "scripts/casper-soak/campaign.sh": "51344dd77c14eeadc864e8c0973871bd5181475cee0f10a6872354de2808ad69",
+    "scripts/casper-soak/check-campaign-control.sh": "d8c20e8e9ce5d1aeb8b4788d85299bcc50635a81614350a3664f583e4ec19dc9",
+    "scripts/casper-soak/check-campaign-reservation.sh": "1f01d7fe1ba9adfa5d1a657d7993ffa259349b7a6638ef607f9ad335a9100666",
+    "scripts/casper-soak/test-campaign-control.sh": "388df7432af1bd2679d5035d604a45ee3e22bd7f69da850bf5ce6d3cf3b0ce90",
+    "scripts/casper-soak/test-campaign.sh": "82bcb927fbfc9872ce820c92b42f0765645909e3bbddf5f58476c9d19d419647",
+    "scripts/casper-soak/supervisor/Dockerfile": "fa53d7ee32a5c7e5aafea06da9abbe1bc5f625286d68cfc65a4f46e45cdd09b8",
+    "scripts/casper-soak/supervisor/func.yaml": "af6e76a6348418e91c8193b2474858b3b70f00a21860b163a4d73e14116239d7",
+    "scripts/casper-soak/supervisor/start.sh": "9f38b5c0336b10f68db8cdd3f0432e0e2fbb71db9292a1d51ac40fbe3680a6b3",
+    "formal/tlaplus/casper_soak/campaign/CampaignControl.tla": "1965550f0c8531114139581c53ca2af04f572b2c0c101622fab16bc1d5f290b8",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_approval_unsafe.cfg": "6911aa0a8605f15dadf38b2ffc77605463fd9723e9c0fb3a424f723ed001df9d",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_prerequisites_unsafe.cfg": "f535f81c05659121ceb6c6518416c4cd1879a4a32cc343a396dde21e40fb2041",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_reservation_unsafe.cfg": "c4ffd9223eaca73670962ddcd22adc6d1da30ebd595a1a3a1ec44eaa046ba8ca",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_schedule_unsafe.cfg": "43c901886067013d789917c31d3b7b55ac23c2f23e79441eaba4b19e4e0133bf",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl_termination_unsafe.cfg": "e737e0f3f76a226617ca3352922f62bdc941a9ca7b7e5601e4d2ad7b793ec31e",
+    "formal/tlaplus/casper_soak/campaign/MC_CampaignControl.cfg": "01a856af1bf93f8971068d71ca992ae90025bc925ba7b59ba5946b8f080b0767",
+    "formal/tlaplus/casper_soak/campaign/README.md": "90c4eb05ec939b4f7d0988feff010a9ff72ffbfef751c85ff21a031cf9d6ed7a",
+    "formal/tlaplus/casper_soak/campaign/verification-plan.jsonc": "4486a82ee8e4ecee3f0846013f9c9caf8c6644c6229b140545e82eb23d163ba6",
+    "docs/claims/casper-campaign-execution.md": "1574f70fc5b1f432b7bf1fa98a6deca125d3221e3b29864686a42da70a2b31bb",
+    "docs/claims/casper-campaign-reservation.md": "8f040e6d0f514575e9d832ba05b9cd4e46f9b5a1947cf1c31cadd1cf3d049f4d",
+    "docs/claims/casper-soak-campaign.md": "4440eec4b9710119bda6deed38d228ceebfa17e0c263c826a008702d8e2e69e5",
+    ".github/workflows/casper-campaign-control.yml": "109a71c33f50577dc42daa7a8800504a8df7c0bb81ef844c8fd97e7c533a7541",
+    ".github/workflows/merge-recovery-soak.yml": "931b0f44db5b3d7d4b3e12fb5071d5e98a381fd021b7a1cea79308d6905bdbaa"
+  },
+  "previous_hosted_evidence": {
+    "path": "docs/casper/cbc-evidence/runs/casper-campaign-hosted-58e952c6f-01/report.json",
+    "sha256": "c04d4b7c8bce2bd31b670f7e6494886a80b401fbe78ad977f30bb72cf3ae85c7",
+    "changed_sources": [
+      {
+        "path": "Cargo.lock",
+        "previous_sha256": "cd89db867ef7750731daf1b9c6ff1d7742f72a348072525247ba218cc7e78eaf",
+        "sha256": "9da684952a74e56706dfd0fcc9165a02e05529443d963f5040aec61b2a6a0f75"
+      },
+      {
+        "path": ".github/workflows/merge-recovery-soak.yml",
+        "previous_sha256": "0e61d97222f962d973e9bb5322e6f70d3d302c7936be0ac59e05efafc86c9ece",
+        "sha256": "931b0f44db5b3d7d4b3e12fb5071d5e98a381fd021b7a1cea79308d6905bdbaa"
+      }
+    ]
+  },
+  "checks": {
+    "planner": 133,
+    "controller_and_supervisor": 32,
+    "model_runner_regressions": 3,
+    "isolated_linux_reservations": 16,
+    "ignored_reservation_helper": 1,
+    "models": [
+      {
+        "configuration": "MC_CampaignControl.cfg",
+        "elapsed_seconds": 0.752897333,
+        "exit": 0,
+        "expected_exit": 0,
+        "expected_property": null,
+        "log": "MC_CampaignControl.cfg.log",
+        "log_sha256": "59f3bcdf969f77920cbe89e6ad12d0f6357c10546dc3ba20f8830a90823a2bcb",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CampaignControl_approval_unsafe.cfg",
+        "elapsed_seconds": 0.567280875,
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "AuthorizedLaunch",
+        "log": "MC_CampaignControl_approval_unsafe.cfg.log",
+        "log_sha256": "d9b75be34349a62e1d547aad7e747f5afb22d462a3c7f221855c831913936f34",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CampaignControl_reservation_unsafe.cfg",
+        "elapsed_seconds": 0.5800295,
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "OneSubmission",
+        "log": "MC_CampaignControl_reservation_unsafe.cfg.log",
+        "log_sha256": "79ebf16fdd0cbde66d1483da5378505a145f9a7ec8ba7c5a9f89250e29109ad0",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CampaignControl_schedule_unsafe.cfg",
+        "elapsed_seconds": 0.588743459,
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "ScheduledLaunch",
+        "log": "MC_CampaignControl_schedule_unsafe.cfg.log",
+        "log_sha256": "58c73c1655078f91eae4152b20b23797e9792995ba5fdbb31d3e96dfc74a1a89",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CampaignControl_termination_unsafe.cfg",
+        "elapsed_seconds": 0.586440417,
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "ConfirmedCleanup",
+        "log": "MC_CampaignControl_termination_unsafe.cfg.log",
+        "log_sha256": "dc75b50a77e72fba0ce61eacc87c0cac137548f112d78cdb8fad48b00d736675",
+        "outcome": "passed"
+      },
+      {
+        "configuration": "MC_CampaignControl_prerequisites_unsafe.cfg",
+        "elapsed_seconds": 0.570234458,
+        "exit": 12,
+        "expected_exit": 12,
+        "expected_property": "PriorStagesPassed",
+        "log": "MC_CampaignControl_prerequisites_unsafe.cfg.log",
+        "log_sha256": "229bfe2f2075f477597676494e84776470e53ef496336ddc8e9739b016dd28cc",
+        "outcome": "passed"
+      }
+    ],
+    "source_inventory_stable": true
+  },
+  "retained_attempts": [
+    {
+      "scope": "initial aggregate suite",
+      "exit_code": 1,
+      "reason": "The native PATH selected BSD realpath and an incompatible sha256sum executable."
+    },
+    {
+      "scope": "first GNU fixture retry",
+      "exit_code": 127,
+      "reason": "The replacement PATH omitted cargo."
+    },
+    {
+      "scope": "sandbox planner retry",
+      "exit_code": 1,
+      "reason": "The simulated API could not write to /dev/stdout."
+    }
+  ],
+  "log_digests": {
+    "target/task-017-12-control-renewal-20260928/checks/report.json": "f06bdc4748f57f1e416196716022fb4a67b0cab047afac554028043bcb820e6a",
+    "target/task-017-12-control-renewal-20260928/checks/source-before.sha256": "39aa4c1c66734d9855ba2ae9090c13a12d1843c575e0049f6cac0bcbbc886195",
+    "target/task-017-12-control-renewal-20260928/checks/source-after.sha256": "39aa4c1c66734d9855ba2ae9090c13a12d1843c575e0049f6cac0bcbbc886195",
+    "target/task-017-12-control-renewal-20260928/checks/tools.txt": "dd247dddb6bb29ab35ef79c66caa6e946f17d9fd5a991b2e20fc6253fd64c488",
+    "target/task-017-12-control-renewal-20260928/checks/fixtures.txt": "2fe58e19dec2bbd950993ee6506c206269ef6a03e4621a52d92cc00c58623bff",
+    "target/task-017-12-control-renewal-20260928/checks/planner.txt": "56cf7e9112cadc69ec63c7da23a155639d23f824655e71ae0e9e1d39f17e9cac",
+    "target/task-017-12-control-renewal-20260928/checks/models/report.json": "e258343ad9279f5477551952d22ea11a99d65fdf6b905c1682ee1c6cb0625477",
+    "target/task-017-12-control-renewal-20260928/checks/models.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "target/task-017-12-control-renewal-20260928/checks/regressions.txt": "448ed96551ae14e007addd9f365cb99e3db87260fcb40e5f7d6ebc8ecb52c2c4",
+    "target/task-017-12-control-renewal-20260928/checks/reservations/report.json": "15788b3f375dcfedfe66a1922f0a737fc27afd4513ccbf636badd14c824db93f",
+    "target/task-017-12-control-renewal-20260928/checks/reservations/tests.txt": "bc5e873ab4a71c9a2ee52ce82d4a8c5e7e1ee603dcc8fc0ba23b40a00556b097",
+    "target/task-017-12-control-renewal-20260928/checks/reservations/binaries.sha256": "abbc2b1118b1a653d1702a8df447f8bbfe77e971081a57f4ae0fe048dab12117",
+    "target/task-017-12-control-renewal-20260928/checks/reservations/container.json": "9713b6a217ba581d674f105ba544ac32b1de21507bfe3f2cfe983e089e73253e",
+    "target/task-017-12-control-renewal-20260928/checks/reservations/container-final.json": "78d7fae1b387b56f69b4787e28f92a2c73c03b74d786f4308ee447fe800b731d",
+    "target/task-017-12-control-renewal-20260928/fixtures-gnu/rust.log": "4eb748c63779186b53ad5ad6315a09ac915a29f37311b3ffb24287258c0837f5",
+    "target/task-017-12-control-renewal-20260928/fixtures-final/report.json": "f5fb081d373c4abc1eb758ec4c8a0d75ba338bcbbd4fc00b8b51359d89d042d8",
+    "target/task-017-12-control-renewal-20260928/fixtures-final/rust.log": "38951ebf283c35e5dce913aaa525d4b163715d63551daa0dfa76a3b1ca63aedb",
+    "target/task-017-12-control-renewal-20260928/planner-final/dispatch-prior-consistent/prior-101/run.json.stderr": "9690a78ad7d6794df543724252e6856359e481549f0d00f0e8051398871b1110",
+    "target/task-017-12-control-renewal-20260928/planner-unrestricted/summary.json": "bc29e6ff89b61a438e469cb02f840613d97b0ba267d2362393e1bd9829a25263",
+    "target/task-017-12-control-renewal-20260928/planner-unrestricted.log": "84acc557134f7874fb0e7746db858a120af0bf7b4bfb13bd85f56a432cbcff12",
+    "target/task-017-12-control-renewal-20260928/claims.json": "91daece32a69ea84c5cbd68fc13c4d17933cc8cd1b5e5c07d43763590ec0ca1e",
+    "target/task-017-12-control-renewal-20260928/checks/models/MC_CampaignControl.cfg.log": "59f3bcdf969f77920cbe89e6ad12d0f6357c10546dc3ba20f8830a90823a2bcb",
+    "target/task-017-12-control-renewal-20260928/checks/models/MC_CampaignControl_approval_unsafe.cfg.log": "d9b75be34349a62e1d547aad7e747f5afb22d462a3c7f221855c831913936f34",
+    "target/task-017-12-control-renewal-20260928/checks/models/MC_CampaignControl_reservation_unsafe.cfg.log": "79ebf16fdd0cbde66d1483da5378505a145f9a7ec8ba7c5a9f89250e29109ad0",
+    "target/task-017-12-control-renewal-20260928/checks/models/MC_CampaignControl_schedule_unsafe.cfg.log": "58c73c1655078f91eae4152b20b23797e9792995ba5fdbb31d3e96dfc74a1a89",
+    "target/task-017-12-control-renewal-20260928/checks/models/MC_CampaignControl_termination_unsafe.cfg.log": "dc75b50a77e72fba0ce61eacc87c0cac137548f112d78cdb8fad48b00d736675",
+    "target/task-017-12-control-renewal-20260928/checks/models/MC_CampaignControl_prerequisites_unsafe.cfg.log": "229bfe2f2075f477597676494e84776470e53ef496336ddc8e9739b016dd28cc"
+  },
+  "strict_claim_audit": {
+    "exit_code": 4,
+    "claim001": "pending",
+    "claims002_through008": "discharged",
+    "all_soak_fields": "pending"
+  },
+  "hosted_renewal": false,
+  "live_qualification": "pending",
+  "node_launches": 0,
+  "cloud_launches": 0,
+  "limitations": [
+    "Controlled fixtures do not establish deployed OCI behavior or node qualification.",
+    "The aggregate first attempt failed. The component reruns supplied the passing results.",
+    "Named source-bound acceptance remains pending.",
+    "The node observer prerequisite has not merged into dev."
+  ]
+}

@@ -6,15 +6,19 @@
 
 use casper::rust::blocks::block_processor::OfInterestVerdict;
 use casper::rust::casper::Casper;
-use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
+// Changed by DR-116 (gap G6): the recovery family runs on offered envelopes.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
 async fn a_racing_duplicate_must_not_destroy_dependency_recovery() {
-    let genesis = GenesisBuilder::new()
+    // Changed by DR-116 (gap G6): an offered-funded genesis.
+    // let genesis = GenesisBuilder::new()
+    let genesis = GenesisBuilder::offered_v6()
         .build_genesis_with_parameters(None)
         .await
         .expect("Failed to build genesis");

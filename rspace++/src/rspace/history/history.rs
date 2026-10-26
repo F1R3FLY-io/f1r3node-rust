@@ -4,7 +4,6 @@ use shared::rust::store::key_value_store::KeyValueStore;
 
 use crate::rspace::errors::{HistoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use crate::rspace::hashing::native_source::SourceMeter;
 use crate::rspace::history::history_action::HistoryAction;
 use crate::rspace::history::instances::radix_history::RadixHistory;
 pub struct NativePreparedHistory {
@@ -22,7 +21,6 @@ pub trait History: Send + Sync {
     fn prepare_native(
         &self,
         actions: Vec<HistoryAction>,
-        meter: &dyn SourceMeter,
     ) -> Result<NativePreparedHistory, RSpaceError>;
 
     fn root_ref(&self) -> &Blake2b256Hash;
@@ -31,7 +29,7 @@ pub trait History: Send + Sync {
 
     fn reset(&self, root: &Blake2b256Hash) -> Result<Box<dyn History>, HistoryError>;
 
-    fn snapshot_native(&self, meter: &dyn SourceMeter) -> Result<Box<dyn History>, RSpaceError>;
+    fn snapshot_native(&self) -> Box<dyn History>;
 }
 
 pub struct HistoryInstances;

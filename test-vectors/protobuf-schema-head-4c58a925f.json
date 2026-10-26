@@ -1,0 +1,26 @@
+{
+  "name": "protobuf_schema_head_4c58a925f",
+  "base_revision": "4c58a925f2b63e4aa3721383a0b885e2f330a145",
+  "digest": "Blake2b-256 of the file bytes at the base revision (git show <base>:<path>)",
+  "scope": "every .proto file outside target/ and .git/, models/build.rs and models/src/rust/serde_helpers.rs",
+  "files": {
+    "comm/src/main/protobuf/coop/rchain/comm/protocol/kademlia.proto": "1bcb0c0ed3ad1b229598281dfb0815ddec2fde25407fd77a195b0ae54412467b",
+    "comm/src/scalapb/scalapb.proto": "4a63f2530aa81a8551b995ab8382c1a42f063289c4a3d340f8de5a950d7d1cab",
+    "models/build.rs": "649d7ac0777d455423058def9add7882a536f17ec931434c8e4956a3549d9d32",
+    "models/src/main/protobuf/CasperMessage.proto": "51a8cbd350c9871eff8a1dba6e7e2c193478187cbd9272f76cdc7271b0d1b292",
+    "models/src/main/protobuf/DeployServiceCommon.proto": "5ea41b5be0da98c168983d3a36053de7d762f6624c28b183429ba5b9edaa7879",
+    "models/src/main/protobuf/DeployServiceV1.proto": "49688faf6edef49a462b5438df4df5b5534b5de48f1cf431076d0692d7da3c4a",
+    "models/src/main/protobuf/ExternalCommunicationServiceCommon.proto": "6bc66b168bb5e3fd0f123de8b11667986e3698ec6bbdcc680fbba0b104d424fa",
+    "models/src/main/protobuf/ExternalCommunicationServiceV1.proto": "18e23f7acf79c34f1f82c85f57fe07399c4817701eecaf274dfc49b6a434e61f",
+    "models/src/main/protobuf/ProposeServiceCommon.proto": "9112917185389ee9932860536783b3657e9f513149576962e3849d25f8b921da",
+    "models/src/main/protobuf/ProposeServiceV1.proto": "a4a9baa4291a35839e439733e6412c7524205678210c7a854e3475a1c14ddbe8",
+    "models/src/main/protobuf/RhoTypes.proto": "115815d116759422814d7bf076e7be64d9a3bd19a3ebae73f74e66797a04c946",
+    "models/src/main/protobuf/ServiceError.proto": "233d2df033e9b168d481a8ec643db45fca9a54b0ba787e651c013ecd0a021335",
+    "models/src/main/protobuf/routing.proto": "d600f613f4e2ae8ff8bc07bd73a72df937e19a4a9bf792c83b99325122b20f37",
+    "models/src/rust/serde_helpers.rs": "3cc4844dca682869bf8f2b6f63162eca8bea9548404011736fa74be4480140a7",
+    "models/src/scalapb/scalapb.proto": "4a63f2530aa81a8551b995ab8382c1a42f063289c4a3d340f8de5a950d7d1cab",
+    "node/src/main/protobuf/lsp.proto": "49fc5f98b321e57254e806414e22c6ffab35043d010948bdb4c6ff0db5396698",
+    "node/src/main/protobuf/repl.proto": "2242f53638b6a2e9837859ea143fee3517874fd9561406023807a6396cd288b0",
+    "node/src/scalapb/scalapb.proto": "4a63f2530aa81a8551b995ab8382c1a42f063289c4a3d340f8de5a950d7d1cab"
+  }
+}

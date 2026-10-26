@@ -1,5 +1,5 @@
 {
-  "captured_at_revision": "4d67b5ccc42c4e510162d075f7ed423bf8175563",
+  "captured_at_revision": "4c58a925f2b63e4aa3721383a0b885e2f330a145",
   "entries": {
     "casper/src/main/resources/AuthKey.rho": {
       "outcome": "ok",
@@ -63,9 +63,9 @@
     },
     "casper/src/main/resources/SystemVault.rho": {
       "outcome": "ok",
-      "prost_blake2b256": "8fad8b5e1f53b503e79af5cef90acdb222ff4d5b579c131098c504b5cc9d4f8a",
-      "source_blake2b256": "e8120f921ac6f649b3bc8cb3963ebe21fee588b8cb940c6b95698d9c74d5b9a8",
-      "stable_hash": "54040f3be764a890804414e4c425d1b6ebd0a17a39ee7ab76c6af720ea19cd8c"
+      "prost_blake2b256": "3e3fb0072dd6edc302df31b84187111ce7add8f3fe28a1143a915a0bcf378eab",
+      "source_blake2b256": "6c4501bc0d1a2b7120eb6fe4270b47624ff75a3a3a27ffe13b382c8e96d70cf9",
+      "stable_hash": "8a25419bd9ea494e8ccb80d745ad65eeac41282e6bab064d962e7a46ce1e9b52"
     },
     "casper/src/main/resources/TokenMetadata.rhox": {
       "outcome": "ok",

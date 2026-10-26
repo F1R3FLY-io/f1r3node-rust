@@ -1,6 +1,5 @@
 use futures::{stream, StreamExt, TryStreamExt};
 use rholang::rust::interpreter::accounting::phlo_execution::PhloFundingSource;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 
 use super::*;
 use crate::rust::errors::CasperError;
@@ -51,7 +50,6 @@ impl<'a, A> DirectWalletFunding<'a, A> {
         reader: &dyn SupplyReader,
         expected_pre_state: [u8; 32],
         parallel_reads: NonZeroUsize,
-        budget: &HostWorkBudget,
     ) -> Result<DirectWalletSnapshot<'a, A>, DirectWalletSnapshotError> {
         if reader.pre_state_root() != expected_pre_state {
             return Err(DirectWalletSnapshotError::WrongPreState);
@@ -74,7 +72,7 @@ impl<'a, A> DirectWalletFunding<'a, A> {
             let payer = payers
                 .get(&key)
                 .ok_or(DirectWalletSnapshotError::MissingAuthorizedSource)?;
-            let inventory = reader.read_purse(&payer.signature, budget).await?;
+            let inventory = reader.read_purse(&payer.signature).await?;
             let capacity = u64::try_from(inventory.balance.unwrap_or(0))
                 .map_err(|_| DirectWalletSnapshotError::NegativeBalance)?;
             Ok::<_, DirectWalletSnapshotError>(DirectWalletSource {

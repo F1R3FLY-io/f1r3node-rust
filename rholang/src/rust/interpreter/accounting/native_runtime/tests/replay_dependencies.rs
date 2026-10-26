@@ -37,7 +37,7 @@ fn retry_waits_for_its_exact_accepted_owner_while_independent_work_proceeds() {
     };
     let replay = bind(&recording, rows.into(), log)
         .unwrap()
-        .into_replay(host())
+        .into_replay()
         .unwrap();
     assert_eq!(replay.trace().journal_index(0), Some(2));
     assert_eq!(replay.trace().journal_index(2), Some(0));
@@ -115,7 +115,7 @@ proptest! {
         let recording = NativeBudgetRecording {
             session: [0; 32], attempts: attempts.into(), retries: Arc::from([]), used: channels.len() as u64, paths: fixture_paths(),
         };
-        let replay = bind(&recording, rows.into(), log).unwrap().into_replay(host()).unwrap();
+        let replay = bind(&recording, rows.into(), log).unwrap().into_replay().unwrap();
         let root = replay.checkpoint().unwrap();
         for _ in 0..2 {
             let mut completed = vec![false; channels.len()];

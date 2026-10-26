@@ -5,7 +5,7 @@
 //! stores a record on `a`, parks a persistent waiter on `b` and a linear waiter on `c`, and
 //! writes and takes one record on `d`, so the collection of `d` exists and is empty. The chain
 //! checkpoints the root R1. Two branches then play one deploy each on R1, as two sibling
-//! blocks do. Every deploy runs in native execution at the v6 host-work limits (decision 69).
+//! blocks do. Every deploy runs in native execution (decision 69).
 //!
 //! The rig builds the merge index of each branch as Casper builds it for a block
 //! (`casper/src/rust/merging/block_index.rs`, `create_event_log_index`). It calls the merger
@@ -32,8 +32,8 @@
 //! allocator of its row, or no counter for an unordered family, and its merge index holds its
 //! space events. No mergeable channel of a deploy is a Reified channel (item 19 of the consensus
 //! checklist). For a conflict-free row, block 3 runs on the merged root in a restarted runtime,
-//! and native replay reproduces it. Block 3 on the root of a serial order gives the same root, the
-//! same phlo and the same host work. For a conflict row, block 3 runs on the root of the left
+//! and native replay reproduces it. Block 3 on the root of a serial order gives the same root and
+//! the same phlo. For a conflict row, block 3 runs on the root of the left
 //! branch, and native replay reproduces it. Every deploy of every row also passes the coverage
 //! check of A4. The check runs in every build profile, and the test name keeps the word of the
 //! plan.
@@ -59,8 +59,8 @@ use support::family_programs::{
 };
 use support::merge::{index, merged_root, touching, without_channels};
 use support::native::{
-    assert_reproduces, certify, footprint_channels, host_work, native_play, NativeChain, Played,
-    AMPLE_LIMIT, OUT,
+    assert_reproduces, certify, footprint_channels, native_play, NativeChain, Played, AMPLE_LIMIT,
+    OUT,
 };
 use support::session::{counter_channel, data_channel, native, space_counter_channel, Injections};
 
@@ -489,7 +489,7 @@ fn check_branch(rig: &Rig, branch: &Played, slot: usize, ordered: bool, label: &
 /// dependency, and the merged root is the root of both serial orders. Block 3, the program
 /// `block3` over the names, then runs on the merged root in a restarted runtime and delivers the
 /// labels `delivered` in all. Native replay reproduces it, and block 3 on the serial root gives
-/// the same root, phlo and host work.
+/// the same root and phlo.
 async fn assert_merge_row(
     rig: &mut Rig,
     (left_body, right_body): (&str, &str),
@@ -526,15 +526,8 @@ async fn assert_merge_row(
     let block3_label = format!("{label}-block3");
     let term = with_names(block3, rig.spaces.len());
     let mut restarted = rig.chain.restarted(&merged).await;
-    let merged_host = host_work();
     let on_merge = restarted
-        .play_with(
-            &term,
-            &block3_label,
-            LIMIT,
-            merged_host.clone(),
-            Injections::new(),
-        )
+        .play_with(&term, &block3_label, LIMIT, Injections::new())
         .await;
     check_deploy(&on_merge, &block3_label);
     assert_eq!(
@@ -545,16 +538,9 @@ async fn assert_merge_row(
     let certification = certify(&on_merge, &term, LIMIT).await;
     assert_reproduces(&block3_label, &on_merge, &certification);
     rig.chain.reset(&serial).await;
-    let serial_host = host_work();
     let on_serial = rig
         .chain
-        .play_with(
-            &term,
-            &block3_label,
-            LIMIT,
-            serial_host.clone(),
-            Injections::new(),
-        )
+        .play_with(&term, &block3_label, LIMIT, Injections::new())
         .await;
     check_deploy(&on_serial, &block3_label);
     assert_eq!(
@@ -564,11 +550,6 @@ async fn assert_merge_row(
     assert_eq!(
         on_merge.result.native_phlo_usage, on_serial.result.native_phlo_usage,
         "{label}: the phlo of block 3 on the merged root and on the serial root"
-    );
-    assert_eq!(
-        merged_host.usages(),
-        serial_host.usages(),
-        "{label}: the host work of block 3 on the merged root and on the serial root"
     );
     (left, right)
 }

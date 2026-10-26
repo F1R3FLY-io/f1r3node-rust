@@ -400,11 +400,20 @@ pub const EMBED_PROCESS: SystemChannel = SystemChannel {
     arity: 2,
 };
 
-/// The body ref of `rho:vectordb:embed`, in `non_deterministic_ops()`.
+/// The body ref of `rho:vectordb:embed`, in `non_deterministic_ops()` and so in the recorded set
+/// of native funded execution (`is_native_recorded_op`, decision 68).
 pub const EMBED_BODY_REF: BodyRef = body_ref(EMBED);
 
-/// The body ref of `rho:vectordb:ann`, in `non_deterministic_ops()`.
+/// The body ref of `rho:vectordb:ann`, in `non_deterministic_ops()` and so in the recorded set
+/// of native funded execution (`is_native_recorded_op`, decision 68).
 pub const ANN_BODY_REF: BodyRef = body_ref(ANN);
+
+/// True for the recorded processes of Reified RSpaces, `embed` and `ann` (decision 68). Their
+/// own handlers record and replay their replies, so native funded execution does not send them
+/// to its driver of external services (`is_native_external_process`).
+pub const fn is_recorded_process(body: BodyRef) -> bool {
+    body == EMBED_BODY_REF || body == ANN_BODY_REF
+}
 
 /// `ann!(ret, space, channel, query, options)` (P6 step 7, decision 57): a recorded process.
 /// Play asks the mirror of a VectorDB space for advisory ids, and replay produces the recorded

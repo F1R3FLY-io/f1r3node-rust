@@ -58,7 +58,7 @@
 //! (`Discipline::restore`), as the host reducer's `produce_peeks` does (decision 45, Rule E). The
 //! re-store registers the record's own authority and bumps no counter. A divergent pair
 //! re-issues after one round (A10), and a chain re-issues after `FIRE_ROUND_CAP` rounds (I-21).
-//! Each round makes at most two metered matcher calls, and the bump makes one more. A store or a
+//! Each round makes at most two matcher calls, and the bump makes one more. A store or a
 //! park on a side that holds `D::CAPACITY` entries fails with `CellOccupied` before it stages
 //! anything (F15).
 //!
@@ -78,22 +78,16 @@
 //! the legacy chain of decision 45 (Option P) and registers an introduction (P4 design B.7). A
 //! re-offer and a re-fire repeat an identity with its first authority (readiness review S6).
 //!
-//! An operation reserves each of its reads and copies on the meter of the job before it makes it
-//! (decision 42): the ids of its channels, the config decode, the envelope decode of each entry
-//! of a head scan, each comparison, the copy of the head, and the copies of each staged
-//! operation. It copies only the head that it meets, and a fire that ends the loop moves its
+//! An operation copies only the head that it meets, and a fire that ends the loop moves its
 //! values instead of copying them. The outcome after the commit only moves values out of its
-//! receipt, and the operation prepays that work at staging, so a host-work rejection never
-//! follows the commit (`AgentReadCoverage.v`).
+//! receipt.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::mem::size_of;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, CostAuthority, ListParWithRandom, Par, TaggedContinuation};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::space_store_handle::{
     canonical_continuation_order, canonical_data_order, incoming_candidate, ConsumeOutcome,
@@ -101,7 +95,6 @@ use rspace_plus_plus::rspace::space_store_handle::{
 };
 use rspace_plus_plus::rspace::trace::event::Produce;
 use serde::Serialize;
-use shared::rust::collection_backing::tree_backing;
 
 use super::agent::{
     AllocOp, Allocation, ConsumeOp, JoinOp, OpOrigin, ParSpaceReceipt, ParSpaceTxn, Prepared,
@@ -121,7 +114,7 @@ use super::settle::reissued_operation;
 use super::theory::{self, SpaceTheory, TheoryCommitLease};
 use super::types::config::SpaceConfig;
 use crate::rust::interpreter::reified::costs::{
-    FireRounds, FireStep, ReissueCause, ScanMeter, FIRE_ROUND_CAP,
+    FireRounds, FireStep, ReissueCause, FIRE_ROUND_CAP,
 };
 use crate::rust::interpreter::reified::legacy_charges::LegacyChain;
 
@@ -151,11 +144,10 @@ pub trait OuterStore: Default + Send + Sync + 'static {
     /// to the join engine over its own scope (joins plan section 9).
     fn classify<D: Discipline>(
         agent: &GenericSpace<Self, D>,
-        env: &SpaceEnv,
         opened: &mut CollectionTxn,
         op: &SpaceOp,
     ) -> Result<JoinRoute, SpaceError> {
-        join::classify(agent, env, opened, op)
+        join::classify(agent, opened, op)
     }
 
     /// RUN-JOIN of a collection operation of the store (joins plan section 4.2). The keyed stores
@@ -187,7 +179,6 @@ pub trait OuterStore: Default + Send + Sync + 'static {
         _config: &SpaceConfig,
         _channel: &Par,
         _key: &CollectionKey,
-        _meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
         Ok(())
     }
@@ -195,21 +186,13 @@ pub trait OuterStore: Default + Send + Sync + 'static {
     /// Checks the payload `data` of a send to a collection of the store, before any staging. A
     /// HashSet collection holds units, so the HashSet store accepts only the empty payload
     /// (`PayloadNotEmpty`, P7 HS-2). The default accepts every payload and does no work.
-    fn check_payload(
-        &self,
-        _data: &ListParWithRandom,
-        _meter: &ScanMeter,
-    ) -> Result<(), SpaceError> {
-        Ok(())
-    }
+    fn check_payload(&self, _data: &ListParWithRandom) -> Result<(), SpaceError> { Ok(()) }
 
     /// Checks the pattern `pattern` of a receive bind on a collection of the store, before any
     /// staging. A HashSet receive takes a unit, so the HashSet store accepts only the empty
     /// pattern list, with no binder and no remainder (`PatternNotEmpty`, P7 HS-3). The default
     /// accepts every pattern and does no work.
-    fn check_patterns(&self, _pattern: &BindPattern, _meter: &ScanMeter) -> Result<(), SpaceError> {
-        Ok(())
-    }
+    fn check_patterns(&self, _pattern: &BindPattern) -> Result<(), SpaceError> { Ok(()) }
 
     /// The channel of the records and waiting continuations of the collection `key`.
     fn data_channel(&self, space: NativeSpace, key: &CollectionKey) -> Par;
@@ -227,7 +210,6 @@ pub trait OuterStore: Default + Send + Sync + 'static {
         _space: NativeSpace,
         _random: &Blake2b512Random,
         _authority: &CostAuthority,
-        _meter: &ScanMeter,
     ) -> Result<Vec<(Par, ListParWithRandom)>, SpaceError> {
         Ok(Vec::new())
     }
@@ -349,13 +331,8 @@ pub trait Discipline: Default + Send + Sync + 'static {
     /// The bound of `side` of a collection of a space with the config `config`, or `None` for
     /// no bound (P6, design v3 4.0). The default is [`Discipline::CAPACITY`] on both sides,
     /// whose excess is `CellOccupied` (F15), and it reads nothing. A VectorDB space bounds the
-    /// records of each collection by its `capacity`, and it reserves its reads on `meter`.
-    fn bound(
-        &self,
-        _config: &SpaceConfig,
-        _side: Side,
-        _meter: &ScanMeter,
-    ) -> Result<Option<SideBound>, SpaceError> {
+    /// records of each collection by its `capacity`.
+    fn bound(&self, _config: &SpaceConfig, _side: Side) -> Result<Option<SideBound>, SpaceError> {
         Ok(Self::CAPACITY.map(SideBound::Cell))
     }
 
@@ -364,23 +341,12 @@ pub trait Discipline: Default + Send + Sync + 'static {
     const JOIN_WINDOW: JoinWindow = JoinWindow::Head;
 
     /// The head of one side: the entry that interacts next, or `None` for an empty side. The
-    /// result depends on the entry set only, not on the order of `entries`. Each comparison and
-    /// each tie-break encode is reserved on `meter` before it is made (decision 42).
-    fn head_metered<T: Serialize>(
-        &self,
-        side: Side,
-        entries: &[Ordered<'_, T>],
-        meter: &ScanMeter,
-    ) -> Result<Option<usize>, SpaceError>;
-
-    /// [`Discipline::head_metered`] without a budget.
+    /// result depends on the entry set only, not on the order of `entries`.
     fn head<T: Serialize>(
         &self,
         side: Side,
         entries: &[Ordered<'_, T>],
-    ) -> Result<Option<usize>, SpaceError> {
-        self.head_metered(side, entries, &ScanMeter::new(None))
-    }
+    ) -> Result<Option<usize>, SpaceError>;
 
     /// True when a fresh element of `side` becomes the head of its side, which holds `queued`
     /// entries. A re-issued persistent element uses [`Discipline::precedes`] instead.
@@ -388,15 +354,8 @@ pub trait Discipline: Default + Send + Sync + 'static {
 
     /// True when an element of `side` with the order `ord` interacts before the head of the side,
     /// whose order is `head` (decision 43). The two orders differ. A re-issued persistent element
-    /// re-enters at the head exactly when its side is empty or this holds. The comparison is
-    /// reserved on `meter` before it is made.
-    fn precedes(
-        &self,
-        side: Side,
-        ord: i64,
-        head: i64,
-        meter: &ScanMeter,
-    ) -> Result<bool, SpaceError>;
+    /// re-enters at the head exactly when its side is empty or this holds.
+    fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError>;
 
     /// Checks the values of the named params `params` of a send, and of the query `query` of a
     /// receive, under the config `config`, before the bump. The keys are already checked against
@@ -406,7 +365,6 @@ pub trait Discipline: Default + Send + Sync + 'static {
         _config: &SpaceConfig,
         _params: &BTreeMap<String, Par>,
         _query: Option<&QueryParams>,
-        _meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
         Ok(())
     }
@@ -479,20 +437,13 @@ pub trait Discipline: Default + Send + Sync + 'static {
     }
 
     /// The class of the payload `payload` in a join window (P5c). `None` makes each record a
-    /// class of its own, as every discipline but the set does. The set gives its F5 class key,
-    /// with its work reserved on `meter` first. The default does no work.
-    fn join_class_key(
-        &self,
-        _payload: &[Par],
-        _meter: &ScanMeter,
-    ) -> Result<Option<Vec<u8>>, SpaceError> {
-        Ok(None)
-    }
+    /// class of its own, as every discipline but the set does. The set gives its F5 class key.
+    /// The default does no work.
+    fn join_class_key(&self, _payload: &[Par]) -> Result<Option<Vec<u8>>, SpaceError> { Ok(None) }
 }
 
 /// The operation around which a settle hook runs (P5b): a borrowed view. A hook copies only
-/// the fields that it uses, for example to build the `SettleOp` of a re-issue, and it reserves
-/// each copy first (decision 42).
+/// the fields that it uses, for example to build the `SettleOp` of a re-issue.
 #[derive(Clone, Copy, Debug)]
 pub enum OpView<'a> {
     /// A produce.
@@ -509,15 +460,8 @@ pub trait FamilySpace: SpaceAgent {
     /// 4.1): `Single` when the data channel of its collection holds no join group other than
     /// its own, and otherwise `Join` with the closure of its collections and the lock keys of
     /// that closure. A join and a settle with a cascade are always `Join`. The reads are not
-    /// lock-checked, and the classification stages nothing. It reserves what the join check of
-    /// P4 reserved for a collection without joins, so the host work of such an operation does not
-    /// change.
-    fn classify(
-        &self,
-        env: &SpaceEnv,
-        opened: &mut CollectionTxn,
-        op: &SpaceOp,
-    ) -> Result<JoinRoute, SpaceError>;
+    /// lock-checked, and the classification stages nothing.
+    fn classify(&self, opened: &mut CollectionTxn, op: &SpaceOp) -> Result<JoinRoute, SpaceError>;
 
     /// Steps 3 to 8 of the collection operation `op` in the open transaction `opened`, whose
     /// config names the family of this agent (`RUN-WITH`).
@@ -578,11 +522,6 @@ pub struct CollectionChannels {
     keys: [Par; 4],
 }
 
-/// The template of a `GPrivate` name with an empty id. A channel of a collection is this name
-/// with its id, so a reserved copy of the template and a reserved id buffer cover its
-/// allocations.
-pub(crate) static GPRIVATE: LazyLock<Par> = LazyLock::new(|| namespace::gprivate(Vec::new()));
-
 impl CollectionChannels {
     /// The channels of the collection `key` of `space` in the outer store `outer`.
     pub fn new<S: OuterStore>(outer: &S, space: NativeSpace, key: &CollectionKey) -> Self {
@@ -594,27 +533,6 @@ impl CollectionChannels {
                 outer.data_channel(space, key),
             ],
         }
-    }
-
-    /// [`CollectionChannels::new`] with its allocations reserved (decision 42): four names, the
-    /// ids of the config channel and of the space counter, and the ids of the collection counter
-    /// and of the data channel, which also hold the bytes of the key. The outer store derives
-    /// each id from the space and the key.
-    pub fn new_metered<S: OuterStore>(
-        outer: &S,
-        space: NativeSpace,
-        key: &CollectionKey,
-        meter: &ScanMeter,
-    ) -> Result<Self, SpaceError> {
-        let scoped = namespace::SPACE_ID_PREFIX_LEN;
-        let keyed = scoped
-            .checked_add(key.as_bytes().len())
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        for bytes in [scoped, scoped, keyed, keyed] {
-            meter.reserve_copy(&*GPRIVATE)?;
-            meter.reserve_buffer::<u8>(bytes)?;
-        }
-        Ok(Self::new(outer, space, key))
     }
 
     /// The config channel `C(sid)`.
@@ -655,8 +573,7 @@ impl CollectionChannels {
 }
 
 /// The kind of a staged operation, to check its receipt and to build the outcome. The staged
-/// list holds one byte for each operation, so the reservation of a head-only plan does not
-/// change with the kinds that other plans use.
+/// list holds one byte for each operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Staged {
     /// A take or a put of a counter.
@@ -687,10 +604,10 @@ enum Staged {
 /// What the plans of one operation share.
 struct Plan<'a> {
     data: &'a Par,
-    /// The config of the space, read once at the begin of the operation (decision 42). A
-    /// VectorDB plan reads its metric and its `capacity` from it (P6, design v3 4.0).
+    /// The config of the space, read once at the begin of the operation. A VectorDB plan
+    /// reads its metric and its `capacity` from it (P6, design v3 4.0).
     config: &'a SpaceConfig,
-    matcher: &'a SpaceMatcher<'a>,
+    matcher: &'a SpaceMatcher,
     /// The introduction of the operation, which every staged operation registers by default.
     introduction: &'a Arc<Introduction>,
     staged: Vec<Staged>,
@@ -708,7 +625,7 @@ struct Plan<'a> {
     rounds: FireRounds,
     /// The mirror capture of the transaction (P6 step 7b): active for a VectorDB space with a
     /// mirror. It records the staged stores, and after the commit it gives the net writes of
-    /// the transaction, with no meter and no error path.
+    /// the transaction, with no error path.
     mirror: MirrorCapture,
     /// The claims of a program job on a `seq` space (P7, SQ-3), or `None`. Every staging
     /// primitive of [`Cx`] claims the channels that it uses, and the job stores the claims
@@ -767,23 +684,19 @@ pub struct ReceiveFire {
 
 /// The view and the staging primitives of one collection operation (P5 design v3, A.3.3). A
 /// plan reads the staged view and stages only through these methods, so every staged operation
-/// goes through the legacy chain of decision 45 (Option P), registers an introduction (P4
-/// design B.7) and reserves its reads and copies (decision 42). `Cx` exposes no raw transaction.
+/// goes through the legacy chain of decision 45 (Option P) and registers an introduction (P4
+/// design B.7). `Cx` exposes no raw transaction.
 pub struct Cx<'c, 'p> {
     txn: &'c mut ParSpaceTxn,
     plan: &'c mut Plan<'p>,
 }
 
 impl<'p> Cx<'_, 'p> {
-    /// The meter of the job. Its lifetime is the lifetime of the job, not of a borrow of the
-    /// view, so a plan can stage while it holds the meter.
-    pub fn meter(&self) -> &'p ScanMeter { self.plan.matcher.meter() }
-
     /// The data channel `D(sid,k)` of the collection of the operation.
     pub fn data_channel(&self) -> &'p Par { self.plan.data }
 
     /// The config of the space of the operation (P6, design v3 4.0). It is the config that the
-    /// begin of the operation read once (decision 42), so a plan only borrows it.
+    /// begin of the operation read once, so a plan only borrows it.
     pub fn config(&self) -> &'p SpaceConfig { self.plan.config }
 
     /// The introduction of the operation.
@@ -824,29 +737,24 @@ impl<'p> Cx<'_, 'p> {
         Ok(self.txn.continuations(std::slice::from_ref(channel))?)
     }
 
-    /// The indices of the records of `channel` in the canonical order of DR-75 (decision 41),
-    /// with the work reserved as the branch reserves it.
+    /// The indices of the records of `channel` in the canonical order of DR-75 (decision 41).
     pub fn canonical_data_order(&mut self, channel: &Par) -> Result<Vec<usize>, SpaceError> {
-        let meter = self.meter();
-        Ok(canonical_data_order(self.txn.data(channel)?, meter)?)
+        Ok(canonical_data_order(self.txn.data(channel)?))
     }
 
-    /// The indices of the waiting continuations of `channel` in the canonical order of DR-75,
-    /// with the work reserved as the branch reserves it.
+    /// The indices of the waiting continuations of `channel` in the canonical order of DR-75.
     pub fn canonical_waiter_order(&mut self, channel: &Par) -> Result<Vec<usize>, SpaceError> {
-        let meter = self.meter();
         Ok(canonical_continuation_order(
             self.txn.continuations(std::slice::from_ref(channel))?,
-            meter,
-        )?)
+        ))
     }
 
-    /// The spatial match of `pattern` against `data`, metered.
+    /// The spatial match of `pattern` against `data`.
     pub fn bind(
         &self,
         pattern: &BindPattern,
         data: &ListParWithRandom,
-    ) -> Result<Option<ListParWithRandom>, SpaceError> {
+    ) -> Option<ListParWithRandom> {
         self.plan.matcher.bind(pattern, data)
     }
 
@@ -885,8 +793,8 @@ impl<'p> Cx<'_, 'p> {
     /// the theory reads it only then, so a space without a theory does no work for it.
     pub fn has_theory(&self) -> bool { self.plan.theory.is_some() }
 
-    /// The `where` guard of `continuation` over `matched`, metered (decision 37), and then the
-    /// check of the theory of the space on each datum of `stored` (P7, TH-6). A refusal of
+    /// The `where` guard of `continuation` over `matched` (decision 37), and then the check of
+    /// the theory of the space on each datum of `stored` (P7, TH-6). A refusal of
     /// either is a guard refusal.
     pub fn admits(
         &mut self,
@@ -894,33 +802,33 @@ impl<'p> Cx<'_, 'p> {
         matched: &ListParWithRandom,
         stored: &[StoredMatch<'_>],
     ) -> Result<bool, SpaceError> {
-        match self.plan.matcher.admits(continuation, matched)? {
+        match self.plan.matcher.admits(continuation, matched) {
             true => self.theory_admits(stored),
             false => Ok(false),
         }
     }
 
     /// The `where` guard of `continuation` over the values `matched` of every bind, in bind
-    /// order, metered (decision 37: once, after every bind matched), and then the check of the
-    /// theory of the space on each datum of `stored` (P7, TH-6).
+    /// order (decision 37: once, after every bind matched), and then the check of the theory of
+    /// the space on each datum of `stored` (P7, TH-6).
     pub fn admits_all(
         &mut self,
         continuation: &TaggedContinuation,
         matched: &[ListParWithRandom],
         stored: &[StoredMatch<'_>],
     ) -> Result<bool, SpaceError> {
-        match self.plan.matcher.admits_all(continuation, matched)? {
+        match self.plan.matcher.admits_all(continuation, matched) {
             true => self.theory_admits(stored),
             false => Ok(false),
         }
     }
 
-    /// The `where` guard of `continuation` over `matched`, metered (decision 37), and then the
-    /// check of the theory of the space on each stored record of `members`, with the values
+    /// The `where` guard of `continuation` over `matched` (decision 37), and then the check of
+    /// the theory of the space on each stored record of `members`, with the values
     /// `matched` as the captures of each (P7, TH-6: each stored member of a list). `stored` gives
     /// the record of a stored member, or `None` for the element in flight, which its send
-    /// admitted. The decode of each payload (`payload_of`) and its buffer are reserved. They
-    /// happen only for a space with a theory and only after the guard admitted the match, so a
+    /// admitted. The decode of each payload (`payload_of`) and its buffer happen only for a space
+    /// with a theory and only after the guard admitted the match, so a
     /// space without a theory does no work for them.
     pub fn admits_records<T>(
         &mut self,
@@ -928,24 +836,23 @@ impl<'p> Cx<'_, 'p> {
         matched: &ListParWithRandom,
         members: &[T],
         stored: impl Fn(&T) -> Option<&ListParWithRandom>,
-        payload_of: fn(&ListParWithRandom, &ScanMeter) -> Result<ListParWithRandom, SpaceError>,
+        payload_of: fn(&ListParWithRandom) -> Result<ListParWithRandom, SpaceError>,
     ) -> Result<bool, SpaceError> {
-        if !self.plan.matcher.admits(continuation, matched)? {
+        if !self.plan.matcher.admits(continuation, matched) {
             return Ok(false);
         }
         if self.plan.theory.is_none() {
             return Ok(true);
         }
-        let meter = self.meter();
         let count = members
             .iter()
             .filter(|member| stored(member).is_some())
             .count();
-        let mut payloads = meter.buffer::<ListParWithRandom>(count)?;
+        let mut payloads = Vec::<ListParWithRandom>::with_capacity(count);
         for record in members.iter().filter_map(&stored) {
-            payloads.push(payload_of(record, meter)?);
+            payloads.push(payload_of(record)?);
         }
-        let mut checks = meter.buffer::<StoredMatch<'_>>(payloads.len())?;
+        let mut checks = Vec::<StoredMatch<'_>>::with_capacity(payloads.len());
         checks.extend(payloads.iter().map(|payload| StoredMatch {
             payload,
             captures: matched,
@@ -962,7 +869,7 @@ impl<'p> Cx<'_, 'p> {
         continuation: &TaggedContinuation,
         held: Held,
     ) -> Result<Option<ListParWithRandom>, SpaceError> {
-        let Some(matched) = self.plan.matcher.bind(pattern, data)? else {
+        let Some(matched) = self.plan.matcher.bind(pattern, data) else {
             return Ok(None);
         };
         let admitted = match held {
@@ -975,18 +882,17 @@ impl<'p> Cx<'_, 'p> {
         Ok(admitted.then_some(matched))
     }
 
-    /// TH-6: the check of the theory of the space on each datum of `stored`, in order. Each
-    /// check reserves its work before it reads. A verdict that is not `Proven` refuses the
+    /// TH-6: the check of the theory of the space on each datum of `stored`, in order. A
+    /// verdict that is not `Proven` refuses the
     /// match, and a `Proven` verdict adds its lease to the transaction (TH-9). A space without a
     /// theory admits every match and does no work.
     pub(crate) fn theory_admits(&mut self, stored: &[StoredMatch<'_>]) -> Result<bool, SpaceError> {
         let Some(theory) = self.plan.theory.clone() else {
             return Ok(true);
         };
-        let meter = self.meter();
         for datum in stored {
             if !theory
-                .check_match(datum.payload, datum.captures, meter)?
+                .check_match(datum.payload, datum.captures)?
                 .is_proven()
             {
                 return Ok(false);
@@ -997,53 +903,50 @@ impl<'p> Cx<'_, 'p> {
     }
 
     /// The head of the entries of one side: its index in `entries` and its order. The scan
-    /// reserves its buffer and the decode of each envelope (`ord_of`), and it copies nothing.
+    /// decodes each envelope (`ord_of`), and it copies nothing.
     pub(crate) fn scan_head<D: Discipline, T: Serialize>(
         discipline: &D,
         side: Side,
         entries: &[T],
-        ord_of: fn(&T, &ScanMeter) -> Result<i64, SpaceError>,
-        meter: &ScanMeter,
+        ord_of: fn(&T) -> Result<i64, SpaceError>,
     ) -> Result<Option<(usize, i64)>, SpaceError> {
-        let mut ordered = meter.buffer::<Ordered<'_, T>>(entries.len())?;
+        let mut ordered = Vec::<Ordered<'_, T>>::with_capacity(entries.len());
         for entry in entries {
             ordered.push(Ordered {
-                ord: ord_of(entry, meter)?,
+                ord: ord_of(entry)?,
                 entry,
             });
         }
-        let head = discipline.head_metered(side, &ordered, meter)?;
+        let head = discipline.head(side, &ordered)?;
         Ok(head.and_then(|index| ordered.get(index).map(|entry| (index, entry.ord))))
     }
 
-    /// The head waiting continuation of the collection in the staged view. The scan reserves
-    /// its buffer and the decode of each envelope, and only the head is copied.
+    /// The head waiting continuation of the collection in the staged view. The scan decodes each
+    /// envelope, and only the head is copied.
     pub fn head_waiter<D: Discipline>(
         &mut self,
         discipline: &D,
     ) -> Result<Option<ParWaiter>, SpaceError> {
-        let meter = self.meter();
         let waiters = self
             .txn
             .continuations(std::slice::from_ref(self.plan.data))?;
-        let head = Self::scan_head(discipline, Side::Waiters, waiters, waiter_ord, meter)?;
+        let head = Self::scan_head(discipline, Side::Waiters, waiters, waiter_ord)?;
         match head.and_then(|(index, _)| waiters.get(index)) {
-            Some(waiter) => Ok(Some(meter.copy(waiter)?)),
+            Some(waiter) => Ok(Some(waiter.clone())),
             None => Ok(None),
         }
     }
 
     /// The head record of the collection in the staged view, with its index in the view. The
-    /// scan reserves its buffer and the decode of each envelope, and only the head is copied.
+    /// scan decodes each envelope, and only the head is copied.
     pub fn head_datum<D: Discipline>(
         &mut self,
         discipline: &D,
     ) -> Result<Option<(usize, ParDatum)>, SpaceError> {
-        let meter = self.meter();
         let records = self.txn.data(self.plan.data)?;
-        let head = Self::scan_head(discipline, Side::Data, records, datum_ord, meter)?;
+        let head = Self::scan_head(discipline, Side::Data, records, datum_ord)?;
         match head.and_then(|(index, _)| records.get(index).map(|datum| (index, datum))) {
-            Some((index, datum)) => Ok(Some((index, meter.copy(datum)?))),
+            Some((index, datum)) => Ok(Some((index, datum.clone()))),
             None => Ok(None),
         }
     }
@@ -1055,18 +958,14 @@ impl<'p> Cx<'_, 'p> {
         discipline: &D,
         side: Side,
     ) -> Result<Option<i64>, SpaceError> {
-        let meter = self.meter();
         let data = self.plan.data;
         let head = match side {
-            Side::Data => {
-                Self::scan_head(discipline, side, self.txn.data(data)?, datum_ord, meter)?
-            }
+            Side::Data => Self::scan_head(discipline, side, self.txn.data(data)?, datum_ord)?,
             Side::Waiters => Self::scan_head(
                 discipline,
                 side,
                 self.txn.continuations(std::slice::from_ref(data))?,
                 waiter_ord,
-                meter,
             )?,
         };
         Ok(head.map(|(_, ord)| ord))
@@ -1086,14 +985,13 @@ impl<'p> Cx<'_, 'p> {
     /// empty side. A re-issued persistent element with the first-round order `reissued`
     /// re-enters at its place (decision 43): at the head when its side is empty or its order
     /// precedes the order of the head. An element in flight is stored nowhere, so a stored entry
-    /// with its order is `Inconsistent`. Each comparison is reserved before it is made.
+    /// with its order is `Inconsistent`.
     pub fn at_head<D: Discipline>(
         &mut self,
         discipline: &D,
         side: Side,
         reissued: Option<i64>,
     ) -> Result<bool, SpaceError> {
-        let meter = self.meter();
         let Some(ord) = reissued else {
             let queued = self.side_len(side)?;
             return Ok(discipline.reaches_head(side, queued));
@@ -1101,12 +999,11 @@ impl<'p> Cx<'_, 'p> {
         let Some(head) = self.head_ord(discipline, side)? else {
             return Ok(true);
         };
-        meter.compare(size_of::<i64>(), size_of::<i64>())?;
         match ord == head {
             true => Err(SpaceError::Inconsistent(
                 "a re-issued element shares its order with a stored entry",
             )),
-            false => discipline.precedes(side, ord, head, meter),
+            false => discipline.precedes(side, ord, head),
         }
     }
 
@@ -1122,47 +1019,39 @@ impl<'p> Cx<'_, 'p> {
         // let Some(capacity) = D::CAPACITY else {
         //     return Ok(());
         // };
-        let Some(bound) = D::default().bound(self.plan.config, side, self.meter())? else {
+        let Some(bound) = D::default().bound(self.plan.config, side)? else {
             return Ok(());
         };
         let held = self.side_len(side)?;
-        self.meter()
-            .compare(size_of::<usize>(), size_of::<usize>())?;
         match held >= bound.limit() {
             true => Err(bound.full()),
             false => Ok(()),
         }
     }
 
-    /// The one-channel group of `channel`, with its buffer and its copy reserved.
-    fn channel_list(&self, channel: &Par) -> Result<Vec<Par>, SpaceError> {
-        let meter = self.meter();
-        let mut channels = meter.buffer::<Par>(1)?;
-        channels.push(meter.copy(channel)?);
-        Ok(channels)
+    /// The one-channel group of `channel`.
+    fn channel_list(&self, channel: &Par) -> Vec<Par> {
+        let mut channels = Vec::<Par>::with_capacity(1);
+        channels.push(channel.clone());
+        channels
     }
 
-    /// The one-pattern list of `pattern`, with its buffer and its copy reserved.
-    fn pattern_list(&self, pattern: &BindPattern) -> Result<Vec<BindPattern>, SpaceError> {
-        let meter = self.meter();
-        let mut patterns = meter.buffer::<BindPattern>(1)?;
-        patterns.push(meter.copy(pattern)?);
-        Ok(patterns)
+    /// The one-pattern list of `pattern`.
+    fn pattern_list(&self, pattern: &BindPattern) -> Vec<BindPattern> {
+        let mut patterns = Vec::<BindPattern>::with_capacity(1);
+        patterns.push(pattern.clone());
+        patterns
     }
 
     /// Appends `kind` to the staged list.
-    fn push_staged(&mut self, kind: Staged) -> Result<(), SpaceError> {
-        let meter = self.meter();
-        push_reserved(&mut self.plan.staged, kind, meter)
-    }
+    fn push_staged(&mut self, kind: Staged) { self.plan.staged.push(kind); }
 
     /// Claims `channel` in the role `role` for a program job on a `seq` space (P7, SQ-3). Every
     /// other job claims nothing. A refused claim aborts the deploy with `SeqConcurrent` before
     /// the primitive stages anything.
     fn claim(&mut self, channel: &Par, role: ClaimRole) -> Result<(), SpaceError> {
-        let meter = self.meter();
         match self.plan.seq.as_mut() {
-            Some(seq) => seq.claim(channel, role, meter),
+            Some(seq) => seq.claim(channel, role),
             None => Ok(()),
         }
     }
@@ -1186,20 +1075,20 @@ impl<'p> Cx<'_, 'p> {
         introduction: &Arc<Introduction>,
     ) -> Result<(), SpaceError> {
         self.claim(channel, ClaimRole::Data)?;
-        let meter = self.meter();
         if self.plan.mirror.is_active() {
             let index = self.plan.staged.len();
             self.plan.mirror.store(index, channel, &record, persist);
         }
         let op = SpaceProduce {
-            channel: meter.copy(channel)?,
+            channel: channel.clone(),
             data: record,
             persist,
             outcome: ProduceOutcome::Store,
-            before_observe: Some(record::register_introduction(introduction, meter)?),
+            before_observe: Some(record::register_introduction(introduction)),
         };
         self.plan.legacy.produce(self.txn, op)?;
-        self.push_staged(Staged::Store)
+        self.push_staged(Staged::Store);
+        Ok(())
     }
 
     /// Stages the park of the continuation of the receive `op` on the data channel of the
@@ -1210,8 +1099,8 @@ impl<'p> Cx<'_, 'p> {
         continuation: TaggedContinuation,
         peeks: BTreeSet<i32>,
     ) -> Result<(), SpaceError> {
-        let channels = self.channel_list(self.plan.data)?;
-        let patterns = self.pattern_list(&op.pattern)?;
+        let channels = self.channel_list(self.plan.data);
+        let patterns = self.pattern_list(&op.pattern);
         self.park_on(channels, patterns, continuation, op.persistent, peeks)
     }
 
@@ -1228,7 +1117,6 @@ impl<'p> Cx<'_, 'p> {
         for channel in &channels {
             self.claim(channel, ClaimRole::Waiter)?;
         }
-        let meter = self.meter();
         let staged = SpaceConsume {
             channels,
             patterns,
@@ -1236,13 +1124,11 @@ impl<'p> Cx<'_, 'p> {
             persist,
             peeks,
             outcome: ConsumeOutcome::Park,
-            before_observe: Some(record::register_introduction(
-                self.plan.introduction,
-                meter,
-            )?),
+            before_observe: Some(record::register_introduction(self.plan.introduction)),
         };
         self.plan.legacy.consume(self.txn, staged)?;
-        self.push_staged(Staged::Park)
+        self.push_staged(Staged::Park);
+        Ok(())
     }
 
     /// Stages the re-store of a record that a consume-side peek removed (decision 45, Rule E) on
@@ -1262,8 +1148,7 @@ impl<'p> Cx<'_, 'p> {
         channel: &Par,
         record: ListParWithRandom,
     ) -> Result<(), SpaceError> {
-        let meter = self.meter();
-        let introduction = self.plan.introduction.for_record(&record, meter)?;
+        let introduction = self.plan.introduction.for_record(&record)?;
         self.store_on(channel, record, false, &introduction)
     }
 
@@ -1294,18 +1179,17 @@ impl<'p> Cx<'_, 'p> {
         introduction: &Arc<Introduction>,
     ) -> Result<(), SpaceError> {
         self.claim(channel, ClaimRole::Waiter)?;
-        let meter = self.meter();
-        let channels = self.channel_list(channel)?;
-        let mut candidates = meter.buffer::<ParCandidate>(1)?;
+        let channels = self.channel_list(channel);
+        let mut candidates = Vec::<ParCandidate>::with_capacity(1);
         candidates.push(incoming_candidate(
-            meter.copy(channel)?,
+            channel.clone(),
             source,
             removed,
             fire.persistent,
             fire.matched,
         ));
         let op = SpaceProduce {
-            channel: meter.copy(channel)?,
+            channel: channel.clone(),
             data,
             persist: fire.persistent,
             outcome: ProduceOutcome::Fire {
@@ -1313,10 +1197,11 @@ impl<'p> Cx<'_, 'p> {
                 continuation: fire.waiter,
                 data: candidates,
             },
-            before_observe: Some(record::register_introduction(introduction, meter)?),
+            before_observe: Some(record::register_introduction(introduction)),
         };
         self.plan.legacy.produce(self.txn, op)?;
-        self.push_staged(Staged::Fire)
+        self.push_staged(Staged::Fire);
+        Ok(())
     }
 
     /// Stages a consume-side fire of the receive `op` over one record of the collection, with
@@ -1329,11 +1214,10 @@ impl<'p> Cx<'_, 'p> {
         continuation: TaggedContinuation,
         peeks: BTreeSet<i32>,
     ) -> Result<(), SpaceError> {
-        let meter = self.meter();
-        let channels = self.channel_list(self.plan.data)?;
-        let patterns = self.pattern_list(&op.pattern)?;
-        let mut candidates = meter.buffer::<ParCandidate>(1)?;
-        candidates.push(receive_candidate(meter.copy(self.plan.data)?, fire));
+        let channels = self.channel_list(self.plan.data);
+        let patterns = self.pattern_list(&op.pattern);
+        let mut candidates = Vec::<ParCandidate>::with_capacity(1);
+        candidates.push(receive_candidate(self.plan.data.clone(), fire));
         self.fire_receive_group(
             channels,
             patterns,
@@ -1372,7 +1256,6 @@ impl<'p> Cx<'_, 'p> {
         for candidate in &candidates {
             self.claim(&candidate.channel, ClaimRole::Data)?;
         }
-        let meter = self.meter();
         let staged = SpaceConsume {
             channels,
             patterns,
@@ -1380,17 +1263,18 @@ impl<'p> Cx<'_, 'p> {
             persist,
             peeks,
             outcome: ConsumeOutcome::Fire { data: candidates },
-            before_observe: Some(record::register_introduction(
-                self.plan.introduction,
-                meter,
-            )?),
+            before_observe: Some(record::register_introduction(self.plan.introduction)),
         };
         self.plan.legacy.consume(self.txn, staged)?;
         match binds == width {
-            true => self.push_staged(Staged::Fire),
+            true => {
+                self.push_staged(Staged::Fire);
+                Ok(())
+            }
             false => {
-                push_reserved(&mut self.plan.prefixes, binds, meter)?;
-                self.push_staged(Staged::FirePrefix)
+                self.plan.prefixes.push(binds);
+                self.push_staged(Staged::FirePrefix);
+                Ok(())
             }
         }
     }
@@ -1443,7 +1327,6 @@ impl<'p> Cx<'_, 'p> {
         for candidate in &candidates {
             self.claim(&candidate.channel, ClaimRole::Data)?;
         }
-        let meter = self.meter();
         let staged = SpaceConsume {
             channels,
             patterns,
@@ -1451,13 +1334,11 @@ impl<'p> Cx<'_, 'p> {
             persist: false,
             peeks: BTreeSet::new(),
             outcome: ConsumeOutcome::Fire { data: candidates },
-            before_observe: Some(record::register_introduction(
-                self.plan.introduction,
-                meter,
-            )?),
+            before_observe: Some(record::register_introduction(self.plan.introduction)),
         };
         self.plan.legacy.consume(self.txn, staged)?;
-        self.push_staged(kind)
+        self.push_staged(kind);
+        Ok(())
     }
 
     /// The re-issue of `op` with the cause `cause`: a plan that ends at the round cap (I-21) or
@@ -1468,8 +1349,7 @@ impl<'p> Cx<'_, 'p> {
 
     // ── The primitives of the join engine (P5c) ───────────────────────────────────────────
 
-    /// The join groups of `channel` in the staged view. The caller reserves its reads of the
-    /// groups.
+    /// The join groups of `channel` in the staged view.
     pub fn joins_on(&mut self, channel: &Par) -> Result<&[Vec<Par>], SpaceError> {
         Ok(self.txn.joins(channel)?)
     }
@@ -1481,13 +1361,9 @@ impl<'p> Cx<'_, 'p> {
     }
 
     /// The indices of the waiting continuations of the join group `group` in the canonical
-    /// order of DR-75, with the work reserved as the branch reserves it.
+    /// order of DR-75.
     pub fn canonical_group_order(&mut self, group: &[Par]) -> Result<Vec<usize>, SpaceError> {
-        let meter = self.meter();
-        Ok(canonical_continuation_order(
-            self.txn.continuations(group)?,
-            meter,
-        )?)
+        Ok(canonical_continuation_order(self.txn.continuations(group)?))
     }
 
     /// Bumps the counters `counters` of a collection that the transaction touches (decision
@@ -1505,8 +1381,7 @@ impl<'p> Cx<'_, 'p> {
     /// Stages a produce-side fire of the group `channels`: the datum `data` on `channel` fires
     /// `waiter` with `candidates`, one for each channel of the group in group order, of which
     /// exactly one is the incoming candidate (`incoming_candidate`). A group of two or more
-    /// channels stages a `JoinFire`, and a group of one channel a `Fire`. The decode of the fired
-    /// continuation by the outcome is prepaid here, for the record version of the group.
+    /// channels stages a `JoinFire`, and a group of one channel a `Fire`.
     #[allow(clippy::too_many_arguments)]
     pub fn fire_offer_group(
         &mut self,
@@ -1524,19 +1399,12 @@ impl<'p> Cx<'_, 'p> {
                 "a group fire does not line up its channels and candidates",
             ));
         }
-        let meter = self.meter();
         let kind = match width {
-            1 => {
-                record::prepay_continuation_unwrap(&waiter.continuation, meter)?;
-                Staged::Fire
-            }
-            _ => {
-                record::prepay_join_continuation_unwrap(&waiter.continuation, width, meter)?;
-                Staged::JoinFire
-            }
+            1 => Staged::Fire,
+            _ => Staged::JoinFire,
         };
         let op = SpaceProduce {
-            channel: meter.copy(channel)?,
+            channel: channel.clone(),
             data,
             persist,
             outcome: ProduceOutcome::Fire {
@@ -1544,16 +1412,16 @@ impl<'p> Cx<'_, 'p> {
                 continuation: waiter,
                 data: candidates,
             },
-            before_observe: Some(record::register_introduction(introduction, meter)?),
+            before_observe: Some(record::register_introduction(introduction)),
         };
         self.plan.legacy.produce(self.txn, op)?;
-        self.push_staged(kind)
+        self.push_staged(kind);
+        Ok(())
     }
 
     /// Stages a consume-side fire of a join waiter: `continuation`, a record of version 2, over
     /// the group `channels` with `patterns` and the stored candidates `candidates`, one for each
-    /// channel in group order, with the introduction of the operation. It stages a `JoinFire`,
-    /// and the decode of the continuation by the outcome is prepaid here.
+    /// channel in group order, with the introduction of the operation. It stages a `JoinFire`.
     pub fn fire_join(
         &mut self,
         channels: Vec<Par>,
@@ -1569,8 +1437,6 @@ impl<'p> Cx<'_, 'p> {
                 "a join fire does not line up its channels, patterns and candidates",
             ));
         }
-        let meter = self.meter();
-        record::prepay_join_continuation_unwrap(&continuation, width, meter)?;
         let staged = SpaceConsume {
             channels,
             patterns,
@@ -1578,13 +1444,11 @@ impl<'p> Cx<'_, 'p> {
             persist,
             peeks,
             outcome: ConsumeOutcome::Fire { data: candidates },
-            before_observe: Some(record::register_introduction(
-                self.plan.introduction,
-                meter,
-            )?),
+            before_observe: Some(record::register_introduction(self.plan.introduction)),
         };
         self.plan.legacy.consume(self.txn, staged)?;
-        self.push_staged(Staged::JoinFire)
+        self.push_staged(Staged::JoinFire);
+        Ok(())
     }
 }
 
@@ -1609,9 +1473,8 @@ fn stage_bump(
         },
         &mut plan.legacy,
     )?;
-    let meter = plan.matcher.meter();
     for kind in bump.staged.iter().copied() {
-        push_reserved(&mut plan.staged, Staged::Counter(kind), meter)?;
+        plan.staged.push(Staged::Counter(kind));
     }
     Ok(bump.ord)
 }
@@ -1636,61 +1499,28 @@ pub(crate) fn receive_candidate(channel: Par, fire: ReceiveFire) -> ParCandidate
     }
 }
 
-/// Appends `value` to `values`. A list at its capacity reserves its growth on `meter` before it
-/// grows, as `Vec` doubles its buffer (decision 42). A head-only plan starts with room for all
-/// of its operations (`MAX_STAGED`), so it reserves no growth.
-pub(crate) fn push_reserved<T>(
-    values: &mut Vec<T>,
-    value: T,
-    meter: &ScanMeter,
-) -> Result<(), SpaceError> {
-    if values.len() == values.capacity() {
-        let grown = values
-            .capacity()
-            .checked_mul(2)
-            .ok_or(RSpaceError::HostWorkRejected)?
-            .max(1);
-        meter.reserve_buffer::<T>(grown)?;
-        values
-            .try_reserve_exact(grown - values.len())
-            .map_err(|_| RSpaceError::HostWorkRejected)?;
-    }
-    values.push(value);
-    Ok(())
-}
-
-/// The peek set of a receive: `{0}` for a peek, with its tree node reserved, or the empty set.
-pub fn peek_set(peek: bool, meter: &ScanMeter) -> Result<BTreeSet<i32>, SpaceError> {
+/// The peek set of a receive: `{0}` for a peek, or the empty set.
+pub fn peek_set(peek: bool) -> BTreeSet<i32> {
     match peek {
-        true => {
-            let (operations, bytes) =
-                tree_backing::<i32, ()>(1).ok_or(RSpaceError::HostWorkRejected)?;
-            meter.charge(operations, 0, bytes)?;
-            Ok(BTreeSet::from([0]))
-        }
-        false => Ok(BTreeSet::new()),
+        true => BTreeSet::from([0]),
+        false => BTreeSet::new(),
     }
 }
 
 /// The peek set of a join receive that peeks (P5c): `{0, …, n-1}`, because one arrow covers
-/// every bind of a receive. Its tree nodes are reserved first.
-pub fn peek_set_all(n: usize, meter: &ScanMeter) -> Result<BTreeSet<i32>, SpaceError> {
+/// every bind of a receive.
+pub fn peek_set_all(n: usize) -> Result<BTreeSet<i32>, SpaceError> {
     let last = i32::try_from(n)
         .map_err(|_| SpaceError::Inconsistent("a join has more binds than a peek set holds"))?;
-    let (operations, bytes) = tree_backing::<i32, ()>(n).ok_or(RSpaceError::HostWorkRejected)?;
-    meter.charge(operations, 0, bytes)?;
     Ok((0..last).collect())
 }
 
 /// The error of a missing config record: `DanglingName` for a space name and `DanglingHandle`
-/// for every other channel. The read of the id of `channel` is reserved first.
-fn missing_config(channel: &Par, space: NativeSpace, meter: &ScanMeter) -> SpaceError {
-    match meter.inspect(channel) {
-        Err(error) => error.into(),
-        Ok(()) => match namespace::reified_id_of(channel) {
-            Some(ReifiedId::Name(..)) => SpaceError::DanglingName { space: space.sid },
-            _ => SpaceError::DanglingHandle { space: space.sid },
-        },
+/// for every other channel.
+fn missing_config(channel: &Par, space: NativeSpace) -> SpaceError {
+    match namespace::reified_id_of(channel) {
+        Some(ReifiedId::Name(..)) => SpaceError::DanglingName { space: space.sid },
+        _ => SpaceError::DanglingHandle { space: space.sid },
     }
 }
 
@@ -1710,7 +1540,7 @@ pub fn open_plan<D: Discipline>(
     if cx.rounds().fired() < FIRE_ROUND_CAP {
         return Ok(None);
     }
-    let reissued = reissued_operation(op, cx.bumped(), cx.meter())?;
+    let reissued = reissued_operation(op, cx.bumped());
     Ok(Some(cx.reissue(reissued, ReissueCause::RoundCap)))
 }
 
@@ -1729,14 +1559,13 @@ pub fn offer_head<D: Discipline>(
     if let Some(reissue) = open_plan(discipline, cx, OpView::Produce(&op))? {
         return Ok(Some(reissue));
     }
-    let meter = cx.meter();
-    let record = record::wrap_datum_metered(ord, &op.data, meter)?;
+    let record = record::wrap_datum(ord, &op.data);
     if !cx.at_head(discipline, Side::Data, op.reissued_ord)? {
         cx.check_capacity::<D>(Side::Data)?;
         cx.store(record, op.persistent)?;
         return discipline.settle_after(cx, OpView::Produce(&op));
     }
-    let source = Produce::create_metered(cx.data_channel(), &record, op.persistent, meter)?;
+    let source = Produce::create(cx.data_channel(), &record, op.persistent);
     // Disabled by I-21 (one fire count for each transaction, `Cx::rounds`):
     // let mut rounds = FireRounds::new();
     loop {
@@ -1758,7 +1587,6 @@ pub fn offer_head<D: Discipline>(
         };
         let spent = !op.persistent && waiter.peeks.is_empty();
         let stays = waiter.persist;
-        record::prepay_continuation_unwrap(&waiter.continuation, meter)?;
         let fire = OfferFire {
             persistent: op.persistent,
             waiter,
@@ -1767,16 +1595,16 @@ pub fn offer_head<D: Discipline>(
         let step = cx.rounds().after_fire(spent, stays);
         match step {
             FireStep::Continue => {
-                let (data, removed) = (meter.copy(&record)?, meter.copy(&record)?);
-                cx.fire_offer(fire, data, removed, meter.copy(&source)?)?;
+                let (data, removed) = (record.clone(), record.clone());
+                cx.fire_offer(fire, data, removed, source.clone())?;
             }
             FireStep::Done => {
-                let removed = meter.copy(&record)?;
+                let removed = record.clone();
                 cx.fire_offer(fire, record, removed, source)?;
                 return discipline.settle_after(cx, OpView::Produce(&op));
             }
             FireStep::Reissue(cause) => {
-                let removed = meter.copy(&record)?;
+                let removed = record.clone();
                 cx.fire_offer(fire, record, removed, source)?;
                 return Ok(Some(cx.reissue(
                     SpaceOp::Produce(ProduceOp {
@@ -1806,15 +1634,13 @@ pub fn receive_head<D: Discipline>(
     if let Some(reissue) = open_plan(discipline, cx, OpView::Consume(&op))? {
         return Ok(Some(reissue));
     }
-    let meter = cx.meter();
-    let continuation = record::wrap_continuation_metered(
+    let continuation = record::wrap_continuation_from_parts(
         ord,
         &op.body,
         &op.guard,
         record::stamped(&op.authority),
-        meter,
     )?;
-    let peeks = peek_set(op.peek, meter)?;
+    let peeks = peek_set(op.peek);
     if !cx.at_head(discipline, Side::Waiters, op.reissued_ord)? {
         cx.check_capacity::<D>(Side::Waiters)?;
         cx.park(&op, continuation, peeks)?;
@@ -1828,7 +1654,7 @@ pub fn receive_head<D: Discipline>(
             cx.park(&op, continuation, peeks)?;
             return discipline.settle_after(cx, OpView::Consume(&op));
         };
-        let payload = record::unwrap_datum_metered(&head.a, meter)?.datum;
+        let payload = record::unwrap_datum(&head.a)?.datum;
         let Some(matched) = cx.matches(&op.pattern, &payload, &continuation, Held::Stored)? else {
             cx.check_capacity::<D>(Side::Waiters)?;
             cx.park(&op, continuation, peeks)?;
@@ -1838,11 +1664,10 @@ pub fn receive_head<D: Discipline>(
         let stays = head.persist || op.peek;
         let view_index = i32::try_from(index)
             .map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))?;
-        record::prepay_continuation_unwrap(&continuation, meter)?;
         // Rule E (decision 45): the peek fire removes a non-persistent record, as the host
         // COMM does, and the record is stored again right after the fire.
         let restored = match op.peek && !head.persist {
-            true => Some(meter.copy(&head.a)?),
+            true => Some(head.a.clone()),
             false => None,
         };
         let fire = ReceiveFire {
@@ -1853,8 +1678,8 @@ pub fn receive_head<D: Discipline>(
         let step = cx.rounds().after_fire(spent, stays);
         match step {
             FireStep::Continue => {
-                let fired = meter.copy(&continuation)?;
-                cx.fire_receive(&op, fire, fired, meter.copy(&peeks)?)?;
+                let fired = continuation.clone();
+                cx.fire_receive(&op, fire, fired, peeks.clone())?;
                 if let Some(reissue) = restore_peeked(discipline, cx, restored)? {
                     return Ok(Some(reissue));
                 }
@@ -1895,71 +1720,56 @@ fn restore_peeked<D: Discipline>(
     }
 }
 
-/// The order of a record in the staged view, with the decode of its envelope reserved.
-pub(crate) fn datum_ord(datum: &ParDatum, meter: &ScanMeter) -> Result<i64, SpaceError> {
-    record::datum_ord_metered(&datum.a, meter)
+/// The order of a record in the staged view, from the decode of its envelope.
+pub(crate) fn datum_ord(datum: &ParDatum) -> Result<i64, SpaceError> {
+    record::datum_ord(&datum.a).map_err(SpaceError::from)
 }
 
-/// The order of a waiting continuation in the staged view, with the decode of its envelope
-/// reserved.
-pub(crate) fn waiter_ord(waiter: &ParWaiter, meter: &ScanMeter) -> Result<i64, SpaceError> {
-    record::continuation_ord_metered(&waiter.continuation, meter)
+/// The order of a waiting continuation in the staged view, from the decode of its envelope.
+pub(crate) fn waiter_ord(waiter: &ParWaiter) -> Result<i64, SpaceError> {
+    record::continuation_ord(&waiter.continuation).map_err(SpaceError::from)
 }
 
 /// The order of an operation whose bump returned `bumped` (decision 43). With a counter, it is
 /// the first-round order `reissued` of a re-issued persistent operation, and `bumped` for every
 /// other operation. A bump value is never taken twice, so a first-round order lies in
-/// `0..bumped`, and any other value is `Inconsistent`. The two comparisons are reserved first.
-/// Without a counter every order is 0, so a re-issued order other than 0 is `Inconsistent`, and
-/// its comparison is reserved first.
-pub(crate) fn operation_ord(
-    reissued: Option<i64>,
-    bumped: Option<i64>,
-    meter: &ScanMeter,
-) -> Result<i64, SpaceError> {
+/// `0..bumped`, and any other value is `Inconsistent`. Without a counter every order is 0, so a
+/// re-issued order other than 0 is `Inconsistent`.
+pub(crate) fn operation_ord(reissued: Option<i64>, bumped: Option<i64>) -> Result<i64, SpaceError> {
     match (reissued, bumped) {
         (None, Some(bumped)) => Ok(bumped),
         (None, None) => Ok(0),
-        (Some(ord), Some(bumped)) => {
-            meter.compare(size_of::<i64>(), size_of::<i64>())?;
-            meter.compare(size_of::<i64>(), size_of::<i64>())?;
-            match (0..bumped).contains(&ord) {
-                true => Ok(ord),
-                false => Err(SpaceError::Inconsistent(
-                    "a re-issued order is not an order of the counter",
-                )),
-            }
-        }
-        (Some(ord), None) => {
-            meter.compare(size_of::<i64>(), size_of::<i64>())?;
-            match ord == 0 {
-                true => Ok(0),
-                false => Err(SpaceError::Inconsistent(
-                    "a re-issued order of a collection without a counter is not 0",
-                )),
-            }
-        }
+        (Some(ord), Some(bumped)) => match (0..bumped).contains(&ord) {
+            true => Ok(ord),
+            false => Err(SpaceError::Inconsistent(
+                "a re-issued order is not an order of the counter",
+            )),
+        },
+        (Some(ord), None) => match ord == 0 {
+            true => Ok(0),
+            false => Err(SpaceError::Inconsistent(
+                "a re-issued order of a collection without a counter is not 0",
+            )),
+        },
     }
 }
 
 /// Reads and decodes the config record of `space` on `channel`, and returns the config and the
-/// map in the staged view. A missing record fails with `missing()`. The decode reserves its
-/// work first: the read of the envelope, the strict decode of the map
-/// (`SpaceConfig::from_par_metered`) and the comparison of the space ids.
+/// map in the staged view. A missing record fails with `missing()`. The decode reads the
+/// envelope, decodes the map strictly (`SpaceConfig::from_par_with_theory`) and compares the
+/// space ids.
 fn read_space_config<'t>(
     txn: &'t mut ParSpaceTxn,
     channel: &Par,
     space: NativeSpace,
     missing: impl FnOnce() -> SpaceError,
-    meter: &ScanMeter,
 ) -> Result<(SpaceConfig, &'t Par), SpaceError> {
     let map = match txn.data(channel)? {
         [] => return Err(missing()),
-        [datum] => record::config_map_metered(&datum.a, meter)?,
+        [datum] => record::config_map(&datum.a)?,
         _ => return Err(SpaceError::Inconsistent("a space has two config records")),
     };
-    let config = SpaceConfig::from_par_metered(map, meter)?;
-    meter.compare(namespace::SID_LEN, namespace::SID_LEN)?;
+    let config = SpaceConfig::from_par_with_theory(map)?;
     match config.space_id == space.sid {
         true => Ok((config, map)),
         false => Err(SpaceError::Inconsistent(
@@ -1974,14 +1784,6 @@ fn fire_count(staged: &[Staged]) -> usize {
         .iter()
         .filter(|kind| matches!(kind, Staged::Fire | Staged::FirePrefix | Staged::JoinFire))
         .count()
-}
-
-/// Reserves the buffer of the fires of the outcome of `staged`. [`outcome`] runs after the
-/// commit, so the operation pays for its buffer before the commit, as it prepays the decode of
-/// each fired continuation (`record::prepay_continuation_unwrap`). A host-work rejection then
-/// never follows a commit.
-fn prepay_outcome(staged: &[Staged], meter: &ScanMeter) -> Result<(), SpaceError> {
-    Ok(meter.reserve_buffer::<SpaceFire>(fire_count(staged))?)
 }
 
 /// The outcome of a committed collection operation. It moves each fired continuation out of its
@@ -2080,8 +1882,8 @@ fn outcome(
 }
 
 /// The most operations that one head-only operation stages: the bump, `FIRE_ROUND_CAP` fires,
-/// and one store, park or re-store. The staged list starts with this room, and a plan that
-/// stages more reserves each growth (`push_reserved`).
+/// and one store, park or re-store. The staged list starts with this room, so a plan of one
+/// head-only operation does not grow it.
 const MAX_STAGED: usize = OPEN_BUMP_OPERATIONS + FIRE_ROUND_CAP + 1;
 
 /// The operations of the longest bump (`counter::bump` on a new collection).
@@ -2099,7 +1901,7 @@ pub struct CollectionTxn {
 
 /// Steps 1 and 2 of a collection operation on `channel`, the collection `key` of `space`, with
 /// the channels of the outer store `outer`: the transaction over the lock keys, and the config,
-/// read once (decision 42).
+/// read once.
 pub async fn begin_collection<S: OuterStore>(
     outer: &S,
     env: &SpaceEnv,
@@ -2107,16 +1909,11 @@ pub async fn begin_collection<S: OuterStore>(
     key: &CollectionKey,
     channel: &Par,
 ) -> Result<CollectionTxn, SpaceError> {
-    let meter = &env.meter;
-    let channels = CollectionChannels::new_metered(outer, space, key, meter)?;
+    let channels = CollectionChannels::new(outer, space, key);
     let mut txn = env.begin(channels.lock_keys()).await?;
-    let (config, _) = read_space_config(
-        &mut txn,
-        channels.config(),
-        space,
-        || missing_config(channel, space, meter),
-        meter,
-    )?;
+    let (config, _) = read_space_config(&mut txn, channels.config(), space, || {
+        missing_config(channel, space)
+    })?;
     Ok(CollectionTxn {
         txn,
         channels,
@@ -2131,19 +1928,17 @@ pub async fn begin_collection<S: OuterStore>(
 /// `opened`, which stages nothing, and begins one new transaction over the lock keys of the
 /// closure: the scheduler footprint `[2]‖sid` serializes every job of the space, so the state
 /// does not change between the two transactions, and the closure is complete, so one escalation
-/// is enough. The config of `opened` is read once (decision 42).
+/// is enough. The config of `opened` is read once.
 pub async fn prepare_collection_op(
     agent: &dyn FamilySpace,
     env: &SpaceEnv,
     mut opened: CollectionTxn,
     op: SpaceOp,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
-    match agent.classify(env, &mut opened, &op)? {
+    match agent.classify(&mut opened, &op)? {
         JoinRoute::Single => agent.run_with(env, opened, op),
         JoinRoute::Join(scope) => match agent.always_escalates() {
-            false if scope.covers(&scope.own, &env.meter)? => {
-                agent.run_join(env, opened, scope, op)
-            }
+            false if scope.covers(&scope.own) => agent.run_join(env, opened, scope, op),
             _ => {
                 let CollectionTxn {
                     txn,
@@ -2180,18 +1975,14 @@ impl Admission {
     /// in order, before any staging or bump. A settle job carries only data that was admitted,
     /// so it admits nothing. The first value that is not `Proven` aborts the operation with
     /// `TheoryRefuted` or `TheoryUndetermined`.
-    pub(crate) fn of(
-        config: &SpaceConfig,
-        op: &SpaceOp,
-        meter: &ScanMeter,
-    ) -> Result<Self, SpaceError> {
+    pub(crate) fn of(config: &SpaceConfig, op: &SpaceOp) -> Result<Self, SpaceError> {
         let theory = match &config.theory {
             Some(identity) => Some(theory::resolve(identity)?),
             None => None,
         };
         let leases = match (&theory, op) {
             (Some(theory), SpaceOp::Produce(produce)) => {
-                theory::admit_values(theory.as_ref(), &produce.data.pars, meter)?
+                theory::admit_values(theory.as_ref(), &produce.data.pars)?
             }
             (Some(_), SpaceOp::Consume(_) | SpaceOp::Join(_) | SpaceOp::Settle(_)) | (None, _) => {
                 Vec::new()
@@ -2211,11 +2002,10 @@ fn check_leases(leases: &[Box<dyn TheoryCommitLease>]) -> Result<(), SpaceError>
 }
 
 /// The plan of one transaction of the join engine (P5c) over the open transaction `txn`, whose
-/// own data channel is `data`: the staged list, the metered matcher, the introduction of
+/// own data channel is `data`: the staged list, the matcher, the introduction of
 /// `introduction_authority`, the legacy chain of decision 45 and the fire count of the
 /// transaction (decision 49), as `run_with` makes them. `stage` stages the operations through
-/// [`Cx`] and returns the re-issue. The outcome after the commit is the outcome of `run_with`,
-/// and its buffer is prepaid here.
+/// [`Cx`] and returns the re-issue. The outcome after the commit is the outcome of `run_with`.
 pub(crate) fn run_plan(
     env: &SpaceEnv,
     mut txn: ParSpaceTxn,
@@ -2226,10 +2016,9 @@ pub(crate) fn run_plan(
     admission: Admission,
     stage: impl FnOnce(&mut Cx<'_, '_>) -> Result<Option<SpaceReissue>, SpaceError>,
 ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
-    let meter = &env.meter;
-    let staged = meter.buffer::<Staged>(MAX_STAGED)?;
-    let matcher = SpaceMatcher::metered(env)?;
-    let introduction = Introduction::new(&env.budget, introduction_authority, meter)?;
+    let staged = Vec::<Staged>::with_capacity(MAX_STAGED);
+    let matcher = SpaceMatcher::new(env);
+    let introduction = Introduction::new(&env.budget, introduction_authority);
     let mut plan = Plan {
         data,
         config,
@@ -2259,7 +2048,6 @@ pub(crate) fn run_plan(
         ..
     } = plan;
     check_leases(&leases)?;
-    prepay_outcome(&staged, meter)?;
     Ok(Prepared::new(txn, move |receipt| {
         legacy.finish()?;
         let writes = mirror.writes(&receipt);
@@ -2274,41 +2062,31 @@ pub(crate) fn run_plan(
 
 /// Steps 1 and 2 of the join `op` (P5c): the transaction over the lock keys `[C(sid), S(sid)]`
 /// and `[S(sid,k), D(sid,k)]` of each distinct collection `k` of its binds, in ascending key
-/// order, and the config, read once (decision 42). The channels of the result are the channels
-/// of the collection of the first bind. A join without a bind is `Inconsistent`. The names of
-/// the lock keys are reserved before they are made.
+/// order, and the config, read once. The channels of the result are the channels of the
+/// collection of the first bind. A join without a bind is `Inconsistent`.
 pub async fn begin_join<S: OuterStore>(
     outer: &S,
     env: &SpaceEnv,
     op: &JoinOp,
 ) -> Result<CollectionTxn, SpaceError> {
-    let meter = &env.meter;
     let Some(first) = op.binds.first() else {
         return Err(SpaceError::Inconsistent("a join has no bind"));
     };
-    let channels = CollectionChannels::new_metered(outer, op.space, &first.key, meter)?;
-    let keys = join::distinct_bind_keys(op, meter)?;
-    let length = keys
-        .len()
-        .checked_mul(2)
-        .and_then(|length| length.checked_add(2))
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut lock_keys = meter.buffer::<Par>(length)?;
-    lock_keys.push(meter.copy(channels.config())?);
-    lock_keys.push(meter.copy(channels.space_counter())?);
+    let channels = CollectionChannels::new(outer, op.space, &first.key);
+    let keys = join::distinct_bind_keys(op);
+    let length = keys.len() * 2 + 2;
+    let mut lock_keys = Vec::<Par>::with_capacity(length);
+    lock_keys.push(channels.config().clone());
+    lock_keys.push(channels.space_counter().clone());
     for key in keys {
-        let collection = join::scoped_collection(outer, op.space, key, meter)?;
+        let collection = join::scoped_collection(outer, op.space, key);
         lock_keys.push(collection.counter);
         lock_keys.push(collection.data);
     }
     let mut txn = env.begin(&lock_keys).await?;
-    let (config, _) = read_space_config(
-        &mut txn,
-        channels.config(),
-        op.space,
-        || missing_config(&first.channel, op.space, meter),
-        meter,
-    )?;
+    let (config, _) = read_space_config(&mut txn, channels.config(), op.space, || {
+        missing_config(&first.channel, op.space)
+    })?;
     Ok(CollectionTxn {
         txn,
         channels,
@@ -2316,19 +2094,10 @@ pub async fn begin_join<S: OuterStore>(
     })
 }
 
-/// Reserves the comparison of the family of `config` with the family `S:D`, and compares them.
-/// The comparison reads the names of the config and of the family.
-pub fn family_matches<S: OuterStore, D: Discipline>(
-    config: &SpaceConfig,
-    meter: &ScanMeter,
-) -> Result<bool, SpaceError> {
-    let scanned = config
-        .outer
-        .len()
-        .checked_add(config.inner.len())
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.compare(scanned, S::NAME.len() + D::NAME.len())?;
-    Ok(config.is_family(S::NAME, D::NAME))
+/// Compares the family of `config` with the family `S:D`. The comparison reads the names of the
+/// config and of the family.
+pub fn family_matches<S: OuterStore, D: Discipline>(config: &SpaceConfig) -> bool {
+    config.is_family(S::NAME, D::NAME)
 }
 
 /// The `FamilyUnavailable` error of `config`, with the names of the config and no copy.
@@ -2352,29 +2121,21 @@ pub struct AllocationTxn {
 
 /// Opens the transaction of an allocation in `space` and reads the config once. Every
 /// allocation locks `A(sid)`, because the family is known only after the config read. A missing
-/// config fails with `DanglingHandle`. The two names are reserved before they are made.
+/// config fails with `DanglingHandle`.
 pub async fn begin_allocation(
     env: &SpaceEnv,
     space: NativeSpace,
 ) -> Result<AllocationTxn, SpaceError> {
-    let meter = &env.meter;
-    for _ in 0..2 {
-        meter.reserve_copy(&*GPRIVATE)?;
-        meter.reserve_buffer::<u8>(namespace::SPACE_ID_PREFIX_LEN)?;
-    }
+    for _ in 0..2 {}
     let keys = [
         namespace::gprivate(namespace::config_channel(space)),
         namespace::gprivate(namespace::allocator_channel(space)),
     ];
     let mut txn = env.begin(&keys).await?;
     let [config_channel, allocator] = keys;
-    let (config, _) = read_space_config(
-        &mut txn,
-        &config_channel,
-        space,
-        || SpaceError::DanglingHandle { space: space.sid },
-        meter,
-    )?;
+    let (config, _) = read_space_config(&mut txn, &config_channel, space, || {
+        SpaceError::DanglingHandle { space: space.sid }
+    })?;
     Ok(AllocationTxn {
         txn,
         allocator,
@@ -2385,33 +2146,23 @@ pub async fn begin_allocation(
 /// Reads the config map of `space` in a transaction that commits nothing. A missing config
 /// record fails with `DanglingHandle`.
 pub async fn read_config_map(env: &SpaceEnv, space: NativeSpace) -> Result<Par, SpaceError> {
-    let meter = &env.meter;
-    meter.reserve_copy(&*GPRIVATE)?;
-    meter.reserve_buffer::<u8>(namespace::SPACE_ID_PREFIX_LEN)?;
     let channel = namespace::gprivate(namespace::config_channel(space));
     let mut txn = env.begin(std::slice::from_ref(&channel)).await?;
-    let (_, map) = read_space_config(
-        &mut txn,
-        &channel,
-        space,
-        || SpaceError::DanglingHandle { space: space.sid },
-        meter,
-    )?;
-    Ok(meter.copy(map)?)
+    let (_, map) = read_space_config(&mut txn, &channel, space, || SpaceError::DanglingHandle {
+        space: space.sid,
+    })?;
+    Ok(map.clone())
 }
 
 /// Checks each key of `keys` against `schema`. Each comparison reads the key and the schema
-/// entry and is reserved first. An unknown key fails with `UnknownParam` and the closest schema
-/// key.
+/// entry. An unknown key fails with `UnknownParam` and the closest schema key.
 fn check_keys<'k>(
     keys: impl Iterator<Item = &'k String>,
     schema: &[&str],
-    meter: &ScanMeter,
 ) -> Result<(), SpaceError> {
     for key in keys {
         let mut known = false;
         for entry in schema {
-            meter.compare(key.len(), entry.len())?;
             if key == entry {
                 known = true;
                 break;
@@ -2429,13 +2180,8 @@ fn check_keys<'k>(
 
 impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
     /// Fails with `FamilyUnavailable` unless the config names the family of this agent, and
-    /// otherwise returns the config. The comparison of the names is reserved first, and the
-    /// error takes the names of the config without a copy.
-    fn check_family(
-        &self,
-        config: SpaceConfig,
-        meter: &ScanMeter,
-    ) -> Result<SpaceConfig, SpaceError> {
+    /// otherwise returns the config. The error takes the names of the config without a copy.
+    fn check_family(&self, config: SpaceConfig) -> Result<SpaceConfig, SpaceError> {
         // Disabled by decision 29: joins into ordered collections arrive in P5c, so the agent no
         // longer gates a family on `(USES_COUNTER, ¬JOINS)`. The family match stays.
         // match (config.is_family(S::NAME, D::NAME), D::USES_COUNTER, D::JOINS) {
@@ -2445,7 +2191,7 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
         //         inner: config.inner,
         //     }),
         // }
-        match family_matches::<S, D>(&config, meter)? {
+        match family_matches::<S, D>(&config) {
             true => Ok(config),
             false => Err(family_unavailable(config)),
         }
@@ -2461,15 +2207,15 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
     //     &self,
     //     txn: &mut ParSpaceTxn,
     //     channels: &CollectionChannels,
-    //     meter: &ScanMeter,
+    //
     // ) -> Result<(), SpaceError> {
     //     let data = channels.data();
     //     match txn.joins(data)? {
     //         [] => Ok(()),
     //         [group] => {
-    //             meter.inspect(group)?;
-    //             meter.inspect(data)?;
-    //             meter.charge(1, 0, 0)?;
+    //
+    //
+    //
     //             match group.as_slice() == std::slice::from_ref(data) {
     //                 true => Ok(()),
     //                 false => Err(SpaceError::Inconsistent(
@@ -2493,18 +2239,17 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
         config: &SpaceConfig,
         params: &BTreeMap<String, Par>,
         query: Option<&QueryParams>,
-        meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
-        check_keys(params.keys(), D::SEND_PARAMS, meter)?;
+        check_keys(params.keys(), D::SEND_PARAMS)?;
         if let Some(query) = query {
             if D::QUERY_PARAMS.is_empty() {
                 return Err(SpaceError::QuerySpecUnsupported);
             }
-            check_keys(query.named.keys(), D::QUERY_PARAMS, meter)?;
+            check_keys(query.named.keys(), D::QUERY_PARAMS)?;
         }
         match params.is_empty() && query.is_none() {
             true => Ok(()),
-            false => self.discipline.check_values(config, params, query, meter),
+            false => self.discipline.check_values(config, params, query),
         }
     }
 
@@ -2529,13 +2274,8 @@ impl<S: OuterStore, D: Discipline> GenericSpace<S, D> {
 impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
     fn always_escalates(&self) -> bool { S::ALWAYS_ESCALATES }
 
-    fn classify(
-        &self,
-        env: &SpaceEnv,
-        opened: &mut CollectionTxn,
-        op: &SpaceOp,
-    ) -> Result<JoinRoute, SpaceError> {
-        S::classify(self, env, opened, op)
+    fn classify(&self, opened: &mut CollectionTxn, op: &SpaceOp) -> Result<JoinRoute, SpaceError> {
+        S::classify(self, opened, op)
     }
 
     /// Every check happens before the bump, so a rejected operation leaves the counter
@@ -2547,14 +2287,13 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
         opened: CollectionTxn,
         op: SpaceOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
-        let meter = &env.meter;
         let CollectionTxn {
             mut txn,
             channels,
             config,
         } = opened;
         // Disabled by decision 29 (P5c): `classify` reads the join groups before this step.
-        // self.check_joins(&mut txn, &channels, meter)?;
+        // self.check_joins(&mut txn, &channels)?;
         let no_params = BTreeMap::new();
         let (channel, key, params, query, introduction_authority) = match &op {
             SpaceOp::Produce(op) => (&op.channel, &op.key, &op.params, None, &op.authority),
@@ -2583,15 +2322,15 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
                 return Err(SpaceError::Inconsistent("a join runs in the join engine"))
             }
         };
-        self.outer.check_key(&config, channel, key, meter)?;
+        self.outer.check_key(&config, channel, key)?;
         match &op {
-            SpaceOp::Produce(op) => self.outer.check_payload(&op.data, meter)?,
-            SpaceOp::Consume(op) => self.outer.check_patterns(&op.pattern, meter)?,
+            SpaceOp::Produce(op) => self.outer.check_payload(&op.data)?,
+            SpaceOp::Consume(op) => self.outer.check_patterns(&op.pattern)?,
             SpaceOp::Settle(_) | SpaceOp::Join(_) => {}
         }
-        self.check_params(&config, params, query, meter)?;
+        self.check_params(&config, params, query)?;
         // TH-5: the theory admits the values of a send before any staging or bump.
-        let admission = Admission::of(&config, &op, meter)?;
+        let admission = Admission::of(&config, &op)?;
         // SQ-3: a program operation on a `seq` space claims its own collection first, as the
         // home of its datum or as the channel of its waiter. A settle job is internal.
         let mut seq = SeqClaims::open(
@@ -2599,18 +2338,17 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             op.space(),
             config.qualifier,
             matches!(op, SpaceOp::Settle(_)) || env.origin == OpOrigin::Internal,
-            meter,
         )?;
         if let Some(claims) = seq.as_mut() {
             let role = match &op {
                 SpaceOp::Produce(_) => ClaimRole::Data,
                 SpaceOp::Consume(_) | SpaceOp::Settle(_) | SpaceOp::Join(_) => ClaimRole::Waiter,
             };
-            claims.claim(channels.data(), role, meter)?;
+            claims.claim(channels.data(), role)?;
         }
-        let staged = meter.buffer::<Staged>(MAX_STAGED)?;
-        let matcher = SpaceMatcher::metered(env)?;
-        let introduction = Introduction::new(&env.budget, introduction_authority, meter)?;
+        let staged = Vec::<Staged>::with_capacity(MAX_STAGED);
+        let matcher = SpaceMatcher::new(env);
+        let introduction = Introduction::new(&env.budget, introduction_authority);
         let mut plan = Plan {
             data: channels.data(),
             config: &config,
@@ -2636,7 +2374,7 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
                     OperationAuthority::of_produce(&op, &introduction),
                 )?;
                 plan.bumped = bumped;
-                let ord = operation_ord(op.reissued_ord, bumped, meter)?;
+                let ord = operation_ord(op.reissued_ord, bumped)?;
                 let mut cx = Cx {
                     txn: &mut txn,
                     plan: &mut plan,
@@ -2652,7 +2390,7 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
                     OperationAuthority::of_consume(&op, &introduction),
                 )?;
                 plan.bumped = bumped;
-                let ord = operation_ord(op.reissued_ord, bumped, meter)?;
+                let ord = operation_ord(op.reissued_ord, bumped)?;
                 let mut cx = Cx {
                     txn: &mut txn,
                     plan: &mut plan,
@@ -2690,7 +2428,6 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
             ..
         } = plan;
         check_leases(&leases)?;
-        prepay_outcome(&staged, meter)?;
         Ok(Prepared::new(txn, move |receipt| {
             legacy.finish()?;
             let writes = mirror.writes(&receipt);
@@ -2724,14 +2461,13 @@ impl<S: OuterStore, D: Discipline> FamilySpace for GenericSpace<S, D> {
         if !S::ALLOCATOR {
             return Ok(Allocation::Baseline);
         }
-        let meter = &env.meter;
         let AllocationTxn {
             mut txn,
             allocator,
             config,
         } = opened;
-        let matcher = SpaceMatcher::metered(env)?;
-        let introduction = Introduction::new(&env.budget, &op.authority, meter)?;
+        let matcher = SpaceMatcher::new(env);
+        let introduction = Introduction::new(&env.budget, &op.authority);
         let random = Blake2b512Random::from_bytes(&op.random_state);
         let mut legacy = LegacyChain::new(&env.budget);
         let (indices, staged) = {
@@ -2776,19 +2512,15 @@ pub struct AllocCx<'c> {
 }
 
 impl AllocCx<'_> {
-    /// The meter of the job.
-    pub fn meter(&self) -> &ScanMeter { self.context.matcher.meter() }
-
     /// The allocator channel `A(sid)` of the space.
     pub fn allocator_channel(&self) -> &Par { self.allocator }
 
     /// The only record of the allocator in the staged view, copied, or `None`. Two records are
     /// `Inconsistent`.
     pub fn allocator_record(&mut self) -> Result<Option<ParDatum>, SpaceError> {
-        let meter = self.context.matcher.meter();
         match self.txn.data(self.allocator)? {
             [] => Ok(None),
-            [stored] => Ok(Some(meter.copy(stored)?)),
+            [stored] => Ok(Some(stored.clone())),
             _ => Err(SpaceError::Inconsistent(
                 "a space has two allocator records",
             )),
@@ -2833,7 +2565,7 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         op: ProduceOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_collection(&self.outer, env, op.space, &op.key, &op.channel).await?;
-        let config = self.check_family(opened.config, &env.meter)?;
+        let config = self.check_family(opened.config)?;
         prepare_collection_op(
             self,
             env,
@@ -2849,7 +2581,7 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         op: ConsumeOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_collection(&self.outer, env, op.space, &op.key, &op.channel).await?;
-        let config = self.check_family(opened.config, &env.meter)?;
+        let config = self.check_family(opened.config)?;
         prepare_collection_op(
             self,
             env,
@@ -2865,7 +2597,7 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         op: SettleOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_collection(&self.outer, env, op.space, &op.key, &op.channel).await?;
-        let config = self.check_family(opened.config, &env.meter)?;
+        let config = self.check_family(opened.config)?;
         prepare_collection_op(
             self,
             env,
@@ -2881,7 +2613,7 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         op: JoinOp,
     ) -> Result<Prepared<SpaceOutcome>, SpaceError> {
         let opened = begin_join(&self.outer, env, &op).await?;
-        let config = self.check_family(opened.config, &env.meter)?;
+        let config = self.check_family(opened.config)?;
         prepare_collection_op(
             self,
             env,
@@ -2893,7 +2625,7 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
 
     async fn allocate(&self, env: &SpaceEnv, op: AllocOp) -> Result<Allocation, SpaceError> {
         let opened = begin_allocation(env, op.space).await?;
-        let config = self.check_family(opened.config, &env.meter)?;
+        let config = self.check_family(opened.config)?;
         self.run_allocate(env, AllocationTxn { config, ..opened }, &op)
     }
 
@@ -2906,30 +2638,24 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         env: &SpaceEnv,
         creation: SpaceCreation,
     ) -> Result<Prepared<()>, SpaceError> {
-        let meter = &env.meter;
         let space = creation.space;
-        let prefix = namespace::SPACE_ID_PREFIX_LEN;
-        for _ in 0..3 {
-            meter.reserve_copy(&*GPRIVATE)?;
-            meter.reserve_buffer::<u8>(prefix)?;
-        }
         let keys = [
             namespace::gprivate(namespace::config_channel(space)),
             namespace::gprivate(namespace::space_counter(space)),
             namespace::gprivate(namespace::handle_channel(space)),
         ];
-        let records =
-            self.outer
-                .creation_records(space, &creation.random, &creation.authority, meter)?;
+        let records = self
+            .outer
+            .creation_records(space, &creation.random, &creation.authority)?;
         let mut txn = match records.is_empty() {
             true => env.begin(&keys).await?,
             false => {
-                let mut locked = meter.buffer::<Par>(keys.len() + records.len())?;
+                let mut locked = Vec::<Par>::with_capacity(keys.len() + records.len());
                 for channel in keys
                     .iter()
                     .chain(records.iter().map(|(channel, _)| channel))
                 {
-                    locked.push(meter.copy(channel)?);
+                    locked.push(channel.clone());
                 }
                 env.begin(&locked).await?
             }
@@ -2938,8 +2664,7 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         if !txn.data(&config_channel)?.is_empty() {
             return Err(SpaceError::SpaceAlreadyExists);
         }
-        let config = SpaceConfig::from_par_metered(&creation.config, meter)?;
-        meter.compare(namespace::SID_LEN, namespace::SID_LEN)?;
+        let config = SpaceConfig::from_par_with_theory(&creation.config)?;
         if config.space_id != space.sid {
             return Err(SpaceError::Inconsistent(
                 "the config of a new space names another space",
@@ -2947,35 +2672,33 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
         }
         let qualifier = config.qualifier;
         let volatile = Arc::clone(&env.volatile);
-        self.check_family(config, meter)?;
-        let introduction = Introduction::new(&env.budget, &creation.authority, meter)?;
+        self.check_family(config)?;
+        let introduction = Introduction::new(&env.budget, &creation.authority);
         let mut legacy = LegacyChain::new(&env.budget);
         let config = SpaceProduce {
             channel: config_channel,
-            data: record::config_record_metered(
+            data: record::config_record(
                 creation.config,
                 &RandomPurpose::Config.derive(&creation.random),
-                meter,
-            )?,
+            ),
             persist: true,
             outcome: ProduceOutcome::Store,
-            before_observe: Some(record::register_introduction(&introduction, meter)?),
+            before_observe: Some(record::register_introduction(&introduction)),
         };
         legacy.produce(&mut txn, config)?;
-        let cost_authority = record::cost_authority_metered(&creation.authority, meter)?;
+        let cost_authority = record::cost_authority(&creation.authority);
         let counter = SpaceProduce {
             channel: space_counter,
-            data: record::counter_record_metered(
+            data: record::counter_record(
                 0,
                 &RandomPurpose::SpaceCounter
                     .derive(&creation.random)
                     .split_byte(1),
                 cost_authority,
-                meter,
-            )?,
+            ),
             persist: false,
             outcome: ProduceOutcome::Store,
-            before_observe: Some(record::register_introduction(&introduction, meter)?),
+            before_observe: Some(record::register_introduction(&introduction)),
         };
         legacy.produce(&mut txn, counter)?;
         let extra = records.len();
@@ -2985,13 +2708,13 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
                 data,
                 persist: false,
                 outcome: ProduceOutcome::Store,
-                before_observe: Some(record::register_introduction(&introduction, meter)?),
+                before_observe: Some(record::register_introduction(&introduction)),
             };
             legacy.produce(&mut txn, staged)?;
         }
-        let mut channels = meter.buffer::<Par>(1)?;
+        let mut channels = Vec::<Par>::with_capacity(1);
         channels.push(handle);
-        let mut patterns = meter.buffer::<BindPattern>(1)?;
+        let mut patterns = Vec::<BindPattern>::with_capacity(1);
         patterns.push(creation.handle_pattern);
         let handle = SpaceConsume {
             channels,
@@ -3000,7 +2723,7 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
             persist: true,
             peeks: BTreeSet::new(),
             outcome: ConsumeOutcome::Park,
-            before_observe: Some(record::register_introduction(&introduction, meter)?),
+            before_observe: Some(record::register_introduction(&introduction)),
         };
         legacy.consume(&mut txn, handle)?;
         Ok(Prepared::new(txn, move |receipt| {
@@ -3039,15 +2762,12 @@ impl<S: OuterStore, D: Discipline> SpaceAgent for GenericSpace<S, D> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock};
 
     use models::rhoapi::cost_signature::Value as CostSignatureValue;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::tagged_continuation::TaggedCont;
     use models::rhoapi::{CostAuthority, CostRegion, CostSignature, Expr, ParWithRandom};
-    use models::rust::host_work::{
-        HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
-    };
     use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
     use models::rust::utils::{
         new_freevar_par, new_freevar_var, new_gbool_par, new_gint_par, new_gstring_par,
@@ -3073,9 +2793,8 @@ mod tests {
     };
     use crate::rust::interpreter::accounting::costs::Cost;
     use crate::rust::interpreter::accounting::RuntimeBudget;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::matcher::r#match::Matcher;
-    use crate::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+    use crate::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
     use crate::rust::interpreter::spaces::agent::run_op;
     use crate::rust::interpreter::spaces::counter::{counter_continuation, counter_pattern};
     use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
@@ -3102,7 +2821,6 @@ mod tests {
         SpaceEnv {
             store: SpaceStoreHandle::new(host),
             budget: budget.clone(),
-            meter: ScanMeter::new(None),
             volatile: Default::default(),
             origin: Default::default(),
         }
@@ -3727,10 +3445,7 @@ mod tests {
             ..ListParWithRandom::default()
         };
         assert!(
-            SpaceMatcher::new(&env)
-                .bind(&exactly(2), &second)
-                .expect("the match fits the budget")
-                .is_some(),
+            SpaceMatcher::new(&env).bind(&exactly(2), &second).is_some(),
             "negative control: a scan of the records would fire the second record"
         );
         let blocked = consume(&env, receive("w", exactly(2))).await;
@@ -3761,10 +3476,7 @@ mod tests {
         space.take_event_log().await;
         let sent = send(2);
         assert!(
-            SpaceMatcher::new(&env)
-                .bind(&any(), &sent.data)
-                .expect("the match fits the budget")
-                .is_some(),
+            SpaceMatcher::new(&env).bind(&any(), &sent.data).is_some(),
             "negative control: a scan of the waiters would fire w2"
         );
         assert_eq!(produce(&env, sent).await, SpaceOutcome::default());
@@ -5130,27 +4842,20 @@ mod tests {
         const QUERY_PARAMS: &'static [&'static str] = &["priority"];
         const CAPACITY: Option<usize> = Some(1);
 
-        fn head_metered<T: Serialize>(
+        fn head<T: Serialize>(
             &self,
             side: Side,
             entries: &[Ordered<'_, T>],
-            meter: &ScanMeter,
         ) -> Result<Option<usize>, SpaceError> {
-            QueueDiscipline.head_metered(side, entries, meter)
+            QueueDiscipline.head(side, entries)
         }
 
         fn reaches_head(&self, side: Side, queued: usize) -> bool {
             QueueDiscipline.reaches_head(side, queued)
         }
 
-        fn precedes(
-            &self,
-            side: Side,
-            ord: i64,
-            head: i64,
-            meter: &ScanMeter,
-        ) -> Result<bool, SpaceError> {
-            QueueDiscipline.precedes(side, ord, head, meter)
+        fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+            QueueDiscipline.precedes(side, ord, head)
         }
 
         fn check_values(
@@ -5158,7 +4863,6 @@ mod tests {
             _config: &SpaceConfig,
             params: &BTreeMap<String, Par>,
             query: Option<&QueryParams>,
-            _meter: &ScanMeter,
         ) -> Result<(), SpaceError> {
             let named = params
                 .iter()
@@ -5201,27 +4905,20 @@ mod tests {
         const USES_COUNTER: bool = true;
         const SEND_PARAMS: &'static [&'static str] = &[];
 
-        fn head_metered<T: Serialize>(
+        fn head<T: Serialize>(
             &self,
             side: Side,
             entries: &[Ordered<'_, T>],
-            meter: &ScanMeter,
         ) -> Result<Option<usize>, SpaceError> {
-            QueueDiscipline.head_metered(side, entries, meter)
+            QueueDiscipline.head(side, entries)
         }
 
         fn reaches_head(&self, side: Side, queued: usize) -> bool {
             QueueDiscipline.reaches_head(side, queued)
         }
 
-        fn precedes(
-            &self,
-            side: Side,
-            ord: i64,
-            head: i64,
-            meter: &ScanMeter,
-        ) -> Result<bool, SpaceError> {
-            QueueDiscipline.precedes(side, ord, head, meter)
+        fn precedes(&self, side: Side, ord: i64, head: i64) -> Result<bool, SpaceError> {
+            QueueDiscipline.precedes(side, ord, head)
         }
 
         fn settle_before(
@@ -5276,14 +4973,12 @@ mod tests {
             space: NativeSpace,
             random: &Blake2b512Random,
             authority: &CostAuthority,
-            meter: &ScanMeter,
         ) -> Result<Vec<(Par, ListParWithRandom)>, SpaceError> {
-            let record = record::counter_record_metered(
+            let record = record::counter_record(
                 0,
                 &RandomPurpose::Allocator.derive(random).split_byte(1),
-                record::cost_authority_metered(authority, meter)?,
-                meter,
-            )?;
+                record::cost_authority(authority),
+            );
             Ok(vec![(
                 namespace::gprivate(namespace::allocator_channel(space)),
                 record,
@@ -5299,7 +4994,7 @@ mod tests {
             let stored = cx.allocator_record()?.ok_or(SpaceError::Inconsistent(
                 "a space without an allocator record",
             ))?;
-            let value = record::counter_value_metered(&stored.a, cx.meter())?;
+            let value = record::counter_value(&stored.a)?;
             let count = i64::try_from(op.count).map_err(|_| SpaceError::OutOfNames)?;
             let next = value.checked_add(count).ok_or(SpaceError::OutOfNames)?;
             cx.take(stored, value)?;
@@ -5360,10 +5055,6 @@ mod tests {
         }
     }
 
-    fn unbounded() -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)))
-    }
-
     fn wrapped(name: &str) -> TaggedContinuation {
         record::wrap_continuation(0, &named(name, None)).expect("a continuation record")
     }
@@ -5385,15 +5076,15 @@ mod tests {
     ) -> Result<SpaceOutcome, SpaceError> {
         let ch = channels();
         let mut txn = env.store.begin(ch.lock_keys()).await?;
-        let matcher = SpaceMatcher::metered(env)?;
-        let introduction = Introduction::new(&env.budget, &CostAuthority::default(), &env.meter)?;
+        let matcher = SpaceMatcher::new(env);
+        let introduction = Introduction::new(&env.budget, &CostAuthority::default());
         let config = SpaceConfig::new(SPACE.sid, "hashmap", "queue", SpaceQualifier::Default);
         let mut plan = Plan {
             data: ch.data(),
             config: &config,
             matcher: &matcher,
             introduction: &introduction,
-            staged: env.meter.buffer::<Staged>(MAX_STAGED)?,
+            staged: Vec::with_capacity(MAX_STAGED),
             prefixes: Vec::new(),
             bumped: None,
             legacy: LegacyChain::new(&env.budget),
@@ -5439,7 +5130,7 @@ mod tests {
         for (_, index, head) in stored {
             let payload = record::unwrap_datum(&head.a).expect("a datum record").datum;
             let matched = cx
-                .bind(&any(), &payload)?
+                .bind(&any(), &payload)
                 .expect("any() binds every payload");
             let view_index = i32::try_from(index).expect("a small index");
             candidates.push(receive_candidate(data.clone(), ReceiveFire {
@@ -5449,13 +5140,6 @@ mod tests {
             }));
         }
         Ok(candidates)
-    }
-
-    #[test]
-    fn space_engine_staged_kinds_stay_one_byte() {
-        // A head-only plan reserves room for `MAX_STAGED` kinds before it stages, so the host
-        // work of a queue operation depends on this size. The queue parity golden pins it.
-        assert_eq!(size_of::<Staged>(), 1);
     }
 
     #[tokio::test]
@@ -5960,15 +5644,15 @@ mod tests {
         stage: impl FnOnce(&mut Cx<'_, '_>) -> Result<(), SpaceError>,
     ) -> Result<SpaceOutcome, SpaceError> {
         let mut txn = env.store.begin(keys).await?;
-        let matcher = SpaceMatcher::metered(env)?;
-        let introduction = Introduction::new(&env.budget, &CostAuthority::default(), &env.meter)?;
+        let matcher = SpaceMatcher::new(env);
+        let introduction = Introduction::new(&env.budget, &CostAuthority::default());
         let config = SpaceConfig::new(SPACE.sid, "hashmap", "queue", SpaceQualifier::Default);
         let mut plan = Plan {
             data: &keys[0],
             config: &config,
             matcher: &matcher,
             introduction: &introduction,
-            staged: env.meter.buffer::<Staged>(MAX_STAGED)?,
+            staged: Vec::with_capacity(MAX_STAGED),
             prefixes: Vec::new(),
             bumped: None,
             legacy: LegacyChain::new(&env.budget),
@@ -6037,8 +5721,8 @@ mod tests {
             let payload = |record: &ListParWithRandom| {
                 record::unwrap_datum(record).expect("a datum record").datum
             };
-            let incoming_match = cx.bind(&any(), &payload(&incoming))?.expect("any() binds");
-            let stored_match = cx.bind(&any(), &payload(&stored.a))?.expect("any() binds");
+            let incoming_match = cx.bind(&any(), &payload(&incoming)).expect("any() binds");
+            let stored_match = cx.bind(&any(), &payload(&stored.a)).expect("any() binds");
             let candidates = group
                 .iter()
                 .map(|channel| match *channel == a {
@@ -6098,7 +5782,7 @@ mod tests {
                 let payload = record::unwrap_datum(&stored.a)
                     .expect("a datum record")
                     .datum;
-                let matched = cx.bind(&any(), &payload)?.expect("any() binds");
+                let matched = cx.bind(&any(), &payload).expect("any() binds");
                 candidates.push(receive_candidate(channel.clone(), ReceiveFire {
                     head: stored,
                     matched,
@@ -6210,77 +5894,25 @@ mod tests {
 
     #[test]
     fn space_engine_join_peek_set_covers_every_bind() {
-        let host_work = unbounded();
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        assert_eq!(peek_set_all(3, &meter), Ok(BTreeSet::from([0, 1, 2])));
-        assert!(host_work.usage(HostWorkDimension::SearchStateBytes).get() > 0);
-        assert_eq!(peek_set_all(0, &meter), Ok(BTreeSet::new()));
-        assert_eq!(peek_set_all(1, &meter), peek_set(true, &meter));
-    }
-
-    #[test]
-    fn space_engine_staged_list_growth_is_reserved_before_it_grows() {
-        let operations = HostWorkDimension::VerificationOperations;
-        let bytes = HostWorkDimension::SearchStateBytes;
-        let host_work = unbounded();
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        let mut staged = meter.buffer::<Staged>(2).expect("room for two kinds");
-        let reserved = (host_work.usage(operations), host_work.usage(bytes));
-        // A push within the reserved room reserves nothing.
-        push_reserved(&mut staged, Staged::Store, &meter).expect("a push");
-        push_reserved(&mut staged, Staged::Park, &meter).expect("a push");
-        assert_eq!(
-            (host_work.usage(operations), host_work.usage(bytes)),
-            reserved
-        );
-        // A push at the capacity reserves the doubled buffer before the list grows, as
-        // `reserve_buffer` reserves a vector: `length + 1` operations and the bytes.
-        let grown = staged.capacity() * 2;
-        push_reserved(&mut staged, Staged::Fire, &meter).expect("the growth fits");
-        assert_eq!(
-            host_work.usage(operations),
-            HostWorkUsage::new(reserved.0.get() + (grown as u64 + 1))
-        );
-        assert_eq!(
-            host_work.usage(bytes),
-            HostWorkUsage::new(reserved.1.get() + (grown * size_of::<Staged>()) as u64)
-        );
-        assert_eq!(staged, vec![Staged::Store, Staged::Park, Staged::Fire]);
-        // A budget one operation short of the growth rejects it and leaves the list as it was.
-        let mut full = ScanMeter::new(None)
-            .buffer::<Staged>(2)
-            .expect("room for two kinds");
-        full.extend([Staged::Store, Staged::Park]);
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        limits.set(operations, HostWorkLimit::new(full.capacity() as u64 * 2));
-        let cut = HostWorkBudget::new(limits);
-        assert_eq!(
-            push_reserved(&mut full, Staged::Fire, &ScanMeter::new(Some(cut.clone()))),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        );
-        assert!(cut.is_rejected());
-        assert_eq!(full, vec![Staged::Store, Staged::Park]);
-        // An empty list grows to one entry.
-        let mut empty: Vec<usize> = Vec::new();
-        push_reserved(&mut empty, 7, &ScanMeter::new(None)).expect("a push");
-        assert_eq!(empty, vec![7]);
+        assert_eq!(peek_set_all(3), Ok(BTreeSet::from([0, 1, 2])));
+        assert_eq!(peek_set_all(0), Ok(BTreeSet::new()));
+        assert_eq!(peek_set_all(1), Ok(peek_set(true)));
     }
 
     #[test]
     fn space_engine_operation_ord_without_a_counter_is_zero() {
-        let meter = ScanMeter::new(None);
-        assert_eq!(operation_ord(None, None, &meter), Ok(0));
-        assert_eq!(operation_ord(Some(0), None, &meter), Ok(0));
+        assert_eq!(operation_ord(None, None), Ok(0));
+        assert_eq!(operation_ord(Some(0), None), Ok(0));
         assert_eq!(
-            operation_ord(Some(3), None, &meter),
+            operation_ord(Some(3), None),
             Err(SpaceError::Inconsistent(
                 "a re-issued order of a collection without a counter is not 0"
             ))
         );
-        assert_eq!(operation_ord(None, Some(5), &meter), Ok(5));
-        assert_eq!(operation_ord(Some(2), Some(5), &meter), Ok(2));
+        assert_eq!(operation_ord(None, Some(5)), Ok(5));
+        assert_eq!(operation_ord(Some(2), Some(5)), Ok(2));
         assert_eq!(
-            operation_ord(Some(5), Some(5), &meter),
+            operation_ord(Some(5), Some(5)),
             Err(SpaceError::Inconsistent(
                 "a re-issued order is not an order of the counter"
             ))
@@ -6373,15 +6005,7 @@ mod tests {
         let mut runs = Vec::new();
         for agent in [&queue as &dyn SpaceAgent, &FamilyAgent] {
             let space = play().await;
-            let budget = budget();
-            let host_work = unbounded();
-            let env = SpaceEnv {
-                store: SpaceStoreHandle::new(space.clone()),
-                budget: budget.clone(),
-                meter: ScanMeter::new(Some(host_work.clone())),
-                volatile: Default::default(),
-                origin: Default::default(),
-            };
+            let env = env_over(space.clone(), &budget());
             agent
                 .prepare_create(&env, creation(config()))
                 .await
@@ -6396,16 +6020,11 @@ mod tests {
                     .expect("the operation commits");
                 fires.push(fired(&outcome));
             }
-            let usage: Vec<HostWorkUsage> = HostWorkDimension::ALL
-                .into_iter()
-                .map(|dimension| host_work.usage(dimension))
-                .collect();
             runs.push((
                 fires,
                 labels(&space.take_event_log().await),
                 records(&space).await,
                 waiters(&space).await,
-                usage,
             ));
         }
         assert_eq!(runs[0], runs[1]);
@@ -6633,15 +6252,14 @@ mod tests {
         use crate::rust::interpreter::spaces::disciplines::cell::CellDiscipline;
 
         let config = SpaceConfig::new(SPACE.sid, "hashmap", "cell", SpaceQualifier::Default);
-        let meter = ScanMeter::new(None);
         // A cell holds one record and one waiter (F15), and its excess is `CellOccupied`.
         for side in [Side::Data, Side::Waiters] {
             assert_eq!(
-                CellDiscipline.bound(&config, side, &meter),
+                CellDiscipline.bound(&config, side),
                 Ok(Some(SideBound::Cell(1)))
             );
-            assert_eq!(BagDiscipline.bound(&config, side, &meter), Ok(None));
-            assert_eq!(QueueDiscipline.bound(&config, side, &meter), Ok(None));
+            assert_eq!(BagDiscipline.bound(&config, side), Ok(None));
+            assert_eq!(QueueDiscipline.bound(&config, side), Ok(None));
         }
         assert_eq!(SideBound::Cell(1).limit(), 1);
         assert_eq!(SideBound::Cell(1).full(), SpaceError::CellOccupied);
@@ -6651,20 +6269,6 @@ mod tests {
     }
 
     // ── The theory seam (P7, TH-5, TH-6, TH-8) ───────────────────────────────────────────────
-
-    fn host_work() -> (HostWorkBudget, ScanMeter) {
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000)));
-        (budget.clone(), ScanMeter::new(Some(budget)))
-    }
-
-    fn work_of(budget: &HostWorkBudget) -> [u64; 3] {
-        [
-            HostWorkDimension::VerificationOperations,
-            HostWorkDimension::VerificationBytes,
-            HostWorkDimension::SearchStateBytes,
-        ]
-        .map(|dimension| budget.usage(dimension).get())
-    }
 
     fn theory_config(identity: Option<TheoryIdentity>) -> SpaceConfig {
         SpaceConfig {
@@ -6688,183 +6292,132 @@ mod tests {
         })
     }
 
-    /// TH-5 and TH-8: the admission of a send checks its values in order and reserves one
-    /// `VerificationOperations` unit for each check before it reads the value, and nothing
-    /// else. The first value that is not `Proven` stops it with its index. A receive and a space
-    /// without a theory admit nothing and reserve nothing.
+    /// TH-5: the admission of a send checks its values in order. The first value that is not
+    /// `Proven` stops it with its index. A theory whose work limit is zero cannot decide a value.
+    /// A receive and a space without a theory admit nothing.
     #[test]
-    fn theory_admission_reserves_one_unit_per_checked_value() {
+    fn theory_admission_checks_each_value_in_order() {
         let nat = theory_config(Some(TheoryIdentity::builtin("Nat")));
-        let (budget, meter) = host_work();
-        let admission = Admission::of(&nat, &send_values(vec![int(0), int(1), int(2)]), &meter)
+        let admission = Admission::of(&nat, &send_values(vec![int(0), int(1), int(2)]))
             .expect("Nat admits three naturals");
         assert!(admission.theory.is_some());
         assert!(admission.leases.is_empty(), "a builtin gives no lease");
-        assert_eq!(work_of(&budget), [3, 0, 0]);
 
-        let (budget, meter) = host_work();
         assert_eq!(
-            Admission::of(&nat, &send_values(vec![int(0), int(-1), int(2)]), &meter).err(),
+            Admission::of(&nat, &send_values(vec![int(0), int(-1), int(2)])).err(),
             Some(SpaceError::TheoryRefuted {
                 theory: "Nat".to_string(),
                 index: 1,
             })
-        );
-        assert_eq!(
-            work_of(&budget),
-            [2, 0, 0],
-            "the check stops at the refusal"
         );
 
         let starved = theory_config(Some(TheoryIdentity {
             limit_profile: TheoryUsage::new(0, 0),
             ..TheoryIdentity::builtin("Nat")
         }));
-        let (budget, meter) = host_work();
         assert_eq!(
-            Admission::of(&starved, &send_values(vec![int(0)]), &meter).err(),
+            Admission::of(&starved, &send_values(vec![int(0)])).err(),
             Some(SpaceError::TheoryUndetermined {
                 theory: "Nat".to_string(),
                 index: 0,
             })
         );
-        assert_eq!(work_of(&budget), [0, 0, 0], "a starved check reads nothing");
 
         for (config, op) in [
             (nat.clone(), SpaceOp::Consume(receive("w", any()))),
             (theory_config(None), send_values(vec![int(-1)])),
         ] {
-            let (budget, meter) = host_work();
-            let admission = Admission::of(&config, &op, &meter).expect("nothing to admit");
+            let admission = Admission::of(&config, &op).expect("nothing to admit");
             assert!(admission.leases.is_empty());
-            assert_eq!(work_of(&budget), [0, 0, 0]);
         }
         let unavailable = theory_config(Some(TheoryIdentity::builtin("Real")));
         assert_eq!(
-            Admission::of(
-                &unavailable,
-                &send_values(vec![int(0)]),
-                &ScanMeter::new(None)
-            )
-            .err(),
+            Admission::of(&unavailable, &send_values(vec![int(0)])).err(),
             Some(SpaceError::TheoryUnavailable("Real".to_string()))
         );
     }
 
-    /// TH-6 and TH-8: after the guard admitted a match, the theory checks each stored datum of
-    /// the match for one `VerificationOperations` unit, and a datum in flight for none. A guard
-    /// refusal checks nothing, and a space without a theory does no work for its stored data.
+    /// TH-6: after the guard admitted a match, the theory checks each stored datum of the match,
+    /// and a datum that it does not prove refuses the match. A refusing guard refuses the match,
+    /// and a space without a theory admits every stored datum.
     #[tokio::test]
-    async fn theory_match_reserves_one_unit_per_stored_datum() {
+    async fn theory_match_checks_each_stored_datum() {
         let admitting = named("w", None);
         let refusing = named("w", Some(new_gbool_par(false, Vec::new(), false)));
-        let matched = ListParWithRandom {
+        let natural = ListParWithRandom {
             pars: vec![int(1)],
             ..ListParWithRandom::default()
         };
-        let stored = [
+        let negative = ListParWithRandom {
+            pars: vec![int(-1)],
+            ..ListParWithRandom::default()
+        };
+        fn stored(payload: &ListParWithRandom) -> StoredMatch<'_> {
             StoredMatch {
-                payload: &matched,
-                captures: &matched,
-            },
-            StoredMatch {
-                payload: &matched,
-                captures: &matched,
-            },
-        ];
+                payload,
+                captures: payload,
+            }
+        }
+        let proven = [stored(&natural), stored(&natural)];
+        let refuted = [stored(&natural), stored(&negative)];
         let nat = theory::resolve(&TheoryIdentity::builtin("Nat")).expect("Nat resolves");
         for (theory, checks, expected) in [
-            (Some(nat.clone()), &stored[..], 2),
-            (Some(nat.clone()), &stored[..1], 1),
-            (Some(nat.clone()), &[][..], 0),
-            (None, &stored[..], 0),
+            (Some(nat.clone()), &proven[..], true),
+            (Some(nat.clone()), &refuted[..], false),
+            (Some(nat.clone()), &[][..], true),
+            (None, &refuted[..], true),
         ] {
             let Fixture { env, .. } = fixture().await;
-            let (budget, meter) = host_work();
-            let env = SpaceEnv { meter, ..env };
-            let mut work = [[0u64; 3]; 5];
             staged_plan_with(&env, theory, |cx| {
-                work[0] = work_of(&budget);
-                assert_eq!(cx.admits(&admitting, &matched, &[]), Ok(true));
-                work[1] = work_of(&budget);
-                assert_eq!(cx.admits(&admitting, &matched, checks), Ok(true));
-                work[2] = work_of(&budget);
-                assert_eq!(cx.admits(&refusing, &matched, &[]), Ok(false));
-                work[3] = work_of(&budget);
-                assert_eq!(cx.admits(&refusing, &matched, checks), Ok(false));
-                work[4] = work_of(&budget);
+                assert_eq!(cx.admits(&admitting, &natural, checks), Ok(expected));
+                assert_eq!(cx.admits(&refusing, &natural, checks), Ok(false));
                 Ok(())
             })
             .await
             .expect("the plan commits");
-            let step = |from: usize| -> [u64; 3] {
-                [0, 1, 2].map(|dimension| work[from + 1][dimension] - work[from][dimension])
-            };
-            let (guard, checked) = (step(0), step(1));
-            assert_eq!(
-                [0, 1, 2].map(|dimension| checked[dimension] - guard[dimension]),
-                [expected, 0, 0],
-                "{expected} checks after an admitting guard"
-            );
-            assert_eq!(step(3), step(2), "a refusing guard checks no stored datum");
         }
     }
 
     /// TH-5: the admission of a send runs after the config read and the gates, and before any
-    /// staging or bump. A send that fails at the params gate does the work of those steps and
-    /// one params check more, and nothing that comes after the gates, in either order of the
-    /// admission. So a budget of that work and one more `VerificationOperations` unit lets the
-    /// theory refuse a send at its first value, and the same budget rejects an admitted send at
-    /// the plan.
+    /// staging or bump. A send that fails at the params gate fails there, whatever its values.
+    /// A send that the theory refutes stages nothing: no record and no event. An admitted send
+    /// stores its record.
     #[tokio::test]
     async fn theory_admission_precedes_any_staging() {
         let space = play().await;
-        let open = env_over(space.clone(), &budget());
+        let env = env_over(space.clone(), &budget());
         create(
-            &open,
+            &env,
             creation(theory_config(Some(TheoryIdentity::builtin("Nat"))).to_par()),
         )
         .await;
-        let metered = |host_work: &HostWorkBudget| SpaceEnv {
-            meter: ScanMeter::new(Some(host_work.clone())),
-            ..env_over(space.clone(), &budget())
-        };
-        let gates = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
+        space.take_event_log().await;
         let unknown = SpaceOp::Produce(ProduceOp {
             params: BTreeMap::from([("zz".to_string(), int(1))]),
             ..send(-1)
         });
         assert!(matches!(
-            run_op(&FamilyAgent, &metered(&gates), unknown).await,
+            run_op(&FamilyAgent, &env, unknown).await,
             Err(SpaceError::UnknownParam { .. })
         ));
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(0));
-        for dimension in HostWorkDimension::ALL {
-            let slack = u64::from(dimension == HostWorkDimension::VerificationOperations);
-            limits.set(
-                dimension,
-                HostWorkLimit::new(gates.usage(dimension).get() + slack),
-            );
-        }
-        for (op, expected) in [
-            (
-                send_values(vec![int(-1)]),
-                Err(SpaceError::TheoryRefuted {
-                    theory: "Nat".to_string(),
-                    index: 0,
-                }),
-            ),
-            (
-                send_values(vec![int(1)]),
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            ),
-        ] {
-            let host_work = HostWorkBudget::new(limits);
-            let result = run_op(&FamilyAgent, &metered(&host_work), op)
+        assert_eq!(
+            run_op(&FamilyAgent, &env, send_values(vec![int(-1)]))
                 .await
-                .map(|_| ());
-            assert_eq!(result, expected);
-        }
+                .map(|_| ()),
+            Err(SpaceError::TheoryRefuted {
+                theory: "Nat".to_string(),
+                index: 0,
+            })
+        );
+        assert!(
+            space.take_event_log().await.is_empty(),
+            "a refuted send stages nothing"
+        );
+        assert!(records(&space).await.is_empty());
+        run_op(&FamilyAgent, &env, send_values(vec![int(1)]))
+            .await
+            .expect("Nat admits a natural");
+        assert_eq!(records(&space).await.len(), 1);
     }
 
     /// TH-6 (`theory_refusal_is_guard_refusal` of Match.v): after the guard, the theory of the

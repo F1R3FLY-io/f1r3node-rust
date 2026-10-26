@@ -1091,12 +1091,11 @@ const PATHMAP_ROWS: [Row; 6] = [
 /// element (`@c ≡ @[c]`), so its records lie on `D(sid, path_key([name]))`, and its waiters and
 /// markers on `I(sid, prefix_key([name]))`.
 fn path_channels(space: NativeSpace, name: &Par) -> (Par, Par) {
-    let meter = rholang::rust::interpreter::reified::costs::ScanMeter::new(None);
     let path = std::slice::from_ref(name);
-    let key = rholang::rust::interpreter::spaces::pathmap::path_key(path, &meter)
+    let key = rholang::rust::interpreter::spaces::pathmap::path_key(path)
         .expect("the path key of a name");
-    let encoded = rholang::rust::interpreter::spaces::pathmap::encode_path(path, &meter)
-        .expect("the path of a name");
+    let encoded =
+        rholang::rust::interpreter::spaces::pathmap::encode_path(path).expect("the path of a name");
     let prefix = encoded.prefix_key(1).expect("the prefix key of a name");
     (
         rholang::rust::interpreter::spaces::outer::pathmap::PathMapOuter::path_data(space, &key),

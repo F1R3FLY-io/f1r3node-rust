@@ -23,8 +23,7 @@
 //! * a float: `GDouble` with the bits of `RN_53` of the exact value (`num::round_to_f64`).
 //!
 //! The reply is `[true, value]`, or `[false, code, detail]` for the failures of [`ReplyCode`], so
-//! `!?` and `try … catch` apply (decision 57). A host-work rejection is not a reply: the deploy
-//! fails (decision 40).
+//! `!?` and `try … catch` apply (decision 57).
 //!
 //! ```text
 //! EVALUATE([op, x₁, …, x_n]):
@@ -34,20 +33,15 @@
 //!   the vectors of a pair have one length, or reply DimensionMismatch
 //!   compute the value exactly, then encode it in the widest kind (norm, distance: RN_53 of √)
 //! ```
-//!
-//! Every step reserves its work on the meter of the call before it makes it (decision 42).
-//! Without a budget, as in legacy execution, the meter accepts every reservation.
 
 use std::borrow::Cow;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, Expr, GBigRational, Par};
+use models::rhoapi::{EList, GBigRational, Par};
 use num_traits::ToPrimitive;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 
+use super::exact;
 use super::num::{self, Exact, ExactVector, NumError, Number};
-use super::{costs, exact};
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
 
 /// An operation of `rho:lang:vector`.
@@ -183,14 +177,8 @@ impl ReplyCode {
 pub enum OpFailure {
     /// A failure that the process replies.
     Reply(ReplyCode),
-    /// A rejection of a reservation by the host-work budget: the deploy fails.
-    HostWork(RSpaceError),
     /// A broken invariant of the module: the deploy fails.
     Inconsistent(&'static str),
-}
-
-impl From<RSpaceError> for OpFailure {
-    fn from(error: RSpaceError) -> Self { OpFailure::HostWork(error) }
 }
 
 impl From<NumError> for OpFailure {
@@ -203,7 +191,6 @@ impl From<NumError> for OpFailure {
             NumError::DimensionMismatch { .. } => OpFailure::Reply(ReplyCode::DimensionMismatch),
             NumError::ValueOutOfRange => OpFailure::Reply(ReplyCode::ValueOutOfRange),
             NumError::MixedScores => OpFailure::Inconsistent("a vector operation mixes scores"),
-            NumError::HostWork(error) => OpFailure::HostWork(error),
         }
     }
 }
@@ -221,49 +208,49 @@ struct NumberOperand {
 }
 
 impl NumberOperand {
-    /// The exact value: borrowed, or converted with the work reserved first.
-    fn value(&self, meter: &ScanMeter) -> Result<Cow<'_, Exact>, OpFailure> {
+    /// The exact value: borrowed, or converted.
+    fn value(&self) -> Cow<'_, Exact> {
         match &self.number {
-            Number::Dyadic(form) => Ok(Cow::Owned(form.value(meter)?)),
-            Number::Rational(value) => Ok(Cow::Borrowed(value)),
+            Number::Dyadic(form) => Cow::Owned(form.value()),
+            Number::Rational(value) => Cow::Borrowed(value),
         }
     }
 }
 
 /// The value of the call `[op, x…]`: the list that the reducer packed after `ret`.
-pub fn evaluate(call: &Par, meter: &ScanMeter) -> Result<Par, OpFailure> {
+pub fn evaluate(call: &Par) -> Result<Par, OpFailure> {
     let elements = list_elements(call).ok_or(OpFailure::Reply(ReplyCode::BadArgument))?;
     let (name, operands) = elements
         .split_first()
         .ok_or(OpFailure::Reply(ReplyCode::UnknownMethod))?;
-    let operation = operation_of(name, meter)?;
+    let operation = operation_of(name)?;
     if operands.len() != operation.operands() {
         return Err(OpFailure::Reply(ReplyCode::BadArgument));
     }
     match (operation, operands) {
         (Operation::Add, [left, right]) => {
-            let (left, right) = vector_pair(left, right, meter)?;
-            add(&left, &right, meter)
+            let (left, right) = vector_pair(left, right)?;
+            add(&left, &right)
         }
         (Operation::Scale, [vector, factor]) => {
-            let vector = vector_operand(vector, meter)?;
-            let factor = number_operand(factor, meter)?;
-            scale(&vector, &factor, meter)
+            let vector = vector_operand(vector)?;
+            let factor = number_operand(factor)?;
+            scale(&vector, &factor)
         }
         (Operation::Dot, [left, right]) => {
-            let (left, right) = vector_pair(left, right, meter)?;
-            let value = exact::dot(&left.vector, &right.vector, meter)?;
-            number_par(&value, left.kind.max(right.kind), meter)
+            let (left, right) = vector_pair(left, right)?;
+            let value = exact::dot(&left.vector, &right.vector)?;
+            number_par(&value, left.kind.max(right.kind))
         }
         (Operation::Norm, [vector]) => {
-            let vector = vector_operand(vector, meter)?;
-            let square = exact::dot(&vector.vector, &vector.vector, meter)?;
-            float_par(num::sqrt_to_f64(&square, meter)?, meter)
+            let vector = vector_operand(vector)?;
+            let square = exact::dot(&vector.vector, &vector.vector)?;
+            Ok(float_par(num::sqrt_to_f64(&square)?))
         }
         (Operation::Distance, [left, right]) => {
-            let (left, right) = vector_pair(left, right, meter)?;
-            let square = exact::distance2(&left.vector, &right.vector, meter)?;
-            float_par(num::sqrt_to_f64(&square, meter)?, meter)
+            let (left, right) = vector_pair(left, right)?;
+            let square = exact::distance2(&left.vector, &right.vector)?;
+            Ok(float_par(num::sqrt_to_f64(&square)?))
         }
         _ => Err(OpFailure::Inconsistent(
             "the operand count was checked against the operation",
@@ -272,19 +259,13 @@ pub fn evaluate(call: &Par, meter: &ScanMeter) -> Result<Par, OpFailure> {
 }
 
 /// The reply of a call: `[true, value]`, or `[false, code, detail]` for a failure that the
-/// process replies. A host-work rejection and an inconsistency pass through.
-pub fn reply(result: Result<Par, OpFailure>, meter: &ScanMeter) -> Result<Par, OpFailure> {
+/// process replies. An inconsistency passes through.
+pub fn reply(result: Result<Par, OpFailure>) -> Result<Par, OpFailure> {
     let parts = match result {
         Ok(value) => {
-            meter.reserve_buffer::<Par>(2)?;
-            meter.reserve_buffer::<Expr>(1)?;
             vec![expr_par(ExprInstance::GBool(true)), value]
         }
         Err(OpFailure::Reply(code)) => {
-            meter.reserve_buffer::<Par>(3)?;
-            meter.reserve_buffer::<Expr>(3)?;
-            meter.reserve_buffer::<u8>(code.code().len())?;
-            meter.reserve_buffer::<u8>(code.detail().len())?;
             vec![
                 expr_par(ExprInstance::GBool(false)),
                 expr_par(ExprInstance::GString(code.code().to_string())),
@@ -293,7 +274,7 @@ pub fn reply(result: Result<Par, OpFailure>, meter: &ScanMeter) -> Result<Par, O
         }
         Err(failure) => return Err(failure),
     };
-    list_par(parts, meter)
+    Ok(list_par(parts))
 }
 
 /// The elements of `par` when it is one list without a remainder or a connective.
@@ -311,14 +292,13 @@ fn list_elements(par: &Par) -> Option<&[Par]> {
     }
 }
 
-/// The operation that `name` names. Each comparison of a method name is reserved first.
-fn operation_of(name: &Par, meter: &ScanMeter) -> Result<Operation, OpFailure> {
+/// The operation that `name` names.
+fn operation_of(name: &Par) -> Result<Operation, OpFailure> {
     let text = match (sole_expr(name), name.connective_used) {
         (Some(ExprInstance::GString(text)), false) => text,
         _ => return Err(OpFailure::Reply(ReplyCode::UnknownMethod)),
     };
     for operation in Operation::ALL {
-        meter.compare(text.len(), operation.name().len())?;
         if text == operation.name() {
             return Ok(operation);
         }
@@ -327,13 +307,12 @@ fn operation_of(name: &Par, meter: &ScanMeter) -> Result<Operation, OpFailure> {
 }
 
 /// The vector operand `par` and the widest kind of its elements. The kind test of each element
-/// reads the kind of its expression, one operation each, as the driver tests a numeric list.
-fn vector_operand(par: &Par, meter: &ScanMeter) -> Result<VectorOperand, OpFailure> {
-    let vector = num::vector_of(par, None, meter)?;
+/// reads the kind of its expression.
+fn vector_operand(par: &Par) -> Result<VectorOperand, OpFailure> {
+    let vector = num::vector_of(par, None)?;
     let elements = list_elements(par).ok_or(OpFailure::Inconsistent(
         "a decoded vector operand is one list",
     ))?;
-    meter.charge(elements.len(), 0, 0)?;
     let kind = elements
         .iter()
         .filter_map(kind_of)
@@ -343,8 +322,8 @@ fn vector_operand(par: &Par, meter: &ScanMeter) -> Result<VectorOperand, OpFailu
 }
 
 /// The number operand `par` and its kind.
-fn number_operand(par: &Par, meter: &ScanMeter) -> Result<NumberOperand, OpFailure> {
-    let number = num::number_of(par, meter)?;
+fn number_operand(par: &Par) -> Result<NumberOperand, OpFailure> {
+    let number = num::number_of(par)?;
     let kind = kind_of(par).ok_or(OpFailure::Inconsistent(
         "a decoded number operand has a kind",
     ))?;
@@ -352,12 +331,8 @@ fn number_operand(par: &Par, meter: &ScanMeter) -> Result<NumberOperand, OpFailu
 }
 
 /// The two vector operands of a pair, which must have one length.
-fn vector_pair(
-    left: &Par,
-    right: &Par,
-    meter: &ScanMeter,
-) -> Result<(VectorOperand, VectorOperand), OpFailure> {
-    let (left, right) = (vector_operand(left, meter)?, vector_operand(right, meter)?);
+fn vector_pair(left: &Par, right: &Par) -> Result<(VectorOperand, VectorOperand), OpFailure> {
+    let (left, right) = (vector_operand(left)?, vector_operand(right)?);
     match left.vector.len() == right.vector.len() {
         true => Ok((left, right)),
         false => Err(OpFailure::Reply(ReplyCode::DimensionMismatch)),
@@ -365,40 +340,30 @@ fn vector_pair(
 }
 
 /// `a + b`, exact, in the widest kind of both vectors.
-fn add(left: &VectorOperand, right: &VectorOperand, meter: &ScanMeter) -> Result<Par, OpFailure> {
+fn add(left: &VectorOperand, right: &VectorOperand) -> Result<Par, OpFailure> {
     let kind = left.kind.max(right.kind);
-    let (a, b) = (
-        left.vector.rationals(meter)?,
-        right.vector.rationals(meter)?,
-    );
-    let mut values = meter.buffer::<Par>(a.len())?;
+    let (a, b) = (left.vector.rationals(), right.vector.rationals());
+    let mut values = Vec::<Par>::with_capacity(a.len());
     for (x, y) in a.iter().zip(b.iter()) {
-        costs::reserve_rational(x, y, meter)?;
-        values.push(number_par(&(x + y), kind, meter)?);
+        values.push(number_par(&(x + y), kind)?);
     }
-    list_par(values, meter)
+    Ok(list_par(values))
 }
 
 /// `s · v`, exact, in the widest kind of the vector and the factor.
-fn scale(
-    vector: &VectorOperand,
-    factor: &NumberOperand,
-    meter: &ScanMeter,
-) -> Result<Par, OpFailure> {
+fn scale(vector: &VectorOperand, factor: &NumberOperand) -> Result<Par, OpFailure> {
     let kind = vector.kind.max(factor.kind);
-    let s = factor.value(meter)?;
-    let elements = vector.vector.rationals(meter)?;
-    let mut values = meter.buffer::<Par>(elements.len())?;
+    let s = factor.value();
+    let elements = vector.vector.rationals();
+    let mut values = Vec::<Par>::with_capacity(elements.len());
     for x in elements.iter() {
-        costs::reserve_rational(&s, x, meter)?;
-        values.push(number_par(&(s.as_ref() * x), kind, meter)?);
+        values.push(number_par(&(s.as_ref() * x), kind)?);
     }
-    list_par(values, meter)
+    Ok(list_par(values))
 }
 
-/// The exact `value` encoded in `kind`. The encode of each integer and the rounding of a float
-/// are reserved first.
-fn number_par(value: &Exact, kind: Kind, meter: &ScanMeter) -> Result<Par, OpFailure> {
+/// The exact `value` encoded in `kind`.
+fn number_par(value: &Exact, kind: Kind) -> Result<Par, OpFailure> {
     let instance = match kind {
         Kind::Integer => {
             if !value.is_integer() {
@@ -407,54 +372,40 @@ fn number_par(value: &Exact, kind: Kind, meter: &ScanMeter) -> Result<Par, OpFai
                 ));
             }
             let integer = value.numer();
-            costs::reserve_integer_encode(integer, meter)?;
             match integer.to_i64() {
                 Some(small) => ExprInstance::GInt(small),
                 None => ExprInstance::GBigInt(integer.to_signed_bytes_be()),
             }
         }
-        Kind::Rational => {
-            costs::reserve_integer_encode(value.numer(), meter)?;
-            costs::reserve_integer_encode(value.denom(), meter)?;
-            ExprInstance::GBigRat(GBigRational {
-                numerator: value.numer().to_signed_bytes_be(),
-                denominator: value.denom().to_signed_bytes_be(),
-            })
-        }
-        Kind::Float => ExprInstance::GDouble(num::round_to_f64(value, meter)?.to_bits()),
+        Kind::Rational => ExprInstance::GBigRat(GBigRational {
+            numerator: value.numer().to_signed_bytes_be(),
+            denominator: value.denom().to_signed_bytes_be(),
+        }),
+        Kind::Float => ExprInstance::GDouble(num::round_to_f64(value)?.to_bits()),
     };
-    meter.reserve_buffer::<Expr>(1)?;
     Ok(expr_par(instance))
 }
 
 /// The `f64` `value` as a `GDouble`.
-fn float_par(value: f64, meter: &ScanMeter) -> Result<Par, OpFailure> {
-    meter.reserve_buffer::<Expr>(1)?;
-    Ok(expr_par(ExprInstance::GDouble(value.to_bits())))
-}
+fn float_par(value: f64) -> Par { expr_par(ExprInstance::GDouble(value.to_bits())) }
 
 /// The list of the ground values `values`. A number and a list of numbers have no free variable
 /// and no connective, so the list has none either.
-fn list_par(values: Vec<Par>, meter: &ScanMeter) -> Result<Par, OpFailure> {
-    meter.reserve_buffer::<Expr>(1)?;
-    Ok(expr_par(ExprInstance::EListBody(EList {
+fn list_par(values: Vec<Par>) -> Par {
+    expr_par(ExprInstance::EListBody(EList {
         ps: values,
         locally_free: Vec::new(),
         connective_used: false,
         remainder: None,
-    })))
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use models::rhoapi::GFixedPoint;
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
-
-    fn unmetered() -> ScanMeter { ScanMeter::new(None) }
 
     fn int(value: i64) -> Par { expr_par(ExprInstance::GInt(value)) }
 
@@ -498,7 +449,7 @@ mod tests {
     }
 
     fn value_of(name: &str, operands: Vec<Par>) -> Result<Par, OpFailure> {
-        evaluate(&call(name, operands), &unmetered())
+        evaluate(&call(name, operands))
     }
 
     fn code_of(name: &str, operands: Vec<Par>) -> Option<ReplyCode> {
@@ -616,16 +567,16 @@ mod tests {
         let pair = || vec![list(vec![int(1)]), list(vec![int(2)])];
         assert_eq!(code_of("cross", pair()), Some(ReplyCode::UnknownMethod));
         assert_eq!(
-            evaluate(&list(vec![int(1)]), &unmetered()),
+            evaluate(&list(vec![int(1)])),
             Err(OpFailure::Reply(ReplyCode::UnknownMethod)),
             "the method is a string"
         );
         assert_eq!(
-            evaluate(&list(vec![]), &unmetered()),
+            evaluate(&list(vec![])),
             Err(OpFailure::Reply(ReplyCode::UnknownMethod))
         );
         assert_eq!(
-            evaluate(&int(1), &unmetered()),
+            evaluate(&int(1)),
             Err(OpFailure::Reply(ReplyCode::BadArgument))
         );
         assert_eq!(
@@ -680,14 +631,10 @@ mod tests {
 
     #[test]
     fn vector_ops_replies_have_the_ok_shape() {
-        let meter = unmetered();
-        assert_eq!(
-            reply(Ok(int(7)), &meter),
-            Ok(list(vec![flag(true), int(7)]))
-        );
+        assert_eq!(reply(Ok(int(7))), Ok(list(vec![flag(true), int(7)])));
         for code in ReplyCode::ALL {
             assert_eq!(
-                reply(Err(OpFailure::Reply(code)), &meter),
+                reply(Err(OpFailure::Reply(code))),
                 Ok(list(vec![
                     flag(false),
                     string(code.code()),
@@ -697,33 +644,9 @@ mod tests {
             );
         }
         assert_eq!(
-            reply(
-                Err(OpFailure::HostWork(RSpaceError::HostWorkRejected)),
-                &meter
-            ),
-            Err(OpFailure::HostWork(RSpaceError::HostWorkRejected)),
-            "a host-work rejection is not a reply"
-        );
-    }
-
-    #[test]
-    fn vector_ops_reserve_their_work_and_reject_on_the_budget() {
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let meter = ScanMeter::new(Some(budget.clone()));
-        let program = call("dot", vec![
-            list(vec![rational(1, 3), int(2)]),
-            list(vec![int(3), int(4)]),
-        ]);
-        assert_eq!(evaluate(&program, &meter), Ok(rational(9, 1)));
-        let used = budget
-            .usage(HostWorkDimension::VerificationOperations)
-            .get();
-        assert!(used > 0, "the call reserves its work");
-        let tight = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(used - 1)));
-        assert_eq!(
-            evaluate(&program, &ScanMeter::new(Some(tight))),
-            Err(OpFailure::HostWork(RSpaceError::HostWorkRejected)),
-            "one unit less of host work rejects the call"
+            reply(Err(OpFailure::Inconsistent("a broken invariant"))),
+            Err(OpFailure::Inconsistent("a broken invariant")),
+            "a broken invariant is not a reply"
         );
     }
 }

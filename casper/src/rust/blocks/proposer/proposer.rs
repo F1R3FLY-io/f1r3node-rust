@@ -766,8 +766,11 @@ impl BlockCreator for ProductionBlockCreator {
         dummy_deploy_opt: Option<(PrivateKey, String)>,
         selection: DeploySelection,
     ) -> Result<BlockCreatorResult, CasperError> {
-        block_creator::create_with_approved_genesis(
-            casper.get_approved_block()?,
+        // Changed by DR-99: a proposal takes the policy adopted at start.
+        // block_creator::create_with_approved_genesis(
+        //     casper.get_approved_block()?,
+        block_creator::create_with_adopted_policy(
+            casper.adopted_resource_policy(),
             casper.offered_funded_active(),
             casper_snapshot,
             validator_identity,

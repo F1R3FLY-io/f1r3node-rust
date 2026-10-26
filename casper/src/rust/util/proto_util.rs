@@ -14,10 +14,11 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedSystemDeploy,
-    ProcessedUserDeploy, RejectedDeploy,
+    ProcessedUserDeploy,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
+use shared::rust::dag::observation_work::{NoopWork, WorkMeter};
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::ByteString;
 
@@ -164,6 +165,15 @@ pub fn weight_from_validator_by_dag(
     block_hash: &BlockHash,
     validator: &Validator,
 ) -> Result<i64, KvStoreError> {
+    weight_from_validator_by_dag_metered(&NoopWork, dag, block_hash, validator)
+}
+
+pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
+    meter: &W,
+    dag: &mut KeyValueDagRepresentation,
+    block_hash: &BlockHash,
+    validator: &Validator,
+) -> Result<i64, KvStoreError> {
     // On the fork-choice BFS a traversed block — or its main parent, read for
     // the weight map — can be absent from the metadata index: a sync/prune
     // window, or, on an LFS-restored node, a parent below the restore horizon
@@ -173,6 +183,7 @@ pub fn weight_from_validator_by_dag(
     // fetch-and-retry, where a `KeyNotFound` hard-failed admission (the #306
     // storm on restored joiners and observers). No backtrace in the context —
     // this is a hot path with exactly one caller (`estimator::build_scores_map`).
+    meter.lookup()?;
     let block_metadata = dag
         .lookup(block_hash)?
         .ok_or_else(|| KvStoreError::MissingBlock {
@@ -184,6 +195,7 @@ pub fn weight_from_validator_by_dag(
     match block_metadata.parents.first() {
         Some(parent_hash) => {
             // Look up parent
+            meter.lookup()?;
             let parent_metadata =
                 dag.lookup(parent_hash)?
                     .ok_or_else(|| KvStoreError::MissingBlock {
@@ -325,19 +337,6 @@ pub fn parent_metadatas_above_block_number(
 }
 
 pub fn deploys(block: &BlockMessage) -> Vec<ProcessedUserDeploy> { block.body.deploys.clone() }
-
-/// The block's KEPT rejection records. A duplicate-flagged record states
-/// that the copy it discarded was redundant — its effect already stood in
-/// the forming merge's own post-state — so it does not dispute the sig's
-/// standing win. Every disposition reader consumes records through this
-/// one filter so the discard policy cannot drift between readers.
-pub fn kept_rejected_records(block: &BlockMessage) -> impl Iterator<Item = &RejectedDeploy> {
-    block
-        .body
-        .rejected_deploys
-        .iter()
-        .filter(|record| !record.duplicate)
-}
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
     block.body.system_deploys.clone()

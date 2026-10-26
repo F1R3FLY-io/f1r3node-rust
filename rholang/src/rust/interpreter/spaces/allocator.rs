@@ -16,7 +16,7 @@
 //!
 //! ```text
 //! ALLOC(rule, k):
-//!   n ← the value of the only A(sid) record             ▷ its copy and its decode are reserved
+//!   n ← the value of the only A(sid) record             ▷ decoded from a copy of the record
 //!   fixed array of size s:  require n + k ≤ s, else OutOfNames     ▷ nothing is staged
 //!                           indices n, n+1, …, n+k−1      next ← n + k
 //!   cyclic array of size s: indices (n + i) mod s         next ← (n + k) mod s
@@ -39,18 +39,9 @@
 //! HashMap store (A5). Its channel must be an index name of its own space ([`index_of_name`]),
 //! and a fixed or cyclic Array space also requires an index below its size (F8). Every other
 //! channel fails with `NotAnIndexName` before any staging.
-//!
-//! Every read and copy is reserved on the meter of the job before it is made (decision 42): the
-//! decode of a channel, the comparisons of the spaces, of the indices and of the allocator
-//! value, the buffer of the indices, the channel and the record of a new allocator, and the
-//! steps of `counter::take` and `counter::put`.
-
-use std::mem::size_of;
-use std::sync::LazyLock;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{CostAuthority, ListParWithRandom, Par};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 
 use super::agent::AllocOp;
 use super::errors::SpaceError;
@@ -58,18 +49,6 @@ use super::generic::AllocCx;
 use super::namespace::{self, Durability, NameTail, NativeSpace, RandomPurpose, ReifiedId};
 use super::record;
 use super::types::config::SpaceConfig;
-use crate::rust::interpreter::reified::costs::ScanMeter;
-
-/// The template of a `GPrivate` name with an empty id. A reserved copy of it and a reserved id
-/// buffer cover the allocation of a channel of a space.
-static GPRIVATE: LazyLock<Par> = LazyLock::new(|| namespace::gprivate(Vec::new()));
-
-/// The bytes that a comparison of two spaces reads on each side: the space id and the
-/// durability.
-const SPACE_BYTES: usize = size_of::<NativeSpace>();
-
-/// The bytes that a comparison of two allocator values or two indices reads on each side.
-const VALUE_BYTES: usize = size_of::<i64>();
 
 /// How a store allocates its index names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -104,36 +83,27 @@ impl AllocationRule {
     /// Plans the allocation of `count` names from the allocator value `value`. The plan stages
     /// nothing. A fixed array fails with `OutOfNames` when `value + count` exceeds its size, and
     /// a vector fails with `OutOfNames` when `value + count` exceeds `i64::MAX`. An allocator
-    /// value outside the range of the rule is `Inconsistent`. Each comparison of two values and
-    /// the buffer of the indices are reserved before they are made.
-    pub fn plan(
-        self,
-        value: i64,
-        count: u64,
-        meter: &ScanMeter,
-    ) -> Result<AllocationPlan, SpaceError> {
+    /// value outside the range of the rule is `Inconsistent`.
+    pub fn plan(self, value: i64, count: u64) -> Result<AllocationPlan, SpaceError> {
         let start = u64::try_from(value)
             .map_err(|_| SpaceError::Inconsistent("an allocator value is negative"))?;
         match self {
             AllocationRule::Fixed { size } => {
-                meter.compare(VALUE_BYTES, VALUE_BYTES)?;
                 if value > size {
                     return Err(SpaceError::Inconsistent(
                         "the allocator of an Array space exceeds its size",
                     ));
                 }
-                meter.compare(VALUE_BYTES, VALUE_BYTES)?;
                 let next = match bounded_sum(value, count) {
                     Some(next) if next <= size => next,
                     Some(_) | None => return Err(SpaceError::OutOfNames),
                 };
                 Ok(AllocationPlan {
-                    indices: sequential(start, count, meter)?,
+                    indices: sequential(start, count)?,
                     next,
                 })
             }
             AllocationRule::Cyclic { size } => {
-                meter.compare(VALUE_BYTES, VALUE_BYTES)?;
                 if value >= size {
                     return Err(SpaceError::Inconsistent(
                         "the allocator of a cyclic Array space is not below its size",
@@ -144,17 +114,16 @@ impl AllocationRule {
                 })?;
                 let next = (start + count % modulus) % modulus;
                 Ok(AllocationPlan {
-                    indices: cyclic(start, modulus, count, meter)?,
+                    indices: cyclic(start, modulus, count)?,
                     next: i64::try_from(next).map_err(|_| {
                         SpaceError::Inconsistent("a cyclic allocator value exceeds i64")
                     })?,
                 })
             }
             AllocationRule::Unbounded => {
-                meter.compare(VALUE_BYTES, VALUE_BYTES)?;
                 let next = bounded_sum(value, count).ok_or(SpaceError::OutOfNames)?;
                 Ok(AllocationPlan {
-                    indices: sequential(start, count, meter)?,
+                    indices: sequential(start, count)?,
                     next,
                 })
             }
@@ -169,18 +138,17 @@ fn bounded_sum(value: i64, count: u64) -> Option<i64> {
         .and_then(|count| value.checked_add(count))
 }
 
-/// The indices `start, start + 1, …, start + count − 1`, with their buffer reserved first. The
-/// caller has checked that the last index fits in `i64`.
-fn sequential(start: u64, count: u64, meter: &ScanMeter) -> Result<Vec<u64>, SpaceError> {
-    let mut indices = meter.buffer::<u64>(buffer_length(count)?)?;
+/// The indices `start, start + 1, …, start + count − 1`. The caller has checked that the last
+/// index fits in `i64`.
+fn sequential(start: u64, count: u64) -> Result<Vec<u64>, SpaceError> {
+    let mut indices = Vec::<u64>::with_capacity(buffer_length(count)?);
     indices.extend(start..start + count);
     Ok(indices)
 }
 
-/// The indices `(start + i) mod modulus` for `i` in `0..count`, with their buffer reserved
-/// first. `start` is below `modulus`.
-fn cyclic(start: u64, modulus: u64, count: u64, meter: &ScanMeter) -> Result<Vec<u64>, SpaceError> {
-    let mut indices = meter.buffer::<u64>(buffer_length(count)?)?;
+/// The indices `(start + i) mod modulus` for `i` in `0..count`. `start` is below `modulus`.
+fn cyclic(start: u64, modulus: u64, count: u64) -> Result<Vec<u64>, SpaceError> {
+    let mut indices = Vec::<u64>::with_capacity(buffer_length(count)?);
     let mut index = start;
     for _ in 0..count {
         indices.push(index);
@@ -193,9 +161,10 @@ fn cyclic(start: u64, modulus: u64, count: u64, meter: &ScanMeter) -> Result<Vec
 }
 
 /// The length of a buffer of `count` indices. A count that the address space cannot hold is
-/// rejected as host work that no budget can pay.
+/// `Inconsistent`.
 fn buffer_length(count: u64) -> Result<usize, SpaceError> {
-    usize::try_from(count).map_err(|_| SpaceError::Host(RSpaceError::HostWorkRejected))
+    usize::try_from(count)
+        .map_err(|_| SpaceError::Inconsistent("an allocation count exceeds the address space"))
 }
 
 /// The space that `config` describes: its id, and its durability. A `default` space is durable
@@ -210,30 +179,21 @@ pub fn space_of(config: &SpaceConfig) -> NativeSpace {
     }
 }
 
-/// The index of `channel` when it is an index name of the space of `config`, or
-/// `NotAnIndexName` (F8). A forged channel, a name with a random tail and a name of another space
-/// fail. The read of the channel and the comparison of the two spaces are reserved first.
-pub fn index_of_name(
-    config: &SpaceConfig,
-    channel: &Par,
-    meter: &ScanMeter,
-) -> Result<u64, SpaceError> {
-    meter.inspect(channel)?;
+/// The index of `channel` when it is an index name of the space of `config`, or `NotAnIndexName`
+/// (F8). A forged channel, a name with a random tail and a name of another space fail.
+pub fn index_of_name(config: &SpaceConfig, channel: &Par) -> Result<u64, SpaceError> {
     let Some(ReifiedId::Name(space, NameTail::Index(index))) = namespace::reified_id_of(channel)
     else {
         return Err(SpaceError::NotAnIndexName);
     };
-    meter.compare(SPACE_BYTES, SPACE_BYTES)?;
     match space == space_of(config) {
         true => Ok(index),
         false => Err(SpaceError::NotAnIndexName),
     }
 }
 
-/// Fails with `NotAnIndexName` unless `index` is below `size`. The comparison is reserved
-/// first.
-pub fn check_below(index: u64, size: i64, meter: &ScanMeter) -> Result<(), SpaceError> {
-    meter.compare(VALUE_BYTES, VALUE_BYTES)?;
+/// Fails with `NotAnIndexName` unless `index` is below `size`.
+pub fn check_below(index: u64, size: i64) -> Result<(), SpaceError> {
     match u64::try_from(size).is_ok_and(|size| index < size) {
         true => Ok(()),
         false => Err(SpaceError::NotAnIndexName),
@@ -251,29 +211,24 @@ pub fn allocator_channel(space: NativeSpace) -> Par {
     namespace::gprivate(namespace::allocator_channel(space))
 }
 
-/// The records that the creation of an Array or a Vector space stages after the space counter:
-/// the allocator `A(sid) = 0`. `random` is the random state of the factory call, and the record
-/// takes `RandomPurpose::Allocator.derive(random).split_byte(1)`, as the put of an allocation
-/// does. The record carries the cost authority `authority` of the caller, as the space counter
-/// does. The channel, the record and their buffer are reserved before they are made.
+/// The records that the creation of an Array or a Vector space stages after the space counter: the
+/// allocator `A(sid) = 0`. `random` is the random state of the factory call, and the record takes
+/// `RandomPurpose::Allocator.derive(random).split_byte(1)`, as the put of an allocation does. The
+/// record carries the cost authority `authority` of the caller, as the space counter does.
 pub fn creation_records(
     space: NativeSpace,
     random: &Blake2b512Random,
     authority: &CostAuthority,
-    meter: &ScanMeter,
-) -> Result<Vec<(Par, ListParWithRandom)>, SpaceError> {
-    let mut records = meter.buffer::<(Par, ListParWithRandom)>(1)?;
-    meter.reserve_copy(&*GPRIVATE)?;
-    meter.reserve_buffer::<u8>(namespace::SPACE_ID_PREFIX_LEN)?;
+) -> Vec<(Par, ListParWithRandom)> {
+    let mut records = Vec::<(Par, ListParWithRandom)>::with_capacity(1);
     let channel = allocator_channel(space);
-    let record = record::counter_record_metered(
+    let record = record::counter_record(
         0,
         &RandomPurpose::Allocator.derive(random).split_byte(1),
-        record::cost_authority_metered(authority, meter)?,
-        meter,
-    )?;
+        record::cost_authority(authority),
+    );
     records.push((channel, record));
-    Ok(records)
+    records
 }
 
 /// Stages the allocation of `op.count` names with `rule` in `cx`, and returns the indices in
@@ -288,8 +243,8 @@ pub fn allocate(
     let stored = cx.allocator_record()?.ok_or(SpaceError::Inconsistent(
         "an Array or a Vector space has no allocator record",
     ))?;
-    let value = record::counter_value_metered(&stored.a, cx.meter())?;
-    let AllocationPlan { indices, next } = rule.plan(value, op.count, cx.meter())?;
+    let value = record::counter_value(&stored.a)?;
+    let AllocationPlan { indices, next } = rule.plan(value, op.count)?;
     cx.take(stored, value)?;
     cx.put(next)?;
     Ok(indices)
@@ -300,13 +255,9 @@ mod tests {
     use models::rhoapi::cost_signature::Value as CostSignatureValue;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::{CostRegion, CostSignature, Expr};
-    use models::rust::host_work::{
-        HostWorkDimension, HostWorkLimit, HostWorkLimits, HostWorkUsage,
-    };
     use models::rust::utils::new_gstring_par;
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::spaces::namespace::SID_LEN;
     use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 
@@ -315,10 +266,8 @@ mod tests {
         durability: Durability::Durable,
     };
 
-    fn unmetered() -> ScanMeter { ScanMeter::new(None) }
-
     fn plan(rule: AllocationRule, value: i64, count: u64) -> Result<AllocationPlan, SpaceError> {
-        rule.plan(value, count, &unmetered())
+        rule.plan(value, count)
     }
 
     fn planned(indices: Vec<u64>, next: i64) -> Result<AllocationPlan, SpaceError> {
@@ -381,11 +330,6 @@ mod tests {
         let widest = AllocationRule::Cyclic { size: i64::MAX };
         let last = u64::try_from(i64::MAX - 1).expect("a positive index");
         assert_eq!(plan(widest, i64::MAX - 1, 2), planned(vec![last, 0], 1));
-        // A count that no buffer can hold is host work that no budget pays.
-        assert_eq!(
-            plan(widest, i64::MAX - 1, u64::MAX),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        );
         assert_eq!(
             plan(cyclic, 3, 1),
             Err(SpaceError::Inconsistent(
@@ -410,46 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn space_allocator_plan_reserves_its_comparisons_and_its_buffer() {
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        let operations = HostWorkDimension::VerificationOperations;
-        let scanned = HostWorkDimension::VerificationBytes;
-        let backing = HostWorkDimension::SearchStateBytes;
-        AllocationRule::Fixed { size: 8 }
-            .plan(2, 3, &meter)
-            .expect("the plan fits");
-        // Two comparisons of two values, and a buffer of three indices: four operations, and
-        // the bytes of the three indices.
-        assert_eq!(host_work.usage(operations), HostWorkUsage::new(2 + 4));
-        assert_eq!(
-            host_work.usage(scanned),
-            HostWorkUsage::new(2 * 2 * VALUE_BYTES as u64 + 3 * 8)
-        );
-        assert_eq!(host_work.usage(backing), HostWorkUsage::new(3 * 8));
-        // A budget one operation short rejects the plan before its buffer.
-        let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-        limits.set(operations, HostWorkLimit::new(5));
-        let cut = HostWorkBudget::new(limits);
-        assert_eq!(
-            AllocationRule::Fixed { size: 8 }.plan(2, 3, &ScanMeter::new(Some(cut.clone()))),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        );
-        assert!(cut.is_rejected());
-        // An allocation that does not fit reserves no buffer.
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        assert_eq!(
-            AllocationRule::Fixed { size: 2 }.plan(1, 2, &meter),
-            Err(SpaceError::OutOfNames)
-        );
-        assert_eq!(host_work.usage(operations), HostWorkUsage::new(2));
-        assert_eq!(host_work.usage(backing), HostWorkUsage::ZERO);
-    }
-
-    #[test]
     fn space_allocator_index_names_belong_to_their_space() {
-        let meter = unmetered();
         let durable = config(SpaceQualifier::Default);
         assert_eq!(space_of(&durable), SPACE);
         assert_eq!(
@@ -462,7 +367,7 @@ mod tests {
         );
         for index in [0, 1, 41, u64::MAX] {
             assert_eq!(
-                index_of_name(&durable, &index_name(SPACE, index), &meter),
+                index_of_name(&durable, &index_name(SPACE, index)),
                 Ok(index)
             );
         }
@@ -490,66 +395,23 @@ mod tests {
             Par::default(),
         ] {
             assert_eq!(
-                index_of_name(&durable, &forged, &meter),
+                index_of_name(&durable, &forged),
                 Err(SpaceError::NotAnIndexName),
                 "{forged:?}"
             );
         }
         // An ephemeral space accepts its own ephemeral names only.
         let temp = config(SpaceQualifier::Temp);
+        assert_eq!(index_of_name(&temp, &index_name(ephemeral, 3)), Ok(3));
         assert_eq!(
-            index_of_name(&temp, &index_name(ephemeral, 3), &meter),
-            Ok(3)
-        );
-        assert_eq!(
-            index_of_name(&temp, &index_name(SPACE, 3), &meter),
+            index_of_name(&temp, &index_name(SPACE, 3)),
             Err(SpaceError::NotAnIndexName)
         );
-        assert_eq!(check_below(2, 3, &meter), Ok(()));
-        assert_eq!(check_below(3, 3, &meter), Err(SpaceError::NotAnIndexName));
+        assert_eq!(check_below(2, 3), Ok(()));
+        assert_eq!(check_below(3, 3), Err(SpaceError::NotAnIndexName));
         assert_eq!(
-            check_below(u64::MAX, i64::MAX, &meter),
+            check_below(u64::MAX, i64::MAX),
             Err(SpaceError::NotAnIndexName)
-        );
-    }
-
-    #[test]
-    fn space_allocator_index_name_check_reserves_the_decode_and_the_comparison() {
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        let name = index_name(SPACE, 7);
-        index_of_name(&config(SpaceQualifier::Default), &name, &meter).expect("an index name");
-        let inspected = ScanMeter::new(Some(HostWorkBudget::new(HostWorkLimits::uniform(
-            HostWorkLimit::new(u64::MAX),
-        ))));
-        inspected.inspect(&name).expect("a read");
-        let read = inspected
-            .host_work()
-            .expect("a metered budget")
-            .usage(HostWorkDimension::VerificationOperations);
-        assert_eq!(
-            host_work.usage(HostWorkDimension::VerificationOperations),
-            HostWorkUsage::new(read.get() + 1),
-            "the read of the name and one comparison of the spaces"
-        );
-        // A forged channel is read before it is rejected, and it reserves no comparison.
-        let forged = new_gstring_par("forged".to_string(), Vec::new(), false);
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        let meter = ScanMeter::new(Some(host_work.clone()));
-        assert_eq!(
-            index_of_name(&config(SpaceQualifier::Default), &forged, &meter),
-            Err(SpaceError::NotAnIndexName)
-        );
-        assert!(host_work.usage(HostWorkDimension::VerificationOperations) > HostWorkUsage::ZERO);
-        // A budget that cannot pay the read rejects the check.
-        let zero = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-        assert_eq!(
-            index_of_name(
-                &config(SpaceQualifier::Default),
-                &name,
-                &ScanMeter::new(Some(zero))
-            ),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
         );
     }
 
@@ -557,8 +419,7 @@ mod tests {
     fn space_allocator_creation_stages_the_allocator_at_zero() {
         let random = Blake2b512Random::create_from_bytes(b"factory call");
         let authority = region(3);
-        let records =
-            creation_records(SPACE, &random, &authority, &unmetered()).expect("the records");
+        let records = creation_records(SPACE, &random, &authority);
         let [(channel, data)] = records.as_slice() else {
             panic!("one allocator record: {records:?}");
         };
@@ -577,19 +438,7 @@ mod tests {
             )
         );
         // Without a region the record carries no authority, as the space counter.
-        let records = creation_records(SPACE, &random, &CostAuthority::default(), &unmetered())
-            .expect("the records");
+        let records = creation_records(SPACE, &random, &CostAuthority::default());
         assert_eq!(records[0].1.cost_authority, None);
-        // The records are reserved before they are made.
-        let zero = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-        assert_eq!(
-            creation_records(
-                SPACE,
-                &random,
-                &CostAuthority::default(),
-                &ScanMeter::new(Some(zero))
-            ),
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected))
-        );
     }
 }

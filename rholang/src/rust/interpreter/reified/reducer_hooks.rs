@@ -48,13 +48,13 @@ use super::ReducerCore;
 use crate::rust::interpreter::accounting::authority::{
     cost_region, extend_authority, sig_to_cost_signature,
 };
+use crate::rust::interpreter::accounting::byte_accounting::IntroductionMeasurement;
 use crate::rust::interpreter::accounting::costs::new_bindings_cost;
 use crate::rust::interpreter::accounting::economic_failure::EvaluationFailureSummary;
 use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
 use crate::rust::interpreter::dispatch::DispatchType;
 use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::reified::errors::ReifiedReduceError;
 use crate::rust::interpreter::reified::route::{self, classify_channel, ChannelClass, Route};
 use crate::rust::interpreter::reified::scope::{
@@ -91,11 +91,13 @@ const NOT_READABLE: &str = "Trying to read from non-readable channel.";
 
 /// The target of a send after routing.
 enum SendRoute {
-    /// The HEAD produce on the default space.
+    /// The HEAD produce on the default space. `measurement` is the measurement of the datum
+    /// that the reducer made (DR-118), or `None` when the route changed the datum.
     Host {
         chan: Par,
         data: ListParWithRandom,
         authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     },
     /// A produce on a collection of a native space.
     Space(ProduceOp),
@@ -195,10 +197,10 @@ impl BinderGroups {
 }
 
 impl ReducerCore {
-    /// P7 (VR-3): starts an evaluation from `inj`, `inj_with_observation` or
-    /// `inj_with_host_work`, and tells whether it is a root evaluation: no reduction context
-    /// runs. Only a root evaluation resets the book of the ephemeral spaces, the mirror journal
-    /// and the committed parents, and only a root evaluation sweeps at its end.
+    /// P7 (VR-3): starts an evaluation from `inj` or `inj_with_observation`, and tells whether
+    /// it is a root evaluation: no reduction context runs. Only a root evaluation resets the
+    /// book of the ephemeral spaces, the mirror journal and the committed parents, and only a
+    /// root evaluation sweeps at its end.
     pub(in crate::rust::interpreter) fn begin_root_evaluation(&self) -> bool {
         let root = deterministic_reduction::current().is_none();
         if root {
@@ -221,7 +223,7 @@ impl ReducerCore {
     }
 
     /// `end_root_evaluation` with the failure summary of the evaluation: a sweep failure adds
-    /// the class `Platform` to the summary (VR-8), as a host-work rejection does.
+    /// the class `Platform` to the summary (VR-8).
     pub(in crate::rust::interpreter) async fn end_root_evaluation_observed(
         &self,
         root: bool,
@@ -389,7 +391,7 @@ impl ReducerCore {
                         space,
                         kind: UseKind::Agent,
                     }),
-                ) => (None, Some(send_meter().copy(space)?)),
+                ) => (None, Some(space.clone())),
                 (None, None) => (None, None),
             };
             spaces.push(space);
@@ -485,6 +487,7 @@ impl ReducerCore {
         data: ListParWithRandom,
         persistent: bool,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Pin<
         Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send + 'a>,
     > {
@@ -499,7 +502,7 @@ impl ReducerCore {
         //     Ok(SendRoute::Space(op)) => Box::pin(self.space_op(SpaceOp::Produce(op), None)),
         //     Err(error) => Box::pin(std::future::ready(Err(error))),
         // }
-        match self.route_send(chan, data, persistent, introduction_authority) {
+        match self.route_send(chan, data, persistent, introduction_authority, measurement) {
             Ok(route) => self.dispatch_send(route, persistent),
             Err(error) => Box::pin(std::future::ready(Err(error))),
         }
@@ -519,7 +522,8 @@ impl ReducerCore {
                 chan,
                 data,
                 authority,
-            } => self.produce(chan, data, persistent, authority),
+                measurement,
+            } => self.produce(chan, data, persistent, authority, measurement),
             SendRoute::Space(op) => Box::pin(self.space_op(SpaceOp::Produce(op), None)),
         }
     }
@@ -554,8 +558,17 @@ impl ReducerCore {
         data: ListParWithRandom,
         persistent: bool,
         authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<SendRoute, InterpreterError> {
-        self.route_send_from(&self.space_ctx, chan, data, persistent, authority, false)
+        self.route_send_from(
+            &self.space_ctx,
+            chan,
+            data,
+            persistent,
+            authority,
+            measurement,
+            false,
+        )
     }
 
     /// The loop of `route_send` from the use-context `context`. `scanned` is true for a call
@@ -568,13 +581,15 @@ impl ReducerCore {
         data: ListParWithRandom,
         persistent: bool,
         authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
         scanned: bool,
     ) -> Result<SendRoute, InterpreterError> {
         let seq = self.reified.seq_spaces();
         // Changed by P8 step 3: the loop starts from the given context and scan state.
         // let mut ctx = &self.space_ctx;
         let mut ctx = context;
-        let (mut chan, mut data, mut persistent) = (chan, data, persistent);
+        let (mut chan, mut data, mut persistent, mut measurement) =
+            (chan, data, persistent, measurement);
         // let mut scanned = false;
         let mut scanned = scanned;
         loop {
@@ -590,15 +605,13 @@ impl ReducerCore {
             // SQ-2 (P7): while the evaluation holds a `seq` space, a send whose data holds one
             // of its names aborts before any mutation.
             if !seq.is_empty() && !scanned {
-                let meter = send_meter();
-                seq::check_send(&chan, &data.pars, &seq, &meter)?;
+                seq::check_send(&chan, &data.pars, &seq)?;
             }
             match route {
                 Route::Agent { agent, raw } => {
-                    let meter = send_meter();
                     // A5: the scan also covers the raw channel, which the call carries as data.
                     if !seq.is_empty() {
-                        seq::check_send(&chan, std::slice::from_ref(&raw), &seq, &meter)?;
+                        seq::check_send(&chan, std::slice::from_ref(&raw), &seq)?;
                     }
                     if persistent {
                         return Err(ReifiedReduceError::PersistentSendOnAgentSpace.into());
@@ -606,14 +619,23 @@ impl ReducerCore {
                     if params.is_some() {
                         return Err(ReifiedReduceError::ParamsUnsupportedOnAgentSpace.into());
                     }
-                    let (call, call_data) = user_agent::produce_call(&agent, raw, data, &meter)?;
+                    let (call, call_data) = user_agent::produce_call(&agent, raw, data)?;
                     ctx = &NO_CONTEXT;
-                    (chan, data, persistent) = (call, call_data, false);
+                    // The call carries other data than the send, so its observer measures
+                    // the datum (DR-118).
+                    (chan, data, persistent, measurement) = (call, call_data, false, None);
                     scanned = true;
                 }
                 route => {
-                    return self
-                        .route_send_off_agent(route, chan, data, persistent, params, authority)
+                    return self.route_send_off_agent(
+                        route,
+                        chan,
+                        data,
+                        persistent,
+                        params,
+                        authority,
+                        measurement,
+                    )
                 }
             }
         }
@@ -628,32 +650,36 @@ impl ReducerCore {
         persistent: bool,
         params: Option<SendParams>,
         authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Result<SendRoute, InterpreterError> {
         match route {
             Route::Default => {
                 // Moved by P7 step 1 before the liveness check of DG-1 (above).
                 // check_persistent_send(&chan, persistent)?;
-                let data = match (op_of(&chan), handle_of(&chan)) {
+                // A packed send carries other data than the reducer measured, so its
+                // observer measures the datum (DR-118).
+                let (data, measurement) = match (op_of(&chan), handle_of(&chan)) {
                     (Some(op), _) if is_factory_op(op) => {
                         reject_positional(params.as_ref())?;
-                        pack_arguments(data)
+                        (pack_arguments(data), None)
                     }
                     (Some(op), _) if packs_arguments(op) && params.is_none() => {
-                        pack_arguments(data)
+                        (pack_arguments(data), None)
                     }
                     (_, Some(_)) => {
                         reject_positional(params.as_ref())?;
-                        data
+                        (data, measurement)
                     }
                     _ if params.is_some() => {
                         return Err(ReifiedReduceError::ParamsUnsupported.into())
                     }
-                    _ => data,
+                    _ => (data, measurement),
                 };
                 Ok(SendRoute::Host {
                     chan,
                     data,
                     authority,
+                    measurement,
                 })
             }
             Route::Space { space, key } => {
@@ -710,6 +736,7 @@ impl ReducerCore {
         guard: Option<Par>,
         authority: CostAuthority,
         introduction_authority: CostAuthority,
+        measurement: Option<IntroductionMeasurement>,
     ) -> Pin<
         Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send + 'a>,
     > {
@@ -722,8 +749,15 @@ impl ReducerCore {
                 guard,
                 authority,
                 introduction_authority,
+                measurement,
             );
         }
+        // A use-context wraps the body, so the observer of a wrapped body measures it
+        // (DR-118).
+        let measurement = match self.space_ctx {
+            Some(_) => None,
+            None => measurement,
+        };
         let ParWithRandom { body, random_state } = body;
         let body = ParWithRandom {
             body: body.map(|body| wrap_body(&self.space_ctx, body)),
@@ -738,6 +772,7 @@ impl ReducerCore {
                 guard,
                 authority,
                 introduction_authority,
+                measurement,
             ),
             Ok(ReceiveRoute::Space {
                 space,
@@ -808,11 +843,10 @@ impl ReducerCore {
         authority: CostAuthority,
         introduction_authority: CostAuthority,
     ) -> Result<DispatchType, InterpreterError> {
-        let meter = send_meter();
         let seq = self.reified.seq_spaces();
         if !seq.is_empty() {
             for bind in &binds {
-                seq::check_send(&agent, std::slice::from_ref(&bind.raw), &seq, &meter)?;
+                seq::check_send(&agent, std::slice::from_ref(&bind.raw), &seq)?;
             }
         }
         let ReceiveTranslation {
@@ -828,7 +862,6 @@ impl ReducerCore {
             peek,
             guard,
             &introduction_authority,
-            &meter,
         )?;
         for matcher in matchers {
             self.consume(
@@ -839,6 +872,7 @@ impl ReducerCore {
                 None,
                 CostAuthority::default(),
                 introduction_authority.clone(),
+                None,
             )
             .await?;
         }
@@ -850,6 +884,7 @@ impl ReducerCore {
             None,
             authority,
             introduction_authority.clone(),
+            None,
         )
         .await?;
         let route = self.route_send_from(
@@ -858,6 +893,7 @@ impl ReducerCore {
             call,
             false,
             introduction_authority,
+            None,
             true,
         )?;
         self.dispatch_send(route, false).await
@@ -906,11 +942,9 @@ impl ReducerCore {
         }) = self.space_ctx.as_deref()
         {
             let binders = plain_binders(new)?;
-            let meter = send_meter();
-            meter.reserve_buffer::<Option<Par>>(binders)?;
             let mut agents = Vec::with_capacity(binders);
             for _ in 0..binders {
-                agents.push(Some(meter.copy(space)?));
+                agents.push(Some(space.clone()));
             }
             let spaces = vec![None; binders];
             return Box::pin(self.agent_new(new, &env, rand, &spaces, agents, authority)).await;
@@ -975,15 +1009,8 @@ impl ReducerCore {
             .substitute_and_charge(&body, 0, &env.shift(new.bind_count))?;
         let closed = wrap_body(&self.space_ctx, closed);
         let base = RandomPurpose::Xlate.derive(&rand);
-        let NewTranslation { par, random } = user_agent::translate_new(
-            &bound,
-            env.level,
-            bind_count,
-            &binders,
-            closed,
-            &base,
-            &send_meter(),
-        )?;
+        let NewTranslation { par, random } =
+            user_agent::translate_new(&bound, env.level, bind_count, &binders, closed, &base)?;
         let mut unscoped = self.clone();
         unscoped.space_ctx = None;
         unscoped
@@ -1373,12 +1400,19 @@ fn query_bind(source: Par) -> Result<(Par, Option<QueryParams>), InterpreterErro
 
 /// The inner channel of a query under the read rule of `unbundle_receive`: the body of a bundle
 /// with the read flag, or the channel itself when it is no bundle. A bundle without the read flag
-/// fails with the text of HEAD.
+/// fails with the error of HEAD, a `BundlePermissionError` with the text of HEAD.
 fn readable_channel(channel: Par) -> Result<Par, InterpreterError> {
     match single_bundle(&channel) {
+        // Changed by decision 89 (DR-128): HEAD raises the text as a `BundlePermissionError`,
+        // which the failure classifier maps to a user failure.
+        // Some(Bundle {
+        //     read_flag: false, ..
+        // }) => Err(InterpreterError::ReduceError(NOT_READABLE.to_string())),
         Some(Bundle {
             read_flag: false, ..
-        }) => Err(InterpreterError::ReduceError(NOT_READABLE.to_string())),
+        }) => Err(InterpreterError::BundlePermissionError(
+            NOT_READABLE.to_string(),
+        )),
         Some(Bundle { body, .. }) => unwrap_option_safe(body),
         None => Ok(channel),
     }
@@ -1469,7 +1503,7 @@ fn join_route(routed: Vec<RoutedBind>) -> Result<ReceiveRoute, InterpreterError>
             // Changed by P8 step 3 (design v2 TR-1, TR-2): a join whose channels all route to
             // one user agent is translated, and a query on it aborts.
             // None => Err(join_error(routed.iter().map(|bind| &bind.route).collect()).into()),
-            None => match one_agent(&routed, &send_meter())? {
+            None => match one_agent(&routed) {
                 Some(_) if routed.iter().any(|bind| bind.query.is_some()) => {
                     Err(ReifiedReduceError::QuerySpecUnsupportedOnAgentSpace.into())
                 }
@@ -1486,26 +1520,23 @@ fn join_route(routed: Vec<RoutedBind>) -> Result<ReceiveRoute, InterpreterError>
 /// The agent of a join whose channels all route to one user agent, or `None` (P8, design v2
 /// TR-1). Two routes name one agent when their references are equal (AG-3). The references
 /// come from substituted terms, which are sorted, so the comparison is the comparison of sorted
-/// `Par`s. Each comparison reserves the reads of both references first.
-fn one_agent(routed: &[RoutedBind], meter: &ScanMeter) -> Result<Option<Par>, SpaceError> {
+/// `Par`s.
+fn one_agent(routed: &[RoutedBind]) -> Option<Par> {
     let first = match routed.first().map(|bind| &bind.route) {
         Some(Route::Agent { agent, .. }) => agent,
-        Some(Route::Default | Route::Space { .. }) | None => return Ok(None),
+        Some(Route::Default | Route::Space { .. }) | None => return None,
     };
     for bind in &routed[1..] {
         match &bind.route {
             Route::Agent { agent, .. } => {
-                meter.inspect(first)?;
-                meter.inspect(agent)?;
                 if agent != first {
-                    return Ok(None);
+                    return None;
                 }
             }
-            Route::Default | Route::Space { .. } => return Ok(None),
+            Route::Default | Route::Space { .. } => return None,
         }
     }
-    meter.reserve_copy(first)?;
-    Ok(Some(first.clone()))
+    Some(first.clone())
 }
 
 /// The bind of a translated receive of a bind that routes to a user agent, or `None` for
@@ -2085,18 +2116,11 @@ fn refreshed_marker_par(par: &Par, marker: Marker) -> Cow<'_, Par> {
     }
 }
 
-/// Hook H3, step 1: refreshes a trailing PARAMS tuple in place and decodes it. The data of a send
-/// without a PARAMS tuple keeps its bytes.
 /// No use-context: the context of a call on a user agent (P8, design v2 AG-4).
 static NO_CONTEXT: SpaceCtx = None;
 
-/// The scan meter of a send, on the host-work budget of the reduction context.
-fn send_meter() -> ScanMeter {
-    ScanMeter::new(
-        deterministic_reduction::current().and_then(|context| context.host_work_budget()),
-    )
-}
-
+/// Hook H3, step 1: refreshes a trailing PARAMS tuple in place and decodes it. The data of a send
+/// without a PARAMS tuple keeps its bytes.
 fn trailing_params(data: &mut [Par]) -> Result<Option<SendParams>, InterpreterError> {
     if let Some(last) = data.last_mut() {
         if matches!(sole_marker_tuple(last), Some((Marker::Params, _))) {
@@ -2743,6 +2767,7 @@ mod tests {
                     datum(vec![int(1)]),
                     persistent,
                     authority(),
+                    None,
                 )
                 .await
                 .expect("an ordinary send runs");
@@ -2752,6 +2777,7 @@ mod tests {
                     datum(vec![int(1)]),
                     persistent,
                     authority(),
+                    None,
                 )
                 .await
                 .expect("the HEAD send runs");
@@ -2773,6 +2799,7 @@ mod tests {
                 None,
                 authority(),
                 authority(),
+                None,
             )
             .await
             .expect("an ordinary receive runs");
@@ -2785,6 +2812,7 @@ mod tests {
                 None,
                 authority(),
                 authority(),
+                None,
             )
             .await
             .expect("the HEAD receive runs");
@@ -2848,7 +2876,7 @@ mod tests {
                 code(
                     fixture
                         .reducer
-                        .reified_produce(channel.clone(), call.clone(), true, authority())
+                        .reified_produce(channel.clone(), call.clone(), true, authority(), None)
                         .await
                 ),
                 expected(abort)
@@ -2861,7 +2889,7 @@ mod tests {
                     code(
                         fixture
                             .reducer
-                            .reified_produce(channel.clone(), call, false, authority())
+                            .reified_produce(channel.clone(), call, false, authority(), None)
                             .await
                     ),
                     expected("DanglingHandle")
@@ -2871,7 +2899,7 @@ mod tests {
             }
             fixture
                 .reducer
-                .reified_produce(channel.clone(), call, false, authority())
+                .reified_produce(channel.clone(), call, false, authority(), None)
                 .await
                 .expect("a call without persistence runs");
             assert_eq!(fixture.host.get_data(&channel).await.len(), 1);
@@ -2879,7 +2907,13 @@ mod tests {
         for channel in [Marker::Use.par(), private(2), string("rrs-4c-persistent")] {
             fixture
                 .reducer
-                .reified_produce(channel.clone(), datum(vec![int(1)]), true, authority())
+                .reified_produce(
+                    channel.clone(),
+                    datum(vec![int(1)]),
+                    true,
+                    authority(),
+                    None,
+                )
                 .await
                 .expect("a persistent send to another name runs");
             assert_eq!(fixture.host.get_data(&channel).await.len(), 1);
@@ -2903,7 +2937,7 @@ mod tests {
         let send_to = |channel: Par, pars: Vec<Par>| {
             fixture
                 .reducer
-                .reified_produce(channel, datum(pars), false, authority())
+                .reified_produce(channel, datum(pars), false, authority(), None)
         };
 
         let factory = namespace::gprivate(namespace::op_channel(0x01));
@@ -3006,7 +3040,7 @@ mod tests {
             code(
                 fixture
                     .reducer
-                    .reified_produce(name.clone(), datum(vec![int(1)]), false, authority())
+                    .reified_produce(name.clone(), datum(vec![int(1)]), false, authority(), None)
                     .await
             ),
             expected("RuntimeUnavailable")
@@ -3023,6 +3057,7 @@ mod tests {
                         None,
                         authority(),
                         authority(),
+                        None,
                     )
                     .await
             ),
@@ -3030,7 +3065,7 @@ mod tests {
         );
         assert_eq!(
             code(
-                core.reified_produce(forged.clone(), datum(vec![int(1)]), true, authority())
+                core.reified_produce(forged.clone(), datum(vec![int(1)]), true, authority(), None)
                     .await
             ),
             expected("RuntimeUnavailable")
@@ -3045,6 +3080,7 @@ mod tests {
                     None,
                     authority(),
                     authority(),
+                    None,
                 )
                 .await
             ),
@@ -3063,7 +3099,7 @@ mod tests {
         assert_eq!(
             code(
                 replay
-                    .reified_produce(name.clone(), datum(vec![int(1)]), false, authority())
+                    .reified_produce(name.clone(), datum(vec![int(1)]), false, authority(), None)
                     .await
             ),
             expected("RuntimeUnavailable")
@@ -3074,7 +3110,7 @@ mod tests {
             code(
                 hosted
                     .reducer
-                    .reified_produce(name.clone(), datum(vec![int(1)]), false, authority())
+                    .reified_produce(name.clone(), datum(vec![int(1)]), false, authority(), None)
                     .await
             ),
             expected("DanglingName")
@@ -3091,6 +3127,7 @@ mod tests {
                         None,
                         authority(),
                         authority(),
+                        None,
                     )
                     .await
             ),
@@ -3099,7 +3136,13 @@ mod tests {
         assert_eq!(
             code(
                 scoped(&hosted.reducer, space)
-                    .reified_produce(forged.clone(), datum(vec![int(1)]), false, authority())
+                    .reified_produce(
+                        forged.clone(),
+                        datum(vec![int(1)]),
+                        false,
+                        authority(),
+                        None
+                    )
                     .await
             ),
             expected("DanglingHandle")
@@ -3144,6 +3187,7 @@ mod tests {
                 datum(vec![int(7), int(8)]),
                 false,
                 authority(),
+                None,
             )
             .await
             .expect("the call is produced");
@@ -3166,7 +3210,7 @@ mod tests {
         );
         fixture
             .reducer
-            .reified_produce(outer, datum(vec![int(3)]), false, authority())
+            .reified_produce(outer, datum(vec![int(3)]), false, authority(), None)
             .await
             .expect("the calls are produced");
         let first = list(vec![int(3)]);
@@ -3193,7 +3237,7 @@ mod tests {
             &fixture.reducer,
             new_bundle_par(string("agent"), true, false),
         );
-        core.reified_produce(string("x"), datum(vec![int(2)]), false, authority())
+        core.reified_produce(string("x"), datum(vec![int(2)]), false, authority(), None)
             .await
             .expect("the call is produced");
         assert_eq!(stored(&fixture.host, &string("agent")).await, vec![vec![
@@ -3234,7 +3278,7 @@ mod tests {
                 code(
                     fixture
                         .reducer
-                        .reified_produce(tagged.clone(), datum(data), persistent, authority())
+                        .reified_produce(tagged.clone(), datum(data), persistent, authority(), None)
                         .await
                 ),
                 expected(error)
@@ -3245,7 +3289,7 @@ mod tests {
             code(
                 fixture
                     .reducer
-                    .reified_produce(read_only, datum(vec![int(1)]), false, authority())
+                    .reified_produce(read_only, datum(vec![int(1)]), false, authority(), None)
                     .await
             ),
             expected("HandleNotWritable")
@@ -3269,7 +3313,7 @@ mod tests {
     //         code(
     //             fixture
     //                 .reducer
-    //                 .reified_produce(tagged.clone(), datum(vec![int(1)]), false, authority())
+    //                 .reified_produce(tagged.clone(), datum(vec![int(1)]), false, authority(), None)
     //                 .await
     //         ),
     //         expected("AgentSpacesUnavailable")
@@ -3310,6 +3354,7 @@ mod tests {
             guard,
             authority(),
             authority(),
+            None,
         )
         .await
     }
@@ -3358,8 +3403,7 @@ mod tests {
             panic!("one bind gives one pair");
         };
         assert_eq!(*raw, int(1));
-        let meter = ScanMeter::new(None);
-        let state = user_agent::matcher_state_of(matcher, &meter)
+        let state = user_agent::matcher_state_of(matcher)
             .expect("the decode runs")
             .expect("a translation state");
         let base = namespace::RandomPurpose::Xlate
@@ -3435,11 +3479,10 @@ mod tests {
         .await
         .expect("the join is translated");
         let (pairs, _, _) = receive_call(&fixture.host, "agent").await;
-        let meter = ScanMeter::new(None);
         let states: Vec<_> = pairs
             .iter()
             .map(|(matcher, _)| {
-                user_agent::matcher_state_of(matcher, &meter)
+                user_agent::matcher_state_of(matcher)
                     .expect("the decode runs")
                     .expect("a translation state")
             })
@@ -3523,9 +3566,8 @@ mod tests {
             .await
             .expect("the guarded join is translated");
             let (pairs, _, _) = receive_call(&fixture.host, "agent").await;
-            let meter = ScanMeter::new(None);
             for (index, (matcher, _)) in pairs.iter().enumerate() {
-                let state = user_agent::matcher_state_of(matcher, &meter)
+                let state = user_agent::matcher_state_of(matcher)
                     .expect("the decode runs")
                     .expect("a translation state");
                 let expected_guard = (index == owner).then(|| guard.clone());
@@ -3596,7 +3638,7 @@ mod tests {
     //                         None,
     //                         authority(),
     //                         authority(),
-    //                     )
+    //                     , None)
     //                     .await
     //             ),
     //             expected("AgentSpacesUnavailable")
@@ -3620,6 +3662,7 @@ mod tests {
             None,
             authority(),
             authority(),
+            None,
         )
         .await
     }
@@ -3713,6 +3756,7 @@ mod tests {
             None,
             authority(),
             authority(),
+            None,
         )
         .await
         .expect("the receive parks");
@@ -4448,7 +4492,11 @@ mod tests {
         let write_only = new_bundle_par(name.clone(), true, false);
         assert_eq!(
             route_one(reducer, query_source(write_only, payload.clone(), &named)).err(),
-            Some(InterpreterError::ReduceError(NOT_READABLE.to_string()))
+            // Changed by decision 89 (DR-128): the error of HEAD.
+            // Some(InterpreterError::ReduceError(NOT_READABLE.to_string()))
+            Some(InterpreterError::BundlePermissionError(
+                NOT_READABLE.to_string()
+            ))
         );
         let tagged = new_etuple_par(vec![
             namespace::gprivate(namespace::op_channel(AGENT_TAG)),
@@ -4692,9 +4740,13 @@ mod tests {
                         prop_assert!(!takes_fast_path(&source));
                         prop_assert_eq!(reject_query_source(&source), Ok(()));
                         let expected = match case.bundle {
-                            Some((_, false)) => Target::Failed(InterpreterError::ReduceError(
-                                NOT_READABLE.to_string(),
-                            )),
+                            // Changed by decision 89 (DR-128): the error of HEAD.
+                            // Some((_, false)) => Target::Failed(InterpreterError::ReduceError(
+                            //     NOT_READABLE.to_string(),
+                            // )),
+                            Some((_, false)) => Target::Failed(
+                                InterpreterError::BundlePermissionError(NOT_READABLE.to_string()),
+                            ),
                             Some((_, true)) | None => model_target(
                                 &core.space_ctx,
                                 case.channel.clone(),
@@ -4782,6 +4834,7 @@ mod tests {
             datum(vec![int(1), named.clone()]),
             false,
             authority(),
+            None,
         ) {
             Ok(SendRoute::Space(op)) => {
                 assert_eq!(op.params, BTreeMap::from([("k".to_string(), int(1))]));
@@ -4799,6 +4852,7 @@ mod tests {
                         datum(vec![int(1), named.clone()]),
                         persistent,
                         authority(),
+                        None,
                     ),
                 )
                 .await
@@ -4834,6 +4888,7 @@ mod tests {
                             datum(vec![int(1), params]),
                             false,
                             authority(),
+                            None,
                         ),
                     )
                     .await
@@ -4994,39 +5049,21 @@ mod tests {
         );
     }
 
-    /// The host-work usage of the names of `new` under the reducer `core`, in one root with a
-    /// metered host-work budget.
-    async fn allocation_usage(core: &ReducerCore, new: &New) -> Vec<u64> {
-        use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-
-        use crate::rust::interpreter::host_work::HostWorkBudget;
-
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
-        core.reified.begin_evaluation_scope();
-        let (names, _, errors) = root_with_observation(
-            core.space.clone(),
-            core.metering.budget(),
-            core.reduction_coordinator.clone(),
-            Some(host_work.clone()),
+    /// The environment of the names of `new` under the reducer `core`, allocated in one root.
+    async fn allocated_env(core: &ReducerCore, new: &New) -> Env<Par> {
+        in_root(
+            core,
             core.reified_allocate(new, &env_of(int(0)), &mut rand(b"usage"), &authority()),
         )
-        .await;
-        assert!(
-            errors.is_empty(),
-            "the detached reductions failed: {errors:?}"
-        );
-        names.expect("the names are allocated");
-        HostWorkDimension::ALL
-            .into_iter()
-            .map(|dimension| host_work.usage(dimension).get())
-            .collect()
+        .await
+        .expect("the names are allocated")
     }
 
-    /// The `Baseline` job of a HashMap space reserves its reads on the host-work budget of the
-    /// deploy (decision 42), and it makes no event and charges no phlo. A `new` outside every
-    /// `use` block runs no job, so the difference of the two usages is the work of the job.
+    /// The `Baseline` job of a HashMap space makes no event and charges no phlo, as a `new`
+    /// outside every `use` block runs no job. The job names the names in the space, so the two
+    /// environments differ.
     #[tokio::test]
-    async fn reducer_space_routing_baseline_job_reserves_its_reads() {
+    async fn reducer_space_routing_baseline_job_makes_no_event_and_charges_no_phlo() {
         let fixture = hosted().await;
         let reducer: &ReducerCore = &fixture.reducer;
         let space = native(34);
@@ -5042,15 +5079,12 @@ mod tests {
             locally_free: Vec::new(),
         };
         let phlo = reducer.metering.budget().get().value;
-        let without = allocation_usage(reducer, &new).await;
-        let with = allocation_usage(&scoped(reducer, space), &new).await;
-        assert!(
-            with.iter()
-                .zip(&without)
-                .all(|(with, without)| with >= without),
-            "{with:?} against {without:?}"
+        let without = allocated_env(reducer, &new).await;
+        let with = allocated_env(&scoped(reducer, space), &new).await;
+        assert_ne!(
+            with.env_map, without.env_map,
+            "the job names the names in the space"
         );
-        assert_ne!(with, without, "the job reserves its reads");
         assert!(fixture.host.take_event_log().await.is_empty());
         assert_eq!(reducer.metering.budget().get().value, phlo);
     }
@@ -5156,8 +5190,11 @@ mod tests {
     fn assert_failures_in_index_order(result: Result<DispatchType, InterpreterError>) {
         match result {
             Err(InterpreterError::AggregateError { interpreter_errors }) => {
+                // Changed by decision 89 (DR-128): a send on a read-only bundle fails with a
+                // `BundlePermissionError`, a user failure with the text of HEAD.
+                // [InterpreterError::ReduceError(first), InterpreterError::ReduceError(second)] =>
                 match interpreter_errors.as_slice() {
-                    [InterpreterError::ReduceError(first), InterpreterError::ReduceError(second)] =>
+                    [InterpreterError::BundlePermissionError(first), InterpreterError::ReduceError(second)] =>
                     {
                         assert!(first.contains("non-writeable"), "{first}");
                         assert!(second.starts_with("Unbound variable"), "{second}");
@@ -5180,7 +5217,6 @@ mod tests {
             reducer.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             step,
         )
         .await;
@@ -5218,7 +5254,7 @@ mod tests {
         let channel = channel.clone();
         Box::pin(async move {
             reducer
-                .reified_produce(channel, datum(vec![int(value)]), false, authority())
+                .reified_produce(channel, datum(vec![int(value)]), false, authority(), None)
                 .await
         })
     }
@@ -5336,7 +5372,6 @@ mod tests {
             reducer.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             reducer.dispatch_space_outcome(
                 SpaceOutcome {
                     fires: failing_fires(),
@@ -5452,38 +5487,38 @@ mod tests {
 
     // ── A native space end to end ──────────────────────────────────────────────────────────────
 
-    /// FR-5': every root entry of the reducer begins an evaluation scope of the spaces, and
-    /// `inj_with_host_work` too. Each root evaluation starts at the order of the root
-    /// participant, and the session is the deploy of the budget. So the creation and both runs
-    /// commit their first transaction under one parent order. Without a new scope, the first run
-    /// already fails with `ParentOrderReused`.
+    /// FR-5': every root entry of the reducer begins an evaluation scope of the spaces. Each root
+    /// evaluation starts at the order of the root participant, and the session is the deploy of
+    /// the budget. So the creation and both runs commit their first transaction under one parent
+    /// order. Without a new scope, the first run already fails with `ParentOrderReused`.
     #[tokio::test]
-    async fn reducer_space_routing_inj_with_host_work_begins_an_evaluation_scope() {
-        use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-
-        use crate::rust::interpreter::host_work::HostWorkBudget;
-
-        let fixture = hosted().await;
-        let reducer: &ReducerCore = &fixture.reducer;
-        let space = native(42);
-        let name = space_name(space, [5; 32]);
-        in_root(reducer, create(reducer, space))
-            .await
-            .expect("create the space");
-        let term = send(name.clone(), vec![int(1)]);
-        for run in 0..2 {
-            let host_work =
-                HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
-            reducer
-                .inj_with_host_work(term.clone(), rand(b"host-work"), host_work)
+    async fn reducer_space_routing_each_root_entry_begins_an_evaluation_scope() {
+        for entry in [RootEntry::Inj, RootEntry::Observation] {
+            let fixture = hosted().await;
+            let reducer: &ReducerCore = &fixture.reducer;
+            let space = native(42);
+            let name = space_name(space, [5; 32]);
+            in_root(reducer, create(reducer, space))
                 .await
-                .unwrap_or_else(|error| panic!("run {run} of the send failed: {error:?}"));
+                .expect("create the space");
+            let term = send(name.clone(), vec![int(1)]);
+            for run in 0..2 {
+                run_root_entry(reducer, entry, term.clone())
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("{entry:?}: run {run} of the send failed: {error:?}")
+                    });
+            }
+            let collection = namespace::gprivate(namespace::data_channel(
+                space,
+                &CollectionKey::of_channel(&name).expect("a key"),
+            ));
+            assert_eq!(
+                fixture.host.get_data(&collection).await.len(),
+                2,
+                "{entry:?}"
+            );
         }
-        let collection = namespace::gprivate(namespace::data_channel(
-            space,
-            &CollectionKey::of_channel(&name).expect("a key"),
-        ));
-        assert_eq!(fixture.host.get_data(&collection).await.len(), 2);
     }
 
     // ── P7: the volatile sweep at each root entry ──────────────────────────────────────────────
@@ -5553,7 +5588,6 @@ mod tests {
     enum RootEntry {
         Inj,
         Observation,
-        HostWork,
     }
 
     async fn run_root_entry(
@@ -5561,24 +5595,13 @@ mod tests {
         entry: RootEntry,
         term: Par,
     ) -> Result<(), InterpreterError> {
-        use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-
-        use crate::rust::interpreter::host_work::HostWorkBudget;
-
         match entry {
             RootEntry::Inj => reducer.inj(term, rand(b"p7-sweep")).await,
             RootEntry::Observation => {
                 reducer
-                    .inj_with_observation(term, rand(b"p7-sweep"), None)
+                    .inj_with_observation(term, rand(b"p7-sweep"))
                     .await
                     .0
-            }
-            RootEntry::HostWork => {
-                let host_work =
-                    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)));
-                reducer
-                    .inj_with_host_work(term, rand(b"p7-sweep"), host_work)
-                    .await
             }
         }
     }
@@ -5600,7 +5623,7 @@ mod tests {
     for (x <- s!?("gensym")) { x!(1) | x!(2) }
   }
 }"#;
-        for entry in [RootEntry::Inj, RootEntry::Observation, RootEntry::HostWork] {
+        for entry in [RootEntry::Inj, RootEntry::Observation] {
             for (source, fails) in [(ok, false), (err, true)] {
                 let fixture = hosted().await;
                 let reducer: &ReducerCore = &fixture.reducer;
@@ -5642,7 +5665,7 @@ mod tests {
     for (x <- s!?("gensym")) { x!(1) | x!(2) }
   }
 }"#;
-        for entry in [RootEntry::Inj, RootEntry::Observation, RootEntry::HostWork] {
+        for entry in [RootEntry::Inj, RootEntry::Observation] {
             for (source, fails) in [(ok, false), (err, true)] {
                 let term = Compiler::source_to_adt(source).expect("the program parses");
                 let fixture = hosted().await;
@@ -5744,19 +5767,20 @@ mod tests {
                 None,
                 authority(),
                 authority(),
+                None,
             ),
         )
         .await
         .expect("park the waiter");
         in_root(
             reducer,
-            reducer.reified_produce(name.clone(), datum(vec![int(7)]), false, authority()),
+            reducer.reified_produce(name.clone(), datum(vec![int(7)]), false, authority(), None),
         )
         .await
         .expect("fire the waiter");
         in_root(
             reducer,
-            reducer.reified_produce(name.clone(), datum(vec![int(8)]), false, authority()),
+            reducer.reified_produce(name.clone(), datum(vec![int(8)]), false, authority(), None),
         )
         .await
         .expect("store the datum");
@@ -5770,6 +5794,7 @@ mod tests {
                 None,
                 authority(),
                 authority(),
+                None,
             ),
         )
         .await

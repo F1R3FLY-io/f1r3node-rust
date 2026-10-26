@@ -108,7 +108,6 @@ impl FundingFixture {
         let descriptor = native_schedule(self.weights, self.price);
         let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS).unwrap();
         let terms = descriptor.encode(PhloGenesisPolicy::LIMITS).unwrap();
-        let host = priced_config(limit, self.weights, self.price).host_work();
         let rules = NativePhloRules::resolve(&descriptor).unwrap();
         assert_eq!(
             observations
@@ -120,40 +119,29 @@ impl FundingFixture {
         );
         let measured = rules.measure(observations, 100_000).unwrap();
         let regions = measured
-            .region_demands(
-                NativePhloRegionLimits {
-                    regions: 100_000,
-                    encoded_authority_bytes: 10_000_000,
-                },
-                &host,
-            )
+            .region_demands(NativePhloRegionLimits {
+                regions: 100_000,
+                encoded_authority_bytes: 10_000_000,
+            })
             .unwrap();
         let located = regions
-            .locate_purses(
-                NativePhloPurseLimits {
-                    bindings: 100_000,
-                    encoded_binding_bytes: 10_000_000,
-                },
-                &host,
-            )
+            .locate_purses(NativePhloPurseLimits {
+                bindings: 100_000,
+                encoded_binding_bytes: 10_000_000,
+            })
             .unwrap();
         let demand = located
-            .prepare_acquisition_demand(
-                &binding,
-                &terms,
-                NativePhloAcquisitionLimits {
-                    schedule: PhloGenesisPolicy::LIMITS,
-                    entries: 100_000,
-                    key: models::rust::phlo_obligation::PhloObligationKeyLimits {
-                        wire: models::rust::phlo_wire::PhloWireLimits {
-                            total_bytes: 10_000_000,
-                            field_bytes: 10_000_000,
-                        },
-                        authority_nodes: 1_000_000,
+            .prepare_acquisition_demand(&binding, &terms, NativePhloAcquisitionLimits {
+                schedule: PhloGenesisPolicy::LIMITS,
+                entries: 100_000,
+                key: models::rust::phlo_obligation::PhloObligationKeyLimits {
+                    wire: models::rust::phlo_wire::PhloWireLimits {
+                        total_bytes: 10_000_000,
+                        field_bytes: 10_000_000,
                     },
+                    authority_nodes: 1_000_000,
                 },
-                &host,
-            )
+            })
             .unwrap();
         let schedules = [binding.schedule()];
         let ceilings = vec![self.price; self.owners];
@@ -184,17 +172,13 @@ impl FundingFixture {
             },
             authority_nodes: 10_000,
         };
-        let discharge = prepare_counted_phlo_discharge(
-            &[],
-            demand.resources(),
-            PhloDischargeLimits {
+        let discharge =
+            prepare_counted_phlo_discharge(&[], demand.resources(), PhloDischargeLimits {
                 execution: execution_limits,
                 key: key_limits,
                 aggregate_key_bytes: 20_000_000,
-            },
-            &host,
-        )
-        .unwrap();
+            })
+            .unwrap();
         let execution =
             check_counted_phlo_execution(controls, discharge.witness(), execution_limits).unwrap();
         assert_eq!(execution.usage(), usage);
@@ -237,7 +221,7 @@ impl FundingFixture {
             aggregate_key_bytes: 20_000_000,
         };
         let selected = obligations
-            .select_funding(input, selection_limits, &host)
+            .select_funding(input, selection_limits)
             .unwrap()
             .unwrap();
         assert!(obligations
@@ -248,8 +232,7 @@ impl FundingFixture {
                     resource_next_cursor: selected.resource_next_cursor(),
                     fee_next_cursor: selected.fee_next_cursor(),
                 },
-                selection_limits,
-                &host
+                selection_limits
             )
             .unwrap());
         let sources: Vec<_> = keys
@@ -298,8 +281,7 @@ impl FundingFixture {
                         capacities: &short,
                         ..input
                     },
-                    selection_limits,
-                    &host
+                    selection_limits
                 )
                 .unwrap()
                 .is_none());

@@ -123,9 +123,7 @@ pub fn with_stash(family: &BlockFamily, body: &str) -> String {
 }
 
 /// The channel of the deliveries of the agent deploys. Each agent deploy makes one call of the
-/// agent, as each step of the conformance kit does: native replay charges more host work than
-/// play for a call of a stored contract (decision 79), and two calls of the reference agent in
-/// one deploy need more than the v6 limits in replay.
+/// agent, as each step of the conformance kit does.
 pub const AGENT_OUT: &str = "rrs-p9-replay-out-agent";
 
 /// The `temp` space and the `seq` space that each family deploy of block 2 creates and ends.

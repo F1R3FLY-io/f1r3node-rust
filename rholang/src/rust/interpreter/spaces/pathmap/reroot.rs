@@ -32,17 +32,14 @@
 //!   exactly when they are logically equal. The empty map and the map of the empty path both
 //!   stand for the unit, so they are logically equal.
 //!
-//! The function takes the value and moves its parts into the result. It reserves each copy of an
-//! element of the suffix and each allocation, and the adapter reserves its own work (decision
-//! 42). `R(ε, v)` returns `v` with no work.
+//! The function takes the value and moves its parts into the result. It copies each element of the
+//! suffix. `R(ε, v)` returns `v` with no work.
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EPathMap, Expr, Par};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 
 use super::adapter::{EPathMapAdapter, LogicalPath, LogicalPathMap};
 use super::path_codec::plain_list;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::record::sole_expr;
 
@@ -52,24 +49,23 @@ pub fn reroot<A: EPathMapAdapter>(
     suffix: &[Par],
     value: Par,
     adapter: &A,
-    meter: &ScanMeter,
 ) -> Result<Par, SpaceError> {
     match (suffix.is_empty(), is_pathmap(&value)) {
         (true, _) => Ok(value),
         (false, true) => {
             let map = into_pathmap(value)?;
-            let logical = adapter.decode(map, meter)?;
-            let rest = LogicalPath::new(copy_elements(suffix, 0, meter)?, meter)?;
+            let logical = adapter.decode(map)?;
+            let rest = LogicalPath::new(copy_elements(suffix, 0))?;
             let rerooted = match logical.is_empty() {
-                true => LogicalPathMap::singleton(rest, meter)?,
-                false => logical.prefixed(&rest, meter)?,
+                true => LogicalPathMap::singleton(rest),
+                false => logical.prefixed(&rest)?,
             };
-            pathmap_par(adapter.encode(rerooted, meter)?, meter)
+            Ok(pathmap_par(adapter.encode(rerooted)?))
         }
         (false, false) => {
-            let mut elements = copy_elements(suffix, 1, meter)?;
+            let mut elements = copy_elements(suffix, 1);
             elements.push(value);
-            plain_list(elements, meter)
+            Ok(plain_list(elements))
         }
     }
 }
@@ -79,11 +75,10 @@ pub fn reroot_payload<A: EPathMapAdapter>(
     suffix: &[Par],
     payload: Vec<Par>,
     adapter: &A,
-    meter: &ScanMeter,
 ) -> Result<Vec<Par>, SpaceError> {
-    let mut rerooted = meter.buffer::<Par>(payload.len())?;
+    let mut rerooted = Vec::<Par>::with_capacity(payload.len());
     for value in payload {
-        rerooted.push(reroot(suffix, value, adapter, meter)?);
+        rerooted.push(reroot(suffix, value, adapter)?);
     }
     Ok(rerooted)
 }
@@ -105,40 +100,30 @@ fn into_pathmap(value: Par) -> Result<EPathMap, SpaceError> {
     }
 }
 
-/// Copies of `elements` in a list with room for `extra` more elements. Each copy and the list
-/// are reserved first.
-fn copy_elements(
-    elements: &[Par],
-    extra: usize,
-    meter: &ScanMeter,
-) -> Result<Vec<Par>, SpaceError> {
-    let room = elements
-        .len()
-        .checked_add(extra)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    let mut copies = meter.buffer::<Par>(room)?;
+/// Copies of `elements` in a list with room for `extra` more elements.
+fn copy_elements(elements: &[Par], extra: usize) -> Vec<Par> {
+    let room = elements.len() + extra;
+    let mut copies = Vec::<Par>::with_capacity(room);
     for element in elements {
-        meter.reserve_copy(element)?;
         copies.push(element.clone());
     }
-    Ok(copies)
+    copies
 }
 
-/// The `Par` of the PathMap value `map`, with the bit sets of the map. The copy of the bit set
-/// and the expression list are reserved first.
-fn pathmap_par(map: EPathMap, meter: &ScanMeter) -> Result<Par, SpaceError> {
-    let locally_free = meter.copy(&map.locally_free)?;
+/// The `Par` of the PathMap value `map`, with the bit sets of the map.
+fn pathmap_par(map: EPathMap) -> Par {
+    let locally_free = map.locally_free.clone();
     let connective_used = map.connective_used;
-    let mut exprs = meter.buffer::<Expr>(1)?;
+    let mut exprs = Vec::<Expr>::with_capacity(1);
     exprs.push(Expr {
         expr_instance: Some(ExprInstance::EPathmapBody(map)),
     });
-    Ok(Par {
+    Par {
         exprs,
         locally_free,
         connective_used,
         ..Par::default()
-    })
+    }
 }
 
 #[cfg(test)]
@@ -153,7 +138,7 @@ mod tests {
     use crate::rust::interpreter::spaces::pathmap::test_support::*;
 
     fn r(suffix: &[Par], value: Par) -> Par {
-        reroot(suffix, value, &HeadEPathMapAdapter, &unmetered()).expect("the value re-roots")
+        reroot(suffix, value, &HeadEPathMapAdapter).expect("the value re-roots")
     }
 
     fn ints(values: &[i64]) -> Vec<Par> { values.iter().map(|value| gint(*value)).collect() }
@@ -170,10 +155,7 @@ mod tests {
         match is_pathmap(value) {
             true => {
                 let map = HeadEPathMapAdapter
-                    .decode(
-                        into_pathmap(value.clone()).expect("a PathMap"),
-                        &unmetered(),
-                    )
+                    .decode(into_pathmap(value.clone()).expect("a PathMap"))
                     .expect("the map decodes");
                 let keys: Vec<Vec<u8>> = map
                     .entries()
@@ -305,8 +287,7 @@ mod tests {
             reroot_payload(
                 &ints(&[9]),
                 vec![gint(1), pathmap(vec![gint(2)])],
-                &HeadEPathMapAdapter,
-                &unmetered()
+                &HeadEPathMapAdapter
             ),
             Ok(vec![
                 glist(ints(&[9, 1])),
@@ -317,14 +298,13 @@ mod tests {
 
     #[test]
     fn a_rerooting_fails_closed() {
-        let meter = unmetered();
         let nested = pathmap(vec![pathmap(vec![gint(1)])]);
         assert_eq!(
-            reroot(&ints(&[1]), nested.clone(), &HeadEPathMapAdapter, &meter),
+            reroot(&ints(&[1]), nested.clone(), &HeadEPathMapAdapter),
             Err(SpaceError::UnsupportedPathElement)
         );
         assert_eq!(
-            reroot(&[], nested.clone(), &HeadEPathMapAdapter, &meter),
+            reroot(&[], nested.clone(), &HeadEPathMapAdapter),
             Ok(nested),
             "the exact path delivers the value as it is"
         );
@@ -332,8 +312,7 @@ mod tests {
             reroot(
                 &[pathmap(Vec::new())],
                 pathmap(vec![gint(1)]),
-                &HeadEPathMapAdapter,
-                &meter
+                &HeadEPathMapAdapter
             ),
             Err(SpaceError::UnsupportedPathElement)
         );
@@ -345,40 +324,17 @@ mod tests {
             ..epathmap(vec![gint(1)])
         }));
         assert_eq!(
-            reroot(&ints(&[1]), pattern, &HeadEPathMapAdapter, &meter),
+            reroot(&ints(&[1]), pattern, &HeadEPathMapAdapter),
             Err(SpaceError::Inconsistent("a PathMap value has a remainder"))
         );
         assert_eq!(
             reroot_payload(
                 &ints(&[1]),
                 vec![gint(1), pathmap(vec![zipper(Vec::new())])],
-                &HeadEPathMapAdapter,
-                &meter
+                &HeadEPathMapAdapter
             ),
             Err(SpaceError::UnsupportedPathElement)
         );
-    }
-
-    #[test]
-    fn a_rerooting_rejects_a_cut_budget() {
-        let suffix = vec![gint(2), send(gint(0), vec![gint(1)])];
-        let map = pathmap(vec![gstring("b"), glist(ints(&[1, 2])), gstring("b")]);
-        assert_cut(|meter| reroot(&suffix, map.clone(), &HeadEPathMapAdapter, meter));
-        assert_cut(|meter| reroot(&suffix, pathmap(Vec::new()), &HeadEPathMapAdapter, meter));
-        assert_cut(|meter| reroot(&suffix, gint(42), &HeadEPathMapAdapter, meter));
-        assert_cut(|meter| {
-            reroot_payload(
-                &suffix,
-                vec![gint(42), map.clone()],
-                &HeadEPathMapAdapter,
-                meter,
-            )
-        });
-        // The exact path does no work.
-        let (value, usage) =
-            usage_of(|meter| reroot(&[], map.clone(), &HeadEPathMapAdapter, meter));
-        assert_eq!(value, map);
-        assert_eq!(usage, [0, 0, 0]);
     }
 
     // `PathMapPrefix.v`, `reroot_ident`.

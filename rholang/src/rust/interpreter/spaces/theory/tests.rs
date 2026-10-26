@@ -25,7 +25,6 @@ use super::TheoryUsage;
 use crate::rust::interpreter::accounting::costs::Cost;
 use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::matcher::r#match::Matcher;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::{
     run_op, ConsumeOp, JoinBind, JoinOp, ProduceOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp,
     SpaceOutcome,
@@ -86,7 +85,6 @@ async fn fresh() -> (ParRSpace, SpaceEnv) {
     let env = SpaceEnv {
         store: SpaceStoreHandle::new(host.clone()),
         budget: RuntimeBudget::new(Cost::create(10_000_000, "theory seam test")),
-        meter: ScanMeter::new(None),
         volatile: Default::default(),
         origin: Default::default(),
     };
@@ -417,8 +415,9 @@ async fn space_guard_match_refusal_is_a_guard_refusal() {
 
 /// TH-3 and TH-7: each config read resolves the identity of the theory. An identity that names
 /// no checker of this build is a valid identity map for the strict decoder, which reads content
-/// only. The metered config read, the creation of a space and every operation on a space whose
-/// stored config names it fail with `TheoryUnavailable`, and they stage nothing.
+/// only. The config read (`SpaceConfig::from_par_with_theory`), the creation of a space and every
+/// operation on a space whose stored config names it fail with `TheoryUnavailable`. They stage
+/// nothing.
 #[tokio::test]
 async fn theory_unavailable_fails_each_config_read() {
     for identity in [
@@ -439,7 +438,7 @@ async fn theory_unavailable_fails_each_config_read() {
             Ok(Some(identity.clone()))
         );
         assert_eq!(
-            SpaceConfig::from_par_metered(&map, &ScanMeter::new(None)).err(),
+            SpaceConfig::from_par_with_theory(&map).err(),
             Some(expected.clone())
         );
         let (host, env) = fresh().await;
@@ -474,32 +473,17 @@ async fn theory_unavailable_fails_each_config_read() {
     }
 }
 
-/// Decision 74: the config record holds the identity as one `GByteArray` of its canonical bytes,
-/// and a metered config read of a space with a builtin theory costs less than a tenth more than
-/// the read of the same space without one. The TH-2 map in the record cost 169 % more, on every
-/// operation.
+/// Decision 74: the config record holds the identity as one `GByteArray` of its canonical bytes.
 #[test]
 fn theory_config_slot_is_one_compact_par() {
     use models::rhoapi::expr::ExprInstance;
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::spaces::types::config::{map_entries, THEORY_KEY};
 
-    let read = |identity: Option<TheoryIdentity>| {
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 50)));
-        let map = config_of(SpaceInner::Bag, identity);
-        SpaceConfig::from_par_metered(&map, &ScanMeter::new(Some(budget.clone())))
-            .expect("a config");
-        (
-            budget.usage(HostWorkDimension::VerificationBytes).get(),
-            map,
-        )
-    };
-    let (plain, _) = read(None);
     for name in super::builtin::BUILTIN_NAMES {
         let identity = TheoryIdentity::builtin(name);
-        let (with_theory, map) = read(Some(identity.clone()));
+        let map = config_of(SpaceInner::Bag, Some(identity.clone()));
+        SpaceConfig::from_par_with_theory(&map).expect("a config");
         let entries = map_entries(&map).expect("a config map");
         let slot = entries.get(THEORY_KEY).expect("a theory slot");
         assert_eq!(
@@ -508,10 +492,6 @@ fn theory_config_slot_is_one_compact_par() {
                 expr_instance: Some(ExprInstance::GByteArray(identity.to_bytes())),
             }],
             "{name}"
-        );
-        assert!(
-            (with_theory - plain) * 10 < plain,
-            "{name}: {with_theory} against {plain}"
         );
     }
 }

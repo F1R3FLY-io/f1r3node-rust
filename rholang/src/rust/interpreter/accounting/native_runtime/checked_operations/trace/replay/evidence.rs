@@ -27,16 +27,8 @@ impl NativeReplayAccountingSnapshot {
     pub fn observations(&self) -> &ByteObservationSnapshot { &self.observations }
 }
 
-fn granted_observations(
-    recording: &NativeBudgetRecording,
-    host: &HostWorkBudget,
-) -> Result<ByteObservationSnapshot, NativeReplayError> {
-    work(
-        host,
-        HostWorkDimension::VerificationOperations,
-        recording.attempts.len(),
-    )?;
-    let mut rows = allocate(recording.attempts.len(), host)?;
+fn granted_observations(recording: &NativeBudgetRecording) -> ByteObservationSnapshot {
+    let mut rows = Vec::with_capacity(recording.attempts.len());
     rows.extend(
         recording
             .attempts
@@ -44,26 +36,21 @@ fn granted_observations(
             .filter(|attempt| attempt.granted)
             .map(|attempt| Arc::clone(&attempt.observation)),
     );
-    Ok(ByteObservationSnapshot {
+    ByteObservationSnapshot {
         rows,
         metered_context: true,
         history_lost: false,
-    })
+    }
 }
 
 impl NativeReplayBoundary {
     pub fn completed_evidence(&self) -> Result<NativeReplayAccountingSnapshot, NativeReplayError> {
         let usage = self.completed_usage()?;
         let journal = self.replay.inner.trace.journal();
-        let observations = granted_observations(&journal.recording, &self.replay.inner.host)?;
+        let observations = granted_observations(&journal.recording);
         if usage != journal.recording.used {
             return Err(NativeReplayError::Outcome);
         }
-        work(
-            &self.replay.inner.host,
-            HostWorkDimension::VerificationOperations,
-            3,
-        )?;
         Ok(NativeReplayAccountingSnapshot {
             recording: journal.recording.clone(),
             operations: Arc::clone(&journal.operations),

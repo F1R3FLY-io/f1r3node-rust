@@ -7,7 +7,7 @@
 //! | Test | Property |
 //! |---|---|
 //! | `reducer_seq_payload` | SQ-2: a send whose data holds a seq name as data, in a quoted process, in a bundle, in a list, in a map or in the message of a handle `produce` aborts with `SeqSent`, and the deploy changes no state. The handle of a `seq` space may be sent, and the channel argument of the space's own `produce` and the forwarder hop are not scanned, so a sync `produce` runs. |
-//! | `seq_scan_charge_is_schedule_independent` | Decision 83: the charge of the SQ-2 check is a function of the deploy. The creation job records a seq space, so the sends of one scheduling window read one book. Two shapes of the P9 step 3 probe, a touch of a stored space beside a seq creation, play 24 times each and certify, and play gives one host-work vector for each shape. |
+//! | `seq_scan_is_schedule_independent` | Decision 83: the SQ-2 check reads one book in each scheduling window. The creation job records a seq space, so the sends of one scheduling window read one book. Two shapes of the P9 step 3 probe, a touch of a stored space beside a seq creation, play 24 times each, and native replay certifies each play. |
 //! | `reducer_seq_atomic_guard` | SQ-3 and SQ-6 on the traces of design v3, section 5: concurrent uses of one channel abort with `SeqConcurrent` (a send and a receive, a forged channel of `use S`, a PathMap name), a chain of sync uses runs, sync uses of two channels in parallel run, parallel reads and allocations use no channel, a join of two chained channels runs, and a re-issue at `FIRE_ROUND_CAP` is no use. |
 //! | `prop_seq_claim_chain` | `SeqExclusive` (`SpaceCoordination.tla`): for generated uses of two channels by generated participants, the claims admit a use exactly when the last admitted use of its channel is a prefix of its participant path, so the admitted uses of each channel form one prefix chain. A job that fails stores nothing. |
 //! | `prop_seq_qualifier_support` | `QualifierSupport` (`SpaceCoordination.tla`): for every family, qualifier and execution model, an accepted constructor of a HashSet family has `seq`, and an accepted `seq` constructor has native execution. Among the families with a schema, gate 3 refuses exactly `seq` in legacy execution (QT-4, QT-5). |
@@ -26,15 +26,12 @@ use models::rhoapi::{
     Bundle, CostSignature, CostStack, EList, EMap, ETuple, Expr, KeyValuePair, Match, MatchCase,
     Par, Receive, ReceiveBind, Send,
 };
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::space_factory_urn::{
     SpaceFactoryUrn, SpaceOuter, SpaceQualifier as UrnQualifier,
 };
 use models::rust::utils::{new_gint_par, new_gstring_par};
 use proptest::prelude::{any, prop_oneof, Just, Strategy};
 use proptest::test_runner::TestCaseError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
-use rholang::rust::interpreter::reified::costs::ScanMeter;
 use rholang::rust::interpreter::reified::seq::check_send;
 use rholang::rust::interpreter::spaces::ephemeral::{ClaimRole, SeqClaims, VolatileRegistry};
 use rholang::rust::interpreter::spaces::errors::SpaceError;
@@ -46,8 +43,7 @@ use rholang::rust::interpreter::spaces::namespace::{
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rspace_plus_plus::rspace::operation_context::{self, OperationOrder, PathSegment};
 use support::native::{
-    assert_reproduces, certify, certify_with, host_work, native_play_with, NativeChain, Played,
-    AMPLE_LIMIT, OUT,
+    assert_reproduces, certify, native_play, NativeChain, Played, AMPLE_LIMIT, OUT,
 };
 use support::props::{check, pure_config, runtime_config, tokio_runtime};
 use support::session::{error_codes, Injections};
@@ -76,20 +72,7 @@ fn seq_program(urn: &str, body: &str) -> String {
 /// Plays `term` natively at the v6 limits, checks that the hot store holds no volatile channel
 /// after it, and certifies it.
 async fn play_and_certify(label: &str, term: &str) -> Played {
-    play_and_certify_with(label, term, host_work).await
-}
-
-/// A host-work budget of 2^40 units in each dimension, for the trace of the round cap. Its 65
-/// records and 65 fires on one queue use about 1.03 * 10^9 `VerificationBytes` in play with
-/// every qualifier (measured: 1,026,708,249 with `seq`, 1,024,973,702 with `temp`, 1,024,976,585
-/// with `default`), above the v6 limit of 2^28. The test checks the claims, not the v6 limits.
-fn cap_host_work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1 << 40)))
-}
-
-/// [`play_and_certify`] with the host-work budget that `host` makes for play and for replay.
-async fn play_and_certify_with(label: &str, term: &str, host: fn() -> HostWorkBudget) -> Played {
-    let played = native_play_with(term, SEQ_LIMIT, host()).await;
+    let played = native_play(term, SEQ_LIMIT).await;
     assert!(
         played.result.native_budget_recording.is_some(),
         "{label}: the deploy evaluated: {:?}",
@@ -100,7 +83,7 @@ async fn play_and_certify_with(label: &str, term: &str, host: fn() -> HostWorkBu
         "{label}: the sweep leaves no volatile channel: {:?}",
         played.residue
     );
-    let certification = certify_with(&played, term, SEQ_LIMIT, host()).await;
+    let certification = certify(&played, term, SEQ_LIMIT).await;
     assert_reproduces(label, &played, &certification);
     played
 }
@@ -169,11 +152,10 @@ async fn reducer_seq_payload() {
     );
 }
 
-/// The number of runs of each shape of [`seq_scan_charge_is_schedule_independent`]. Before the
-/// fix of decision 83, about one run in five gave a second play host-work vector.
+/// The number of runs of each shape of [`seq_scan_is_schedule_independent`].
 const SCHEDULE_RUNS: usize = 24;
 
-/// Block 1 of [`seq_scan_charge_is_schedule_independent`] (the probe of P9 step 3): a
+/// Block 1 of [`seq_scan_is_schedule_independent`] (the probe of P9 step 3): a
 /// `hashmap:bag` space with two records on `a` and a waiter on `b`, whose body sends to a
 /// persistent forwarder. The handle and the names of the space wait on a public channel.
 const SCHEDULE_SETUP: &str = r#"new factory(`rho:space:hashmap:bag`), out in {
@@ -211,32 +193,18 @@ fn schedule_touch(seq: &str) -> String {
     )
 }
 
-/// The host work of `budget` in each dimension.
-fn host_vector(budget: &HostWorkBudget) -> Vec<u64> {
-    budget
-        .usages()
-        .into_array()
-        .iter()
-        .map(|usage| usage.get())
-        .collect()
-}
-
-/// Decision 83 (P7 design v3, VR-2): the charge of the SQ-2 scan is a function of the deploy.
-/// The creation job records a seq space, and no participant runs during a job, so the sends of
-/// one scheduling window read one set of seq spaces. Each shape plays [`SCHEDULE_RUNS`] times
-/// on a fresh chain at the v6 limits, and native replay certifies each play. Play gives one
-/// host-work vector for each shape. The test compares play only, as N9 does: native replay in
-/// this tree reserves host work that depends on the schedule also for programs without spaces
-/// (verification.md, section 34.4.1).
+/// Decision 83 (P7 design v3, VR-2): the SQ-2 scan reads one set of seq spaces in each scheduling
+/// window. The creation job records a seq space, and no participant runs during a job, so the
+/// sends of one scheduling window read one set of seq spaces. Each shape plays
+/// [`SCHEDULE_RUNS`] times on a fresh chain at the v6 limits, and native replay certifies each
+/// play.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn seq_scan_charge_is_schedule_independent() {
-    let mut splits = Vec::with_capacity(2);
+async fn seq_scan_is_schedule_independent() {
     for (shape, seq) in [
         ("a touch beside a seq creation", SEQ_CREATE),
         ("a touch beside a seq gensym", SEQ_GENSYM),
     ] {
         let term = schedule_touch(seq);
-        let mut vectors: BTreeMap<Vec<u64>, usize> = BTreeMap::new();
         for _ in 0..SCHEDULE_RUNS {
             let mut chain = NativeChain::new().await;
             let setup = chain
@@ -247,15 +215,8 @@ async fn seq_scan_charge_is_schedule_independent() {
                 "{shape}: the setup fails: {:?}",
                 setup.result.errors
             );
-            let host = host_work();
             let played = chain
-                .play_with(
-                    &term,
-                    "seq schedule touch",
-                    SEQ_LIMIT,
-                    host.clone(),
-                    Injections::new(),
-                )
+                .play_with(&term, "seq schedule touch", SEQ_LIMIT, Injections::new())
                 .await;
             assert!(
                 played.result.errors.is_empty(),
@@ -269,16 +230,8 @@ async fn seq_scan_charge_is_schedule_independent() {
             );
             let certification = certify(&played, &term, SEQ_LIMIT).await;
             assert_reproduces(shape, &played, &certification);
-            *vectors.entry(host_vector(&host)).or_insert(0) += 1;
-        }
-        if vectors.len() != 1 {
-            splits.push(format!("{shape}: {vectors:?}"));
         }
     }
-    assert!(
-        splits.is_empty(),
-        "the play host work of a shape depends on the schedule: {splits:#?}"
-    );
 }
 
 // ─── SQ-3: the claims ────────────────────────────────────────────────────────────────────────────
@@ -385,7 +338,7 @@ for (@a <- x & @b <- y) { out!(["join", a, b]) }"#,
   } |
   loop!(1)
 }"#;
-    let played = play_and_certify_with("round cap", &seq_program(queue, body), cap_host_work).await;
+    let played = play_and_certify("round cap", &seq_program(queue, body)).await;
     assert!(
         played.result.errors.is_empty(),
         "{:?}",
@@ -625,12 +578,10 @@ fn prop_seq_claim_chain() {
                 let registry = Arc::clone(&registry);
                 let claimed = &channels[usize::from(channel)];
                 let result = operation_context::scope(order, async move {
-                    let meter = ScanMeter::new(None);
-                    let mut claims =
-                        SeqClaims::open(&registry, space, SpaceQualifier::Seq, false, &meter)
-                            .expect("a seq job opens")
-                            .expect("a program job claims");
-                    claims.claim(claimed, ClaimRole::Data, &meter)?;
+                    let mut claims = SeqClaims::open(&registry, space, SpaceQualifier::Seq, false)
+                        .expect("a seq job opens")
+                        .expect("a program job claims");
+                    claims.claim(claimed, ClaimRole::Data)?;
                     if !fails {
                         claims.store();
                     }
@@ -867,7 +818,7 @@ fn prop_seq_scan_finds_every_seq_name() {
         proptest::collection::vec(trees(), 0..4),
         |trees| {
             let pars: Vec<Par> = trees.iter().map(Tree::to_par).collect();
-            let result = check_send(&string("out"), &pars, &live, &ScanMeter::new(None));
+            let result = check_send(&string("out"), &pars, &live);
             match (trees.iter().any(Tree::holds_seq_name), result) {
                 (true, Err(SpaceError::SeqSent { space })) if space == LIVE => Ok(()),
                 (false, Ok(())) => Ok(()),

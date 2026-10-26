@@ -1,0 +1,17 @@
+{
+  "validation": "passed",
+  "report_sha256": "73848a230f169a62736d60c5440fa2ea24b991ab7a6f80b0d138718547c9d5a7",
+  "validator_sha256": "1d498b1d62c9dd36d18a52803e20a3808c6b3a67ca7f78e39b4463f55cab9298",
+  "cbc_gate_sha256": "9907dc76301102dcaec5901129dcbefc5547973245296433eac3a424ba02d70e",
+  "ste_log_sha256": "7b9e5219d1c961e5e50da0eecb3fb6c01d95605e27592fea549f27dff2143498",
+  "cbc_exit": 4,
+  "mandatory_artifacts": 4,
+  "pending_artifacts": 4,
+  "source_hashes": "verified",
+  "bulk_hashes": "verified",
+  "historical_reports": "unchanged",
+  "claim": "pending",
+  "ste_check": "passed",
+  "human_ste_review": false,
+  "claim_acceptance": false
+}

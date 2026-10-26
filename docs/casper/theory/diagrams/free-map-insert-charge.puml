@@ -1,0 +1,54 @@
+' One free-map binding: B-tree bounds instead of whole-map walks (DR-103,
+' Phase D item D-D1a). The matcher's free map is a standard BTreeMap from i32
+' levels to Par bindings. One insert touches at most one node on each level
+' of the tree after the insert. The most expensive level is an internal split
+' at edge 0: split_leaf_data reads the middle slot and moves six slots into a
+' new node, split moves seven edges, from_new_internal corrects seven parent
+' links, and insert_fit shifts the left half and writes the new slot and edge.
+' The level moves 12 slots, 12 edges and 12 links, and writes 4 lengths and
+' 1 parent pointer: exactly L = 3,832 bytes.
+'
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-103);
+'                  shared/src/rust/collection_backing.rs (tree_insert_level_bytes,
+'                  tree_insert_moves); rholang/src/rust/interpreter/matcher/
+'                  spatial_matcher.rs (reserve_free_map_search,
+'                  reserve_free_map_insert).
+' Formal model:    formal/rocq/cost_accounted_rho/theories/FreeMapBindings.v.
+' Palette:  full node = control amber · left half = process lilac · new node = pool green
+'           middle slot = delta amber · totals = indigo note · charge = supply blue
+'           legacy charge = reject red · moves = instantiate blue
+' Render:  plantuml -tsvg docs/casper/theory/diagrams/free-map-insert-charge.puml
+'          (or: ./render.sh free-map-insert-charge.puml)
+
+@startuml free-map-insert-charge
+!include palette.iuml
+$ca_base_skin()
+skinparam ArrowColor $ca_neutral
+skinparam RectangleBorderColor #333333
+skinparam RectangleFontSize 11
+title One internal split at edge 0, the most expensive level of a free-map insert (DR-103)
+
+rectangle "**Full internal node** before the insert\n11 slots <latex>k_0 \ldots k_{10}</latex>, 12 edges <latex>e_0 \ldots e_{11}</latex>\ninsert at edge 0: splitpoint picks the middle <latex>k_4</latex>,\nand the new entry goes to the left half at index 0" as Full $ca_control
+
+rectangle "**Middle slot** <latex>k_4</latex>\nsplit_leaf_data reads it: 1 slot\nit goes up to the parent level,\nwhich writes it as its new slot" as Middle $ca_delta
+
+rectangle "**New node** (allocated)\ninitialized: 1 parent pointer, 1 length\nsplit_leaf_data moves <latex>k_5 \ldots k_{10}</latex>: 6 slots, and sets its length: 1 length\nsplit moves <latex>e_5 \ldots e_{11}</latex>: 7 edges\nfrom_new_internal corrects 7 parent links" as Right $ca_pool
+
+rectangle "**Left half** (the old node)\nsplit_leaf_data sets its length to 4: 1 length\ninsert_fit at index 0 shifts <latex>k_0 \ldots k_3</latex> and writes the new slot: 5 slots\nshifts <latex>e_1 \ldots e_4</latex> and writes the new edge: 5 edges\ncorrects the parent links of edges 1 to 5: 5 links\nwrites its length: 1 length" as Left $ca_process
+
+Full -[$ca_instantiate,bold]-> Middle : read
+Full -[$ca_instantiate,bold]-> Right : move
+Full -[$ca_instantiate,bold]-> Left : shift and write
+
+rectangle "**Level total** (FreeMapBindings.internal_split_attains_charge)\nslots <latex>1 + 6 + 5 = 12</latex>, edges <latex>7 + 5 = 12</latex>, links <latex>7 + 5 = 12</latex>\nlengths 4, parent pointers 1\n<latex>L = 12 \cdot 300 + 12 \cdot 8 + 12 \cdot 10 + 4 \cdot 2 + 8 = 3832</latex> bytes\nevery other level costs at most <latex>L</latex> (insert_level_work_bounded)" as Total $ca_note_indigo
+
+rectangle "**Charge of one binding** (reserve_free_map_insert)\nsearch: <latex>S(n) = 11 \cdot h(n)</latex> operations and <latex>8\,S(n)</latex> scanned bytes\ninsert: the search, then <latex>1 + g_{\mathrm{ops}}</latex> operations, <latex>h(n+1) \cdot L</latex> scanned bytes\nand the growth <latex>B(n+1) - B(n)</latex> as backing bytes\nthe last level leaves room for the map's length and root writes\nan insert at <latex>n = 10</latex>: 16 operations, 7,752 scanned bytes and 3,472 backing bytes" as Charge $ca_supply
+
+rectangle "**Legacy charge** (commented out)\nevery insert: a walk of the whole map, then <latex>B(n+1)</latex>\nas scanned and as backing bytes\nthe remainder handler runs ten times for each variable, so\n<latex>v</latex> variables of payload <latex>s</latex> walk <latex>5\,s\,v\,(v-1)</latex> bytes\n<latex>v = 8</latex>, <latex>s = 1000</latex>: 280,000 bytes" as Legacy $ca_rejectfill
+
+Middle -[hidden]-> Total
+Right -[hidden]-> Charge
+Left -[hidden]-> Legacy
+Total -[hidden]right-> Charge
+Charge -[hidden]right-> Legacy
+@enduml

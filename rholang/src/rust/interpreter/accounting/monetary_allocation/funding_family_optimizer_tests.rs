@@ -1,6 +1,5 @@
 use std::num::NonZeroUsize;
 
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
@@ -21,10 +20,6 @@ fn limits() -> FundingFamilyLimits {
         },
         case_cap: NonZeroUsize::new(16).unwrap(),
     }
-}
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
 }
 
 fn candidates(problem: FundingOutcomeProblem<'_>, capacities: &[u64]) -> Vec<Candidate> {
@@ -182,7 +177,7 @@ fn oracle(problem: FundingFamilyOptimizationProblem<'_>) -> Option<Vec<Candidate
 
 fn assert_oracle(problem: FundingFamilyOptimizationProblem<'_>) {
     let expected = oracle(problem);
-    let actual = optimize_funding_family(problem, limits(), &work()).unwrap();
+    let actual = optimize_funding_family(problem, limits()).unwrap();
     assert_eq!(actual.is_some(), expected.is_some());
     if let (Some(actual), Some(expected)) = (actual, expected) {
         let mut holds = vec![0; problem.capacities.len()];
@@ -246,9 +241,7 @@ fn family_optimizer_selects_the_approved_five_source_family() {
         resource_cursor: 0,
         fee_cursor: 0,
     };
-    let selected = optimize_funding_family(problem, limits(), &work())
-        .unwrap()
-        .unwrap();
+    let selected = optimize_funding_family(problem, limits()).unwrap().unwrap();
     assert_eq!(selected.holds(), [0, 1, 1, 1, 1]);
     assert_eq!(selected.outcomes()[0].resource_totals().source_debits(), [
         0, 1, 1, 0, 0
@@ -328,9 +321,7 @@ fn family_optimizer_handles_zero_charges_wide_amounts_and_many_sources() {
             resource_cursor: n - 1,
             fee_cursor: 0,
         };
-        let selected = optimize_funding_family(problem, limits(), &work())
-            .unwrap()
-            .unwrap();
+        let selected = optimize_funding_family(problem, limits()).unwrap().unwrap();
         assert_eq!(selected.total_held(), 2);
         assert_eq!(
             selected.outcomes()[0].resource_totals().source_debits()[n - 1],
@@ -354,7 +345,7 @@ fn family_optimizer_handles_zero_charges_wide_amounts_and_many_sources() {
         fee_cursor: 0,
     };
     assert_eq!(
-        optimize_funding_family(problem, limits(), &work())
+        optimize_funding_family(problem, limits())
             .unwrap()
             .unwrap()
             .total_held(),
@@ -398,12 +389,11 @@ fn family_optimizer_validates_all_inputs_before_reporting_infeasibility() {
         fee_cursor: 0,
     };
     assert!(matches!(
-        optimize_funding_family(problem, limits(), &work()),
+        optimize_funding_family(problem, limits()),
         Err(FundingFamilyError::Search(
             FundingSearchError::InvalidProblem(FundingAssignmentError::InvalidDimensions)
         ))
     ));
-    let empty_budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
     assert!(matches!(
         optimize_funding_family(
             FundingFamilyOptimizationProblem {
@@ -411,57 +401,32 @@ fn family_optimizer_validates_all_inputs_before_reporting_infeasibility() {
                 ..problem
             },
             limits(),
-            &empty_budget
         ),
-        Err(FundingFamilyError::Search(FundingSearchError::HostWork(_)))
+        Ok(None)
     ));
 }
 
 #[test]
-fn family_optimizer_does_not_publish_an_incumbent_on_late_exhaustion() {
-    let capacities = [1, 1];
-    let only_b = vec![vec![false], vec![true]];
-    let either = vec![vec![true], vec![true]];
-    let outcomes = [
-        FundingOutcomeProblem {
-            resources: FundingMinimaxProblem {
-                capacities: &capacities,
-                obligations: &[1],
-                eligible: &only_b,
-            },
-            unit_fee_eligible: None,
+fn family_optimizer_reports_no_allocation_when_a_charge_exceeds_the_exposure() {
+    let capacities = [1_u64 << 40, 1_u64 << 40];
+    let eligible = [vec![true], vec![true]];
+    let outcomes = [FundingOutcomeProblem {
+        resources: FundingMinimaxProblem {
+            capacities: &capacities,
+            obligations: &[1_u64 << 40],
+            eligible: &eligible,
         },
-        FundingOutcomeProblem {
-            resources: FundingMinimaxProblem {
-                capacities: &capacities,
-                obligations: &[1],
-                eligible: &either,
-            },
-            unit_fee_eligible: None,
-        },
-    ];
+        unit_fee_eligible: None,
+    }];
     let problem = FundingFamilyOptimizationProblem {
         capacities: &capacities,
         outcomes: &outcomes,
-        exposure_limit: 1,
+        exposure_limit: (1_u128 << 40) - 1,
         resource_cursor: 0,
         fee_cursor: 0,
     };
-    let complete = work();
-    let result = optimize_funding_family(problem, limits(), &complete)
-        .unwrap()
-        .unwrap();
-    assert_eq!(result.holds(), [0, 1]);
-    let used = complete.usage(HostWorkDimension::SearchCandidates).get();
-    let mut capped = complete.limits();
-    capped.set(
-        HostWorkDimension::SearchCandidates,
-        HostWorkLimit::new(used - 1),
-    );
-    assert!(matches!(
-        optimize_funding_family(problem, limits(), &HostWorkBudget::new(capped)),
-        Err(FundingFamilyError::Search(FundingSearchError::HostWork(_)))
-    ));
+    let result = optimize_funding_family(problem, limits());
+    assert!(matches!(result, Ok(None)), "{result:?}");
 }
 
 #[test]
@@ -483,9 +448,7 @@ fn family_verifier_rejects_altered_and_feasible_noncanonical_proposals() {
         resource_cursor: 0,
         fee_cursor: 0,
     };
-    let selected = optimize_funding_family(problem, limits(), &work())
-        .unwrap()
-        .unwrap();
+    let selected = optimize_funding_family(problem, limits()).unwrap().unwrap();
     let proposed = [FundingOutcomeProposal {
         resources: selected.outcomes()[0].resources(),
         fee_debits: selected.outcomes()[0].fee_debits(),
@@ -494,7 +457,7 @@ fn family_verifier_rejects_altered_and_feasible_noncanonical_proposals() {
         outcomes: &proposed,
         holds: selected.holds(),
     };
-    assert!(verify_funding_family_allocation(problem, proposal, limits(), &work()).unwrap());
+    assert!(verify_funding_family_allocation(problem, proposal, limits()).unwrap());
     assert!(!verify_funding_family_allocation(
         problem,
         FundingFamilyProposal {
@@ -502,7 +465,6 @@ fn family_verifier_rejects_altered_and_feasible_noncanonical_proposals() {
             ..proposal
         },
         limits(),
-        &work()
     )
     .unwrap());
     let alternative = [FundingOutcomeProposal {
@@ -516,7 +478,6 @@ fn family_verifier_rejects_altered_and_feasible_noncanonical_proposals() {
             holds: &[0, 2]
         },
         limits(),
-        &work()
     )
     .unwrap());
     let altered = [FundingOutcomeProposal {
@@ -530,7 +491,6 @@ fn family_verifier_rejects_altered_and_feasible_noncanonical_proposals() {
             ..proposal
         },
         limits(),
-        &work()
     )
     .unwrap());
 }
@@ -545,7 +505,7 @@ fn single_outcome_family_preserves_full_width_resources_plus_unit_fee() {
         obligations: &[u64::MAX],
         eligible: &eligible,
     };
-    let existing = select_funding_with_unit_fee(resources, &fees, 0, 0, limits().search, &work())
+    let existing = select_funding_with_unit_fee(resources, &fees, 0, 0, limits().search)
         .unwrap()
         .unwrap();
     let outcomes = [FundingOutcomeProblem {
@@ -561,7 +521,6 @@ fn single_outcome_family_preserves_full_width_resources_plus_unit_fee() {
             fee_cursor: 0,
         },
         limits(),
-        &work(),
     )
     .unwrap()
     .unwrap();
@@ -611,16 +570,14 @@ fn duplicate_outcomes_preserve_allocations_and_shared_holds() {
                 resource_cursor,
                 fee_cursor,
             };
-            let baseline = optimize_funding_family(problem, limits(), &work())
-                .unwrap()
-                .unwrap();
+            let baseline = optimize_funding_family(problem, limits()).unwrap().unwrap();
             for order in [vec![0, 0, 1], vec![0, 1, 1], vec![0, 0, 1, 1]] {
                 let duplicated: Vec<_> = order.iter().map(|i| outcomes[*i]).collect();
                 let duplicated_problem = FundingFamilyOptimizationProblem {
                     outcomes: &duplicated,
                     ..problem
                 };
-                let selected = optimize_funding_family(duplicated_problem, limits(), &work())
+                let selected = optimize_funding_family(duplicated_problem, limits())
                     .unwrap()
                     .unwrap();
                 for (outcome, original) in selected.outcomes().iter().zip(&order) {
@@ -692,21 +649,13 @@ fn complete_family_priority_differs_from_an_unrestricted_outcome_projection() {
         assert!(holds.iter().zip(capacities).all(|(hold, cap)| *hold <= cap));
         assert!(holds.iter().map(|hold| u128::from(*hold)).sum::<u128>() <= 3);
     }
-    let independent = select_funding_with_unit_fee(
-        outcomes[1].resources,
-        &second_fee,
-        0,
-        0,
-        limits().search,
-        &work(),
-    )
-    .unwrap()
-    .unwrap();
+    let independent =
+        select_funding_with_unit_fee(outcomes[1].resources, &second_fee, 0, 0, limits().search)
+            .unwrap()
+            .unwrap();
     assert!(independent.resource_unrestricted());
     assert_eq!(independent.resource_totals().source_debits(), [1, 0, 0, 0]);
-    let selected = optimize_funding_family(problem, limits(), &work())
-        .unwrap()
-        .unwrap();
+    let selected = optimize_funding_family(problem, limits()).unwrap().unwrap();
     assert_eq!(selected.outcomes()[0].resource_totals().source_debits(), [
         0, 1, 0, 0
     ]);
@@ -750,9 +699,7 @@ fn single_outcome_family_preserves_existing_resource_and_fee_allocations() {
                     resource_cursor,
                     fee_cursor,
                 };
-                let selected = optimize_funding_family(problem, limits(), &work())
-                    .unwrap()
-                    .unwrap();
+                let selected = optimize_funding_family(problem, limits()).unwrap().unwrap();
                 let effective_problem = FundingMinimaxProblem {
                     capacities: &effective,
                     ..resources
@@ -764,7 +711,6 @@ fn single_outcome_family_preserves_existing_resource_and_fee_allocations() {
                         resource_cursor,
                         fee_cursor,
                         limits().search,
-                        &work(),
                     )
                     .unwrap()
                     .unwrap();
@@ -778,7 +724,6 @@ fn single_outcome_family_preserves_existing_resource_and_fee_allocations() {
                         effective_problem,
                         resource_cursor,
                         limits().search,
-                        &work(),
                     )
                     .unwrap() else {
                         panic!("fundable outcome");
@@ -791,23 +736,163 @@ fn single_outcome_family_preserves_existing_resource_and_fee_allocations() {
     }
 }
 
+type SmallFamily = (
+    (usize, usize, usize),
+    Vec<u64>,
+    Vec<u64>,
+    Vec<u64>,
+    Vec<bool>,
+    Vec<bool>,
+    Vec<bool>,
+    u128,
+    usize,
+    usize,
+);
+
+fn small_family() -> impl Strategy<Value = SmallFamily> {
+    (1_usize..4, 1_usize..4, 0_usize..3).prop_flat_map(|(n, k, m)| {
+        (
+            Just((n, k, m)),
+            prop::collection::vec(0_u64..3, n),
+            prop::collection::vec(0_u64..4, k * n),
+            prop::collection::vec(0_u64..3, k * m),
+            prop::collection::vec(any::<bool>(), k * n * m),
+            prop::collection::vec(any::<bool>(), k * n),
+            prop::collection::vec(any::<bool>(), k),
+            0_u128..7,
+            0_usize..n,
+            0_usize..n,
+        )
+    })
+}
+
+fn with_small_family(data: SmallFamily, check: impl FnOnce(FundingFamilyOptimizationProblem<'_>)) {
+    let (
+        (n, k, m),
+        capacities,
+        outcome_caps,
+        amounts,
+        edges,
+        fees,
+        charged,
+        exposure_limit,
+        resource_cursor,
+        fee_cursor,
+    ) = data;
+    let eligibility: Vec<Vec<Vec<_>>> = (0..k)
+        .map(|o| {
+            (0..n)
+                .map(|i| edges[(o * n + i) * m..(o * n + i + 1) * m].to_vec())
+                .collect()
+        })
+        .collect();
+    let outcomes: Vec<_> = (0..k)
+        .map(|o| FundingOutcomeProblem {
+            resources: FundingMinimaxProblem {
+                capacities: &outcome_caps[o * n..(o + 1) * n],
+                obligations: &amounts[o * m..(o + 1) * m],
+                eligible: &eligibility[o],
+            },
+            unit_fee_eligible: charged[o].then_some(&fees[o * n..(o + 1) * n]),
+        })
+        .collect();
+    check(FundingFamilyOptimizationProblem {
+        capacities: &capacities,
+        outcomes: &outcomes,
+        exposure_limit,
+        resource_cursor,
+        fee_cursor,
+    });
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]
-    fn family_optimizer_matches_complete_multi_outcome_oracle(
-        data in (1_usize..4, 1_usize..4, 0_usize..3).prop_flat_map(|(n,k,m)| (
-            Just((n,k,m)), prop::collection::vec(0_u64..3,n), prop::collection::vec(0_u64..4,k*n),
-            prop::collection::vec(0_u64..3,k*m), prop::collection::vec(any::<bool>(),k*n*m),
-            prop::collection::vec(any::<bool>(),k*n), prop::collection::vec(any::<bool>(),k),
-            0_u128..7, 0_usize..n, 0_usize..n,
-        ))
-    ) {
-        let ((n,k,m), capacities, outcome_caps, amounts, edges, fees, charged, exposure_limit, resource_cursor, fee_cursor) = data;
-        let eligibility: Vec<Vec<Vec<_>>> = (0..k).map(|o| (0..n).map(|i| edges[(o*n+i)*m..(o*n+i+1)*m].to_vec()).collect()).collect();
-        let outcomes: Vec<_> = (0..k).map(|o| FundingOutcomeProblem {
-            resources: FundingMinimaxProblem { capacities: &outcome_caps[o*n..(o+1)*n], obligations: &amounts[o*m..(o+1)*m], eligible: &eligibility[o] },
-            unit_fee_eligible: charged[o].then_some(&fees[o*n..(o+1)*n]),
-        }).collect();
-        assert_oracle(FundingFamilyOptimizationProblem { capacities: &capacities, outcomes: &outcomes, exposure_limit, resource_cursor, fee_cursor });
+    fn family_optimizer_matches_complete_multi_outcome_oracle(data in small_family()) {
+        with_small_family(data, assert_oracle);
+    }
+}
+
+// Added by DR-131 (decision D-J): the early exit returns the result of the
+// search loop alone, on every small family, with or without a charge above the
+// exposure limit.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+    #[test]
+    fn family_optimizer_early_exit_matches_the_search_loop(data in small_family()) {
+        with_small_family(data, |problem| {
+            let (root, _) = validate(problem, limits()).expect("generated families are valid");
+            let searched = search_funding_family(problem, root, limits())
+                .expect("the search loop completes on a valid small family");
+            let optimized = optimize_funding_family(problem, limits())
+                .expect("the optimizer completes on a valid small family");
+            assert_eq!(optimized, searched);
+        });
+    }
+}
+
+/// Added by DR-131 (decision D-K): times one funding search at the protocol
+/// size limits. Each of the protocol's sources is eligible for every
+/// obligation and for the unit fee. The obligation count grows by a factor of
+/// 4 from 16 to the protocol's obligation limit. The policy rejects a case with
+/// more than `funding_case.cells` cells before the search, so the points above
+/// that product are beyond production. A point that takes more than 600
+/// seconds ends the sweep. The test is a measurement, so it is ignored. Run it
+/// alone with `--ignored --nocapture`, pinned to one core.
+#[test]
+#[ignore = "DR-131 decision D-K: a measurement that can take hours"]
+fn funding_search_time_at_the_protocol_size_limits() {
+    let protocol = models::rust::cost_protocol_limits::offered_funded_v6_limits();
+    let n = protocol.funding_case.sources;
+    let obligation_limit = protocol.funding_case.obligations;
+    let limits = FundingFamilyLimits {
+        search: FundingSearchLimits {
+            source_cap: NonZeroUsize::new(n).expect("a positive source limit"),
+            obligation_cap: NonZeroUsize::new(obligation_limit)
+                .expect("a positive obligation limit"),
+        },
+        case_cap: NonZeroUsize::new(1).expect("one case"),
+    };
+    let capacities = vec![u64::MAX; n];
+    let fee = vec![true; n];
+    let mut m = 16;
+    while m <= obligation_limit {
+        let count = u64::try_from(m).expect("an obligation count fits in u64");
+        let amount = u64::MAX / count;
+        let obligations = vec![amount; m];
+        let eligible = vec![vec![true; m]; n];
+        let outcomes = [FundingOutcomeProblem {
+            resources: FundingMinimaxProblem {
+                capacities: &capacities,
+                obligations: &obligations,
+                eligible: &eligible,
+            },
+            unit_fee_eligible: Some(&fee),
+        }];
+        let charge = u128::from(amount) * u128::from(count) + 1;
+        let problem = FundingFamilyOptimizationProblem {
+            capacities: &capacities,
+            outcomes: &outcomes,
+            exposure_limit: charge,
+            resource_cursor: 0,
+            fee_cursor: 0,
+        };
+        let started = std::time::Instant::now();
+        let selected = optimize_funding_family(problem, limits)
+            .expect("the search completes")
+            .expect("the search returns an allocation");
+        let elapsed = started.elapsed();
+        assert_eq!(selected.total_held(), charge);
+        println!(
+            "D-K sources={n} obligations={m} cells={} cell_limit={} charge={charge} seconds={:.3}",
+            n * m,
+            protocol.funding_case.cells,
+            elapsed.as_secs_f64()
+        );
+        if elapsed > std::time::Duration::from_secs(600) {
+            println!("D-K stopped after obligations={m}: the point took more than 600 seconds");
+            break;
+        }
+        m *= 4;
     }
 }

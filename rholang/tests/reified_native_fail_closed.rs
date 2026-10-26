@@ -3,7 +3,7 @@
 // Since the merge of feature/cost-accounted-rho, `create_native_replay_env` is production code:
 // proposer self-certification and validator replay run every offered deploy in it. Decision 46
 // made spaces fail closed there, and this file tested that rule. Decision 47 runs spaces in
-// native execution: native play stages and commits them with metered reads, and native replay
+// native execution: native play stages and commits them as legacy play does, and native replay
 // replays each staged operation against its journal row through the native backend of the
 // session. So a space deploy plays natively, and native replay reproduces it: no error, a
 // complete journal, the phlo usage of play, the same authority events and byte observations,
@@ -15,12 +15,11 @@ use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
-    native_resource_compatibility_rule, NativeBudgetTraceLimits, NativePhloDimension,
-    NativePhloExecutionContract, NativePhloRegionLimits,
+    native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
+    NativePhloDimension, NativePhloExecutionContract, NativePhloRegionLimits,
 };
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
@@ -31,7 +30,6 @@ use rholang::rust::interpreter::accounting::{
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::external_services::ExternalServices;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
@@ -128,7 +126,8 @@ fn with_contract<T>(action: impl FnOnce(NativePhloExecutionContract<'_>) -> T) -
     )
     .expect("the test controls check");
     let contract =
-        NativePhloExecutionContract::new(controls, &binding).expect("the test contract builds");
+        NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+            .expect("the test contract builds");
     action(contract)
 }
 
@@ -143,12 +142,8 @@ fn budget_limits() -> NativeBudgetTraceLimits {
     }
 }
 
-fn host_work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
-
-fn config(host: HostWorkBudget) -> NativeRuntimeConfig {
-    with_contract(|contract| NativeRuntimeConfig::new(contract, budget_limits(), host))
+fn config() -> NativeRuntimeConfig {
+    with_contract(|contract| NativeRuntimeConfig::new(contract, budget_limits()))
 }
 
 fn random() -> Blake2b512Random { Blake2b512Random::create_from_bytes(SEED) }
@@ -195,7 +190,7 @@ async fn play(term: &str) -> Played {
     .expect("a native play runtime");
     runtime.cost.set_deploy_signature_funded(DEPLOY, funding());
     let result = runtime
-        .evaluate_with_native_phlo(term, HashMap::new(), random(), None, config(host_work()))
+        .evaluate_with_native_phlo(term, HashMap::new(), random(), None, config())
         .await
         .expect("native play evaluates");
     let log = runtime.create_soft_checkpoint().await.log;
@@ -247,7 +242,6 @@ async fn replay(
         .native_operation_recording
         .clone()
         .expect("native play records its operations");
-    let host = host_work();
     let trace = with_contract(|contract| {
         contract.check_operation_journal(
             recording.session,
@@ -262,32 +256,26 @@ async fn replay(
                 footprint_bytes: 10_000_000,
                 predecessor_edges: 1_000_000,
             },
-            &host,
         )
     })
     .expect("the play journal checks")
-    .bind_trace(
-        played.log.clone().into(),
-        NativeOperationTraceLimits {
-            events: 100_000,
-            source_entries: 1_000_000,
-            source_bytes: 10_000_000,
-            telemetry_items: 100_000,
-            telemetry_bytes: 10_000_000,
-        },
-        &host,
-    )
+    .bind_trace(played.log.clone().into(), NativeOperationTraceLimits {
+        events: 100_000,
+        source_entries: 1_000_000,
+        source_bytes: 10_000_000,
+        telemetry_items: 100_000,
+        telemetry_bytes: 10_000_000,
+    })
     .expect("the play log binds to the journal");
     let budget = RuntimeBudget::new(Cost::unsafe_max());
     budget.set_deploy_signature_funded(DEPLOY, funding());
     budget
-        .reset_for_native_execution(config(host.clone()))
+        .reset_for_native_execution(config())
         .expect("the replay budget enters native execution");
     let mut environment = create_native_replay_env(
         trace,
         played.history.clone(),
         Arc::new(Box::new(Matcher)),
-        host,
         Arc::new(RwLock::new(HashMap::new())),
         Arc::new(default_mergeable_tags()),
         &mut Vec::new(),

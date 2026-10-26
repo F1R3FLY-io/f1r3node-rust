@@ -1,18 +1,16 @@
-use std::mem::size_of;
 use std::sync::Arc;
 
 use models::rhoapi::CostAuthority;
-use models::rust::host_work::HostWorkDimension;
 use models::rust::phlo_wire::{PhloWireDecoder, PhloWireEncoder, PhloWireLimits};
 use prost::Message;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
 
 use super::path_trie::{NativePathTrie, PathId};
-use super::recording::{recording_error, work};
+use super::recording::recording_error;
 use super::{
-    ByteObservation, HostWorkBudget, InterpreterError, NativeBudgetRecording, NativeBudgetRetry,
-    NativeCommRecord, NativeCommSource, NativeConsumeSource, NativeObservationLink,
-    NativeOperationOccurrence, NativeOperationRecord, NativeOperationSource, NativeProduceSource,
+    ByteObservation, InterpreterError, NativeBudgetRecording, NativeBudgetRetry, NativeCommRecord,
+    NativeCommSource, NativeConsumeSource, NativeObservationLink, NativeOperationOccurrence,
+    NativeOperationRecord, NativeOperationSource, NativeProduceSource,
 };
 use crate::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use crate::rust::interpreter::accounting::byte_accounting::ByteCharge;
@@ -53,58 +51,20 @@ fn bounded_count(value: u64, maximum: usize) -> Result<usize, InterpreterError> 
         .ok_or_else(malformed)
 }
 
-fn reserve_vec<T>(count: usize, host: &HostWorkBudget) -> Result<Vec<T>, InterpreterError> {
-    work(host, HostWorkDimension::VerificationOperations, count)?;
-    work(
-        host,
-        HostWorkDimension::SearchStateBytes,
-        count
-            .checked_mul(size_of::<T>())
-            .and_then(|bytes| bytes.checked_mul(2))
-            .ok_or(InterpreterError::HostWorkRejected)?,
-    )?;
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(count)
-        .map_err(|_| InterpreterError::HostWorkRejected)?;
-    Ok(values)
-}
-
-struct Writer<'a> {
+struct Writer {
     wire: PhloWireEncoder,
-    host: &'a HostWorkBudget,
 }
 
-impl Writer<'_> {
-    fn reserve(&self, bytes: usize) -> Result<(), InterpreterError> {
-        work(self.host, HostWorkDimension::VerificationOperations, 1)?;
-        work(self.host, HostWorkDimension::VerificationBytes, bytes)?;
-        work(
-            self.host,
-            HostWorkDimension::SearchStateBytes,
-            bytes
-                .checked_mul(4)
-                .ok_or(InterpreterError::HostWorkRejected)?,
-        )
-    }
-
+impl Writer {
     fn u8(&mut self, value: u8) -> Result<(), InterpreterError> {
-        self.reserve(1)?;
         self.wire.u8(value).map_err(|_| malformed())
     }
 
     fn u64(&mut self, value: u64) -> Result<(), InterpreterError> {
-        self.reserve(8)?;
         self.wire.u64(value).map_err(|_| malformed())
     }
 
     fn bytes(&mut self, value: &[u8]) -> Result<(), InterpreterError> {
-        self.reserve(
-            value
-                .len()
-                .checked_add(8)
-                .ok_or(InterpreterError::HostWorkRejected)?,
-        )?;
         self.wire.bytes(value).map_err(|_| malformed())
     }
 
@@ -113,23 +73,15 @@ impl Writer<'_> {
 
 struct Reader<'a> {
     wire: PhloWireDecoder<'a>,
-    host: &'a HostWorkBudget,
 }
 
 impl<'a> Reader<'a> {
-    fn new(
-        input: &'a [u8],
-        limits: PhloWireLimits,
-        host: &'a HostWorkBudget,
-    ) -> Result<Self, InterpreterError> {
+    fn new(input: &'a [u8], limits: PhloWireLimits) -> Result<Self, InterpreterError> {
         if input.len() > limits.total_bytes {
             return Err(malformed());
         }
-        work(host, HostWorkDimension::VerificationBytes, input.len())?;
-        work(host, HostWorkDimension::VerificationOperations, input.len())?;
         Ok(Self {
             wire: PhloWireDecoder::new(input, limits).map_err(|_| malformed())?,
-            host,
         })
     }
 
@@ -176,7 +128,7 @@ fn kind(value: NativeAttemptStage) -> AuthorityByteEventKind {
 
 #[cfg(test)]
 fn write_path(
-    wire: &mut Writer<'_>,
+    wire: &mut Writer,
     path: &[(u64, u64)],
     maximum: usize,
 ) -> Result<(), InterpreterError> {
@@ -213,7 +165,7 @@ fn read_path(
     }
     let mut node = PathId::ROOT;
     for _ in 0..count {
-        node = paths.child(node, (wire.u64()?, wire.u64()?), wire.host)?;
+        node = paths.child(node, (wire.u64()?, wire.u64()?))?;
     }
     Ok(node)
 }
@@ -222,7 +174,7 @@ fn read_path(
 // The longest common prefix comes from the jump table, so the bytes equal
 // those of the segment encoder, which stays as the test oracle.
 fn write_path_delta(
-    wire: &mut Writer<'_>,
+    wire: &mut Writer,
     paths: &NativePathTrie,
     path: PathId,
     previous: PathId,
@@ -231,8 +183,8 @@ fn write_path_delta(
     if path.depth() > maximum || !paths.contains(path) || !paths.contains(previous) {
         return Err(malformed());
     }
-    let prefix = paths.lcp_depth(path, previous, wire.host)?;
-    let suffix = paths.suffix(path, prefix, wire.host)?;
+    let prefix = paths.lcp_depth(path, previous)?;
+    let suffix = paths.suffix(path, prefix)?;
     wire.u64(length(prefix)?)?;
     wire.u64(length(suffix.len())?)?;
     for (left, right) in suffix {
@@ -244,7 +196,7 @@ fn write_path_delta(
 
 #[cfg(test)]
 fn write_path_delta_segments(
-    wire: &mut Writer<'_>,
+    wire: &mut Writer,
     path: &[(u64, u64)],
     previous: &[(u64, u64)],
     maximum: usize,
@@ -256,13 +208,6 @@ fn write_path_delta_segments(
     let mut prefix = 0;
     while prefix < shared {
         let end = prefix.saturating_add(16).min(shared);
-        let count = end - prefix;
-        work(
-            wire.host,
-            HostWorkDimension::VerificationOperations,
-            count * 2,
-        )?;
-        work(wire.host, HostWorkDimension::VerificationBytes, count * 16)?;
         while prefix < end && path[prefix] == previous[prefix] {
             prefix += 1;
         }
@@ -321,23 +266,23 @@ fn read_path_delta(
     if !paths.admit(suffix, total) {
         return Err(malformed());
     }
-    let mut node = paths.ancestor(previous, prefix, wire.host)?;
+    let mut node = paths.ancestor(previous, prefix)?;
     for index in 0..suffix {
         let segment = (wire.u64()?, wire.u64()?);
         if index == 0 && prefix < previous.depth() {
-            let next = paths.ancestor(previous, prefix + 1, wire.host)?;
+            let next = paths.ancestor(previous, prefix + 1)?;
             if paths.last_segment(next) == Some(segment) {
                 return Err(malformed());
             }
         }
-        node = paths.child(node, segment, wire.host)?;
+        node = paths.child(node, segment)?;
     }
     Ok(node)
 }
 
 #[cfg(test)]
 fn write_occurrence(
-    wire: &mut Writer<'_>,
+    wire: &mut Writer,
     paths: &NativePathTrie,
     occurrence: &NativeBudgetOccurrence,
     limits: NativeBudgetTraceLimits,
@@ -365,7 +310,7 @@ fn read_occurrence(
 }
 
 fn write_occurrence_delta(
-    wire: &mut Writer<'_>,
+    wire: &mut Writer,
     paths: &NativePathTrie,
     occurrence: &NativeBudgetOccurrence,
     previous: PathId,
@@ -396,16 +341,11 @@ fn read_occurrence_delta(
 }
 
 fn write_observation(
-    wire: &mut Writer<'_>,
+    wire: &mut Writer,
     observation: &ByteObservation,
 ) -> Result<(), InterpreterError> {
     wire.bytes(&observation.event_id)?;
     wire.u8(stage_tag(observation.kind.into()))?;
-    let size = observation.authority.encoded_len();
-    wire.reserve(
-        size.checked_mul(2)
-            .ok_or(InterpreterError::HostWorkRejected)?,
-    )?;
     wire.bytes(&observation.authority.encode_to_vec())?;
     match observation.measurement {
         Some(charge) => {
@@ -430,28 +370,10 @@ fn read_observation(wire: &mut Reader<'_>) -> Result<Arc<ByteObservation>, Inter
     let event_id = wire.fixed32()?;
     let kind = kind(stage(wire.u8()?)?);
     let authority_bytes = wire.bytes()?;
-    work(
-        wire.host,
-        HostWorkDimension::SearchStateBytes,
-        authority_bytes
-            .len()
-            .checked_mul(64)
-            .ok_or(InterpreterError::HostWorkRejected)?,
-    )?;
     let authority = CostAuthority::decode(authority_bytes).map_err(|_| malformed())?;
-    work(
-        wire.host,
-        HostWorkDimension::VerificationBytes,
-        authority_bytes.len(),
-    )?;
     if authority.encoded_len() != authority_bytes.len() {
         return Err(malformed());
     }
-    work(
-        wire.host,
-        HostWorkDimension::SearchStateBytes,
-        authority_bytes.len(),
-    )?;
     if authority.encode_to_vec() != authority_bytes {
         return Err(malformed());
     }
@@ -469,11 +391,6 @@ fn read_observation(wire: &mut Reader<'_>) -> Result<Arc<ByteObservation>, Inter
         1 => Some(wire.u64()?),
         _ => return Err(malformed()),
     };
-    work(
-        wire.host,
-        HostWorkDimension::SearchStateBytes,
-        size_of::<ByteObservation>(),
-    )?;
     Ok(Arc::new(ByteObservation {
         event_id,
         kind,
@@ -486,7 +403,6 @@ fn read_observation(wire: &mut Reader<'_>) -> Result<Arc<ByteObservation>, Inter
 pub fn encode_native_budget_recording(
     recording: &NativeBudgetRecording,
     limits: NativeRecordingWireLimits,
-    host: &HostWorkBudget,
 ) -> Result<Vec<u8>, InterpreterError> {
     if recording
         .attempts
@@ -499,7 +415,6 @@ pub fn encode_native_budget_recording(
     }
     let mut wire = Writer {
         wire: PhloWireEncoder::new(limits.wire),
-        host,
     };
     wire.bytes(BUDGET_DOMAIN_V2)?;
     wire.bytes(&recording.session)?;
@@ -543,9 +458,8 @@ pub fn encode_native_budget_recording(
 pub fn decode_native_budget_recording(
     input: &[u8],
     limits: NativeRecordingWireLimits,
-    host: &HostWorkBudget,
 ) -> Result<NativeBudgetRecording, InterpreterError> {
-    let mut wire = Reader::new(input, limits.wire, host)?;
+    let mut wire = Reader::new(input, limits.wire)?;
     let delta = match wire.bytes()? {
         BUDGET_DOMAIN => false,
         BUDGET_DOMAIN_V2 => true,
@@ -554,8 +468,8 @@ pub fn decode_native_budget_recording(
     let session = wire.fixed32()?;
     let used = wire.u64()?;
     let attempts_count = bounded_count(wire.u64()?, limits.budget.attempts)?;
-    let mut paths = NativePathTrie::new(limits.budget.path_segments, host)?;
-    let mut attempts = reserve_vec::<NativeBudgetAttempt>(attempts_count, host)?;
+    let mut paths = NativePathTrie::new(limits.budget.path_segments);
+    let mut attempts = Vec::<NativeBudgetAttempt>::with_capacity(attempts_count);
     for _ in 0..attempts_count {
         let previous = attempts
             .last()
@@ -581,7 +495,7 @@ pub fn decode_native_budget_recording(
         });
     }
     let retries_count = bounded_count(wire.u64()?, limits.budget.attempts - attempts_count)?;
-    let mut retries = reserve_vec::<NativeBudgetRetry>(retries_count, host)?;
+    let mut retries = Vec::<NativeBudgetRetry>::with_capacity(retries_count);
     for _ in 0..retries_count {
         let previous = retries
             .last()
@@ -627,10 +541,7 @@ fn add_count(total: &mut usize, extra: usize, limit: usize) -> Result<(), Interp
     Ok(())
 }
 
-fn write_produce(
-    wire: &mut Writer<'_>,
-    source: &NativeProduceSource,
-) -> Result<(), InterpreterError> {
+fn write_produce(wire: &mut Writer, source: &NativeProduceSource) -> Result<(), InterpreterError> {
     wire.bytes(&source.channel)?;
     wire.bytes(&source.hash)?;
     wire.u8(u8::from(source.persistent))
@@ -652,7 +563,7 @@ fn read_produce(wire: &mut Reader<'_>) -> Result<NativeProduceSource, Interprete
 }
 
 fn write_consume(
-    wire: &mut Writer<'_>,
+    wire: &mut Writer,
     source: &NativeConsumeSource,
     sources: &mut usize,
     limits: NativeRecordingWireLimits,
@@ -673,7 +584,7 @@ fn read_consume(
 ) -> Result<NativeConsumeSource, InterpreterError> {
     let count = bounded_count(wire.u64()?, limits.source_entries.saturating_sub(*sources))?;
     add_count(sources, count, limits.source_entries)?;
-    let mut channels = reserve_vec(count, wire.host)?;
+    let mut channels = Vec::with_capacity(count);
     for _ in 0..count {
         channels.push(wire.fixed32()?);
     }
@@ -690,7 +601,7 @@ fn read_consume(
     })
 }
 
-fn write_link(wire: &mut Writer<'_>, link: NativeObservationLink) -> Result<(), InterpreterError> {
+fn write_link(wire: &mut Writer, link: NativeObservationLink) -> Result<(), InterpreterError> {
     match link {
         NativeObservationLink::Attempt(index) => {
             wire.u8(0)?;
@@ -716,7 +627,7 @@ fn read_link(
     }
 }
 
-fn write_i32(wire: &mut Writer<'_>, value: i32) -> Result<(), InterpreterError> {
+fn write_i32(wire: &mut Writer, value: i32) -> Result<(), InterpreterError> {
     wire.u64(u64::from(value as u32))
 }
 
@@ -726,7 +637,7 @@ fn read_i32(wire: &mut Reader<'_>) -> Result<i32, InterpreterError> {
 }
 
 fn write_comm(
-    wire: &mut Writer<'_>,
+    wire: &mut Writer,
     comm: &NativeCommRecord,
     sources: &mut usize,
     limits: NativeRecordingWireLimits,
@@ -765,28 +676,23 @@ fn read_comm(
     let consume = read_consume(wire, sources, limits)?;
     let count = bounded_count(wire.u64()?, limits.source_entries.saturating_sub(*sources))?;
     add_count(sources, count, limits.source_entries)?;
-    let mut produces = reserve_vec(count, wire.host)?;
+    let mut produces = Vec::with_capacity(count);
     for _ in 0..count {
         produces.push(read_produce(wire)?);
     }
     let count = bounded_count(wire.u64()?, limits.source_entries.saturating_sub(*sources))?;
     add_count(sources, count, limits.source_entries)?;
-    let mut peeks = reserve_vec(count, wire.host)?;
+    let mut peeks = Vec::with_capacity(count);
     for _ in 0..count {
         peeks.push(read_i32(wire)?);
     }
     let count = bounded_count(wire.u64()?, limits.source_entries.saturating_sub(*sources))?;
     add_count(sources, count, limits.source_entries)?;
-    let mut repetitions = reserve_vec(count, wire.host)?;
+    let mut repetitions = Vec::with_capacity(count);
     for _ in 0..count {
         repetitions.push((read_produce(wire)?, read_i32(wire)?));
     }
     let observation = read_link(wire, limits.budget)?;
-    work(
-        wire.host,
-        HostWorkDimension::SearchStateBytes,
-        size_of::<NativeCommSource>(),
-    )?;
     Ok(NativeCommRecord {
         source: Arc::new(NativeCommSource {
             consume,
@@ -821,14 +727,12 @@ pub fn encode_native_operation_journal(
     operations: &[NativeOperationRecord],
     paths: &NativePathTrie,
     limits: NativeRecordingWireLimits,
-    host: &HostWorkBudget,
 ) -> Result<Vec<u8>, InterpreterError> {
     if operations.len() > limits.operations {
         return Err(malformed());
     }
     let mut wire = Writer {
         wire: PhloWireEncoder::new(limits.wire),
-        host,
     };
     wire.bytes(JOURNAL_DOMAIN_V2)?;
     wire.u64(length(operations.len())?)?;
@@ -903,19 +807,18 @@ pub fn decode_native_operation_journal(
     input: &[u8],
     recording: &mut NativeBudgetRecording,
     limits: NativeRecordingWireLimits,
-    host: &HostWorkBudget,
 ) -> Result<Arc<[NativeOperationRecord]>, InterpreterError> {
     let paths = Arc::get_mut(&mut recording.paths).ok_or_else(|| {
         recording_error("native operation journal needs the recording's unshared path trie")
     })?;
-    let mut wire = Reader::new(input, limits.wire, host)?;
+    let mut wire = Reader::new(input, limits.wire)?;
     let delta = match wire.bytes()? {
         JOURNAL_DOMAIN => false,
         JOURNAL_DOMAIN_V2 => true,
         _ => return Err(malformed()),
     };
     let count = bounded_count(wire.u64()?, limits.operations)?;
-    let mut operations = reserve_vec::<NativeOperationRecord>(count, host)?;
+    let mut operations = Vec::<NativeOperationRecord>::with_capacity(count);
     let (mut sources, mut footprints, mut footprint_bytes, mut edges) = (0, 0, 0, 0);
     for _ in 0..count {
         let previous = operations
@@ -952,7 +855,7 @@ pub fn decode_native_operation_journal(
                 let count =
                     bounded_count(wire.u64()?, limits.source_entries.saturating_sub(sources))?;
                 add_count(&mut sources, count, limits.source_entries)?;
-                let mut peeks = reserve_vec(count, host)?;
+                let mut peeks = Vec::with_capacity(count);
                 for _ in 0..count {
                     peeks.push(read_i32(&mut wire)?);
                 }
@@ -965,16 +868,15 @@ pub fn decode_native_operation_journal(
             limits.footprint_entries.saturating_sub(footprints),
         )?;
         add_count(&mut footprints, count, limits.footprint_entries)?;
-        let mut footprint = reserve_vec(count, host)?;
+        let mut footprint = Vec::with_capacity(count);
         for _ in 0..count {
             let bytes = wire.bytes()?;
             add_count(&mut footprint_bytes, bytes.len(), limits.footprint_bytes)?;
-            work(host, HostWorkDimension::SearchStateBytes, bytes.len())?;
             footprint.push(Arc::from(bytes));
         }
         let count = bounded_count(wire.u64()?, limits.predecessor_edges.saturating_sub(edges))?;
         add_count(&mut edges, count, limits.predecessor_edges)?;
-        let mut predecessors = reserve_vec(count, host)?;
+        let mut predecessors = Vec::with_capacity(count);
         for _ in 0..count {
             predecessors.push(bounded_count(wire.u64()?, limits.operations)?);
         }
@@ -1006,14 +908,8 @@ pub fn decode_native_operation_journal(
 
 #[cfg(test)]
 mod tests {
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
-
     use super::*;
     use crate::rust::interpreter::accounting::native_phlo_rules::NativePhloRegionLimits;
-
-    fn host(limit: u64) -> HostWorkBudget {
-        HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(limit)))
-    }
 
     fn limits() -> NativeRecordingWireLimits {
         NativeRecordingWireLimits {
@@ -1041,15 +937,9 @@ mod tests {
     /// A recording whose trie holds the paths [(7, 8)] and [(7, 9)] in wire
     /// order: the attempt, then the retry.
     fn recording() -> NativeBudgetRecording {
-        let budget = host(1_000_000);
-        let mut paths =
-            NativePathTrie::new(limits().budget.path_segments, &budget).expect("trie fits");
-        let first = paths
-            .intern(PathId::ROOT, &[(7, 8)], &budget)
-            .expect("path fits");
-        let second = paths
-            .intern(PathId::ROOT, &[(7, 9)], &budget)
-            .expect("path fits");
+        let mut paths = NativePathTrie::new(limits().budget.path_segments);
+        let first = paths.intern(PathId::ROOT, &[(7, 8)]).expect("path fits");
+        let second = paths.intern(PathId::ROOT, &[(7, 9)]).expect("path fits");
         let observation = Arc::new(ByteObservation {
             event_id: [2; 32],
             kind: AuthorityByteEventKind::ProduceIntroduction,
@@ -1149,10 +1039,9 @@ mod tests {
 
     #[test]
     fn canonical_recording_and_journal_round_trip() {
-        let budget = host(1_000_000);
         let original = recording();
-        let bytes = encode_native_budget_recording(&original, limits(), &budget).unwrap();
-        let mut decoded = decode_native_budget_recording(&bytes, limits(), &budget).unwrap();
+        let bytes = encode_native_budget_recording(&original, limits()).unwrap();
+        let mut decoded = decode_native_budget_recording(&bytes, limits()).unwrap();
         assert_eq!(decoded.session, original.session);
         assert_eq!(decoded.used, original.used);
         assert_eq!(decoded.attempts.as_ref(), original.attempts.as_ref());
@@ -1166,30 +1055,25 @@ mod tests {
         );
         assert_eq!(decoded.paths, original.paths);
         assert_eq!(
-            encode_native_budget_recording(&decoded, limits(), &budget).unwrap(),
+            encode_native_budget_recording(&decoded, limits()).unwrap(),
             bytes
         );
         let rows = journal(&original);
-        let bytes =
-            encode_native_operation_journal(&rows, &original.paths, limits(), &budget).unwrap();
-        let decoded_rows =
-            decode_native_operation_journal(&bytes, &mut decoded, limits(), &budget).unwrap();
+        let bytes = encode_native_operation_journal(&rows, &original.paths, limits()).unwrap();
+        let decoded_rows = decode_native_operation_journal(&bytes, &mut decoded, limits()).unwrap();
         assert_eq!(decoded_rows.as_ref(), rows.as_ref());
         assert_eq!(decoded.paths, original.paths);
         assert_eq!(
-            encode_native_operation_journal(&decoded_rows, &decoded.paths, limits(), &budget)
-                .unwrap(),
+            encode_native_operation_journal(&decoded_rows, &decoded.paths, limits()).unwrap(),
             bytes
         );
     }
 
     #[test]
     fn historical_recording_decodes_and_noncanonical_delta_is_rejected() {
-        let budget = host(1_000_000);
         let original = recording();
         let mut writer = Writer {
             wire: PhloWireEncoder::new(limits().wire),
-            host: &budget,
         };
         writer.bytes(BUDGET_DOMAIN).unwrap();
         writer.bytes(&original.session).unwrap();
@@ -1217,7 +1101,7 @@ mod tests {
         write_observation(&mut writer, &retry.observation).unwrap();
         writer.u64(retry.accepted_attempt as u64).unwrap();
         writer.u64(retry.fresh_before as u64).unwrap();
-        let decoded = decode_native_budget_recording(&writer.finish(), limits(), &budget).unwrap();
+        let decoded = decode_native_budget_recording(&writer.finish(), limits()).unwrap();
         assert_eq!(decoded.session, original.session);
         assert_eq!(decoded.used, original.used);
         assert_eq!(decoded.attempts.as_ref(), original.attempts.as_ref());
@@ -1233,16 +1117,15 @@ mod tests {
 
         let mut writer = Writer {
             wire: PhloWireEncoder::new(limits().wire),
-            host: &budget,
         };
         writer.u64(0).unwrap();
         writer.u64(1).unwrap();
         writer.u64(7).unwrap();
         writer.u64(8).unwrap();
         let bytes = writer.finish();
-        let mut reader = Reader::new(&bytes, limits().wire, &budget).unwrap();
-        let mut paths = NativePathTrie::new(limits().budget.path_segments, &budget).unwrap();
-        let previous = paths.intern(PathId::ROOT, &[(7, 8)], &budget).unwrap();
+        let mut reader = Reader::new(&bytes, limits().wire).unwrap();
+        let mut paths = NativePathTrie::new(limits().budget.path_segments);
+        let previous = paths.intern(PathId::ROOT, &[(7, 8)]).unwrap();
         assert!(read_path_delta(
             &mut reader,
             &mut paths,
@@ -1255,13 +1138,11 @@ mod tests {
 
     #[test]
     fn historical_operation_journal_decodes() {
-        let budget = host(1_000_000);
         let mut recording = recording();
         let rows = journal(&recording);
         let row = &rows[0];
         let mut writer = Writer {
             wire: PhloWireEncoder::new(limits().wire),
-            host: &budget,
         };
         writer.bytes(JOURNAL_DOMAIN).unwrap();
         writer.u64(1).unwrap();
@@ -1287,38 +1168,28 @@ mod tests {
         writer.u64(row.budget_start as u64).unwrap();
         writer.u64(row.budget_end as u64).unwrap();
         let decoded =
-            decode_native_operation_journal(&writer.finish(), &mut recording, limits(), &budget)
-                .unwrap();
+            decode_native_operation_journal(&writer.finish(), &mut recording, limits()).unwrap();
         assert_eq!(decoded.as_ref(), &rows[..1]);
     }
 
     #[test]
     fn malformed_or_over_limit_records_fail_before_publication() {
         let original = recording();
-        let bytes = encode_native_budget_recording(&original, limits(), &host(1_000_000)).unwrap();
+        let bytes = encode_native_budget_recording(&original, limits()).unwrap();
         let mut trailing = bytes.clone();
         trailing.push(0);
-        assert!(decode_native_budget_recording(&trailing, limits(), &host(1_000_000)).is_err());
+        assert!(decode_native_budget_recording(&trailing, limits()).is_err());
         let mut short = limits();
         short.wire.total_bytes = bytes.len() - 1;
-        assert!(decode_native_budget_recording(&bytes, short, &host(1_000_000)).is_err());
+        assert!(decode_native_budget_recording(&bytes, short).is_err());
         let mut short = limits();
         short.budget.attempts = 1;
-        assert!(decode_native_budget_recording(&bytes, short, &host(1_000_000)).is_err());
-        assert!(decode_native_budget_recording(&bytes, limits(), &host(1)).is_err());
+        assert!(decode_native_budget_recording(&bytes, short).is_err());
         let rows = journal(&original);
-        let bytes =
-            encode_native_operation_journal(&rows, &original.paths, limits(), &host(1_000_000))
-                .unwrap();
+        let bytes = encode_native_operation_journal(&rows, &original.paths, limits()).unwrap();
         let mut short = limits();
         short.footprint_bytes = 1;
-        assert!(
-            decode_native_operation_journal(&bytes, &mut recording(), short, &host(1_000_000))
-                .is_err()
-        );
-        assert!(
-            decode_native_operation_journal(&bytes, &mut recording(), limits(), &host(1)).is_err()
-        );
+        assert!(decode_native_operation_journal(&bytes, &mut recording(), short).is_err());
     }
 
     /// C7b (DR-86): the Σ s_i limit is checked from the wire header before
@@ -1326,10 +1197,8 @@ mod tests {
     /// together.
     #[test]
     fn delta_limit_checked_before_allocation() {
-        let budget = host(1_000_000);
         let mut writer = Writer {
             wire: PhloWireEncoder::new(limits().wire),
-            host: &budget,
         };
         writer.u64(0).unwrap();
         writer.u64(3).unwrap();
@@ -1339,46 +1208,31 @@ mod tests {
         }
         let bytes = writer.finish();
         for total in [0, 1, 2] {
-            let mut paths = NativePathTrie::new(4, &budget).unwrap();
-            let before = budget.usages();
-            let mut reader = Reader::new(&bytes, limits().wire, &budget).unwrap();
-            let after_reader = budget.usages();
+            let mut paths = NativePathTrie::new(4);
+            let mut reader = Reader::new(&bytes, limits().wire).unwrap();
             assert!(read_path_delta(&mut reader, &mut paths, PathId::ROOT, 4, total).is_err());
             assert_eq!(paths.node_count(), 0);
-            assert_eq!(
-                budget.usage(HostWorkDimension::SearchStateBytes),
-                after_reader.get(HostWorkDimension::SearchStateBytes),
-            );
-            assert_ne!(before, after_reader);
-            let mut reader = Reader::new(&bytes[8..], limits().wire, &budget).unwrap();
+            let mut reader = Reader::new(&bytes[8..], limits().wire).unwrap();
             assert!(read_path(&mut reader, &mut paths, 4, total).is_err());
             assert_eq!(paths.node_count(), 0);
         }
-        let mut paths = NativePathTrie::new(4, &budget).unwrap();
-        let mut reader = Reader::new(&bytes, limits().wire, &budget).unwrap();
+        let mut paths = NativePathTrie::new(4);
+        let mut reader = Reader::new(&bytes, limits().wire).unwrap();
         let node = read_path_delta(&mut reader, &mut paths, PathId::ROOT, 4, 3).unwrap();
         assert_eq!(paths.segments(node), vec![(0, 0), (1, 0), (2, 0)]);
 
         let original = recording();
-        let recording_bytes = encode_native_budget_recording(&original, limits(), &budget).unwrap();
-        let journal_bytes = encode_native_operation_journal(
-            &journal(&original),
-            &original.paths,
-            limits(),
-            &budget,
-        )
-        .unwrap();
+        let recording_bytes = encode_native_budget_recording(&original, limits()).unwrap();
+        let journal_bytes =
+            encode_native_operation_journal(&journal(&original), &original.paths, limits())
+                .unwrap();
         let mut tight = limits();
         tight.total_path_segments = 2;
-        let mut decoded = decode_native_budget_recording(&recording_bytes, tight, &budget).unwrap();
-        assert!(
-            decode_native_operation_journal(&journal_bytes, &mut decoded, tight, &budget).is_err()
-        );
+        let mut decoded = decode_native_budget_recording(&recording_bytes, tight).unwrap();
+        assert!(decode_native_operation_journal(&journal_bytes, &mut decoded, tight).is_err());
         tight.total_path_segments = 4;
-        let mut decoded = decode_native_budget_recording(&recording_bytes, tight, &budget).unwrap();
-        assert!(
-            decode_native_operation_journal(&journal_bytes, &mut decoded, tight, &budget).is_ok()
-        );
+        let mut decoded = decode_native_budget_recording(&recording_bytes, tight).unwrap();
+        assert!(decode_native_operation_journal(&journal_bytes, &mut decoded, tight).is_ok());
     }
 
     fn shared_prefix(path: &[(u64, u64)], previous: &[(u64, u64)]) -> usize {
@@ -1393,14 +1247,9 @@ mod tests {
     }
 
     /// Encodes `paths` as one delta chain with the segment encoder.
-    fn segment_chain_bytes(
-        paths: &[Vec<(u64, u64)>],
-        maximum: usize,
-        budget: &HostWorkBudget,
-    ) -> Vec<u8> {
+    fn segment_chain_bytes(paths: &[Vec<(u64, u64)>], maximum: usize) -> Vec<u8> {
         let mut writer = Writer {
             wire: PhloWireEncoder::new(limits().wire),
-            host: budget,
         };
         let mut previous: &[(u64, u64)] = &[];
         for path in paths {
@@ -1422,11 +1271,10 @@ mod tests {
         fn path_delta_chain_round_trips_and_rejects_every_noncanonical_prefix(
             paths in path_chain(),
         ) {
-            let budget = host(1_000_000_000);
             let maximum = 6;
-            let bytes = segment_chain_bytes(&paths, maximum, &budget);
-            let mut reader = Reader::new(&bytes, limits().wire, &budget).expect("reader opens");
-            let mut trie = NativePathTrie::new(maximum, &budget).expect("trie fits");
+            let bytes = segment_chain_bytes(&paths, maximum);
+            let mut reader = Reader::new(&bytes, limits().wire).expect("reader opens");
+            let mut trie = NativePathTrie::new(maximum);
             let mut ids = Vec::new();
             let mut decoded_previous = PathId::ROOT;
             for path in &paths {
@@ -1444,7 +1292,6 @@ mod tests {
                 for prefix in 0..shared_prefix(path, &previous) {
                     let mut writer = Writer {
                         wire: PhloWireEncoder::new(limits().wire),
-                        host: &budget,
                     };
                     writer.u64(prefix as u64).expect("prefix encodes");
                     writer.u64((path.len() - prefix) as u64).expect("length encodes");
@@ -1453,7 +1300,7 @@ mod tests {
                         writer.u64(right).expect("segment encodes");
                     }
                     let bytes = writer.finish();
-                    let mut reader = Reader::new(&bytes, limits().wire, &budget)
+                    let mut reader = Reader::new(&bytes, limits().wire)
                         .expect("reader opens");
                     let mut attempt = trie.clone();
                     proptest::prop_assert!(
@@ -1480,15 +1327,14 @@ mod tests {
             recording_paths in path_chain(),
             journal_paths in path_chain(),
         ) {
-            let budget = host(1_000_000_000);
             let maximum = 6;
-            let mut trie = NativePathTrie::new(maximum, &budget).expect("trie fits");
+            let mut trie = NativePathTrie::new(maximum);
             let mut chains = Vec::new();
             for chain in [&recording_paths, &journal_paths] {
                 let mut previous: (&[(u64, u64)], PathId) = (&[], PathId::ROOT);
                 let mut ids = Vec::new();
                 for path in chain.iter() {
-                    let id = trie.intern_delta(path, previous.0, previous.1, &budget).expect("path fits");
+                    let id = trie.intern_delta(path, previous.0, previous.1).expect("path fits");
                     ids.push(id);
                     previous = (path, id);
                 }
@@ -1498,7 +1344,6 @@ mod tests {
             for (ids, paths) in chains.iter().zip([&recording_paths, &journal_paths]) {
                 let mut writer = Writer {
                     wire: PhloWireEncoder::new(limits().wire),
-                    host: &budget,
                 };
                 let mut previous = PathId::ROOT;
                 for id in ids {
@@ -1506,13 +1351,13 @@ mod tests {
                     previous = *id;
                 }
                 let bytes = writer.finish();
-                proptest::prop_assert_eq!(&bytes, &segment_chain_bytes(paths, maximum, &budget));
+                proptest::prop_assert_eq!(&bytes, &segment_chain_bytes(paths, maximum));
                 v2.push(bytes);
             }
 
-            let mut decoded = NativePathTrie::new(maximum, &budget).expect("trie fits");
+            let mut decoded = NativePathTrie::new(maximum);
             for (bytes, ids) in v2.iter().zip(&chains) {
-                let mut reader = Reader::new(bytes, limits().wire, &budget).expect("reader opens");
+                let mut reader = Reader::new(bytes, limits().wire).expect("reader opens");
                 let mut previous = PathId::ROOT;
                 for id in ids {
                     let node = read_path_delta(&mut reader, &mut decoded, previous, maximum, usize::MAX)
@@ -1524,17 +1369,16 @@ mod tests {
             }
             proptest::prop_assert_eq!(&decoded, &trie);
 
-            let mut historical = NativePathTrie::new(maximum, &budget).expect("trie fits");
+            let mut historical = NativePathTrie::new(maximum);
             for (chain, ids) in [&recording_paths, &journal_paths].into_iter().zip(&chains) {
                 let mut writer = Writer {
                     wire: PhloWireEncoder::new(limits().wire),
-                    host: &budget,
                 };
                 for path in chain.iter() {
                     write_path(&mut writer, path, maximum).expect("path encodes");
                 }
                 let bytes = writer.finish();
-                let mut reader = Reader::new(&bytes, limits().wire, &budget).expect("reader opens");
+                let mut reader = Reader::new(&bytes, limits().wire).expect("reader opens");
                 for id in ids {
                     let node = read_path(&mut reader, &mut historical, maximum, usize::MAX)
                         .expect("historical path decodes");

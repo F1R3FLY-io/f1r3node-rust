@@ -1,5 +1,3 @@
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -11,26 +9,6 @@ struct Matcher;
 
 impl Match<String, String, String> for Matcher {
     fn get(&self, _: &String, datum: &String) -> Option<String> { Some(datum.clone()) }
-
-    fn get_metered(
-        &self,
-        _: &String,
-        datum: &String,
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<Option<String>, RSpaceError> {
-        meter.reserve(1, datum.len(), datum.len())?;
-        Ok(Some(datum.clone()))
-    }
-
-    fn check_commit_metered(
-        &self,
-        _: &String,
-        _: &[&String],
-        meter: &(dyn rspace_plus_plus::rspace::hashing::native_source::SourceMeter + Send + Sync),
-    ) -> Result<bool, RSpaceError> {
-        meter.reserve(1, 0, 0)?;
-        Ok(true)
-    }
 }
 
 fn empty_trace() -> CheckedNativeOperationTrace {
@@ -44,16 +22,8 @@ fn empty_trace() -> CheckedNativeOperationTrace {
     bind(&recording, Arc::from([]), Vec::new()).unwrap()
 }
 
-#[test]
-fn replay_rejects_before_allocating_fixed_owners_without_cleanup_credit() {
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(3)));
-    assert!(empty_trace().into_replay(budget.clone()).is_err());
-    assert_eq!(budget.usage(HostWorkDimension::SearchStateBytes).get(), 0);
-}
-
 async fn session(
     trace: CheckedNativeOperationTrace,
-    budget: HostWorkBudget,
 ) -> NativeRuntimeReplaySession<String, String, String, String> {
     let mut stores = InMemoryStoreManager::new();
     let (play, _) = RSpace::<String, String, String, String>::create_with_replay(
@@ -62,37 +32,22 @@ async fn session(
     )
     .unwrap();
     trace
-        .into_session(
-            play.get_history_repository(),
-            Arc::new(Box::new(Matcher)),
-            budget,
-        )
+        .into_session(play.get_history_repository(), Arc::new(Box::new(Matcher)))
         .unwrap()
 }
 
+/// Changed by DR-131: the host-work exhaustion between the checkpoint and the
+/// restore went with host work. The test keeps its checks of the restore and
+/// of the closed session.
 #[tokio::test]
-async fn checked_session_restores_after_host_exhaustion_without_reopening_closed_epochs() {
-    let budget = host();
-    let session = session(empty_trace(), budget.clone()).await;
+async fn checked_session_restores_without_reopening_closed_epochs() {
+    let session = session(empty_trace()).await;
     session.check_complete().await.unwrap();
     let evidence = session.completed_evidence().await.unwrap();
     assert_eq!(evidence.usage(), 0);
     assert!(evidence.observations().has_complete_measurements());
     assert!(evidence.observations().rows.is_empty());
     let checkpoint = session.checkpoint().await.unwrap();
-    assert!(budget
-        .reserve(HostWorkDimension::VerificationOperations, u64::MAX.into())
-        .is_err());
-    assert!(session.completed_evidence().await.is_err());
-    let rejected = session
-        .checkpoint()
-        .await
-        .err()
-        .expect("host budget was exhausted");
-    assert_eq!(
-        InterpreterError::from(rejected),
-        InterpreterError::HostWorkRejected
-    );
     session.restore(checkpoint).await.unwrap();
     session.check_complete().await.unwrap();
     session.close().await.unwrap();
@@ -105,8 +60,8 @@ async fn checked_session_restores_after_host_exhaustion_without_reopening_closed
 #[tokio::test]
 async fn checked_session_rejects_foreign_checkpoint_and_preserves_incomplete_trace() {
     let (recording, rows, log) = trace_fixture();
-    let incomplete = session(bind(&recording, rows, log).unwrap(), host()).await;
-    let other = session(empty_trace(), host()).await;
+    let incomplete = session(bind(&recording, rows, log).unwrap()).await;
+    let other = session(empty_trace()).await;
     let foreign = other.checkpoint().await.unwrap();
     assert!(incomplete.restore(foreign).await.is_err());
     assert!(incomplete.check_complete().await.is_err());
@@ -116,54 +71,12 @@ async fn checked_session_rejects_foreign_checkpoint_and_preserves_incomplete_tra
     other.check_complete().await.unwrap();
 }
 
+/// Changed by DR-131: the session has no execution budget to exhaust and no
+/// inspection budget. The test keeps its checks that a cold query reads the
+/// retained value without a root change, and that a closed session rejects
+/// the query.
 #[tokio::test]
-async fn borrowed_history_uses_the_production_host_budget_without_refunding_reads() {
-    use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
-    use rspace_plus_plus::rspace::history::native_reader::{NativeLeafKind, NativeReadError};
-    use rspace_plus_plus::rspace::rspace_interface::ISpace;
-
-    let mut stores = InMemoryStoreManager::new();
-    let (play, _) = RSpace::<String, String, String, String>::create_with_replay(
-        stores.r_space_stores().await.unwrap(),
-        Arc::new(Box::new(Matcher)),
-    )
-    .unwrap();
-    play.produce("c".into(), "v".into(), false).await.unwrap();
-    let checkpoint = play.create_checkpoint().await.unwrap();
-    let repository = play.get_history_repository();
-    let reader = repository.native_history_reader(checkpoint.root.0.as_slice().try_into().unwrap());
-    let channel = hash(&"c".to_owned()).0.as_slice().try_into().unwrap();
-    let budget = host();
-    let mut previous_backing = 0;
-    for _ in 0..2 {
-        assert_eq!(
-            reader
-                .with_records(NativeLeafKind::Data, &channel, &budget, |rows| Ok(
-                    rows.len()
-                ))
-                .unwrap(),
-            Some(1)
-        );
-        let backing = budget.usage(HostWorkDimension::SearchStateBytes).get();
-        assert!(backing > previous_backing);
-        previous_backing = backing;
-    }
-    assert!(budget
-        .reserve(HostWorkDimension::VerificationOperations, u64::MAX.into())
-        .is_err());
-    let result: Result<Option<()>, _> =
-        reader.with_records(NativeLeafKind::Data, &channel, &budget, |_| {
-            panic!("rejected history read reached the consumer")
-        });
-    assert!(matches!(result, Err(NativeReadError::Host(_))));
-    assert_eq!(
-        budget.usage(HostWorkDimension::SearchStateBytes).get(),
-        previous_backing
-    );
-}
-
-#[tokio::test]
-async fn cold_session_queries_preserve_rejected_execution_and_use_the_inspection_budget() {
+async fn cold_session_queries_read_the_retained_value_until_close() {
     use rspace_plus_plus::rspace::rspace_interface::ISpace;
 
     let mut stores = InMemoryStoreManager::new();
@@ -176,53 +89,25 @@ async fn cold_session_queries_preserve_rejected_execution_and_use_the_inspection
         .await
         .unwrap();
     let root = play.create_checkpoint().await.unwrap().root;
-    let execution = host();
     let session = empty_trace()
-        .into_session(
-            play.get_history_repository(),
-            Arc::new(Box::new(Matcher)),
-            execution.clone(),
-        )
+        .into_session(play.get_history_repository(), Arc::new(Box::new(Matcher)))
         .unwrap();
-    execution
-        .reserve(HostWorkDimension::VerificationOperations, u64::MAX.into())
-        .unwrap_err();
     assert_eq!(
-        session.get_data(&"cold".into()).await.unwrap_err(),
-        RSpaceError::HostWorkRejected
-    );
-    let inspection = host();
-    assert_eq!(
-        session
-            .get_data_with_host_work(&"cold".into(), &inspection)
-            .await
-            .unwrap()[0]
-            .a,
+        session.get_data(&"cold".into()).await.unwrap()[0].a,
         "retained"
-    );
-    assert!(
-        inspection
-            .usage(HostWorkDimension::VerificationOperations)
-            .get()
-            > 0
-    );
-    assert!(inspection.usage(HostWorkDimension::SearchStateBytes).get() > 0);
-    assert_eq!(
-        session.get_data(&"cold".into()).await.unwrap_err(),
-        RSpaceError::HostWorkRejected
     );
     assert_eq!(play.get_history_repository().root(), root);
     session.close().await.unwrap();
-    assert!(session
-        .get_data_with_host_work(&"cold".into(), &host())
-        .await
-        .is_err());
+    assert!(session.get_data(&"cold".into()).await.is_err());
 }
 
+/// Changed by DR-131: the decoder's charges went with host work, and S6
+/// replaced the typed decoder with the cold-store decoder (`decode_datum`).
+/// The test keeps its check of the record schema.
 #[test]
 fn guarded_history_decoder_preserves_the_production_rho_record_schema() {
     use models::rhoapi::{ListParWithRandom, Par};
-    use rspace_plus_plus::rspace::history::native_reader::{decode_record, NativeReadError};
+    use rspace_plus_plus::rspace::history::native_reader::decode_datum;
     use rspace_plus_plus::rspace::internal::Datum;
     use rspace_plus_plus::rspace::trace::event::Produce;
 
@@ -241,23 +126,5 @@ fn guarded_history_decoder_preserves_the_production_rho_record_schema() {
     };
     let bytes = bincode::serialize(&datum).unwrap();
     let expected: Datum<ListParWithRandom> = bincode::deserialize(&bytes).unwrap();
-    let budget = host();
-    assert_eq!(
-        decode_record::<Datum<ListParWithRandom>, _>(&bytes, &budget).unwrap(),
-        expected
-    );
-    assert!(
-        budget
-            .usage(HostWorkDimension::VerificationOperations)
-            .get()
-            > 0
-    );
-    assert!(budget.usage(HostWorkDimension::SearchStateBytes).get() > 0);
-    budget
-        .reserve(HostWorkDimension::VerificationOperations, u64::MAX.into())
-        .unwrap_err();
-    assert!(matches!(
-        decode_record::<Datum<ListParWithRandom>, _>(&bytes, &budget),
-        Err(NativeReadError::Host(InterpreterError::HostWorkRejected))
-    ));
+    assert_eq!(decode_datum::<ListParWithRandom>(&bytes).unwrap(), expected);
 }

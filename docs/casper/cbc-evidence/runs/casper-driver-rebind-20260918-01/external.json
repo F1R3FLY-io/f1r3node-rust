@@ -1,0 +1,29 @@
+{
+ "schema_version": 2,
+ "package": "casper-driver-rebind-20260918-01",
+ "task": "TASK-017-14",
+ "recorded_on": "2026-10-03",
+ "store": {
+  "kind": "github-release",
+  "repository": "F1R3FLY-io/f1r3node-rust",
+  "tag": "cbc-evidence-epic-017"
+ },
+ "assets": [
+  {
+   "asset": "casper-driver-rebind-20260918-01.external.tar.gz",
+   "sha256": "f3ec48efb5fafb8f5865561bd770e301a6f7db643dd32ca89ba31f0dca76637d",
+   "bytes": 3133369,
+   "members": 55,
+   "bundle_created": "2026-09-19",
+   "inner_manifest": "external-manifest.json"
+  },
+  {
+   "asset": "casper-driver-rebind-20260918-01.metadata.tar.gz",
+   "sha256": "cf874a9e8bc6d6253ca5fb7ca2d386becbecf1fcf18cb73e1d60fa5a56f3242f",
+   "bytes": 7203,
+   "members": 3,
+   "bundle_created": "2026-10-03",
+   "inner_manifest": "external-manifest.json"
+  }
+ ]
+}

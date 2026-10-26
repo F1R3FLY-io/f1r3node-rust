@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "status": "acceptance-regressions-passed-strict-task-closure-blocked",
+  "task": "TASK-020-1",
+  "source_commit": "affbebc6eaa5cac9678fcbded9182423fda0fb67",
+  "tested_commit": "b21659ec1ea526b97227157d6cae790310f6013f",
+  "run_id": 36651370411,
+  "attempt": 1,
+  "event": "pull_request",
+  "job_id": 109688126217,
+  "job_conclusion": "success",
+  "recorded_at": "2026-09-30T00:54:47Z",
+  "verification": {
+    "source_paths_matched": 9,
+    "source_comparison": "Local Git blob identity equals the complete GitHub tree at tested_commit.",
+    "checkout_identity": "Exact tested commit in the hosted checkout log.",
+    "nextest": {
+      "exit": 0,
+      "passed": 400,
+      "skipped": 0,
+      "resource_regressions": 7
+    },
+    "doctests": {
+      "exit": 0,
+      "tests": 0
+    },
+    "lint_job_id": 109686370637,
+    "lint_conclusion": "success",
+    "linux_descriptor_test": {
+      "name": "rust::transport::f1r3fly_server::resource_tests::real_descriptor_exhaustion_recovers_without_a_log_storm",
+      "result": "PASS",
+      "seconds": 0.679,
+      "child_nofile_limit": 64,
+      "descriptor_open_cap": 128,
+      "parent_deadline_seconds": 10,
+      "asserted_error_count_range": [
+        1,
+        6
+      ],
+      "asserted_log_bytes_range_exclusive": [
+        0,
+        1024
+      ],
+      "recovery_deadline_seconds": 2,
+      "stdout_metrics": "Not exposed by successful nextest output. Bounds come from the reviewed assertions, not measured values in the hosted log."
+    }
+  },
+  "acceptance_mapping": {
+    "backoff": "accept_errors_back_off_exponentially_up_to_one_second",
+    "logging": "repeated_accept_errors_limit_logs_and_summarize_suppressed_errors",
+    "exhaustion_and_recovery": "real_descriptor_exhaustion_recovers_without_a_log_storm",
+    "success_no_backoff": "successful_accept_resets_backoff_without_delaying_the_next_accept",
+    "consumer_closure": [
+      "closing_incoming_interrupts_backoff",
+      "closing_idle_incoming_stops_listener",
+      "dropping_incoming_releases_listener_and_stalled_handshakes"
+    ]
+  },
+  "completion": {
+    "strict": true,
+    "force": false,
+    "exit": 3,
+    "grade": "partial",
+    "gaps": [
+      "no_flow_link"
+    ],
+    "status_changed": false,
+    "tracker_copy_only": true,
+    "helper_sha256": "924a1cde6ae61d15a72dda276687b0d63d9df0dd75d7b7f1aba4e8300f502d2e"
+  },
+  "raw_log": {
+    "retained_in": "target/task-020-1-hosted-36651370411/comm-job.log",
+    "sha256": "ed194fe980aa049ae814383d1a9eb7fb41eff42d9ecc8a428f01c267c642d7ba",
+    "uploaded": false
+  },
+  "limits": [
+    "Overall CI status is a checkpoint, not inferred success for other jobs.",
+    "The initial descriptor-exhaustion cause and concurrent-handshake cap remain outside this correction.",
+    "Passing transport tests do not establish byte-bounded file logs or complete node resource qualification.",
+    "The accept path stays untagged under the recorded maintainer decision."
+  ],
+  "waiver": false,
+  "node_campaign": false,
+  "commit_or_push": false,
+  "task_closed": false
+}

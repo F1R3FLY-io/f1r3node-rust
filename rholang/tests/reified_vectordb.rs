@@ -32,7 +32,6 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{BindPattern, CostAuthority, EEq, EVar, Expr, ListParWithRandom, Par, Var};
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::{
     new_elist_par, new_freevar_par, new_gbigrat_expr, new_gbool_par, new_gbytearray_par,
@@ -41,8 +40,7 @@ use models::rust::utils::{
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
-use rholang::rust::interpreter::reified::costs::{ReissueCause, ScanMeter, FIRE_ROUND_CAP};
+use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, JoinBind, JoinOp, ProduceOp, QueryParams, SpaceEnv, SpaceOp, SpaceOutcome,
 };
@@ -55,13 +53,12 @@ use rholang::rust::interpreter::spaces::record::{self, WaiterPolicy};
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::trace::event::{Event, Produce, COMM};
 use support::agent::{
     any, body_name, body_of, budget, create, creation, data_channel, env_over, exactly, fired, int,
-    key_of, play, play_and_replay, receive_on, run, string, unbounded_host_work, ParRSpace,
+    key_of, play, play_and_replay, receive_on, run, string, ParRSpace,
 };
 use support::props::{check, pure_config, tokio_runtime};
 use support::session::{setup_source, with_space, Injections, Session};
@@ -173,17 +170,6 @@ impl Rig {
         assert!(outcome.fires.is_empty());
         rig.host.take_event_log().await;
         rig
-    }
-
-    /// The same rig with a meter that charges `host_work`.
-    fn metered(self, host_work: &HostWorkBudget) -> Rig {
-        Rig {
-            host: self.host,
-            env: SpaceEnv {
-                meter: ScanMeter::new(Some(host_work.clone())),
-                ..self.env
-            },
-        }
     }
 
     async fn run(&self, op: SpaceOp) -> Result<SpaceOutcome, SpaceError> {
@@ -1024,99 +1010,6 @@ async fn space_vectordb_capacity_bounds_records_not_waiters() {
         "the full collection takes a send that fires"
     );
     assert_eq!(rig.records().await.len(), 2);
-}
-
-/// A named operation of the reservation test.
-type OpShape = (&'static str, fn() -> SpaceOp);
-
-/// The dimensions that a space job charges (decision 42).
-const AGENT_DIMENSIONS: [HostWorkDimension; 3] = [
-    HostWorkDimension::VerificationOperations,
-    HostWorkDimension::VerificationBytes,
-    HostWorkDimension::SearchStateBytes,
-];
-
-/// The records of the reservation shapes: an image above two documents, and a list waiter that
-/// refuses `[img, doc]` (CE-2).
-async fn reservation_setup(joined: bool) -> Rig {
-    let rig = match joined {
-        false => Rig::new(COSINE).await,
-        true => Rig::joined(COSINE).await,
-    };
-    rig.send(doc_send("img", &[10.0, 1.0], "r1")).await;
-    rig.send(doc_send("doc", &[10.0, 2.0], "r2")).await;
-    rig.send(doc_send("doc", &[10.0, 3.0], "r3")).await;
-    rig.receive(receive(
-        "docs",
-        literal(list(vec![string("doc"), string("doc")])),
-        Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
-    ))
-    .await;
-    rig.log().await;
-    rig
-}
-
-/// Each step of a VectorDB operation is reserved before it runs (decision 42): with the measured
-/// budget the operation commits as with no bound, and a budget one unit short in any charged
-/// dimension rejects it with `HostWorkRejected` and no effect. The shapes are a removal that
-/// cascades (CE-2) and a list peek with scores, in the driver and in the engine.
-#[tokio::test]
-async fn space_vectordb_reservation_cut_rejects_without_effect() {
-    let removal = || {
-        SpaceOp::Consume(receive(
-            "img",
-            literal(string("img")),
-            Some(query(Some(vector(&[1.0, 0.0])), &[])),
-        ))
-    };
-    let list_peek = || {
-        SpaceOp::Consume(peeking(receive(
-            "list",
-            any(),
-            Some(query(Some(vector(&[1.0, 0.0])), &[
-                ("results", string("all")),
-                ("scores", boolean(true)),
-            ])),
-        )))
-    };
-    let shapes: [OpShape; 2] = [("removal", removal), ("list peek", list_peek)];
-    for joined in [false, true] {
-        for (shape, op) in shapes {
-            let measured = unbounded_host_work();
-            let unlimited = reservation_setup(joined).await.metered(&measured);
-            let expected = unlimited.run(op()).await.expect("the operation commits");
-            assert!(!expected.fires.is_empty(), "{shape}");
-            let mut exact = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-            for dimension in AGENT_DIMENSIONS {
-                exact.set(
-                    dimension,
-                    HostWorkLimit::new(measured.usage(dimension).get()),
-                );
-            }
-            let fitting = reservation_setup(joined)
-                .await
-                .metered(&HostWorkBudget::new(exact));
-            assert_eq!(fitting.run(op()).await, Ok(expected), "{shape}");
-            for dimension in AGENT_DIMENSIONS {
-                let usage = measured.usage(dimension).get();
-                assert!(usage > 0, "{shape} charges {dimension}");
-                let mut cut = exact;
-                cut.set(dimension, HostWorkLimit::new(usage - 1));
-                let rig = reservation_setup(joined)
-                    .await
-                    .metered(&HostWorkBudget::new(cut));
-                let (records, waiters) = (rig.records().await, rig.waiters().await);
-                assert_eq!(
-                    rig.run(op()).await,
-                    Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                    "{shape} {dimension} (engine {joined})"
-                );
-                assert!(rig.log().await.is_empty(), "{shape} {dimension}");
-                assert_eq!(rig.records().await, records, "{shape} {dimension}");
-                assert_eq!(rig.waiters().await, waiters, "{shape} {dimension}");
-            }
-        }
-    }
 }
 
 // ─── Rule E (decision 45) ────────────────────────────────────────────────────────────────
@@ -2626,7 +2519,7 @@ fn prop_vectordb_list_fires_are_atomic() {
 //
 // Each test carries the name of the leaf filter that it serves, as the named tests of P4 and P5
 // do: `space_native_vectors`, `space_similarity_topk`, `space_vector_discipline`,
-// `space_hash_collision_tie`, `rspace_list_random_state` and `reducer_query_costs`.
+// `space_hash_collision_tie` and `rspace_list_random_state`.
 
 /// The `Par` of the one expression `instance`.
 fn number(instance: ExprInstance) -> Par {
@@ -3086,8 +2979,7 @@ async fn space_vector_discipline_restart_keeps_values_ties_and_order() {
 /// `rrs-spaces-determinism-collision-ties`). In each of three orders of the sends, one rig
 /// selects from its hot store, in the order of the sends, and a second rig selects after a
 /// checkpoint and a reset, from the history. Every order and both views select the same value
-/// and log the same COMM, the roots are equal, the history views reserve equal host work, and
-/// replay reproduces play.
+/// and log the same COMM, the roots are equal, and replay reproduces play.
 #[tokio::test]
 async fn space_hash_collision_tie_duplicates_are_interchangeable() {
     let shape = Shape {
@@ -3121,8 +3013,6 @@ async fn space_hash_collision_tie_duplicates_are_interchangeable() {
             .await
             .expect("the reset to the checkpoint");
         cold.log().await;
-        let measured = unbounded_host_work();
-        let cold = cold.metered(&measured);
         let again = fired(&cold.receive(take()).await);
         assert_eq!(
             again, first,
@@ -3130,8 +3020,7 @@ async fn space_hash_collision_tie_duplicates_are_interchangeable() {
         );
         assert_eq!(comms(&cold.log().await), comm);
         assert_eq!(root_of(&cold).await, after);
-        let usage = AGENT_DIMENSIONS.map(|dimension| measured.usage(dimension).get());
-        results.push((stored, first, comm, after, usage));
+        results.push((stored, first, comm, after));
     }
     for result in &results[1..] {
         assert_eq!(
@@ -3205,7 +3094,6 @@ fn space_hash_collision_tie_forced_equal_source_hashes_select_one_value() {
     use rspace_plus_plus::rspace::internal::Datum;
     use rspace_plus_plus::rspace::space_store_handle::canonical_data_order;
 
-    let meter = ScanMeter::new(None);
     let forced = Blake2b256Hash::new(b"rrs-forced-source-hash");
     let record = |payload: Par, salt: &str| Datum {
         a: record::wrap_vdb_datum(
@@ -3223,21 +3111,16 @@ fn space_hash_collision_tie_forced_equal_source_hashes_select_one_value() {
         record(string("first"), "a"),
     ];
     let q = Query::new(
-        vector_of(&ints(&[1, 0]), Some(2), &meter).expect("a query vector"),
+        vector_of(&ints(&[1, 0]), Some(2)).expect("a query vector"),
         Metric::Dot,
-        &meter,
     )
-    .expect("an unmetered query")
+    .expect("a query")
     .expect("a query with a direction");
-    let score = exact::score(
-        &q,
-        &vector_of(&ints(&[1, 0]), Some(2), &meter).expect("a vector"),
-        &meter,
-    )
-    .expect("an unmetered score")
-    .expect("a defined score");
+    let score = exact::score(&q, &vector_of(&ints(&[1, 0]), Some(2)).expect("a vector"))
+        .expect("a score")
+        .expect("a defined score");
     let selected = |view: &[Datum<ListParWithRandom>]| -> Par {
-        let order = canonical_data_order(view, &meter).expect("an unmetered order");
+        let order = canonical_data_order(view);
         let mut candidates: Vec<Candidate> = order
             .iter()
             .enumerate()
@@ -3246,7 +3129,7 @@ fn space_hash_collision_tie_forced_equal_source_hashes_select_one_value() {
                 rank,
             })
             .collect();
-        exact::rank(&mut candidates, &meter).expect("an unmetered rank");
+        exact::rank(&mut candidates).expect("a rank");
         let best = order[candidates[0].rank];
         record::unwrap_vdb_datum(&view[best].a)
             .expect("a VectorDB record")
@@ -3433,60 +3316,4 @@ async fn rspace_list_random_state_replay_reproduces_the_merged_states() {
         replay.create_checkpoint().await.expect("a checkpoint").root,
         root
     );
-}
-
-/// The host work of a query is a function of the records and the query (tracker leaf
-/// `rrs-reducer-query-costs`; decision 40 replaces the precharge by `n`, `d` and `k` of the
-/// leaf with a reservation before each step): equal inputs reserve equal amounts, and more
-/// records or more dimensions reserve more. `space_vectordb_reservation_cut_rejects_without_effect`
-/// shows that a budget one unit short rejects without effect.
-#[tokio::test]
-async fn reducer_query_costs_of_a_query_follow_its_records_and_dimensions() {
-    let usage = |records: usize, dimensions: usize| async move {
-        let rig = Rig::new(Shape {
-            capacity: 16,
-            dimensions: i64::try_from(dimensions).expect("a small dimension"),
-            metric: "cosine",
-        })
-        .await;
-        for index in 0..records {
-            let mut values = vec![1.0; dimensions];
-            values[0] = 2.0 + index as f64;
-            rig.send(vector_send(&values, &format!("record {index}")))
-                .await;
-        }
-        let measured = unbounded_host_work();
-        let rig = rig.metered(&measured);
-        let mut q = vec![0.0; dimensions];
-        q[0] = 1.0;
-        let outcome = rig
-            .receive(receive(
-                "best",
-                any(),
-                Some(query(Some(vector(&q)), &[("scores", boolean(true))])),
-            ))
-            .await;
-        assert_eq!(outcome.fires.len(), 1);
-        AGENT_DIMENSIONS.map(|dimension| measured.usage(dimension).get())
-    };
-    let base = usage(2, 2).await;
-    assert_eq!(
-        usage(2, 2).await,
-        base,
-        "equal inputs reserve equal amounts"
-    );
-    let more_records = usage(4, 2).await;
-    let more_dimensions = usage(2, 4).await;
-    for index in 0..3 {
-        assert!(
-            more_records[index] > base[index],
-            "{:?}: 4 records reserve more than 2",
-            AGENT_DIMENSIONS[index]
-        );
-        assert!(
-            more_dimensions[index] > base[index],
-            "{:?}: 4 dimensions reserve more than 2",
-            AGENT_DIMENSIONS[index]
-        );
-    }
 }

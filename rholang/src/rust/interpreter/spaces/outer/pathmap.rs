@@ -31,16 +31,11 @@
 //! `EZipper` at any depth (`UnsupportedPathElement`). The check runs before any staging. So every
 //! prefix of an accepted path is accepted too, and a datum has at most 65 markers
 //! (`PathMapPrefix.v`, `path_element_rules`).
-//!
-//! Every builder of this module has a metered form that reserves the name template and the id
-//! buffer of each channel before it makes the channel (decision 42).
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{CostAuthority, ListParWithRandom, Par};
-use rspace_plus_plus::rspace::errors::RSpaceError;
 
 use super::hashmap::HashMapOuter;
-use crate::rust::interpreter::reified::costs::ScanMeter;
 use crate::rust::interpreter::spaces::agent::{Prepared, SpaceEnv, SpaceOp, SpaceOutcome};
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{
@@ -95,62 +90,20 @@ impl PathMapOuter {
         namespace::gprivate(namespace::path_index_channel(space, prefix_key))
     }
 
-    /// [`PathMapOuter::token`] with the name and its id buffer reserved first.
-    pub fn token_metered(space: NativeSpace, meter: &ScanMeter) -> Result<Par, SpaceError> {
-        reserve_name(0, meter)?;
-        Ok(Self::token(space))
-    }
-
-    /// [`PathMapOuter::path_data`] with the name and its id buffer reserved first.
-    pub fn path_data_metered(
-        space: NativeSpace,
-        path_key: &[u8],
-        meter: &ScanMeter,
-    ) -> Result<Par, SpaceError> {
-        reserve_name(path_key.len(), meter)?;
-        Ok(Self::path_data(space, path_key))
-    }
-
-    /// [`PathMapOuter::index`] with the name and its id buffer reserved first.
-    pub fn index_metered(
-        space: NativeSpace,
-        prefix_key: &[u8],
-        meter: &ScanMeter,
-    ) -> Result<Par, SpaceError> {
-        reserve_name(prefix_key.len(), meter)?;
-        Ok(Self::index(space, prefix_key))
-    }
-
     /// The channels of the path that `encoded` holds: its data channel and the index channel of
-    /// each of its prefixes in depth order. Each name and the list of the index channels are
-    /// reserved first.
+    /// each of its prefixes in depth order.
     pub fn path_channels(
         space: NativeSpace,
         encoded: &EncodedPath,
-        meter: &ScanMeter,
     ) -> Result<PathChannels, SpaceError> {
-        let data = Self::path_data_metered(space, encoded.path_key(), meter)?;
-        let count = encoded
-            .depth()
-            .checked_add(1)
-            .ok_or(RSpaceError::HostWorkRejected)?;
-        let mut index = meter.buffer::<Par>(count)?;
+        let data = Self::path_data(space, encoded.path_key());
+        let count = encoded.depth() + 1;
+        let mut index = Vec::<Par>::with_capacity(count);
         for prefix_key in encoded.prefix_keys() {
-            index.push(Self::index_metered(space, prefix_key?, meter)?);
+            index.push(Self::index(space, prefix_key?));
         }
         Ok(PathChannels { data, index })
     }
-}
-
-/// Reserves a `GPrivate` name and its id of a space-scoped id with a tail of `tail` bytes, as
-/// `CollectionChannels::new_metered` reserves the channels of a collection.
-fn reserve_name(tail: usize, meter: &ScanMeter) -> Result<(), SpaceError> {
-    let bytes = namespace::SPACE_ID_PREFIX_LEN
-        .checked_add(tail)
-        .ok_or(RSpaceError::HostWorkRejected)?;
-    meter.reserve_copy(&namespace::gprivate(Vec::new()))?;
-    meter.reserve_buffer::<u8>(bytes)?;
-    Ok(())
 }
 
 impl OuterStore for PathMapOuter {
@@ -165,11 +118,10 @@ impl OuterStore for PathMapOuter {
     /// one (`pathmap::join::classify`).
     fn classify<D: Discipline>(
         agent: &GenericSpace<Self, D>,
-        env: &SpaceEnv,
         opened: &mut CollectionTxn,
         op: &SpaceOp,
     ) -> Result<JoinRoute, SpaceError> {
-        pathmap_join::classify(agent, env, opened, op)
+        pathmap_join::classify(agent, opened, op)
     }
 
     /// The join engine runs a PathMap operation with the prefix source
@@ -188,25 +140,22 @@ impl OuterStore for PathMapOuter {
     /// rule fails as [`OuterStore::check_key`] fails. A path key ends with its terminator, so it
     /// is never empty.
     fn key(&self, channel: &Par) -> Result<CollectionKey, SpaceError> {
-        let unmetered = ScanMeter::new(None);
-        let key = path_key(channel_path(channel, &unmetered)?, &unmetered)?;
+        let key = path_key(channel_path(channel)?)?;
         CollectionKey::from_bytes(key).ok_or(SpaceError::Inconsistent("a path key is empty"))
     }
 
     /// Accepts `channel` only when its path follows the path rules (module docs): at most
     /// `PATH_DEPTH_CAP` elements (`PathTooDeep`), and no element that holds an `EPathMap` or an
     /// `EZipper` at any depth (`UnsupportedPathElement`). The routed key is not part of the check,
-    /// because the PathMap engine derives its keys from the channel. The read of the channel and
-    /// the encode of the path are reserved before they are made.
+    /// because the PathMap engine derives its keys from the channel.
     fn check_key(
         &self,
         _config: &SpaceConfig,
         channel: &Par,
         _key: &CollectionKey,
-        meter: &ScanMeter,
     ) -> Result<(), SpaceError> {
-        let path = channel_path(channel, meter)?;
-        encode_path(path, meter).map(drop)
+        let path = channel_path(channel)?;
+        encode_path(path).map(drop)
     }
 
     /// The data channel `D(sid, key)` of the path whose path key is `key`.
@@ -227,7 +176,6 @@ impl OuterStore for PathMapOuter {
         _space: NativeSpace,
         _random: &Blake2b512Random,
         _authority: &CostAuthority,
-        _meter: &ScanMeter,
     ) -> Result<Vec<(Par, ListParWithRandom)>, SpaceError> {
         Ok(Vec::new())
     }
@@ -244,10 +192,8 @@ mod tests {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{EList, EPathMap, ETuple, EZipper, Expr, GPrivate, GUnforgeable, Par};
-    use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 
     use super::*;
-    use crate::rust::interpreter::host_work::HostWorkBudget;
     use crate::rust::interpreter::reified::route::{classify_channel, ChannelClass};
     use crate::rust::interpreter::spaces::namespace::{
         decode_reified_id, reified_id_of, sole_gprivate_id, Durability, NameTail, RandomPurpose,
@@ -327,8 +273,6 @@ mod tests {
         }))
     }
 
-    fn unmetered() -> ScanMeter { ScanMeter::new(None) }
-
     fn config() -> SpaceConfig {
         SpaceConfig::new(
             SPACE.sid,
@@ -340,7 +284,7 @@ mod tests {
 
     fn checked(channel: &Par) -> Result<(), SpaceError> {
         let key = CollectionKey::of_channel(channel).expect("a routed key");
-        PathMapOuter.check_key(&config(), channel, &key, &unmetered())
+        PathMapOuter.check_key(&config(), channel, &key)
     }
 
     fn id_of(channel: &Par) -> Vec<u8> {
@@ -358,9 +302,9 @@ mod tests {
     }
 
     fn channels_of(channel: &Par) -> PathChannels {
-        let path = channel_path(channel, &unmetered()).expect("a channel path");
-        let encoded = encode_path(path, &unmetered()).expect("the path encodes");
-        PathMapOuter::path_channels(SPACE, &encoded, &unmetered()).expect("the channels")
+        let path = channel_path(channel).expect("a channel path");
+        let encoded = encode_path(path).expect("the path encodes");
+        PathMapOuter::path_channels(SPACE, &encoded).expect("the channels")
     }
 
     // The EPM1 vectors of v2 3.4 (the per-arm pins and the top-level split pins of
@@ -540,7 +484,7 @@ mod tests {
     fn a_creation_stages_no_record_of_the_store() {
         let random = Blake2b512Random::create_from_bytes(b"factory call");
         assert_eq!(
-            PathMapOuter.creation_records(SPACE, &random, &CostAuthority::default(), &unmetered()),
+            PathMapOuter.creation_records(SPACE, &random, &CostAuthority::default()),
             Ok(Vec::new())
         );
     }
@@ -561,7 +505,7 @@ mod tests {
             Some(ReifiedId::Name(SPACE, NameTail::Random(tail)))
         );
         assert_eq!(classify_channel(&name), ChannelClass::SpaceName(SPACE));
-        let path = channel_path(&name, &unmetered()).expect("a channel path");
+        let path = channel_path(&name).expect("a channel path");
         assert_eq!(path, std::slice::from_ref(&name));
         let channels = channels_of(&name);
         let segment = [vec![0x0E, 66], id_of(&name)].concat();
@@ -570,62 +514,5 @@ mod tests {
             .gensym(SPACE, &Blake2b512Random::create_from_bytes(b"another call"))
             .expect("a name");
         assert_ne!(channels_of(&other), channels);
-    }
-
-    #[test]
-    fn the_metered_builders_reserve_their_work() {
-        let channel = glist(vec![gint(0), gstring("a"), glist(vec![gint(2)])]);
-        let unmetered_channels = channels_of(&channel);
-        let run = |meter: &ScanMeter| -> Result<PathChannels, SpaceError> {
-            let path = channel_path(&channel, meter)?;
-            let encoded = encode_path(path, meter)?;
-            PathMapOuter::path_channels(SPACE, &encoded, meter)
-        };
-        let dimensions = [
-            HostWorkDimension::VerificationOperations,
-            HostWorkDimension::VerificationBytes,
-            HostWorkDimension::SearchStateBytes,
-        ];
-        let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-        assert_eq!(
-            run(&ScanMeter::new(Some(budget.clone()))).expect("a budget with no bound"),
-            unmetered_channels
-        );
-        let usage = dimensions.map(|dimension| budget.usage(dimension).get());
-        assert!(usage.iter().all(|used| *used > 0));
-        for (dimension, used) in dimensions.into_iter().zip(usage) {
-            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-            limits.set(dimension, HostWorkLimit::new(used - 1));
-            assert_eq!(
-                run(&ScanMeter::new(Some(HostWorkBudget::new(limits)))),
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                "a cut of {dimension} rejects the channels"
-            );
-        }
-        for (name, run) in [
-            (
-                "token",
-                Box::new(|meter: &ScanMeter| PathMapOuter::token_metered(SPACE, meter))
-                    as Box<dyn Fn(&ScanMeter) -> Result<Par, SpaceError>>,
-            ),
-            (
-                "index",
-                Box::new(|meter: &ScanMeter| PathMapOuter::index_metered(SPACE, &[3, 0], meter)),
-            ),
-        ] {
-            let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX)));
-            run(&ScanMeter::new(Some(budget.clone()))).expect("a budget with no bound");
-            let bytes = budget.usage(HostWorkDimension::SearchStateBytes).get();
-            let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-            limits.set(
-                HostWorkDimension::SearchStateBytes,
-                HostWorkLimit::new(bytes - 1),
-            );
-            assert_eq!(
-                run(&ScanMeter::new(Some(HostWorkBudget::new(limits)))),
-                Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-                "a cut rejects the {name} builder"
-            );
-        }
     }
 }

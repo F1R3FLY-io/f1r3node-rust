@@ -16,7 +16,7 @@
 //!   re-issues the operation. Divergent pairs re-issue after each round (A10).
 //! * Every operation and every settle job bumps the counter (decision 31), so two branches race
 //!   on it (merge check #1). Replay reproduces play, and the order survives a restart.
-//! * Metering (decision 42) and the legacy charges of Option P (decision 45).
+//! * The legacy charges of Option P (decision 45).
 //!
 //! Each property below states an invariant of `StackDiscipline.v` or `StackDiscipline.tla`:
 //!
@@ -27,7 +27,6 @@
 //! | `prop_stack_no_pending_match_any_schedule` | `StackNoPendingMatch`, `stack_produce_preserves_inv`, `stack_consume_preserves_inv`, `stack_peek_restore_needs_no_settle` |
 //! | `prop_stack_settle_bounded_any_schedule` | `stack_settle_terminates` |
 //! | `prop_stack_plan_permutation_invariant` | `stack_plan_permutation_invariant` |
-//! | `prop_stack_reservation_cut_rejects_without_effect` | `settle_trace_covered` |
 //! | `prop_stack_reissue_keeps_ord_any_schedule` | `ReissueKeepsOrd`, `stack_reissue_keeps_ord`, `stack_reentry_at_lifo_place` |
 
 #[path = "support/mod.rs"]
@@ -42,7 +41,6 @@ use models::rhoapi::{
     BindPattern, CostAuthority, CostRegion, CostSignature, ListParWithRandom, Par,
     TaggedContinuation,
 };
-use models::rust::host_work::{HostWorkDimension, HostWorkLimit, HostWorkLimits};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::new_gbool_par;
 use proptest::arbitrary::any as arbitrary;
@@ -53,7 +51,6 @@ use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use rholang::rust::interpreter::accounting::byte_accounting::produce_introduction_identity;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
-use rholang::rust::interpreter::host_work::HostWorkBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::reified::legacy_charges::{
@@ -76,7 +73,6 @@ use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::settle::{lift_continuation, lift_pattern};
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
-use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
@@ -92,8 +88,8 @@ use rspace_plus_plus::rspace::space_store_handle::{
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce};
 use support::agent::{
     any, body_name, budget, config_of, counter, counter_channel, create, creation, data_channel,
-    env_over, exactly, fired, int, key_of, metered_env, named, play, play_and_replay, receive_on,
-    records_on, run, send_on, space_counter_channel, string, unbounded_host_work, ParRSpace,
+    env_over, exactly, fired, int, key_of, named, play, play_and_replay, receive_on, records_on,
+    run, send_on, space_counter_channel, string, ParRSpace,
 };
 use support::legacy::{charging_host, host_consume, host_produce, split};
 use support::props::{check, pure_config, tokio_runtime};
@@ -1475,62 +1471,7 @@ async fn space_stack_branches_race_on_the_counter() {
     }
 }
 
-// ─── Metering (decision 42) and the legacy charges (decision 45, Option P) ───────────────────
-
-/// The host work of `VerificationOperations` that the send of 2 makes in the state of the
-/// counterexample, on a fresh store.
-async fn settle_usage() -> u64 {
-    let Fixture { space, env } = fixture().await;
-    counterexample(&env, any()).await;
-    let host_work = unbounded_host_work();
-    let metered = metered_env(space.clone(), &env.budget, &host_work);
-    let outcome = produce(&metered, send(2)).await;
-    assert_eq!(outcome.fires.len(), 2, "the plan and the settle fire");
-    host_work
-        .usage(HostWorkDimension::VerificationOperations)
-        .get()
-}
-
-/// A meter that allows `limit` units of `VerificationOperations` and every other unit.
-fn cut_host_work(limit: u64) -> HostWorkBudget {
-    let mut limits = HostWorkLimits::uniform(HostWorkLimit::new(u64::MAX));
-    limits.set(
-        HostWorkDimension::VerificationOperations,
-        HostWorkLimit::new(limit),
-    );
-    HostWorkBudget::new(limits)
-}
-
-#[tokio::test]
-async fn space_stack_reservation_cut_rejects_without_effect() {
-    let usage = settle_usage().await;
-    assert_eq!(settle_usage().await, usage, "the usage is deterministic");
-    for limit in [usage - 1, usage * 3 / 4, usage / 2, 0] {
-        let Fixture { space, env } = fixture().await;
-        counterexample(&env, any()).await;
-        let records_before = records(&space).await;
-        let waiters_before = waiters(&space).await;
-        let counter_before = counter_value(&space).await;
-        space.take_event_log().await;
-        let metered = metered_env(space.clone(), &env.budget, &cut_host_work(limit));
-        assert_eq!(
-            run(&stack(), &metered, SpaceOp::Produce(send(2))).await,
-            Err(SpaceError::Host(RSpaceError::HostWorkRejected)),
-            "the limit {limit} of {usage}"
-        );
-        assert!(space.take_event_log().await.is_empty(), "nothing commits");
-        assert_eq!(records(&space).await, records_before);
-        assert_eq!(waiters(&space).await, waiters_before);
-        assert_eq!(counter_value(&space).await, counter_before);
-    }
-    let Fixture { space, env } = fixture().await;
-    counterexample(&env, any()).await;
-    let metered = metered_env(space.clone(), &env.budget, &cut_host_work(usage));
-    assert_eq!(fired(&produce(&metered, send(2)).await), vec![
-        literal("w"),
-        delivery("w2", 1)
-    ]);
-}
+// ─── The legacy charges (decision 45, Option P) ──────────────────────────────────────────────
 
 /// A fresh legacy budget and a charging host over it.
 async fn legacy_host() -> (
@@ -2252,75 +2193,6 @@ fn prop_stack_plan_permutation_invariant() {
             Ok(())
         })
     });
-}
-
-/// `settle_trace_covered`: an operation reserves all of its work before the commit, so a budget
-/// below its usage rejects it with no effect, and a budget equal to its usage runs it.
-#[test]
-fn prop_stack_reservation_cut_rejects_without_effect() {
-    check(
-        pure_config(),
-        (arb_schedule(), 0u64..=100),
-        |(schedule, percent)| {
-            tokio_runtime().block_on(async {
-                let Some((last, prefix)) = schedule.split_last() else {
-                    return Ok(());
-                };
-                let index = prefix.len();
-                let mut usages = Vec::with_capacity(2);
-                let mut outcomes = Vec::with_capacity(2);
-                for limit in [None, Some(percent)] {
-                    let Fixture { space, env } = fixture().await;
-                    for (position, step_of) in prefix.iter().enumerate() {
-                        run(&stack(), &env, op_of(position, step_of))
-                            .await
-                            .map_err(|error| TestCaseError::fail(format!("{error}")))?;
-                    }
-                    let before = (
-                        records(&space).await,
-                        waiters(&space).await,
-                        counter_value(&space).await,
-                    );
-                    space.take_event_log().await;
-                    let host_work = match limit {
-                        None => unbounded_host_work(),
-                        Some(percent) => cut_host_work(usages[0] * percent / 100),
-                    };
-                    let metered = metered_env(space.clone(), &env.budget, &host_work);
-                    let result = run(&stack(), &metered, op_of(index, last)).await;
-                    usages.push(
-                        host_work
-                            .usage(HostWorkDimension::VerificationOperations)
-                            .get(),
-                    );
-                    match (&result, limit) {
-                        (Ok(_), None) => {}
-                        (Ok(_), Some(percent)) => {
-                            prop_assert_eq!(percent, 100, "only the full usage runs")
-                        }
-                        (Err(SpaceError::Host(RSpaceError::HostWorkRejected)), Some(percent)) => {
-                            prop_assert!(percent < 100);
-                            prop_assert!(space.take_event_log().await.is_empty());
-                            let after = (
-                                records(&space).await,
-                                waiters(&space).await,
-                                counter_value(&space).await,
-                            );
-                            prop_assert_eq!(after, before, "a rejected operation has no effect");
-                        }
-                        (other, _) => {
-                            return Err(TestCaseError::fail(format!("unexpected {other:?}")));
-                        }
-                    }
-                    outcomes.push(result);
-                }
-                if percent == 100 {
-                    prop_assert_eq!(&outcomes[1], &outcomes[0]);
-                }
-                Ok(())
-            })
-        },
-    );
 }
 
 /// One round of a generated schedule with re-issues: a fresh operation, or the next round of the

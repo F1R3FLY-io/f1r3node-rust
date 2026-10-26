@@ -1,0 +1,180 @@
+{
+  "schema_version": 1,
+  "task": "TASK-020-3",
+  "status": "local-implementation-verified-external-single-sink-pending",
+  "branch": "fix/node-log-and-accept-backoff",
+  "initial_head": "b0afbe724c058c2357bf833f6f9ea1ac585f112a",
+  "source_checkpoint": "6e1c8833a02b11d8145f9928fc41798f612b08a0",
+  "platform": "aarch64-apple-darwin",
+  "claimed_by": "pi-session-01a0ab62-71b3-7248-a800-37a6fde2e4fa",
+  "claimed_at": "2026-09-30T02:23:57Z",
+  "claimed_at_source": "clock_checkpoint_after_claim",
+  "local_deployment": {
+    "base_files": 6,
+    "node_service_definitions": 12,
+    "rendered_profiles": 8,
+    "profile_node_entries": 18,
+    "sink": "stdout",
+    "driver": "json-file",
+    "max_size": "100m",
+    "max_file": "3",
+    "baseline_semantic_comparisons_passed": 6
+  },
+  "tests": {
+    "initial_guard": {
+      "exit": 101,
+      "passed": 5,
+      "failed": 2
+    },
+    "supply_chain": {
+      "exit": 0,
+      "passed": 39,
+      "ignored": 0
+    },
+    "node_shared_logging": {
+      "exit": 0,
+      "passed": 33,
+      "filtered_out": 352,
+      "nextest_run_id": "b278ef13-26a5-4592-99b8-be4a9c9d7458"
+    },
+    "controlled_guard_refusals": 48,
+    "cli_misplacement_refusals": 1
+  },
+  "direct_checks": {
+    "supply_chain_clippy": {
+      "exit": 0,
+      "warnings_denied": true
+    },
+    "node_cli_clippy": {
+      "exit": 0,
+      "warnings_denied": true
+    },
+    "rustfmt": {
+      "exit": 0
+    },
+    "shell_syntax": {
+      "exit": 0
+    },
+    "docker_compose": {
+      "exit": 0
+    },
+    "cargo_deny": {
+      "initial_exit": 2,
+      "initial_failure": "The option preceded the check subcommand.",
+      "corrected_exit": 0,
+      "disable_fetch": true,
+      "advisories": "ok",
+      "bans": "ok",
+      "licenses": "ok",
+      "sources": "ok",
+      "permitted_warnings": true
+    }
+  },
+  "analyzer_boundary": {
+    "fresh_primary_rust_lsp": "zero errors across three files",
+    "yaml_shard_schema": "Crystal package schema selected incorrectly. Findings marked false-positive.",
+    "automatic_adapter_verdict": "Not used as proof of the direct checks.",
+    "legacy_markdown_warnings": "Unchanged README sections retain warnings."
+  },
+  "tools": {
+    "rustc": "1.95.0-nightly (6efa357bf 2026-02-08)",
+    "cargo": "1.95.0-nightly (fe2f314ae 2026-01-30)",
+    "nextest": "0.9.143",
+    "docker_compose": "5.3.1",
+    "cargo_deny": "0.19.4",
+    "jq": "1.8.2",
+    "yaml_rust2": "0.13.0"
+  },
+  "dependency_changes": {
+    "scope": "supply-chain test-only",
+    "added_packages": [
+      "arraydeque@0.5.1",
+      "foldhash@0.2.0",
+      "hashlink@0.12.2",
+      "yaml-rust2@0.13.0"
+    ],
+    "existing_package_versions_changed": false,
+    "existing_hashbrown_dependency_graph_changed": true
+  },
+  "external": {
+    "repository": "F1R3FLY-io/system-integration",
+    "local_checkout": "962effd17708192627bd249362761c0ccb1fd5fa",
+    "local_checkout_stale": true,
+    "main": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
+    "dev": "ef9844893f19df3e7523bb97e9e0da0ca241bb10",
+    "promotion_pr": 145,
+    "promotion_merged_at": "2026-09-23T19:55:44Z",
+    "promotion_merge_revision": "e3c4e14189f0c6ced2e9674487fcbdeffd93141b",
+    "compose_variants": 5,
+    "node_service_definitions": 11,
+    "container_caps_verified": true,
+    "sink": "both",
+    "single_sink_merge_revision": null,
+    "external_changes_made": false,
+    "handoff": "docs/handoffs/task-020-3-system-integration-20260930.md",
+    "sources": [
+      {
+        "path": "compose/f1r3node-rust.yml",
+        "git_blob": "0883b8148463ff86d82cb13d3eaf590ae38d8b3c",
+        "sha256": "dc2e7f81292dc11a0fa32c56baaeed792578ca171e01746f07fefe9b2302a649"
+      },
+      {
+        "path": "compose/f1r3node-rust-shard-light.yml",
+        "git_blob": "fc7ad5fed507faac878fff03064fb1250886e136",
+        "sha256": "0549a1495ba570d08d8a6fe4461829bdbe472c3c0be1526094db35eefdfc8c15"
+      },
+      {
+        "path": "compose/f1r3node-rust-standalone.yml",
+        "git_blob": "e4bcc4d08cbbf4ae6950c78276ea79c422848f08",
+        "sha256": "6aae50e564f9f89e3a0748c0a9d3aaeba0f9412044dd6d280bf8d6417f6fac27"
+      },
+      {
+        "path": "compose/f1r3node-rust-observer.yml",
+        "git_blob": "fd5b421713a09299100e6e72dec93ad42113bbbb",
+        "sha256": "35ea60e6416cee9ee3eae5d8a6ea753cfd5e8d10dffde04a23cfc65e86288b54"
+      },
+      {
+        "path": "compose/f1r3node-rust-validator4.yml",
+        "git_blob": "0221aaa2e1122b8f66c56c9d4fb73358dba2d668",
+        "sha256": "223bc40032f0b657c9acc09260980ef8af63f45e02ef188960e7c992c8e52e1b"
+      },
+      {
+        "path": "conf/rust.conf",
+        "git_blob": "3dd6305060d6712d268c4456475a7864ea85b06e",
+        "sha256": "cb916b00e0c9255259c2709b6b67762183f40e5edb404b69b593cfe3912f7c2c"
+      }
+    ]
+  },
+  "ownership_comparison": {
+    "TASK-020-1": "unchanged",
+    "TASK-020-2": "unchanged",
+    "TASK-020-4": "unchanged"
+  },
+  "completion": {
+    "task_status": "in_progress",
+    "completion_helper_run": false,
+    "blocker": "Review the external log-reader contract and verify a merged single-sink correction.",
+    "epic_status": "in_progress",
+    "story_status": "in_progress",
+    "flow_status": "in_progress",
+    "task_020_4_status": "pending"
+  },
+  "boundaries": {
+    "hosted_linux": false,
+    "containers_started": false,
+    "live_storage_measurement": false,
+    "guardian_qualification": false,
+    "cbc_discharge": false,
+    "assistant_git_add": false,
+    "assistant_git_commit": false,
+    "assistant_git_push": false,
+    "assistant_git_merge": false,
+    "raw_sources_published": false
+  },
+  "evidence": {
+    "source_manifest": "source-artifacts.sha256",
+    "documentation_manifest": "documentation-inputs.sha256",
+    "private_scratch": "target/task-020-3-deployment-log-caps/",
+    "ste_check": "Only new or changed prose. Human STE review remains necessary."
+  }
+}

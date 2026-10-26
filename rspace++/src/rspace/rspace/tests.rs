@@ -13,6 +13,8 @@ use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use crate::rspace::trace::event::{Event, IOEvent};
 
 mod checkpoint_failure_tests;
+// Added by DR-129 (M34): F1-F3 and F7 of the random-order restoration.
+mod random_candidate_order_tests;
 
 // ── minimal types ─────────────────────────────────────────────────────────
 
@@ -568,4 +570,53 @@ async fn get_store_read_lock_isolated_cost_at_rholang_par_scale() {
          ({seq_ms}ms) at {PAR_BRANCHES} branches x {OPS_PER_BRANCH} ops x2 calls/op — see issue \
          #50"
     );
+}
+
+/// Changed by DR-131 S6: the test was
+/// `checkpoint_root_unchanged_by_uncached_read`. The uncached read went with
+/// host work (DU-8), and the settlement reads use `get_data`, which fills the
+/// store. The test keeps its checks for that read: the read exports its
+/// fills, and a checkpoint keeps the root, also after a write and on the
+/// replay space.
+#[tokio::test]
+async fn checkpoint_root_unchanged_by_filling_read() {
+    let mut kvm = InMemoryStoreManager::new();
+    let store = kvm.r_space_stores().await.expect("in-memory stores");
+    let (play, replay) = RSpace::create_with_replay(store, Arc::new(Box::new(AlwaysMatch)))
+        .expect("play and replay spaces");
+    let data_channel = "history-data".to_string();
+    let empty_channel = "history-empty".to_string();
+    for index in 0..5 {
+        play.produce(data_channel.clone(), "x".repeat(1 + 7 * index), false)
+            .await
+            .expect("produce");
+    }
+    let root = play.create_checkpoint().await.expect("checkpoint").root;
+
+    play.reset(&root).await.expect("reset to the root");
+    play.get_data(&data_channel).await;
+    play.get_data(&empty_channel).await;
+    assert!(!play.get_store().changes().is_empty(), "the read fills the store");
+    assert_eq!(play.create_checkpoint().await.expect("checkpoint").root, root);
+
+    play.reset(&root).await.expect("reset to the root");
+    play.produce(data_channel.clone(), "z".to_string(), false)
+        .await
+        .expect("produce");
+    let written_root = play.create_checkpoint().await.expect("checkpoint").root;
+    assert_ne!(written_root, root);
+    play.reset(&root).await.expect("reset to the root");
+    play.produce(data_channel.clone(), "z".to_string(), false)
+        .await
+        .expect("produce");
+    for channel in [&data_channel, &empty_channel] {
+        play.get_data(channel).await;
+    }
+    assert_eq!(play.create_checkpoint().await.expect("checkpoint").root, written_root);
+
+    replay.reset(&root).await.expect("reset to the root");
+    for channel in [&data_channel, &empty_channel, &data_channel] {
+        replay.get_data(channel).await;
+    }
+    assert_eq!(replay.create_checkpoint().await.expect("checkpoint").root, root);
 }

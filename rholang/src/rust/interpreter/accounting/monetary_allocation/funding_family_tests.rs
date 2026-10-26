@@ -1,11 +1,6 @@
-use models::rust::host_work::{HostWorkLimit, HostWorkLimits};
 use proptest::prelude::*;
 
 use super::*;
-
-fn work() -> HostWorkBudget {
-    HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(100_000_000)))
-}
 
 fn limits() -> FundingFamilyLimits {
     FundingFamilyLimits {
@@ -151,7 +146,7 @@ fn family_search_recovers_the_incompatible_independent_ties() {
             cases: &cases,
             exposure_limit: limit,
         };
-        let selected = solve_funding_family_feasibility(problem, limits(), &work()).unwrap();
+        let selected = solve_funding_family_feasibility(problem, limits()).unwrap();
         assert_eq!(selected.is_some(), limit >= 4);
         if let Some(witness) = selected {
             assert_witness(problem, &witness);
@@ -183,7 +178,7 @@ fn family_search_does_not_reject_a_feasible_family_after_one_bad_witness() {
         cases: &cases,
         exposure_limit: 1,
     };
-    let selected = solve_funding_family_feasibility(problem, limits(), &work())
+    let selected = solve_funding_family_feasibility(problem, limits())
         .unwrap()
         .unwrap();
     assert_eq!(selected.holds(), [0, 1]);
@@ -207,7 +202,7 @@ fn family_search_supports_full_width_amounts_and_large_cohorts() {
             cases: &cases,
             exposure_limit: u128::from(u64::MAX),
         };
-        let selected = solve_funding_family_feasibility(problem, limits(), &work())
+        let selected = solve_funding_family_feasibility(problem, limits())
             .unwrap()
             .unwrap();
         assert_witness(problem, &selected);
@@ -240,7 +235,7 @@ fn family_full_width_conflict_requires_range_search_not_token_iteration() {
             cases: &cases,
             exposure_limit: u128::from(u64::MAX),
         };
-        let selected = solve_funding_family_feasibility(problem, limits(), &work()).unwrap();
+        let selected = solve_funding_family_feasibility(problem, limits()).unwrap();
         assert_eq!(selected.is_some(), first == &flexible);
         if let Some(witness) = selected {
             assert_eq!(witness.holds(), [0, u64::MAX]);
@@ -292,7 +287,7 @@ fn family_feasibility_and_canonical_priority_agree_on_the_approved_alternative()
             cases: &cases,
             exposure_limit: 4,
         };
-        let witness = solve_funding_family_feasibility(problem, limits(), &work())
+        let witness = solve_funding_family_feasibility(problem, limits())
             .unwrap()
             .unwrap();
         assert_witness(problem, &witness);
@@ -304,19 +299,15 @@ fn family_feasibility_and_canonical_priority_agree_on_the_approved_alternative()
                 &[&resources[0], &resources[1]],
                 0,
                 limits(),
-                &work(),
             )
             .unwrap(),
         );
     }
-    assert_eq!(
-        keys[0].compare(&keys[1], &work()).unwrap(),
-        std::cmp::Ordering::Less
-    );
+    assert_eq!(keys[0].compare(&keys[1]).unwrap(), std::cmp::Ordering::Less);
 }
 
 #[test]
-fn family_validation_precedes_infeasibility_and_exhaustion_is_not_rejection() {
+fn family_validation_precedes_infeasibility() {
     let eligible = vec![vec![true]];
     let valid = FundingBoxProblem {
         lower: &[0],
@@ -335,7 +326,7 @@ fn family_validation_precedes_infeasibility_and_exhaustion_is_not_rejection() {
         exposure_limit: 0,
     };
     assert!(matches!(
-        solve_funding_family_feasibility(problem, limits(), &work()),
+        solve_funding_family_feasibility(problem, limits()),
         Err(FundingFamilyError::Search(
             FundingSearchError::InvalidProblem(FundingAssignmentError::InvalidDimensions)
         ))
@@ -346,19 +337,13 @@ fn family_validation_precedes_infeasibility_and_exhaustion_is_not_rejection() {
         cases: &cases,
         exposure_limit: 1,
     };
-    let budget = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(0)));
-    assert!(matches!(
-        solve_funding_family_feasibility(problem, limits(), &budget),
-        Err(FundingFamilyError::Search(FundingSearchError::HostWork(_)))
-    ));
     assert_eq!(
         solve_funding_family_feasibility(
             FundingFamilyProblem {
                 cases: &[],
                 ..problem
             },
-            limits(),
-            &work()
+            limits()
         ),
         Err(FundingFamilyError::EmptyCases)
     );
@@ -371,8 +356,7 @@ fn family_validation_precedes_infeasibility_and_exhaustion_is_not_rejection() {
             FundingFamilyLimits {
                 case_cap: NonZeroUsize::new(1).unwrap(),
                 ..limits()
-            },
-            &work()
+            }
         ),
         Err(FundingFamilyError::TooManyCases)
     );
@@ -425,8 +409,7 @@ fn family_exhaustive_two_source_two_outcome_domains() {
                                 exposure_limit,
                             };
                             let result =
-                                solve_funding_family_feasibility(problem, limits(), &work())
-                                    .unwrap();
+                                solve_funding_family_feasibility(problem, limits()).unwrap();
                             assert_eq!(result.is_some(), family_oracle(problem), "capacity={capacities:?}, demands={first},{second}, mask={mask}, exposure={exposure_limit}");
                             if let Some(witness) = result {
                                 assert_witness(problem, &witness);
@@ -463,11 +446,11 @@ proptest! {
         }
         let cases: Vec<_> = (0..k).map(|o| FundingBoxProblem { lower: &lower[o], upper: &upper[o], obligations: &demands[o*m..(o+1)*m], eligible: &eligible[o] }).collect();
         let problem = FundingFamilyProblem { capacities: &capacities, cases: &cases, exposure_limit };
-        let result = solve_funding_family_feasibility(problem, limits(), &work()).unwrap();
+        let result = solve_funding_family_feasibility(problem, limits()).unwrap();
         prop_assert_eq!(result.is_some(), family_oracle(problem));
         if let Some(witness) = &result { assert_witness(problem, witness); }
         let reversed: Vec<_> = cases.iter().rev().copied().collect();
-        let reordered = solve_funding_family_feasibility(FundingFamilyProblem { cases: &reversed, ..problem }, limits(), &work()).unwrap();
+        let reordered = solve_funding_family_feasibility(FundingFamilyProblem { cases: &reversed, ..problem }, limits()).unwrap();
         prop_assert_eq!(result.is_some(), reordered.is_some());
         let reversed_capacities: Vec<_> = capacities.iter().rev().copied().collect();
         let reversed_lower: Vec<Vec<_>> = lower.iter().map(|row| row.iter().rev().copied().collect()).collect();
@@ -477,7 +460,7 @@ proptest! {
             lower: &reversed_lower[o], upper: &reversed_upper[o], obligations: &demands[o*m..(o+1)*m], eligible: &reversed_edges[o],
         }).collect();
         let permuted_problem = FundingFamilyProblem { capacities: &reversed_capacities, cases: &source_permuted, exposure_limit };
-        let permuted = solve_funding_family_feasibility(permuted_problem, limits(), &work()).unwrap();
+        let permuted = solve_funding_family_feasibility(permuted_problem, limits()).unwrap();
         prop_assert_eq!(result.is_some(), permuted.is_some());
         if let Some(witness) = &permuted { assert_witness(permuted_problem, witness); }
     }

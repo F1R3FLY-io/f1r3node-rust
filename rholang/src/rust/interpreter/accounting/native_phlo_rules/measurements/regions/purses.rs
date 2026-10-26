@@ -2,14 +2,12 @@ use std::collections::BTreeMap;
 
 use models::rhoapi::cost_signature::Value;
 use models::rhoapi::{CostSignature, Par};
-use models::rust::host_work::{HostWorkDimension, HostWorkUnits};
 use prost::Message;
 use thiserror::Error;
 
 use super::{NativePhloRegionDemand, NativePhloRegionDemands};
 use crate::rust::interpreter::accounting::authority::{cost_signature_to_sig, AuthorityError};
 use crate::rust::interpreter::accounting::{Sig, SignatureChannel};
-use crate::rust::interpreter::host_work::HostWorkBudget;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativePhloPurseLimits {
@@ -64,27 +62,7 @@ pub struct NativePhloLocatedDemands<'a> {
     purses: BTreeMap<&'a [u8], NativePhloPurse<'a>>,
 }
 
-fn reserve(
-    host_work: &HostWorkBudget,
-    dimension: HostWorkDimension,
-    amount: usize,
-) -> Result<(), NativePhloPurseError> {
-    host_work
-        .reserve(
-            dimension,
-            HostWorkUnits::new(
-                u64::try_from(amount).map_err(|_| AuthorityError::ArithmeticOverflow)?,
-            ),
-        )
-        .map_err(AuthorityError::from)?;
-    Ok(())
-}
-
-fn channel_bytes(
-    signature: &CostSignature,
-    host_work: &HostWorkBudget,
-) -> Result<usize, NativePhloPurseError> {
-    reserve(host_work, HostWorkDimension::StructuralItems, 1)?;
+fn channel_bytes(signature: &CostSignature) -> Result<usize, NativePhloPurseError> {
     let atom_bytes = SignatureChannel::from_sig(&Sig::Ground(Vec::new()))
         .par
         .encoded_len();
@@ -99,11 +77,6 @@ fn channel_bytes(
                     .ok_or(AuthorityError::ArithmeticOverflow)?;
             }
             Some(Value::Compound(compound)) => {
-                reserve(
-                    host_work,
-                    HostWorkDimension::StructuralItems,
-                    compound.elements.len(),
-                )?;
                 pending.extend(&compound.elements);
             }
             _ => return Err(AuthorityError::UnsupportedFundingSignature.into()),
@@ -116,24 +89,16 @@ impl NativePhloRegionDemands<'_> {
     pub fn locate_purses(
         &self,
         limits: NativePhloPurseLimits,
-        host_work: &HostWorkBudget,
     ) -> Result<NativePhloLocatedDemands<'_>, NativePhloPurseError> {
         let mut purses: BTreeMap<&[u8], NativePhloPurse<'_>> = BTreeMap::new();
         let mut encoded_bytes = 0_usize;
         for row in self.measurements.observations.rows() {
-            reserve(host_work, HostWorkDimension::VerificationOperations, 1)?;
             for region in &row.authority.regions {
-                reserve(host_work, HostWorkDimension::VerificationOperations, 1)?;
                 let original_authority = region
                     .signature
                     .as_ref()
                     .ok_or(AuthorityError::MissingSignature)?;
                 let authority_bytes = original_authority.encoded_len();
-                reserve(
-                    host_work,
-                    HostWorkDimension::VerificationBytes,
-                    authority_bytes,
-                )?;
                 if let Some(prior) = purses.get(region.instance_id.as_slice()) {
                     if prior.original_authority != original_authority {
                         return Err(AuthorityError::RegionIdentityConflict.into());
@@ -143,7 +108,7 @@ impl NativePhloRegionDemands<'_> {
                 if purses.len() >= limits.bindings {
                     return Err(NativePhloPurseError::BindingLimit);
                 }
-                let expected_channel_bytes = channel_bytes(original_authority, host_work)?;
+                let expected_channel_bytes = channel_bytes(original_authority)?;
                 let binding_bytes = authority_bytes
                     .checked_add(expected_channel_bytes)
                     .ok_or(NativePhloPurseError::BindingByteLimit)?;
@@ -151,7 +116,6 @@ impl NativePhloRegionDemands<'_> {
                     .checked_add(binding_bytes)
                     .filter(|count| *count <= limits.encoded_binding_bytes)
                     .ok_or(NativePhloPurseError::BindingByteLimit)?;
-                reserve(host_work, HostWorkDimension::StructuralBytes, binding_bytes)?;
                 let authority = cost_signature_to_sig(original_authority)?;
                 let channel = SignatureChannel::from_sig(&authority).par;
                 if channel.encoded_len() != expected_channel_bytes {

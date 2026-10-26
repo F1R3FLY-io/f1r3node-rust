@@ -20,9 +20,7 @@
 //! operation, and a post-charge stops after its operation. Replay stages the same operations
 //! and runs the same callbacks, so it makes the same charges and stops at the same point.
 //!
-//! The chain is active only in a legacy deploy with a metered budget. A legacy deploy has no
-//! host-work budget, so the encoded-length walks of the charges reserve nothing, as the walks of
-//! `ChargingRSpace` reserve nothing.
+//! The chain is active only in a legacy deploy with a metered budget.
 
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};

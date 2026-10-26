@@ -7,12 +7,10 @@ use std::task::Poll;
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
-use models::rust::host_work::{HostWorkDimension, HostWorkReservationError, HostWorkUnits};
 use prost::Message;
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::hashing::native_source::SourceMeter;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::operation_context::{self, CausalPath, OperationOrder};
 use rspace_plus_plus::rspace::reporting_rspace::ReportPhase;
@@ -33,7 +31,6 @@ use super::accounting::phlo_execution::PhloFailure;
 use super::accounting::RuntimeBudget;
 use super::errors::InterpreterError;
 use super::execution_space::{ExecutionBackend, ExecutionSpace};
-use super::host_work::HostWorkBudget;
 use super::rho_runtime::RhoISpace;
 
 #[cfg(test)]
@@ -167,8 +164,6 @@ impl ReductionContext {
     }
 
     pub fn rejoin(&self) { self.session.rejoin(self.participant.clone()); }
-
-    pub fn host_work_budget(&self) -> Option<HostWorkBudget> { self.session.host_work.clone() }
 }
 
 pub fn current() -> Option<ReductionContext> {
@@ -184,7 +179,7 @@ pub(crate) fn record_evaluator_failures(errors: &[InterpreterError]) {
         return;
     }
     if let Some(context) = current() {
-        let summary = classify_errors(errors, context.session.failure_work.as_ref())
+        let summary = classify_errors(errors)
             .unwrap_or_else(|_| EvaluationFailureSummary::single(PhloFailure::Platform));
         context.session.failures.record(summary);
     }
@@ -308,19 +303,6 @@ impl Drop for RootCancellationGuard {
     }
 }
 
-pub fn reserve_host_work(
-    dimension: HostWorkDimension,
-    units: HostWorkUnits,
-) -> Result<(), HostWorkReservationError> {
-    let Some(context) = current() else {
-        return Ok(());
-    };
-    let Some(budget) = context.host_work_budget() else {
-        return Ok(());
-    };
-    budget.reserve(dimension, units).map(|_| ())
-}
-
 pub async fn scope<T>(context: ReductionContext, future: impl Future<Output = T>) -> T {
     REDUCTION_CONTEXT.scope(context, future).await
 }
@@ -380,20 +362,10 @@ pub async fn root<T>(
     coordinator: ReductionCoordinator,
     future: impl Future<Output = T>,
 ) -> T {
-    root_with_host_work(space, budget, coordinator, None, future).await
-}
-
-pub async fn root_with_host_work<T>(
-    space: impl Into<ExecutionSpace>,
-    budget: RuntimeBudget,
-    coordinator: ReductionCoordinator,
-    host_work: Option<HostWorkBudget>,
-    future: impl Future<Output = T>,
-) -> T {
     if current().is_some() {
         return future.await;
     }
-    root_with_observation(space, budget, coordinator, host_work, future)
+    root_with_observation(space, budget, coordinator, future)
         .await
         .0
 }
@@ -402,7 +374,6 @@ pub(crate) async fn root_with_observation<T>(
     space: impl Into<ExecutionSpace>,
     budget: RuntimeBudget,
     coordinator: ReductionCoordinator,
-    host_work: Option<HostWorkBudget>,
     future: impl Future<Output = T>,
 ) -> (T, EvaluationFailureSummary, Vec<InterpreterError>) {
     if let Some(context) = current() {
@@ -414,7 +385,6 @@ pub(crate) async fn root_with_observation<T>(
     let session = Arc::new(ReductionSession::new(
         space.into(),
         budget,
-        host_work,
         evaluation_guard,
     ));
     let mut cancellation = RootCancellationGuard {
@@ -516,9 +486,7 @@ struct ReductionSession {
     legacy_split: bool,
     space: ExecutionSpace,
     budget: RuntimeBudget,
-    host_work: Option<HostWorkBudget>,
     failures: FailureRecorder,
-    failure_work: Option<HostWorkBudget>,
     state: Mutex<SessionState>,
     evaluation_guard: Mutex<Option<OwnedRwLockReadGuard<()>>>,
     next_detached_id: AtomicU64,
@@ -656,7 +624,6 @@ impl ReductionSession {
     fn new(
         space: ExecutionSpace,
         budget: RuntimeBudget,
-        host_work: Option<HostWorkBudget>,
         evaluation_guard: OwnedRwLockReadGuard<()>,
     ) -> Self {
         Self {
@@ -664,10 +631,6 @@ impl ReductionSession {
             legacy_split: LEGACY_SPLIT.with(std::cell::Cell::get),
             space,
             budget,
-            failure_work: host_work
-                .as_ref()
-                .map(|budget| HostWorkBudget::new(budget.limits())),
-            host_work,
             failures: FailureRecorder::default(),
             state: Mutex::new(SessionState {
                 participants: BTreeMap::new(),
@@ -907,13 +870,32 @@ impl ReductionSession {
         match &intent {
             Intent::Produce { channel, data, .. } => {
                 insert_channel(&mut footprint, channel);
-                let joins = match self.space.get_joins(channel.clone()).await {
-                    Ok(joins) => joins,
-                    Err(error) => return Err(intent.reject(order, error)),
-                };
-                for join in joins {
-                    for joined_channel in join {
-                        insert_channel(&mut footprint, &joined_channel);
+                // Changed by D-C5a (DR-100): a native session gives every intent
+                // the footprint key [2, 0] (insert_authority), so its frontier is
+                // one conflict component and the joins cannot change the
+                // partition. The joins read was charged to the replay budget on
+                // this driver path only; the direct path of a lone participant
+                // skipped it, so the charge depended on whether the other
+                // participants had completed (the thread schedule).
+                // let joins = match self.space.get_joins(channel.clone()).await {
+                //     Ok(joins) => joins,
+                //     Err(error) => return Err(intent.reject(order, error)),
+                // };
+                // for join in joins {
+                //     for joined_channel in join {
+                //         insert_channel(&mut footprint, &joined_channel);
+                //     }
+                // }
+                let read_joins = !self.budget.native_execution_active();
+                if read_joins {
+                    let joins = match self.space.get_joins(channel.clone()).await {
+                        Ok(joins) => joins,
+                        Err(error) => return Err(intent.reject(order, error)),
+                    };
+                    for join in joins {
+                        for joined_channel in join {
+                            insert_channel(&mut footprint, &joined_channel);
+                        }
                     }
                 }
                 insert_authority(&mut footprint, data.cost_authority.as_ref(), &self.budget);
@@ -999,6 +981,10 @@ impl ReductionSession {
             }
         }
         let components = conflict_components(prepared);
+        debug_assert!(
+            !self.budget.native_execution_active() || components.len() <= 1,
+            "a native frontier must form one conflict component (DR-79 step 5, DR-100)"
+        );
         let mut component_futures = FuturesUnordered::new();
         for component in components {
             let session = self.clone();
@@ -1140,14 +1126,6 @@ impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Determi
 
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
         self.inner.get_data(channel).await
-    }
-
-    async fn get_data_metered(
-        &self,
-        channel: &Par,
-        meter: &(dyn SourceMeter + Sync),
-    ) -> Result<Vec<Datum<ListParWithRandom>>, RSpaceError> {
-        self.inner.get_data_metered(channel, meter).await
     }
 
     async fn get_waiting_continuations(
@@ -1381,7 +1359,6 @@ mod tests {
     use std::time::Duration;
 
     use models::rhoapi::{CostAuthority, CostRegion};
-    use models::rust::host_work::{HostWorkLimit, HostWorkLimits, HostWorkUsage};
     use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
     use proptest::prelude::*;
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -1519,19 +1496,22 @@ mod tests {
             1,
         )
         .unwrap();
-        let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
-        let config = NativeRuntimeConfig::new(
-            contract,
-            NativeBudgetTraceLimits {
-                attempts: 4,
-                path_segments: 4,
-                regions: NativePhloRegionLimits {
-                    regions: 4,
-                    encoded_authority_bytes: 4096,
-                },
+        // Changed by DR-113: the contract names the source of its bound.
+        // let contract = NativePhloExecutionContract::new(controls, &binding).unwrap();
+        let contract = NativePhloExecutionContract::new(
+            controls,
+            &binding,
+            crate::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::Certificate,
+        )
+        .unwrap();
+        let config = NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+            attempts: 4,
+            path_segments: 4,
+            regions: NativePhloRegionLimits {
+                regions: 4,
+                encoded_authority_bytes: 4096,
             },
-            HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(1_000_000))),
-        );
+        });
         let budget = RuntimeBudget::new(Cost::create(1, "native global schedule"));
         budget.reset_for_native_execution(config).unwrap();
         budget
@@ -1546,7 +1526,6 @@ mod tests {
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {
                 let children = current().expect("root reduction context").split(1);
                 drop(children);
@@ -1559,7 +1538,6 @@ mod tests {
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {},
         )
         .await;
@@ -1575,7 +1553,6 @@ mod tests {
             reducer.space.clone(),
             reducer.metering.budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {
                 spawn_detached(async {
                     tokio::task::yield_now().await;
@@ -1598,7 +1575,6 @@ mod tests {
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {
                 spawn_detached(async {
                     tokio::task::yield_now().await;
@@ -1632,7 +1608,6 @@ mod tests {
                 reducer.space.clone(),
                 reducer.metering.budget(),
                 reducer.reduction_coordinator.clone(),
-                None,
                 async move {
                     spawn_detached(async move {
                         let _guard = MarkDrop(dropped_child);
@@ -1659,7 +1634,6 @@ mod tests {
                 reducer.space.clone(),
                 reducer.metering.budget(),
                 reducer.reduction_coordinator.clone(),
-                None,
                 async {},
             ),
         )
@@ -1680,7 +1654,6 @@ mod tests {
                 reducer.space.clone(),
                 reducer.metering.budget(),
                 reducer.reduction_coordinator.clone(),
-                None,
                 async move {
                     let context = current().expect("reduction context");
                     let child = context.split(1).pop().expect("child context");
@@ -1734,7 +1707,7 @@ mod tests {
             if self.admissions.fetch_add(1, Ordering::SeqCst) == 0 {
                 Ok(None)
             } else {
-                Err(RSpaceError::HostWorkRejected)
+                Err(refused_admission())
             }
         }
 
@@ -1747,8 +1720,20 @@ mod tests {
         }
     }
 
+    /// Changed by DR-131 S6: the error of a refused admission. It was
+    /// `RSpaceError::HostWorkRejected`, which is deleted.
+    fn refused_admission() -> RSpaceError {
+        RSpaceError::InterpreterError("admission refused".to_owned())
+    }
+
+    /// Changed by DR-131 S6: the test was
+    /// `native_disjoint_operations_reserve_near_limit_in_causal_order`. The
+    /// backend refused the second admission with the host-work error, which
+    /// is deleted, so it refuses it with an ordinary error. The test keeps its
+    /// check that the scheduler admits the disjoint operations in causal
+    /// order.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn native_disjoint_operations_reserve_near_limit_in_causal_order() {
+    async fn native_disjoint_operations_are_admitted_in_causal_order() {
         let budget = native_budget();
         let first_channel = models::rust::utils::new_gint_par(1, Vec::new(), false);
         let second_channel = models::rust::utils::new_gint_par(2, Vec::new(), false);
@@ -1787,7 +1772,7 @@ mod tests {
         )
         .await;
         assert!(first.is_ok());
-        assert!(matches!(second, Err(RSpaceError::HostWorkRejected)));
+        assert_eq!(second, Err(refused_admission()));
         assert_eq!(admissions.load(Ordering::SeqCst), 2);
     }
 
@@ -1973,42 +1958,6 @@ mod tests {
             },
         )
         .await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn parallel_children_share_the_root_host_work_budget() {
-        let (_, reducer) =
-            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
-                .await;
-        let host_work = HostWorkBudget::new(HostWorkLimits::uniform(HostWorkLimit::new(16)));
-        root_with_host_work(
-            reducer.space.clone(),
-            RuntimeBudget::new(Cost::create(100, "host work propagation")),
-            ReductionCoordinator::default(),
-            Some(host_work.clone()),
-            async {
-                let parent = current().expect("root reduction context");
-                let children = parent.split(4);
-                let mut handles = Vec::new();
-                for child in children {
-                    handles.push(tokio::spawn(scope(child.clone(), async move {
-                        let _guard = ParticipantGuard::for_context(&child);
-                        reserve_host_work(HostWorkDimension::ReductionSteps, HostWorkUnits::new(1))
-                            .unwrap();
-                    })));
-                }
-                for handle in handles {
-                    handle.await.unwrap();
-                }
-                parent.rejoin();
-            },
-        )
-        .await;
-
-        assert_eq!(
-            host_work.usage(HostWorkDimension::ReductionSteps),
-            HostWorkUsage::new(4)
-        );
     }
 
     #[tokio::test]
@@ -2223,7 +2172,6 @@ mod tests {
                 reducer.space.clone(),
                 native_budget(),
                 reducer.reduction_coordinator.clone(),
-                None,
                 async {
                     let root = current().expect("root reduction context");
                     let compacted_root =
@@ -2282,7 +2230,6 @@ mod tests {
             reducer.space.clone(),
             native_budget(),
             reducer.reduction_coordinator.clone(),
-            None,
             async {
                 let root = current().expect("root reduction context");
                 let mut compacted = ReductionContext::root(root.session.clone(), root.session_id);

@@ -5,11 +5,11 @@
 //! runs one role in a fresh process (`support::process`). The children keep their stores in a run
 //! directory under `RRS_SCRATCH`, or under `target/verification/reified-rspaces/scratch`, and
 //! never in the RAM-backed temporary directory of the host. Every deploy runs in native execution
-//! at the v6 host-work limits (decision 69).
+//! at the v6 limits (decision 69).
 //!
 //! | Test | Property |
 //! |---|---|
-//! | `n2_cross_process_post_state_equal` | The children `n2-a` and `n2-b` each play one deploy set in a fresh process over an in-memory store, and the parent plays the set twice in its own process. For each deploy, all four runs give the same pre-state and post-state roots, outputs, event log, evidence bytes, phlo and host work. |
+//! | `n2_cross_process_post_state_equal` | The children `n2-a` and `n2-b` each play one deploy set in a fresh process over an in-memory store, and the parent plays the set twice in its own process. For each deploy, all four runs give the same pre-state and post-state roots, outputs, event log, evidence bytes and phlo. |
 //! | `space_cross_block_replay` | The child `propose` plays three blocks over one LMDB store. Block 1 creates a durable space of each family and an agent space, with records and waiters. Block 2 uses them, fires the waiters of block 1, and creates and ends a `temp` space and a `seq` space inside each deploy. Block 3 runs joins, PathMap prefix deliveries and agent calls. The child `validate` opens the store in another process and certifies each deploy once from its pre-state. The parent plays the blocks in its own process and compares every record of the child `propose` with its own. |
 //!
 //! The deploy set of N2 holds the 24 family programs with the qualifiers `default` and `temp`,
@@ -19,8 +19,7 @@
 //! worker count of the parent (finding F-47-2). Only the child `validate` certifies, because a
 //! validator certifies each deploy once (amendment A16). In the replay across blocks, each family
 //! forwards its deliveries to a channel of its own, and the parent checks the deliveries of each
-//! family after its run. One shared channel would grow with the chain, and native replay charges
-//! loads that grow with it (decision 79).
+//! family after its run.
 
 #[path = "support/mod.rs"]
 mod support;

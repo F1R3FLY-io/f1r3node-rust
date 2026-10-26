@@ -9,25 +9,24 @@ use models::rust::casper::protocol::casper_message::DeployData;
 /// Creates a bonding deploy
 /// Scala equivalent: BondingUtil.bondingDeploy[F]
 ///
-/// Note: In original Scala code, the 'amount' parameter is accepted but not used!
-/// The hardcoded value 1000 is used instead (line 23 in BondingUtil.scala).
-/// This is likely a bug, but we port it 1:1 for now.
+/// The Scala original accepts `amount` and then bonds a hardcoded 1000; this
+/// honors it, so a spec can choose a stake geometry. Every existing caller
+/// passes 1000, so their behavior is unchanged.
 pub fn bonding_deploy(
     amount: i64,
     private_key: &PrivateKey,
     shard_id: Option<String>,
 ) -> Result<Signed<DeployData>, CasperError> {
-    // WARNING: Scala bug - 'amount' parameter is ignored, hardcoded 1000 is used
-    let _ = amount; // Explicitly mark as unused to match Scala behavior
-
-    let source = r#"
-new retCh, PoSCh, rl(`rho:registry:lookup`), stdout(`rho:io:stdout`), deployerId(`rho:system:deployerId`) in {
+    let source = format!(
+        r#"
+new retCh, PoSCh, rl(`rho:registry:lookup`), stdout(`rho:io:stdout`), deployerId(`rho:system:deployerId`) in {{
   rl!(`rho:system:pos`, *PoSCh) |
-  for(@(_, PoS) <- PoSCh) {
-    @PoS!("bond", *deployerId, 1000, *retCh)
-  }
-}
-"#.to_string();
+  for(@(_, PoS) <- PoSCh) {{
+    @PoS!("bond", *deployerId, {amount}, *retCh)
+  }}
+}}
+"#
+    );
 
     construct_deploy::source_deploy_now_full(
         source,

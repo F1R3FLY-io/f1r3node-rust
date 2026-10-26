@@ -15,6 +15,7 @@ members = [
 	"graphz",
 	"formal/loom/cost_accounting",
 	"scripts/supply-chain",
+	"scripts/casper-soak",
 ]
 
 [workspace.dependencies]

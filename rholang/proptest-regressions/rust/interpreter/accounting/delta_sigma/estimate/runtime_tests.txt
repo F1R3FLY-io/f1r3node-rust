@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 9013122fb1726fbbcd89783e7b4adfa739b7268b61f8b7c5d51cb53edc91b86c # shrinks to program = [New([Send(0, Int(0)), Signed(0, [Send(2, Text(""))])]), Receive { binds: [(2, None)], body: [Branch([], [])], persistent: false, peek: false }], seed = [0, 0, 0, 0, 0, 0, 0, 0]
+cc 598c6619529362e078cbc7e7e9f6e05d194be398dea4c6de8fa24303b97ceac4 # shrinks to program = [Receive { binds: [(0, None)], body: [SignedQuote(Literal(0), [SignedQuote(Channel(0), [])])], persistent: false, peek: false }], seed = [0, 0, 0, 0, 0, 0, 0, 0]
