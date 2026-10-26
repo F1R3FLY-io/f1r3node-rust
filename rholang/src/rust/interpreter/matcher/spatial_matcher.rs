@@ -43,13 +43,9 @@ impl SpatialMatcherContext {
         }
     }
 
-    pub fn spatial_match_result(&mut self, target: Par, pattern: Par) -> Option<&FreeMap> {
-        let do_match = self.spatial_match(target, pattern);
-
-        match do_match {
-            Some(_) => Some(&self.free_map),
-            None => None,
-        }
+    /// Matches `target` against `pattern` and hands back the bindings found.
+    pub fn into_match_result(mut self, target: Par, pattern: Par) -> Option<FreeMap> {
+        self.spatial_match(target, pattern).map(|_| self.free_map)
     }
 }
 

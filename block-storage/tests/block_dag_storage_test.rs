@@ -2244,7 +2244,11 @@ async fn deploy_terminal_is_write_once_and_prunes_the_open_row() {
     let dag = dag_storage.get_representation().unwrap();
     let sig = deploy.deploy.sig.clone();
     assert_eq!(dag.deploy_terminal(&sig).unwrap(), None);
-    assert!(dag.open_lifecycle_sigs().unwrap().contains(&sig.to_vec()));
+    assert!(dag
+        .open_lifecycle_rows()
+        .unwrap()
+        .iter()
+        .any(|(open, _)| *open == sig.to_vec()));
 
     let first = TerminalRecord {
         state: TerminalState::Finalized,
@@ -2266,7 +2270,11 @@ async fn deploy_terminal_is_write_once_and_prunes_the_open_row() {
     let survivor = dag.put_deploy_terminal_if_absent(&sig, second).unwrap();
     assert_eq!(survivor, first, "the first terminal write must stand");
     assert_eq!(dag.deploy_terminal(&sig).unwrap(), Some(first));
-    assert!(!dag.open_lifecycle_sigs().unwrap().contains(&sig.to_vec()));
+    assert!(!dag
+        .open_lifecycle_rows()
+        .unwrap()
+        .iter()
+        .any(|(open, _)| *open == sig.to_vec()));
     assert_eq!(
         dag.deploy_canonical_appearance(&sig).unwrap(),
         Some(carrier.block_hash.clone())

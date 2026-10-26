@@ -360,6 +360,18 @@ pub struct RuntimeManager {
     /// `safe_descend` falls through to the identity branch
     /// (matches pre-Shape-A behavior).
     pub root_registry: rholang::rust::interpreter::io::path::identity::RootIdentityRegistry,
+
+    /// Shared range-lock registry — broadcast to every spawned
+    /// runtime via `FileHandleTable::share_lock_registry` in
+    /// `broadcast_fs_slots`.  Cross-cap lock coordination on the
+    /// same `(dev, inode)` has to live above the per-fd table
+    /// because each `File` cap mints its own fd (slice 27's
+    /// fresh-mint posture), so same-file concurrent operations
+    /// via different caps need a shared coordinator.  Mirrors
+    /// [`root_registry`](Self::root_registry) in shape — a
+    /// single manager-owned registry fans out to every
+    /// runtime's handle-table at spawn time.
+    pub shared_lock_registry: rholang::rust::interpreter::io::lock::SharedLockRegistry,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -749,6 +761,19 @@ impl RuntimeManager {
         runtime
             .fs_handles
             .share_root_registry(self.root_registry.clone());
+        // Share the manager's `SharedLockRegistry` backing with the
+        // spawned runtime via the same two-layer-indirection
+        // discipline (see `SharedLockRegistry::share_from`).  Cross-
+        // cap lock coordination on the same `(dev, inode)` is now
+        // visible across every runtime spawned from this manager —
+        // without this call, each runtime would carry its own
+        // disjoint `LockRegistry` and a `File` cap holding a
+        // range-lock in one runtime would not block a sibling cap's
+        // acquire attempt in another runtime, defeating the
+        // whole-shard coordination guarantee.
+        runtime
+            .fs_handles
+            .share_lock_registry(self.shared_lock_registry.clone());
     }
 
     pub async fn compute_state(
@@ -849,6 +874,11 @@ impl RuntimeManager {
             Vec<ProcessedDeploy>,
             Vec<ProcessedSystemDeploy>,
             Vec<Bond>,
+            // Per-deploy Merkle leaves in commit order (user deploys
+            // first, then system deploys).  Fed to
+            // `proto_util::hash_block_with_leaves` by the propose path
+            // to skip re-hashing the body at package time.
+            Vec<[u8; 32]>,
         ),
         CasperError,
     > {
@@ -952,7 +982,29 @@ impl RuntimeManager {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_drop_runtime_ops", rss_kb);
         }
 
-        Ok((state_hash, usr_processed, sys_processed, bonds))
+        // Per-deploy Merkle leaves for `hash_block_with_leaves`.  Computed
+        // from the processed deploys after the propose loop; cheaper than
+        // rehashing from the body at package time, and keeps the Merkle
+        // hash recipe owned by `proto_util`.
+        let mut block_hash_leaves: Vec<[u8; 32]> =
+            Vec::with_capacity(usr_processed.len() + sys_processed.len());
+        for pd in &usr_processed {
+            block_hash_leaves.push(crate::rust::util::proto_util::hash_processed_deploy_leaf(
+                pd,
+            ));
+        }
+        for psd in &sys_processed {
+            block_hash_leaves
+                .push(crate::rust::util::proto_util::hash_processed_system_deploy_leaf(psd));
+        }
+
+        Ok((
+            state_hash,
+            usr_processed,
+            sys_processed,
+            bonds,
+            block_hash_leaves,
+        ))
     }
 
     pub async fn compute_genesis(
@@ -1072,7 +1124,15 @@ impl RuntimeManager {
             .await;
         metrics::histogram!(BLOCK_REPLAY_RUNTIME_EXECUTE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(execute_start.elapsed().as_secs_f64());
-        let (state_hash, mergeable_chs) = replay_result?;
+        // Discard per-deploy Merkle leaves at this API boundary: callers of
+        // `RuntimeManager::replay_compute_state` only need the state hash.
+        // The leaves exist to give fail-fast replay semantics (bad deploy
+        // detected the moment its leaf is computed); they are also used on
+        // the propose path (`compute_state_with_bonds`) to feed
+        // `hash_block_with_leaves` without rehashing.  Validation computes
+        // `block_hash` via `Validate::block_hash` which recomputes leaves
+        // from the stored block body.
+        let (state_hash, mergeable_chs, _block_hash_leaves) = replay_result?;
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);
@@ -1725,6 +1785,7 @@ impl RuntimeManager {
             consensus_static_roots: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             root_registry:
                 rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new(),
+            shared_lock_registry: rholang::rust::interpreter::io::lock::SharedLockRegistry::new(),
         }
     }
 

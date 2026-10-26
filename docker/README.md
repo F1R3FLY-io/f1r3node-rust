@@ -2,9 +2,10 @@
 
 ## Quick Start (Docker Only)
 
-Pull the latest image and start a multi-validator shard:
+Pull the latest image and start a multi-validator shard. `.env` is not tracked, so copy the development template first. Its keys are public: use them only on a local, private network.
 
 ```bash
+cp -n .env.example .env
 docker compose -f shard.yml pull
 docker compose -f shard.yml up -d
 ```
@@ -53,6 +54,7 @@ F1R3FLY_RUST_IMAGE=f1r3fly-rust:local docker compose -f shard.yml up -d
 
 For local development with instant finalization:
 ```bash
+cp -n .env.example .env
 docker compose -f standalone.yml up -d
 docker compose -f standalone.yml logs -f
 docker compose -f standalone.yml down -v
@@ -132,7 +134,7 @@ The Rust node reads a small set of environment variables. All other configuratio
 | `OLLAMA_MODEL` | Ollama model name (default: `llama3.2`) |
 | `OLLAMA_TIMEOUT_SEC` | Ollama request timeout in seconds (default: `120`) |
 
-See [`.env.example`](.env.example) for Docker defaults.
+See [`.env.example`](.env.example) for Docker defaults. The compose files read the node keys from `.env`, which is not tracked. Copy `.env.example` to `.env` before the first start.
 
 ## Port Mapping
 

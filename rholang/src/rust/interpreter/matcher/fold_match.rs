@@ -68,7 +68,7 @@ impl FoldMatch<Par, Par> for SpatialMatcherContext {
             &[] => Some(acc),
 
             [item, rem @ ..] => {
-                if self.locally_free(item.to_owned(), 0).is_empty() {
+                if item.locally_free(0).is_empty() {
                     acc.push(item.clone());
                     self.free_check(rem, level, acc)
                 } else {
@@ -121,7 +121,7 @@ impl FoldMatch<MatchCase, MatchCase> for SpatialMatcherContext {
             &[] => Some(acc),
 
             [item, rem @ ..] => {
-                if self.locally_free(item.to_owned(), 0).is_empty() {
+                if item.locally_free(0).is_empty() {
                     acc.push(item.clone());
                     self.free_check(rem, level, acc)
                 } else {
