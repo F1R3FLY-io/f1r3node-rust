@@ -2340,3 +2340,25 @@ mod merkle_block_hash_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod bigint_bond_info_tests {
+    use super::*;
+
+    #[test]
+    fn bond_info_preserves_large_stakes_in_the_decimal_field() {
+        for amount in [
+            "9223372036854775807",
+            "9223372036854775808",
+            "100000000000000000000000",
+        ] {
+            let bond = Bond {
+                validator: vec![1; 32].into(),
+                stake: amount.parse().unwrap(),
+            };
+            let info = bond_to_bond_info(&bond);
+            assert_eq!(info.stake_big_int, amount);
+            assert_eq!(info.stake, amount.parse::<i64>().unwrap_or(0));
+        }
+    }
+}

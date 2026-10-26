@@ -24,6 +24,7 @@ pub mod multi_sig_system_vault_spec;
 pub mod non_negative_number_spec;
 pub mod pos_delegation_scalability_spec;
 pub mod pos_delegation_review_spec;
+pub mod pos_lazy_rewards_spec;
 pub mod pos_spec;
 pub mod registry_ops_spec;
 pub mod registry_spec;

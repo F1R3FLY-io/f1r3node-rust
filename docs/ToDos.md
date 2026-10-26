@@ -26,6 +26,32 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
+### TASK-030-14: Verify and fix PR 54 delegation review findings
+
+```yaml
+id: TASK-030-14
+status: complete
+claimed_by: codex-pr54-delegation-review
+branch: fix/pr54-delegation-review
+base_commit: b9eeb64ba346fafa5530cae8a1891c831744cb20
+user_story: US-014
+completed_at: 2026-10-26
+notes:
+  - "Implemented lazy reward indexes, cached liabilities, coop forfeiture, and quarantine protections."
+  - "All 30 PoS scenarios and five lazy reward scenarios passed. Timeout retry was disabled."
+  - "Delegation guards, independent capacity, and three BigInt API boundary tests passed."
+  - "Independent Opus review verified the corrections and reported no remaining correctness findings."
+  - "No full-capacity load benchmark or injected vault transfer failure test was run."
+acceptance:
+  - "Verify each node review lead against the current source."
+  - "Prevent slashed keys from rebonding and preserve the quarantine horizon."
+  - "Conserve forfeited rewards during slashing."
+  - "Use lazy reward indexes and cached liabilities at epoch boundaries."
+  - "Verify rounding, stake changes, repeated claims, and independent delegation capacity."
+  - "Verify large stake response precision."
+  - "Run focused regression tests and independent Opus review."
+```
+
 - **Casper ratification follow-up (2026-09-16).** EPIC-017 owns the pre-#216 models, baseline conformance, and harness preparation on `formal/soak-casper-consensus`. EPIC-018 owns a separate formal-methods harness PR after PR #216 merges. The [meeting record](https://github.com/F1R3FLY-io/f1r3node-rust/pull/390#pullrequestreview-5227717933) controls both phases. PRs #430 through #433 remain prerequisites in stack order. The [branch plan](https://github.com/F1R3FLY-io/f1r3node-rust/blob/ba9758507194d6e34bc1494d416b87405facd550/docs/plans/casper-ratified-soak-2026-09-16.md) (local Git: `ba9758507194d6e34bc1494d416b87405facd550:docs/plans/casper-ratified-soak-2026-09-16.md`) defines the handoff, separate completion gates, and deferred-policy restrictions.
 
 <!-- Compact, current-state-only. This section replaces the free-form status

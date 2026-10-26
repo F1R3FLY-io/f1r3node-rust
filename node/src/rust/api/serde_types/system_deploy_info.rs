@@ -490,6 +490,22 @@ mod tests {
     }
 
     #[test]
+    fn large_bond_stake_serializes_without_precision_loss() {
+        let proto = BondInfo {
+            stake_big_int: "100000000000000000000".to_string(),
+            validator: "validator-key".to_string(),
+            stake: 0,
+        };
+        let value: BondInfoSerde = proto.clone().into();
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(json["stake"], "100000000000000000000");
+        let back: BondInfo = serde_json::from_value::<BondInfoSerde>(json)
+            .unwrap()
+            .into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
     fn justification_info_roundtrips() {
         let proto = JustificationInfo {
             validator: "validator-key".to_string(),

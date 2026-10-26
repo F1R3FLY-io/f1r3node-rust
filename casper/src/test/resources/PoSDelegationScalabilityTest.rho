@@ -19,7 +19,7 @@ in {
       @(_, ListOps) <- ListOpsCh) {
     @RhoSpec!("testSuite", *setup,
       [
-        ("delegator cap and validator index reuse", *test_delegator_cap_and_index_reuse)
+        ("delegator capacity and validator index updates", *test_delegator_cap_and_index_reuse)
       ]
     ) |
 
@@ -110,7 +110,7 @@ in {
                         prepareUser!("2020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020202020", *overflowSetupCh) |
                         for (@overflowPk, _, _, @overflowDeployerId <- overflowSetupCh) {
                           @PoS!("delegate", overflowDeployerId, targetValidator, 2n, *overflowDelegateCh) |
-                          for (@(false, overflowMsg) <- overflowDelegateCh) {
+                          for (@(true, _) <- overflowDelegateCh) {
                             prepareUser!(delegatorKeys.nth(0), *firstSetupCh) |
                             for (@firstPk, _, _, @firstDeployerId <- firstSetupCh) {
                               setBlockData!("blockNumber", 10, *blockDataCh) |
@@ -127,15 +127,15 @@ in {
                                         finalDelegatorMap => {
                                           rhoSpec!("assertMany",
                                             [
-                                              ((16, "==", maxCap), "delegator cap derives from active-validator sizing in this test genesis"),
-                                              ((16, "==", delegatedCount), "cap-sized delegator set is admitted"),
-                                              ((existingPk, "==", firstPk), "existing capped delegator can be topped up"),
-                                              (("Validator delegator limit reached.", "==", overflowMsg), "new delegator over cap is rejected"),
-                                              ((16, "==", finalDelegatorMap.size()), "validator delegator index remains bounded after slot reuse"),
+                                              ((1600, "==", maxCap), "delegator cap is independent of the one-validator genesis"),
+                                              ((16, "==", delegatedCount), "initial delegator set is admitted"),
+                                              ((existingPk, "==", firstPk), "existing delegator can be topped up"),
+
+                                              ((16, "==", finalDelegatorMap.size()), "removing one of seventeen delegators leaves sixteen entries"),
                                               ((false, "==", finalDelegatorMap.contains(firstPk)), "undelegated account leaves validator index"),
-                                              ((true, "==", finalDelegatorMap.contains(overflowPk)), "freed validator index slot can be reused"),
+                                              ((true, "==", finalDelegatorMap.contains(overflowPk)), "seventeenth delegator remains indexed"),
                                               ((false, "==", delegations.getOrElse(firstPk, {}).contains(targetValidator)), "undelegated account leaves delegation map"),
-                                              ((2n, "==", delegations.getOrElse(overflowPk, {}).getOrElse(targetValidator, 0n)), "replacement delegator is recorded")
+                                              ((4n, "==", delegations.getOrElse(overflowPk, {}).getOrElse(targetValidator, 0n)), "seventeenth delegator can join and add stake")
                                             ],
                                             *ackCh
                                           )

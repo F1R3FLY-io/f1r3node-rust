@@ -20,6 +20,12 @@ Delegated stake contributes to validator effective stake for reward weight and s
 
 ## State Model
 
+The review fixes preserve the current reward-forfeiture policy. Slashing transfers forfeited principal and accrued rewards to the coop vault.
+A permanent slashed-key set prevents a removed validator from bonding again.
+Delegated principal uses the same quarantine horizon as validator withdrawals: the next epoch boundary plus `quarantineLength`.
+Epoch processing updates cumulative reward indexes and liability totals per validator. Each stake change or claim settles the affected delegator positions.
+Each validator admits up to 1600 active delegators. The bound is independent of the validator count.
+
 PoS state now includes:
 
 - `allBonds : Map[ValidatorPk, BigInt]`
@@ -31,7 +37,7 @@ PoS state now includes:
 - `delegatedTotals : Map[ValidatorPk, BigInt]`
   - Aggregated delegated stake per validator.
 - `delegatorRewards : Map[DelegatorPk, Map[ValidatorPk, BigInt]]`
-  - Accrued rewards claimable by delegators, bucketed by validator internally.
+  - Settled whole rewards, stored by delegator and validator.
   - `getDelegatorRewards` returns the flattened `Map[DelegatorPk, BigInt]` view.
 - `pendingUndelegations : Map[DelegatorPk, Map[ValidatorPk, (BigInt, Int)]]`
   - Pending undelegation principal by delegator/validator as `(amount, unlockBlock)`.
@@ -42,6 +48,56 @@ Effective stake is computed as:
 - `effectiveBonds[validator] = allBonds[validator] + delegatedTotals.getOrElse(validator, 0n)`
 
 Slashing deletes the validator from `allBonds`, so slashed validators do not leave permanent zero-bond entries. `computeEffectiveBonds` also ignores stale `delegatedTotals` entries for validators missing from positive `allBonds`.
+
+## Lazy Reward Accounting
+
+**Implemented in:** `PoS.rhox`
+
+**Value Stream:** Consensus Correctness
+
+As a delegator, I need accurate rewards and a predictable quarantine period without a reward calculation for every delegator at each epoch.
+
+The fresh-chain implementation uses these additional state fields:
+
+| Field | Purpose |
+| --- | --- |
+| `slashedValidators` | Permanently rejects previously slashed keys at bonding. |
+| `rewardIndexes[v]` | Cumulative scaled reward per unit of delegated stake. |
+| `rewardCheckpoints[d][v]` | Last settled index and fractional reward remainder. |
+| `validatorRewardLiabilities[v]` | Reserved delegator rewards that have not been paid or forfeited. |
+| `delegatorRewardLiability` | Sum of all validator reward liabilities. |
+| `pendingUndelegationTotal` | Sum of all pending undelegation principal. |
+
+Let `S = maximumBond * 10^18`, `B` be self-bond, `D` delegated stake, and `R` the validator epoch reward.
+The validator receives `floor(R * B / (B + D))` in committed rewards.
+Delegators reserve `Q = floor(R * D / (B + D))`.
+For positive `D`, the cumulative index increases by `floor(Q * S / D)`.
+The per-validator and global reward liabilities increase by `Q`.
+
+Settlement computes `scaled = stake * (currentIndex - lastIndex) + remainder`.
+It adds `floor(scaled / S)` to the position reward and retains `scaled % S` as the remainder.
+A new position starts at the current index and receives no earlier rewards.
+Stake additions, undelegations, and validator withdrawals settle rewards before changing the position stake.
+Bonding rejects validators whose earlier bond remains in withdrawal quarantine.
+Claims settle all positions of the caller and debit liabilities only after a successful transfer.
+A failed transfer preserves the original state.
+
+This changes rounding from separate integer truncation each epoch to fractional carry across settlements.
+Index truncation leaves a small reserve that cannot be redistributed as surplus.
+The reserve remains in the PoS vault until slashing transfers the validator liability to the coop vault.
+Claims cannot exceed the total reserved rewards. Repeated claims without new rewards cannot pay twice.
+Slashing also transfers committed validator rewards and invalidates all reward checkpoints for the slashed key.
+
+Epoch reward calculation traverses validators and uses cached reward and pending-principal liabilities.
+It does not traverse delegator positions. The full rewards query and validator withdrawal still traverse affected delegators.
+State serialization costs can still depend on total state size. This change does not claim constant epoch execution cost.
+
+The legacy gRPC `BondInfo.stake` field cannot represent a value above signed 64-bit range.
+Such clients must read `stakeBigInt`. REST already exposes the exact decimal string as `stake`.
+
+The regression tests cover stake changes, fractional carry, rounding reserves, repeated claims, quarantine, and claims across slashed and live validators.
+The capacity test admits seventeen delegators with one active validator. It does not measure performance at the 1600-delegator limit.
+
 
 ## Public Contract API
 
@@ -95,7 +151,7 @@ See the [economic pipeline design](../designs/pr54-bigint-economic-pipeline.md) 
     - removes `amount` from active delegation immediately
     - decrements `delegations[delegatorPk][validatorPk]`
     - decrements `delegatedTotals[validatorPk]`
-    - creates `pendingUndelegations[delegatorPk][validatorPk] = (amount, blockNumber + epochLength)`
+    - creates `pendingUndelegations[delegatorPk][validatorPk] = (amount, quarantineLength + epochLength * (1 + blockNumber / epochLength))`
     - pending principal stops contributing to future effective stake, but remains slashable until completion
 
 - `PoS("completeUndelegate", deployerId, validatorPk, returnCh)`
@@ -109,7 +165,7 @@ See the [economic pipeline design](../designs/pr54-bigint-economic-pipeline.md) 
 
 - `PoS("claimDelegatorRewards", deployerId, returnCh)`
   - Preconditions:
-    - `delegatorRewards[delegatorPk] > 0`
+    - the caller has a positive whole reward after settlement
   - Effects:
     - transfers accumulated delegator rewards to delegator vault
     - clears delegator reward entry
@@ -118,13 +174,13 @@ See the [economic pipeline design](../designs/pr54-bigint-economic-pipeline.md) 
   - Preconditions:
     - deployer is a bonded validator
   - Effects:
-    - converts every active delegation to this validator into pending undelegation with unlock block `blockNumber + epochLength`
+    - converts every active delegation to this validator into pending undelegation with unlock block `quarantineLength + epochLength * (1 + blockNumber / epochLength)`
     - merges with an existing pending undelegation for the same `(delegator, validator)` by adding the amount and keeping the later unlock block
     - refuses with `Delegated total mismatch.` if the moved active delegation sum does not match `delegatedTotals[validatorPk]`
     - clears `delegatedTotals[validatorPk]`
     - records the validator in `pendingWithdrawers`
   - Consequence:
-    - if a delegator already has an unlocked but unclaimed pending undelegation for this validator, validator withdrawal can extend the merged claim by up to `epochLength`, and the merged amount remains slashable until completion
+    - if a delegator already has an unlocked but unclaimed pending undelegation for this validator, validator withdrawal can extend the merged claim to the new quarantine horizon, and the merged amount remains slashable until completion
 
 ## Wallet SDK Integration (Reference)
 
@@ -309,7 +365,7 @@ This means delegation increases validator reward weight, and delegators receive 
 Reward accounting now treats these as liabilities before minting new epoch rewards:
 
 - validator `committedRewards`
-- delegator `delegatorRewards`
+- reserved delegator reward liabilities, including fractional rounding reserves
 - `pendingUndelegations` principal
 
 Rust runtime on-chain bond queries now call `getEffectiveBonds`, so consensus stake reads include delegated stake.
@@ -328,20 +384,22 @@ Rust runtime on-chain bond queries now call `getEffectiveBonds`, so consensus st
 `PoS("withdraw", ...)` no longer rejects only because delegated stake exists:
 
 - active delegations to the withdrawing validator are converted to pending undelegations
-- pending undelegations use the same `epochLength` cooldown as delegator-requested undelegation
+- pending undelegations use the same quarantine horizon as delegator-requested undelegation
 - validator self-bond still follows the existing pending-withdrawer and quarantine flow
 
 ### Slash
 
 `PoS("slash", ...)` now:
 
-- transfers `selfBond + quarantinedWithdrawerBond + activeDelegatedTotal + pendingUndelegationTotalForValidator` to Coop vault
+- transfers `selfBond + quarantinedWithdrawerBond + activeDelegatedTotal + pendingUndelegationTotalForValidator + committedRewards + validatorRewardLiability` to Coop vault
 - removes slashed validator from every delegator mapping
 - deletes the validator's reverse delegator index
 - deletes `delegatedTotals[validatorPk]`
 - removes pending undelegation claims tied to the slashed validator
 - removes pending/quarantined withdrawal records tied to the slashed validator
-- removes delegator reward buckets attributed to the slashed validator while preserving rewards from other validators
+- invalidates reward checkpoints for the slashed validator and preserves rewards from other validators
+- transfers reserved rewards, including rounding reserves, to the coop vault
+- permanently prevents the slashed public key from bonding again
 - deletes `allBonds[validatorPk]`, removes the validator from the active set, and clears rewards
 
 ## Mechanism Invariants
@@ -350,23 +408,23 @@ Expected invariants for valid state transitions:
 
 1. `delegatedTotals[v] == sum(delegations[d].getOrElse(v, 0n) for all d)`
 2. Delegation can only target validators with active self-bond (`allBonds[v] > 0`).
-3. Delegation amount is at least `minimumBond`. A validator can admit at most `numberOfActiveValidators * 16` distinct delegators at a time; an existing delegator can add stake without consuming another slot.
+3. Delegation amount is at least `minimumBond`. A validator can admit at most 1600 distinct delegators at a time; an existing delegator can add stake without consuming another slot.
 4. Validator withdrawal converts positive delegated totals into pending undelegations instead of permanently blocking validator exit.
 5. A validator cannot increase self-bond through `bond` after it is already bonded; effective stake cap growth is only admitted through `delegate` and checked against `maximumBond`.
 6. On slash, validator self-bond, active delegated stake, and pending undelegation principal tied to that validator are slashed.
 7. Reward weighting uses effective stake (`self + active delegated`), excluding pending undelegations. Active-validator selection currently caps the bonded-key list and is not stake-ranked by effective amount.
 8. Undelegation request removes stake from effective bonds immediately and records unlocking principal in `pendingUndelegations`.
 9. Pending undelegation principal remains slashable until `completeUndelegate` transfers it out.
-10. Delegator rewards are persisted on-chain by `(delegator, validator)` until claimed or until that validator is slashed.
+10. Reward indexes and position checkpoints preserve rewards until payment or slashing.
 
 ## Current Limitations
 
-1. Cooldown duration is fixed to `epochLength` (no separate undelegation-parameter yet).
+1. Delegated principal uses the validator quarantine horizon. There is no separate undelegation duration setting.
 2. Only one pending undelegation per `(delegator, validator)` pair is allowed at a time.
 3. `getDelegatorRewards` intentionally remains a flattened compatibility view; validator attribution is internal slash accounting state.
 4. `maximumBond` is enforced as an effective stake cap (`self + active delegated`), not just self-bond.
 5. Delegation, undelegation, and validator withdrawal change effective stake immediately. TestNet v1 should either accept this immediate-activation economic model explicitly or gate delegation rollout on an epoch-snapshot design.
-6. Epoch reward distribution is bounded by the reverse validator-delegator index and the per-validator delegator cap. A reward-per-share or equivalent lazy-accounting model is still the right path before broad open delegation.
+6. Epoch reward accounting uses validator indexes. Full reward queries, validator withdrawals, and state serialization still depend on the number of delegators.
 7. Pending undelegation slashability is explicit current behavior. Operators and wallets must show that unlocking stake is still slashable until completion.
 8. Concurrent delegation deploys contend on the single PoS state cell. Merge-rejected delegation deploys are expected to recover through canonical deploy recovery and finalize without double application, but a deploy that loses the merge can see additional inclusion latency.
 9. REST `/validators` and `/validator/{pubkey}` expose effective stake plus self-bond and delegated components. Wallets that need delegation ownership, claimable rewards, or pending undelegation state must still use the PoS query methods through exploratory deploys until dedicated REST endpoints are added.

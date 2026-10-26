@@ -279,6 +279,18 @@ mod tests {
     }
 
     #[test]
+    fn large_bond_stake_serializes_without_precision_loss() {
+        let mut original = create_test_light_block_info();
+        original.bonds[0].stake = 0;
+        original.bonds[0].stake_big_int = "100000000000000000000".to_string();
+
+        let json = light_block_info_to_json(original.clone()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["bonds"][0]["stake"], "100000000000000000000");
+        assert_eq!(light_block_info_from_json(&json).bonds, original.bonds);
+    }
+
+    #[test]
     fn test_bytes_fields_serialize_as_base64() {
         let original = create_test_light_block_info();
         let json = light_block_info_to_json(original).unwrap();

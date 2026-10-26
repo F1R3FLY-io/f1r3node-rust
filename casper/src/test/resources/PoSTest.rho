@@ -10,7 +10,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       sysAuthTokenCh,
       stdlog(`rho:io:stdlog`),
       vaultAddressOps(`rho:vault:address`),
-      posVaultAddressCh, posVaultCh,
+      posVaultAddressCh, posVaultCh, delegationQuarantineCh,
       RhoSpecCh, PoSCh, SystemVaultCh, ListOpsCh,
       setup, prepareUser,
       test_make_pos_succeeds,
@@ -62,7 +62,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
           @sysAuthToken  <- sysAuthTokenCh) {
         stdlog!("info", {"posVaultAddress" : posVaultAddress}) |
         @PoS!("getInitialPosVault", *posVaultCh) |
-        for (@(posAddr, posVault) <- posVaultCh) {
+        @PoS!("getQuarantineLength", *delegationQuarantineCh) |
+        for (@(posAddr, posVault) <- posVaultCh & @delegationQuarantineLength <- delegationQuarantineCh) {
           @RhoSpec!("testSuite", *setup,
             [
               ("PoS is created with empty rewards", *test_make_pos_succeeds),
@@ -320,11 +321,11 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                    @validatorDelegators <- validatorDelegatorsCh &
                                    @delegatedTotals <- delegatedTotalsCh &
                                    @pendingUndelegations <- pendingUndelegationsCh) {
-                                setBlockData!("blockNumber", requestBlock + epochLength - 1, *blockDataCh) |
+                                setBlockData!("blockNumber", (delegationQuarantineLength + epochLength * (1 + requestBlock / epochLength)) - 1, *blockDataCh) |
                                 for (_ <- blockDataCh) {
                                   @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *prematureCompleteCh) |
                                   for (@(false, earlyMsg) <- prematureCompleteCh) {
-                                    setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                    setBlockData!("blockNumber", (delegationQuarantineLength + epochLength * (1 + requestBlock / epochLength)), *blockDataCh) |
                                     for (_ <- blockDataCh) {
                                       @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *completeUndelegateCh) |
                                       for (@(true, _) <- completeUndelegateCh) {
@@ -341,7 +342,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                               ((false, "==", delegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "delegation entry is removed on undelegation request"),
                                               ((false, "==", validatorDelegators.getOrElse(validatorPubKey, {}).contains(delegatorPubKey)), "validator delegator index is cleared on full undelegation"),
                                               ((false, "==", delegatedTotals.contains(validatorPubKey)), "delegated total entry is removed on undelegation request"),
-                                              (((undelegationAmt, requestBlock + epochLength), "==", pendingUndelegations.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "pending undelegation stores amount and unlock block"),
+                                              (((undelegationAmt, (delegationQuarantineLength + epochLength * (1 + requestBlock / epochLength))), "==", pendingUndelegations.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "pending undelegation stores amount and unlock block"),
                                               ((requestPosBalance, "==", initialPosBalance), "PoS vault does not transfer principal before cooldown completion"),
                                               ((requestDelegatorBalance, "==", initialDelegatorBalance), "delegator does not receive principal before cooldown completion"),
                                               (("Undelegation cooldown not finished.", "==", earlyMsg), "early undelegation completion is rejected"),
@@ -493,7 +494,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                           ((false, "==", delegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "active delegation entry is removed"),
                                           ((false, "==", validatorDelegators.contains(validatorPubKey)), "validator delegator index is cleared by withdraw"),
                                           ((false, "==", delegatedTotals.contains(validatorPubKey)), "delegated total is cleared"),
-                                          (((delegationAmt, requestBlock + epochLength), "==", pendingUndelegations.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "delegated stake becomes pending undelegation"),
+                                          (((delegationAmt, (delegationQuarantineLength + epochLength * (1 + requestBlock / epochLength))), "==", pendingUndelegations.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "delegated stake becomes pending undelegation"),
                                           ((validatorBond, "==", effectiveBonds.get(validatorPubKey)), "pending undelegation no longer contributes to effective stake"),
                                           ((false, "==", finalPendingWithdrawers.contains(validatorPubKey)), "slash clears pending withdrawer state"),
                                           ((false, "==", finalBonds.contains(validatorPubKey)), "slash removes withdrawn validator bond entry"),
@@ -1248,7 +1249,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                    @hash <- hashCh) {
                                 setInvalidBlocks!({hash : validatorPubKey}, *invalidBlocksSetCh) |
                                 for (_ <- invalidBlocksSetCh) {
-                                  setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                  setBlockData!("blockNumber", (delegationQuarantineLength + epochLength * (1 + requestBlock / epochLength)), *blockDataCh) |
                                   for (_ <- blockDataCh) {
                                     @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *preSlashCompleteCh) |
                                     @PoS!("getPendingUndelegations", *pendingDuringEvidenceCh) |
@@ -1259,7 +1260,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                         getPosBalance!(*postSlashPosBalanceCh) |
                                         getCoopBalance!(*postSlashCoopBalanceCh) |
                                         @PoS!("getPendingUndelegations", *pendingAfterCh) |
-                                        setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                        setBlockData!("blockNumber", (delegationQuarantineLength + epochLength * (1 + requestBlock / epochLength)), *blockDataCh) |
                                         for (@postSlashPosBalance <- postSlashPosBalanceCh &
                                              @postSlashCoopBalance <- postSlashCoopBalanceCh &
                                              @pendingAfter <- pendingAfterCh &
@@ -1268,9 +1269,9 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                           for (@(false, completeMsg) <- completeCh) {
                                             rhoSpec!("assertMany",
                                               [
-                                                (((delegationAmt, requestBlock + epochLength), "==", pendingBefore.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "undelegation request is pending before slash"),
+                                                (((delegationAmt, (delegationQuarantineLength + epochLength * (1 + requestBlock / epochLength))), "==", pendingBefore.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "undelegation request is pending before slash"),
                                                 (("Validator has pending slash evidence.", "==", preSlashCompleteMsg), "completeUndelegate cannot escape known slash evidence"),
-                                                (((delegationAmt, requestBlock + epochLength), "==", pendingDuringEvidence.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "pending undelegation remains escrowed when slash evidence is pending"),
+                                                (((delegationAmt, (delegationQuarantineLength + epochLength * (1 + requestBlock / epochLength))), "==", pendingDuringEvidence.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "pending undelegation remains escrowed when slash evidence is pending"),
                                                 ((false, "==", pendingAfter.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "pending undelegation is removed by slash"),
                                                 (((validatorBond + delegationAmt).toBigInt(), "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates self-bond plus pending undelegation"),
                                                 (((validatorBond + delegationAmt).toBigInt(), "==", postSlashCoopBalance - preSlashCoopBalance), "slash transfers confiscated pending stake to Coop vault"),
@@ -1340,7 +1341,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                     @PoS!("getDelegations", *delegationsAfterCh) |
                                     @PoS!("getDelegatedTotals", *totalsAfterCh) |
                                     @PoS!("getPendingUndelegations", *pendingAfterCh) |
-                                    setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                    setBlockData!("blockNumber", (delegationQuarantineLength + epochLength * (1 + requestBlock / epochLength)), *blockDataCh) |
                                     for (@postSlashPosBalance <- postSlashPosBalanceCh &
                                          @postSlashCoopBalance <- postSlashCoopBalanceCh &
                                          @delegationsAfter <- delegationsAfterCh &

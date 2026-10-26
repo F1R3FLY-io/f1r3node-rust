@@ -289,8 +289,6 @@ impl InvalidBlock {
             //     enforcement, and a gate rule in its proving phase must
             //     never be able to burn honest stake through its own bugs.
             //   • NotOfInterest: local node filtering decision.
-            //   • LowDeployCost / InvalidDeployCost: fee admission rules;
-            //     these verdicts do not authorize slashing.
             InvalidBlock::InvalidFormat
             | InvalidBlock::InvalidSignature
             | InvalidBlock::InvalidSender

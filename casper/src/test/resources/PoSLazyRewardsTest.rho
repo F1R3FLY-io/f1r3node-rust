@@ -1,0 +1,582 @@
+new rl(`rho:registry:lookup`), vaultAddressOps(`rho:vault:address`),
+    makeDeployerId(`rho:test:deployerId:make`), makeToken(`sys:test:authToken:make`),
+    setBlockData(`rho:test:block:data:set`), setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+    posCh, vaultsCh, specCh, tokenCh, setup, prepareUser, epoch, coopBalance,
+    test_stake_changes_and_slash, test_fractional_rewards, test_withdrawal_rewards, test_rounding_reserve, test_multi_validator_rewards in {
+  rl!(`rho:system:pos`, *posCh) |
+  rl!(`rho:vault:system`, *vaultsCh) |
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *specCh) |
+  makeToken!(*tokenCh) |
+  for (@(_, PoS) <- posCh & @(_, SystemVault) <- vaultsCh & @(_, RhoSpec) <- specCh & @token <- tokenCh) {
+    @RhoSpec!("testSuite", *setup, [
+      ("lazy rewards follow stake changes and slash liabilities", *test_stake_changes_and_slash),
+      ("lazy rewards retain fractions across claims", *test_fractional_rewards),
+      ("withdrawal settles rewards and preserves quarantine", *test_withdrawal_rewards),
+      ("rounding reserves remain funded until slashing", *test_rounding_reserve),
+      ("claims conserve rewards across slashed and live validators", *test_multi_validator_rewards)
+    ]) |
+    contract prepareUser(@pk, reply) = {
+      new idCh, addrCh, vaultCh in {
+        makeDeployerId!("deployerId", pk, *idCh) |
+        vaultAddressOps!("fromPublicKey", pk, *addrCh) |
+        for (@id <- idCh & @addr <- addrCh) {
+          @SystemVault!("findOrCreate", addr, *vaultCh) |
+          for (@(true, vault) <- vaultCh) { reply!((pk, id, vault)) }
+        }
+      }
+    } |
+    contract setup(_, reply) = {
+      new validatorsCh, firstCh, secondCh, payerCh, validatorCh, posVaultCh in {
+        @PoS!("getActiveValidators", *validatorsCh) |
+        @PoS!("getInitialPosVault", *posVaultCh) |
+        prepareUser!("$$firstPk$$".hexToBytes(), *firstCh) |
+        prepareUser!("$$secondPk$$".hexToBytes(), *secondCh) |
+        prepareUser!("$$payerPk$$".hexToBytes(), *payerCh) |
+        for (@validators <- validatorsCh) {
+          prepareUser!(validators.toList().nth(0), *validatorCh) |
+          for (@first <- firstCh & @second <- secondCh & @payer <- payerCh & @validator <- validatorCh & @(_, posVault) <- posVaultCh) {
+            reply!((first, second, payer, validator, posVault))
+          }
+        }
+      }
+    } |
+    contract epoch(@height, @amount, @payerId, reply) = {
+      new chargeCh, refundCh, heightCh in {
+        @PoS!("chargeDeploy", payerId, amount, token, *chargeCh) |
+        @PoS!("refundDeploy", 0, token, *refundCh) |
+        for (@(true, _) <- chargeCh & @(true, _) <- refundCh) {
+          setBlockData!("blockNumber", height, *heightCh) |
+          for (_ <- heightCh) { @PoS!("closeBlock", token, *reply) }
+        }
+      }
+    } |
+    contract coopBalance(reply) = {
+      new coopCh in {
+        @PoS!("getCoopVault", *coopCh) |
+        for (@(_, _, vault) <- coopCh) { @vault!("balance", *reply) }
+      }
+    } |
+    contract test_stake_changes_and_slash(rhoSpec, @((firstPk, firstId, firstVault), (secondPk, secondId, secondVault), (_, payerId, _), (validatorPk, validatorId, validatorVault), posVault), ackCh) = {
+      new firstDelegateCh in {
+        @PoS!("delegate", firstId, validatorPk, 100n, *firstDelegateCh) |
+        for (@(true, _) <- firstDelegateCh) {
+          new epochOneCh in {
+            epoch!(10, 200n, payerId, *epochOneCh) |
+            for (@(true, _) <- epochOneCh) {
+              new firstRewardsCh in {
+                @PoS!("getDelegatorRewards", *firstRewardsCh) |
+                for (@firstRewards <- firstRewardsCh) {
+                  new secondDelegateCh in {
+                    @PoS!("delegate", secondId, validatorPk, 100n, *secondDelegateCh) |
+                    for (@(true, _) <- secondDelegateCh) {
+                      new topUpCh in {
+                        @PoS!("delegate", firstId, validatorPk, 100n, *topUpCh) |
+                        for (@(true, _) <- topUpCh) {
+                          new epochTwoCh in {
+                            epoch!(20, 400n, payerId, *epochTwoCh) |
+                            for (@(true, _) <- epochTwoCh) {
+                              new secondRewardsCh in {
+                                @PoS!("getDelegatorRewards", *secondRewardsCh) |
+                                for (@secondRewards <- secondRewardsCh) {
+                                  new requestHeightCh in {
+                                    setBlockData!("blockNumber", 21, *requestHeightCh) |
+                                    for (_ <- requestHeightCh) {
+                                      new undelegateCh in {
+                                        @PoS!("undelegate", firstId, validatorPk, 100n, *undelegateCh) |
+                                        for (@(true, _) <- undelegateCh) {
+                                          new pendingCh in {
+                                            @PoS!("getPendingUndelegations", *pendingCh) |
+                                            for (@pending <- pendingCh) {
+                                              new earlyHeightCh in {
+                                                setBlockData!("blockNumber", 31, *earlyHeightCh) |
+                                                for (_ <- earlyHeightCh) {
+                                                  new earlyCompleteCh in {
+                                                    @PoS!("completeUndelegate", firstId, validatorPk, *earlyCompleteCh) |
+                                                    for (@earlyComplete <- earlyCompleteCh) {
+                                                      new epochThreeCh in {
+                                                        epoch!(40, 300n, payerId, *epochThreeCh) |
+                                                        for (@(true, _) <- epochThreeCh) {
+                                                          new thirdRewardsCh in {
+                                                            @PoS!("getDelegatorRewards", *thirdRewardsCh) |
+                                                            for (@thirdRewards <- thirdRewardsCh) {
+                                                              new balanceBeforeCh in {
+                                                                @firstVault!("balance", *balanceBeforeCh) |
+                                                                for (@balanceBefore <- balanceBeforeCh) {
+                                                                  new claimCh in {
+                                                                    @PoS!("claimDelegatorRewards", firstId, *claimCh) |
+                                                                    for (@(true, _) <- claimCh) {
+                                                                      new repeatClaimCh in {
+                                                                        @PoS!("claimDelegatorRewards", firstId, *repeatClaimCh) |
+                                                                        for (@repeatClaim <- repeatClaimCh) {
+                                                                          new unlockHeightCh in {
+                                                                            setBlockData!("blockNumber", 50, *unlockHeightCh) |
+                                                                            for (_ <- unlockHeightCh) {
+                                                                              new completeCh in {
+                                                                                @PoS!("completeUndelegate", firstId, validatorPk, *completeCh) |
+                                                                                for (@(true, _) <- completeCh) {
+                                                                                  new balanceAfterCh in {
+                                                                                    @firstVault!("balance", *balanceAfterCh) |
+                                                                                    for (@balanceAfter <- balanceAfterCh) {
+                                                                                      new noPaymentCh in {
+                                                                                        @PoS!("closeBlock", token, *noPaymentCh) |
+                                                                                        for (@(true, _) <- noPaymentCh) {
+                                                                                          new unpaidRewardsCh in {
+                                                                                            @PoS!("getDelegatorRewards", *unpaidRewardsCh) |
+                                                                                            for (@unpaidRewards <- unpaidRewardsCh) {
+                                                                                              new coopBeforeCh in {
+                                                                                                coopBalance!(*coopBeforeCh) |
+                                                                                                for (@coopBefore <- coopBeforeCh) {
+                                                                                                  new posBeforeCh in {
+                                                                                                    @posVault!("balance", *posBeforeCh) |
+                                                                                                    for (@posBefore <- posBeforeCh) {
+                                                                                                      new evidenceCh in {
+                                                                                                        setInvalidBlocks!({"abcd".hexToBytes() : validatorPk}, *evidenceCh) |
+                                                                                                        for (_ <- evidenceCh) {
+                                                                                                          new slashCh in {
+                                                                                                            @PoS!("slash", payerId, "abcd".hexToBytes(), token, *slashCh) |
+                                                                                                            for (@(true, _) <- slashCh) {
+                                                                                                              new rebondCh in {
+                                                                                                                @PoS!("bond", validatorId, 100n, *rebondCh) |
+                                                                                                                for (@rebond <- rebondCh) {
+                                                                                                                  new repeatSlashCh in {
+                                                                                                                    @PoS!("slash", payerId, "abcd".hexToBytes(), token, *repeatSlashCh) |
+                                                                                                                    for (@(true, _) <- repeatSlashCh) {
+                                                                                                                      new forfeitedClaimCh in {
+                                                                                                                        @PoS!("claimDelegatorRewards", secondId, *forfeitedClaimCh) |
+                                                                                                                        for (@forfeitedClaim <- forfeitedClaimCh) {
+                                                                                                                          new coopAfterCh in {
+                                                                                                                            coopBalance!(*coopAfterCh) |
+                                                                                                                            for (@coopAfter <- coopAfterCh) {
+                                                                                                                              new posAfterCh in {
+                                                                                                                                @posVault!("balance", *posAfterCh) |
+                                                                                                                                for (@posAfter <- posAfterCh) {
+                                                                                                                                  new finalRewardsCh in {
+                                                                                                                                    @PoS!("getDelegatorRewards", *finalRewardsCh) |
+                                                                                                                                    for (@finalRewards <- finalRewardsCh) {
+                                                                                                                                      rhoSpec!("assertMany", [
+                                                                                                                                        ((100n, "==", firstRewards.getOrElse(firstPk, 0n)), "first epoch reward"),
+                                                                                                                                        ((300n, "==", secondRewards.getOrElse(firstPk, 0n)), "top-up cannot capture past rewards"),
+                                                                                                                                        ((100n, "==", secondRewards.getOrElse(secondPk, 0n)), "late delegation receives only new rewards"),
+                                                                                                                                        (((100n, 50), "==", pending.get(firstPk).get(validatorPk)), "undelegation uses validator quarantine"),
+                                                                                                                                        (((false, "Undelegation cooldown not finished."), "==", earlyComplete), "one epoch cannot release slashable stake"),
+                                                                                                                                        ((400n, "==", thirdRewards.getOrElse(firstPk, 0n)), "partial undelegation settles earlier rewards"),
+                                                                                                                                        ((200n, "==", thirdRewards.getOrElse(secondPk, 0n)), "remaining delegation accrues rewards"),
+                                                                                                                                        (((false, "No delegator rewards available."), "==", repeatClaim), "claim cannot pay twice"),
+                                                                                                                                        ((500n, "==", balanceAfter - balanceBefore), "claim and undelegation pay exact amounts"),
+                                                                                                                                        ((200n, "==", unpaidRewards.getOrElse(secondPk, 0n)), "cached liabilities prevent rewards from becoming surplus"),
+                                                                                                                                        ((800n, "==", posBefore), "principal and reward liabilities remain funded"),
+                                                                                                                                        ((800n, "==", coopAfter - coopBefore), "slash transfers principal and all forfeited rewards once"),
+                                                                                                                                        ((0n, "==", posAfter), "no forfeited reward remains for redistribution"),
+                                                                                                                                        (((false, "Public key has been slashed."), "==", rebond), "slashed key cannot bond again"),
+                                                                                                                                        (((false, "No delegator rewards available."), "==", forfeitedClaim), "slashed rewards cannot be claimed"),
+                                                                                                                                        (({}, "==", finalRewards), "slashed checkpoints do not expose rewards")
+                                                                                                                                      ], *ackCh)
+                                                                                                                                    }
+                                                                                                                                  }
+                                                                                                                                }
+                                                                                                                              }
+                                                                                                                            }
+                                                                                                                          }
+                                                                                                                        }
+                                                                                                                      }
+                                                                                                                    }
+                                                                                                                  }
+                                                                                                                }
+                                                                                                              }
+                                                                                                            }
+                                                                                                          }
+                                                                                                        }
+                                                                                                      }
+                                                                                                    }
+                                                                                                  }
+                                                                                                }
+                                                                                              }
+                                                                                            }
+                                                                                          }
+                                                                                        }
+                                                                                      }
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+    contract test_fractional_rewards(rhoSpec, @((firstPk, firstId, firstVault), (secondPk, secondId, secondVault), (_, payerId, _), (validatorPk, validatorId, validatorVault), posVault), ackCh) = {
+      new firstDelegateCh in {
+        @PoS!("delegate", firstId, validatorPk, 3n, *firstDelegateCh) |
+        for (@(true, _) <- firstDelegateCh) {
+          new secondDelegateCh in {
+            @PoS!("delegate", secondId, validatorPk, 3n, *secondDelegateCh) |
+            for (@(true, _) <- secondDelegateCh) {
+              new beforeCh in {
+                @firstVault!("balance", *beforeCh) |
+                for (@before <- beforeCh) {
+                  new epochOneCh in {
+                    epoch!(10, 53n, payerId, *epochOneCh) |
+                    for (@(true, _) <- epochOneCh) {
+                      new firstRewardsCh in {
+                        @PoS!("getDelegatorRewards", *firstRewardsCh) |
+                        for (@firstRewards <- firstRewardsCh) {
+                          new firstClaimCh in {
+                            @PoS!("claimDelegatorRewards", firstId, *firstClaimCh) |
+                            for (@(true, _) <- firstClaimCh) {
+                              new epochTwoCh in {
+                                epoch!(20, 53n, payerId, *epochTwoCh) |
+                                for (@(true, _) <- epochTwoCh) {
+                                  new secondRewardsCh in {
+                                    @PoS!("getDelegatorRewards", *secondRewardsCh) |
+                                    for (@secondRewards <- secondRewardsCh) {
+                                      new secondClaimCh in {
+                                        @PoS!("claimDelegatorRewards", firstId, *secondClaimCh) |
+                                        for (@(true, _) <- secondClaimCh) {
+                                          new afterCh in {
+                                            @firstVault!("balance", *afterCh) |
+                                            for (@after <- afterCh) {
+                                              new lateClaimCh in {
+                                                @PoS!("claimDelegatorRewards", secondId, *lateClaimCh) |
+                                                for (@(true, _) <- lateClaimCh) {
+                                                  new posBalanceCh in {
+                                                    @posVault!("balance", *posBalanceCh) |
+                                                    for (@posBalance <- posBalanceCh) {
+                                                      new finalRewardsCh in {
+                                                        @PoS!("getDelegatorRewards", *finalRewardsCh) |
+                                                        for (@finalRewards <- finalRewardsCh) {
+                                                          rhoSpec!("assertMany", [
+                                                            ((1n, "==", firstRewards.getOrElse(firstPk, 0n)), "fraction is retained after the first epoch"),
+                                                            ((2n, "==", secondRewards.getOrElse(firstPk, 0n)), "claim retains fractional reward for the next epoch"),
+                                                            ((3n, "==", secondRewards.getOrElse(secondPk, 0n)), "delayed settlement accumulates both epochs"),
+                                                            ((3n, "==", after - before), "claim timing does not lose fractional rewards"),
+                                                            ((206n, "==", posBalance), "principal and validator rewards remain after all claims"),
+                                                            (({}, "==", finalRewards), "all whole rewards were paid")
+                                                          ], *ackCh)
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+    contract test_withdrawal_rewards(rhoSpec, @((firstPk, firstId, firstVault), (secondPk, secondId, secondVault), (_, payerId, _), (validatorPk, validatorId, validatorVault), posVault), ackCh) = {
+      new delegateCh in {
+        @PoS!("delegate", firstId, validatorPk, 100n, *delegateCh) |
+        for (@(true, _) <- delegateCh) {
+          new epochOneCh in {
+            epoch!(10, 200n, payerId, *epochOneCh) |
+            for (@(true, _) <- epochOneCh) {
+              new requestHeightCh in {
+                setBlockData!("blockNumber", 11, *requestHeightCh) |
+                for (_ <- requestHeightCh) {
+                  new undelegateCh in {
+                    @PoS!("undelegate", firstId, validatorPk, 50n, *undelegateCh) |
+                    for (@(true, _) <- undelegateCh) {
+                      new secondEpochCh in {
+                        epoch!(20, 150n, payerId, *secondEpochCh) |
+                        for (@(true, _) <- secondEpochCh) {
+                          new withdrawHeightCh in {
+                            setBlockData!("blockNumber", 21, *withdrawHeightCh) |
+                            for (_ <- withdrawHeightCh) {
+                              new withdrawCh in {
+                                @PoS!("withdraw", validatorId, *withdrawCh) |
+                                for (@(true, _) <- withdrawCh) {
+                                  new pendingCh in {
+                                    @PoS!("getPendingUndelegations", *pendingCh) |
+                                    for (@pending <- pendingCh) {
+                                      new rewardsCh in {
+                                        @PoS!("getDelegatorRewards", *rewardsCh) |
+                                        for (@rewards <- rewardsCh) {
+                                          new firstBoundaryCh in {
+                                            setBlockData!("blockNumber", 30, *firstBoundaryCh) |
+                                            for (_ <- firstBoundaryCh) {
+                                              new moveWithdrawerCh in {
+                                                @PoS!("closeBlock", token, *moveWithdrawerCh) |
+                                                for (@(true, _) <- moveWithdrawerCh) {
+                                                  new rebondCh in {
+                                                    @PoS!("bond", validatorId, 100n, *rebondCh) |
+                                                    for (@rebond <- rebondCh) {
+                                                      new earlyHeightCh in {
+                                                        setBlockData!("blockNumber", 40, *earlyHeightCh) |
+                                                        for (_ <- earlyHeightCh) {
+                                                          new secondBoundaryCh in {
+                                                            @PoS!("closeBlock", token, *secondBoundaryCh) |
+                                                            for (@(true, _) <- secondBoundaryCh) {
+                                                              new earlyCompleteCh in {
+                                                                @PoS!("completeUndelegate", firstId, validatorPk, *earlyCompleteCh) |
+                                                                for (@earlyComplete <- earlyCompleteCh) {
+                                                                  new unlockHeightCh in {
+                                                                    setBlockData!("blockNumber", 50, *unlockHeightCh) |
+                                                                    for (_ <- unlockHeightCh) {
+                                                                      new closeCh in {
+                                                                        @PoS!("closeBlock", token, *closeCh) |
+                                                                        for (@(true, _) <- closeCh) {
+                                                                          new completeCh in {
+                                                                            @PoS!("completeUndelegate", firstId, validatorPk, *completeCh) |
+                                                                            for (@(true, _) <- completeCh) {
+                                                                              new claimCh in {
+                                                                                @PoS!("claimDelegatorRewards", firstId, *claimCh) |
+                                                                                for (@(true, _) <- claimCh) {
+                                                                                  new posBalanceCh in {
+                                                                                    @posVault!("balance", *posBalanceCh) |
+                                                                                    for (@posBalance <- posBalanceCh) {
+                                                                                      rhoSpec!("assertMany", [
+                                                                                        (((100n, 50), "==", pending.get(firstPk).get(validatorPk)), "validator withdrawal merges principal at the later quarantine horizon"),
+                                                                                        ((150n, "==", rewards.getOrElse(firstPk, 0n)), "withdrawal settles rewards before removing delegation"),
+                                                                                        (((false, "Undelegation cooldown not finished."), "==", earlyComplete), "merged principal cannot leave at the old deadline"),
+                                                                                        (((false, "Public key is withdrawing."), "==", rebond), "quarantined bond cannot be replaced by rebonding"),
+                                                                                        ((0n, "==", posBalance), "all principal and rewards are paid once")
+                                                                                      ], *ackCh)
+                                                                                    }
+                                                                                  }
+                                                                                }
+                                                                              }
+                                                                            }
+                                                                          }
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+    contract test_rounding_reserve(rhoSpec, @((firstPk, firstId, firstVault), (secondPk, secondId, secondVault), (_, payerId, _), (validatorPk, validatorId, validatorVault), posVault), ackCh) = {
+      new delegateCh in {
+        @PoS!("delegate", firstId, validatorPk, 3n, *delegateCh) |
+        for (@(true, _) <- delegateCh) {
+          new epochCh in {
+            epoch!(10, 35n, payerId, *epochCh) |
+            for (@(true, _) <- epochCh) {
+              new firstRewardsCh in {
+                @PoS!("getDelegatorRewards", *firstRewardsCh) |
+                for (@firstRewards <- firstRewardsCh) {
+                  new nextHeightCh in {
+                    setBlockData!("blockNumber", 20, *nextHeightCh) |
+                    for (_ <- nextHeightCh) {
+                      new nextEpochCh in {
+                        @PoS!("closeBlock", token, *nextEpochCh) |
+                        for (@(true, _) <- nextEpochCh) {
+                          new nextRewardsCh in {
+                            @PoS!("getDelegatorRewards", *nextRewardsCh) |
+                            for (@nextRewards <- nextRewardsCh) {
+                              new coopBeforeCh in {
+                                coopBalance!(*coopBeforeCh) |
+                                for (@coopBefore <- coopBeforeCh) {
+                                  new evidenceCh in {
+                                    setInvalidBlocks!({"abcd".hexToBytes() : validatorPk}, *evidenceCh) |
+                                    for (_ <- evidenceCh) {
+                                      new slashCh in {
+                                        @PoS!("slash", payerId, "abcd".hexToBytes(), token, *slashCh) |
+                                        for (@(true, _) <- slashCh) {
+                                          new coopAfterCh in {
+                                            coopBalance!(*coopAfterCh) |
+                                            for (@coopAfter <- coopAfterCh) {
+                                              new posAfterCh in {
+                                                @posVault!("balance", *posAfterCh) |
+                                                for (@posAfter <- posAfterCh) {
+                                                  rhoSpec!("assertMany", [
+                                                    ((0n, "==", firstRewards.getOrElse(firstPk, 0n)), "index truncation retains the fractional reserve"),
+                                                    ((0n, "==", nextRewards.getOrElse(firstPk, 0n)), "reserved rounding is not redistributed at the next epoch"),
+                                                    ((137n, "==", coopAfter - coopBefore), "slash transfers principal, validator rewards, and the rounding reserve"),
+                                                    ((1n, "==", posAfter), "only the unallocated epoch split remainder remains")
+                                                  ], *ackCh)
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+    contract test_multi_validator_rewards(rhoSpec, @((firstPk, firstId, firstVault), (secondPk, secondId, secondVault), (_, payerId, _), (validatorPk, validatorId, validatorVault), posVault), ackCh) = {
+      new validatorsCh in {
+        @PoS!("getActiveValidators", *validatorsCh) |
+        for (@validators <- validatorsCh) {
+          new firstDelegateCh in {
+            @PoS!("delegate", firstId, validatorPk, 100n, *firstDelegateCh) |
+            for (@(true, _) <- firstDelegateCh) {
+              new secondDelegateCh in {
+                @PoS!("delegate", firstId, validators.delete(validatorPk).toList().nth(0), 100n, *secondDelegateCh) |
+                for (@(true, _) <- secondDelegateCh) {
+                  new beforeCh in {
+                    @firstVault!("balance", *beforeCh) |
+                    for (@before <- beforeCh) {
+                      new epochOneCh in {
+                        epoch!(10, 400n, payerId, *epochOneCh) |
+                        for (@(true, _) <- epochOneCh) {
+                          new bothRewardsCh in {
+                            @PoS!("getDelegatorRewards", *bothRewardsCh) |
+                            for (@bothRewards <- bothRewardsCh) {
+                              new bothClaimCh in {
+                                @PoS!("claimDelegatorRewards", firstId, *bothClaimCh) |
+                                for (@(true, _) <- bothClaimCh) {
+                                  new epochTwoCh in {
+                                    epoch!(20, 400n, payerId, *epochTwoCh) |
+                                    for (@(true, _) <- epochTwoCh) {
+                                      new coopBeforeCh in {
+                                        coopBalance!(*coopBeforeCh) |
+                                        for (@coopBefore <- coopBeforeCh) {
+                                          new evidenceCh in {
+                                            setInvalidBlocks!({"abcd".hexToBytes() : validatorPk}, *evidenceCh) |
+                                            for (_ <- evidenceCh) {
+                                              new slashCh in {
+                                                @PoS!("slash", payerId, "abcd".hexToBytes(), token, *slashCh) |
+                                                for (@(true, _) <- slashCh) {
+                                                  new remainingRewardsCh in {
+                                                    @PoS!("getDelegatorRewards", *remainingRewardsCh) |
+                                                    for (@remainingRewards <- remainingRewardsCh) {
+                                                      new remainingClaimCh in {
+                                                        @PoS!("claimDelegatorRewards", firstId, *remainingClaimCh) |
+                                                        for (@(true, _) <- remainingClaimCh) {
+                                                          new afterCh in {
+                                                            @firstVault!("balance", *afterCh) |
+                                                            for (@after <- afterCh) {
+                                                              new coopAfterCh in {
+                                                                coopBalance!(*coopAfterCh) |
+                                                                for (@coopAfter <- coopAfterCh) {
+                                                                  new posAfterCh in {
+                                                                    @posVault!("balance", *posAfterCh) |
+                                                                    for (@posAfter <- posAfterCh) {
+                                                                      new finalRewardsCh in {
+                                                                        @PoS!("getDelegatorRewards", *finalRewardsCh) |
+                                                                        for (@finalRewards <- finalRewardsCh) {
+                                                                          rhoSpec!("assertMany", [
+                                                                            ((200n, "==", bothRewards.getOrElse(firstPk, 0n)), "claim spans both validator liabilities"),
+                                                                            ((100n, "==", remainingRewards.getOrElse(firstPk, 0n)), "slashing preserves the other validator reward"),
+                                                                            ((300n, "==", after - before), "claims pay both validators before slash and only the survivor after slash"),
+                                                                            ((500n, "==", coopAfter - coopBefore), "previously claimed rewards cannot be slashed twice"),
+                                                                            ((400n, "==", posAfter), "surviving principal and committed rewards remain funded"),
+                                                                            (({}, "==", finalRewards), "mixed slashed and live checkpoints settle once")
+                                                                          ], *ackCh)
+                                                                        }
+                                                                      }
+                                                                    }
+                                                                  }
+                                                                }
+                                                              }
+                                                            }
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
