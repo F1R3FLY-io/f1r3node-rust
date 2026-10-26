@@ -9,32 +9,33 @@ The maintainer accepted the review fixes of this file on 2026-10-04 (PR #580, co
 The maintainer accepted the PR #811 segment writer stop change and the 3 earlier unaccepted commits of this file on 2026-10-21 (PR #811, comment 6324960804) at revision `32798242d`.
 The maintainer accepted the PR #811 assertion fix of this file on 2026-10-21 (PR #811, comment 6326106207) at revision `c3a9a0a28`.
 The maintainer accepted the TASK-021-27 fixture scenarios of this file on 2026-10-23 (PR #827, review 5627170022) at revision `c1cf31d7e`.
+The maintainer accepted the PR #863 and PR #870 writer stop cases of this file on 2026-10-26 (PR #870, comment 6429833007) at revision `6dd029064`.
 
 ```json
 {
   "artifact": {
     "path": "scripts/bench/test-run-merge-recovery-soak.sh",
     "id": "scripts-bench-test-run-merge-recovery-soak-sh",
-    "commit": "f7a2696bd91224ac237f52664b9df406d8420c98",
+    "commit": "85b04c07e512a09d5fc87239294ff111f4e88563",
     "commit_is_base": false,
-    "sha256": "d70933e3d37af22aa0a0cd819d909ee86cdc700a43e820ff95153d1babb23a60",
+    "sha256": "710adb582faa54c638d8ac6a01e25bbb27aca2c6d0362d92fb021978cb30d632",
     "working_tree": true,
-    "sha256_before_change": "3ff8305f3323e950c9a474b57dd24936de10461d6a5b6318cf129aef6ee953ba"
+    "sha256_before_change": "d70933e3d37af22aa0a0cd819d909ee86cdc700a43e820ff95153d1babb23a60"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
     "CLAIM-CASPER-SOAK-001"
   ],
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "670e2867bf40fb941a7e762b8624550c0feb8cdc45fe7efcfc7b69f3cc0cabc8"
+    "docs/claims/casper-soak-harness.md": "92c82d3eb42331aa2fda2e6c53dd4b74dd3a1cd166855dd0c2db4b38cdbbda2c"
   },
   "adapter": "embedded",
   "status": "discharged",
   "scope": "bounded-harness-only",
   "evidence": {
     "kind": "accepted-change",
-    "ref": "docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json",
-    "sha256": "c24f610020098e953c6a6ca9194b062fb87c9ccf97b8eb1604dab9c872cde76a"
+    "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-race-acceptance-20261026-01/report.json",
+    "sha256": "a0d27b8e73a7e9b798639203ad84e00739daa94d9e6e8b5f1374a2e3e1f82c8f"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -47,7 +48,7 @@ The maintainer accepted the TASK-021-27 fixture scenarios of this file on 2026-1
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-10-23T10:45:54Z",
+  "verified_at": "2026-10-26T23:32:01Z",
   "previous_ledger": {
     "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
     "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
@@ -57,14 +58,14 @@ The maintainer accepted the TASK-021-27 fixture scenarios of this file on 2026-1
   "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/scripts-bench-test-run-merge-recovery-soak-sh.md",
   "evidence_before_change": {
     "kind": "accepted-change",
-    "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-02/report.json",
-    "sha256": "7d7a5e5f87cbf56716e732c8b6a1ffbd6dc9ce46e47d6ff0a5c3e33da9489522"
+    "ref": "docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json",
+    "sha256": "c24f610020098e953c6a6ca9194b062fb87c9ccf97b8eb1604dab9c872cde76a"
   },
   "acceptance": {
     "accepted_by": "jltatbeach",
-    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/827#pullrequestreview-5627170022",
-    "revision": "c1cf31d7ed9224ccb83ebdd8de9d9ea8cd9b9c88",
-    "reviewed_at": "2026-10-23T10:45:54Z"
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/870#issuecomment-6429833007",
+    "revision": "6dd0290647f420567b958c7eb783ca9806383bb5",
+    "reviewed_at": "2026-10-26T23:32:01Z"
   }
 }
 ```

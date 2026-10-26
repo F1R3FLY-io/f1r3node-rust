@@ -257,6 +257,8 @@ On 2026-10-26, PR #863 changed how the driver confirms the writer stop. The chan
 - **Limitation:** like the end-of-segment stop, the exit stop applies only to a soak without a Casper manifest (`SOAK_INPUT_DIR` is not set). It applies only before the end-of-segment stop has run.
 - Nine fixture cases of `scripts/bench/test-run-merge-recovery-soak.sh` cover these rules: slow, vanish, exits, stuck, persist, sigkill, breach, breach-inspect, and a restart after `target_advanced`. The unit test `owner_scan_reports_a_process_whose_environment_is_unreadable` covers the skip report.
 
+On 2026-10-26 the maintainer accepted this change, the changed stop guarantee, and its four limitations (PR #870, comment 6429833007) at revision `6dd029064`. The acceptance includes the fix `85b04c07e` for the inspect-before-kill regression that PR #863 merged. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-race-acceptance-20261026-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-race-20261026-01/report.json).
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.
