@@ -17,6 +17,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::validator::Validator;
@@ -42,6 +43,19 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
             .admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
             .await
             .map(|_| ())
+    }
+
+    fn bucket_view(&self) -> Arc<crate::rust::economics::bucket_view::BucketView> {
+        self.bucket_view.clone()
+    }
+
+    async fn request_ejections(&self, snapshot: &CasperSnapshot) -> Result<(), CasperError> {
+        let Some(identity) = self.validator_id.as_ref() else {
+            return Ok(());
+        };
+        let own = Bytes::copy_from_slice(&identity.public_key.bytes);
+        let offers = self.bucket_view.proposal(&own).ejection_offers;
+        self.request_ejections_of(snapshot, &offers).await
     }
 
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
@@ -114,8 +128,9 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
     async fn handle_valid_block(
         &self,
         block: &BlockMessage,
+        parents: &[BlockMetadata],
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        super::block_admission::admit_handle_valid_block(self, block).await
+        super::block_admission::admit_handle_valid_block(self, block, parents).await
     }
 
     fn handle_invalid_block(
@@ -152,6 +167,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
             self.block_dag_storage.clone(),
             self.block_store.clone(),
             &self.casper_shard_conf,
+            &self.chain_parameters,
             &self.approved_block,
         ))
     }
@@ -246,6 +262,10 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
     fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.casper_shard_conf }
+
+    fn chain_parameters(&self) -> &crate::rust::chain_parameters::ChainParameters {
+        &self.chain_parameters
+    }
 
     fn rejected_deploy_buffer_contains_sig(&self, sig: &[u8]) -> Result<bool, CasperError> {
         self.rejected_deploy_buffer

@@ -28,7 +28,7 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {

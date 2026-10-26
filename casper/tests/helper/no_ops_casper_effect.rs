@@ -10,6 +10,7 @@ use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
+use casper::rust::chain_parameters::ChainParameters;
 use casper::rust::errors::CasperError;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::validator_identity::ValidatorIdentity;
@@ -35,6 +36,7 @@ pub struct NoOpsCasperEffect {
     block_dag_storage: KeyValueDagRepresentation,
     self_created_should_fail: bool,
     shard_conf: CasperShardConf,
+    chain: ChainParameters,
 }
 
 unsafe impl Send for NoOpsCasperEffect {}
@@ -66,6 +68,7 @@ impl Clone for NoOpsCasperEffect {
             block_dag_storage: self.block_dag_storage.clone(),
             self_created_should_fail: self.self_created_should_fail,
             shard_conf: self.shard_conf.clone(),
+            chain: self.chain,
         }
     }
 }
@@ -103,6 +106,7 @@ impl NoOpsCasperEffect {
             block_dag_storage,
             self_created_should_fail: false,
             shard_conf: CasperShardConf::new(),
+            chain: ChainParameters::shipped(),
         }
     }
 
@@ -131,6 +135,7 @@ impl NoOpsCasperEffect {
             block_dag_storage,
             self_created_should_fail: false,
             shard_conf: CasperShardConf::new(),
+            chain: ChainParameters::shipped(),
         }
     }
 
@@ -176,6 +181,8 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.shard_conf }
 
+    fn chain_parameters(&self) -> &ChainParameters { &self.chain }
+
     fn get_validator(&self) -> Option<ValidatorIdentity> { None }
 
     fn is_local_validator_bonded(&self) -> bool { false }
@@ -194,6 +201,12 @@ impl Casper for NoOpsCasperEffect {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         Err(CasperError::RuntimeError(
             "get_snapshot not implemented for NoOpsCasperEffect - use TestCasperWithSnapshot for heartbeat tests".to_string(),
+        ))
+    }
+
+    fn bucket_view(&self) -> Arc<casper::rust::economics::bucket_view::BucketView> {
+        Arc::new(casper::rust::economics::bucket_view::BucketView::new(
+            self.chain.leaky_bucket,
         ))
     }
 
@@ -254,6 +267,7 @@ impl Casper for NoOpsCasperEffect {
     async fn handle_valid_block(
         &self,
         _block: &BlockMessage,
+        _parents: &[models::rust::block_metadata::BlockMetadata],
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         Ok(self.block_dag_storage.clone())
     }

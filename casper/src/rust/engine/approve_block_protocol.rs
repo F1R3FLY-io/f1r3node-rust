@@ -20,7 +20,7 @@ use shared::rust::shared::f1r3fly_events::{F1r3flyEvent, F1r3flyEvents};
 use tokio::time::sleep;
 
 use crate::rust::errors::CasperError;
-use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+use crate::rust::genesis::contracts::proof_of_stake::{LeakyBucketGenesis, ProofOfStake};
 use crate::rust::genesis::contracts::validator::Validator;
 use crate::rust::genesis::genesis::Genesis;
 use crate::rust::metrics_constants::APPROVE_BLOCK_METRICS_SOURCE;
@@ -128,6 +128,7 @@ impl ApproveBlockProtocolFactory {
         max_parent_depth: i32,
         deploy_lifespan: i64,
         min_phlo_price: i64,
+        leaky_bucket: LeakyBucketGenesis,
         shard_id: String,
         deploy_timestamp: Option<i64>,
         required_sigs: i32,
@@ -193,6 +194,15 @@ impl ApproveBlockProtocolFactory {
                 max_parent_depth,
                 deploy_lifespan,
                 min_phlo_price,
+                epoch_phlogiston: leaky_bucket.epoch_phlogiston,
+                lambda_base_ppm: leaky_bucket.lambda_base_ppm,
+                theta_eject_ppm: leaky_bucket.theta_eject_ppm,
+                eject_observation_blocks: leaky_bucket.eject_observation_blocks,
+                breadth_exponent: leaky_bucket.breadth_exponent,
+                recency_reference_ppm: leaky_bucket.recency_reference_ppm,
+                vote_list_bound: leaky_bucket.vote_list_bound,
+                max_overflow_claim_minimum_bonds: leaky_bucket.max_overflow_claim_minimum_bonds,
+                failed_claim_fee_ppm: leaky_bucket.failed_claim_fee_ppm,
                 pos_multi_sig_public_keys,
                 pos_multi_sig_quorum,
             },

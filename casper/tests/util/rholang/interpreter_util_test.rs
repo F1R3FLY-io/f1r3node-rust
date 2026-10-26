@@ -169,6 +169,7 @@ impl TestContext {
             max_seq_nums: HashMap::new(),
             on_chain_state: OnChainCasperState {
                 shard_conf: CasperShardConf::new(),
+                chain: casper::rust::chain_parameters::ChainParameters::shipped(),
                 bonds_map: HashMap::new(),
                 active_validators: Vec::new(),
             },
@@ -225,6 +226,7 @@ impl TestContext {
         let casper_snapshot = Self::mk_casper_snapshot(dag);
 
         let block_data = BlockData {
+            committee: Vec::new(),
             time_stamp: now,
             block_number,
             sender: self.genesis_context.validator_pks()[0].clone(),
@@ -388,7 +390,7 @@ async fn compute_block_checkpoint_should_merge_histories_in_case_of_multiple_par
      *         genesis
      */
 
-    let mut nodes = TestNode::create_network(ctx.genesis_context, 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis_context, 2, None, None, None)
         .await
         .unwrap();
 
@@ -1016,6 +1018,7 @@ async fn validate_block_checkpoint_should_return_a_checkpoint_with_the_right_has
                 .as_millis() as i64;
 
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: now,
                 block_number: 0,
                 sender: ctx.genesis_context.validator_pks()[0].clone(),
@@ -1143,6 +1146,7 @@ contract @"recursionTest"(@list) = {
                 .as_millis() as i64;
 
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: now,
                 block_number: 0,
                 sender: ctx.genesis_context.validator_pks()[0].clone(),
@@ -1274,6 +1278,7 @@ async fn validate_block_checkpoint_should_pass_persistent_produce_test_with_caus
                 .as_millis() as i64;
 
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: now,
                 block_number: 0,
                 sender: ctx.genesis_context.validator_pks()[0].clone(),
@@ -1401,6 +1406,7 @@ new loop, primeCheck, stdoutAck(`rho:io:stdoutAck`) in {
                 .as_millis() as i64;
 
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: now,
                 block_number: 0,
                 sender: ctx.genesis_context.validator_pks()[0].clone(),
@@ -1520,6 +1526,7 @@ async fn validate_block_checkpoint_should_pass_tests_involving_races() {
                     .as_millis() as i64;
 
                 let block_data = BlockData {
+                    committee: Vec::new(),
                     time_stamp: now,
                     block_number: (i + 1) as i64,
                     sender: ctx.genesis_context.validator_pks()[0].clone(),
@@ -1629,6 +1636,7 @@ async fn validate_block_checkpoint_should_return_none_for_logs_containing_extra_
                 .as_millis() as i64;
 
             let block_data = BlockData {
+                committee: Vec::new(),
                 time_stamp: now,
                 block_number: 0,
                 sender: ctx.genesis_context.validator_pks()[0].clone(),
@@ -1770,6 +1778,7 @@ async fn validate_block_checkpoint_should_pass_map_update_test() {
                     .as_millis() as i64;
 
                 let block_data = BlockData {
+                    committee: Vec::new(),
                     time_stamp: now,
                     block_number: (i + 1) as i64,
                     sender: ctx.genesis_context.validator_pks()[0].clone(),

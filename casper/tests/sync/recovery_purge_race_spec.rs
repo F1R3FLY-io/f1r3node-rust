@@ -19,7 +19,7 @@ async fn a_racing_duplicate_must_not_destroy_dependency_recovery() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
     let shard = genesis.genesis_block.shard_id.clone();

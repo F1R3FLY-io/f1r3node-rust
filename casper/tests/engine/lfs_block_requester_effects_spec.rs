@@ -1,6 +1,6 @@
 // See casper/src/test/scala/coop/rchain/casper/engine/LfsBlockRequesterEffectsSpec.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
@@ -1241,4 +1241,249 @@ mod tests {
         .await
         .expect("Test should complete successfully");
     }
+}
+
+/// One pass of the requester over `network` from `anchor`, answering every
+/// request it sends, with `held` already in its store.
+async fn restore_pass(
+    anchor: &BlockMessage,
+    held: &HashMap<BlockHash, BlockMessage>,
+    network: &HashMap<BlockHash, BlockMessage>,
+    min_height: i64,
+) -> (
+    HashSet<BlockHash>,
+    HashMap<BlockHash, BlockMessage>,
+    BTreeSet<i64>,
+) {
+    use futures::stream::StreamExt;
+
+    let approved_block = create_approved_block(anchor.clone());
+    let test_state = Arc::new(Mutex::new(TestST::with_blocks(held.clone())));
+    let (response_tx, response_rx) = mpsc::channel(1024);
+    let (request_tx, mut request_rx) = mpsc::unbounded_channel();
+    let (save_tx, mut save_rx) = mpsc::unbounded_channel();
+    let mut ops = MockBlockRequesterOps::new(test_state, request_tx, save_tx);
+    let empty_queue = std::collections::VecDeque::new();
+    let (_mergeable_tx, mergeable_rx) = mpsc::channel(50);
+
+    let stream = casper::rust::engine::lfs_block_requester::stream(
+        &approved_block,
+        &empty_queue,
+        response_rx,
+        Arc::new(AtomicUsize::new(0)),
+        mergeable_rx,
+        min_height,
+        std::time::Duration::from_secs(3600),
+        &mut ops,
+    )
+    .await
+    .expect("stream");
+
+    let mut requested = HashSet::new();
+    let mut last = None;
+    let mut stream = Box::pin(stream);
+    loop {
+        tokio::select! {
+            next = stream.next() => match next {
+                Some(st) => last = Some(st),
+                None => break,
+            },
+            Some(hash) = request_rx.recv() => {
+                requested.insert(hash.clone());
+                let block = network.get(&hash).expect("requested block exists").clone();
+                response_tx.send(block).await.expect("respond");
+            }
+        }
+    }
+    let mut saved = HashMap::new();
+    while let Ok((hash, block)) = save_rx.try_recv() {
+        saved.insert(hash, block);
+    }
+    let heights = last
+        .expect("final state")
+        .height_map
+        .keys()
+        .copied()
+        .collect();
+    (requested, saved, heights)
+}
+
+/// A requester whose broadcasts reach the network but report one peer
+/// unreachable.
+struct OnePeerUnreachable(MockBlockRequesterOps);
+
+#[async_trait]
+impl BlockRequesterOps for OnePeerUnreachable {
+    async fn request_for_block(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        self.0.request_for_block(block_hash).await?;
+        Err(CasperError::StreamError("one peer unreachable".to_string()))
+    }
+
+    fn contains_block(&self, block_hash: &BlockHash) -> Result<bool, CasperError> {
+        self.0.contains_block(block_hash)
+    }
+
+    fn get_block_from_store(&self, block_hash: &BlockHash) -> BlockMessage {
+        self.0.get_block_from_store(block_hash)
+    }
+
+    fn put_block_to_store(
+        &mut self,
+        block_hash: BlockHash,
+        block: &BlockMessage,
+    ) -> Result<(), CasperError> {
+        self.0.put_block_to_store(block_hash, block)
+    }
+
+    fn validate_block(&self, block: &BlockMessage) -> bool { self.0.validate_block(block) }
+
+    async fn request_for_mergeable_entry(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
+        self.0.request_for_mergeable_entry(block_hash).await
+    }
+
+    fn put_mergeable_entry(
+        &self,
+        block_hash: &BlockHash,
+        serialized_entry: &[u8],
+    ) -> Result<(), CasperError> {
+        self.0.put_mergeable_entry(block_hash, serialized_entry)
+    }
+}
+
+/// One unreachable peer fails every broadcast though the rest answer, and the
+/// restore still fetches the whole window rather than stopping early.
+#[tokio::test]
+async fn one_unreachable_peer_does_not_stop_a_restore() {
+    use futures::stream::StreamExt;
+
+    init_logger();
+    let chain: Vec<BlockMessage> = (1..=8)
+        .map(|i| {
+            let below = if i > 1 {
+                vec![mk_hash(&format!("c{}", i - 1))]
+            } else {
+                vec![]
+            };
+            get_block(mk_hash(&format!("c{i}")), i * 10, below)
+        })
+        .collect();
+    let network = as_map(&chain);
+    let anchor = chain[7].clone();
+    let approved_block = create_approved_block(anchor.clone());
+    let test_state = Arc::new(Mutex::new(TestST::with_blocks(as_map(
+        std::slice::from_ref(&anchor),
+    ))));
+    let (response_tx, response_rx) = mpsc::channel(1024);
+    let (request_tx, mut request_rx) = mpsc::unbounded_channel();
+    let (save_tx, _save_rx) = mpsc::unbounded_channel();
+    let mut ops = OnePeerUnreachable(MockBlockRequesterOps::new(test_state, request_tx, save_tx));
+    let empty_queue = std::collections::VecDeque::new();
+    let (_mergeable_tx, mergeable_rx) = mpsc::channel(50);
+
+    let stream = casper::rust::engine::lfs_block_requester::stream(
+        &approved_block,
+        &empty_queue,
+        response_rx,
+        Arc::new(AtomicUsize::new(0)),
+        mergeable_rx,
+        0,
+        std::time::Duration::from_secs(3600),
+        &mut ops,
+    )
+    .await
+    .expect("stream");
+
+    let mut last = None;
+    let mut stream = Box::pin(stream);
+    let deadline = tokio::time::sleep(std::time::Duration::from_secs(30));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            next = stream.next() => match next {
+                Some(st) => last = Some(st),
+                None => break,
+            },
+            Some(hash) = request_rx.recv() => {
+                let block = network.get(&hash).expect("requested block exists").clone();
+                response_tx.send(block).await.expect("respond");
+            }
+            _ = &mut deadline => panic!("the restore neither finished nor stopped"),
+        }
+    }
+    let last = last.expect("final state");
+    assert!(last.is_finished(), "the restore stopped before the window");
+    assert_eq!(
+        last.height_map.keys().copied().collect::<Vec<_>>(),
+        (1..=8).map(|i| i * 10).collect::<Vec<_>>()
+    );
+}
+
+/// A restore deepens its window once the anchor's state shows the chain needs
+/// more history than local configuration asked for. The second pass reuses
+/// what the first stored and fetches only what lies below it, and its final
+/// state covers the whole deeper window.
+#[tokio::test]
+async fn a_deeper_second_pass_fetches_only_what_lies_below_the_first_window() {
+    init_logger();
+    let chain: Vec<BlockMessage> = (1..=5)
+        .map(|i| {
+            let below = if i > 1 {
+                vec![mk_hash(&format!("c{}", i - 1))]
+            } else {
+                vec![]
+            };
+            get_block(mk_hash(&format!("c{i}")), i * 10, below)
+        })
+        .collect();
+    let network = as_map(&chain);
+    let anchor = chain[4].clone();
+    let mut held = as_map(std::slice::from_ref(&anchor));
+
+    let (_, first_saved, first_heights) = restore_pass(&anchor, &held, &network, 35).await;
+    assert!(
+        !first_heights.contains(&20),
+        "the first window stops above height 20: {first_heights:?}"
+    );
+    held.extend(first_saved);
+
+    let (second_requests, _, heights) = restore_pass(&anchor, &held, &network, 15).await;
+    assert!(
+        second_requests.iter().all(|hash| !held.contains_key(hash)),
+        "nothing the first pass stored is fetched again: {second_requests:?}"
+    );
+    assert!(
+        !second_requests.is_empty(),
+        "the deeper window needs blocks the first pass never fetched"
+    );
+    assert!(
+        [20, 30, 40, 50]
+            .iter()
+            .all(|height| heights.contains(height)),
+        "the final state covers the whole deeper window: {heights:?}"
+    );
+}
+
+/// A restore that already holds far more of the blocks it needs than any
+/// queue would buffer still processes them all and finishes.
+#[tokio::test]
+async fn a_restore_holding_more_blocks_than_any_queue_held_finishes() {
+    let held_blocks: Vec<BlockMessage> = (0..2_048)
+        .map(|i| get_block(mk_hash(&format!("held{i}")), 50, vec![]))
+        .collect();
+    let anchor = get_block(
+        mk_hash("anchor"),
+        60,
+        held_blocks.iter().map(|b| b.block_hash.clone()).collect(),
+    );
+    let mut held = as_map(&held_blocks);
+    held.insert(anchor.block_hash.clone(), anchor.clone());
+
+    let (requested, _, heights) = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        restore_pass(&anchor, &held, &held, 0),
+    )
+    .await
+    .expect("the restore finishes");
+    assert!(requested.is_empty(), "every block was held: {requested:?}");
+    assert_eq!(heights, BTreeSet::from([50, 60]));
 }

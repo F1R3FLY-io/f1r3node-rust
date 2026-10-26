@@ -2395,3 +2395,60 @@ async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_h
         "the anchor is the seed every derived floor descends from"
     );
 }
+
+/// A vote is findable for as long as the block carrying it is, restarts
+/// included, and an invalid block's body is not history, so its votes never
+/// count.
+#[test]
+fn votes_in_valid_blocks_survive_a_restart_and_invalid_blocks_record_none() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use block_storage::rust::dag::vote_index::VoteEntry;
+    use models::rust::casper::protocol::casper_message::{ClaimFamily, ClaimId, LeakyBucketVote};
+
+    RUNTIME.block_on(async {
+        let genesis = genesis_block();
+        let claim = ClaimId {
+            family: ClaimFamily::Eject,
+            target: prost::bytes::Bytes::from(vec![7u8; 65]),
+            opened_at: 3,
+            proposer: prost::bytes::Bytes::from(vec![8u8; 65]),
+        };
+        let mut valid = chain_block(1, vec![genesis.block_hash.clone()]);
+        valid.body.leaky_bucket_votes = vec![LeakyBucketVote {
+            claim: claim.clone(),
+            yea: true,
+            testimony: None,
+        }];
+        let mut invalid = chain_block(1, vec![genesis.block_hash.clone()]);
+        invalid.body.leaky_bucket_votes = vec![LeakyBucketVote {
+            claim: claim.clone(),
+            yea: false,
+            testimony: None,
+        }];
+        assert_ne!(valid.sender, invalid.sender);
+
+        let mut kvm = InMemoryStoreManager::new();
+        {
+            let storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            storage.insert(&genesis, InsertMode::Approved).unwrap();
+            storage.insert(&valid, InsertMode::Normal).unwrap();
+            storage.insert(&invalid, InsertMode::Invalid).unwrap();
+        }
+        let restarted = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+
+        assert_eq!(
+            restarted.leaky_bucket_votes(&claim, &valid.sender).unwrap(),
+            Some(vec![VoteEntry {
+                block_hash: valid.block_hash.to_vec(),
+                sequence_number: valid.seq_num,
+                yea: true,
+            }])
+        );
+        assert_eq!(
+            restarted
+                .leaky_bucket_votes(&claim, &invalid.sender)
+                .unwrap(),
+            Some(vec![])
+        );
+    });
+}

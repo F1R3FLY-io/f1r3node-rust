@@ -47,7 +47,7 @@ async fn multi_parent_casper_should_increment_last_finalized_block_as_appropriat
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -130,7 +130,7 @@ async fn multi_parent_casper_should_advance_finalization_monotonically_in_round_
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
     // Heartbeat mode: under deploy-inclusion leadership only the leader packages

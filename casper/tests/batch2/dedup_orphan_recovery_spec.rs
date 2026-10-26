@@ -32,6 +32,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::chain_parameters::ChainParameters;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
     compute_deploys_checkpoint, compute_parents_post_state,
@@ -120,17 +121,21 @@ async fn dedup_orphan_lands_in_rejected_deploy_buffer() {
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
-        shard_conf.max_parent_depth = 0;
         // A non-trivial deploy lifespan keeps the orphan sig in the
-        // `Pending` state through `compute_rejected_buffer_admits`. The
-        // default of 0 would mark any deploy whose `valid_after_block_number`
+        // `Pending` state through `compute_rejected_buffer_admits`. A
+        // lifespan of 0 would mark any deploy whose `valid_after_block_number`
         // is below the tip height as `Expired`, which would prevent buffer
         // admission and obscure what this test is checking.
-        shard_conf.deploy_lifespan = 50;
+        let chain = ChainParameters {
+            max_parent_depth: 0,
+            deploy_lifespan: 50,
+            ..ChainParameters::shipped()
+        };
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator.clone(), 100);
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
+            chain,
             bonds_map,
             active_validators: vec![validator.clone()],
         };

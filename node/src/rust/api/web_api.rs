@@ -233,7 +233,6 @@ pub struct WebApiImpl {
     node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
     trigger_propose_f: Option<Arc<ProposeFunction>>,
     epoch_length: i32,
-    quarantine_length: i32,
     is_ready: Arc<AtomicBool>,
 }
 
@@ -257,7 +256,6 @@ impl WebApiImpl {
         node_discovery: Arc<dyn NodeDiscovery + Send + Sync>,
         trigger_propose_f: Option<Arc<ProposeFunction>>,
         epoch_length: i32,
-        quarantine_length: i32,
         is_ready: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -279,7 +277,6 @@ impl WebApiImpl {
             node_discovery,
             trigger_propose_f,
             epoch_length,
-            quarantine_length,
             is_ready,
         }
     }
@@ -429,14 +426,17 @@ impl WebApi for WebApiImpl {
 
         let is_ready = self.is_ready.load(Ordering::Relaxed);
 
-        // Advertise the floor admission and validity actually enforce — the
-        // chain-adopted value; local conf only until casper is up.
-        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => casper.casper_shard_conf().min_phlo_price,
-            None => self.min_phlo_price,
+        // Advertise what admission and validity actually enforce — the chain's
+        // values; local conf only until casper is up.
+        let (min_phlo_price, epoch_length) = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => {
+                let chain = casper.chain_parameters();
+                (chain.min_phlo_price, chain.epoch_length)
+            }
+            None => (self.min_phlo_price, self.epoch_length),
         };
-        let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
-            lfb_number / self.epoch_length as i64
+        let current_epoch = if epoch_length > 0 && lfb_number >= 0 {
+            lfb_number / epoch_length as i64
         } else {
             0
         };
@@ -461,7 +461,7 @@ impl WebApi for WebApiImpl {
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
-            epoch_length: self.epoch_length,
+            epoch_length,
         })
     }
 
@@ -959,9 +959,15 @@ impl WebApi for WebApiImpl {
 
     async fn get_epoch(&self, block_hash: Option<String>) -> Result<EpochResponse> {
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let epoch_length = self.epoch_length as i64;
-        let quarantine_length = self.quarantine_length as i64;
+        let chain = *self
+            .engine_cell
+            .get()
+            .await
+            .with_casper()
+            .ok_or_else(|| eyre!("casper is not initialized"))?
+            .chain_parameters();
+        let epoch_length = chain.epoch_length as i64;
+        let quarantine_length = chain.quarantine_length as i64;
 
         let current_epoch = if epoch_length > 0 {
             block_number / epoch_length

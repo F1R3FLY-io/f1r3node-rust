@@ -613,7 +613,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 metrics::counter!(BLOCK_VALIDATION_SUCCESS_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
                     .increment(1);
                 self.dependencies
-                    .effects_for_valid_block(casper.clone(), block)
+                    .effects_for_valid_block(casper.clone(), block, &snapshot)
                     .await
             }
             Either::Left(invalid_block) => {
@@ -1733,12 +1733,19 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     }
 
     /// Equivalent to Scala's: effectsForValidBlock = (c: Casper[F], b: BlockMessage) => { ... }
+    ///
+    /// Parents resolve here because past `handle_valid_block` the block is in
+    /// the DAG and out of the casper buffer.
     pub async fn effects_for_valid_block(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
+        snapshot: &CasperSnapshot,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
-        let dag = { casper.handle_valid_block(block).await? };
+        let parents = snapshot
+            .dag
+            .lookups_unsafe(block.header.parents_hash_list.clone())?;
+        let dag = { casper.handle_valid_block(block, &parents).await? };
 
         // Equivalent to Scala's: CommUtil[F].sendBlockHash(b.blockHash, b.sender)
         self.spawn_block_hash_announce(block);

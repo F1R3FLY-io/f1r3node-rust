@@ -285,6 +285,36 @@ pub mod builder {
                 node_conf.casper.genesis_block_data.epoch_length,
             ));
         }
+        let vote_list_bound = node_conf
+            .casper
+            .genesis_block_data
+            .leaky_bucket_vote_list_bound;
+        if !(1..=u32::MAX as i64).contains(&vote_list_bound) {
+            return Err(eyre::eyre!(
+                "casper.genesis-block-data.leaky-bucket-vote-list-bound ({}) must be in \
+                [1, {}]: a block that may carry no vote can never discharge one",
+                vote_list_bound,
+                u32::MAX,
+            ));
+        }
+        let basis = casper::rust::chain_parameters::WindowBasis {
+            max_parent_depth,
+            deploy_lifespan: node_conf.casper.deploy_lifespan,
+            epoch_length: node_conf.casper.genesis_block_data.epoch_length,
+        };
+        let quarantine = node_conf.casper.genesis_block_data.quarantine_length as i64;
+        if let Some(minimum) = basis.minimum_quarantine() {
+            if quarantine < minimum {
+                return Err(eyre::eyre!(
+                    "casper.genesis-block-data.quarantine-length ({}) must be at least {}: \
+                    two epochs of ejection grace, plus the block retention window, plus an \
+                    epoch, so a validator that votes and then unbonds stays slashable for as \
+                    long as evidence against it can be checked",
+                    quarantine,
+                    minimum,
+                ));
+            }
+        }
 
         // The mpd sentinel's real side effect is easy to miss: with no
         // citability horizon, nothing is ever provably beyond contest.
@@ -784,6 +814,27 @@ mod embedded_defaults_tests {
         }
     }
 
+    /// The buffer widens every window it is added to, so a negative one would
+    /// fetch, import and retain less than the parent reach and the retention
+    /// window need.
+    #[test]
+    fn a_negative_mergeable_gc_depth_buffer_is_rejected() {
+        let shipped: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(shipped.casper.mergeable_channels_gc_depth_buffer, 10);
+
+        let result: Result<NodeConf, _> = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .load_str("casper.mergeable-channels-gc-depth-buffer = -5")
+            .unwrap()
+            .resolve();
+        assert!(result.is_err());
+    }
+
     /// A negative fault-tolerance threshold weakens "finalized" from a BFT
     /// certificate to bare majority agreement per snapshot — a legitimate
     /// test/dev sentinel, but one an operator must choose with eyes open.
@@ -945,6 +996,31 @@ mod embedded_defaults_tests {
         assert!(
             builder::validate_config(&cfg).is_err(),
             "epoch-length 0 must fail startup"
+        );
+    }
+
+    /// The quarantine must cover two epochs of grace, the retention
+    /// window and an epoch of margin. At the shipped epoch of 10000 and depth
+    /// of 15 that is 20000 + 10015 + 10000.
+    #[test]
+    fn a_quarantine_shorter_than_the_section_3_11_minimum_fails_startup() {
+        let mut cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        cfg.casper.max_parent_depth = 15;
+        cfg.casper.genesis_block_data.epoch_length = 10_000;
+
+        cfg.casper.genesis_block_data.quarantine_length = 40_015;
+        builder::validate_config(&cfg).expect("the minimum itself is enough");
+
+        cfg.casper.genesis_block_data.quarantine_length = 40_014;
+        let err = builder::validate_config(&cfg).expect_err("one block short must fail startup");
+        assert!(
+            err.to_string()
+                .contains("quarantine-length (40014) must be at least 40015"),
+            "the quarantine check itself must fire, got: {err}"
         );
     }
 

@@ -15,7 +15,7 @@ async fn the_release_scan_records_its_duration() {
         .build_genesis_with_parameters(None)
         .await
         .expect("Failed to build genesis");
-    let nodes = TestNode::create_network(genesis, 1, None, None, None, None)
+    let nodes = TestNode::create_network(genesis, 1, None, None, None)
         .await
         .unwrap();
 

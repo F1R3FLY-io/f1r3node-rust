@@ -156,7 +156,7 @@ async fn multi_parent_casper_should_allow_multiple_deploys_in_a_single_block() {
 async fn multi_parent_casper_should_not_allow_empty_blocks_with_multiple_parents() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
 
@@ -222,7 +222,7 @@ async fn multi_parent_casper_should_propose_and_replay_peek() {
     // Trait objects dyn Trait is not Send by default
     // tokio::spawn requires Send so that tasks can migrate between threads
     for _ in 1..=10 {
-        let mut nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+        let mut nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None)
             .await
             .unwrap();
 
@@ -301,7 +301,7 @@ async fn multi_parent_casper_should_reject_blocks_not_from_bonded_validators() {
 async fn multi_parent_casper_should_propose_blocks_it_adds_to_peers() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
 
@@ -327,21 +327,27 @@ async fn multi_parent_casper_should_propose_blocks_it_adds_to_peers() {
 /// executes for free.
 #[tokio::test]
 async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
-    let ctx = TestContext::new().await;
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    parameters.2.proof_of_stake.min_phlo_price = 1;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 1, None, None, None)
         .await
         .unwrap();
 
-    // Below the fixture's shard-conf floor (min_phlo_price = 1); the deploy
-    // enters the pool directly, modeling a proposer that skipped the API gate.
+    // Below the chain's floor of 1; the deploy enters the pool directly,
+    // modeling a proposer that skipped the API gate.
     let underpriced = construct_deploy::source_deploy_now_full(
         "Nil".to_string(),
         None,
         Some(0),
         None,
         None,
-        Some(ctx.shard_id.clone()),
+        Some(shard_id),
     )
     .unwrap();
 
@@ -365,7 +371,7 @@ async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
 async fn multi_parent_casper_should_add_a_valid_block_from_peer() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
 
@@ -408,7 +414,7 @@ async fn multi_parent_casper_should_reject_add_block_when_there_exist_deploy_by_
 ) {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
 
@@ -497,7 +503,7 @@ async fn multi_parent_casper_should_reject_add_block_when_there_exist_deploy_by_
 async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
 
@@ -601,7 +607,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
 ) {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -772,7 +778,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
 async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -917,7 +923,7 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
 
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -997,7 +1003,7 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
 async fn multi_parent_casper_should_succeed_at_slashing() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -1168,6 +1174,7 @@ async fn build_block_with_invalid_justification(
         extra_bytes: Bytes::new(),
         applied_from_scope: vec![],
         merge_base: Bytes::new(),
+        leaky_bucket_votes: Vec::new(),
     };
 
     let serialized_justifications = vec![Justification {

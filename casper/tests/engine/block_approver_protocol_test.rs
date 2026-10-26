@@ -5,6 +5,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use casper::rust::engine::block_approver_protocol::BlockApproverProtocol;
+use casper::rust::genesis::contracts::proof_of_stake::LeakyBucketGenesis;
 use crypto::rust::public_key::PublicKey;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
@@ -54,8 +55,7 @@ impl TestContext {
 
         let required_sigs = (bonds.len() - 1) as i32;
 
-        let mut nodes =
-            TestNode::create_network(genesis_context, 1, None, None, None, None).await?;
+        let mut nodes = TestNode::create_network(genesis_context, 1, None, None, None).await?;
 
         // Note: Using remove(0) instead of referencing nodes[0] because TestNode doesn't implement Clone
         // and we need an owned value. This is acceptable since networkSize=1 (only one element).
@@ -75,6 +75,7 @@ impl TestContext {
             genesis_params.proof_of_stake.max_parent_depth,
             genesis_params.proof_of_stake.deploy_lifespan,
             genesis_params.proof_of_stake.min_phlo_price,
+            genesis_params.proof_of_stake.leaky_bucket(),
             required_sigs,
             genesis_params.proof_of_stake.pos_multi_sig_public_keys,
             genesis_params.proof_of_stake.pos_multi_sig_quorum,
@@ -213,6 +214,7 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         ctx.protocol.max_parent_depth,
         ctx.protocol.deploy_lifespan,
         ctx.protocol.min_phlo_price,
+        ctx.protocol.leaky_bucket,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -253,6 +255,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         ctx.protocol.max_parent_depth,
         ctx.protocol.deploy_lifespan,
         ctx.protocol.min_phlo_price,
+        ctx.protocol.leaky_bucket,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -293,6 +296,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         ctx.protocol.max_parent_depth,
         ctx.protocol.deploy_lifespan,
         ctx.protocol.min_phlo_price,
+        ctx.protocol.leaky_bucket,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -337,6 +341,10 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         ctx.protocol.max_parent_depth + 1,              // incorrect
         ctx.protocol.deploy_lifespan + 1,               // incorrect
         ctx.protocol.min_phlo_price + 1,                // incorrect
+        LeakyBucketGenesis {
+            lambda_base_ppm: ctx.protocol.leaky_bucket.lambda_base_ppm + 1,
+            ..ctx.protocol.leaky_bucket
+        }, // incorrect
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,
@@ -410,6 +418,7 @@ async fn block_approver_protocol_rejects_candidate_when_local_fs_bundle_mismatch
         ctx.protocol.max_parent_depth,
         ctx.protocol.deploy_lifespan,
         ctx.protocol.min_phlo_price,
+        ctx.protocol.leaky_bucket,
         SHARD_ID,
         &ctx.protocol.pos_multi_sig_public_keys,
         ctx.protocol.pos_multi_sig_quorum,

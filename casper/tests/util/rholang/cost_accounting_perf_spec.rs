@@ -122,6 +122,7 @@ async fn play_system_deploy_timed<S: SystemDeployTrait>(
     let runtime = runtime_manager.spawn_runtime().await.unwrap();
     runtime
         .set_block_data(BlockData {
+            committee: Vec::new(),
             time_stamp: 0,
             block_number: 0,
             sender: genesis_context.validator_pks()[0].clone(),
@@ -484,6 +485,7 @@ async fn time_replay_per_deploy(
     let replay_runtime = runtime_manager.spawn_replay_runtime().await.unwrap();
     replay_runtime
         .set_block_data(BlockData {
+            committee: Vec::new(),
             time_stamp: processed_deploy.deploy.data.time_stamp,
             block_number: 0,
             sender: genesis_context.validator_pks()[0].clone(),
@@ -608,6 +610,7 @@ async fn measure_replay_per_deploy_cost() {
                 .unwrap();
 
                 let block_data = BlockData {
+                    committee: Vec::new(),
                     time_stamp: deploy.data.time_stamp,
                     block_number: 0,
                     sender: genesis_context.validator_pks()[0].clone(),
@@ -878,6 +881,7 @@ async fn measure_block_replay_cost() {
                 }
 
                 let block_data = BlockData {
+                    committee: Vec::new(),
                     time_stamp: deploys[0].data.time_stamp,
                     block_number: block_idx as i64,
                     sender: validator.clone(),

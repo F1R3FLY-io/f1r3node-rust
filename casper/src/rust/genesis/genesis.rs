@@ -263,6 +263,7 @@ impl Genesis {
             extra_bytes: Bytes::new(),
             applied_from_scope: Vec::new(),
             merge_base: Bytes::new(),
+            leaky_bucket_votes: Vec::new(),
         };
 
         let header = proto_util::block_header(Vec::new(), genesis.version, genesis.timestamp);
@@ -301,38 +302,8 @@ mod tests {
     #[test]
     fn default_blessed_terms_includes_fs_generator_deploy() {
         use super::super::contracts::standard_deploys;
-        use super::super::contracts::validator::Validator;
 
-        let pos_params = ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
-            validators: vec![Validator {
-                pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
-                stake: 100,
-            }],
-            epoch_length: 10,
-            quarantine_length: 20,
-            number_of_active_validators: 1,
-            fault_tolerance_threshold_ppm: 100_000,
-            max_parent_depth: 1,
-            deploy_lifespan: 1,
-            min_phlo_price: 1,
-            pos_multi_sig_public_keys: vec![hex::encode(
-                &*standard_deploys::POS_GENERATOR_PUB_KEY.bytes,
-            )],
-            pos_multi_sig_quorum: 1,
-        };
-        let deploys = Genesis::default_blessed_terms(
-            &pos_params,
-            &vec![],
-            0,
-            "root",
-            "F1R3CAP",
-            "F1R3",
-            18,
-            &[],
-            None,
-        );
+        let deploys = blessed_terms(|_| {});
         let fs_pk = &*standard_deploys::FS_GENERATOR_PUB_KEY;
         let found = deploys.iter().any(|d| d.pk.bytes == fs_pk.bytes);
         assert!(
@@ -347,5 +318,70 @@ mod tests {
                 .map(|d| hex::encode(&d.pk.bytes))
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// At an epoch of 10 and a depth of 1: two epochs of grace, a retention
+    /// window of 1 + 10, and an epoch of margin make 41.
+    #[test]
+    #[should_panic(expected = "quarantine length 40 is below the 41 blocks")]
+    fn genesis_refuses_a_quarantine_below_the_minimum() {
+        blessed_terms(|pos| pos.quarantine_length = 41);
+        blessed_terms(|pos| pos.quarantine_length = 40);
+    }
+
+    /// Genesis refuses a chain parameter a node would refuse to start on.
+    #[test]
+    #[should_panic(expected = "breadthExponent out of range")]
+    fn genesis_refuses_a_parameter_no_node_can_run_with() {
+        blessed_terms(|pos| pos.breadth_exponent = 0);
+    }
+
+    /// The terms of a small genesis, with `adjust` applied to its
+    /// proof-of-stake parameters.
+    fn blessed_terms(adjust: impl FnOnce(&mut ProofOfStake)) -> Vec<Signed<DeployData>> {
+        use super::super::contracts::standard_deploys;
+        use super::super::contracts::validator::Validator;
+
+        let mut pos_params = ProofOfStake {
+            minimum_bond: 1,
+            maximum_bond: i64::MAX,
+            validators: vec![Validator {
+                pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
+                stake: 100,
+            }],
+            epoch_length: 10,
+            quarantine_length: 50,
+            number_of_active_validators: 1,
+            fault_tolerance_threshold_ppm: 100_000,
+            max_parent_depth: 1,
+            deploy_lifespan: 1,
+            min_phlo_price: 1,
+            epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON,
+            lambda_base_ppm: ProofOfStake::DEFAULT_LAMBDA_BASE_PPM,
+            theta_eject_ppm: ProofOfStake::DEFAULT_THETA_EJECT_PPM,
+            eject_observation_blocks: ProofOfStake::DEFAULT_EJECT_OBSERVATION_BLOCKS,
+            breadth_exponent: ProofOfStake::DEFAULT_BREADTH_EXPONENT,
+            recency_reference_ppm: ProofOfStake::DEFAULT_RECENCY_REFERENCE_PPM,
+            vote_list_bound: ProofOfStake::DEFAULT_VOTE_LIST_BOUND,
+            max_overflow_claim_minimum_bonds:
+                ProofOfStake::DEFAULT_MAX_OVERFLOW_CLAIM_MINIMUM_BONDS,
+            failed_claim_fee_ppm: ProofOfStake::DEFAULT_FAILED_CLAIM_FEE_PPM,
+            pos_multi_sig_public_keys: vec![hex::encode(
+                &*standard_deploys::POS_GENERATOR_PUB_KEY.bytes,
+            )],
+            pos_multi_sig_quorum: 1,
+        };
+        adjust(&mut pos_params);
+        Genesis::default_blessed_terms(
+            &pos_params,
+            &vec![],
+            0,
+            "root",
+            "F1R3CAP",
+            "F1R3",
+            18,
+            &[],
+            None,
+        )
     }
 }

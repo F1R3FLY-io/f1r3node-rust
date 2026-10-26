@@ -74,11 +74,15 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// happen synchronously inside the proposer (block_creator) and
     /// validator (validate.rs::repeat_deploy) — never across `.await`.
     pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+    /// This node's subjective leaky-bucket view of every committee member's
+    /// earning capacity, driven from block admission.
+    pub bucket_view: Arc<crate::rust::economics::bucket_view::BucketView>,
+    pub ejection_requests: Arc<PlMutex<super::ejection_requests::EjectionRequests>>,
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
     pub validator_id: Option<ValidatorIdentity>,
     pub finalized_bond_cache: FinalizedBondCache,
-    // TODO: this should be read from chain, for now read from startup options - OLD
     pub casper_shard_conf: CasperShardConf,
+    pub chain_parameters: crate::rust::chain_parameters::ChainParameters,
     pub approved_block: BlockMessage,
     /// Escalates a persistent containment hold (the shard finalizing floors
     /// this node's LFB is not contained in) to a finality-divergence ERROR

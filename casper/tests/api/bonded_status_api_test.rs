@@ -86,7 +86,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
 async fn bond_status_should_return_true_for_bonded_validator() {
     let ctx = TestContext::new().await;
 
-    let nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -218,7 +218,7 @@ async fn failed_finalization_after_lfb_advance_rejects_an_unbonded_deploy() {
 async fn bond_status_should_return_true_for_newly_bonded_validator() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 4, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 4, None, None, None)
         .await
         .unwrap();
 

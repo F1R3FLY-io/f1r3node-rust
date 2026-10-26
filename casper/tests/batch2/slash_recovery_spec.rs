@@ -94,7 +94,7 @@ impl TestContext {
 async fn slash_for_equivocator_survives_multi_parent_merge() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
     let equivocator_pk = nodes[0]
@@ -294,7 +294,7 @@ async fn slash_for_equivocator_survives_multi_parent_merge() {
 async fn slash_survives_merge_with_pre_slash_sibling() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
     let equivocator_pk = nodes[0]
@@ -450,7 +450,7 @@ async fn slash_survives_merge_with_pre_slash_sibling() {
 async fn e1c_re_issues_merge_rejected_slash() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
     let alt_issuer_pk = nodes[2]
@@ -637,7 +637,7 @@ async fn e1c_re_issues_merge_rejected_slash() {
 async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .expect("create_network(3)");
     let alt_issuer_pk = nodes[2]

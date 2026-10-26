@@ -126,6 +126,12 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
+            // Leaky-bucket votes by claim and voter, recorded from valid block
+            // bodies. Opened in BlockDagKeyValueStorage::new.
+            Db::new("leaky-bucket-votes".to_string(), None),
+            dag_storage_env_config(),
+        ),
+        (
             // WRITE-ONCE terminal deploy verdicts (Finalized/Expired/Failed),
             // written by the finality layer's lifecycle register.
             Db::new("deploy-lifecycle-terminal".to_string(), None),

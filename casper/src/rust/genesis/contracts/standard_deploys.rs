@@ -17,6 +17,7 @@ use super::proof_of_stake::ProofOfStake;
 use super::vault::Vault;
 use super::vaults_generator::VaultsGenerator;
 use super::{embedded_rho, fs_genesis};
+use crate::rust::chain_parameters::ChainParameters;
 
 /// Build a `CompiledRholangSource` from an embedded `.rho` constant. The
 /// `name` is preserved on the resulting source as identification metadata
@@ -298,6 +299,37 @@ pub fn token_metadata(
 pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
     assert!(pos.minimum_bond <= pos.maximum_bond);
     assert!(!pos.validators.is_empty());
+    if let Err(detail) = ChainParameters::checked(|name| pos.chain_parameter(name)) {
+        panic!("genesis would write a chain parameter no node can run with: {detail}");
+    }
+    assert!(
+        pos.number_of_active_validators > 0,
+        "active-validator cap must be positive"
+    );
+    let max_overflow_per_claim = pos
+        .max_overflow_claim_minimum_bonds
+        .checked_mul(pos.minimum_bond)
+        .filter(|bound| *bound > 0)
+        .expect("the overflow claim bound must be a positive number of minimum bonds");
+    assert!(
+        (0..=1_000_000).contains(&pos.failed_claim_fee_ppm),
+        "the failed-claim fee must be in [0, 1000000] ppm of the bond"
+    );
+    let basis = pos.window_basis();
+    let (Some(retention_window), Some(minimum_quarantine)) =
+        (basis.block_retention_window(), basis.minimum_quarantine())
+    else {
+        panic!(
+            "a disabled parent-depth check has no finite retention window, so no quarantine \
+             is long enough"
+        )
+    };
+    assert!(
+        pos.quarantine_length as i64 >= minimum_quarantine,
+        "quarantine length {} is below the {minimum_quarantine} blocks required: ejection \
+         grace, the block retention window and an epoch of margin",
+        pos.quarantine_length
+    );
 
     to_deploy(
         CompiledRholangTemplate::new("PoS.rhox", embedded_rho::POS, HashMap::new(), &[
@@ -320,6 +352,30 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
             ("maxParentDepth", &pos.max_parent_depth.to_string()),
             ("deployLifespan", &pos.deploy_lifespan.to_string()),
             ("minPhloPrice", &pos.min_phlo_price.to_string()),
+            ("epochPhlogiston", &pos.epoch_phlogiston.to_string()),
+            ("lambdaBasePpm", &pos.lambda_base_ppm.to_string()),
+            ("thetaEjectPpm", &pos.theta_eject_ppm.to_string()),
+            (
+                "ejectObservationBlocks",
+                &pos.eject_observation_blocks.to_string(),
+            ),
+            ("breadthExponent", &pos.breadth_exponent.to_string()),
+            (
+                "recencyReferencePpm",
+                &pos.recency_reference_ppm.to_string(),
+            ),
+            (
+                "claimDeadlineBlocks",
+                &basis.claim_deadline_blocks().to_string(),
+            ),
+            ("voteListBound", &pos.vote_list_bound.to_string()),
+            ("maxOverflowPerClaim", &max_overflow_per_claim.to_string()),
+            ("failedClaimFeePpm", &pos.failed_claim_fee_ppm.to_string()),
+            (
+                "ejectionGraceBlocks",
+                &basis.ejection_grace_blocks().to_string(),
+            ),
+            ("retentionWindowBlocks", &retention_window.to_string()),
             (
                 "posMultiSigPublicKeys",
                 &ProofOfStake::public_keys(&pos.pos_multi_sig_public_keys),

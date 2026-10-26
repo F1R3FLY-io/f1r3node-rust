@@ -552,7 +552,11 @@ async fn check_lfb_and_propose(
         std::cmp::max(pending_deploy_max_lag, advanced_deploy_recovery_max_lag);
     let idle_recovery_window_open =
         finality_progress.stalled && finality_progress.recovery_round_due;
-    let lag_recovery_leader = is_lag_recovery_leader(&snapshot, validator_identity);
+    let lag_recovery_leader = is_lag_recovery_leader(
+        &snapshot,
+        validator_identity,
+        &casper.bucket_view().ejected(),
+    );
     let effective_frontier_chase_cap = effective_frontier_chase_cap(
         frontier_chase_max_lag,
         deploy_recovery_max_lag,
@@ -573,7 +577,7 @@ async fn check_lfb_and_propose(
     // snapshot carries the chain-ADOPTED one — re-judge I3 here, once.
     {
         static ADOPTED_GEOMETRY_CHECK: std::sync::Once = std::sync::Once::new();
-        let adopted_mpd = snapshot.on_chain_state.shard_conf.max_parent_depth;
+        let adopted_mpd = snapshot.on_chain_state.chain.max_parent_depth;
         let cap = config.advanced.empty_frontier_max_unfinalized_blocks;
         if adopted_mpd != i32::MAX && cap > adopted_mpd as i64 {
             ADOPTED_GEOMETRY_CHECK.call_once(|| {
@@ -1184,9 +1188,11 @@ fn stale_recovery_window_is_open(
             .unwrap_or(true)
 }
 
+/// An ejected validator is not expected to propose, so it never leads.
 fn is_lag_recovery_leader(
     snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
+    ejected: &std::collections::HashSet<Validator>,
 ) -> bool {
     let validators: Vec<Validator> = match snapshot.parents.first() {
         Some(parent) => parent
@@ -1195,6 +1201,7 @@ fn is_lag_recovery_leader(
             .bonds
             .iter()
             .map(|bond| bond.validator.clone())
+            .filter(|validator| !ejected.contains(validator))
             .collect(),
         None => return true,
     };
@@ -1305,6 +1312,39 @@ mod tests {
 
             prop_assert_eq!(first, second);
         }
+    }
+
+    /// An ejected validator is not expected to propose, so the lowest
+    /// key among the rest leads lag recovery.
+    #[test]
+    fn an_ejected_validator_does_not_lead_lag_recovery() {
+        let me = create_test_validator_identity();
+        let lowest = Validator::from(vec![0u8; 65]);
+        let mut parent = models::rust::block_implicits::get_random_block_default();
+        parent.body.state.bonds = vec![
+            models::rust::casper::protocol::casper_message::Bond {
+                validator: lowest.clone(),
+                stake: 1,
+            },
+            models::rust::casper::protocol::casper_message::Bond {
+                validator: me.public_key.bytes.clone(),
+                stake: 1,
+            },
+        ];
+        let mut snapshot =
+            casper::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.parents = vec![parent];
+
+        assert!(!is_lag_recovery_leader(
+            &snapshot,
+            &me,
+            &std::collections::HashSet::new()
+        ));
+        assert!(is_lag_recovery_leader(
+            &snapshot,
+            &me,
+            &std::collections::HashSet::from([lowest])
+        ));
     }
 
     #[test]

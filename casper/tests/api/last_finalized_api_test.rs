@@ -84,7 +84,7 @@ async fn is_finalized(block: &BlockMessage, engine_cell: &EngineCell) -> bool {
 async fn is_finalized_should_return_true_for_ancestors_of_last_finalized_block() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -176,7 +176,7 @@ async fn is_finalized_should_return_true_for_ancestors_of_last_finalized_block()
 async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_block() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 

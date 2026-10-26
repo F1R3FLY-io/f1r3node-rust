@@ -28,7 +28,7 @@ use models::rhoapi::{Expr, Par};
 use prost::bytes::Bytes;
 use serial_test::serial;
 
-use crate::helper::test_node::{ShardOverrides, TestNode};
+use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 const DEPLOY_LIFESPAN: i64 = 5;
@@ -46,19 +46,16 @@ fn gstring_channel(name: &str) -> Par {
 #[serial]
 async fn late_carrier_past_window_is_rejected_with_record_and_without_effect() {
     let n_validators = 3usize;
-    let genesis_parameters =
+    let mut genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
+    genesis_parameters.2.proof_of_stake.deploy_lifespan = DEPLOY_LIFESPAN;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes =
-        TestNode::create_network_with_overrides(genesis, n_validators, ShardOverrides {
-            deploy_lifespan: Some(DEPLOY_LIFESPAN),
-            ..Default::default()
-        })
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {

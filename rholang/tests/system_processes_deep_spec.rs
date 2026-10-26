@@ -381,6 +381,7 @@ async fn block_data_deploy_data_and_invalid_blocks() {
         let sender_bytes = vec![9u8, 8, 7];
         runtime
             .set_block_data(BlockData {
+                committee: Vec::new(),
                 block_number: 42,
                 time_stamp: 1234,
                 sender: PublicKey::from_bytes(&sender_bytes),
@@ -589,6 +590,36 @@ async fn block_data_set_then_get_round_trips() {
     eval_err(
         &mut runtime,
         "new set(`rho:test:block:data:set`) in { set!(42, 1, \"x\") }",
+    )
+    .await;
+}
+
+/// The committee set for a block is the one its deploys read, with members
+/// holding no stake left out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn block_committee_set_then_get_round_trips() {
+    let mut runtime = framework_runtime().await;
+    eval_ok(
+        &mut runtime,
+        "new set(`rho:test:block:data:set`) in { set!(\"committee\", {\"aa\".hexToBytes(): 3, \"bb\".hexToBytes(): 0}, \"ack\") }",
+    )
+    .await;
+    assert_eq!(data_at(&runtime, "ack").await, vec![Par::default()]);
+    eval_ok(
+        &mut runtime,
+        "new get(`rho:block:committee`) in { get!(\"committee-out\") }",
+    )
+    .await;
+    eval_ok(
+        &mut runtime,
+        "for (@committee <- @\"committee-out\") { @\"checked\"!(committee == {\"aa\".hexToBytes(): 3}) }",
+    )
+    .await;
+    assert_eq!(data_at(&runtime, "checked").await, vec![gbool_par(true)]);
+
+    eval_err(
+        &mut runtime,
+        "new set(`rho:test:block:data:set`) in { set!(\"committee\", {\"aa\".hexToBytes(): \"three\"}, \"x\") }",
     )
     .await;
 }

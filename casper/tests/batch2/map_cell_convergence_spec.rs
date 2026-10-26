@@ -196,10 +196,9 @@ async fn run_convergence(
     let ctx = TestContext::new(n_validators).await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
-    let mut nodes =
-        TestNode::create_network(ctx.genesis.clone(), n_validators, None, None, None, None)
-            .await
-            .expect("create_network");
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), n_validators, None, None, None)
+        .await
+        .expect("create_network");
     // Heartbeat/liveness like a production shard: a proposer with no user deploys
     // (its write recovered or already canonical) emits an empty CloseBlock block
     // instead of erroring NoNewDeploys, so the chain keeps advancing.
@@ -398,7 +397,12 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
         node.rejected_deploy_buffer.clone(),
         &node.runtime_manager,
         &mut node.block_store,
+        &node.block_dag_storage,
         casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
+        casper::rust::economics::bucket_view::LeakyBucketProposal::abstaining(
+            *node.casper.bucket_view().params(),
+        )
+        .fixed(),
     )
     .await
     .expect("block creation")
@@ -424,7 +428,7 @@ async fn create_allow_empty(node: &mut TestNode) -> BlockCreatorResult {
 async fn unresolved_user_frontier_fresh_admission_is_bounded_and_disjoint() {
     let context = TestContext::new(2).await;
     let shard = context.genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(context.genesis, 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(context.genesis, 2, None, None, None)
         .await
         .expect("network");
     let first = map_set_deploy("leader-a", 1, &signer_key(0), &shard);

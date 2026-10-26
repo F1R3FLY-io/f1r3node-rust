@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use casper::rust::blocks::block_processor::BlockProcessorDependencies;
-use casper::rust::casper::Casper;
+use casper::rust::casper::{Casper, CasperSnapshot};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use comm::rust::errors::CommError;
 use comm::rust::peer_node::PeerNode;
@@ -139,14 +139,18 @@ async fn a_dead_peer_does_not_stall_valid_block_effects() {
         None,
         Arc::new(runtime_manager),
         block_store,
-        dag_representation,
+        dag_representation.clone(),
     ));
+    let snapshot_dag = dag_representation;
 
-    let block = get_random_block_default();
+    // The effects path resolves every declared parent against the DAG first.
+    let mut block = get_random_block_default();
+    block.header.parents_hash_list.clear();
+    let snapshot = CasperSnapshot::new(snapshot_dag);
 
     let start = Instant::now();
     dependencies
-        .effects_for_valid_block(casper, &block)
+        .effects_for_valid_block(casper, &block, &snapshot)
         .await
         .expect("effects_for_valid_block failed");
     let elapsed = start.elapsed();

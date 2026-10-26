@@ -107,7 +107,7 @@ async fn a_finalized_verdict_on_the_lfb_survives_a_low_base_merge() {
         .await
         .expect("genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 3, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {

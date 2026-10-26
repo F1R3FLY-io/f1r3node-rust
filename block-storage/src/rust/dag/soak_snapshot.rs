@@ -26,12 +26,13 @@ use crate::rust::key_value_block_store::{BlockDecodeLimits, KeyValueBlockStore};
 
 pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 pub const SNAPSHOT_SCOPE: &str = "batch-b1-bounded-detached-capture";
-pub const EXCLUDED_STORES: [&str; 5] = [
+pub const EXCLUDED_STORES: [&str; 6] = [
     "blocks-approved",
     "deploy-lifecycle-events",
     "deploy-lifecycle-terminal",
     "carrier-index",
     "carrier-index-meta",
+    "leaky-bucket-votes",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1110,6 +1111,7 @@ mod tests {
             "deploy-lifecycle-terminal",
             "carrier-index",
             "carrier-index-meta",
+            "leaky-bucket-votes",
             "genesis-hash",
             "blocks",
             "blocks-approved",

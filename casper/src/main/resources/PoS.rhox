@@ -173,7 +173,7 @@ in {
           for (@initialActive     <- initialActiveCh;
                @(true, _) <- moveInitialBondCh) {
             new stateCh, pendingRewardsInitializedCh, rewardsInfo, calTotalActiveBonds, calTotalBonds,
-                accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState in {
+                accumulateSndNum, accumulateFstOfSndArg, accumulateItemInState, forfeitStake in {
               // Initializes PoS state structure.
               stateCh!({
                 // Map[PublicKey, Int] - each validator stake
@@ -191,6 +191,42 @@ in {
                 "pendingWithdrawers": {},
                 "randomImages"    : {},
                 "randomNumbers"   : {},
+                // Map[PublicKey, Map] - open ejection proceedings, keyed by target so at
+                //                       most one can be open against a validator at a time.
+                //                       Each record carries the proposer that opened it, the
+                //                       block it was opened at, and the electorate frozen at
+                //                       that block.
+                "ejectionEvidence": {},
+                // Map[PublicKey, Map] - validators ejected by a passed claim: the
+                //                       end of their grace, the floor the claim
+                //                       passed at, and the claim's electorate.
+                "ejectedValidators": {},
+                // Map[PublicKey, Map] - open rejoin requests, keyed by the ejected
+                //                       validator making them: the block each was
+                //                       opened at and the topup it pays on success.
+                "pendingRejoins": {},
+                // Map[PublicKey, Map[Int, Map]] - each validator's ejections,
+                //                       keyed by the floor the ejection passed
+                //                       at: the block that paid its rejoin and
+                //                       the topup, both Nil while still ejected.
+                //                       Closed ones leave once the retention
+                //                       window passes them.
+                "freezeHistory": {},
+                // BigInt - the paid rejoin topups the PoS vault holds. They back
+                //          the overflow the rejoiners are credited, so no epoch
+                //          distributes them.
+                "heldTopups": 0n,
+                // Map[PublicKey, Map] - open overflow claims, keyed by the
+                //                       claimant: the block each was opened at,
+                //                       the amount, and the electorate frozen at
+                //                       that block.
+                "overflowClaims": {},
+                // Map[PublicKey, Map] - each validator's paid overflow claims:
+                //                       the running total, and each payment's
+                //                       amount by the block that paid it.
+                //                       Payments leave once the retention
+                //                       window passes them; the total stays.
+                "claimedOverflow": {},
               }) |
               contract rewardsInfo(retCh) = {
                 new posBalanceCh, totalActiveBondCh, totalBondCh, totalWithdrawCh, committedRewardsCh in {
@@ -202,17 +238,19 @@ in {
                   for (@posBalance <- posBalanceCh; @totalBond <- totalBondCh; @activeBonds <- totalActiveBondCh;
                        @totalWithdraw <- totalWithdrawCh; @totalCommittedRewards <- committedRewardsCh){
                     for (@state <<- stateCh) {
-                      retCh!((posBalance , totalBond , activeBonds, totalWithdraw, totalCommittedRewards, state.get("allBonds"), state.get("activeValidators")))
+                      retCh!((posBalance - state.get("heldTopups"), totalBond , activeBonds, totalWithdraw, totalCommittedRewards, state.get("allBonds"), state.get("activeValidators"), state.get("ejectedValidators")))
                     }
                   }
                 }
               } |
+              // Stake eligible for rewards: active and not ejected.
               contract calTotalActiveBonds(returnCh) = {
                 new computeSum in {
                   for (@state <<- stateCh){
                     @ListOps!("fold", state.get("allBonds").toList(), 0, *computeSum, *returnCh) |
                     contract computeSum(@(pk, bondAmount), @acc, resultCh) = {
-                      if (state.get("activeValidators").contains(pk)){
+                      if (state.get("activeValidators").contains(pk) and
+                          not state.get("ejectedValidators").contains(pk)){
                         resultCh!(acc + bondAmount)
                       } else {
                         resultCh!(acc)
@@ -236,11 +274,15 @@ in {
               contract PoS(@"getCurrentEpochRewards", returnCh) = {
                 new rewardCh, computeReward in {
                   rewardsInfo!(*rewardCh)|
-                  for (@(posBalance, totalBond, activeBonds, totalWithdraw, totalCommittedRewards, bondsMap, activeValidatorsSet) <- rewardCh){
+                  for (@(posBalance, totalBond, activeBonds, totalWithdraw, totalCommittedRewards, bondsMap, activeValidatorsSet, ejectedValidators) <- rewardCh){
                     @ListOps!("fold", bondsMap.toList(), {}, *computeReward, *returnCh) |
                     contract computeReward(@(pk, bonds), @acc,  outCh) = {
                       // Rewards are BigInt, so this product cannot overflow. Each bond is divided by minimumBond first, which truncates the validator's share.
-                      if (activeValidatorsSet.contains(pk)){
+                      // An ejected validator's share goes to the rest; with no
+                      // eligible stake left, nothing is distributed this epoch.
+                      if (activeValidatorsSet.contains(pk) and
+                          not ejectedValidators.contains(pk) and
+                          activeBonds / $$minimumBond$$ > 0){
                         outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$).toBigInt() / (activeBonds / $$minimumBond$$).toBigInt()))
                       } else {
                         outCh!(acc.set(pk, 0n))
@@ -303,20 +345,25 @@ in {
               contract PoS(@"getQuarantineLength", returnCh) = {
                 returnCh!($$quarantineLength$$)
               } |
-              // Exposes the protocol fault-tolerance threshold (parts-per-million).
-              // This is a CONSENSUS-level value: every node reads it back at startup
-              // and uses it for the finalized-floor / finality oracle, so the merge
-              // base is node-identical regardless of local configuration.
-              contract PoS(@"getFaultToleranceThresholdPpm", returnCh) = {
-                returnCh!($$faultToleranceThresholdPpm$$)
-              } |
-              // Exposes the consensus-critical shard parameters as one tuple:
-              // (maxParentDepth, deployLifespan, minPhloPrice). Validity rules
-              // fork on divergence, so every node reads these back at startup
-              // and runs them regardless of local configuration. Immutable
-              // until an on-chain parameter-upgrade mechanism exists.
-              contract PoS(@"getConsensusParameters", returnCh) = {
-                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$))
+              // Exposes the parameters the node's consensus rules read, fixed at
+              // genesis. Every node reads them back and runs them regardless of
+              // local configuration, since validity forks on any divergence.
+              contract PoS(@"getChainParameters", returnCh) = {
+                returnCh!({
+                  "faultToleranceThresholdPpm": $$faultToleranceThresholdPpm$$,
+                  "maxParentDepth"            : $$maxParentDepth$$,
+                  "deployLifespan"            : $$deployLifespan$$,
+                  "minPhloPrice"              : $$minPhloPrice$$,
+                  "epochLength"               : $$epochLength$$,
+                  "quarantineLength"          : $$quarantineLength$$,
+                  "lambdaBasePpm"             : $$lambdaBasePpm$$,
+                  "thetaEjectPpm"             : $$thetaEjectPpm$$,
+                  "ejectObservationBlocks"    : $$ejectObservationBlocks$$,
+                  "breadthExponent"           : $$breadthExponent$$,
+                  "recencyReferencePpm"       : $$recencyReferencePpm$$,
+                  "voteListBound"             : $$voteListBound$$,
+                  "epochPhlogiston"           : $$epochPhlogiston$$
+                })
               } |
               contract PoS(@"posVaultTransfer", @targetAddress, @amount, @deployerID, @transferRet) = {
                 // human transfer would just use this method
@@ -462,6 +509,589 @@ in {
                   }
                 }
               } |
+              // Ejection proceedings keyed by target, each until a block
+              // resolves or expires it.
+              contract PoS(@"getEjectionEvidence", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("ejectionEvidence"))
+                }
+              } |
+              contract PoS(@"getEjectedValidators", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("ejectedValidators"))
+                }
+              } |
+              contract PoS(@"getPendingRejoins", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("pendingRejoins"))
+                }
+              } |
+              contract PoS(@"getFreezeHistory", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("freezeHistory"))
+                }
+              } |
+              contract PoS(@"getOverflowClaims", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("overflowClaims"))
+                }
+              } |
+              contract PoS(@"getClaimedOverflow", returnCh) = {
+                for (@state <<- stateCh) {
+                  returnCh!(state.get("claimedOverflow"))
+                }
+              } |
+              // A validator claims overflow it has earned. The electorate is
+              // the committee of the block the claim runs in, less the
+              // validators it holds ejected. An ejected validator may claim,
+              // to fund its topup, and so may one in the unbonding quarantine.
+              // A claim past its deadline still holds the slot until the block
+              // that charges its fee removes it.
+              contract PoS(@"claimOverflow", @deployerId, @amount, returnCh) = {
+                new userCh, processCh, quarantinedCh, blockDataCh, committeeCh,
+                    electorateCh, keepVoter,
+                    getBlockData(`rho:block:data`), getCommittee(`rho:block:committee`)
+                in {
+                  runMVar!(*stateCh, *processCh, *returnCh) |
+                  getUser!(deployerId, *userCh) |
+                  getBlockData!(*blockDataCh) |
+                  getCommittee!(*committeeCh) |
+                  for (@state, resultCh   <- processCh &
+                       @userPk            <- userCh &
+                       @blockNumber, _, _ <- blockDataCh &
+                       @committee         <- committeeCh) {
+                    match state.get("withdrawers").get(userPk) {
+                      Nil => quarantinedCh!(0)
+                      (quarantined, _) => quarantinedCh!(quarantined)
+                    } |
+                    @ListOps!("fold", committee.toList(), {}, *keepVoter, *electorateCh) |
+                    contract keepVoter(@(pk, stake), @acc, ret) = {
+                      if (state.get("ejectedValidators").contains(pk)) {
+                        ret!(acc)
+                      } else {
+                        ret!(acc.set(pk, stake))
+                      }
+                    } |
+                    for (@quarantined <- quarantinedCh & @electorate <- electorateCh) {
+                      if (not (amount matches Int)) {
+                        resultCh!(state, (false, "Claim amount must be an Int."))
+                      } else if (amount <= 0) {
+                        resultCh!(state, (false, "Claim amount must be positive."))
+                      } else if (amount > $$maxOverflowPerClaim$$) {
+                        resultCh!(state, (false, "Claim amount exceeds the bound on one claim."))
+                      } else if (state.get("allBonds").getOrElse(userPk, 0) <= 0 and quarantined <= 0) {
+                        resultCh!(state, (false, "Only a validator holding stake may claim overflow."))
+                      } else if (state.get("overflowClaims").contains(userPk)) {
+                        resultCh!(state, (false, "An overflow claim is already open for this validator."))
+                      } else {
+                        resultCh!(
+                          state.set("overflowClaims",
+                            state.get("overflowClaims").set(userPk, {
+                              "proposer"  : userPk,
+                              "openedAt"  : blockNumber,
+                              "amount"    : amount,
+                              "electorate": electorate
+                            })),
+                          (true, Nil))
+                      }
+                    }
+                  }
+                }
+              } |
+              // An ejected validator asks to return within its grace, offering a
+              // topup paid only if the rejoin passes. The electorate is
+              // the one that ejected it, kept in its ejection record.
+              contract PoS(@"rejoinFromEjection", @deployerId, @topup, returnCh) = {
+                new userCh, processCh, blockDataCh,
+                    getBlockData(`rho:block:data`)
+                in {
+                  runMVar!(*stateCh, *processCh, *returnCh) |
+                  getBlockData!(*blockDataCh) |
+                  getUser!(deployerId, *userCh) |
+                  for (@state, resultCh   <- processCh &
+                       @userPk            <- userCh &
+                       @blockNumber, _, _ <- blockDataCh) {
+                    match state.get("ejectedValidators").get(userPk) {
+                      Nil => resultCh!(state, (false, "Only an ejected validator may rejoin."))
+                      ejection => {
+                        if (not (topup matches Int)) {
+                          resultCh!(state, (false, "Topup must be an Int."))
+                        } else if (topup <= 0) {
+                          resultCh!(state, (false, "Topup must be positive."))
+                        } else if (blockNumber > ejection.get("graceEnd")) {
+                          resultCh!(state, (false, "The grace of this ejection has ended."))
+                        } else if (state.get("pendingRejoins").contains(userPk)) {
+                          resultCh!(state, (false, "A rejoin is already open for this validator."))
+                        } else {
+                          resultCh!(
+                            state.set("pendingRejoins",
+                              state.get("pendingRejoins").set(userPk, {
+                                "proposer": userPk,
+                                "openedAt": blockNumber,
+                                "topup"   : topup
+                              })),
+                            (true, Nil))
+                        }
+                      }
+                    }
+                  }
+                }
+              } |
+              // A validator accuses another of having stopped earning. The
+              // accuser's view of the target is NOT checked here and cannot be:
+              // it is node-local, two honest nodes are expected to disagree,
+              // and a rule reading it would split consensus. The threshold
+              // vote settles the claim's merit.
+              //
+              // The committee is that of the block the deploy runs in, which
+              // block validation checks against the block's finalized floor. It
+              // decides who is seated and is frozen as the electorate.
+              contract PoS(@"ejectValidator", @deployerId, @target, returnCh) = {
+                new userCh, processCh, blockDataCh, committeeCh,
+                    getBlockData(`rho:block:data`), getCommittee(`rho:block:committee`)
+                in {
+                  runMVar!(*stateCh, *processCh, *returnCh) |
+                  getBlockData!(*blockDataCh) |
+                  getCommittee!(*committeeCh) |
+                  getUser!(deployerId, *userCh) |
+                  for (@state, resultCh   <- processCh &
+                       @userPk            <- userCh &
+                       @blockNumber, _, _ <- blockDataCh &
+                       @committee         <- committeeCh) {
+                    new electorateCh, notEjected in {
+                      // An ejected validator stays bonded and seated
+                      // through its grace but votes on no new claim.
+                      @ListOps!("fold", committee.toList(), {}, *notEjected, *electorateCh) |
+                      contract notEjected(@(pk, stake), @acc, retCh) = {
+                        if (state.get("ejectedValidators").contains(pk)) {
+                          retCh!(acc)
+                        } else {
+                          retCh!(acc.set(pk, stake))
+                        }
+                      } |
+                      // A claim holds its slot until a block resolves or
+                      // expires it, since its votes count until a floor
+                      // reaches its deadline.
+                      for (@electorate <- electorateCh) {
+                        // Who, then whom, then whether proceedings are
+                        // already under way.
+                        if (not committee.contains(userPk)) {
+                          resultCh!(state, (false, "Only a seated validator may open ejection proceedings."))
+                        } else if (not committee.contains(target)) {
+                          resultCh!(state, (false, "Ejection target is not a seated validator."))
+                        } else if (state.get("ejectedValidators").contains(target)) {
+                          resultCh!(state, (false, "Ejection target is already ejected."))
+                        } else if (state.get("ejectionEvidence").contains(target)) {
+                          resultCh!(state, (false, "Ejection proceedings are already open against this validator."))
+                        } else {
+                          resultCh!(
+                            state.set("ejectionEvidence",
+                              state.get("ejectionEvidence").set(target, {
+                                "proposer"  : userPk,
+                                "openedAt"  : blockNumber,
+                                "electorate": electorate
+                              })),
+                            (true, Nil))
+                        }
+                      }
+                    }
+                  }
+                }
+              } |
+              // Moves every bond the validator holds, including one already in
+              // quarantine, to the coop vault, takes it out of the active set,
+              // closes every ejection proceeding against it and drops its
+              // freezes, which no bucket is kept for any more. A failed
+              // transfer leaves the validator as it was; one already at nothing
+              // is left at nothing.
+              contract forfeitStake(@target, @current, retCh) = {
+                new stakeCh, transferredCh, bondsCh, withdrawersCh in {
+                  match current.get("withdrawers").get(target) {
+                    Nil => stakeCh!(current.get("allBonds").getOrElse(target, 0))
+                    (quarantined, _) => stakeCh!(current.get("allBonds").getOrElse(target, 0) + quarantined)
+                  } |
+                  for (@stake <- stakeCh) {
+                    if (stake > 0) {
+                      @posVault!("transfer", coopMultiVaultAddr, stake, posAuthKey, *transferredCh)
+                    } else {
+                      transferredCh!((true, Nil))
+                    } |
+                    for (@transferred <- transferredCh) {
+                      match transferred {
+                        (true, _) => {
+                          if (current.get("allBonds").contains(target)) {
+                            bondsCh!(current.get("allBonds").set(target, 0))
+                          } else {
+                            bondsCh!(current.get("allBonds"))
+                          } |
+                          match current.get("withdrawers").get(target) {
+                            Nil => withdrawersCh!(current.get("withdrawers"))
+                            (_, quarantine) => withdrawersCh!(current.get("withdrawers").set(target, (0, quarantine)))
+                          } |
+                          for (@bonds <- bondsCh & @withdrawers <- withdrawersCh) {
+                            retCh!(current
+                              .set("allBonds", bonds)
+                              .set("withdrawers", withdrawers)
+                              .set("activeValidators", current.get("activeValidators").delete(target))
+                              .set("committedRewards", current.get("committedRewards").delete(target))
+                              .set("ejectionEvidence", current.get("ejectionEvidence").delete(target))
+                              .set("ejectedValidators", current.get("ejectedValidators").delete(target))
+                              .set("pendingRejoins", current.get("pendingRejoins").delete(target))
+                              .set("freezeHistory", current.get("freezeHistory").delete(target)))
+                          }
+                        }
+                        _ => retCh!(current)
+                      }
+                    }
+                  }
+                }
+              } |
+
+              // Slashes a validator whose nay on an overflow claim its own
+              // signed ancestry proved it owed. Validation checks the
+              // evidence; the contract only needs the system's authority.
+              contract PoS(@"slashDishonestVoter", @accused, @sysAuthToken, returnCh) = {
+                new isValidTokenCh, processCh, forfeitedCh in {
+                  sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+                  for (@isValid <- isValidTokenCh) {
+                    if (isValid) {
+                      runMVar!(*stateCh, *processCh, *returnCh) |
+                      for (@state, resultCh <- processCh) {
+                        forfeitStake!(accused, state, *forfeitedCh) |
+                        for (@forfeited <- forfeitedCh) {
+                          resultCh!(forfeited, (true, Nil))
+                        }
+                      }
+                    } else {
+                      returnCh!((false, "Invalid AuthToken"))
+                    }
+                  }
+                }
+              } |
+
+              // Applies the outcomes block validation found at the block's
+              // floor, then the grace expiries the floor has reached, then the
+              // claims whose deadline the floor has reached undecided. A passed
+              // ejection ejects its target and a failed one clears the slot. A
+              // passed rejoin debits its topup from the rejoining validator
+              // through the deployer identity the resolution carries for it,
+              // and reinstates it if paid; unpaid, or failed, it clears the
+              // slot. A passed overflow claim is paid from what the PoS vault
+              // holds undistributed, and fails if that cannot cover it; an
+              // overflow claim refused or expired costs its claimant the
+              // failed-claim fee. Votes count once a floor shows them, so a
+              // claim is decided whenever its floor's tally crosses and expires
+              // only once its floor reaches the deadline undecided. The tally
+              // is not visible here, so every resolution is trusted as to its
+              // outcome and checked only to name a recorded claim, a rejoin
+              // within its grace; every grace expiry to name a grace that has
+              // ended; and every claim expiry a claim whose deadline its floor
+              // has reached.
+              contract PoS(@"resolveClaims", @resolutions, @graceExpiries,
+                           @claimExpiries, @floorHash, @floorNumber,
+                           @sysAuthToken, returnCh) = {
+                new isValidTokenCh in {
+                  sysAuthTokenOps!("check", sysAuthToken, *isValidTokenCh) |
+                  for (@isValid <- isValidTokenCh) {
+                    if (isValid) {
+                      new processCh, blockDataCh, namesOpenClaim, namesEndedGrace,
+                          namesLapsedClaim, recordOf,
+                          applyResolution, expireClaim,
+                          payOverflow, chargeFailedClaim,
+                          checkedCh, endedCh, lapsedCh,
+                          resolvedCh, expiredCh, lapsedOutCh,
+                          getBlockData(`rho:block:data`)
+                      in {
+                        runMVar!(*stateCh, *processCh, *returnCh) |
+                        getBlockData!(*blockDataCh) |
+                        for (@state, resultCh   <- processCh &
+                             @blockNumber, _, _ <- blockDataCh) {
+                          @ListOps!("fold", resolutions, true, *namesOpenClaim, *checkedCh) |
+                          @ListOps!("fold", graceExpiries, true, *namesEndedGrace, *endedCh) |
+                          @ListOps!("fold", claimExpiries, true, *namesLapsedClaim, *lapsedCh) |
+                          contract recordOf(@claim, retCh) = {
+                            match claim.get("family") {
+                              "eject"    => retCh!(state.get("ejectionEvidence").get(claim.get("target")))
+                              "rejoin"   => retCh!(state.get("pendingRejoins").get(claim.get("target")))
+                              "overflow" => retCh!(state.get("overflowClaims").get(claim.get("target")))
+                              _          => retCh!(Nil)
+                            }
+                          } |
+                          contract namesLapsedClaim(@claim, @acc, retCh) = {
+                            new recordCh in {
+                              recordOf!(claim, *recordCh) |
+                              for (@record <- recordCh) {
+                                match record {
+                                  Nil => retCh!(false)
+                                  _ => retCh!(
+                                    acc and
+                                    record.get("proposer") == claim.get("proposer") and
+                                    record.get("openedAt") == claim.get("openedAt") and
+                                    record.get("openedAt") + $$claimDeadlineBlocks$$ <= floorNumber
+                                  )
+                                }
+                              }
+                            }
+                          } |
+                          contract namesOpenClaim(@resolution, @acc, retCh) = {
+                            match (resolution.get("family"),
+                                   state.get("ejectionEvidence").get(resolution.get("target")),
+                                   state.get("pendingRejoins").get(resolution.get("target")),
+                                   state.get("ejectedValidators").get(resolution.get("target"))) {
+                              ("eject", Nil, _, _) => retCh!(false)
+                              ("eject", record, _, _) => retCh!(
+                                acc and
+                                record.get("proposer") == resolution.get("proposer") and
+                                record.get("openedAt") == resolution.get("openedAt")
+                              )
+                              ("rejoin", _, Nil, _) => retCh!(false)
+                              ("rejoin", _, _, Nil) => retCh!(false)
+                              ("rejoin", _, record, ejection) => retCh!(
+                                acc and
+                                record.get("proposer") == resolution.get("proposer") and
+                                record.get("openedAt") == resolution.get("openedAt") and
+                                floorNumber <= ejection.get("graceEnd")
+                              )
+                              ("overflow", _, _, _) => {
+                                match state.get("overflowClaims").get(resolution.get("target")) {
+                                  Nil => retCh!(false)
+                                  record => retCh!(
+                                    acc and
+                                    record.get("proposer") == resolution.get("proposer") and
+                                    record.get("openedAt") == resolution.get("openedAt")
+                                  )
+                                }
+                              }
+                              _ => retCh!(false)
+                            }
+                          } |
+                          contract namesEndedGrace(@target, @acc, retCh) = {
+                            match state.get("ejectedValidators").get(target) {
+                              Nil => retCh!(false)
+                              ejection => retCh!(acc and ejection.get("graceEnd") < floorNumber)
+                            }
+                          } |
+                          contract applyResolution(@resolution, @current, retCh) = {
+                            match (resolution.get("family"), resolution.get("target"), resolution.get("passed")) {
+                              ("eject", target, true) => {
+                                retCh!(current
+                                  .set("ejectedValidators", current.get("ejectedValidators").set(target, {
+                                    "graceEnd"        : floorNumber + $$ejectionGraceBlocks$$,
+                                    "ejectFloor"      : floorNumber,
+                                    "ejectFloorHash"  : floorHash,
+                                    "ejectionSnapshot": current.get("ejectionEvidence").get(target).get("electorate")
+                                  }))
+                                  .set("freezeHistory", current.get("freezeHistory").set(target,
+                                    current.get("freezeHistory").getOrElse(target, {})
+                                      .set(floorNumber, {"to": Nil, "topup": Nil})))
+                                  .set("ejectionEvidence", current.get("ejectionEvidence").delete(target)))
+                              }
+                              ("eject", target, false) => {
+                                retCh!(current
+                                  .set("ejectionEvidence", current.get("ejectionEvidence").delete(target)))
+                              }
+                              ("rejoin", target, true) => {
+                                new payerPkCh, paidCh in {
+                                  getUser!(resolution.get("payer"), *payerPkCh) |
+                                  for (@payerPk <- payerPkCh) {
+                                    if (payerPk == target) {
+                                      deposit!(resolution.get("payer"),
+                                               current.get("pendingRejoins").get(target).get("topup"),
+                                               posVaultAddr, *paidCh)
+                                    } else {
+                                      paidCh!((false, "The payer is not the rejoining validator."))
+                                    } |
+                                    for (@paid <- paidCh) {
+                                      match paid {
+                                        (true, _) => {
+                                          retCh!(current
+                                            .set("freezeHistory", current.get("freezeHistory").set(target,
+                                              current.get("freezeHistory").get(target).set(
+                                                current.get("ejectedValidators").get(target).get("ejectFloor"), {
+                                                  "to"   : blockNumber,
+                                                  "topup": current.get("pendingRejoins").get(target).get("topup")
+                                                })))
+                                            .set("heldTopups", current.get("heldTopups") +
+                                              current.get("pendingRejoins").get(target).get("topup").toBigInt())
+                                            .set("ejectedValidators", current.get("ejectedValidators").delete(target))
+                                            .set("pendingRejoins", current.get("pendingRejoins").delete(target)))
+                                        }
+                                        _ => {
+                                          retCh!(current
+                                            .set("pendingRejoins", current.get("pendingRejoins").delete(target)))
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                              ("rejoin", target, false) => {
+                                retCh!(current
+                                  .set("pendingRejoins", current.get("pendingRejoins").delete(target)))
+                              }
+                              ("overflow", target, true) => {
+                                payOverflow!(target, current, *retCh)
+                              }
+                              ("overflow", target, false) => {
+                                chargeFailedClaim!(target,
+                                  current.set("overflowClaims", current.get("overflowClaims").delete(target)),
+                                  *retCh)
+                              }
+                            }
+                          } |
+                          // Pays the claim from the PoS vault. What the vault
+                          // holds beyond bonds, withdrawals and committed rewards
+                          // is the held topups and the epoch's surplus, and a
+                          // claim drawing on anything more would be paid out of
+                          // stake. The topups are drawn on first. A slashed
+                          // claimant forfeits its overflow.
+                          contract payOverflow(@target, @current, retCh) = {
+                            new balanceCh, bondsCh, withdrawnCh, committedCh, holdsCh,
+                                addressCh, createdCh, paidCh, heldCh in {
+                              @posVault!("balance", *balanceCh) |
+                              @ListOps!("fold", current.get("allBonds").toList(), 0n, *accumulateSndNum, *bondsCh) |
+                              @ListOps!("fold", current.get("withdrawers").toList(), 0n, *accumulateFstOfSndArg, *withdrawnCh) |
+                              @ListOps!("fold", current.get("committedRewards").toList(), 0n, *accumulateSndNum, *committedCh) |
+                              match current.get("withdrawers").get(target) {
+                                Nil => holdsCh!(current.get("allBonds").getOrElse(target, 0) > 0)
+                                (quarantined, _) => holdsCh!(current.get("allBonds").getOrElse(target, 0) > 0 or quarantined > 0)
+                              } |
+                              for (@balance <- balanceCh & @bonds <- bondsCh & @withdrawn <- withdrawnCh &
+                                   @committed <- committedCh & @holds <- holdsCh) {
+                                match current.get("overflowClaims").get(target).get("amount") {
+                                  amount => {
+                                    if (holds and amount.toBigInt() <= balance - bonds - withdrawn - committed) {
+                                      vaultAddressOps!("fromPublicKey", target, *addressCh) |
+                                      for (@address <- addressCh) {
+                                        @SystemVault!("findOrCreate", address, *createdCh) |
+                                        for (_ <- createdCh) {
+                                          @posVault!("transfer", address, amount, posAuthKey, *paidCh)
+                                        }
+                                      } |
+                                      for (@paid <- paidCh) {
+                                        match paid {
+                                          (true, _) => {
+                                            if (current.get("heldTopups") > amount.toBigInt()) {
+                                              heldCh!(current.get("heldTopups") - amount.toBigInt())
+                                            } else {
+                                              heldCh!(0n)
+                                            } |
+                                            for (@held <- heldCh) {
+                                              retCh!(current
+                                                .set("claimedOverflow", current.get("claimedOverflow").set(target, {
+                                                  "total"   : current.get("claimedOverflow").getOrElse(target, {"total": 0}).get("total") + amount,
+                                                  "payments": current.get("claimedOverflow").getOrElse(target, {"payments": {}}).get("payments").set(blockNumber, amount)
+                                                }))
+                                                .set("heldTopups", held)
+                                                .set("overflowClaims", current.get("overflowClaims").delete(target)))
+                                            }
+                                          }
+                                          _ => {
+                                            retCh!(current
+                                              .set("overflowClaims", current.get("overflowClaims").delete(target)))
+                                          }
+                                        }
+                                      }
+                                    } else {
+                                      retCh!(current
+                                        .set("overflowClaims", current.get("overflowClaims").delete(target)))
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          } |
+                          // A claim that ends below 2/3, refused or undecided,
+                          // burns a bond-scaled fee into
+                          // the coop vault, taken from the bond, or from the
+                          // quarantine for a claimant that has unbonded. The
+                          // fee rounds up, so a small bond still pays one, and
+                          // the stake is split at a million so the product
+                          // cannot overflow.
+                          contract chargeFailedClaim(@target, @current, retCh) = {
+                            new sourceCh, transferredCh in {
+                              if (current.get("allBonds").getOrElse(target, 0) > 0) {
+                                sourceCh!(("allBonds", current.get("allBonds").get(target)))
+                              } else {
+                                match current.get("withdrawers").get(target) {
+                                  Nil => sourceCh!(("none", 0))
+                                  (quarantined, _) => sourceCh!(("withdrawers", quarantined))
+                                }
+                              } |
+                              for (@(source, stake) <- sourceCh) {
+                                match stake / 1000000 * $$failedClaimFeePpm$$ +
+                                      (stake % 1000000 * $$failedClaimFeePpm$$ + 999999) / 1000000 {
+                                  fee => {
+                                    if (fee <= 0) {
+                                      retCh!(current)
+                                    } else {
+                                      @posVault!("transfer", coopMultiVaultAddr, fee, posAuthKey, *transferredCh) |
+                                      for (@transferred <- transferredCh) {
+                                        match (transferred, source, current.get("withdrawers").get(target)) {
+                                          ((true, _), "allBonds", _) => {
+                                            if (stake - fee > 0) {
+                                              retCh!(current.set("allBonds", current.get("allBonds").set(target, stake - fee)))
+                                            } else {
+                                              retCh!(current
+                                                .set("allBonds", current.get("allBonds").set(target, 0))
+                                                .set("activeValidators", current.get("activeValidators").delete(target)))
+                                            }
+                                          }
+                                          ((true, _), "withdrawers", (_, quarantine)) => {
+                                            retCh!(current.set("withdrawers", current.get("withdrawers").set(target, (stake - fee, quarantine))))
+                                          }
+                                          _ => retCh!(current)
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          } |
+                          contract expireClaim(@claim, @current, retCh) = {
+                            match (claim.get("family"), claim.get("target")) {
+                              ("overflow", target) => {
+                                chargeFailedClaim!(target,
+                                  current.set("overflowClaims", current.get("overflowClaims").delete(target)),
+                                  *retCh)
+                              }
+                              ("eject", target) => {
+                                retCh!(current.set("ejectionEvidence", current.get("ejectionEvidence").delete(target)))
+                              }
+                              ("rejoin", target) => {
+                                retCh!(current.set("pendingRejoins", current.get("pendingRejoins").delete(target)))
+                              }
+                            }
+                          } |
+                          for (@allOpen <- checkedCh & @allEnded <- endedCh & @allLapsed <- lapsedCh) {
+                            if (not allOpen) {
+                              resultCh!(state, (false, "A resolution names no claim open at this block."))
+                            } else if (not allEnded) {
+                              resultCh!(state, (false, "A grace expiry names no ejection whose grace has ended."))
+                            } else if (not allLapsed) {
+                              resultCh!(state, (false, "A claim expiry names no claim whose deadline its floor has reached."))
+                            } else {
+                              @ListOps!("fold", resolutions, state, *applyResolution, *resolvedCh) |
+                              for (@resolved <- resolvedCh) {
+                                @ListOps!("fold", graceExpiries, resolved, *forfeitStake, *expiredCh) |
+                                for (@expired <- expiredCh) {
+                                  @ListOps!("fold", claimExpiries, expired, *expireClaim, *lapsedOutCh) |
+                                  for (@lapsedOut <- lapsedOutCh) {
+                                    resultCh!(lapsedOut, (true, Nil))
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    } else {
+                      returnCh!((false, "Invalid AuthToken"))
+                    }
+                  }
+                }
+              } |
               new commitRewards in {
                 // Private method which transfers all of a validator's rewards + bond to the Coop vault.
                 // Slash expects (Boolean, Either[Nil, String]) on returnCh.
@@ -479,61 +1109,27 @@ in {
                           for (@invalidBlocks        <- invalidBlocksCh &
                                @userPk               <- userCh &
                                @state, stateUpdateCh <- stateProcessCh) {
-                                new toBeSlashed, valBondCh, valRewardCh in {
+                                new toBeSlashed, stakeCh, forfeitedCh in {
                                   if (invalidBlocks.contains(blockHash)) {
                                     toBeSlashed!(invalidBlocks.get(blockHash)) |
                                     for (@validator <- toBeSlashed) {
-                                      valBondCh!(state.get("allBonds").get(validator)) |
-                                      for (@valBond <- valBondCh) {
-                                        // Idempotency: a validator already at
-                                        // stake 0 has been slashed by a prior
-                                        // call. The transfer of `valBond = 0`
-                                        // would fail with "Amount must be
-                                        // positive value", but the desired
-                                        // end state (validator at 0, removed
-                                        // from active set) is already reached.
-                                        // Returning (true, Nil) here makes
-                                        // PoS!"slash" safe to invoke from
-                                        // every block whose body re-issues a
-                                        // SlashDeploy for the same offender —
-                                        // a requirement for the
-                                        // merge-rejected-slash recovery
-                                        // path (`merging::rejected_slash::
-                                        // filter_recoverable`) and for the
-                                        // T-9.3 catch-all dispatcher that
-                                        // mints a record per slashable
-                                        // variant.
-                                        if (valBond <= 0) {
-                                          stateUpdateCh!(state, (true, Nil))
+                                      match state.get("withdrawers").get(validator) {
+                                        Nil => stakeCh!(state.get("allBonds").getOrElse(validator, 0))
+                                        (quarantined, _) => stakeCh!(state.get("allBonds").getOrElse(validator, 0) + quarantined)
+                                      } |
+                                      forfeitStake!(validator, state, *forfeitedCh) |
+                                      for (@stake <- stakeCh & @forfeited <- forfeitedCh) {
+                                        // A validator already at nothing was
+                                        // slashed before, and slashing it
+                                        // again succeeds, since a block may
+                                        // re-issue a slash for the same
+                                        // offender. With stake left, an
+                                        // unchanged state means the transfer
+                                        // failed.
+                                        if (stake > 0 and forfeited == state) {
+                                          stateUpdateCh!(state, (false, "transfer failed"))
                                         } else {
-                                          new transferDoneCh in {
-                                            @posVault!(
-                                              "transfer",
-                                              coopMultiVaultAddr,
-                                              valBond,
-                                              posAuthKey,
-                                              *transferDoneCh
-                                            ) |
-                                            for (@transferResult <- transferDoneCh) {
-                                              match transferResult {
-                                                (true, _) => {
-                                                  stateUpdateCh!({
-                                                    "allBonds"        : state.get("allBonds").set(validator, 0),
-                                                    "activeValidators": state.get("activeValidators").delete(validator),
-                                                    "committedRewards" : state.get("committedRewards").delete(validator),
-                                                    "withdrawers"     : state.get("withdrawers"),
-                                                    "pendingWithdrawers": state.get("pendingWithdrawers"),
-                                                    "randomImages"    : state.get("randomImages"),
-                                                    "randomNumbers"   : state.get("randomNumbers")
-                                                  },
-                                                  (true, Nil))
-                                                }
-                                                (_, errorMessage) => {
-                                                  stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
-                                                }
-                                              }
-                                            }
-                                          }
+                                          stateUpdateCh!(forfeited, (true, Nil))
                                         }
                                       }
                                     }
@@ -567,7 +1163,8 @@ in {
                                   stateProcessCh, paymentDoneCh,
                                   accDepositsDoneCh, commitRewardsCh,
                                   newValidatorsCh, removeQuarantinedCh, currentEpochRewardCh,
-                                  commitCurrentEpochRewards, updatedRewardsCh, movePendingWithdrawCh, movePendingWithdrawer
+                                  commitCurrentEpochRewards, updatedRewardsCh, movePendingWithdrawCh, movePendingWithdrawer,
+                                  sweepRetention, sweptRetentionCh
                               in {
                                 PoS!("getCurrentEpochRewards", * currentEpochRewardCh) |
                                 for (@currentRewards <- currentEpochRewardCh) {
@@ -589,7 +1186,13 @@ in {
                                           // 6. Pick new `activeValidators`
                                           pickActiveValidators!(newMovedPendingState.get("allBonds").toList(), *newValidatorsCh) |
                                           for (@newValidators <- newValidatorsCh) {
-                                            stateUpdateCh!(newRemovedQuantinueState.set("activeValidators", newValidators), (true, Nil))
+                                            // 7. Drop the closed freezes and overflow payments
+                                            // the retention window has passed. No evidence
+                                            // reaches them, so this only bounds the maps.
+                                            sweepRetention!(blockNumber, newRemovedQuantinueState.set("activeValidators", newValidators), *sweptRetentionCh) |
+                                            for (@sweptState <- sweptRetentionCh) {
+                                              stateUpdateCh!(sweptState, (true, Nil))
+                                            }
                                           }
                                         }
                                       }
@@ -617,15 +1220,83 @@ in {
                                     }
                                   }
                                 } |
+                                contract sweepRetention(@currentBlockNumber, @state, returnCh) = {
+                                  new keepRecent, keepFreeze, keepPayments, keepPayment,
+                                      sweptFreezesCh, sweptClaimedCh in {
+                                    @ListOps!("fold", state.get("freezeHistory").toList(), {}, *keepRecent, *sweptFreezesCh) |
+                                    @ListOps!("fold", state.get("claimedOverflow").toList(), {}, *keepPayments, *sweptClaimedCh) |
+                                    contract keepPayments(@(target, claimed), @acc, resultCh) = {
+                                      new keptCh in {
+                                        @ListOps!("fold", claimed.get("payments").toList(), {}, *keepPayment, *keptCh) |
+                                        for (@kept <- keptCh) {
+                                          resultCh!(acc.set(target, claimed.set("payments", kept)))
+                                        }
+                                      }
+                                    } |
+                                    contract keepPayment(@(at, amount), @acc, resultCh) = {
+                                      if (at + $$retentionWindowBlocks$$ >= currentBlockNumber) {
+                                        resultCh!(acc.set(at, amount))
+                                      } else {
+                                        resultCh!(acc)
+                                      }
+                                    } |
+                                    contract keepRecent(@(target, byFloor), @acc, resultCh) = {
+                                      new keptCh in {
+                                        @ListOps!("fold", byFloor.toList(), {}, *keepFreeze, *keptCh) |
+                                        for (@kept <- keptCh) {
+                                          if (kept.size() == 0) {
+                                            resultCh!(acc)
+                                          } else {
+                                            resultCh!(acc.set(target, kept))
+                                          }
+                                        }
+                                      }
+                                    } |
+                                    contract keepFreeze(@(from, record), @acc, resultCh) = {
+                                      match record.get("to") {
+                                        Nil => resultCh!(acc.set(from, record))
+                                        to => {
+                                          if (to + $$retentionWindowBlocks$$ >= currentBlockNumber) {
+                                            resultCh!(acc.set(from, record))
+                                          } else {
+                                            resultCh!(acc)
+                                          }
+                                        }
+                                      }
+                                    } |
+                                    for (@sweptFreezes <- sweptFreezesCh & @sweptClaimed <- sweptClaimedCh) {
+                                      returnCh!(state
+                                        .set("freezeHistory", sweptFreezes)
+                                        .set("claimedOverflow", sweptClaimed))
+                                    }
+                                  }
+                                } |
                                 contract movePendingWithdrawer(@state, returnCh) = {
                                   new movePending in {
                                     @ListOps!("fold", state.get("pendingWithdrawers").toList(), state, *movePending, *returnCh) |
+                                    // A validator that bonded again beside its
+                                    // quarantine joins the new bond to it, held
+                                    // until the later of the two ends.
                                     contract movePending(@(pk, quantine), @updatedState, resultCh) = {
-                                      resultCh!(updatedState
-                                                .set("withdrawers", updatedState.get("withdrawers").set(pk, (updatedState.get("allBonds").get(pk), quantine)))
-                                                .set("allBonds", updatedState.get("allBonds").delete(pk))
-                                                .set("pendingWithdrawers", updatedState.get("pendingWithdrawers").delete(pk))
-                                                )
+                                      new entryCh in {
+                                        match updatedState.get("withdrawers").get(pk) {
+                                          Nil => entryCh!((updatedState.get("allBonds").get(pk), quantine))
+                                          (held, heldUntil) => {
+                                            if (heldUntil > quantine) {
+                                              entryCh!((held + updatedState.get("allBonds").getOrElse(pk, 0), heldUntil))
+                                            } else {
+                                              entryCh!((held + updatedState.get("allBonds").getOrElse(pk, 0), quantine))
+                                            }
+                                          }
+                                        } |
+                                        for (@entry <- entryCh) {
+                                          resultCh!(updatedState
+                                                    .set("withdrawers", updatedState.get("withdrawers").set(pk, entry))
+                                                    .set("allBonds", updatedState.get("allBonds").delete(pk))
+                                                    .set("pendingWithdrawers", updatedState.get("pendingWithdrawers").delete(pk))
+                                                    )
+                                        }
+                                      }
                                     }
                                   }
                                 } |
@@ -654,13 +1325,23 @@ in {
                                       // design/09-bug-fixes-and-rationale.md §9.13
                                       // (theorem t_9_10_withdraw_transfer_failure_safety,
                                       // formal/rocq/slashing/theories/BugFixWithdrawTransferFailure.v).
+                                      // A slashed bond leaves nothing to pay, and the vault
+                                      // refuses a transfer of nothing.
                                       contract payWithdraw(@(pk, (bonds, quantine)), resultCh) = {
                                         new transferResultCh in {
-                                          payWithdrawer!((pk, bonds.toBigInt() + state.get("committedRewards").getOrElse(pk, 0n)), *transferResultCh) |
-                                          for (@transferResult <- transferResultCh) {
-                                            match transferResult {
-                                              (true, _) => { resultCh!((pk, true)) }
-                                              (_, _)    => { resultCh!((pk, false)) }
+                                          match bonds.toBigInt() + state.get("committedRewards").getOrElse(pk, 0n) {
+                                            payment => {
+                                              if (payment == 0n) {
+                                                resultCh!((pk, true))
+                                              } else {
+                                                payWithdrawer!((pk, payment), *transferResultCh) |
+                                                for (@transferResult <- transferResultCh) {
+                                                  match transferResult {
+                                                    (true, _) => { resultCh!((pk, true)) }
+                                                    (_, _)    => { resultCh!((pk, false)) }
+                                                  }
+                                                }
+                                              }
                                             }
                                           }
                                         }
@@ -786,14 +1467,17 @@ in {
         }
       } |
       // Selects set of active validators from the set of available validators.
+      // A key with no stake, such as a slashed validator's, holds no seat.
       contract pickActiveValidators(@allBonds, returnCh) = {
-        new availableValidatorsCh,
-            isAvailable, pksCh
-        in {
-          @ListOps!("map", allBonds, *fst, *pksCh) |
-          for (@pks <- pksCh) {
-            // TODO: Randomly select 100 active validators once we have on-chain randomness
-            returnCh!(pks.take($$numberOfActiveValidators$$).toSet())
+        new staked, stakedCh, pksCh in {
+          contract staked(@(_, stake), retCh) = { retCh!(stake > 0) } |
+          @ListOps!("filter", allBonds, *staked, *stakedCh) |
+          for (@stakedBonds <- stakedCh) {
+            @ListOps!("map", stakedBonds, *fst, *pksCh) |
+            for (@pks <- pksCh) {
+              // TODO: Randomly select 100 active validators once we have on-chain randomness
+              returnCh!(pks.take($$numberOfActiveValidators$$).toSet())
+            }
           }
         }
       }

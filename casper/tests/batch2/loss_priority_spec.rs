@@ -98,7 +98,7 @@ async fn key_landed(node: &TestNode, state_hash: &prost::bytes::Bytes, key: &str
 async fn three_validator_neutral_base_applies_prior_loss_priority() {
     let ctx = build_genesis(3).await;
     let shard_id = ctx.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(ctx, 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx, 3, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {
@@ -298,7 +298,7 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
 async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
     let ctx = build_genesis(2).await;
     let shard_id = ctx.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(ctx, 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx, 2, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {
@@ -445,7 +445,7 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
 async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry() {
     let ctx = build_genesis(2).await;
     let shard_id = ctx.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(ctx, 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx, 2, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {

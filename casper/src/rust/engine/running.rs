@@ -496,11 +496,8 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     async fn floor_seed_for(&self, anchor: &BlockHash) -> Option<FinalizedFloorSeed> {
         let seed: Result<Option<FinalizedFloorSeed>, CasperError> = async {
             let dag = self.casper.block_dag().await?;
-            let ftt = FtThreshold::from_ppm(
-                self.casper
-                    .casper_shard_conf()
-                    .fault_tolerance_threshold_ppm,
-            );
+            let ftt =
+                FtThreshold::from_ppm(self.casper.chain_parameters().fault_tolerance_threshold_ppm);
             // Populates BOTH caches from one derivation, so the frontier read
             // below cannot miss for any block that has parents.
             let floor = floor_of_block(&dag, self.casper.block_store(), anchor, ftt).await?;

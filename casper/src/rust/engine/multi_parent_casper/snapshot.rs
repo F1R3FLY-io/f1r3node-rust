@@ -202,7 +202,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         valid_latest_msgs.values(),
         BlockMetadata::from_block(&this.approved_block, false, None, None),
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-            this.casper_shard_conf.fault_tolerance_threshold_ppm,
+            this.chain_parameters.fault_tolerance_threshold_ppm,
         ),
     )
     .await?;
@@ -213,7 +213,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             &fork_choice_floor,
             valid_latest_msgs.clone(),
             this.casper_shard_conf.max_number_of_parents,
-            Some(this.casper_shard_conf.max_parent_depth),
+            Some(this.chain_parameters.max_parent_depth),
         )
         .await?;
     let ghost_main_parent = fork_choice.tips.into_iter().next();
@@ -280,7 +280,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         parents_after_count_limit.truncate(cap);
     }
 
-    let parents = if this.casper_shard_conf.max_parent_depth != i32::MAX
+    let parents = if this.chain_parameters.max_parent_depth != i32::MAX
         && parents_after_count_limit.len() > 1
     {
         // C13 / Perf-2: collapse the build-then-max-then-filter triple
@@ -300,7 +300,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             parents_with_meta.push((b, meta));
         }
 
-        let depth = this.casper_shard_conf.max_parent_depth as i64;
+        let depth = this.chain_parameters.max_parent_depth as i64;
         // DEPTH CAP. This one CAN drop the proposer's own latest message, and
         // unlike the count cap it must: a parent spread further than
         // `max_parent_depth` from the frontier makes the block InvalidParents,
@@ -444,8 +444,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                     max_block_num
                 ))
             })?;
-            let earliest_block_number =
-                current_block_number - on_chain_state.shard_conf.deploy_lifespan;
+            let earliest_block_number = current_block_number - on_chain_state.chain.deploy_lifespan;
 
             // Propagate storage errors out of the BFS neighbor
             // expansion. Silent `.unwrap_or_default()` here is a
@@ -584,6 +583,7 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
         let bm = &block.body.state.bonds;
         return Ok(OnChainCasperState {
             shard_conf: this.casper_shard_conf.clone(),
+            chain: this.chain_parameters,
             bonds_map: bm
                 .iter()
                 .map(|v| (v.validator.clone(), v.stake))
@@ -618,6 +618,7 @@ pub(crate) async fn get_on_chain_state<T: TransportLayer + Send + Sync>(
 
     Ok(OnChainCasperState {
         shard_conf: this.casper_shard_conf.clone(),
+        chain: this.chain_parameters,
         bonds_map: bm
             .iter()
             .map(|v| (v.validator.clone(), v.stake))

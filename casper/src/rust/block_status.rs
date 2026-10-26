@@ -109,6 +109,16 @@ pub enum InvalidBlock {
     // `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`).
     UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
+    // A vote on a claim the proposer may not vote on at the block's pre-state:
+    // not open, not in its electorate, already voted on, or voted twice.
+    InvalidLeakyBucketVote,
+    // Fewer votes than the proposer owes on the claims open at its pre-state.
+    MissingLeakyBucketVotes,
+    // Claim resolutions other than exactly those the block's floor requires.
+    InvalidClaimResolution,
+    // Dishonest-vote evidence that does not prove its nay dishonest, or a
+    // second piece against the same validator.
+    InvalidDishonestVote,
     // PrematureDeployRetry: a rejected sig re-included before its latest
     // kept rejection settled into the block's frozen floor closure.
     // Raised by `Validate::repeat_deploy`'s gated recovery exemption.
@@ -282,6 +292,10 @@ impl InvalidBlock {
             //     never validity.
             //   • InvalidRejectedDeploy: rejected-deploy tracking; not a
             //     consensus offense.
+            //   • InvalidLeakyBucketVote / MissingLeakyBucketVotes /
+            //     InvalidClaimResolution / InvalidDishonestVote: judged
+            //     against the replayed pre-state and the receiver's vote
+            //     index or held blocks.
             //   • PrematureDeployRetry: a retry ahead of the gate. The gate
             //     is a pure function of the block, so every honest node
             //     declines the block identically — admission does all the
@@ -313,6 +327,10 @@ impl InvalidBlock {
             | InvalidBlock::ContainsTimeExpiredDeploy
             | InvalidBlock::ContainsFutureDeploy
             | InvalidBlock::InvalidRejectedDeploy
+            | InvalidBlock::InvalidLeakyBucketVote
+            | InvalidBlock::MissingLeakyBucketVotes
+            | InvalidBlock::InvalidClaimResolution
+            | InvalidBlock::InvalidDishonestVote
             | InvalidBlock::PrematureDeployRetry
             | InvalidBlock::NotOfInterest
             | InvalidBlock::LowDeployCost => false,

@@ -41,7 +41,7 @@ use std::sync::Arc;
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, ClaimId};
 #[cfg(any(test, feature = "test-internals"))]
 use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::equivocation_record::SequenceNumber;
@@ -66,6 +66,7 @@ use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
 use super::equivocation_tracker_store::EquivocationTrackerStore;
+use super::vote_index::{VoteEntry, VoteIndex};
 
 pub type DeployId = shared::rust::ByteString;
 
@@ -881,6 +882,7 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
     /// Repeat-deploy carrier index (see `KeyValueDagRepresentation::carrier_index`).
     pub(crate) carrier_index: Arc<PlRwLock<CarrierIndex>>,
+    pub(crate) vote_index: VoteIndex,
     /// Monotonically increasing counter incremented on every successful block insert.
     /// Used by caches to detect when the DAG has changed.
     pub(crate) dag_generation: Arc<AtomicU64>,
@@ -967,6 +969,20 @@ impl BlockDagKeyValueStorage {
             .set_watermark_if_absent(lowest_held)
     }
 
+    /// Every vote `voter` cast on `claim` in a valid block, on any branch, or
+    /// `None` when pruning may have removed them.
+    pub fn leaky_bucket_votes(
+        &self,
+        claim: &ClaimId,
+        voter: &Validator,
+    ) -> Result<Option<Vec<VoteEntry>>, KvStoreError> {
+        self.vote_index.entries(claim, voter)
+    }
+
+    pub fn prune_leaky_bucket_votes(&self, opened_at_cutoff: i64) -> Result<u64, KvStoreError> {
+        self.vote_index.prune_opened_at_or_before(opened_at_cutoff)
+    }
+
     /// Test-only corruption helper (P2-16-style escape hatch): deletes the
     /// PERSISTED metadata row for a block while the in-memory DAG state
     /// still lists it, simulating a crash between the lifecycle ingest and
@@ -1017,6 +1033,8 @@ impl BlockDagKeyValueStorage {
         let lifecycle_tables =
             DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
 
+        let vote_index_kv_store = kvm.store("leaky-bucket-votes".to_string()).await?;
+
         let genesis_hash_kv_store = kvm.store("genesis-hash".to_string()).await?;
         let genesis_hash_db: KeyValueTypedStoreImpl<String, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(genesis_hash_kv_store);
@@ -1030,6 +1048,7 @@ impl BlockDagKeyValueStorage {
             equivocation_tracker_index: equivocation_tracker_store,
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
             carrier_index: Arc::new(PlRwLock::new(carrier_index_tables)),
+            vote_index: VoteIndex::new(vote_index_kv_store)?,
             latest_messages_index: latest_messages_db,
             dag_generation: Arc::new(AtomicU64::new(0)),
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
@@ -1129,6 +1148,7 @@ impl BlockDagKeyValueStorage {
             equivocation_tracker_index,
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
             carrier_index: Arc::new(PlRwLock::new(CarrierIndex::in_memory())),
+            vote_index: VoteIndex::in_memory(),
             dag_generation,
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
@@ -1188,6 +1208,19 @@ impl BlockDagKeyValueStorage {
             metadata,
             storage: self,
         })
+    }
+
+    /// `get_representation()?.latest_block_number()` without building a
+    /// representation, which scans the latest-message and invalid-block tables.
+    pub fn max_height(&self) -> i64 {
+        let metadata_guard = self.block_metadata_index.read();
+        let dag_state_guard = metadata_guard.dag_state().read();
+        dag_state_guard
+            .height_map
+            .get_max()
+            .map(|(height, _)| height + 1)
+            // An empty DAG holds no height, so the next block is block 0.
+            .unwrap_or(0)
     }
 
     /// Public method to get DAG representation with global lock protection.
@@ -1489,6 +1522,17 @@ impl BlockDagKeyValueStorage {
                     }
                 }
                 drop(lifecycle_guard);
+            }
+
+            if !invalid {
+                for vote in &block.body.leaky_bucket_votes {
+                    self.vote_index
+                        .record_once(&vote.claim, &block.sender, VoteEntry {
+                            block_hash: block.block_hash.to_vec(),
+                            sequence_number: block.seq_num,
+                            yea: vote.yea,
+                        })?;
+                }
             }
 
             let block_metadata = BlockMetadata::from_block(block, invalid, None, None);

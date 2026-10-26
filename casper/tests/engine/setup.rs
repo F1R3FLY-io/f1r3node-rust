@@ -357,21 +357,13 @@ impl TestFixture {
 
         // Scala: implicit val casperShardConf = CasperShardConf(-1, shardId, "", finalizationRate, ...)
         let mut casper_shard_conf = CasperShardConf::new();
-        casper_shard_conf.fault_tolerance_threshold = -1.0;
         casper_shard_conf.shard_name = shard_id;
         casper_shard_conf.parent_shard_id = "".to_string();
         casper_shard_conf.finalization_rate = finalization_rate;
         casper_shard_conf.max_number_of_parents = i32::MAX;
-        casper_shard_conf.max_parent_depth = i32::MAX;
         casper_shard_conf.synchrony_constraint_threshold = 0.0;
         casper_shard_conf.height_constraint_threshold = i64::MAX;
-        casper_shard_conf.deploy_lifespan = 50;
         casper_shard_conf.casper_version = 1;
-        casper_shard_conf.bond_minimum = genesis_params.proof_of_stake.minimum_bond;
-        casper_shard_conf.bond_maximum = genesis_params.proof_of_stake.maximum_bond;
-        casper_shard_conf.epoch_length = genesis_params.proof_of_stake.epoch_length;
-        casper_shard_conf.quarantine_length = genesis_params.proof_of_stake.quarantine_length;
-        casper_shard_conf.min_phlo_price = 1;
 
         // **Scala equivalent**: exporter params with skip and take
         let exporter_params = ExporterParams {
@@ -424,6 +416,7 @@ impl TestFixture {
             genesis_params.proof_of_stake.max_parent_depth,
             genesis_params.proof_of_stake.deploy_lifespan,
             genesis_params.proof_of_stake.min_phlo_price,
+            genesis_params.proof_of_stake.leaky_bucket(),
             required_sigs,
             genesis_params
                 .proof_of_stake

@@ -4,7 +4,6 @@
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
-use casper::rust::casper::CasperShardConf;
 use casper::rust::util::rspace_history_horizon::{
     compute_forward_horizon_roots, lfs_min_block_number,
 };
@@ -16,17 +15,23 @@ use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{create_block, create_genesis_block};
 use crate::helper::block_util::generate_validator;
 
-fn mk_conf(max_parent_depth: i32, depth_buffer: i32) -> CasperShardConf {
-    let mut conf = CasperShardConf::new();
-    conf.max_parent_depth = max_parent_depth;
-    conf.mergeable_channels_gc_depth_buffer = depth_buffer;
-    conf
+/// The chain's parent depth and the node's gc depth buffer.
+struct Reach {
+    max_parent_depth: i32,
+    mergeable_channels_gc_depth_buffer: u32,
+}
+
+fn mk_conf(max_parent_depth: i32, depth_buffer: u32) -> Reach {
+    Reach {
+        max_parent_depth,
+        mergeable_channels_gc_depth_buffer: depth_buffer,
+    }
 }
 
 /// The parent-reachability floor alone. These tests predate the bound being
 /// supplied by the caller and assert against this window specifically;
 /// production passes [`lfs_min_block_number`], which can be older.
-fn horizon_floor(lfb: &BlockMessage, conf: &CasperShardConf) -> i64 {
+fn horizon_floor(lfb: &BlockMessage, conf: &Reach) -> i64 {
     lfb.body.state.block_number
         - (conf.max_parent_depth as i64)
         - (conf.mergeable_channels_gc_depth_buffer as i64)
@@ -101,7 +106,7 @@ async fn returns_empty_when_max_parent_depth_is_unlimited() {
         let dag = block_dag_storage.get_representation().expect("dag representation");
         let conf = mk_conf(i32::MAX, 0);
 
-        let roots = compute_forward_horizon_roots(&dag, &block_store, &chain[4], &conf, horizon_floor(&chain[4], &conf)).unwrap();
+        let roots = compute_forward_horizon_roots(&dag, &block_store, &chain[4], conf.max_parent_depth, horizon_floor(&chain[4], &conf)).unwrap();
         assert!(
             roots.is_empty(),
             "horizon should be empty when max_parent_depth is unlimited (caller falls back to disable-lfs replay)"
@@ -131,7 +136,7 @@ async fn includes_main_chain_ancestors_within_horizon() {
             &dag,
             &block_store,
             &chain[5],
-            &conf,
+            conf.max_parent_depth,
             horizon_floor(&chain[5], &conf),
         )
         .unwrap();
@@ -173,7 +178,7 @@ async fn excludes_blocks_outside_horizon() {
             &dag,
             &block_store,
             &chain[9],
-            &conf,
+            conf.max_parent_depth,
             horizon_floor(&chain[9], &conf),
         )
         .unwrap();
@@ -231,7 +236,7 @@ async fn returns_lfb_only_when_horizon_at_genesis() {
             &dag,
             &block_store,
             &chain[1],
-            &conf,
+            conf.max_parent_depth,
             horizon_floor(&chain[1], &conf),
         )
         .unwrap();
@@ -267,7 +272,7 @@ async fn ordered_by_descending_height() {
             &dag,
             &block_store,
             &chain[5],
-            &conf,
+            conf.max_parent_depth,
             horizon_floor(&chain[5], &conf),
         )
         .unwrap();
@@ -365,7 +370,7 @@ async fn pre_state_included_for_multi_parent_block() {
             &dag,
             &block_store,
             &merged,
-            &conf,
+            conf.max_parent_depth,
             horizon_floor(&merged, &conf),
         )
         .unwrap();
@@ -414,7 +419,7 @@ async fn single_parent_pre_state_dedupes_against_parent_post_state() {
             &dag,
             &block_store,
             &chain[3],
-            &conf,
+            conf.max_parent_depth,
             horizon_floor(&chain[3], &conf),
         )
         .unwrap();
@@ -464,10 +469,11 @@ async fn horizon_roots_must_cover_every_block_the_replay_resets_to() {
         let lfb_height = lfb.body.state.block_number;
 
         let deploy_lifespan: i64 = 30;
-        let (mpd, buffer) = (5i32, 3i32);
+        let (mpd, buffer) = (5i32, 3u32);
         let conf = mk_conf(mpd, buffer);
 
-        let replay_floor = lfs_min_block_number(lfb_height, deploy_lifespan, mpd, buffer);
+        let replay_floor =
+            lfs_min_block_number(lfb_height, Some(mpd as i64 + deploy_lifespan), buffer);
         let horizon_floor = lfb_height - (mpd as i64) - (buffer as i64);
         assert!(
             replay_floor < horizon_floor,
@@ -477,11 +483,16 @@ async fn horizon_roots_must_cover_every_block_the_replay_resets_to() {
         let dag = block_dag_storage
             .get_representation()
             .expect("dag representation");
-        let roots: std::collections::HashSet<Blake2b256Hash> =
-            compute_forward_horizon_roots(&dag, &block_store, &lfb, &conf, replay_floor)
-                .unwrap()
-                .into_iter()
-                .collect();
+        let roots: std::collections::HashSet<Blake2b256Hash> = compute_forward_horizon_roots(
+            &dag,
+            &block_store,
+            &lfb,
+            conf.max_parent_depth,
+            replay_floor,
+        )
+        .unwrap()
+        .into_iter()
+        .collect();
 
         let mut missing: Vec<String> = Vec::new();
         for b in chain

@@ -13,7 +13,7 @@ async fn a_released_block_with_a_stale_parent_link_is_processed() {
         .build_genesis_with_parameters(None)
         .await
         .expect("Failed to build genesis");
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
     let shard = genesis.genesis_block.shard_id.clone();

@@ -128,6 +128,7 @@ impl GenesisBuilder {
             extra_bytes: bytes::Bytes::new(),
             applied_from_scope: vec![],
             merge_base: bytes::Bytes::new(),
+            leaky_bucket_votes: Vec::new(),
         };
 
         let header = Header {
@@ -236,6 +237,16 @@ impl GenesisBuilder {
                         stake: *stake,
                     })
                     .collect(),
+                epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON,
+                lambda_base_ppm: ProofOfStake::DEFAULT_LAMBDA_BASE_PPM,
+                theta_eject_ppm: ProofOfStake::DEFAULT_THETA_EJECT_PPM,
+                eject_observation_blocks: ProofOfStake::DEFAULT_EJECT_OBSERVATION_BLOCKS,
+                breadth_exponent: ProofOfStake::DEFAULT_BREADTH_EXPONENT,
+                recency_reference_ppm: ProofOfStake::DEFAULT_RECENCY_REFERENCE_PPM,
+                vote_list_bound: ProofOfStake::DEFAULT_VOTE_LIST_BOUND,
+                max_overflow_claim_minimum_bonds:
+                    ProofOfStake::DEFAULT_MAX_OVERFLOW_CLAIM_MINIMUM_BONDS,
+                failed_claim_fee_ppm: ProofOfStake::DEFAULT_FAILED_CLAIM_FEE_PPM,
                 pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
                 pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
             },

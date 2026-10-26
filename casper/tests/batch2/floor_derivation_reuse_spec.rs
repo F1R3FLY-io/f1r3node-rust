@@ -175,7 +175,7 @@ async fn a_validated_block_keeps_the_floor_its_validation_derived() {
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .expect("genesis");
-    let mut nodes = TestNode::create_network(genesis, 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 2, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {

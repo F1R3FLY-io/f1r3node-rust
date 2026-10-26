@@ -16,7 +16,7 @@ use prost::Message;
 use tracing::{info, warn};
 
 use crate::rust::errors::CasperError;
-use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+use crate::rust::genesis::contracts::proof_of_stake::{LeakyBucketGenesis, ProofOfStake};
 use crate::rust::genesis::contracts::validator::Validator;
 use crate::rust::genesis::contracts::vault::Vault;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -40,6 +40,7 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
     pub min_phlo_price: i64,
+    pub leaky_bucket: LeakyBucketGenesis,
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
@@ -86,6 +87,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         max_parent_depth: i32,
         deploy_lifespan: i64,
         min_phlo_price: i64,
+        leaky_bucket: LeakyBucketGenesis,
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
@@ -129,6 +131,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             max_parent_depth,
             deploy_lifespan,
             min_phlo_price,
+            leaky_bucket,
             required_sigs,
             pos_multi_sig_public_keys,
             pos_multi_sig_quorum,
@@ -190,6 +193,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         max_parent_depth: i32,
         deploy_lifespan: i64,
         min_phlo_price: i64,
+        leaky_bucket: LeakyBucketGenesis,
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
@@ -248,6 +252,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             max_parent_depth,
             deploy_lifespan,
             min_phlo_price,
+            epoch_phlogiston: leaky_bucket.epoch_phlogiston,
+            lambda_base_ppm: leaky_bucket.lambda_base_ppm,
+            theta_eject_ppm: leaky_bucket.theta_eject_ppm,
+            eject_observation_blocks: leaky_bucket.eject_observation_blocks,
+            breadth_exponent: leaky_bucket.breadth_exponent,
+            recency_reference_ppm: leaky_bucket.recency_reference_ppm,
+            vote_list_bound: leaky_bucket.vote_list_bound,
+            max_overflow_claim_minimum_bonds: leaky_bucket.max_overflow_claim_minimum_bonds,
+            failed_claim_fee_ppm: leaky_bucket.failed_claim_fee_ppm,
             pos_multi_sig_public_keys: pos_multi_sig_public_keys.to_vec(),
             pos_multi_sig_quorum,
         };
@@ -385,6 +398,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             self.max_parent_depth,
             self.deploy_lifespan,
             self.min_phlo_price,
+            self.leaky_bucket,
             shard_id,
             &self.pos_multi_sig_public_keys,
             self.pos_multi_sig_quorum,

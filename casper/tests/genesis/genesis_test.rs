@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::chain_parameters::ChainParameters;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator;
 use casper::rust::genesis::genesis::Genesis;
@@ -112,6 +113,7 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
         max_seq_nums: Default::default(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
+            chain: ChainParameters::shipped(),
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
         },
@@ -239,6 +241,16 @@ async fn from_input_files(
             deploy_lifespan: 50,
             min_phlo_price: 0,
             validators,
+            epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON,
+            lambda_base_ppm: ProofOfStake::DEFAULT_LAMBDA_BASE_PPM,
+            theta_eject_ppm: ProofOfStake::DEFAULT_THETA_EJECT_PPM,
+            eject_observation_blocks: ProofOfStake::DEFAULT_EJECT_OBSERVATION_BLOCKS,
+            breadth_exponent: ProofOfStake::DEFAULT_BREADTH_EXPONENT,
+            recency_reference_ppm: ProofOfStake::DEFAULT_RECENCY_REFERENCE_PPM,
+            vote_list_bound: ProofOfStake::DEFAULT_VOTE_LIST_BOUND,
+            max_overflow_claim_minimum_bonds:
+                ProofOfStake::DEFAULT_MAX_OVERFLOW_CLAIM_MINIMUM_BONDS,
+            failed_claim_fee_ppm: ProofOfStake::DEFAULT_FAILED_CLAIM_FEE_PPM,
             pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
         },

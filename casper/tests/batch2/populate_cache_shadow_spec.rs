@@ -46,7 +46,7 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
     let ctx = TestContext::new().await;
     let shard_id = ctx.genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None)
         .await
         .expect("create_network(2)");
     for node in nodes.iter_mut() {

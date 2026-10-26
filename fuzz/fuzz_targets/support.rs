@@ -134,6 +134,7 @@ pub fn block_with_system_deploys(
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
             merge_base: Bytes::new(),
+            leaky_bucket_votes: vec![],
         },
         justifications: vec![],
         sender,

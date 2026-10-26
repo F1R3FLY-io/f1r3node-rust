@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
+use models::rust::casper::protocol::casper_message::SystemDeployData;
 use models::rust::utils::new_gint_par;
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
@@ -48,6 +49,8 @@ impl SystemDeployTrait for PreChargeDeploy {
     }
 
     fn as_any(&self) -> &dyn std::any::Any { self }
+
+    fn recorded_form(&self) -> SystemDeployData { SystemDeployData::Empty }
 
     fn rand(&self) -> Blake2b512Random { self.rand.clone() }
 

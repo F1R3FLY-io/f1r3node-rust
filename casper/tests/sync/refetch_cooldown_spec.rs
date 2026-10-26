@@ -18,7 +18,7 @@ async fn a_duplicate_copy_of_a_buffered_block_keeps_its_refetch_cooldown() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
     let shard = genesis.genesis_block.shard_id.clone();

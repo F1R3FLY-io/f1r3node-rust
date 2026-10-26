@@ -30,6 +30,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::chain_parameters::ChainParameters;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::interpreter_util::{
     compute_deploys_checkpoint, compute_parents_post_state,
@@ -116,13 +117,16 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
         snapshot.max_seq_nums = max_seq_nums;
         let mut shard_conf = CasperShardConf::new();
         shard_conf.shard_name = shard_name.clone();
-        shard_conf.max_parent_depth = 0;
-        shard_conf.deploy_lifespan = 50;
         let mut bonds_map = HashMap::new();
         bonds_map.insert(validator_0.clone(), 100);
         bonds_map.insert(validator_1.clone(), 100);
         snapshot.on_chain_state = OnChainCasperState {
             shard_conf,
+            chain: ChainParameters {
+                max_parent_depth: 0,
+                deploy_lifespan: 50,
+                ..ChainParameters::shipped()
+            },
             bonds_map,
             active_validators: vec![validator_0.clone(), validator_1.clone()],
         };

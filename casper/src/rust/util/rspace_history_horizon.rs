@@ -46,8 +46,6 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rust::casper::CasperShardConf;
-
 /// Compute the set of rspace roots a joiner needs in its local roots store
 /// before transitioning to Running. Walks every block in the DAG with
 /// `height ≥ min_block_number` and emits both its `pre_state_hash` and
@@ -79,10 +77,10 @@ pub fn compute_forward_horizon_roots(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     lfb: &BlockMessage,
-    casper_shard_conf: &CasperShardConf,
+    max_parent_depth: i32,
     min_block_number: i64,
 ) -> Result<Vec<Blake2b256Hash>, KvStoreError> {
-    if casper_shard_conf.max_parent_depth == i32::MAX {
+    if max_parent_depth == i32::MAX {
         // Depth check disabled — joiner can validate against any historical
         // block. Fall back to no horizon sync; caller can opt into full
         // replay (`disable-lfs = true`) instead.
@@ -153,53 +151,27 @@ pub fn compute_forward_horizon_roots(
     Ok(roots)
 }
 
-/// Compute the LFS lower-bound block number for joiner-side block download.
+/// The lowest block number a joiner restored at `start_block_number` must
+/// download: the chain's retention window below it, widened by the node's
+/// gc depth buffer, clamped to genesis. `lfs_block_requester::stream`
+/// accepts no block below it.
 ///
-/// `lfs_block_requester::stream` clamps how far back from LFB it will accept
-/// blocks during sync. The bound has two contributing constraints:
+/// `None` is a window with no finite bound
+/// ([`WindowBasis::block_retention_window`]), so the bound is genesis.
 ///
-///   1. `deploy_lifespan` — blocks within this window of LFB carry deploys
-///      that may still be reproposable (the original Scala-era reason).
-///   2. `max_parent_depth + mergeable_channels_gc_depth_buffer` — the
-///      forward-horizon: any block within this window of LFB may still be
-///      legitimately referenced as a parent by an upcoming proposal, so the
-///      joiner needs its DAG metadata even if it's older than
-///      `deploy_lifespan` from LFB.
-///
-/// The two COMPOSE — they are not alternatives, and taking the lower of them
-/// (as this did) stops short. The forward-horizon bounds how far below LFB a
-/// block's PARENTS may sit and still be legal; the deploy-lifespan window is
-/// measured from a block's own parents, not from LFB, because that is where
-/// `Validate::block_summary`'s expiry scan starts:
-///
-/// ```text
-/// earliest_block_number = max_block_number(parents) + 1 - deploy_lifespan
-/// ```
-///
-/// So judging the deepest block this node may legally be asked to judge reads
-/// `max_parent_depth + depth_buffer + deploy_lifespan` below LFB. A joiner
-/// restored at 99 with the test-shard geometry held from 49 and had to scan to
-/// 47 to judge a block at 98 — a legal sibling of its own anchor, not stale
-/// history — and the walk running off the end became an `InvalidTransaction`
-/// record against that block's proposer.
-///
-/// The `i32::MAX` sentinel disables the parent-depth check, so parents may sit
-/// at any depth and the scan below them is unbounded too. No finite window
-/// covers that; the honest bound is genesis.
-///
-/// Negative results clamp to 0 (genesis) so the bound is always a valid
-/// block number.
+/// [`WindowBasis::block_retention_window`]: crate::rust::chain_parameters::WindowBasis::block_retention_window
 pub fn lfs_min_block_number(
     start_block_number: i64,
-    deploy_lifespan: i64,
-    max_parent_depth: i32,
-    depth_buffer: i32,
+    retention_window: Option<i64>,
+    depth_buffer: u32,
 ) -> i64 {
-    if max_parent_depth as i64 >= i32::MAX as i64 {
-        return 0;
+    match retention_window {
+        Some(window) => start_block_number
+            .saturating_sub(window)
+            .saturating_sub(depth_buffer as i64)
+            .max(0),
+        None => 0,
     }
-    let parent_reach = (max_parent_depth as i64) + (depth_buffer as i64);
-    std::cmp::max(0, start_block_number - parent_reach - deploy_lifespan)
 }
 
 /// Lower the LFS download floor so the responder's floor seed is usable.
@@ -238,7 +210,7 @@ pub fn lfs_seeded_min_block_number(unseeded: i64, floor_number: i64, frontier_nu
 pub fn lfs_min_state_block_number(
     start_block_number: i64,
     max_parent_depth: i32,
-    depth_buffer: i32,
+    depth_buffer: u32,
 ) -> i64 {
     if max_parent_depth as i64 >= i32::MAX as i64 {
         return 0;
@@ -291,11 +263,16 @@ mod tests {
     fn the_window_covers_a_deep_block_s_own_expiry_scan() {
         // The geometry that failed live (anchor 99, test shard): the old rule
         // gave 49, and block #98's expiry scan read down to #47.
-        assert_eq!(lfs_min_block_number(99, 50, 15, 10), 24);
+        assert_eq!(lfs_min_block_number(99, lifespan_window(15, 50), 10), 24);
         // Node defaults: 100 + 10 of parent reach, then 50 of expiry below it.
-        assert_eq!(lfs_min_block_number(200, 50, 100, 10), 40);
+        assert_eq!(lfs_min_block_number(200, lifespan_window(100, 50), 10), 40);
         // No buffer -> pure max_parent_depth plus the lifespan.
-        assert_eq!(lfs_min_block_number(300, 50, 200, 0), 50);
+        assert_eq!(lfs_min_block_number(300, lifespan_window(200, 50), 0), 50);
+    }
+
+    /// A retention window whose longest look-back is the deploy lifespan.
+    fn lifespan_window(max_parent_depth: i32, deploy_lifespan: i64) -> Option<i64> {
+        (max_parent_depth != i32::MAX).then_some(max_parent_depth as i64 + deploy_lifespan)
     }
 
     /// The state window and the block window are not the same window.
@@ -310,7 +287,7 @@ mod tests {
     #[test]
     fn the_state_window_stops_at_the_parent_reach() {
         // Anchor 109 on the test-shard geometry: blocks to 34, state to 84.
-        assert_eq!(lfs_min_block_number(109, 50, 15, 10), 34);
+        assert_eq!(lfs_min_block_number(109, lifespan_window(15, 50), 10), 34);
         assert_eq!(lfs_min_state_block_number(109, 15, 10), 84);
         // Node defaults.
         assert_eq!(lfs_min_state_block_number(200, 100, 10), 90);
@@ -323,8 +300,8 @@ mod tests {
 
     #[test]
     fn min_block_number_clamps_to_zero_at_genesis() {
-        assert_eq!(lfs_min_block_number(10, 50, 100, 10), 0);
-        assert_eq!(lfs_min_block_number(10, 5, 100, 10), 0);
+        assert_eq!(lfs_min_block_number(10, lifespan_window(100, 50), 10), 0);
+        assert_eq!(lfs_min_block_number(10, lifespan_window(100, 5), 10), 0);
     }
 
     /// The sentinel disables the parent-depth check, so a legal block's parents
@@ -333,8 +310,14 @@ mod tests {
     /// rule exists to close, so the honest bound is genesis.
     #[test]
     fn min_block_number_with_the_depth_check_disabled_reaches_genesis() {
-        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 10), 0);
-        assert_eq!(lfs_min_block_number(200, 50, i32::MAX, 0), 0);
+        assert_eq!(
+            lfs_min_block_number(200, lifespan_window(i32::MAX, 50), 10),
+            0
+        );
+        assert_eq!(
+            lfs_min_block_number(200, lifespan_window(i32::MAX, 50), 0),
+            0
+        );
     }
 }
 

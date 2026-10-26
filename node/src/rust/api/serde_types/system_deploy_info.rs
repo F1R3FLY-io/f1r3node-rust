@@ -3,9 +3,11 @@
 //! This module provides custom JSON serialization for protobuf types that don't have serde derives by default.
 
 use models::casper::{
-    BondInfo, CloseBlockSystemDeployDataProto, JustificationInfo, PeekProto, RejectedDeployInfo,
-    ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto, SingleReport,
-    SlashSystemDeployDataProto, SystemDeployDataProto, SystemDeployInfoWithEventData,
+    BondInfo, ClaimIdProto, ClaimResolutionProto, CloseBlockSystemDeployDataProto,
+    DishonestVoteSystemDeployDataProto, JustificationInfo, PeekProto, RejectedDeployInfo,
+    ReportCommProto, ReportConsumeProto, ReportProduceProto, ReportProto,
+    ResolveClaimsSystemDeployDataProto, SingleReport, SlashSystemDeployDataProto,
+    SystemDeployDataProto, SystemDeployInfoWithEventData,
 };
 use models::rhoapi::{BindPattern, ListParWithRandom, Par};
 use serde::{Deserialize, Serialize};
@@ -122,9 +124,171 @@ impl From<CloseBlockSystemDeployDataSerde> for CloseBlockSystemDeployDataProto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ClaimResolutionSerde {
+    pub family: i32,
+    #[serde(with = "base64_bytes")]
+    pub target: Vec<u8>,
+    #[serde(rename = "openedAt")]
+    pub opened_at: i64,
+    #[serde(with = "base64_bytes")]
+    pub proposer: Vec<u8>,
+    pub outcome: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ClaimIdSerde {
+    pub family: i32,
+    #[serde(with = "base64_bytes")]
+    pub target: Vec<u8>,
+    #[serde(rename = "openedAt")]
+    pub opened_at: i64,
+    #[serde(with = "base64_bytes")]
+    pub proposer: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ValidatorSerde {
+    #[serde(with = "base64_bytes")]
+    pub validator: Vec<u8>,
+}
+
+fn validators_serde(validators: Vec<prost::bytes::Bytes>) -> Vec<ValidatorSerde> {
+    validators
+        .into_iter()
+        .map(|validator| ValidatorSerde {
+            validator: validator.to_vec(),
+        })
+        .collect()
+}
+
+fn validators_proto(validators: Vec<ValidatorSerde>) -> Vec<prost::bytes::Bytes> {
+    validators
+        .into_iter()
+        .map(|validator| validator.validator.into())
+        .collect()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ResolveClaimsSystemDeployDataSerde {
+    pub resolutions: Vec<ClaimResolutionSerde>,
+    #[serde(rename = "graceExpiries")]
+    pub grace_expiries: Vec<ValidatorSerde>,
+    pub expiries: Vec<ClaimIdSerde>,
+    #[serde(rename = "floorHash", with = "base64_bytes")]
+    pub floor_hash: Vec<u8>,
+    #[serde(rename = "floorNumber")]
+    pub floor_number: i64,
+}
+
+impl From<ResolveClaimsSystemDeployDataProto> for ResolveClaimsSystemDeployDataSerde {
+    fn from(data: ResolveClaimsSystemDeployDataProto) -> Self {
+        Self {
+            resolutions: data
+                .resolutions
+                .into_iter()
+                .map(|resolution| ClaimResolutionSerde {
+                    family: resolution.family,
+                    target: resolution.target.to_vec(),
+                    opened_at: resolution.opened_at,
+                    proposer: resolution.proposer.to_vec(),
+                    outcome: resolution.outcome,
+                })
+                .collect(),
+            grace_expiries: validators_serde(data.grace_expiries),
+            expiries: data
+                .expiries
+                .into_iter()
+                .map(|claim| ClaimIdSerde {
+                    family: claim.family,
+                    target: claim.target.to_vec(),
+                    opened_at: claim.opened_at,
+                    proposer: claim.proposer.to_vec(),
+                })
+                .collect(),
+            floor_hash: data.floor_hash.to_vec(),
+            floor_number: data.floor_number,
+        }
+    }
+}
+
+impl From<ResolveClaimsSystemDeployDataSerde> for ResolveClaimsSystemDeployDataProto {
+    fn from(data: ResolveClaimsSystemDeployDataSerde) -> Self {
+        Self {
+            resolutions: data
+                .resolutions
+                .into_iter()
+                .map(|resolution| ClaimResolutionProto {
+                    family: resolution.family,
+                    target: resolution.target.into(),
+                    opened_at: resolution.opened_at,
+                    proposer: resolution.proposer.into(),
+                    outcome: resolution.outcome,
+                })
+                .collect(),
+            grace_expiries: validators_proto(data.grace_expiries),
+            expiries: data
+                .expiries
+                .into_iter()
+                .map(|claim| ClaimIdProto {
+                    family: claim.family,
+                    target: claim.target.into(),
+                    opened_at: claim.opened_at,
+                    proposer: claim.proposer.into(),
+                })
+                .collect(),
+            floor_hash: data.floor_hash.into(),
+            floor_number: data.floor_number,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DishonestVoteSystemDeployDataSerde {
+    #[serde(with = "base64_bytes")]
+    pub accused: Vec<u8>,
+    #[serde(rename = "voteBlock", with = "base64_bytes")]
+    pub vote_block: Vec<u8>,
+    pub family: i32,
+    #[serde(with = "base64_bytes")]
+    pub target: Vec<u8>,
+    #[serde(rename = "openedAt")]
+    pub opened_at: i64,
+    #[serde(with = "base64_bytes")]
+    pub proposer: Vec<u8>,
+}
+
+impl From<DishonestVoteSystemDeployDataProto> for DishonestVoteSystemDeployDataSerde {
+    fn from(data: DishonestVoteSystemDeployDataProto) -> Self {
+        Self {
+            accused: data.accused.to_vec(),
+            vote_block: data.vote_block.to_vec(),
+            family: data.family,
+            target: data.target.to_vec(),
+            opened_at: data.opened_at,
+            proposer: data.proposer.to_vec(),
+        }
+    }
+}
+
+impl From<DishonestVoteSystemDeployDataSerde> for DishonestVoteSystemDeployDataProto {
+    fn from(data: DishonestVoteSystemDeployDataSerde) -> Self {
+        Self {
+            accused: data.accused.into(),
+            vote_block: data.vote_block.into(),
+            family: data.family,
+            target: data.target.into(),
+            opened_at: data.opened_at,
+            proposer: data.proposer.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub enum SystemDeployDataSerde {
     SlashSystemDeploy(SlashSystemDeployDataSerde),
     CloseBlockSystemDeploy(CloseBlockSystemDeployDataSerde),
+    ResolveClaimsSystemDeploy(ResolveClaimsSystemDeployDataSerde),
+    DishonestVoteSystemDeploy(DishonestVoteSystemDeployDataSerde),
 }
 
 impl From<SystemDeployDataProto> for SystemDeployDataSerde {
@@ -138,6 +302,16 @@ impl From<SystemDeployDataProto> for SystemDeployDataSerde {
                     close,
                 ),
             ) => Self::CloseBlockSystemDeploy(close.into()),
+            Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::ResolveClaimsSystemDeploy(
+                    resolve,
+                ),
+            ) => Self::ResolveClaimsSystemDeploy(resolve.into()),
+            Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::DishonestVoteSystemDeploy(
+                    evidence,
+                ),
+            ) => Self::DishonestVoteSystemDeploy(evidence.into()),
             None => Self::CloseBlockSystemDeploy(CloseBlockSystemDeployDataSerde {}),
         }
     }
@@ -154,6 +328,16 @@ impl From<SystemDeployDataSerde> for SystemDeployDataProto {
             SystemDeployDataSerde::CloseBlockSystemDeploy(close) => Some(
                 models::casper::system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(
                     close.into(),
+                ),
+            ),
+            SystemDeployDataSerde::ResolveClaimsSystemDeploy(resolve) => Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::ResolveClaimsSystemDeploy(
+                    resolve.into(),
+                ),
+            ),
+            SystemDeployDataSerde::DishonestVoteSystemDeploy(evidence) => Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::DishonestVoteSystemDeploy(
+                    evidence.into(),
                 ),
             ),
         };
@@ -540,6 +724,62 @@ mod tests {
             SystemDeployDataSerde::CloseBlockSystemDeploy(_)
         ));
         let back: SystemDeployDataProto = serde.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn system_deploy_data_resolve_claims_variant_roundtrips() {
+        let proto = SystemDeployDataProto {
+            system_deploy: Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::ResolveClaimsSystemDeploy(
+                    ResolveClaimsSystemDeployDataProto {
+                        resolutions: vec![ClaimResolutionProto {
+                            family: 1,
+                            target: vec![1].into(),
+                            opened_at: 2,
+                            proposer: vec![3].into(),
+                            outcome: 1,
+                        }],
+                        floor_hash: vec![4].into(),
+                        floor_number: 5,
+                        grace_expiries: vec![vec![6].into()],
+                        expiries: vec![ClaimIdProto {
+                            family: 3,
+                            target: vec![8].into(),
+                            opened_at: 9,
+                            proposer: vec![10].into(),
+                        }],
+                    },
+                ),
+            ),
+        };
+        let serde: SystemDeployDataSerde = proto.clone().into();
+        let json = serde_json::to_string(&serde).unwrap();
+        let parsed: SystemDeployDataSerde = serde_json::from_str(&json).unwrap();
+        let back: SystemDeployDataProto = parsed.into();
+        assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn system_deploy_data_dishonest_vote_variant_roundtrips() {
+        let proto = SystemDeployDataProto {
+            system_deploy: Some(
+                models::casper::system_deploy_data_proto::SystemDeploy::DishonestVoteSystemDeploy(
+                    DishonestVoteSystemDeployDataProto {
+                        accused: vec![1].into(),
+                        vote_block: vec![2].into(),
+                        family: 3,
+                        target: vec![4].into(),
+                        opened_at: 5,
+                        proposer: vec![6].into(),
+                    },
+                ),
+            ),
+        };
+        let serde: SystemDeployDataSerde = proto.clone().into();
+        let json = serde_json::to_string(&serde).unwrap();
+        let parsed: SystemDeployDataSerde = serde_json::from_str(&json).unwrap();
+        let back: SystemDeployDataProto = parsed.into();
         assert_eq!(back, proto);
     }
 

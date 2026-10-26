@@ -10,6 +10,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
+use crate::rust::chain_parameters::ChainParameters;
 use crate::rust::estimator::Estimator;
 
 pub mod evaluation;
@@ -48,16 +49,17 @@ impl CaptureEndpoint {
         dag: BlockDagKeyValueStorage,
         blocks: KeyValueBlockStore,
         conf: &CasperShardConf,
+        chain: &ChainParameters,
         approved: &BlockMessage,
     ) -> Self {
         Self {
             dag,
             blocks,
             authority: AuthorityInputs {
-                fault_tolerance_threshold_ppm: conf.fault_tolerance_threshold_ppm,
-                max_parent_depth: conf.max_parent_depth,
-                deploy_lifespan: conf.deploy_lifespan,
-                min_phlo_price: conf.min_phlo_price,
+                fault_tolerance_threshold_ppm: chain.fault_tolerance_threshold_ppm,
+                max_parent_depth: chain.max_parent_depth,
+                deploy_lifespan: chain.deploy_lifespan,
+                min_phlo_price: chain.min_phlo_price,
                 approved_block_hash: hex::encode(&approved.block_hash),
                 approved_post_state_hash: hex::encode(&approved.body.state.post_state_hash),
             },

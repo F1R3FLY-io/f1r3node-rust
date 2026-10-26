@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
@@ -10,8 +11,10 @@ use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::private_key::PrivateKey;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::validator::Validator;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 use tracing;
 
@@ -23,6 +26,7 @@ use crate::rust::blocks::proposer::propose_result::{
     ProposeFailure, ProposeResult,
 };
 use crate::rust::casper::{Casper, CasperSnapshot};
+use crate::rust::economics::bucket_view::LeakyBucketDecision;
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::multi_parent_casper::created_event;
 use crate::rust::errors::CasperError;
@@ -60,6 +64,7 @@ pub trait StakeChecker {
     async fn check_enough_base_stake(
         &self,
         casper_snapshot: &CasperSnapshot,
+        ejected: &std::collections::HashSet<Validator>,
     ) -> Result<CheckProposeConstraintsResult, CasperError>;
 }
 
@@ -103,6 +108,7 @@ pub trait BlockCreator {
         validator_identity: &ValidatorIdentity,
         dummy_deploy_opt: Option<(PrivateKey, String)>,
         selection: DeploySelection,
+        decision: LeakyBucketDecision,
     ) -> Result<BlockCreatorResult, CasperError>;
 }
 
@@ -122,6 +128,7 @@ pub trait ProposeEffectHandler {
         &mut self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
+        parents: &[BlockMetadata],
     ) -> Result<(), CasperError>;
 
     /// Publish BlockCreated event immediately after block creation (before validation).
@@ -218,7 +225,9 @@ where
     ) -> Result<(ProposeResult, Option<BlockMessage>), CasperError> {
         // check if node is allowed to propose a block
         let step_start = std::time::Instant::now();
-        let constraint_check = self.check_propose_constraints(casper_snapshot).await?;
+        let constraint_check = self
+            .check_propose_constraints(casper_snapshot, &casper.bucket_view().ejected())
+            .await?;
         let constraints_ms = step_start.elapsed().as_millis();
 
         // The height constraint must not gate the recovery lane it exists to
@@ -248,6 +257,19 @@ where
             CheckProposeConstraintsResult::Success => DeploySelection::StandardAllowEmpty,
         };
 
+        if let Err(error) = casper.request_ejections(casper_snapshot).await {
+            tracing::warn!(
+                target: "f1r3fly.casper.economics",
+                %error,
+                "ejections not requested this proposal"
+            );
+        }
+        let decision = casper
+            .bucket_view()
+            .decision(prost::bytes::Bytes::copy_from_slice(
+                &self.validator.public_key.bytes,
+            ));
+
         let step_start = std::time::Instant::now();
         let block_result = self
             .block_creator
@@ -256,6 +278,7 @@ where
                 &self.validator,
                 self.dummy_deploy_opt.clone(),
                 selection,
+                decision,
             )
             .await?;
         let create_ms = step_start.elapsed().as_millis();
@@ -278,8 +301,11 @@ where
                 match validation_result {
                     ValidBlockProcessing::Right(valid_status) => {
                         let step_start = std::time::Instant::now();
+                        let parents = casper_snapshot
+                            .dag
+                            .lookups_unsafe(block.header.parents_hash_list.clone())?;
                         self.propose_effect_handler
-                            .handle_propose_effect(casper, &block)
+                            .handle_propose_effect(casper, &block, &parents)
                             .await?;
                         let effect_ms = step_start.elapsed().as_millis();
                         record_propose_steps(constraints_ms, create_ms, validate_ms, effect_ms);
@@ -361,6 +387,7 @@ where
     pub async fn check_propose_constraints(
         &mut self,
         casper_snapshot: &CasperSnapshot,
+        ejected: &std::collections::HashSet<Validator>,
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
         match self
             .active_validator_checker
@@ -372,7 +399,8 @@ where
             _ => {
                 // Run both async checks in parallel
                 let (stake_result, height_result) = tokio::join!(
-                    self.stake_checker.check_enough_base_stake(casper_snapshot),
+                    self.stake_checker
+                        .check_enough_base_stake(casper_snapshot, ejected),
                     self.height_checker.check_finalized_height(casper_snapshot)
                 );
 
@@ -640,6 +668,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
+    block_dag_storage: BlockDagKeyValueStorage,
     deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_retriever: BlockRetriever<T>,
@@ -663,6 +692,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
             rejected_deploy_buffer,
             runtime_manager.clone(),
             block_store.clone(),
+            block_dag_storage,
         ),
         ProductionBlockValidator,
         ProductionProposeEffectHandler::new(
@@ -714,8 +744,9 @@ impl StakeChecker for ProductionStakeChecker {
     async fn check_enough_base_stake(
         &self,
         casper_snapshot: &CasperSnapshot,
+        ejected: &std::collections::HashSet<Validator>,
     ) -> Result<CheckProposeConstraintsResult, CasperError> {
-        synchrony_constraint_checker::check(casper_snapshot, &self.validator).await
+        synchrony_constraint_checker::check(casper_snapshot, &self.validator, ejected).await
     }
 }
 
@@ -741,6 +772,7 @@ pub struct ProductionBlockCreator {
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
+    block_dag_storage: BlockDagKeyValueStorage,
     finality_progress: block_creator::FinalityProgress,
 }
 
@@ -750,12 +782,14 @@ impl ProductionBlockCreator {
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,
+        block_dag_storage: BlockDagKeyValueStorage,
     ) -> Self {
         Self {
             deploy_storage,
             rejected_deploy_buffer,
             runtime_manager,
             block_store,
+            block_dag_storage,
             finality_progress: block_creator::FinalityProgress::default(),
         }
     }
@@ -764,7 +798,7 @@ impl ProductionBlockCreator {
 impl BlockCreator for ProductionBlockCreator {
     #[tracing::instrument(
         level = "info",
-        skip(self, casper_snapshot, validator_identity, dummy_deploy_opt)
+        skip(self, casper_snapshot, validator_identity, dummy_deploy_opt, decision)
     )]
     async fn create_block(
         &mut self,
@@ -772,6 +806,7 @@ impl BlockCreator for ProductionBlockCreator {
         validator_identity: &ValidatorIdentity,
         dummy_deploy_opt: Option<(PrivateKey, String)>,
         selection: DeploySelection,
+        decision: LeakyBucketDecision,
     ) -> Result<BlockCreatorResult, CasperError> {
         block_creator::create_with_progress(
             casper_snapshot,
@@ -781,7 +816,9 @@ impl BlockCreator for ProductionBlockCreator {
             self.rejected_deploy_buffer.clone(),
             &self.runtime_manager,
             &mut self.block_store,
+            &self.block_dag_storage,
             selection,
+            decision,
             &mut self.finality_progress,
         )
         .await
@@ -836,12 +873,13 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposeEffectHandler
         &mut self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
+        parents: &[BlockMetadata],
     ) -> Result<(), CasperError> {
         // store block
         self.block_store.put_block_message(block)?;
 
         // save changes to Casper (publishes BlockAdded and BlockFinalised events)
-        casper.handle_valid_block(block).await?;
+        casper.handle_valid_block(block, parents).await?;
 
         // inform block retriever about block
         self.block_retriever

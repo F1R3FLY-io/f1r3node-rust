@@ -1,0 +1,330 @@
+//scalapackage coop.rchain.rholang.mint
+
+//requires Pos, RhoSpec
+
+// Exercises `PoS.slash` against the ejection lifecycle. The genesis sets an
+// epoch of 1000. Every test builds on the state the previous one left.
+new
+  rl(`rho:registry:lookup`),
+  makeSysAuthToken(`sys:test:authToken:make`),
+  makeDeployerId(`rho:test:deployerId:make`),
+  setBlockData(`rho:test:block:data:set`),
+  setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+  computeHash(`rho:crypto:keccak256Hash`),
+  sysAuthTokenCh, bondsCh, orderedCh, validatorsCh,
+  RhoSpecCh, PoSCh, ListOpsCh,
+  setup, byStake, failOnRefusal, deployerIdFor, atBlock, posVaultBalance, slash,
+  test_a_slash_closes_the_ejection_and_its_rejoin,
+  test_a_slash_reaches_a_bond_in_quarantine,
+  test_a_second_slash_succeeds,
+  test_a_slash_closes_open_ejection_proceedings,
+  test_an_epoch_close_seats_no_slashed_validator
+in {
+  rl!(`rho:system:pos`, *PoSCh) |
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  rl!(`rho:lang:listOps`, *ListOpsCh) |
+  makeSysAuthToken!(*sysAuthTokenCh) |
+  for(@(_, RhoSpec)  <- RhoSpecCh &
+      @(_, PoS)      <- PoSCh &
+      @(_, ListOps)  <- ListOpsCh &
+      @sysAuthToken  <- sysAuthTokenCh) {
+    @PoS!("getBonds", *bondsCh) |
+    for (@bonds <- bondsCh) {
+      byStake!(bonds, *orderedCh)
+    } |
+    for (@ordered <- orderedCh) {
+      validatorsCh!(ordered) |
+      @RhoSpec!("testSuite", *setup,
+        [
+          ("a slash closes the ejection and its rejoin", *test_a_slash_closes_the_ejection_and_its_rejoin),
+          ("a slash reaches a bond in quarantine", *test_a_slash_reaches_a_bond_in_quarantine),
+          ("a second slash succeeds", *test_a_second_slash_succeeds),
+          ("a slash closes open ejection proceedings", *test_a_slash_closes_open_ejection_proceedings),
+          ("an epoch close seats no slashed validator", *test_an_epoch_close_seats_no_slashed_validator)
+        ]
+      )
+    } |
+
+    contract setup(_, retCh) = {
+      retCh!({})
+    } |
+
+    // The bonded validators, least stake first. The test genesis draws new
+    // keys every run, so in key order each position would hold a different
+    // bond each time. A map's entries list in key order.
+    contract byStake(@bonds, retCh) = {
+      new keyed, keyedCh, validatorOf in {
+        contract keyed(@(pk, stake), @acc, ret) = { ret!(acc.set((stake, pk), pk)) } |
+        contract validatorOf(@(_, pk), ret) = { ret!(pk) } |
+        @ListOps!("fold", bonds.toList(), {}, *keyed, *keyedCh) |
+        for (@byStakeAndKey <- keyedCh) {
+          @ListOps!("map", byStakeAndKey.toList(), *validatorOf, *retCh)
+        }
+      }
+    } |
+
+    // A step's guarded receive matches only success. This fails the test with
+    // a refusal, which would otherwise leave the test waiting forever.
+    contract failOnRefusal(ch, rhoSpec, ackCh) = {
+      for (@(false, reason) <- ch) {
+        rhoSpec!("assert", ((true, Nil), "==", (false, reason)), "a step the test relies on succeeds", *ackCh)
+      }
+    } |
+
+    contract deployerIdFor(@pk, retCh) = {
+      new deployerIdCh in {
+        makeDeployerId!("deployerId", pk, *deployerIdCh) |
+        for (@deployerId <- deployerIdCh) { retCh!(deployerId) }
+      }
+    } |
+
+    contract atBlock(@number, retCh) = {
+      setBlockData!("blockNumber", number, *retCh)
+    } |
+
+    contract posVaultBalance(retCh) = {
+      new posVaultCh in {
+        @PoS!("getInitialPosVault", *posVaultCh) |
+        for (@(_, posVault) <- posVaultCh) {
+          @posVault!("balance", *retCh)
+        }
+      }
+    } |
+
+    // Slashes `validator` on an invalid block it authored.
+    contract slash(@validator, retCh) = {
+      new hashCh, invalidSetCh, deployerIdCh in {
+        computeHash!(validator, *hashCh) |
+        deployerIdFor!(validator, *deployerIdCh) |
+        for (@hash <- hashCh & @deployerId <- deployerIdCh) {
+          setInvalidBlocks!({hash : validator}, *invalidSetCh) |
+          for (_ <- invalidSetCh) {
+            @PoS!("slash", deployerId, hash, sysAuthToken, *retCh)
+          }
+        }
+      }
+    } |
+
+    // An ejected validator slashed with a rejoin open is no longer ejected or
+    // rejoining, so no vote can reinstate it and take its topup.
+    contract test_a_slash_closes_the_ejection_and_its_rejoin(rhoSpec, _, ackCh) = {
+      new b10, d0, bondsCh, committeeSet, opened, b11, ejectedOk, b12, d1, asked,
+          slashed, b13, payerCh, beforeCh, resolved, afterCh, ejectedCh, rejoinsCh,
+          historyCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(10, *b10) |
+          deployerIdFor!(v.nth(0), *d0) |
+          @PoS!("getBonds", *bondsCh) |
+          for (_ <- b10 & @id0 <- d0 & @bonds <- bondsCh) {
+            setBlockData!("committee", bonds, *committeeSet) |
+            for (_ <- committeeSet) {
+              @PoS!("ejectValidator", id0, v.nth(1), *opened) |
+              failOnRefusal!(*opened, *rhoSpec, *ackCh) |
+              for (@(true, _) <- opened) {
+                atBlock!(11, *b11) |
+                for (_ <- b11) {
+                  @PoS!("resolveClaims",
+                    [{"family": "eject", "target": v.nth(1), "openedAt": 10, "proposer": v.nth(0), "passed": true}],
+                    [], [], "aa".hexToBytes(), 5, sysAuthToken, *ejectedOk) |
+                  failOnRefusal!(*ejectedOk, *rhoSpec, *ackCh) |
+                  for (@(true, _) <- ejectedOk) {
+                    atBlock!(12, *b12) |
+                    deployerIdFor!(v.nth(1), *d1) |
+                    for (_ <- b12 & @id1 <- d1) {
+                      @PoS!("rejoinFromEjection", id1, 50, *asked) |
+                      failOnRefusal!(*asked, *rhoSpec, *ackCh) |
+                      for (@(true, _) <- asked) {
+                        slash!(v.nth(1), *slashed) |
+                        for (@slashResult <- slashed) {
+                          atBlock!(13, *b13) |
+                          deployerIdFor!(v.nth(1), *payerCh) |
+                          posVaultBalance!(*beforeCh) |
+                          for (_ <- b13 & @payer <- payerCh & @before <- beforeCh) {
+                            @PoS!("resolveClaims",
+                              [{"family": "rejoin", "target": v.nth(1), "openedAt": 12,
+                                "proposer": v.nth(1), "passed": true, "payer": payer}],
+                              [], [], "aa".hexToBytes(), 6, sysAuthToken, *resolved) |
+                            for (@result <- resolved) {
+                              posVaultBalance!(*afterCh) |
+                              @PoS!("getEjectedValidators", *ejectedCh) |
+                              @PoS!("getPendingRejoins", *rejoinsCh) |
+                              @PoS!("getFreezeHistory", *historyCh) |
+                              for (@after <- afterCh & @ejected <- ejectedCh &
+                                   @rejoins <- rejoinsCh & @history <- historyCh) {
+                                rhoSpec!("assertMany",
+                                  [
+                                    (((true, Nil), "==", slashResult), "the slash succeeds"),
+                                    ((false, "==", ejected.contains(v.nth(1))), "the ejection is closed"),
+                                    ((false, "==", rejoins.contains(v.nth(1))), "and so is the open rejoin"),
+                                    ((false, "==", history.contains(v.nth(1))), "and its freezes are dropped"),
+                                    (((false, "A resolution names no claim open at this block."), "==", result), "a resolution of that rejoin is refused"),
+                                    ((before, "==", after), "and nothing is debited")
+                                  ],
+                                  *ackCh
+                                )
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_a_slash_reaches_a_bond_in_quarantine(rhoSpec, _, ackCh) = {
+      new b100, d2, withdrawn, b1000, closed, beforeWithdrawersCh, beforeCh, slashed,
+          afterCh, withdrawersCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(100, *b100) |
+          deployerIdFor!(v.nth(2), *d2) |
+          for (_ <- b100 & @id2 <- d2) {
+            @PoS!("withdraw", id2, *withdrawn) |
+            failOnRefusal!(*withdrawn, *rhoSpec, *ackCh) |
+            for (@(true, _) <- withdrawn) {
+              atBlock!(1000, *b1000) |
+              for (_ <- b1000) {
+                @PoS!("closeBlock", sysAuthToken, *closed) |
+                failOnRefusal!(*closed, *rhoSpec, *ackCh) |
+                for (@(true, _) <- closed) {
+                  @PoS!("getWithdrawers", *beforeWithdrawersCh) |
+                  posVaultBalance!(*beforeCh) |
+                  for (@beforeWithdrawers <- beforeWithdrawersCh & @before <- beforeCh) {
+                    match beforeWithdrawers.get(v.nth(2)) {
+                      (quarantined, _) => {
+                        slash!(v.nth(2), *slashed) |
+                        for (@slashResult <- slashed) {
+                          posVaultBalance!(*afterCh) |
+                          @PoS!("getWithdrawers", *withdrawersCh) |
+                          for (@after <- afterCh & @withdrawers <- withdrawersCh) {
+                            match withdrawers.get(v.nth(2)) {
+                              (left, _) => {
+                                rhoSpec!("assertMany",
+                                  [
+                                    (((true, Nil), "==", slashResult), "the slash succeeds"),
+                                    ((0, "==", left), "the quarantined bond is slashed"),
+                                    ((before - quarantined.toBigInt(), "==", after), "and leaves the PoS vault")
+                                  ],
+                                  *ackCh
+                                )
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Proceedings opened against a validator end when it is slashed, so they
+    // can neither pass nor lead to a rejoin that takes its topup.
+    contract test_a_slash_closes_open_ejection_proceedings(rhoSpec, _, ackCh) = {
+      new b3000, d0, bondsCh, committeeSet, opened, slashed, b3001, resolved,
+          evidenceCh, ejectedCh, d3, rejoin in {
+        for (@v <<- validatorsCh) {
+          atBlock!(3000, *b3000) |
+          deployerIdFor!(v.nth(0), *d0) |
+          @PoS!("getBonds", *bondsCh) |
+          for (_ <- b3000 & @id0 <- d0 & @bonds <- bondsCh) {
+            setBlockData!("committee", bonds, *committeeSet) |
+            for (_ <- committeeSet) {
+              @PoS!("ejectValidator", id0, v.nth(3), *opened) |
+              failOnRefusal!(*opened, *rhoSpec, *ackCh) |
+              for (@(true, _) <- opened) {
+                slash!(v.nth(3), *slashed) |
+                for (@slashResult <- slashed) {
+                  atBlock!(3001, *b3001) |
+                  for (_ <- b3001) {
+                    @PoS!("resolveClaims",
+                      [{"family": "eject", "target": v.nth(3), "openedAt": 3000, "proposer": v.nth(0), "passed": true}],
+                      [], [], "aa".hexToBytes(), 2990, sysAuthToken, *resolved) |
+                    for (@result <- resolved) {
+                      @PoS!("getEjectionEvidence", *evidenceCh) |
+                      @PoS!("getEjectedValidators", *ejectedCh) |
+                      deployerIdFor!(v.nth(3), *d3) |
+                      for (@evidence <- evidenceCh & @ejected <- ejectedCh & @id3 <- d3) {
+                        @PoS!("rejoinFromEjection", id3, 50, *rejoin) |
+                        for (@rejoinResult <- rejoin) {
+                          rhoSpec!("assertMany",
+                            [
+                              (((true, Nil), "==", slashResult), "the slash succeeds"),
+                              ((false, "==", evidence.contains(v.nth(3))), "the open proceedings are closed"),
+                              (((false, "A resolution names no claim open at this block."), "==", result), "so they cannot pass"),
+                              ((false, "==", ejected.contains(v.nth(3))), "and the validator is not ejected"),
+                              (((false, "Only an ejected validator may rejoin."), "==", rejoinResult), "nor can it rejoin")
+                            ],
+                            *ackCh
+                          )
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // A slash leaves the key in the bonds at nothing, so it cannot bond
+    // again; the epoch close must not seat it.
+    contract test_an_epoch_close_seats_no_slashed_validator(rhoSpec, _, ackCh) = {
+      new b4000, closed, activeCh, bondsCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(4000, *b4000) |
+          for (_ <- b4000) {
+            @PoS!("closeBlock", sysAuthToken, *closed) |
+            failOnRefusal!(*closed, *rhoSpec, *ackCh) |
+            for (@(true, _) <- closed) {
+              @PoS!("getActiveValidators", *activeCh) |
+              @PoS!("getBonds", *bondsCh) |
+              for (@active <- activeCh & @bonds <- bondsCh) {
+                rhoSpec!("assertMany",
+                  [
+                    ((0, "==", bonds.get(v.nth(1))), "the slashed key stays in the bonds at nothing"),
+                    ((false, "==", active.contains(v.nth(1))), "and holds no seat"),
+                    ((false, "==", active.contains(v.nth(3))), "nor does the other slashed key"),
+                    (active.contains(v.nth(0)), "a validator with stake keeps its seat")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_a_second_slash_succeeds(rhoSpec, _, ackCh) = {
+      new slashed, bondsCh in {
+        for (@v <<- validatorsCh) {
+          slash!(v.nth(1), *slashed) |
+          for (@slashResult <- slashed) {
+            @PoS!("getBonds", *bondsCh) |
+            for (@bonds <- bondsCh) {
+              rhoSpec!("assertMany",
+                [
+                  (((true, Nil), "==", slashResult), "slashing a validator with nothing left succeeds"),
+                  ((0, "==", bonds.get(v.nth(1))), "and leaves it at nothing")
+                ],
+                *ackCh
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}

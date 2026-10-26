@@ -7,3 +7,4 @@ pub mod equivocation_tracker_store;
 pub mod equivocations_access;
 pub mod soak_snapshot;
 pub mod soak_equivocations;
+pub mod vote_index;

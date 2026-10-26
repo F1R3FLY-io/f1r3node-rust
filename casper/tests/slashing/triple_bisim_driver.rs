@@ -73,7 +73,7 @@ impl TripleBisimDriver {
             .build_genesis_with_parameters(None)
             .await
             .expect("Failed to build genesis");
-        let nodes = TestNode::create_network(genesis.clone(), n, None, None, None, None)
+        let nodes = TestNode::create_network(genesis.clone(), n, None, None, None)
             .await
             .expect("Failed to create network");
         // Truncate the canonical validator order to the first `n`

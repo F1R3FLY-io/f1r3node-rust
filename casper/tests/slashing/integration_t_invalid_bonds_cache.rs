@@ -43,7 +43,7 @@ async fn integration_t_invalid_bonds_cache() {
         .expect("Failed to build genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .expect("Failed to create network");
 

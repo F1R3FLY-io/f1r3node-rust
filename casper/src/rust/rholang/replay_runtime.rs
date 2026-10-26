@@ -547,6 +547,79 @@ impl ReplayRuntimeOps {
                 Ok(map)
             }
 
+            SystemDeployData::ResolveClaims {
+                resolutions,
+                grace_expiries,
+                expiries,
+                floor_hash,
+                floor_number,
+            } => {
+                let mut resolve_deploy = crate::rust::util::rholang::costacc::resolve_claims_deploy::ResolveClaimsDeploy {
+                    resolutions: resolutions.clone(),
+                    grace_expiries: grace_expiries.clone(),
+                    expiries: expiries.clone(),
+                    floor_hash: floor_hash.clone(),
+                    floor_number: *floor_number,
+                    pk: crypto::rust::public_key::PublicKey::from_bytes(&block_data.sender.bytes),
+                    initial_rand: system_deploy_util::generate_resolve_claims_deploy_random_seed(
+                        block_data.sender.bytes.clone(),
+                        block_data.seq_num,
+                    ),
+                };
+
+                self.rig_system_deploy(processed_system_deploy).await?;
+                let (_, eval_result) = self
+                    .replay_system_deploy_internal(&mut resolve_deploy, &None)
+                    .await?;
+
+                self.discard_event_log("resolve-claims-system-deploy", false)
+                    .await;
+
+                let map = self
+                    .runtime_ops
+                    .get_number_channels_data(&eval_result.mergeable)
+                    .await?;
+
+                self.check_replay_data_with_fix(eval_result.errors.is_empty())
+                    .await?;
+                Ok(map)
+            }
+
+            SystemDeployData::DishonestVote {
+                accused,
+                vote_block,
+                claim,
+            } => {
+                let mut evidence_deploy = crate::rust::util::rholang::costacc::dishonest_vote_deploy::DishonestVoteDeploy {
+                    accused: accused.clone(),
+                    vote_block: vote_block.clone(),
+                    claim: claim.clone(),
+                    pk: crypto::rust::public_key::PublicKey::from_bytes(&block_data.sender.bytes),
+                    initial_rand: system_deploy_util::generate_dishonest_vote_deploy_random_seed(
+                        block_data.sender.bytes.clone(),
+                        block_data.seq_num,
+                        accused,
+                    ),
+                };
+
+                self.rig_system_deploy(processed_system_deploy).await?;
+                let (_, eval_result) = self
+                    .replay_system_deploy_internal(&mut evidence_deploy, &None)
+                    .await?;
+
+                self.discard_event_log("dishonest-vote-system-deploy", false)
+                    .await;
+
+                let map = self
+                    .runtime_ops
+                    .get_number_channels_data(&eval_result.mergeable)
+                    .await?;
+
+                self.check_replay_data_with_fix(eval_result.errors.is_empty())
+                    .await?;
+                Ok(map)
+            }
+
             SystemDeployData::CloseBlockSystemDeployData => {
                 let mut close_block_deploy = CloseBlockDeploy {
                     initial_rand:

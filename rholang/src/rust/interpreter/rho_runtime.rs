@@ -840,6 +840,24 @@ fn std_system_processes() -> Vec<Definition> {
             remainder: None,
         },
         Definition {
+            urn: "rho:block:committee".to_string(),
+            fixed_channel: FixedChannels::get_block_committee(),
+            arity: 1,
+            body_ref: BodyRefs::GET_BLOCK_COMMITTEE,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        ctx.system_processes
+                            .clone()
+                            .get_block_committee(args, ctx.block_data.clone())
+                            .await
+                    })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
             urn: "rho:casper:invalidBlocks".to_string(),
             fixed_channel: FixedChannels::get_invalid_blocks(),
             arity: 1,

@@ -36,7 +36,7 @@ use crate::rust::engine::genesis_validator::GenesisValidator;
 use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
-use crate::rust::genesis::contracts::proof_of_stake::ProofOfStake;
+use crate::rust::genesis::contracts::proof_of_stake::{LeakyBucketGenesis, ProofOfStake};
 use crate::rust::util::bonds_parser::BondsParser;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::vault_parser::VaultParser;
@@ -94,6 +94,35 @@ use crate::rust::blocks::block_processor::{
 };
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
+    /// The configured leaky-bucket genesis parameters. Only consulted when this
+    /// node CREATES genesis; a node joining an existing shard adopts the values
+    /// the chain carries and ignores its own configuration.
+    fn leaky_bucket_genesis(&self) -> LeakyBucketGenesis {
+        LeakyBucketGenesis {
+            epoch_phlogiston: self.conf.genesis_block_data.epoch_phlogiston,
+            lambda_base_ppm: self.conf.genesis_block_data.leaky_bucket_lambda_base_ppm,
+            theta_eject_ppm: self.conf.genesis_block_data.leaky_bucket_theta_eject_ppm,
+            eject_observation_blocks: self
+                .conf
+                .genesis_block_data
+                .leaky_bucket_eject_observation_blocks,
+            breadth_exponent: self.conf.genesis_block_data.leaky_bucket_breadth_exponent,
+            recency_reference_ppm: self
+                .conf
+                .genesis_block_data
+                .leaky_bucket_recency_reference_ppm,
+            vote_list_bound: self.conf.genesis_block_data.leaky_bucket_vote_list_bound,
+            max_overflow_claim_minimum_bonds: self
+                .conf
+                .genesis_block_data
+                .leaky_bucket_max_overflow_claim_minimum_bonds,
+            failed_claim_fee_ppm: self
+                .conf
+                .genesis_block_data
+                .leaky_bucket_failed_claim_fee_ppm,
+        }
+    }
+
     /// Helper method to create MultiParentCasper instance
     /// Scala equivalent: MultiParentCasper.hashSetCasper[F](validatorId, casperShardConf, ab)
     async fn create_casper(
@@ -157,21 +186,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     ) -> Self {
         // Scala equivalent: val casperShardConf = CasperShardConf(...)
         let casper_shard_conf = CasperShardConf {
-            fault_tolerance_threshold: conf.fault_tolerance_threshold,
-            // Locally-derived exact ppm from the configured f32. On a joining/
-            // existing chain, `initializing` overwrites it with the on-chain ppm
-            // (the single exact conversion point).
-            fault_tolerance_threshold_ppm: ProofOfStake::fault_tolerance_threshold_to_ppm(
-                conf.fault_tolerance_threshold,
-            ),
             shard_name: conf.shard_name.clone(),
             parent_shard_id: conf.parent_shard_id.clone(),
             finalization_rate: conf.finalization_rate,
             max_number_of_parents: conf.max_number_of_parents,
-            max_parent_depth: conf.max_parent_depth,
             synchrony_constraint_threshold: conf.synchrony_constraint_threshold,
             height_constraint_threshold: conf.height_constraint_threshold,
-            deploy_lifespan: conf.deploy_lifespan,
             // Zero derives the budget from the citability window
             // (max-parent-depth heights of cadence) with a 5x margin. The
             // launch always produces a bound: `None` (unbounded) is
@@ -190,11 +210,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             deploy_play_budget_is_derived: conf.deploy_play_budget.is_zero(),
             heartbeat_check_interval: conf.heartbeat_conf.check_interval,
             casper_version: crate::rust::casper::CASPER_PROTOCOL_VERSION,
-            bond_minimum: conf.genesis_block_data.bond_minimum,
-            bond_maximum: conf.genesis_block_data.bond_maximum,
-            epoch_length: conf.genesis_block_data.epoch_length,
-            quarantine_length: conf.genesis_block_data.quarantine_length,
-            min_phlo_price: conf.min_phlo_price,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
@@ -638,10 +653,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
-            self.casper_shard_conf.fault_tolerance_threshold_ppm,
-            self.casper_shard_conf.max_parent_depth,
-            self.casper_shard_conf.deploy_lifespan,
-            self.casper_shard_conf.min_phlo_price,
+            ProofOfStake::fault_tolerance_threshold_to_ppm(self.conf.fault_tolerance_threshold),
+            self.conf.max_parent_depth,
+            self.conf.deploy_lifespan,
+            self.conf.min_phlo_price,
+            self.leaky_bucket_genesis(),
             self.conf.genesis_ceremony.required_signatures,
             self.conf
                 .genesis_block_data
@@ -749,10 +765,11 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.epoch_length,
             self.conf.genesis_block_data.quarantine_length,
             self.conf.genesis_block_data.number_of_active_validators,
-            self.casper_shard_conf.fault_tolerance_threshold_ppm,
-            self.casper_shard_conf.max_parent_depth,
-            self.casper_shard_conf.deploy_lifespan,
-            self.casper_shard_conf.min_phlo_price,
+            ProofOfStake::fault_tolerance_threshold_to_ppm(self.conf.fault_tolerance_threshold),
+            self.conf.max_parent_depth,
+            self.conf.deploy_lifespan,
+            self.conf.min_phlo_price,
+            self.leaky_bucket_genesis(),
             self.casper_shard_conf.shard_name.clone(),
             self.conf.genesis_block_data.deploy_timestamp,
             self.conf.genesis_ceremony.required_signatures,

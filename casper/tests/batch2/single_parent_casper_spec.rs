@@ -28,7 +28,7 @@ impl TestContext {
 async fn single_parent_casper_should_create_blocks_with_a_single_parent() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, Some(1), None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, Some(1), None)
         .await
         .unwrap();
     // Heartbeat mode: non-leader proposers emit empty support blocks instead
@@ -96,7 +96,7 @@ async fn single_parent_casper_should_create_blocks_with_a_single_parent() {
 async fn should_reject_multi_parent_blocks() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, Some(1), None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, Some(1), None)
         .await
         .unwrap();
 

@@ -1,0 +1,1075 @@
+//scalapackage coop.rchain.rholang.mint
+
+//requires Pos, RhoSpec
+
+// Exercises `PoS.ejectValidator`, `PoS.resolveClaims` and the reward gate on
+// ejected validators. The epoch is 1000 blocks, so a claim stays open for
+// 1000 and grace is 2000.
+new
+  rl(`rho:registry:lookup`),
+  makeSysAuthToken(`sys:test:authToken:make`),
+  makeDeployerId(`rho:test:deployerId:make`),
+  setBlockData(`rho:test:block:data:set`),
+  sysAuthTokenCh, bondsCh, stakeOrderCh,
+  RhoSpecCh, PoSCh, ListOpsCh,
+  setup, byStake, failOnRefusal, seatedValidators, deployerIdFor, openEjection,
+  test_ejection_opens_against_a_seated_validator,
+  test_ejection_is_refused_when_already_open,
+  test_ejection_is_refused_against_an_unseated_validator,
+  test_ejection_is_refused_from_an_unseated_proposer,
+  test_the_seat_is_judged_against_the_block_committee,
+  test_an_expired_claim_no_longer_blocks_a_new_one,
+  test_a_proposer_may_open_ejections_against_two_targets_in_one_block,
+  test_the_epoch_close_leaves_proceedings_to_expiry, expireEjections,
+  test_a_slash_keeps_the_ejection_records,
+  resolve,
+  test_a_passed_claim_ejects_its_target,
+  test_an_ejected_validator_cannot_be_targeted_again,
+  test_the_electorate_leaves_out_ejected_validators,
+  test_a_failed_claim_clears_its_slot,
+  test_a_resolution_must_name_an_open_claim,
+  test_an_ejected_validator_earns_no_reward,
+  test_with_no_eligible_stake_nothing_is_distributed,
+  resolveRejoin, expire, requestRejoin,
+  test_a_rejoin_is_refused_to_whom_it_does_not_apply,
+  test_a_rejoin_opens_once,
+  test_a_paid_rejoin_reinstates_its_validator,
+  test_an_unpaid_rejoin_fails,
+  test_an_expiry_must_name_an_ended_grace,
+  test_a_rejoin_after_grace_is_refused,
+  test_grace_expiry_slashes_bonded_and_quarantined_validators,
+  test_the_epoch_close_drops_freezes_the_window_has_passed,
+  test_a_dishonest_voter_is_slashed_on_the_systems_authority
+in {
+  rl!(`rho:system:pos`, *PoSCh) |
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  rl!(`rho:lang:listOps`, *ListOpsCh) |
+  makeSysAuthToken!(*sysAuthTokenCh) |
+  for(@(_, RhoSpec)  <- RhoSpecCh &
+      @(_, PoS)      <- PoSCh &
+      @(_, ListOps)  <- ListOpsCh &
+      @sysAuthToken  <- sysAuthTokenCh) {
+    @PoS!("getBonds", *bondsCh) |
+    for (@bonds <- bondsCh) {
+      byStake!(bonds, *stakeOrderCh)
+    } |
+    @RhoSpec!("testSuite", *setup,
+      [
+        ("ejection opens against a seated validator", *test_ejection_opens_against_a_seated_validator),
+        ("ejection is refused while one is already open", *test_ejection_is_refused_when_already_open),
+        ("ejection is refused against an unseated validator", *test_ejection_is_refused_against_an_unseated_validator),
+        ("ejection is refused from an unseated proposer", *test_ejection_is_refused_from_an_unseated_proposer),
+        ("the seat is judged against the block committee", *test_the_seat_is_judged_against_the_block_committee),
+        ("an expired claim no longer blocks a new one", *test_an_expired_claim_no_longer_blocks_a_new_one),
+        ("a proposer may open ejections against two targets in one block", *test_a_proposer_may_open_ejections_against_two_targets_in_one_block),
+        ("the epoch close leaves proceedings to expiry", *test_the_epoch_close_leaves_proceedings_to_expiry),
+        ("a slash keeps the ejection records", *test_a_slash_keeps_the_ejection_records),
+        ("a passed claim ejects its target", *test_a_passed_claim_ejects_its_target),
+        ("an ejected validator cannot be targeted again", *test_an_ejected_validator_cannot_be_targeted_again),
+        ("the electorate leaves out ejected validators", *test_the_electorate_leaves_out_ejected_validators),
+        ("a failed claim clears its slot", *test_a_failed_claim_clears_its_slot),
+        ("a resolution must name an open claim", *test_a_resolution_must_name_an_open_claim),
+        ("an ejected validator earns no reward", *test_an_ejected_validator_earns_no_reward),
+        ("with no eligible stake nothing is distributed", *test_with_no_eligible_stake_nothing_is_distributed),
+        ("a rejoin is refused to whom it does not apply", *test_a_rejoin_is_refused_to_whom_it_does_not_apply),
+        ("a rejoin opens once", *test_a_rejoin_opens_once),
+        ("a paid rejoin reinstates its validator", *test_a_paid_rejoin_reinstates_its_validator),
+        ("an unpaid rejoin fails", *test_an_unpaid_rejoin_fails),
+        ("an expiry must name an ended grace", *test_an_expiry_must_name_an_ended_grace),
+        ("a rejoin after grace is refused", *test_a_rejoin_after_grace_is_refused),
+        ("grace expiry slashes bonded and quarantined validators", *test_grace_expiry_slashes_bonded_and_quarantined_validators),
+        ("the epoch close drops freezes the window has passed", *test_the_epoch_close_drops_freezes_the_window_has_passed),
+        ("a dishonest voter is slashed on the system's authority", *test_a_dishonest_voter_is_slashed_on_the_systems_authority)
+      ]
+    ) |
+
+    contract setup(_, retCh) = {
+      retCh!({})
+    } |
+
+    // The bonded validators, least stake first. The test genesis draws new
+    // keys every run, so in key order each position would hold a different
+    // bond each time. A map's entries list in key order.
+    contract byStake(@bonds, retCh) = {
+      new keyed, keyedCh, validatorOf in {
+        contract keyed(@(pk, stake), @acc, ret) = { ret!(acc.set((stake, pk), pk)) } |
+        contract validatorOf(@(_, pk), ret) = { ret!(pk) } |
+        @ListOps!("fold", bonds.toList(), {}, *keyed, *keyedCh) |
+        for (@byStakeAndKey <- keyedCh) {
+          @ListOps!("map", byStakeAndKey.toList(), *validatorOf, *retCh)
+        }
+      }
+    } |
+
+    // A step's guarded receive matches only success. This fails the test with
+    // a refusal, which would otherwise leave the test waiting forever.
+    contract failOnRefusal(ch, rhoSpec, ackCh) = {
+      for (@(false, reason) <- ch) {
+        rhoSpec!("assert", ((true, Nil), "==", (false, reason)), "a step the test relies on succeeds", *ackCh)
+      }
+    } |
+
+    // The seated validators, as a list of public keys in order of genesis
+    // stake. The default genesis bonds four and the cap is far above that, so
+    // all four are seated at first.
+    contract seatedValidators(retCh) = {
+      new activeValidatorsCh, isActive in {
+        for (@order <<- stakeOrderCh) {
+          @PoS!("getActiveValidators", *activeValidatorsCh) |
+          for (@activeValidators <- activeValidatorsCh) {
+            contract isActive(@pk, ret) = { ret!(activeValidators.contains(pk)) } |
+            @ListOps!("filter", order, *isActive, *retCh)
+          }
+        }
+      }
+    } |
+
+    contract deployerIdFor(@pk, retCh) = {
+      new deployerIdCh in {
+        makeDeployerId!("deployerId", pk, *deployerIdCh) |
+        for (@deployerId <- deployerIdCh) { retCh!(deployerId) }
+      }
+    } |
+
+    // The committee a block carries is its floor's bonds; at genesis every bond
+    // is seated, so the bonds map stands in for it.
+    contract openEjection(@proposerPk, @target, retCh) = {
+      new deployerIdCh, bondsCh, committeeSetCh in {
+        deployerIdFor!(proposerPk, *deployerIdCh) |
+        @PoS!("getBonds", *bondsCh) |
+        for (@deployerId <- deployerIdCh & @committee <- bondsCh) {
+          setBlockData!("committee", committee, *committeeSetCh) |
+          for (_ <- committeeSetCh) {
+            @PoS!("ejectValidator", deployerId, target, *retCh)
+          }
+        }
+      }
+    } |
+
+    // Expires the ejection claims `claims` names, each as (target, openedAt,
+    // proposer), at a floor numbered `floorNumber`.
+    contract expireEjections(@claims, @floorNumber, retCh) = {
+      new named, namedCh in {
+        contract named(@(target, openedAt, proposer), ret) = {
+          ret!({"family": "eject", "target": target, "openedAt": openedAt, "proposer": proposer})
+        } |
+        @ListOps!("map", claims, *named, *namedCh) |
+        for (@expiries <- namedCh) {
+          @PoS!("resolveClaims", [], [], expiries, "aa".hexToBytes(), floorNumber, sysAuthToken, *retCh)
+        }
+      }
+    } |
+
+    // Each test that opens a claim does so at its own block number, because
+    // these tests share a tuplespace. A claim holds its target's slot until a
+    // block resolves or expires it.
+    contract test_ejection_opens_against_a_seated_validator(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockDataSetCh, resultCh, evidenceCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 10, *blockDataSetCh) |
+          for (_ <- blockDataSetCh) {
+            openEjection!(validators.nth(0), validators.nth(1), *resultCh) |
+            for (@result <- resultCh) {
+              @PoS!("getEjectionEvidence", *evidenceCh) |
+              for (@evidence <- evidenceCh) {
+                rhoSpec!("assertMany",
+                  [
+                    (((true, Nil), "==", result), "a seated validator may open proceedings against another"),
+                    (evidence.contains(validators.nth(1)), "the record is keyed by the target"),
+                    ((validators.nth(0), "==", evidence.get(validators.nth(1)).get("proposer")), "the record names the proposer that opened it"),
+                    (evidence.get(validators.nth(1)).contains("openedAt"), "the record carries the block it was opened at"),
+                    (evidence.get(validators.nth(1)).get("electorate").contains(validators.nth(0)), "the frozen electorate holds the seated validators"),
+                    ((4, "==", evidence.get(validators.nth(1)).get("electorate").size()), "the electorate is the committee the block carried"),
+                    ((10, "==", evidence.get(validators.nth(1)).get("openedAt")), "the record carries the block number it was opened at")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // One open claim per target. Without this a proposer could reopen the
+    // same proceedings every block, and every other validator would have to
+    // spend vote budget answering them.
+    contract test_ejection_is_refused_when_already_open(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockDataSetCh, firstCh, secondCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 20, *blockDataSetCh) |
+          for (_ <- blockDataSetCh) {
+            openEjection!(validators.nth(0), validators.nth(2), *firstCh) |
+            failOnRefusal!(*firstCh, *rhoSpec, *ackCh) |
+            for (@(true, _) <- firstCh) {
+              // Same block, same target: the open claim refuses this.
+              openEjection!(validators.nth(0), validators.nth(2), *secondCh) |
+              for (@(ok, message) <- secondCh) {
+                rhoSpec!("assertMany",
+                  [
+                    ((false, "==", ok), "a second claim against the same target is refused"),
+                    (("Ejection proceedings are already open against this validator.", "==", message), "the refusal names the open claim")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_ejection_is_refused_against_an_unseated_validator(rhoSpec, _, ackCh) = {
+      new validatorsCh, resultCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          openEjection!(validators.nth(0), "99".hexToBytes(), *resultCh) |
+          for (@(ok, message) <- resultCh) {
+            rhoSpec!("assertMany",
+              [
+                ((false, "==", ok), "a validator holding no seat cannot be ejected from one"),
+                (("Ejection target is not a seated validator.", "==", message), "the refusal names the target")
+              ],
+              *ackCh
+            )
+          }
+        }
+      }
+    } |
+
+    contract test_ejection_is_refused_from_an_unseated_proposer(rhoSpec, _, ackCh) = {
+      new validatorsCh, resultCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          openEjection!("99".hexToBytes(), validators.nth(3), *resultCh) |
+          for (@(ok, message) <- resultCh) {
+            rhoSpec!("assertMany",
+              [
+                ((false, "==", ok), "only a seated validator may open proceedings"),
+                (("Only a seated validator may open ejection proceedings.", "==", message), "the refusal names the proposer")
+              ],
+              *ackCh
+            )
+          }
+        }
+      }
+    } |
+
+    // The block's committee decides who is seated, not the state the deploy
+    // runs against: a validator bonded and active in state but outside the
+    // block's committee cannot be ejected in that block.
+    contract test_the_seat_is_judged_against_the_block_committee(rhoSpec, _, ackCh) = {
+      new validatorsCh, deployerIdCh, bondsCh, committeeSetCh, resultCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          deployerIdFor!(validators.nth(0), *deployerIdCh) |
+          @PoS!("getBonds", *bondsCh) |
+          for (@deployerId <- deployerIdCh & @bonds <- bondsCh) {
+            setBlockData!("committee", bonds.delete(validators.nth(3)), *committeeSetCh) |
+            for (_ <- committeeSetCh) {
+              @PoS!("ejectValidator", deployerId, validators.nth(3), *resultCh) |
+              for (@(ok, message) <- resultCh) {
+                rhoSpec!("assertMany",
+                  [
+                    ((false, "==", ok), "a validator outside the block's committee cannot be ejected in it"),
+                    (("Ejection target is not a seated validator.", "==", message), "the refusal names the target")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Opened at 40 with a deadline of 1000. A floor through 1039 may still
+    // decide it, so it holds the slot past block 1040 until a block whose
+    // floor has reached 1040 expires it.
+    contract test_an_expired_claim_no_longer_blocks_a_new_one(rhoSpec, _, ackCh) = {
+      new validatorsCh, openBlockCh, firstCh, laterCh, stillOpenCh, earlyCh, expiredCh,
+          secondCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 40, *openBlockCh) |
+          for (_ <- openBlockCh) {
+            openEjection!(validators.nth(0), validators.nth(3), *firstCh) |
+            failOnRefusal!(*firstCh, *rhoSpec, *ackCh) |
+            for (@(true, _) <- firstCh) {
+              setBlockData!("blockNumber", 1100, *laterCh) |
+              for (_ <- laterCh) {
+                openEjection!(validators.nth(1), validators.nth(3), *stillOpenCh) |
+                for (@(openOk, openMessage) <- stillOpenCh) {
+                  expireEjections!([(validators.nth(3), 40, validators.nth(0))], 1039, *earlyCh) |
+                  for (@early <- earlyCh) {
+                    expireEjections!([(validators.nth(3), 40, validators.nth(0))], 1040, *expiredCh) |
+                    for (@expired <- expiredCh) {
+                      openEjection!(validators.nth(1), validators.nth(3), *secondCh) |
+                      for (@second <- secondCh) {
+                        rhoSpec!("assertMany",
+                          [
+                            ((false, "==", openOk), "the claim holds its slot in a block past its deadline"),
+                            (("Ejection proceedings are already open against this validator.", "==", openMessage), "the refusal names the open claim"),
+                            (((false, "A claim expiry names no claim whose deadline its floor has reached."), "==", early), "a floor inside the deadline cannot expire it"),
+                            (((true, Nil), "==", expired), "a floor at the deadline expires it"),
+                            (((true, Nil), "==", second), "and frees the slot for a new claim")
+                          ],
+                          *ackCh
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Only one open claim per target limits ejections, so one proposer may
+    // open proceedings against several targets in one block.
+    contract test_a_proposer_may_open_ejections_against_two_targets_in_one_block(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockDataSetCh, clearedCh, firstCh, secondCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 1100, *blockDataSetCh) |
+          // The claims opened at 10 and 20 against these targets.
+          expireEjections!([(validators.nth(1), 10, validators.nth(0)),
+                            (validators.nth(2), 20, validators.nth(0))], 1100, *clearedCh) |
+          failOnRefusal!(*clearedCh, *rhoSpec, *ackCh) |
+          for (_ <- blockDataSetCh & @(true, _) <- clearedCh) {
+            openEjection!(validators.nth(0), validators.nth(1), *firstCh) |
+            for (@first <- firstCh) {
+              openEjection!(validators.nth(0), validators.nth(2), *secondCh) |
+              for (@second <- secondCh) {
+                rhoSpec!("assertMany",
+                  [
+                    (((true, Nil), "==", first), "the first claim opens"),
+                    (((true, Nil), "==", second), "and so does a second, against another target, in the same block")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // A claim's votes count until a floor reaches its deadline, which the
+    // epoch close cannot see, so the close keeps every record and only an
+    // expiry drops one.
+    contract test_the_epoch_close_leaves_proceedings_to_expiry(rhoSpec, _, ackCh) = {
+      new validatorsCh, openBlockCh, openedCh, recentBlockCh, clearedCh, recentCh,
+          epochCh, afterCloseCh, closeAtEpochCh, expiredCh, afterExpiryCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 1500, *openBlockCh) |
+          for (_ <- openBlockCh) {
+            // The only target with no claim open since block 1100.
+            openEjection!(validators.nth(1), validators.nth(0), *openedCh) |
+            failOnRefusal!(*openedCh, *rhoSpec, *ackCh) |
+            for (@(true, _) <- openedCh) {
+              setBlockData!("blockNumber", 2998, *recentBlockCh) |
+              // The claim opened at 1100 against the fourth.
+              expireEjections!([(validators.nth(3), 1100, validators.nth(1))], 2100, *clearedCh) |
+              failOnRefusal!(*clearedCh, *rhoSpec, *ackCh) |
+              for (_ <- recentBlockCh & @(true, _) <- clearedCh) {
+                openEjection!(validators.nth(1), validators.nth(3), *recentCh) |
+                failOnRefusal!(*recentCh, *rhoSpec, *ackCh) |
+                for (@(true, _) <- recentCh) {
+                  // The default epoch length is 1000 blocks, so 3000 is a
+                  // boundary.
+                  setBlockData!("blockNumber", 3000, *epochCh) |
+                  for (_ <- epochCh) {
+                    @PoS!("closeBlock", sysAuthToken, *closeAtEpochCh) |
+                    failOnRefusal!(*closeAtEpochCh, *rhoSpec, *ackCh) |
+                    for (@(true, _) <- closeAtEpochCh) {
+                      @PoS!("getEjectionEvidence", *afterCloseCh) |
+                      for (@afterClose <- afterCloseCh) {
+                        expireEjections!([(validators.nth(0), 1500, validators.nth(1))], 2500, *expiredCh) |
+                        for (@expired <- expiredCh) {
+                          @PoS!("getEjectionEvidence", *afterExpiryCh) |
+                          for (@afterExpiry <- afterExpiryCh) {
+                            rhoSpec!("assertMany",
+                              [
+                                (afterClose.contains(validators.nth(0)), "the epoch close keeps a record past its deadline"),
+                                (afterClose.contains(validators.nth(3)), "and one still open"),
+                                (((true, Nil), "==", expired), "the lapsed claim expires"),
+                                ((false, "==", afterExpiry.contains(validators.nth(0))), "and the expiry drops its record"),
+                                (afterExpiry.contains(validators.nth(3)), "leaving the open one")
+                              ],
+                              *ackCh
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Runs before any claim is resolved: it opens one against the second
+    // validator, which a later test ejects. It slashes the fourth.
+    contract test_a_slash_keeps_the_ejection_records(rhoSpec, _, ackCh) = {
+      new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+          computeHash(`rho:crypto:keccak256Hash`),
+          validatorsCh, openBlockCh, clearedCh, openedCh, hashCh, invalidSetCh, deployerIdCh,
+          slashCh, evidenceCh, epochCh, closeCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 5000, *openBlockCh) |
+          // The claims opened at 1100 against the second and third.
+          expireEjections!([(validators.nth(1), 1100, validators.nth(0)),
+                            (validators.nth(2), 1100, validators.nth(0))], 2100, *clearedCh) |
+          failOnRefusal!(*clearedCh, *rhoSpec, *ackCh) |
+          for (_ <- openBlockCh & @(true, _) <- clearedCh) {
+            openEjection!(validators.nth(0), validators.nth(1), *openedCh) |
+            failOnRefusal!(*openedCh, *rhoSpec, *ackCh) |
+            for (@(true, _) <- openedCh) {
+              computeHash!(validators.nth(3), *hashCh) |
+              for (@hash <- hashCh) {
+                setInvalidBlocks!({hash : validators.nth(3)}, *invalidSetCh) |
+                deployerIdFor!(validators.nth(0), *deployerIdCh) |
+                for (_ <- invalidSetCh & @deployerId <- deployerIdCh) {
+                  @PoS!("slash", deployerId, hash, sysAuthToken, *slashCh) |
+                  for (@(slashed, _) <- slashCh) {
+                    @PoS!("getEjectionEvidence", *evidenceCh) |
+                    for (@evidence <- evidenceCh) {
+                      setBlockData!("blockNumber", 6000, *epochCh) |
+                      for (_ <- epochCh) {
+                        @PoS!("closeBlock", sysAuthToken, *closeCh) |
+                        for (@(closed, _) <- closeCh) {
+                          rhoSpec!("assertMany",
+                            [
+                              ((true, "==", slashed), "the slash succeeded"),
+                              ((Nil, "!=", evidence), "the slash kept the ejection records"),
+                              (evidence.contains(validators.nth(1)), "the open claim survived the slash"),
+                              ((true, "==", closed), "an epoch close after the slash succeeds")
+                            ],
+                            *ackCh
+                          )
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract resolve(@target, @openedAt, @proposer, @passed, @floorNumber, retCh) = {
+      @PoS!("resolveClaims",
+        [{"family": "eject", "target": target, "openedAt": openedAt, "proposer": proposer, "passed": passed}],
+        [], [], "aa".hexToBytes(), floorNumber, sysAuthToken, *retCh)
+    } |
+
+    // A rejoin is opened by its own target, who also pays for it.
+    contract resolveRejoin(@target, @openedAt, @passed, retCh) = {
+      new payerCh in {
+        deployerIdFor!(target, *payerCh) |
+        for (@payer <- payerCh) {
+          @PoS!("resolveClaims",
+            [{"family": "rejoin", "target": target, "openedAt": openedAt,
+              "proposer": target, "passed": passed, "payer": payer}],
+            [], [], "aa".hexToBytes(), 0, sysAuthToken, *retCh)
+        }
+      }
+    } |
+
+    contract expire(@targets, @floorNumber, retCh) = {
+      @PoS!("resolveClaims", [], targets, [], "aa".hexToBytes(), floorNumber, sysAuthToken, *retCh)
+    } |
+
+    contract requestRejoin(@validator, @topup, retCh) = {
+      new deployerIdCh in {
+        deployerIdFor!(validator, *deployerIdCh) |
+        for (@deployerId <- deployerIdCh) {
+          @PoS!("rejoinFromEjection", deployerId, topup, *retCh)
+        }
+      }
+    } |
+
+    // The claims below are opened against the second validator first, then the
+    // third, and each test builds on the state the previous one left.
+    contract test_a_passed_claim_ejects_its_target(rhoSpec, _, ackCh) = {
+      new validatorsCh, openBlockCh, clearedCh, openedCh, resolveBlockCh, resolvedCh,
+          ejectedCh, evidenceCh, historyCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 7000, *openBlockCh) |
+          // The claim opened at 5000 against the second.
+          expireEjections!([(validators.nth(1), 5000, validators.nth(0))], 6000, *clearedCh) |
+          failOnRefusal!(*clearedCh, *rhoSpec, *ackCh) |
+          for (_ <- openBlockCh & @(true, _) <- clearedCh) {
+            openEjection!(validators.nth(0), validators.nth(1), *openedCh) |
+            failOnRefusal!(*openedCh, *rhoSpec, *ackCh) |
+            for (@(true, _) <- openedCh) {
+              setBlockData!("blockNumber", 7001, *resolveBlockCh) |
+              for (_ <- resolveBlockCh) {
+                resolve!(validators.nth(1), 7000, validators.nth(0), true, 6990, *resolvedCh) |
+                for (@resolved <- resolvedCh) {
+                  @PoS!("getEjectedValidators", *ejectedCh) |
+                  @PoS!("getEjectionEvidence", *evidenceCh) |
+                  @PoS!("getFreezeHistory", *historyCh) |
+                  for (@ejected <- ejectedCh & @evidence <- evidenceCh & @history <- historyCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        (((true, Nil), "==", resolved), "a passed claim resolves"),
+                        (ejected.contains(validators.nth(1)), "its target is ejected"),
+                        ((6990 + 2000, "==", ejected.get(validators.nth(1)).get("graceEnd")), "grace runs two epochs from the floor the claim passed at"),
+                        (("aa".hexToBytes(), "==", ejected.get(validators.nth(1)).get("ejectFloorHash")), "the ejection records its floor"),
+                        ((6990, "==", ejected.get(validators.nth(1)).get("ejectFloor")), "and the floor's number"),
+                        (({6990: {"to": Nil, "topup": Nil}}, "==", history.get(validators.nth(1))), "the freeze opens at the floor"),
+                        (ejected.get(validators.nth(1)).get("ejectionSnapshot").contains(validators.nth(0)), "the ejection keeps the claim's electorate"),
+                        ((false, "==", evidence.contains(validators.nth(1))), "the claim's slot is cleared")
+                      ],
+                      *ackCh
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_an_ejected_validator_cannot_be_targeted_again(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockCh, resultCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 7002, *blockCh) |
+          for (_ <- blockCh) {
+            openEjection!(validators.nth(2), validators.nth(1), *resultCh) |
+            for (@(ok, message) <- resultCh) {
+              rhoSpec!("assertMany",
+                [
+                  ((false, "==", ok), "an ejected validator cannot be put under proceedings again"),
+                  (("Ejection target is already ejected.", "==", message), "the refusal names the ejection")
+                ],
+                *ackCh
+              )
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_the_electorate_leaves_out_ejected_validators(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockCh, openedCh, evidenceCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 7003, *blockCh) |
+          for (_ <- blockCh) {
+            openEjection!(validators.nth(0), validators.nth(2), *openedCh) |
+            failOnRefusal!(*openedCh, *rhoSpec, *ackCh) |
+            for (@(true, _) <- openedCh) {
+              @PoS!("getEjectionEvidence", *evidenceCh) |
+              for (@evidence <- evidenceCh) {
+                rhoSpec!("assertMany",
+                  [
+                    ((false, "==", evidence.get(validators.nth(2)).get("electorate").contains(validators.nth(1))), "an ejected validator votes on no new claim"),
+                    (evidence.get(validators.nth(2)).get("electorate").contains(validators.nth(0)), "the rest of the committee does")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_a_failed_claim_clears_its_slot(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockCh, resolvedCh, ejectedCh, evidenceCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 7004, *blockCh) |
+          for (_ <- blockCh) {
+            resolve!(validators.nth(2), 7003, validators.nth(0), false, 6995, *resolvedCh) |
+            for (@resolved <- resolvedCh) {
+              @PoS!("getEjectedValidators", *ejectedCh) |
+              @PoS!("getEjectionEvidence", *evidenceCh) |
+              for (@ejected <- ejectedCh & @evidence <- evidenceCh) {
+                rhoSpec!("assertMany",
+                  [
+                    (((true, Nil), "==", resolved), "a failed claim resolves"),
+                    ((false, "==", evidence.contains(validators.nth(2))), "its slot is cleared"),
+                    ((false, "==", ejected.contains(validators.nth(2))), "its target is not ejected")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // The contract cannot see the tally, so it trusts the outcome; what it can
+    // check is that the claim named is the one open at this block.
+    contract test_a_resolution_must_name_an_open_claim(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockCh, goneCh, openedCh, wrongCh, ejectedCh, evidenceCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 7005, *blockCh) |
+          for (_ <- blockCh) {
+            resolve!(validators.nth(2), 7003, validators.nth(0), true, 6996, *goneCh) |
+            for (@(goneOk, goneMessage) <- goneCh) {
+              openEjection!(validators.nth(0), validators.nth(2), *openedCh) |
+              failOnRefusal!(*openedCh, *rhoSpec, *ackCh) |
+              for (@(true, _) <- openedCh) {
+                resolve!(validators.nth(2), 7004, validators.nth(0), true, 6996, *wrongCh) |
+                for (@(wrongOk, _) <- wrongCh) {
+                  @PoS!("getEjectedValidators", *ejectedCh) |
+                  @PoS!("getEjectionEvidence", *evidenceCh) |
+                  for (@ejected <- ejectedCh & @evidence <- evidenceCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        ((false, "==", goneOk), "a resolution of a claim already resolved is refused"),
+                        (("A resolution names no claim open at this block.", "==", goneMessage), "the refusal names the claim"),
+                        ((false, "==", wrongOk), "a resolution naming another opening of the claim is refused"),
+                        ((false, "==", ejected.contains(validators.nth(2))), "a refused resolution ejects nobody"),
+                        (evidence.contains(validators.nth(2)), "a refused resolution leaves the open claim in place")
+                      ],
+                      *ackCh
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // The fourth validator was slashed above and the second ejected, so the
+    // surplus goes to the first and third alone.
+    contract test_an_ejected_validator_earns_no_reward(rhoSpec, _, ackCh) = {
+      new validatorsCh, payerCh, chargeCh, refundCh, rewardsCh in {
+        seatedValidators!(*validatorsCh) |
+        deployerIdFor!(("eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
+                        "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
+                        "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
+                        "eeeeeeeeee").hexToBytes(), *payerCh) |
+        for (@validators <- validatorsCh & @payer <- payerCh) {
+          @PoS!("chargeDeploy", payer, 1000, sysAuthToken, *chargeCh) |
+          failOnRefusal!(*chargeCh, *rhoSpec, *ackCh) |
+          for (@(true, _) <- chargeCh) {
+            @PoS!("refundDeploy", 0, sysAuthToken, *refundCh) |
+            failOnRefusal!(*refundCh, *rhoSpec, *ackCh) |
+            for (@(true, _) <- refundCh) {
+              @PoS!("getCurrentEpochRewards", *rewardsCh) |
+              for (@rewards <- rewardsCh) {
+                rhoSpec!("assertMany",
+                  [
+                    ((0n, "==", rewards.get(validators.nth(1))), "an ejected validator's share is forfeit"),
+                    (rewards.get(validators.nth(0)) > 0n, "an eligible validator is paid"),
+                    (rewards.get(validators.nth(2)) > 0n, "so is every other eligible validator")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Ejecting the first and third leaves no eligible stake, which would
+    // otherwise divide by zero and fail every epoch close. The third is
+    // ejected on the claim opened against it at 7005.
+    contract test_with_no_eligible_stake_nothing_is_distributed(rhoSpec, _, ackCh) = {
+      new validatorsCh, b1, o1, r1, b2, r2, b4,
+          rewardsCh, epochCh, closeCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 7010, *b1) |
+          for (_ <- b1) {
+            openEjection!(validators.nth(2), validators.nth(0), *o1) |
+            failOnRefusal!(*o1, *rhoSpec, *ackCh) |
+            for (@(true, _) <- o1) {
+              setBlockData!("blockNumber", 7011, *b2) |
+              for (_ <- b2) {
+                resolve!(validators.nth(0), 7010, validators.nth(2), true, 7000, *r1) |
+                failOnRefusal!(*r1, *rhoSpec, *ackCh) |
+                for (@(true, _) <- r1) {
+                  setBlockData!("blockNumber", 7013, *b4) |
+                  for (_ <- b4) {
+                    resolve!(validators.nth(2), 7005, validators.nth(0), true, 7000, *r2) |
+                    failOnRefusal!(*r2, *rhoSpec, *ackCh) |
+                    for (@(true, _) <- r2) {
+                      @PoS!("getCurrentEpochRewards", *rewardsCh) |
+                      for (@rewards <- rewardsCh) {
+                        setBlockData!("blockNumber", 8000, *epochCh) |
+                        for (_ <- epochCh) {
+                          @PoS!("closeBlock", sysAuthToken, *closeCh) |
+                          for (@(closed, _) <- closeCh) {
+                            for (@order <<- stakeOrderCh) {
+                              rhoSpec!("assertMany",
+                                [
+                                  ((0n, "==", rewards.get(validators.nth(0))), "nobody is paid while nobody is eligible"),
+                                  ((0n, "==", rewards.get(validators.nth(1))), "the second is still ejected"),
+                                  ((0n, "==", rewards.get(validators.nth(2))), "the third is ejected"),
+                                  ((0n, "==", rewards.get(order.nth(3))), "the fourth was slashed"),
+                                  ((true, "==", closed), "the epoch close still succeeds")
+                                ],
+                                *ackCh
+                              )
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // From here the first three validators are ejected — the second with a
+    // grace ending at 8990, the first and third at 9000 — and the fourth is
+    // slashed.
+    contract test_a_rejoin_is_refused_to_whom_it_does_not_apply(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockCh, notEjectedCh, zeroCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 8100, *blockCh) |
+          for (_ <- blockCh) {
+            for (@order <<- stakeOrderCh) {
+              requestRejoin!(order.nth(3), 10, *notEjectedCh)
+            } |
+            requestRejoin!(validators.nth(1), 0, *zeroCh) |
+            for (@notEjected <- notEjectedCh & @zero <- zeroCh) {
+              rhoSpec!("assertMany",
+                [
+                  (((false, "Only an ejected validator may rejoin."), "==", notEjected), "a validator that is not ejected cannot rejoin"),
+                  (((false, "Topup must be positive."), "==", zero), "a rejoin pays a positive topup")
+                ],
+                *ackCh
+              )
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_a_rejoin_opens_once(rhoSpec, _, ackCh) = {
+      new validatorsCh, firstBlockCh, firstCh, pendingCh, secondBlockCh, secondCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 8101, *firstBlockCh) |
+          for (_ <- firstBlockCh) {
+            requestRejoin!(validators.nth(1), 5, *firstCh) |
+            for (@first <- firstCh) {
+              @PoS!("getPendingRejoins", *pendingCh) |
+              for (@pending <- pendingCh) {
+                setBlockData!("blockNumber", 8102, *secondBlockCh) |
+                for (_ <- secondBlockCh) {
+                  requestRejoin!(validators.nth(1), 7, *secondCh) |
+                  for (@second <- secondCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        (((true, Nil), "==", first), "an ejected validator may ask to rejoin within its grace"),
+                        (({"proposer": validators.nth(1), "openedAt": 8101, "topup": 5}, "==", pending.get(validators.nth(1))), "the request records its block and topup"),
+                        (((false, "A rejoin is already open for this validator."), "==", second), "one rejoin is open at a time")
+                      ],
+                      *ackCh
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // The topup is debited from the rejoining validator's address only when
+    // the rejoin passes.
+    contract test_a_paid_rejoin_reinstates_its_validator(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockCh, posVaultCh, beforeCh, resolvedCh, afterCh,
+          ejectedCh, pendingCh, historyCh in {
+        seatedValidators!(*validatorsCh) |
+        @PoS!("getInitialPosVault", *posVaultCh) |
+        for (@validators <- validatorsCh & @(_, posVault) <- posVaultCh) {
+          setBlockData!("blockNumber", 8103, *blockCh) |
+          @posVault!("balance", *beforeCh) |
+          for (_ <- blockCh & @before <- beforeCh) {
+            resolveRejoin!(validators.nth(1), 8101, true, *resolvedCh) |
+            for (@resolved <- resolvedCh) {
+              @posVault!("balance", *afterCh) |
+              @PoS!("getEjectedValidators", *ejectedCh) |
+              @PoS!("getPendingRejoins", *pendingCh) |
+              @PoS!("getFreezeHistory", *historyCh) |
+              for (@after <- afterCh & @ejected <- ejectedCh &
+                   @pending <- pendingCh & @history <- historyCh) {
+                rhoSpec!("assertMany",
+                  [
+                    (((true, Nil), "==", resolved), "a passed rejoin resolves"),
+                    ((before + 5n, "==", after), "the topup is paid into the PoS vault"),
+                    ((false, "==", ejected.contains(validators.nth(1))), "the validator is reinstated"),
+                    ((false, "==", pending.contains(validators.nth(1))), "the rejoin's slot is cleared"),
+                    (({6990: {"to": 8103, "topup": 5}}, "==", history.get(validators.nth(1))), "the freeze closes at the paying block, with the topup")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // A rejoin that passes but cannot be paid fails, and its validator stays
+    // ejected.
+    contract test_an_unpaid_rejoin_fails(rhoSpec, _, ackCh) = {
+      new validatorsCh, openBlockCh, openedCh, resolveBlockCh, resolvedCh,
+          ejectedCh, pendingCh, historyCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 8104, *openBlockCh) |
+          for (_ <- openBlockCh) {
+            requestRejoin!(validators.nth(0), 1000000, *openedCh) |
+            failOnRefusal!(*openedCh, *rhoSpec, *ackCh) |
+            for (@(true, _) <- openedCh) {
+              setBlockData!("blockNumber", 8105, *resolveBlockCh) |
+              for (_ <- resolveBlockCh) {
+                resolveRejoin!(validators.nth(0), 8104, true, *resolvedCh) |
+                for (@resolved <- resolvedCh) {
+                  @PoS!("getEjectedValidators", *ejectedCh) |
+                  @PoS!("getPendingRejoins", *pendingCh) |
+                  @PoS!("getFreezeHistory", *historyCh) |
+                  for (@ejected <- ejectedCh & @pending <- pendingCh & @history <- historyCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        (((true, Nil), "==", resolved), "the resolution itself succeeds"),
+                        (ejected.contains(validators.nth(0)), "an unpaid rejoin leaves its validator ejected"),
+                        ((false, "==", pending.contains(validators.nth(0))), "and clears its slot"),
+                        (({7000: {"to": Nil, "topup": Nil}}, "==", history.get(validators.nth(0))), "and leaves its freeze open")
+                      ],
+                      *ackCh
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_an_expiry_must_name_an_ended_grace(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockCh, resultCh, ejectedCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 8106, *blockCh) |
+          for (_ <- blockCh) {
+            expire!([validators.nth(2)], 8105, *resultCh) |
+            for (@result <- resultCh) {
+              @PoS!("getEjectedValidators", *ejectedCh) |
+              for (@ejected <- ejectedCh) {
+                rhoSpec!("assertMany",
+                  [
+                    (((false, "A grace expiry names no ejection whose grace has ended."), "==", result), "a grace still running cannot be expired"),
+                    (ejected.contains(validators.nth(2)), "the refused expiry leaves the ejection in place")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_a_rejoin_after_grace_is_refused(rhoSpec, _, ackCh) = {
+      new validatorsCh, blockCh, resultCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 9001, *blockCh) |
+          for (_ <- blockCh) {
+            requestRejoin!(validators.nth(0), 5, *resultCh) |
+            for (@result <- resultCh) {
+              rhoSpec!("assertMany",
+                [
+                  (((false, "The grace of this ejection has ended."), "==", result), "a rejoin must be asked for within grace")
+                ],
+                *ackCh
+              )
+            }
+          }
+        }
+      }
+    } |
+
+    // An expired grace slashes, and reaches a validator whose bond has moved
+    // into the unbonding quarantine.
+    contract test_grace_expiry_slashes_bonded_and_quarantined_validators(rhoSpec, _, ackCh) = {
+      new validatorsCh, withdrawBlockCh, deployerIdCh, withdrawnCh, epochCh, closedCh,
+          expiryBlockCh, expiredCh, bondsCh, withdrawersCh, activeCh, ejectedCh,
+          historyCh, quarantinedStakeCh in {
+        seatedValidators!(*validatorsCh) |
+        for (@validators <- validatorsCh) {
+          setBlockData!("blockNumber", 8107, *withdrawBlockCh) |
+          for (_ <- withdrawBlockCh) {
+            deployerIdFor!(validators.nth(0), *deployerIdCh) |
+            for (@deployerId <- deployerIdCh) {
+              @PoS!("withdraw", deployerId, *withdrawnCh) |
+              failOnRefusal!(*withdrawnCh, *rhoSpec, *ackCh) |
+              for (@(true, _) <- withdrawnCh) {
+                setBlockData!("blockNumber", 9000, *epochCh) |
+                for (_ <- epochCh) {
+                  @PoS!("closeBlock", sysAuthToken, *closedCh) |
+                  failOnRefusal!(*closedCh, *rhoSpec, *ackCh) |
+                  for (@(true, _) <- closedCh) {
+                    setBlockData!("blockNumber", 9002, *expiryBlockCh) |
+                    for (_ <- expiryBlockCh) {
+                      expire!([validators.nth(0), validators.nth(2)], 9001, *expiredCh) |
+                      for (@expired <- expiredCh) {
+                        @PoS!("getBonds", *bondsCh) |
+                        @PoS!("getWithdrawers", *withdrawersCh) |
+                        @PoS!("getActiveValidators", *activeCh) |
+                        @PoS!("getEjectedValidators", *ejectedCh) |
+                        @PoS!("getFreezeHistory", *historyCh) |
+                        for (@bonds <- bondsCh & @withdrawers <- withdrawersCh &
+                             @active <- activeCh & @ejected <- ejectedCh &
+                             @history <- historyCh) {
+                          match withdrawers.get(validators.nth(0)) {
+                            (stake, _) => quarantinedStakeCh!(stake)
+                            _ => quarantinedStakeCh!(Nil)
+                          } |
+                          for (@quarantinedStake <- quarantinedStakeCh) {
+                            rhoSpec!("assertMany",
+                              [
+                                (((true, Nil), "==", expired), "the expiries resolve"),
+                                ((0, "==", bonds.get(validators.nth(2))), "a bonded validator's stake is slashed"),
+                                ((0, "==", quarantinedStake), "so is a stake already in quarantine"),
+                                ((false, "==", active.contains(validators.nth(2))), "the slashed validator leaves the active set"),
+                                ((false, "==", ejected.contains(validators.nth(0)) or ejected.contains(validators.nth(2))), "an expired ejection is closed"),
+                                ((false, "==", history.contains(validators.nth(0)) or history.contains(validators.nth(2))), "and the slashed validators' freezes are dropped")
+                              ],
+                              *ackCh
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // The retention window is the parent depth plus an epoch, 1015 blocks: the
+    // freeze the rejoin closed at 8103 is still inside it at 9000 and past it
+    // at 10000. The second validator rejoined and holds that freeze. The
+    // fourth, never ejected, is ejected here and its freeze stays open. It was
+    // slashed earlier and holds no seat, so the block that ejects it seats it
+    // with a stake of its own.
+    contract test_the_epoch_close_drops_freezes_the_window_has_passed(rhoSpec, _, ackCh) = {
+      new pairCh, openBlockCh, deployerIdCh, committeeSetCh,
+          openedCh, resolveBlockCh, resolvedCh, beforeCh, epochCh, closedCh, afterCh in {
+        for (@order <<- stakeOrderCh) {
+          pairCh!((order.nth(1), order.nth(3))) |
+          for (@(rejoined, target) <- pairCh) {
+          setBlockData!("blockNumber", 9500, *openBlockCh) |
+          deployerIdFor!(rejoined, *deployerIdCh) |
+          for (_ <- openBlockCh & @deployerId <- deployerIdCh) {
+            setBlockData!("committee", {rejoined: 1, target: 1}, *committeeSetCh) |
+            for (_ <- committeeSetCh) {
+              @PoS!("ejectValidator", deployerId, target, *openedCh)
+            } |
+            for (@opened <- openedCh) {
+              setBlockData!("blockNumber", 9501, *resolveBlockCh) |
+              for (_ <- resolveBlockCh) {
+                resolve!(target, 9500, rejoined, true, 9490, *resolvedCh) |
+                for (@resolved <- resolvedCh) {
+                  @PoS!("getFreezeHistory", *beforeCh) |
+                  for (@before <- beforeCh) {
+                    setBlockData!("blockNumber", 10000, *epochCh) |
+                    for (_ <- epochCh) {
+                      @PoS!("closeBlock", sysAuthToken, *closedCh) |
+                      failOnRefusal!(*closedCh, *rhoSpec, *ackCh) |
+                      for (@(true, _) <- closedCh) {
+                        @PoS!("getFreezeHistory", *afterCh) |
+                        for (@after <- afterCh) {
+                          rhoSpec!("assertMany",
+                            [
+                              (((true, Nil), "==", opened), "the fourth validator's ejection opens"),
+                              (((true, Nil), "==", resolved), "and passes"),
+                              ((2, "==", before.size()), "the closed freeze survived the close at 9000"),
+                              ((false, "==", after.contains(rejoined)), "and leaves at 10000"),
+                              (({9490: {"to": Nil, "topup": Nil}}, "==", after.get(target)), "while the open one stays")
+                            ],
+                            *ackCh
+                          )
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          }
+        }
+      }
+    } |
+
+    // The voter is the validator the epoch-close test ejected, still bonded and
+    // the only one ejected.
+    contract test_a_dishonest_voter_is_slashed_on_the_systems_authority(rhoSpec, _, ackCh) = {
+      new ejectedCh, forgedCh, firstCh, secondCh, bondsCh, activeCh, historyCh in {
+        @PoS!("getEjectedValidators", *ejectedCh) |
+        for (@ejected <- ejectedCh) {
+          match ejected.keys().toList() { [voter] => {
+          @PoS!("slashDishonestVoter", voter, "not a token", *forgedCh) |
+          for (@forged <- forgedCh) {
+            @PoS!("slashDishonestVoter", voter, sysAuthToken, *firstCh) |
+            for (@first <- firstCh) {
+              @PoS!("slashDishonestVoter", voter, sysAuthToken, *secondCh) |
+              for (@second <- secondCh) {
+                @PoS!("getBonds", *bondsCh) |
+                @PoS!("getActiveValidators", *activeCh) |
+                @PoS!("getFreezeHistory", *historyCh) |
+                for (@bonds <- bondsCh & @active <- activeCh & @history <- historyCh) {
+                  rhoSpec!("assertMany",
+                    [
+                      (((false, "Invalid AuthToken"), "==", forged), "only the system may slash a voter"),
+                      (((true, Nil), "==", first), "the system slashes"),
+                      ((0, "==", bonds.get(voter)), "the voter's bond goes"),
+                      ((false, "==", active.contains(voter)), "and so does its seat"),
+                      ((false, "==", history.contains(voter)), "and its freezes"),
+                      (((true, Nil), "==", second), "a second slash finds nothing left and still succeeds")
+                    ],
+                    *ackCh
+                  )
+                }
+              }
+            }
+          }
+          }}
+        }
+      }
+    }
+  }
+}

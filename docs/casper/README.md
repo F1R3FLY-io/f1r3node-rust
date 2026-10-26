@@ -123,6 +123,7 @@ pub struct CasperSnapshot {
 
 2. **System deploy preparation**:
    - Slashing deploys (punish equivocators)
+   - Ejection deploys (open proceedings against a validator the proposer's leaky-bucket view finds drained)
    - Close block deploys (finalize state)
 
 3. **Block assembly**:

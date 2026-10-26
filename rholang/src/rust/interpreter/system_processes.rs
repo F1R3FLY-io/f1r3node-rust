@@ -194,6 +194,8 @@ impl FixedChannels {
 
     pub fn get_block_data() -> Par { byte_name(10) }
 
+    pub fn get_block_committee() -> Par { byte_name(69) }
+
     pub fn get_invalid_blocks() -> Par { byte_name(11) }
 
     pub fn vault_address() -> Par { byte_name(12) }
@@ -467,6 +469,7 @@ impl BodyRefs {
     pub const BLAKE2B256_HASH: i64 = 7;
     pub const SECP256K1_VERIFY: i64 = 9;
     pub const GET_BLOCK_DATA: i64 = 11;
+    pub const GET_BLOCK_COMMITTEE: i64 = 69;
     pub const GET_INVALID_BLOCKS: i64 = 12;
     pub const VAULT_ADDRESS: i64 = 13;
     pub const DEPLOYER_ID_OPS: i64 = 14;
@@ -741,12 +744,35 @@ impl Definition {
     }
 }
 
+/// A committee written as a map from each validator to its stake.
+pub fn committee_of(map: &Par) -> Option<Vec<casper_message::Bond>> {
+    let [Expr {
+        expr_instance: Some(ExprInstance::EMapBody(map)),
+    }] = map.exprs.as_slice()
+    else {
+        return None;
+    };
+    models::rust::par_map_type_mapper::ParMapTypeMapper::emap_to_par_map(map.clone())
+        .ps
+        .map_iter(|(validator, stake)| {
+            Some(casper_message::Bond {
+                validator: RhoByteArray::unapply(validator)?.into(),
+                stake: RhoNumber::unapply(stake)?,
+            })
+        })
+        .into_iter()
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct BlockData {
     pub time_stamp: i64,
     pub block_number: i64,
     pub sender: PublicKey,
     pub seq_num: i32,
+    /// The committee of the block's finalized floor, which is its own
+    /// `bonds` field. A block without parents has no floor and no committee.
+    pub committee: Vec<casper_message::Bond>,
 }
 
 impl BlockData {
@@ -756,6 +782,7 @@ impl BlockData {
             sender: PublicKey::from_bytes(&hex::decode("00").unwrap()),
             seq_num: 0,
             time_stamp: 0,
+            committee: Vec::new(),
         }
     }
 
@@ -765,6 +792,11 @@ impl BlockData {
             block_number: template.body.state.block_number,
             sender: PublicKey::from_bytes(&template.sender),
             seq_num: template.seq_num,
+            committee: if template.header.parents_hash_list.is_empty() {
+                Vec::new()
+            } else {
+                template.body.state.bonds.clone()
+            },
         }
     }
 }
@@ -1299,6 +1331,49 @@ impl SystemProcesses {
             Par::default().with_exprs(vec![RhoNumber::create_expr(data.time_stamp)]),
             RhoByteArray::create_par(data.sender.bytes.as_ref().to_vec()),
         ];
+
+        produce(&output, ack).await?;
+        Ok(output)
+    }
+
+    /// Replies with the block's committee as a map from each validator with
+    /// stake to that stake.
+    pub async fn get_block_committee(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+        block_data: Arc<tokio::sync::RwLock<BlockData>>,
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("get_block_committee"));
+        };
+
+        let [ack] = args.as_slice() else {
+            return Err(illegal_argument_error("get_block_committee"));
+        };
+
+        let entries: HashMap<Par, Par> = block_data
+            .read()
+            .await
+            .committee
+            .iter()
+            .filter(|bond| bond.stake > 0)
+            .map(|bond| {
+                (
+                    RhoByteArray::create_par(bond.validator.to_vec()),
+                    Par::default().with_exprs(vec![RhoNumber::create_expr(bond.stake)]),
+                )
+            })
+            .collect();
+        let committee = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(
+                models::rust::par_map_type_mapper::ParMapTypeMapper::par_map_to_emap(
+                    models::rust::par_map::ParMap::create_from_sorted_par_map(
+                        models::rust::sorted_par_map::SortedParMap::create_from_map(entries),
+                    ),
+                ),
+            )),
+        }]);
+        let output = vec![committee];
 
         produce(&output, ack).await?;
         Ok(output)
@@ -2069,6 +2144,15 @@ impl SystemProcesses {
                                 } else {
                                     Err(illegal_argument_error("block_data_set"))
                                 }
+                            }
+                            "committee" => {
+                                let Some(committee) = committee_of(value_par) else {
+                                    return Err(illegal_argument_error("block_data_set"));
+                                };
+                                self.block_data.write().await.committee = committee;
+                                let result_par = vec![Par::default()];
+                                produce(&result_par, ack_channel).await?;
+                                Ok(result_par)
                             }
                             _ => Err(illegal_argument_error("block_data_set")),
                         }

@@ -204,21 +204,21 @@ pub struct FinalizationContext {
     pub divergence_monitor: Arc<DivergenceMonitor>,
     pub deploy_storage: Arc<KeyValueDeployStorage>,
     pub finalized_bond_cache: super::bond_cache::FinalizedBondCache,
+    pub bucket_view: Arc<crate::rust::economics::bucket_view::BucketView>,
     pub shard_conf: CasperShardConf,
+    pub chain: crate::rust::chain_parameters::ChainParameters,
 }
 
 impl FinalizationContext {
     /// The exact threshold, never the `f32` display field: it decides finality.
     fn ftt(&self) -> crate::rust::safety::clique_oracle::FtThreshold {
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-            self.shard_conf.fault_tolerance_threshold_ppm,
+            self.chain.fault_tolerance_threshold_ppm,
         )
     }
 
     fn citability_horizon(&self) -> Option<i64> {
-        crate::rust::finality::deploy_lifecycle::citability_horizon(
-            self.shard_conf.max_parent_depth,
-        )
+        crate::rust::finality::deploy_lifecycle::citability_horizon(self.chain.max_parent_depth)
     }
 }
 
@@ -438,7 +438,7 @@ fn settle_blocking(
     let settled = settle(
         &dag,
         &ctx.block_store,
-        ctx.shard_conf.deploy_lifespan,
+        ctx.chain.deploy_lifespan,
         ctx.citability_horizon(),
         memo,
     );
@@ -455,7 +455,7 @@ fn settle_blocking(
     let prune_ms = if advanced {
         let prune_started = std::time::Instant::now();
         let lfb_height = dag.block_number_unsafe(&dag.last_finalized_block())?;
-        if let Err(e) = dag.prune_carriers_below(lfb_height - ctx.shard_conf.deploy_lifespan) {
+        if let Err(e) = dag.prune_carriers_below(lfb_height - ctx.chain.deploy_lifespan) {
             tracing::warn!("carrier-index prune failed (retention only): {}", e);
         }
         Some(prune_started.elapsed().as_millis())
@@ -642,7 +642,58 @@ async fn adopt(
         effect_started.elapsed().as_millis()
     );
     ctx.divergence_monitor.on_advance();
+    reconcile_bucket_view(ctx, &new_lfb.hash).await;
     Ok(())
+}
+
+/// The bucket view keys on in-play bonds, so it is pruned where the adopted
+/// floor advances: that is the only point at which this node learns a bond has
+/// left the system, and the floor's ejection records correct the claims learned
+/// from blocks. A failure here must not fail finalization: a stale entry pays
+/// nobody, whereas an unadopted floor stalls the chain.
+async fn reconcile_bucket_view(ctx: &FinalizationContext, new_lfb: &BlockHash) {
+    let floor = match ctx.block_store.get(new_lfb) {
+        Ok(Some(block)) => (
+            block.body.state.post_state_hash,
+            block.body.state.block_number,
+        ),
+        Ok(None) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.economics",
+                lfb = %PrettyPrinter::build_string_bytes(new_lfb),
+                "bucket view not reconciled: the adopted floor's block is not held"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.economics",
+                %error,
+                "bucket view not reconciled: the adopted floor's block could not be read"
+            );
+            return;
+        }
+    };
+    let (floor_state, floor_number) = floor;
+    match ctx.runtime_manager.floor_state(&floor_state).await {
+        Ok(floor) => ctx.bucket_view.reconcile(&floor, floor_number),
+        Err(error) => tracing::warn!(
+            target: "f1r3fly.casper.economics",
+            %error,
+            "bucket view not reconciled at this floor"
+        ),
+    }
+    // Every later block's parents sit above this floor, so a claim that closed
+    // by its number can never be open at one again.
+    if let Err(error) = ctx.block_dag_storage.prune_leaky_bucket_votes(
+        floor_number.saturating_sub(ctx.bucket_view.params().claim_deadline_blocks),
+    ) {
+        tracing::warn!(
+            target: "f1r3fly.casper.economics",
+            %error,
+            "leaky-bucket votes not pruned at this floor"
+        );
+    }
 }
 
 /// The effects of newly finalized blocks: the runtime's block-index cache

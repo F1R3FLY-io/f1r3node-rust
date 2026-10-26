@@ -168,7 +168,7 @@ async fn invalid_blocks_map_stays_empty_for_a_demoted_verdict() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .expect("Failed to create network");
 
@@ -362,7 +362,7 @@ async fn invalid_block_sender_should_be_in_genesis_validators() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .expect("Failed to create network");
 

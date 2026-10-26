@@ -38,7 +38,7 @@ async fn handle_valid_block_satisfies_atomic_dag_buffer_invariant() {
         .expect("Failed to build genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .expect("Failed to create network");
 

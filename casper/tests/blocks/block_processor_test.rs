@@ -2,8 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, KeyValueDagRepresentation,
+};
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::block_processor::BlockProcessorDependencies;
+use casper::rust::casper::{Casper, CasperSnapshot};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
@@ -17,11 +21,15 @@ use crate::engine::setup;
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::create_genesis_block;
 use crate::helper::block_util::generate_validator;
+use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
+use crate::util::rholang::resources::mk_runtime_manager;
 
 struct TestFixture {
     dependencies: BlockProcessorDependencies<TransportLayerStub>,
     genesis: BlockMessage,
     test_block: BlockMessage,
+    dag: KeyValueDagRepresentation,
+    block_store: KeyValueBlockStore,
 }
 
 impl TestFixture {
@@ -105,9 +113,13 @@ impl TestFixture {
             None,
         );
 
+        let dag = indexed_dag_storage
+            .get_representation()
+            .expect("dag representation");
+
         // Create unified dependencies
         let dependencies = BlockProcessorDependencies::new(
-            block_store,
+            block_store.clone(),
             casper_buffer,
             block_dag_storage,
             block_retriever,
@@ -121,6 +133,8 @@ impl TestFixture {
             dependencies,
             genesis,
             test_block,
+            dag,
+            block_store,
         }
     }
 
@@ -362,4 +376,44 @@ async fn block_processor_components_should_work_together() {
 
     // All operations should complete successfully
     assert!(true, "All components should work together");
+}
+
+/// The casper here would accept the block, so an `Ok` means the resolution
+/// never happened.
+#[tokio::test]
+async fn valid_block_effects_refuse_a_block_whose_parent_the_dag_cannot_resolve() {
+    let fixture = TestFixture::new().await;
+
+    let absent_parent = BlockHash::from(b"a-parent-this-node-does-not-hold".to_vec());
+    let orphan = BlockMessage {
+        header: Header {
+            parents_hash_list: vec![absent_parent.clone()],
+            ..fixture.test_block.header.clone()
+        },
+        ..fixture.test_block.clone()
+    };
+    assert!(
+        !fixture.dag.contains(&absent_parent),
+        "the parent must be absent for this test to mean anything"
+    );
+
+    let runtime_manager = mk_runtime_manager("block-processor-orphan-parent", None).await;
+    let casper: Arc<dyn Casper + Send + Sync> = Arc::new(NoOpsCasperEffect::new(
+        Some(HashMap::new()),
+        None,
+        Arc::new(runtime_manager),
+        fixture.block_store.clone(),
+        fixture.dag.clone(),
+    ));
+    let snapshot = CasperSnapshot::new(fixture.dag.clone());
+
+    let result = fixture
+        .dependencies
+        .effects_for_valid_block(casper, &orphan, &snapshot)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "an unresolvable parent must stop the effects path"
+    );
 }

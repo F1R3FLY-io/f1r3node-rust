@@ -917,6 +917,221 @@ pub struct Body {
     pub extra_bytes: ByteString,
     pub applied_from_scope: Vec<ByteString>,
     pub merge_base: ByteString,
+    pub leaky_bucket_votes: Vec<LeakyBucketVote>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ClaimFamily {
+    Eject,
+    Rejoin,
+    Overflow,
+}
+
+impl ClaimFamily {
+    fn from_proto(family: i32) -> Result<Self, String> {
+        match ClaimFamilyProto::try_from(family) {
+            Ok(ClaimFamilyProto::ClaimFamilyEject) => Ok(ClaimFamily::Eject),
+            Ok(ClaimFamilyProto::ClaimFamilyRejoin) => Ok(ClaimFamily::Rejoin),
+            Ok(ClaimFamilyProto::ClaimFamilyOverflow) => Ok(ClaimFamily::Overflow),
+            Ok(ClaimFamilyProto::ClaimFamilyUnspecified) | Err(_) => {
+                Err(format!("Unknown claim family {family}"))
+            }
+        }
+    }
+
+    fn to_proto(self) -> i32 {
+        match self {
+            ClaimFamily::Eject => ClaimFamilyProto::ClaimFamilyEject as i32,
+            ClaimFamily::Rejoin => ClaimFamilyProto::ClaimFamilyRejoin as i32,
+            ClaimFamily::Overflow => ClaimFamilyProto::ClaimFamilyOverflow as i32,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClaimOutcome {
+    Pass,
+    Fail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimResolution {
+    pub claim: ClaimId,
+    pub outcome: ClaimOutcome,
+}
+
+impl ClaimResolution {
+    fn from_proto(proto: ClaimResolutionProto) -> Result<Self, String> {
+        let outcome = match ClaimOutcomeProto::try_from(proto.outcome) {
+            Ok(ClaimOutcomeProto::ClaimOutcomePass) => ClaimOutcome::Pass,
+            Ok(ClaimOutcomeProto::ClaimOutcomeFail) => ClaimOutcome::Fail,
+            Ok(ClaimOutcomeProto::ClaimOutcomeUnspecified) | Err(_) => {
+                return Err(format!("Unknown claim outcome {}", proto.outcome))
+            }
+        };
+        Ok(Self {
+            claim: ClaimId {
+                family: ClaimFamily::from_proto(proto.family)?,
+                target: proto.target,
+                opened_at: proto.opened_at,
+                proposer: proto.proposer,
+            },
+            outcome,
+        })
+    }
+
+    fn to_proto(&self) -> ClaimResolutionProto {
+        let outcome = match self.outcome {
+            ClaimOutcome::Pass => ClaimOutcomeProto::ClaimOutcomePass,
+            ClaimOutcome::Fail => ClaimOutcomeProto::ClaimOutcomeFail,
+        };
+        ClaimResolutionProto {
+            family: self.claim.family.to_proto(),
+            target: self.claim.target.clone(),
+            opened_at: self.claim.opened_at,
+            proposer: self.claim.proposer.clone(),
+            outcome: outcome as i32,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClaimId {
+    pub family: ClaimFamily,
+    pub target: ByteString,
+    pub opened_at: i64,
+    pub proposer: ByteString,
+}
+
+impl ClaimId {
+    fn from_proto(proto: ClaimIdProto) -> Result<Self, String> {
+        Ok(Self {
+            family: ClaimFamily::from_proto(proto.family)?,
+            target: proto.target,
+            opened_at: proto.opened_at,
+            proposer: proto.proposer,
+        })
+    }
+
+    fn to_proto(&self) -> ClaimIdProto {
+        ClaimIdProto {
+            family: self.family.to_proto(),
+            target: self.target.clone(),
+            opened_at: self.opened_at,
+            proposer: self.proposer.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeakyBucketVote {
+    pub claim: ClaimId,
+    pub yea: bool,
+    /// Carried by a nay on an overflow claim, and by no other vote.
+    pub testimony: Option<OverflowTestimony>,
+}
+
+/// What a nay on an overflow claim was decided under: the claim's amount, and
+/// what the voting block's floor records of the claimant — its total paid and
+/// its freezes, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverflowTestimony {
+    pub amount: i64,
+    pub floor_number: i64,
+    pub claimed_total: i64,
+    pub freezes: Vec<FreezeInterval>,
+}
+
+/// One ejection's freeze over block numbers: from the floor the ejection
+/// passed at through the block that paid its rejoin, or open while the
+/// validator is still ejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FreezeInterval {
+    pub from: i64,
+    pub rejoin: Option<Rejoin>,
+}
+
+/// A paid rejoin: the block that paid it and the topup, in bond units.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rejoin {
+    pub at: i64,
+    pub topup: i64,
+}
+
+impl FreezeInterval {
+    pub fn covers(&self, number: i64) -> bool {
+        self.from <= number && self.rejoin.is_none_or(|rejoin| number <= rejoin.at)
+    }
+
+    fn from_proto(proto: FreezeIntervalProto) -> Self {
+        Self {
+            from: proto.from,
+            rejoin: proto.rejoin.map(|rejoin| Rejoin {
+                at: rejoin.at,
+                topup: rejoin.topup,
+            }),
+        }
+    }
+
+    fn to_proto(&self) -> FreezeIntervalProto {
+        FreezeIntervalProto {
+            from: self.from,
+            rejoin: self.rejoin.map(|rejoin| RejoinProto {
+                at: rejoin.at,
+                topup: rejoin.topup,
+            }),
+        }
+    }
+}
+
+impl OverflowTestimony {
+    fn from_proto(proto: OverflowTestimonyProto) -> Self {
+        Self {
+            amount: proto.amount,
+            floor_number: proto.floor_number,
+            claimed_total: proto.claimed_total,
+            freezes: proto
+                .freezes
+                .into_iter()
+                .map(FreezeInterval::from_proto)
+                .collect(),
+        }
+    }
+
+    fn to_proto(&self) -> OverflowTestimonyProto {
+        OverflowTestimonyProto {
+            amount: self.amount,
+            floor_number: self.floor_number,
+            claimed_total: self.claimed_total,
+            freezes: self.freezes.iter().map(FreezeInterval::to_proto).collect(),
+        }
+    }
+}
+
+impl LeakyBucketVote {
+    pub fn from_proto(proto: LeakyBucketVoteProto) -> Result<Self, String> {
+        Ok(Self {
+            claim: ClaimId {
+                family: ClaimFamily::from_proto(proto.family)?,
+                target: proto.target,
+                opened_at: proto.opened_at,
+                proposer: proto.proposer,
+            },
+            yea: proto.yea,
+            testimony: proto.testimony.map(OverflowTestimony::from_proto),
+        })
+    }
+
+    pub fn to_proto(&self) -> LeakyBucketVoteProto {
+        LeakyBucketVoteProto {
+            family: self.claim.family.to_proto(),
+            target: self.claim.target.clone(),
+            opened_at: self.claim.opened_at,
+            proposer: self.claim.proposer.clone(),
+            yea: self.yea,
+            testimony: self.testimony.as_ref().map(OverflowTestimony::to_proto),
+        }
+    }
 }
 
 impl Body {
@@ -945,6 +1160,11 @@ impl Body {
             extra_bytes: proto.extra_bytes,
             applied_from_scope: proto.applied_from_scope,
             merge_base: proto.merge_base,
+            leaky_bucket_votes: proto
+                .leaky_bucket_votes
+                .into_iter()
+                .map(LeakyBucketVote::from_proto)
+                .collect::<Result<Vec<LeakyBucketVote>, String>>()?,
         })
     }
 
@@ -972,6 +1192,11 @@ impl Body {
             extra_bytes: self.extra_bytes.clone(),
             applied_from_scope: self.applied_from_scope.clone(),
             merge_base: self.merge_base.clone(),
+            leaky_bucket_votes: self
+                .leaky_bucket_votes
+                .iter()
+                .map(LeakyBucketVote::to_proto)
+                .collect(),
         }
     }
 }
@@ -1137,6 +1362,19 @@ pub enum SystemDeployData {
         target_activation_epoch: i64,
     },
     CloseBlockSystemDeployData,
+    ResolveClaims {
+        resolutions: Vec<ClaimResolution>,
+        grace_expiries: Vec<ByteString>,
+        expiries: Vec<ClaimId>,
+        floor_hash: ByteString,
+        floor_number: i64,
+    },
+    /// Slashes `accused` for the nay on `claim` that `vote_block` carries.
+    DishonestVote {
+        accused: ByteString,
+        vote_block: ByteString,
+        claim: ClaimId,
+    },
     Empty,
 }
 
@@ -1172,6 +1410,35 @@ impl SystemDeployData {
             system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_) => {
                 Ok(Self::CloseBlockSystemDeployData)
             }
+            system_deploy_data_proto::SystemDeploy::ResolveClaimsSystemDeploy(resolve) => {
+                Ok(Self::ResolveClaims {
+                    resolutions: resolve
+                        .resolutions
+                        .into_iter()
+                        .map(ClaimResolution::from_proto)
+                        .collect::<Result<Vec<_>, String>>()?,
+                    grace_expiries: resolve.grace_expiries,
+                    expiries: resolve
+                        .expiries
+                        .into_iter()
+                        .map(ClaimId::from_proto)
+                        .collect::<Result<Vec<_>, String>>()?,
+                    floor_hash: resolve.floor_hash,
+                    floor_number: resolve.floor_number,
+                })
+            }
+            system_deploy_data_proto::SystemDeploy::DishonestVoteSystemDeploy(evidence) => {
+                Ok(Self::DishonestVote {
+                    accused: evidence.accused,
+                    vote_block: evidence.vote_block,
+                    claim: ClaimId {
+                        family: ClaimFamily::from_proto(evidence.family)?,
+                        target: evidence.target,
+                        opened_at: evidence.opened_at,
+                        proposer: evidence.proposer,
+                    },
+                })
+            }
         }
     }
 
@@ -1193,6 +1460,39 @@ impl SystemDeployData {
             Self::CloseBlockSystemDeployData => SystemDeployDataProto {
                 system_deploy: Some(SystemDeploy::CloseBlockSystemDeploy(
                     CloseBlockSystemDeployDataProto {},
+                )),
+            },
+            Self::ResolveClaims {
+                resolutions,
+                grace_expiries,
+                expiries,
+                floor_hash,
+                floor_number,
+            } => SystemDeployDataProto {
+                system_deploy: Some(SystemDeploy::ResolveClaimsSystemDeploy(
+                    ResolveClaimsSystemDeployDataProto {
+                        resolutions: resolutions.iter().map(ClaimResolution::to_proto).collect(),
+                        floor_hash,
+                        floor_number,
+                        grace_expiries,
+                        expiries: expiries.iter().map(ClaimId::to_proto).collect(),
+                    },
+                )),
+            },
+            Self::DishonestVote {
+                accused,
+                vote_block,
+                claim,
+            } => SystemDeployDataProto {
+                system_deploy: Some(SystemDeploy::DishonestVoteSystemDeploy(
+                    DishonestVoteSystemDeployDataProto {
+                        accused,
+                        vote_block,
+                        family: claim.family.to_proto(),
+                        target: claim.target,
+                        opened_at: claim.opened_at,
+                        proposer: claim.proposer,
+                    },
                 )),
             },
             Self::Empty => SystemDeployDataProto {
@@ -1837,6 +2137,7 @@ mod approved_block_tests {
                     extra_bytes: Bytes::new(),
                     applied_from_scope: vec![],
                     merge_base: Bytes::new(),
+                    leaky_bucket_votes: vec![],
                 },
                 justifications: vec![],
                 sender: Bytes::new(),

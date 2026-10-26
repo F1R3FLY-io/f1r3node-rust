@@ -1011,7 +1011,7 @@ async fn resolve_merge_floor(
                     parent_hashes,
                     latest_messages,
                     crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
-                        s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                        s.on_chain_state.chain.fault_tolerance_threshold_ppm,
                     ),
                 )
                 .await?;
@@ -1707,8 +1707,7 @@ pub async fn compute_parents_post_state(
             // unique sig per merge call). The walk bound is the validity
             // window's floor edge: a scope-live sig's window was open at
             // its execution, so nothing deeper can hold its effect.
-            let settled_walk_bound =
-                floor_block_number - s.on_chain_state.shard_conf.deploy_lifespan;
+            let settled_walk_bound = floor_block_number - s.on_chain_state.chain.deploy_lifespan;
             // The base is the main parent, so "already settled in the base"
             // asks about the MAIN PARENT's state. This is what drops scope
             // copies of content the parent merged in from elsewhere: those
@@ -1835,7 +1834,7 @@ pub async fn compute_parents_post_state(
                                 floor.hash.clone(),
                                 floor
                                     .block_number
-                                    .saturating_sub(s.on_chain_state.shard_conf.deploy_lifespan),
+                                    .saturating_sub(s.on_chain_state.chain.deploy_lifespan),
                             )
                         })
                         .collect(),
@@ -1872,7 +1871,7 @@ pub async fn compute_parents_post_state(
                 dag_merger::cost_optimal_rejection_alg(),
                 Some(visible_blocks.clone()),
                 floor_block_number,
-                s.on_chain_state.shard_conf.deploy_lifespan,
+                s.on_chain_state.chain.deploy_lifespan,
                 &sig_settled_in_base,
                 &sig_settled_in_floor,
                 &base_lineage_blocks,
@@ -1895,7 +1894,7 @@ pub async fn compute_parents_post_state(
                 block_store,
                 &settled_floors,
                 &rejected_user_records,
-                s.on_chain_state.shard_conf.deploy_lifespan,
+                s.on_chain_state.chain.deploy_lifespan,
             )?;
             let suppressed = suppress_already_recorded_rejections(
                 block_store,
@@ -1949,7 +1948,7 @@ pub async fn compute_parents_post_state(
                     let floor_won = canonical_won_sigs(
                         block_store,
                         std::slice::from_ref(&floor_hash),
-                        floor_block_number - s.on_chain_state.shard_conf.deploy_lifespan,
+                        floor_block_number - s.on_chain_state.chain.deploy_lifespan,
                     )?;
                     let mut by_block: HashMap<BlockHash, Vec<Bytes>> = HashMap::new();
                     for record in &rejected_user_records {
@@ -2049,7 +2048,7 @@ pub async fn compute_parents_post_state(
                     }
                     let skipped = retain_recoverable_rejected_deploys_for_buffer(
                         floor_block_number,
-                        s.on_chain_state.shard_conf.deploy_lifespan,
+                        s.on_chain_state.chain.deploy_lifespan,
                         &mut deploys_to_buffer,
                     );
                     if skipped > 0 {

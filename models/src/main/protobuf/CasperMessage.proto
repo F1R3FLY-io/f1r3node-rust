@@ -405,10 +405,55 @@ message SlashSystemDeployDataProto {
 message CloseBlockSystemDeployDataProto{
 }
 
+enum ClaimOutcomeProto {
+  CLAIM_OUTCOME_UNSPECIFIED = 0;
+  CLAIM_OUTCOME_PASS        = 1;
+  CLAIM_OUTCOME_FAIL        = 2;
+}
+
+message ClaimResolutionProto {
+  ClaimFamilyProto family   = 1;
+  bytes target              = 2;
+  int64 openedAt            = 3;
+  bytes proposer            = 4;
+  ClaimOutcomeProto outcome = 5;
+}
+
+message ClaimIdProto {
+  ClaimFamilyProto family = 1;
+  bytes target            = 2;
+  int64 openedAt          = 3;
+  bytes proposer          = 4;
+}
+
+// The claims whose tally crossed at the block's floor, with that floor; the
+// ejected validators whose grace that floor has passed; and the claims whose
+// deadline that floor has reached undecided.
+message ResolveClaimsSystemDeployDataProto {
+  repeated ClaimResolutionProto resolutions = 1;
+  bytes floorHash                           = 2;
+  int64 floorNumber                         = 3;
+  repeated bytes graceExpiries              = 4;
+  repeated ClaimIdProto expiries            = 5;
+}
+
+// Slashes the validator that cast a nay on an overflow claim its own signed
+// ancestry proves it owed: the vote block and the claim it voted on.
+message DishonestVoteSystemDeployDataProto {
+  bytes accused           = 1;
+  bytes voteBlock         = 2;
+  ClaimFamilyProto family = 3;
+  bytes target            = 4;
+  int64 openedAt          = 5;
+  bytes proposer          = 6;
+}
+
 message SystemDeployDataProto{
   oneof systemDeploy{
     SlashSystemDeployDataProto slashSystemDeploy = 1;
     CloseBlockSystemDeployDataProto closeBlockSystemDeploy = 2;
+    ResolveClaimsSystemDeployDataProto resolveClaimsSystemDeploy = 3;
+    DishonestVoteSystemDeployDataProto dishonestVoteSystemDeploy = 4;
   }
 }
 
@@ -439,6 +484,45 @@ message BodyProto {
   // pointers instead of a per-block re-derivation:
   // state(B) = state(mergeBase) + appliedFromScope + deploys.
   bytes mergeBase                                   = 7;
+  repeated LeakyBucketVoteProto leakyBucketVotes    = 8;
+}
+
+enum ClaimFamilyProto {
+  CLAIM_FAMILY_UNSPECIFIED = 0;
+  CLAIM_FAMILY_EJECT       = 1;
+  CLAIM_FAMILY_REJOIN      = 2;
+  CLAIM_FAMILY_OVERFLOW    = 3;
+}
+
+// The proposer's vote on an open claim, which is named by its family, its
+// target, the block number it was opened at and the validator that opened it.
+message LeakyBucketVoteProto {
+  ClaimFamilyProto family          = 1;
+  bytes target                     = 2;
+  int64 openedAt                   = 3;
+  bytes proposer                   = 4;
+  bool yea                         = 5;
+  OverflowTestimonyProto testimony = 6;
+}
+
+// What a nay on an overflow claim was decided under: the claim's amount, and
+// what the voting block's floor records of the claimant.
+message OverflowTestimonyProto {
+  int64 amount                       = 1;
+  int64 floorNumber                  = 2;
+  int64 claimedTotal                 = 3;
+  repeated FreezeIntervalProto freezes = 4;
+}
+
+// An ejection's freeze over block numbers, closed by the rejoin that paid.
+message FreezeIntervalProto {
+  int64 from        = 1;
+  RejoinProto rejoin = 2;
+}
+
+message RejoinProto {
+  int64 at    = 1;
+  int64 topup = 2;
 }
 
 message RejectedDeployProto{

@@ -45,23 +45,16 @@ fn mk_casper_snapshot(
     use std::collections::HashMap;
 
     use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+    use casper::rust::chain_parameters::ChainParameters;
 
     let shard_conf = CasperShardConf {
-        fault_tolerance_threshold: 0.0,
         shard_name: "root".to_string(),
         parent_shard_id: "".to_string(),
         finalization_rate: 0,
         max_number_of_parents: 10,
-        max_parent_depth: 0,
         synchrony_constraint_threshold: 0.0,
         height_constraint_threshold: 0,
-        deploy_lifespan: 50,
         casper_version: 1,
-        bond_minimum: 0,
-        bond_maximum: i64::MAX,
-        epoch_length: 0,
-        quarantine_length: 0,
-        min_phlo_price: 0,
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
         disable_validator_progress_check: false,
@@ -70,6 +63,15 @@ fn mk_casper_snapshot(
 
     let on_chain_state = OnChainCasperState {
         shard_conf,
+        chain: ChainParameters {
+            fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 0,
+            deploy_lifespan: 50,
+            min_phlo_price: 0,
+            epoch_length: 0,
+            quarantine_length: 0,
+            ..ChainParameters::shipped()
+        },
         bonds_map: HashMap::new(),
         active_validators: vec![],
     };

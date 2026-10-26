@@ -614,6 +614,7 @@ mod tests {
                 extra_bytes: Bytes::new(),
                 applied_from_scope: Vec::new(),
                 merge_base: Bytes::new(),
+                leaky_bucket_votes: Vec::new(),
             },
             justifications,
             sender: sender.clone(),

@@ -21,7 +21,7 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use serial_test::serial;
 
-use crate::helper::test_node::{ShardOverrides, TestNode};
+use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
@@ -37,23 +37,20 @@ fn short(sig: &Bytes) -> String { hex::encode(&sig[..8.min(sig.len())]) }
 
 async fn three_node_network() -> (Vec<TestNode>, String) {
     let n_validators = 3usize;
-    let genesis_parameters =
+    let mut genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
-    let genesis = GenesisBuilder::new()
-        .build_genesis_with_parameters(Some(genesis_parameters))
-        .await
-        .unwrap();
-    let shard_id = genesis.genesis_block.shard_id.clone();
     // A FINITE parent depth: the register's Expired/Failed bound derives
     // from `citability_horizon(max_parent_depth)`; under the i32::MAX
     // disabled sentinel those verdicts are never writable (bound = None →
     // Pending by design) and the landing asserts here would fail
     // vacuously.
-    let mut nodes =
-        TestNode::create_network_with_overrides(genesis, n_validators, ShardOverrides {
-            max_parent_depth: Some(10),
-            ..Default::default()
-        })
+    genesis_parameters.2.proof_of_stake.max_parent_depth = 10;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(genesis_parameters))
+        .await
+        .unwrap();
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {
@@ -460,19 +457,16 @@ async fn a_deploy_finalizes_from_a_carrier_the_spine_never_holds() {
 #[serial]
 async fn private_carrier_must_not_strand_the_verdict_pending_forever() {
     let n_validators = 3usize;
-    let genesis_parameters =
+    let mut genesis_parameters =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(n_validators));
+    genesis_parameters.2.proof_of_stake.max_parent_depth = 5;
+    genesis_parameters.2.proof_of_stake.deploy_lifespan = 10;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes =
-        TestNode::create_network_with_overrides(genesis, n_validators, ShardOverrides {
-            max_parent_depth: Some(5),
-            deploy_lifespan: Some(10),
-            ..Default::default()
-        })
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {

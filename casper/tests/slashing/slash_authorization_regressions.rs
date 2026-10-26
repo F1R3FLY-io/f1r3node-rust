@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::chain_parameters::ChainParameters;
 use casper::rust::errors::CasperError;
 use casper::rust::slashing_authorization::{
     authorized_slash_candidates, checked_base_seq, checked_next_seq, epoch_for_block_number,
@@ -89,9 +90,10 @@ fn snapshot_from_fixture(
         max_block_num,
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
-            shard_conf: CasperShardConf {
+            shard_conf: CasperShardConf::new(),
+            chain: ChainParameters {
                 epoch_length,
-                ..CasperShardConf::new()
+                ..ChainParameters::shipped()
             },
             bonds_map,
             active_validators: bonded,

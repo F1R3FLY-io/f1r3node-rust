@@ -516,6 +516,8 @@ mod tests {
     use casper::rust::casper::{
         Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
     };
+    use casper::rust::chain_parameters::ChainParameters;
+    use casper::rust::economics::bucket_view::BucketView;
     use casper::rust::engine::block_retriever::BlockRetriever;
     use casper::rust::errors::CasperError;
     use casper::rust::genesis::genesis::Genesis;
@@ -529,6 +531,7 @@ mod tests {
     use crypto::rust::signatures::signed::Signed;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits::get_random_block_default;
+    use models::rust::block_metadata::BlockMetadata;
     use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
     use models::rust::validator::Validator;
     use prost::bytes::Bytes;
@@ -605,9 +608,12 @@ mod tests {
         async fn handle_valid_block(
             &self,
             _block: &BlockMessage,
+            _parents: &[BlockMetadata],
         ) -> Result<KeyValueDagRepresentation, CasperError> {
             panic!("Unexpected valid block")
         }
+
+        fn bucket_view(&self) -> Arc<BucketView> { panic!("Unexpected bucket view read") }
 
         fn handle_invalid_block(
             &self,
@@ -652,6 +658,8 @@ mod tests {
         fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
         fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
+
+        fn chain_parameters(&self) -> &ChainParameters { &self.snapshot.on_chain_state.chain }
 
         fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
 

@@ -715,6 +715,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             dummy_deploy_opt,
             runtime_manager.clone(),
             block_store.clone(),
+            block_dag_storage.clone(),
             deploy_storage_arc.clone(),
             rejected_deploy_buffer_arc.clone(),
             block_retriever.clone(),
@@ -1203,7 +1204,6 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             node_discovery.clone(),
             trigger_propose_f,
             conf.casper.genesis_block_data.epoch_length,
-            conf.casper.genesis_block_data.quarantine_length,
             is_ready.clone(),
         )
     };
@@ -1262,7 +1262,10 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                         );
                         return Ok(());
                     };
-                    let gc_casper_shard_conf = gc_casper.casper_shard_conf().clone();
+                    let gc_chain = *gc_casper.chain_parameters();
+                    let gc_depth_buffer = gc_casper
+                        .casper_shard_conf()
+                        .mergeable_channels_gc_depth_buffer;
 
                     // Run GC. `collect_garbage` awaits `floor_of_block`, so on the
                     // common multi-thread runtime the whole pass (including the
@@ -1286,7 +1289,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                         &dag,
                                         &gc_block_store,
                                         &gc_runtime_manager,
-                                        &gc_casper_shard_conf,
+                                        &gc_chain,
+                                        gc_depth_buffer,
                                     ))
                                     .map_err(|e| CasperError::RuntimeError(e.to_string()))
                             })?;
@@ -1301,7 +1305,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
                                 &dag,
                                 &gc_block_store,
                                 &gc_runtime_manager,
-                                &gc_casper_shard_conf,
+                                &gc_chain,
+                                gc_depth_buffer,
                             )
                             .await
                             .map_err(|e| CasperError::RuntimeError(e.to_string()))?;

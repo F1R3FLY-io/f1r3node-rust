@@ -310,6 +310,7 @@ fn should_bypass_synchrony_constraint(
 pub async fn check(
     snapshot: &CasperSnapshot,
     validator_identity: &ValidatorIdentity,
+    ejected: &std::collections::HashSet<Validator>,
 ) -> Result<CheckProposeConstraintsResult, CasperError> {
     let validator = validator_identity.public_key.bytes.clone();
     let main_parent_opt = snapshot.parents.first();
@@ -347,12 +348,16 @@ pub async fn check(
                     .iter()
                     .map(|(validator, hash)| (validator.clone(), hash.clone()))
                     .collect();
+                // An ejected validator is not expected to propose.
                 let validator_weight_map: HashMap<Validator, i64> =
                     CliqueOracle::participating_weight_map(
                         main_parent_meta.weight_map.into_iter().collect(),
                         &snapshot.dag,
                         &latest_messages,
-                    )?;
+                    )?
+                    .into_iter()
+                    .filter(|(validator, _)| !ejected.contains(validator))
+                    .collect();
 
                 // Guaranteed to be present since last proposed block was present
                 let seen_senders = calculate_seen_senders_since(

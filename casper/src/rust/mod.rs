@@ -3,6 +3,8 @@ pub mod block_status;
 pub mod blocks;
 pub mod casper;
 pub mod casper_conf;
+pub mod chain_parameters;
+pub mod economics;
 pub mod engine;
 pub mod epoch;
 pub mod equivocation_detector;

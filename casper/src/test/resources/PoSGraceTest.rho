@@ -1,0 +1,503 @@
+//scalapackage coop.rchain.rholang.mint
+
+//requires Pos, RhoSpec
+
+// Exercises the ejection lifecycle past its claims: rejoins, grace expiry, and
+// the withdrawals and rewards they touch. The genesis sets an epoch of 1000,
+// which is also the claim deadline, and a quarantine of 50000. Every test builds on the
+// state the previous one left, and all four validators are ejected first,
+// from a floor at 0, so every grace ends at 2000.
+new
+  rl(`rho:registry:lookup`),
+  makeSysAuthToken(`sys:test:authToken:make`),
+  makeDeployerId(`rho:test:deployerId:make`),
+  setBlockData(`rho:test:block:data:set`),
+  setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+  computeHash(`rho:crypto:keccak256Hash`),
+  sysAuthTokenCh, bondsCh, orderedCh, validatorsCh,
+  RhoSpecCh, PoSCh, ListOpsCh,
+  setup, byStake, failOnRefusal, deployerIdFor, openEjection, resolveEjection, resolveRejoin, expire,
+  atBlock, posVaultBalance,
+  test_every_validator_is_ejected,
+  test_withdrawn_and_rebonded,
+  test_a_topup_is_not_distributed_as_a_reward,
+  test_an_epoch_close_distributes_the_whole_surplus,
+  test_a_rejoin_passed_at_a_floor_within_grace_resolves_after_it,
+  test_grace_expiry_slashes_every_bond_a_validator_holds,
+  test_a_slashed_validator_may_be_pending_withdrawal,
+  test_grace_ends_by_the_floor,
+  test_a_withdrawal_with_nothing_to_pay_is_closed
+in {
+  rl!(`rho:system:pos`, *PoSCh) |
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  rl!(`rho:lang:listOps`, *ListOpsCh) |
+  makeSysAuthToken!(*sysAuthTokenCh) |
+  for(@(_, RhoSpec)  <- RhoSpecCh &
+      @(_, PoS)      <- PoSCh &
+      @(_, ListOps)  <- ListOpsCh &
+      @sysAuthToken  <- sysAuthTokenCh) {
+    @PoS!("getBonds", *bondsCh) |
+    for (@bonds <- bondsCh) {
+      byStake!(bonds, *orderedCh)
+    } |
+    for (@ordered <- orderedCh) {
+      validatorsCh!(ordered) |
+      @RhoSpec!("testSuite", *setup,
+        [
+          ("every validator is ejected", *test_every_validator_is_ejected),
+          ("withdrawn and rebonded", *test_withdrawn_and_rebonded),
+          ("a topup is not distributed as a reward", *test_a_topup_is_not_distributed_as_a_reward),
+          ("an epoch close distributes the whole surplus", *test_an_epoch_close_distributes_the_whole_surplus),
+          ("a rejoin passed at a floor within grace resolves after it", *test_a_rejoin_passed_at_a_floor_within_grace_resolves_after_it),
+          ("grace expiry slashes every bond a validator holds", *test_grace_expiry_slashes_every_bond_a_validator_holds),
+          ("a slashed validator may be pending withdrawal", *test_a_slashed_validator_may_be_pending_withdrawal),
+          ("grace ends by the floor", *test_grace_ends_by_the_floor),
+          ("a withdrawal with nothing to pay is closed", *test_a_withdrawal_with_nothing_to_pay_is_closed)
+        ]
+      )
+    } |
+
+    contract setup(_, retCh) = {
+      retCh!({})
+    } |
+
+    // The bonded validators, least stake first. The test genesis draws new
+    // keys every run, so in key order each position would hold a different
+    // bond each time. A map's entries list in key order.
+    contract byStake(@bonds, retCh) = {
+      new keyed, keyedCh, validatorOf in {
+        contract keyed(@(pk, stake), @acc, ret) = { ret!(acc.set((stake, pk), pk)) } |
+        contract validatorOf(@(_, pk), ret) = { ret!(pk) } |
+        @ListOps!("fold", bonds.toList(), {}, *keyed, *keyedCh) |
+        for (@byStakeAndKey <- keyedCh) {
+          @ListOps!("map", byStakeAndKey.toList(), *validatorOf, *retCh)
+        }
+      }
+    } |
+
+    // A step's guarded receive matches only success. This fails the test with
+    // a refusal, which would otherwise leave the test waiting forever.
+    contract failOnRefusal(ch, rhoSpec, ackCh) = {
+      for (@(false, reason) <- ch) {
+        rhoSpec!("assert", ((true, Nil), "==", (false, reason)), "a step the test relies on succeeds", *ackCh)
+      }
+    } |
+
+    contract deployerIdFor(@pk, retCh) = {
+      new deployerIdCh in {
+        makeDeployerId!("deployerId", pk, *deployerIdCh) |
+        for (@deployerId <- deployerIdCh) { retCh!(deployerId) }
+      }
+    } |
+
+    contract atBlock(@number, retCh) = {
+      setBlockData!("blockNumber", number, *retCh)
+    } |
+
+    contract posVaultBalance(retCh) = {
+      new posVaultCh in {
+        @PoS!("getInitialPosVault", *posVaultCh) |
+        for (@(_, posVault) <- posVaultCh) {
+          @posVault!("balance", *retCh)
+        }
+      }
+    } |
+
+    // The committee a block carries is its floor's bonds; here every bond
+    // stands in.
+    contract openEjection(@proposerPk, @target, retCh) = {
+      new deployerIdCh, bondsCh, committeeSetCh in {
+        deployerIdFor!(proposerPk, *deployerIdCh) |
+        @PoS!("getBonds", *bondsCh) |
+        for (@deployerId <- deployerIdCh & @committee <- bondsCh) {
+          setBlockData!("committee", committee, *committeeSetCh) |
+          for (_ <- committeeSetCh) {
+            @PoS!("ejectValidator", deployerId, target, *retCh)
+          }
+        }
+      }
+    } |
+
+    contract resolveEjection(@target, @openedAt, @proposer, @floorNumber, retCh) = {
+      @PoS!("resolveClaims",
+        [{"family": "eject", "target": target, "openedAt": openedAt, "proposer": proposer, "passed": true}],
+        [], [], "aa".hexToBytes(), floorNumber, sysAuthToken, *retCh)
+    } |
+
+    contract resolveRejoin(@target, @openedAt, @floorNumber, retCh) = {
+      new payerCh in {
+        deployerIdFor!(target, *payerCh) |
+        for (@payer <- payerCh) {
+          @PoS!("resolveClaims",
+            [{"family": "rejoin", "target": target, "openedAt": openedAt,
+              "proposer": target, "passed": true, "payer": payer}],
+            [], [], "aa".hexToBytes(), floorNumber, sysAuthToken, *retCh)
+        }
+      }
+    } |
+
+    contract expire(@targets, @floorNumber, retCh) = {
+      @PoS!("resolveClaims", [], targets, [], "aa".hexToBytes(), floorNumber, sysAuthToken, *retCh)
+    } |
+
+    contract test_every_validator_is_ejected(rhoSpec, _, ackCh) = {
+      new b10, o0, b11, o1, b12, o2, o3, b13, r0, r1, r2, r3, ejectedCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(10, *b10) |
+          for (_ <- b10) {
+            openEjection!(v.nth(3), v.nth(0), *o0) |
+            failOnRefusal!(*o0, *rhoSpec, *ackCh) |
+            for (@(true, _) <- o0) {
+              atBlock!(11, *b11) |
+              for (_ <- b11) {
+                openEjection!(v.nth(3), v.nth(1), *o1) |
+                failOnRefusal!(*o1, *rhoSpec, *ackCh) |
+                for (@(true, _) <- o1) {
+                  atBlock!(12, *b12) |
+                  for (_ <- b12) {
+                    openEjection!(v.nth(3), v.nth(2), *o2) |
+                    failOnRefusal!(*o2, *rhoSpec, *ackCh) |
+                    for (@(true, _) <- o2) {
+                      openEjection!(v.nth(0), v.nth(3), *o3) |
+                      failOnRefusal!(*o3, *rhoSpec, *ackCh) |
+                      for (@(true, _) <- o3) {
+                        atBlock!(13, *b13) |
+                        for (_ <- b13) {
+                          resolveEjection!(v.nth(0), 10, v.nth(3), 0, *r0) |
+                          failOnRefusal!(*r0, *rhoSpec, *ackCh) |
+                          for (@(true, _) <- r0) {
+                            resolveEjection!(v.nth(1), 11, v.nth(3), 0, *r1) |
+                            failOnRefusal!(*r1, *rhoSpec, *ackCh) |
+                            for (@(true, _) <- r1) {
+                              resolveEjection!(v.nth(2), 12, v.nth(3), 0, *r2) |
+                              failOnRefusal!(*r2, *rhoSpec, *ackCh) |
+                              for (@(true, _) <- r2) {
+                                resolveEjection!(v.nth(3), 12, v.nth(0), 0, *r3) |
+                                failOnRefusal!(*r3, *rhoSpec, *ackCh) |
+                                for (@(true, _) <- r3) {
+                                  @PoS!("getEjectedValidators", *ejectedCh) |
+                                  for (@ejected <- ejectedCh) {
+                                    rhoSpec!("assertMany",
+                                      [
+                                        ((4, "==", ejected.size()), "all four are ejected"),
+                                        ((2000, "==", ejected.get(v.nth(0)).get("graceEnd")), "grace ends two epochs past the floor")
+                                      ],
+                                      *ackCh
+                                    )
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // The first and third withdraw, the epoch close moves both into the
+    // quarantine, and the third bonds again.
+    contract test_withdrawn_and_rebonded(rhoSpec, _, ackCh) = {
+      new b100, d0, w0, d2, w2, b1000, closed, b1100, d2b, bonded,
+          withdrawersCh, bondsCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(100, *b100) |
+          for (_ <- b100) {
+            deployerIdFor!(v.nth(0), *d0) |
+            deployerIdFor!(v.nth(2), *d2) |
+            for (@id0 <- d0 & @id2 <- d2) {
+              @PoS!("withdraw", id0, *w0) |
+              @PoS!("withdraw", id2, *w2) |
+              failOnRefusal!(*w0, *rhoSpec, *ackCh) |
+              failOnRefusal!(*w2, *rhoSpec, *ackCh) |
+              for (@(true, _) <- w0 & @(true, _) <- w2) {
+                atBlock!(1000, *b1000) |
+                for (_ <- b1000) {
+                  @PoS!("closeBlock", sysAuthToken, *closed) |
+                  failOnRefusal!(*closed, *rhoSpec, *ackCh) |
+                  for (@(true, _) <- closed) {
+                    atBlock!(1100, *b1100) |
+                    for (_ <- b1100) {
+                      deployerIdFor!(v.nth(2), *d2b) |
+                      for (@id2b <- d2b) {
+                        @PoS!("bond", id2b, 3, *bonded) |
+                        for (@bond <- bonded) {
+                          @PoS!("getWithdrawers", *withdrawersCh) |
+                          @PoS!("getBonds", *bondsCh) |
+                          for (@withdrawers <- withdrawersCh & @bonds <- bondsCh) {
+                            rhoSpec!("assertMany",
+                              [
+                                (withdrawers.contains(v.nth(0)), "the first is in quarantine"),
+                                (withdrawers.contains(v.nth(2)), "so is the third"),
+                                (((true, Nil), "==", bond), "the third bonds again"),
+                                ((3, "==", bonds.get(v.nth(2))), "with a new bond beside the one in quarantine")
+                              ],
+                              *ackCh
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // What a topup does not refill accrues as overflow, to be claimed back by
+    // the rejoiner. The topup is not a fee for the committee to share.
+    contract test_a_topup_is_not_distributed_as_a_reward(rhoSpec, _, ackCh) = {
+      new b1200, d3, opened, b1201, resolved, beforeCh, afterCh, rewardsCh, ejectedCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(1200, *b1200) |
+          for (_ <- b1200) {
+            deployerIdFor!(v.nth(3), *d3) |
+            for (@id3 <- d3) {
+              @PoS!("rejoinFromEjection", id3, 50, *opened) |
+              failOnRefusal!(*opened, *rhoSpec, *ackCh) |
+              for (@(true, _) <- opened) {
+                atBlock!(1201, *b1201) |
+                posVaultBalance!(*beforeCh) |
+                for (_ <- b1201 & @before <- beforeCh) {
+                  resolveRejoin!(v.nth(3), 1200, 0, *resolved) |
+                  failOnRefusal!(*resolved, *rhoSpec, *ackCh) |
+                  for (@(true, _) <- resolved) {
+                    posVaultBalance!(*afterCh) |
+                    @PoS!("getCurrentEpochRewards", *rewardsCh) |
+                    @PoS!("getEjectedValidators", *ejectedCh) |
+                    for (@after <- afterCh & @rewards <- rewardsCh & @ejected <- ejectedCh) {
+                      rhoSpec!("assertMany",
+                        [
+                          ((false, "==", ejected.contains(v.nth(3))), "the fourth is reinstated"),
+                          ((before + 50n, "==", after), "its topup is in the PoS vault"),
+                          ((0n, "==", rewards.get(v.nth(3))), "and is no part of the epoch's rewards")
+                        ],
+                        *ackCh
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_an_epoch_close_distributes_the_whole_surplus(rhoSpec, _, ackCh) = {
+      new payerCh, charged, refunded, beforeCh, b2000, closed, afterCh in {
+        for (@v <<- validatorsCh) {
+          deployerIdFor!(("eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
+                          "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
+                          "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
+                          "eeeeeeeeee").hexToBytes(), *payerCh) |
+          for (@payer <- payerCh) {
+            @PoS!("chargeDeploy", payer, 100, sysAuthToken, *charged) |
+            failOnRefusal!(*charged, *rhoSpec, *ackCh) |
+            for (@(true, _) <- charged) {
+              @PoS!("refundDeploy", 0, sysAuthToken, *refunded) |
+              failOnRefusal!(*refunded, *rhoSpec, *ackCh) |
+              for (@(true, _) <- refunded) {
+                @PoS!("getCurrentEpochRewards", *beforeCh) |
+                for (@before <- beforeCh) {
+                  atBlock!(2000, *b2000) |
+                  for (_ <- b2000) {
+                    @PoS!("closeBlock", sysAuthToken, *closed) |
+                    failOnRefusal!(*closed, *rhoSpec, *ackCh) |
+                    for (@(true, _) <- closed) {
+                      @PoS!("getCurrentEpochRewards", *afterCh) |
+                      for (@after <- afterCh) {
+                        rhoSpec!("assertMany",
+                          [
+                            ((before.get(v.nth(3)) >= 100n, "==", true), "the fee is surplus until the epoch closes"),
+                            ((0n, "==", after.get(v.nth(3))), "the close leaves no surplus")
+                          ],
+                          *ackCh
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // A rejoin succeeds when its tally crosses at a floor within grace. The
+    // block carrying it may come after the deadline.
+    contract test_a_rejoin_passed_at_a_floor_within_grace_resolves_after_it(rhoSpec, _, ackCh) = {
+      new b1999, d1, opened, b2001, resolved, ejectedCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(1999, *b1999) |
+          for (_ <- b1999) {
+            deployerIdFor!(v.nth(1), *d1) |
+            for (@id1 <- d1) {
+              @PoS!("rejoinFromEjection", id1, 5, *opened) |
+              failOnRefusal!(*opened, *rhoSpec, *ackCh) |
+              for (@(true, _) <- opened) {
+                atBlock!(2001, *b2001) |
+                for (_ <- b2001) {
+                  resolveRejoin!(v.nth(1), 1999, 1999, *resolved) |
+                  for (@result <- resolved) {
+                    @PoS!("getEjectedValidators", *ejectedCh) |
+                    for (@ejected <- ejectedCh) {
+                      rhoSpec!("assertMany",
+                        [
+                          (((true, Nil), "==", result), "the rejoin resolves"),
+                          ((false, "==", ejected.contains(v.nth(1))), "and reinstates the second")
+                        ],
+                        *ackCh
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // A validator stays slashable while its bond is in quarantine,
+    // and a new bond beside it is slashable too.
+    contract test_grace_expiry_slashes_every_bond_a_validator_holds(rhoSpec, _, ackCh) = {
+      new b2002, withdrawersCh, beforeCh, expired, afterCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(2002, *b2002) |
+          @PoS!("getWithdrawers", *withdrawersCh) |
+          posVaultBalance!(*beforeCh) |
+          for (_ <- b2002 & @withdrawers <- withdrawersCh & @before <- beforeCh) {
+            match (withdrawers.get(v.nth(0)), withdrawers.get(v.nth(2))) {
+              ((q0, _), (q2, _)) => {
+                expire!([v.nth(0), v.nth(2)], 2001, *expired) |
+                for (@result <- expired) {
+                  posVaultBalance!(*afterCh) |
+                  for (@after <- afterCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        (((true, Nil), "==", result), "the expiries resolve"),
+                        ((before - after, "==", (q0 + q2 + 3).toBigInt()), "every bond held leaves the PoS vault")
+                      ],
+                      *ackCh
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // The second, reinstated, is ejected again, then withdraws and is slashed
+    // while its withdrawal is pending.
+    contract test_a_slashed_validator_may_be_pending_withdrawal(rhoSpec, _, ackCh) = {
+      new b2100, o3, b2101, r3, b2102, d1, withdrawn, hashCh, invalidSet, slashed in {
+        for (@v <<- validatorsCh) {
+          atBlock!(2100, *b2100) |
+          for (_ <- b2100) {
+            openEjection!(v.nth(1), v.nth(3), *o3) |
+            for (@opened <- o3) {
+              atBlock!(2101, *b2101) |
+              for (_ <- b2101) {
+                resolveEjection!(v.nth(3), 2100, v.nth(1), 2050, *r3) |
+                for (@ejectedAgain <- r3) {
+                  atBlock!(2102, *b2102) |
+                  for (_ <- b2102) {
+                    deployerIdFor!(v.nth(1), *d1) |
+                    for (@id1 <- d1) {
+                      @PoS!("withdraw", id1, *withdrawn) |
+                      for (@withdrawal <- withdrawn) {
+                        computeHash!(v.nth(1), *hashCh) |
+                        for (@hash <- hashCh) {
+                          setInvalidBlocks!({hash : v.nth(1)}, *invalidSet) |
+                          for (_ <- invalidSet) {
+                            @PoS!("slash", id1, hash, sysAuthToken, *slashed) |
+                            for (@slash <- slashed) {
+                              rhoSpec!("assertMany",
+                                [
+                                  (((true, Nil), "==", opened), "the fourth is under proceedings again"),
+                                  (((true, Nil), "==", ejectedAgain), "and ejected, its grace ending at 4050"),
+                                  (((true, Nil), "==", withdrawal), "the second asks to withdraw"),
+                                  (((true, Nil), "==", slash), "and is slashed")
+                                ],
+                                *ackCh
+                              )
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Grace runs over [F, F + grace], F the ejection's floor. A block
+    // past that number whose floor is not yet past it is still within grace.
+    contract test_grace_ends_by_the_floor(rhoSpec, _, ackCh) = {
+      new b4051, early, ejectedCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(4051, *b4051) |
+          for (_ <- b4051) {
+            expire!([v.nth(3)], 4049, *early) |
+            for (@result <- early) {
+              @PoS!("getEjectedValidators", *ejectedCh) |
+              for (@ejected <- ejectedCh) {
+                rhoSpec!("assertMany",
+                  [
+                    (((false, "A grace expiry names no ejection whose grace has ended."), "==", result), "a grace the floor has not passed cannot be expired"),
+                    (ejected.contains(v.nth(3)), "the ejection stands")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // A slashed bond leaves nothing to pay out of the quarantine, and the
+    // entry must still close when the quarantine ends.
+    contract test_a_withdrawal_with_nothing_to_pay_is_closed(rhoSpec, _, ackCh) = {
+      new b53000, closed, withdrawersCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(53000, *b53000) |
+          for (_ <- b53000) {
+            @PoS!("closeBlock", sysAuthToken, *closed) |
+            for (@close <- closed) {
+              @PoS!("getWithdrawers", *withdrawersCh) |
+              for (@withdrawers <- withdrawersCh) {
+                rhoSpec!("assertMany",
+                  [
+                    (((true, Nil), "==", close), "the epoch close succeeds"),
+                    ((false, "==", withdrawers.contains(v.nth(0))), "a quarantine emptied by grace expiry closes"),
+                    ((false, "==", withdrawers.contains(v.nth(2))), "so does one beside a rebond"),
+                    ((false, "==", withdrawers.contains(v.nth(1))), "and one emptied by a slash while pending")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -111,6 +111,61 @@ fn deploy_is_block_expired(
     )?)
 }
 
+/// Why `d` is refused entry to the deploy pool, whoever submits it, if it is.
+///
+/// A deploy admitted now can only ever land in a block that doesn't exist
+/// yet, the next one, so its lifespan is measured against
+/// `next_block_number`: block creation's own expiry filter checks against
+/// exactly that block's number, and a deploy admitted "just inside" the
+/// window at the current tip would otherwise be found expired by it.
+pub fn admission_refusal(
+    d: &Signed<DeployData>,
+    shard_id: &str,
+    chain: &crate::rust::chain_parameters::ChainParameters,
+    next_block_number: i64,
+    now_millis: i64,
+) -> Result<Option<String>, CasperError> {
+    if d.data.shard_id != shard_id {
+        return Ok(Some(format!(
+            "Deploy shardId '{}' is not as expected network shard '{}'.",
+            d.data.shard_id, shard_id
+        )));
+    }
+    if standard_deploys::system_public_keys()
+        .iter()
+        .any(|pk| **pk == d.pk)
+    {
+        return Ok(Some(
+            "Deploy refused because it's signed with forbidden private key.".to_string(),
+        ));
+    }
+    if d.data.is_expired_at(now_millis) {
+        return Ok(Some(format!(
+            "Deploy has expired: expirationTimestamp={:?} is in the past.",
+            d.data.expiration_timestamp
+        )));
+    }
+    // The floor check reads the SAME value the validity rule reads, never a
+    // second node-conf copy.
+    if d.data.phlo_price < chain.min_phlo_price {
+        return Ok(Some(format!(
+            "Phlo price {} is less than minimum price {}.",
+            d.data.phlo_price, chain.min_phlo_price
+        )));
+    }
+    if deploy_is_block_expired(
+        d.data.valid_after_block_number,
+        next_block_number,
+        chain.deploy_lifespan,
+    )? {
+        return Ok(Some(format!(
+            "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
+            d.data.valid_after_block_number, next_block_number, chain.deploy_lifespan
+        )));
+    }
+    Ok(None)
+}
+
 fn should_retry_deploy_propose(status: &ProposeStatus) -> bool {
     match status {
         ProposeStatus::Failure(ProposeFailure::InternalDeployError)
@@ -580,62 +635,12 @@ impl BlockAPI {
             ))
         }
 
-        // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), DeployValidationError> = Ok(())
-            .and_then(|_| {
-                if is_node_read_only {
-                    Err(DeployValidationError {
-                        message: "Deploy was rejected because node is running in read-only mode."
-                            .to_string(),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                if d.data.shard_id != shard_id {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy shardId '{}' is not as expected network shard '{}'.",
-                            d.data.shard_id, shard_id
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                let is_forbidden_key = standard_deploys::system_public_keys()
-                    .iter()
-                    .any(|pk| **pk == d.pk);
-                if is_forbidden_key {
-                    Err(DeployValidationError {
-                        message: "Deploy refused because it's signed with forbidden private key."
-                            .to_string(),
-                    })
-                } else {
-                    Ok(())
-                }
-            })
-            .and_then(|_| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                if d.data.is_expired_at(now) {
-                    Err(DeployValidationError {
-                        message: format!(
-                            "Deploy has expired: expirationTimestamp={:?} is in the past.",
-                            d.data.expiration_timestamp
-                        ),
-                    })
-                } else {
-                    Ok(())
-                }
-            });
-
-        // Return early if validation fails
-        validation_result.map_err(|e| eyre::Report::new(e))?;
+        if is_node_read_only {
+            return Err(eyre::Report::new(DeployValidationError {
+                message: "Deploy was rejected because node is running in read-only mode."
+                    .to_string(),
+            }));
+        }
 
         let log_error_message =
             "Error: Could not deploy, casper instance was not available yet.".to_string();
@@ -649,46 +654,23 @@ impl BlockAPI {
         };
 
         if let Some(casper) = eng.with_casper() {
-            // The floor check reads the SAME value the validity rule reads
-            // (the shard conf), never a second node-conf copy.
-            let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
-            if d.data.phlo_price < min_phlo_price {
-                return Err(eyre::Report::new(DeployValidationError {
-                    message: format!(
-                        "Phlo price {} is less than minimum price {}.",
-                        d.data.phlo_price, min_phlo_price
-                    ),
-                }));
+            let next_block_number = casper.block_dag().await?.latest_block_number() + 1;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis() as i64;
+            if let Some(message) = admission_refusal(
+                &d,
+                shard_id,
+                casper.chain_parameters(),
+                next_block_number,
+                now,
+            )? {
+                return Err(eyre::Report::new(DeployValidationError { message }));
             }
-            let dag = casper.block_dag().await?;
             if !casper.is_local_validator_bonded() {
                 return Err(eyre::Report::new(DeployValidationError {
                     message: "Deploy was rejected because node's validator is not bonded."
                         .to_string(),
-                }));
-            }
-            // A deploy admitted now can only ever land in a block that doesn't
-            // exist yet — the next one, at `latest_block_number + 1` — never
-            // in the current tip, which is already built. block_creator.rs's
-            // own expiry filter checks against exactly that next block's
-            // number (`earliest_block_number = block_number - deploy_lifespan`
-            // for the block being assembled). Checking admission against
-            // `latest_block_number` instead of `latest_block_number + 1` is
-            // off by one: a deploy admitted "just inside" the window at the
-            // current tip is then found expired by the very next block's
-            // filter, so it can never actually be included.
-            let next_block_number = dag.latest_block_number() + 1;
-            let deploy_lifespan = casper.casper_shard_conf().deploy_lifespan;
-            if deploy_is_block_expired(
-                d.data.valid_after_block_number,
-                next_block_number,
-                deploy_lifespan,
-            )? {
-                return Err(eyre::Report::new(DeployValidationError {
-                    message: format!(
-                        "Deploy validAfterBlockNumber {} has expired at block {} with deploy lifespan {}.",
-                        d.data.valid_after_block_number, next_block_number, deploy_lifespan
-                    ),
                 }));
             }
             casper_deploy(casper, d, trigger_propose).await

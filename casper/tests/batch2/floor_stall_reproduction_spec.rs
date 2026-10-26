@@ -60,7 +60,7 @@ async fn equal_three_node_network() -> (Vec<TestNode>, String, BlockMessage) {
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
     let genesis_block = genesis.genesis_block.clone();
-    let mut nodes = TestNode::create_network(genesis, 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 3, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {

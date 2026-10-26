@@ -17,7 +17,7 @@ async fn hash_set_casper_should_handle_multi_parent_blocks_correctly() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
     // Heartbeat mode: non-leader proposers emit empty support blocks instead
@@ -248,7 +248,7 @@ new getBlockData(`rho:block:data`), stdout(`rho:io:stdout`), tCh in {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 
@@ -323,7 +323,7 @@ async fn hash_set_casper_should_not_merge_blocks_that_touch_the_same_channel_inv
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None)
         .await
         .unwrap();
 
@@ -428,7 +428,7 @@ async fn hash_set_casper_should_compute_identical_post_states_across_validators_
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
     // Heartbeat mode: non-leader proposers emit empty support blocks instead
@@ -545,7 +545,7 @@ async fn hash_set_casper_should_produce_identical_merge_results_regardless_of_fi
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
     // Heartbeat mode: non-leader proposers emit empty support blocks instead

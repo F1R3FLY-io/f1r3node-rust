@@ -16,13 +16,14 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
-    BindPattern, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
+    BindPattern, Expr, GPrivate, GUnforgeable, ListParWithRandom, Par, TaggedContinuation,
 };
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
+    Bond, ClaimFamily, ClaimId, DeployData, Event, FreezeInterval, ProcessedDeploy,
+    ProcessedSystemDeploy, Rejoin,
 };
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -52,6 +53,8 @@ use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
 
+use crate::rust::chain_parameters::ChainParameters;
+use crate::rust::economics::claims::{ClaimBook, ClaimRecord, ClaimTerms};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_PLAY_DEPLOY_EVALUATE_TIME_METRIC, BLOCK_PLAY_DEPLOY_PRECHARGE_TIME_METRIC,
@@ -82,6 +85,106 @@ static EXPLORATORY_KEY_PAIR: OnceLock<(PrivateKey, PublicKey)> = OnceLock::new()
 
 fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
     EXPLORATORY_KEY_PAIR.get_or_init(|| Secp256k1.new_key_pair())
+}
+
+/// The PoS facts read from a finalized floor's state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FloorState {
+    pub bonds: Vec<Bond>,
+    pub active_validators: Vec<Validator>,
+    /// Validators whose bond has left `allBonds` for the unbonding quarantine
+    /// but has not yet been paid out.
+    pub withdrawers: Vec<Bond>,
+    /// Claims recorded in the state, each until a block resolves or expires
+    /// it.
+    pub claims: Vec<ClaimRecord>,
+    pub ejected: Vec<Validator>,
+    /// Each validator's ejections still inside the retention window, oldest
+    /// first.
+    pub freezes: Vec<(Validator, Vec<FreezeInterval>)>,
+    /// Each validator that has been paid overflow, the total paid, and the
+    /// payments still inside the retention window.
+    pub claimed: Vec<Claimed>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Claimed {
+    pub validator: Validator,
+    pub total: i64,
+    pub payments: Vec<Payment>,
+}
+
+/// One paid overflow claim: the block that paid it and the amount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Payment {
+    pub at: i64,
+    pub amount: i64,
+}
+
+/// The fields of one record in a PoS state map.
+struct RecordMap(SortedParMap);
+
+impl RecordMap {
+    fn field(&self, name: &str) -> Option<Par> {
+        self.0.get(Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GString(name.to_string())),
+        }]))
+    }
+
+    fn int(&self, name: &str, bad: &impl Fn(&str) -> CasperError) -> Result<i64, CasperError> {
+        match self.field(name).as_ref().map(|par| par.exprs.as_slice()) {
+            Some(
+                [Expr {
+                    expr_instance: Some(ExprInstance::GInt(value)),
+                }],
+            ) => Ok(*value),
+            other => Err(bad(&format!("expected an integer {name}, got {other:?}"))),
+        }
+    }
+
+    fn optional_int(
+        &self,
+        name: &str,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<Option<i64>, CasperError> {
+        match self.field(name).as_ref().map(|par| par.exprs.as_slice()) {
+            Some([]) => Ok(None),
+            Some(
+                [Expr {
+                    expr_instance: Some(ExprInstance::GInt(value)),
+                }],
+            ) => Ok(Some(*value)),
+            other => Err(bad(&format!(
+                "expected an integer or Nil {name}, got {other:?}"
+            ))),
+        }
+    }
+
+    fn validator(
+        &self,
+        name: &str,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<Validator, CasperError> {
+        match self.field(name).as_ref().map(|par| par.exprs.as_slice()) {
+            Some(
+                [Expr {
+                    expr_instance: Some(ExprInstance::GByteArray(bytes)),
+                }],
+            ) => Ok(Validator::from(bytes.clone())),
+            other => Err(bad(&format!("expected a byte-array {name}, got {other:?}"))),
+        }
+    }
+
+    fn bonds(
+        &self,
+        name: &str,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<Vec<Bond>, CasperError> {
+        match self.field(name) {
+            Some(bonds) => RuntimeOps::to_bond_vec(bonds),
+            None => Err(bad(&format!("record has no {name}"))),
+        }
+    }
 }
 
 pub struct RuntimeOps {
@@ -151,6 +254,16 @@ fn system_deploy_kind<S: SystemDeployTrait>(sd: &S) -> &'static str {
         "closeBlock"
     } else if any.downcast_ref::<SlashDeploy>().is_some() {
         "slash"
+    } else if any
+        .downcast_ref::<crate::rust::util::rholang::costacc::resolve_claims_deploy::ResolveClaimsDeploy>()
+        .is_some()
+    {
+        "resolveClaims"
+    } else if any
+        .downcast_ref::<crate::rust::util::rholang::costacc::dishonest_vote_deploy::DishonestVoteDeploy>()
+        .is_some()
+    {
+        "dishonestVote"
     } else if any.downcast_ref::<PreChargeDeploy>().is_some() {
         "precharge"
     } else if any.downcast_ref::<RefundDeploy>().is_some() {
@@ -236,7 +349,6 @@ impl RuntimeOps {
         let mut processed_system_deploys = Vec::with_capacity(system_deploys.len());
 
         for system_deploy_enum in system_deploys {
-            // Match on the enum and call appropriate generic method
             let result = match system_deploy_enum {
                 crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::Slash(
                     mut slash_deploy,
@@ -248,6 +360,18 @@ impl RuntimeOps {
                     mut close_deploy,
                 ) => {
                     self.play_system_deploy(&current_hash, &mut close_deploy)
+                        .await?
+                }
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::ResolveClaims(
+                    mut resolve_deploy,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut resolve_deploy)
+                        .await?
+                }
+                crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum::DishonestVote(
+                    mut evidence_deploy,
+                ) => {
+                    self.play_system_deploy(&current_hash, &mut evidence_deploy)
                         .await?
                 }
             };
@@ -315,6 +439,7 @@ impl RuntimeOps {
                 block_number,
                 sender: PublicKey::from_bytes(&Vec::new()),
                 seq_num: 0,
+                committee: Vec::new(),
             })
             .await;
 
@@ -825,43 +950,13 @@ impl RuntimeOps {
         match result {
             Either::Right(system_deploy_result) => {
                 let mcl = self.get_number_channels_data(&mergeable_channels).await?;
-                if let Some(SlashDeploy {
-                    invalid_block_hash,
-                    pk,
-                    target_activation_epoch,
-                    initial_rand: _,
-                }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
-                {
-                    Ok(SystemDeployResult::play_succeeded(
-                        final_state_hash,
-                        event_log,
-                        SystemDeployData::create_slash(
-                            invalid_block_hash.clone(),
-                            pk.clone(),
-                            *target_activation_epoch,
-                        ),
-                        mcl,
-                        system_deploy_result,
-                    ))
-                } else if let Some(CloseBlockDeploy { .. }) =
-                    system_deploy.as_any().downcast_ref::<CloseBlockDeploy>()
-                {
-                    Ok(SystemDeployResult::play_succeeded(
-                        final_state_hash,
-                        event_log,
-                        SystemDeployData::create_close(),
-                        mcl,
-                        system_deploy_result,
-                    ))
-                } else {
-                    Ok(SystemDeployResult::play_succeeded(
-                        final_state_hash,
-                        event_log,
-                        SystemDeployData::Empty,
-                        mcl,
-                        system_deploy_result,
-                    ))
-                }
+                Ok(SystemDeployResult::play_succeeded(
+                    final_state_hash,
+                    event_log,
+                    system_deploy.recorded_form(),
+                    mcl,
+                    system_deploy_result,
+                ))
             }
 
             Either::Left(usr_err) => Ok(SystemDeployResult::play_failed(event_log, usr_err)),
@@ -1036,39 +1131,14 @@ impl RuntimeOps {
         deploy_result.await
     }
 
-    /// Lenient exploratory query: a runtime execution failure degrades to an
-    /// empty result (logged, not propagated). Appropriate for display/API
-    /// reads (bonds, active validators) — NEVER for consensus-level reads,
-    /// where "failed" and "absent" must stay distinguishable
-    /// (see [`Self::play_exploratory_par_strict`]).
+    /// Runs a read-only query term against the state at `hash` and returns
+    /// whatever it wrote to its return channel. An execution failure
+    /// propagates: "the query failed" and "the value is absent" are different
+    /// facts, and only the caller knows what absence means.
     pub async fn play_exploratory_par(
         &mut self,
         par: Par,
         hash: &StateHash,
-    ) -> Result<Vec<Par>, CasperError> {
-        self.play_exploratory_par_with_mode(par, hash, false).await
-    }
-
-    /// Strict variant: a runtime injection failure PROPAGATES as an error
-    /// instead of degrading to an empty result. Required for consensus-level
-    /// reads (the protocol fault-tolerance threshold) where "query failed"
-    /// must never be conflated with "value genuinely absent" — the lenient
-    /// empty-result degradation would silently route a transient execution
-    /// failure into the local-config fallback and re-open node-local
-    /// divergence.
-    pub async fn play_exploratory_par_strict(
-        &mut self,
-        par: Par,
-        hash: &StateHash,
-    ) -> Result<Vec<Par>, CasperError> {
-        self.play_exploratory_par_with_mode(par, hash, true).await
-    }
-
-    async fn play_exploratory_par_with_mode(
-        &mut self,
-        par: Par,
-        hash: &StateHash,
-        strict: bool,
     ) -> Result<Vec<Par>, CasperError> {
         use crate::rust::metrics_constants::{
             BONDS_CACHE_GET_DATA_TIME_METRIC, BONDS_CACHE_INJ_TIME_METRIC,
@@ -1126,15 +1196,11 @@ impl RuntimeOps {
                 if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
                     tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_inj_err", rss_kb);
                 }
-                tracing::error!(error = ?err, strict, "play_exploratory_par failed");
-                if strict {
-                    Err(CasperError::RuntimeError(format!(
-                        "exploratory query execution failed (strict mode): {:?}",
-                        err
-                    )))
-                } else {
-                    Ok(Vec::new())
-                }
+                tracing::error!(error = ?err, "play_exploratory_par failed");
+                Err(CasperError::RuntimeError(format!(
+                    "exploratory query execution failed: {:?}",
+                    err
+                )))
             }
         };
 
@@ -1361,28 +1427,22 @@ impl RuntimeOps {
             .play_exploratory_par(Self::activate_validator_query_par().clone(), start_hash)
             .await?;
 
-        if validators_pars.is_empty() {
-            tracing::warn!(
-                "No result from getActiveValidators query for state {}; treating as no active validators",
-                PrettyPrinter::build_string_bytes(start_hash)
-            );
-            return Ok(Vec::new());
-        }
-
+        // The active set is seeded at genesis and re-picked every epoch, so it
+        // is never legitimately absent; an empty answer is a failed query.
         if validators_pars.len() != 1 {
             return Err(CasperError::RuntimeError(format!(
-                "Incorrect number of results from query of current bonds in state {}: {}",
+                "Expected exactly one result from the getActiveValidators query in state {}, got {}",
                 PrettyPrinter::build_string_bytes(start_hash),
                 validators_pars.len()
             )));
         }
 
         let validators = Self::to_validator_vec(validators_pars[0].to_owned())?;
-        let vlds: Vec<String> = validators.iter().map(|v| hex::encode(v)).collect();
-        tracing::info!(
-            "*** ACTIVE VALIDATORS FOR StateHash {}: {}",
-            hex::encode(start_hash),
-            vlds.join("\n")
+        tracing::debug!(
+            target: "f1r3fly.casper.pos",
+            state = %PrettyPrinter::build_string_bytes(start_hash),
+            count = validators.len(),
+            "read active validators"
         );
 
         Ok(validators)
@@ -1393,23 +1453,451 @@ impl RuntimeOps {
             .play_exploratory_par(Self::bonds_query_par().clone(), hash)
             .await?;
 
-        if bonds_pars.is_empty() {
-            tracing::warn!(
-                "No result from getBonds query for state {}; treating as empty bonds",
-                PrettyPrinter::build_string_bytes(hash)
-            );
-            return Ok(Vec::new());
-        }
-
+        // A live chain always has bonds, so an empty answer is a failed query.
         if bonds_pars.len() != 1 {
             return Err(CasperError::RuntimeError(format!(
-                "Incorrect number of results from query of current bonds in state {}: {}",
+                "Expected exactly one result from the getBonds query in state {}, got {}",
                 PrettyPrinter::build_string_bytes(hash),
                 bonds_pars.len()
             )));
         }
 
         Self::to_bond_vec(bonds_pars[0].to_owned())
+    }
+
+    /// Everything a finalized floor's state is consulted for, read in one
+    /// evaluation: most of an exploratory read's cost is fixed, so four
+    /// separate reads cost close to four times one.
+    pub async fn get_floor_state(&mut self, hash: &StateHash) -> Result<FloorState, CasperError> {
+        let pars = self
+            .play_exploratory_par(Self::floor_state_query_par().clone(), hash)
+            .await?;
+        let bad = |detail: &str| {
+            CasperError::RuntimeError(format!(
+                "the floor state query returned an invalid value in state {}: {}",
+                PrettyPrinter::build_string_bytes(hash),
+                detail
+            ))
+        };
+        let [result] = pars.as_slice() else {
+            return Err(bad(&format!("expected one result, got {}", pars.len())));
+        };
+        let [bonds, active_validators, withdrawers, evidence, ejected, rejoins, freezes, overflow, claimed] =
+            match result.exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(tuple)),
+                }] => match tuple.ps.as_slice() {
+                    [bonds, active, withdrawers, evidence, ejected, rejoins, freezes, overflow, claimed] => {
+                        [
+                            bonds,
+                            active,
+                            withdrawers,
+                            evidence,
+                            ejected,
+                            rejoins,
+                            freezes,
+                            overflow,
+                            claimed,
+                        ]
+                    }
+                    other => {
+                        return Err(bad(&format!(
+                            "expected a 9-tuple, got {} elements",
+                            other.len()
+                        )))
+                    }
+                },
+                other => return Err(bad(&format!("expected a tuple, got {other:?}"))),
+            };
+        Ok(FloorState {
+            bonds: Self::to_bond_vec(bonds.clone())?,
+            active_validators: Self::to_validator_vec(active_validators.clone())?,
+            withdrawers: Self::to_withdrawer_bond_vec(withdrawers.clone())?,
+            claims: Self::to_claim_records(evidence, rejoins, ejected, overflow, &bad)?,
+            ejected: Self::to_map_keys(ejected, &bad)?,
+            freezes: Self::to_freezes(freezes, &bad)?,
+            claimed: Self::to_claimed(claimed, &bad)?,
+        })
+    }
+
+    /// The validators keying a PoS state map.
+    fn to_map_keys(
+        map: &Par,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<Vec<Validator>, CasperError> {
+        let entries = match map.exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::EMapBody(map)),
+            }] => ParMapTypeMapper::emap_to_par_map(map.clone()).ps,
+            other => return Err(bad(&format!("expected a map, got {other:?}"))),
+        };
+        entries
+            .map_iter(|(key, _)| match key.exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(ExprInstance::GByteArray(bytes)),
+                }] => Ok(Validator::from(bytes.clone())),
+                other => Err(bad(&format!("expected a byte-array key, got {other:?}"))),
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// The claims recorded in the state at `hash`.
+    pub async fn get_claim_book(&mut self, hash: &StateHash) -> Result<ClaimBook, CasperError> {
+        let pars = self
+            .play_exploratory_par(Self::claim_records_query_par().clone(), hash)
+            .await?;
+        let bad = |detail: &str| {
+            CasperError::RuntimeError(format!(
+                "the claim maps are invalid in state {}: {}",
+                PrettyPrinter::build_string_bytes(hash),
+                detail
+            ))
+        };
+        let [result] = pars.as_slice() else {
+            return Err(bad(&format!("expected one result, got {}", pars.len())));
+        };
+        let [evidence, rejoins, ejected, overflow] = match result.exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::ETupleBody(tuple)),
+            }] => match tuple.ps.as_slice() {
+                [evidence, rejoins, ejected, overflow] => [evidence, rejoins, ejected, overflow],
+                other => {
+                    return Err(bad(&format!(
+                        "expected a 4-tuple, got {} elements",
+                        other.len()
+                    )))
+                }
+            },
+            other => return Err(bad(&format!("expected a tuple, got {other:?}"))),
+        };
+        Ok(ClaimBook {
+            records: Self::to_claim_records(evidence, rejoins, ejected, overflow, &bad)?,
+            grace_ends: Self::to_records(ejected, &bad)?
+                .into_iter()
+                .map(|(validator, ejection)| Ok((validator, ejection.int("graceEnd", &bad)?)))
+                .collect::<Result<_, CasperError>>()?,
+        })
+    }
+
+    fn claim_records_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(
+                r#"
+                  new return, rl(`rho:registry:lookup`), poSCh,
+                      evidenceCh, rejoinsCh, ejectedCh, overflowCh in {
+                    rl!(`rho:system:pos`, *poSCh) |
+                    for(@(_, PoS) <- poSCh) {
+                      @PoS!("getEjectionEvidence", *evidenceCh) |
+                      @PoS!("getPendingRejoins", *rejoinsCh) |
+                      @PoS!("getEjectedValidators", *ejectedCh) |
+                      @PoS!("getOverflowClaims", *overflowCh) |
+                      for (@evidence <- evidenceCh & @rejoins <- rejoinsCh &
+                           @ejected <- ejectedCh & @overflow <- overflowCh) {
+                        return!((evidence, rejoins, ejected, overflow))
+                      }
+                    }
+                  }
+                "#,
+            )
+            .expect("Failed to compile claim records query source")
+        })
+    }
+
+    /// Ejection claims from `evidence`, rejoin claims from `rejoins` and
+    /// overflow claims from `overflow`. A rejoin is voted on by the electorate
+    /// that ejected its target and can pass only within that ejection's grace,
+    /// both read from `ejected`.
+    fn to_claim_records(
+        evidence: &Par,
+        rejoins: &Par,
+        ejected: &Par,
+        overflow: &Par,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<Vec<ClaimRecord>, CasperError> {
+        let ejections: HashMap<Validator, RecordMap> =
+            Self::to_records(ejected, bad)?.into_iter().collect();
+        let mut claims = Vec::new();
+        for (target, record) in Self::to_records(evidence, bad)? {
+            claims.push(ClaimRecord {
+                claim: ClaimId {
+                    family: ClaimFamily::Eject,
+                    opened_at: record.int("openedAt", bad)?,
+                    proposer: record.validator("proposer", bad)?,
+                    target,
+                },
+                electorate: record.bonds("electorate", bad)?,
+                terms: ClaimTerms::Eject,
+            });
+        }
+        for (target, record) in Self::to_records(rejoins, bad)? {
+            let ejection = ejections.get(&target).ok_or_else(|| {
+                bad(&format!(
+                    "a rejoin is open for {}, which is not ejected",
+                    hex::encode(&target)
+                ))
+            })?;
+            claims.push(ClaimRecord {
+                claim: ClaimId {
+                    family: ClaimFamily::Rejoin,
+                    opened_at: record.int("openedAt", bad)?,
+                    proposer: record.validator("proposer", bad)?,
+                    target,
+                },
+                electorate: ejection.bonds("ejectionSnapshot", bad)?,
+                terms: ClaimTerms::Rejoin {
+                    topup: record.int("topup", bad)?,
+                    grace_end: ejection.int("graceEnd", bad)?,
+                },
+            });
+        }
+        for (target, record) in Self::to_records(overflow, bad)? {
+            claims.push(ClaimRecord {
+                claim: ClaimId {
+                    family: ClaimFamily::Overflow,
+                    opened_at: record.int("openedAt", bad)?,
+                    proposer: record.validator("proposer", bad)?,
+                    target,
+                },
+                electorate: record.bonds("electorate", bad)?,
+                terms: ClaimTerms::Overflow {
+                    amount: record.int("amount", bad)?,
+                },
+            });
+        }
+        Ok(claims)
+    }
+
+    fn to_claimed(
+        claimed: &Par,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<Vec<Claimed>, CasperError> {
+        Self::to_records(claimed, bad)?
+            .into_iter()
+            .map(|(validator, record)| {
+                let payments = match record
+                    .field("payments")
+                    .as_ref()
+                    .map(|par| par.exprs.as_slice())
+                {
+                    Some(
+                        [Expr {
+                            expr_instance: Some(ExprInstance::EMapBody(map)),
+                        }],
+                    ) => ParMapTypeMapper::emap_to_par_map(map.clone())
+                        .ps
+                        .map_iter(|(at, amount)| {
+                            match (at.exprs.as_slice(), amount.exprs.as_slice()) {
+                                (
+                                    [Expr {
+                                        expr_instance: Some(ExprInstance::GInt(at)),
+                                    }],
+                                    [Expr {
+                                        expr_instance: Some(ExprInstance::GInt(amount)),
+                                    }],
+                                ) => Ok(Payment {
+                                    at: *at,
+                                    amount: *amount,
+                                }),
+                                other => {
+                                    Err(bad(&format!("expected a payment by block, got {other:?}")))
+                                }
+                            }
+                        })
+                        .into_iter()
+                        .collect::<Result<Vec<_>, CasperError>>()?,
+                    other => return Err(bad(&format!("expected a payments map, got {other:?}"))),
+                };
+                Ok(Claimed {
+                    validator,
+                    total: record.int("total", bad)?,
+                    payments,
+                })
+            })
+            .collect()
+    }
+
+    /// Each validator's freezes, keyed in state by the floor each ejection
+    /// passed at; a freeze its rejoin closed carries the paying block and the
+    /// topup.
+    fn to_freezes(
+        history: &Par,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<Vec<(Validator, Vec<FreezeInterval>)>, CasperError> {
+        Self::to_records(history, bad)?
+            .into_iter()
+            .map(|(validator, by_floor)| {
+                let mut intervals = by_floor
+                    .0
+                    .map_iter(|(from, record)| {
+                        let from = match from.exprs.as_slice() {
+                            [Expr {
+                                expr_instance: Some(ExprInstance::GInt(from)),
+                            }] => *from,
+                            other => {
+                                return Err(bad(&format!(
+                                    "expected an integer ejection floor, got {other:?}"
+                                )))
+                            }
+                        };
+                        let record = match record.exprs.as_slice() {
+                            [Expr {
+                                expr_instance: Some(ExprInstance::EMapBody(map)),
+                            }] => RecordMap(ParMapTypeMapper::emap_to_par_map(map.clone()).ps),
+                            other => {
+                                return Err(bad(&format!(
+                                    "expected a freeze record, got {other:?}"
+                                )))
+                            }
+                        };
+                        let closing = (
+                            record.optional_int("to", bad)?,
+                            record.optional_int("topup", bad)?,
+                        );
+                        let rejoin = match closing {
+                            (Some(at), Some(topup)) => Some(Rejoin { at, topup }),
+                            (None, None) => None,
+                            _ => {
+                                let detail = format!(
+                                    "a freeze closes with both its block and its topup, got {closing:?}"
+                                );
+                                return Err(bad(&detail));
+                            }
+                        };
+                        Ok(FreezeInterval { from, rejoin })
+                    })
+                    .into_iter()
+                    .collect::<Result<Vec<_>, CasperError>>()?;
+                intervals.sort_by_key(|interval| interval.from);
+                Ok((validator, intervals))
+            })
+            .collect()
+    }
+
+    /// A PoS state map keyed by validator whose values are records.
+    fn to_records(
+        map: &Par,
+        bad: &impl Fn(&str) -> CasperError,
+    ) -> Result<Vec<(Validator, RecordMap)>, CasperError> {
+        let entries = match map.exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::EMapBody(map)),
+            }] => ParMapTypeMapper::emap_to_par_map(map.clone()).ps,
+            other => return Err(bad(&format!("expected a map, got {other:?}"))),
+        };
+        entries
+            .map_iter(|(key, record)| {
+                let validator = match key.exprs.as_slice() {
+                    [Expr {
+                        expr_instance: Some(ExprInstance::GByteArray(bytes)),
+                    }] => Validator::from(bytes.clone()),
+                    other => return Err(bad(&format!("expected a byte-array key, got {other:?}"))),
+                };
+                match record.exprs.as_slice() {
+                    [Expr {
+                        expr_instance: Some(ExprInstance::EMapBody(map)),
+                    }] => Ok((
+                        validator,
+                        RecordMap(ParMapTypeMapper::emap_to_par_map(map.clone()).ps),
+                    )),
+                    other => Err(bad(&format!("expected a record map, got {other:?}"))),
+                }
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// Reads the parameters fixed at genesis from the PoS contract at
+    /// `start_hash`, checked as `ChainParameters::checked` checks them.
+    pub async fn get_chain_parameters(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<ChainParameters, CasperError> {
+        let pars = self
+            .play_exploratory_par(Self::chain_parameters_query_par().clone(), start_hash)
+            .await?;
+        let bad = |detail: &str| {
+            CasperError::RuntimeError(format!(
+                "getChainParameters returned an invalid value in state {}: {}",
+                PrettyPrinter::build_string_bytes(start_hash),
+                detail
+            ))
+        };
+        let entries = match pars.as_slice() {
+            [par] => match par.exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(ExprInstance::EMapBody(map)),
+                }] => ParMapTypeMapper::emap_to_par_map(map.clone()).ps,
+                other => return Err(bad(&format!("expected a map, got {other:?}"))),
+            },
+            other => return Err(bad(&format!("expected one result, got {}", other.len()))),
+        };
+        let int = |name: &str| -> Result<i64, String> {
+            let key = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GString(name.to_string())),
+            }]);
+            match entries.get(key).as_ref().map(|par| par.exprs.as_slice()) {
+                Some(
+                    [Expr {
+                        expr_instance: Some(ExprInstance::GInt(value)),
+                    }],
+                ) => Ok(*value),
+                other => Err(format!("{name} is not an integer: {other:?}")),
+            }
+        };
+        ChainParameters::checked(int).map_err(|detail| bad(&detail))
+    }
+
+    fn chain_parameters_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(
+                r#"
+                  new return, rl(`rho:registry:lookup`), poSCh in {
+                    rl!(`rho:system:pos`, *poSCh) |
+                    for(@(_, PoS) <- poSCh) {
+                      @PoS!("getChainParameters", *return)
+                    }
+                  }
+                "#,
+            )
+            .expect("Failed to compile chain parameters query source")
+        })
+    }
+
+    fn floor_state_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(
+                r#"
+                  new return, rl(`rho:registry:lookup`), poSCh,
+                      bondsCh, activeCh, withdrawersCh, evidenceCh, ejectedCh,
+                      rejoinsCh, freezesCh, overflowCh, claimedCh in {
+                    rl!(`rho:system:pos`, *poSCh) |
+                    for(@(_, PoS) <- poSCh) {
+                      @PoS!("getBonds", *bondsCh) |
+                      @PoS!("getActiveValidators", *activeCh) |
+                      @PoS!("getWithdrawers", *withdrawersCh) |
+                      @PoS!("getEjectionEvidence", *evidenceCh) |
+                      @PoS!("getEjectedValidators", *ejectedCh) |
+                      @PoS!("getPendingRejoins", *rejoinsCh) |
+                      @PoS!("getFreezeHistory", *freezesCh) |
+                      @PoS!("getOverflowClaims", *overflowCh) |
+                      @PoS!("getClaimedOverflow", *claimedCh) |
+                      for (@bonds <- bondsCh & @active <- activeCh &
+                           @withdrawers <- withdrawersCh & @evidence <- evidenceCh &
+                           @ejected <- ejectedCh & @rejoins <- rejoinsCh &
+                           @freezes <- freezesCh & @overflow <- overflowCh &
+                           @claimed <- claimedCh) {
+                        return!((bonds, active, withdrawers, evidence, ejected, rejoins, freezes, overflow, claimed))
+                      }
+                    }
+                  }
+                "#,
+            )
+            .expect("Failed to compile floor state query source")
+        })
     }
 
     fn activate_validator_query_source() -> String {
@@ -1422,190 +1910,6 @@ impl RuntimeOps {
         }
       "#
         .to_string()
-    }
-
-    /// Reads the protocol fault-tolerance threshold (parts-per-million) from
-    /// the PoS contract at `start_hash`. Returns `None` when the contract does
-    /// not expose the getter (a chain whose genesis predates the parameter) —
-    /// the caller falls back to its local configuration in that case.
-    pub async fn get_fault_tolerance_threshold_ppm(
-        &mut self,
-        start_hash: &StateHash,
-    ) -> Result<Option<i64>, CasperError> {
-        // STRICT query: a runtime execution failure must PROPAGATE (failing
-        // node startup) rather than degrade to an empty result — the lenient
-        // path's `Ok(vec![])`-on-error would be indistinguishable from "the
-        // getter does not exist" and silently route a transient failure into
-        // the local-config fallback, re-opening node-local floor divergence.
-        // `None` is returned only after a SUCCESSFUL query with no result.
-        let ppm_pars = self
-            .play_exploratory_par_strict(Self::fault_tolerance_ppm_query_par().clone(), start_hash)
-            .await?;
-
-        if ppm_pars.is_empty() {
-            tracing::warn!(
-                "No result from getFaultToleranceThresholdPpm query for state {}; \
-                 genesis predates the on-chain protocol FTT — falling back to local config",
-                PrettyPrinter::build_string_bytes(start_hash)
-            );
-            return Ok(None);
-        }
-        if ppm_pars.len() != 1 {
-            return Err(CasperError::RuntimeError(format!(
-                "Incorrect number of results from getFaultToleranceThresholdPpm query in state {}: {}",
-                PrettyPrinter::build_string_bytes(start_hash),
-                ppm_pars.len()
-            )));
-        }
-
-        let par = &ppm_pars[0];
-        match par.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::GInt(ppm)) => {
-                // RANGE GATE (θ = ppm/1e6 ∈ [-1, 1]). This is the guard that
-                // discharges the `-den <= num <= den` hypothesis of the Rocq
-                // `FtExact.ft_exact_no_overflow` / `ft_decides_exact` decision
-                // `2q·den ⋛ S·(den+num)`. It is NOT decorative:
-                //   * ppm < -1e6 ⇒ den+num < 0 ⇒ rhs < 0 <= lhs ⇒ the oracle
-                //     returns true for ANY q, bypassing the fault-tolerance
-                //     threshold shard-wide;
-                //   * ppm > 1e6 ⇒ rhs > 2·S·den >= lhs ⇒ nothing ever
-                //     finalizes (liveness halt).
-                // `ft_decides_exact`'s `debug_assert!` cannot be relied on: it
-                // compiles out in release, which is how CI runs. Reject at the
-                // single read choke point so no caller can observe an
-                // out-of-range protocol threshold.
-                if !(-1_000_000..=1_000_000).contains(ppm) {
-                    return Err(CasperError::RuntimeError(format!(
-                        "on-chain fault-tolerance-threshold ppm out of range [-1000000, 1000000] \
-                         in state {}: {}",
-                        PrettyPrinter::build_string_bytes(start_hash),
-                        ppm
-                    )));
-                }
-                Ok(Some(*ppm))
-            }
-            other => Err(CasperError::RuntimeError(format!(
-                "getFaultToleranceThresholdPpm returned a non-integer value in state {}: {:?}",
-                PrettyPrinter::build_string_bytes(start_hash),
-                other
-            ))),
-        }
-    }
-
-    fn fault_tolerance_ppm_query_source() -> String {
-        r#"
-          new return, rl(`rho:registry:lookup`), poSCh in {
-          rl!(`rho:system:pos`, *poSCh) |
-          for(@(_, PoS) <- poSCh) {
-            @PoS!("getFaultToleranceThresholdPpm", *return)
-          }
-        }
-      "#
-        .to_string()
-    }
-
-    fn fault_tolerance_ppm_query_par() -> &'static Par {
-        static QUERY: OnceLock<Par> = OnceLock::new();
-        QUERY.get_or_init(|| {
-            Compiler::source_to_adt(&Self::fault_tolerance_ppm_query_source())
-                .expect("Failed to compile fault tolerance ppm query source")
-        })
-    }
-
-    /// The on-chain consensus parameters `(max-parent-depth, deploy-lifespan,
-    /// min-phlo-price)` baked into the PoS contract at `start_hash`. Returns
-    /// `None` when the contract does not expose the getter (a chain whose
-    /// genesis predates the parameters).
-    pub async fn get_consensus_parameters(
-        &mut self,
-        start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
-        // STRICT query — same rationale as the protocol-FTT read: a runtime
-        // failure must fail startup, never degrade into the local-config arm.
-        let pars = self
-            .play_exploratory_par_strict(Self::consensus_parameters_query_par().clone(), start_hash)
-            .await?;
-
-        if pars.is_empty() {
-            tracing::warn!(
-                "No result from getConsensusParameters query for state {}; \
-                 genesis predates the on-chain consensus parameters",
-                PrettyPrinter::build_string_bytes(start_hash)
-            );
-            return Ok(None);
-        }
-        if pars.len() != 1 {
-            return Err(CasperError::RuntimeError(format!(
-                "Incorrect number of results from getConsensusParameters query in state {}: {}",
-                PrettyPrinter::build_string_bytes(start_hash),
-                pars.len()
-            )));
-        }
-
-        let bad = |detail: &str| {
-            CasperError::RuntimeError(format!(
-                "getConsensusParameters returned an invalid value in state {}: {}",
-                PrettyPrinter::build_string_bytes(start_hash),
-                detail
-            ))
-        };
-        let int_at = |tuple: &models::rhoapi::ETuple, i: usize| -> Option<i64> {
-            match tuple.ps.get(i)?.exprs.first()?.expr_instance.as_ref()? {
-                ExprInstance::GInt(v) => Some(*v),
-                _ => None,
-            }
-        };
-
-        match pars[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-            Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 3 => {
-                let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
-                let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
-                let min_phlo = int_at(tuple, 2).ok_or_else(|| bad("non-integer minPhloPrice"))?;
-                // RANGE GATES at the single read choke point. The parent-spread
-                // rule takes mpd as i32 (i32::MAX = depth check disabled); a
-                // window of zero or less inverts the expiry and repeat rules;
-                // a negative floor price rejects every deploy.
-                if !(1..=i32::MAX as i64).contains(&mpd) {
-                    return Err(bad(&format!(
-                        "maxParentDepth out of range [1, i32::MAX]: {mpd}"
-                    )));
-                }
-                // Capped at i32::MAX because the narrowest consumer (the
-                // expiry rule's expiration_threshold) is i32.
-                if !(1..=i32::MAX as i64).contains(&lifespan) {
-                    return Err(bad(&format!(
-                        "deployLifespan out of range [1, i32::MAX]: {lifespan}"
-                    )));
-                }
-                if min_phlo < 0 {
-                    return Err(bad(&format!(
-                        "minPhloPrice out of range [0, i64::MAX]: {min_phlo}"
-                    )));
-                }
-                Ok(Some((mpd as i32, lifespan, min_phlo)))
-            }
-            other => Err(bad(&format!("expected a 3-tuple, got {other:?}"))),
-        }
-    }
-
-    fn consensus_parameters_query_source() -> String {
-        r#"
-          new return, rl(`rho:registry:lookup`), poSCh in {
-          rl!(`rho:system:pos`, *poSCh) |
-          for(@(_, PoS) <- poSCh) {
-            @PoS!("getConsensusParameters", *return)
-          }
-        }
-      "#
-        .to_string()
-    }
-
-    fn consensus_parameters_query_par() -> &'static Par {
-        static QUERY: OnceLock<Par> = OnceLock::new();
-        QUERY.get_or_init(|| {
-            Compiler::source_to_adt(&Self::consensus_parameters_query_source())
-                .expect("Failed to compile consensus parameters query source")
-        })
     }
 
     fn activate_validator_query_par() -> &'static Par {
@@ -1705,11 +2009,76 @@ impl RuntimeOps {
         })
         .collect::<Result<Vec<_>, _>>()
     }
+
+    /// `withdrawers` maps a validator to `(bond, quarantineEnd)`, so the stake
+    /// is the first element of the pair rather than the value itself.
+    fn to_withdrawer_bond_vec(withdrawers_map: Par) -> Result<Vec<Bond>, CasperError> {
+        let ps = match withdrawers_map.exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::EMapBody(map)),
+            }] => ParMapTypeMapper::emap_to_par_map(map.clone()).ps,
+            other => {
+                return Err(CasperError::RuntimeError(format!(
+                    "Expected the withdrawers map, got {other:?}"
+                )))
+            }
+        };
+
+        ps.map_iter(|(validator, entry)| {
+            if validator.exprs.len() != 1 || entry.exprs.len() != 1 {
+                return Err(CasperError::RuntimeError(
+                    "Withdrawer entry was not a single validator and a single pair.".to_string(),
+                ));
+            }
+
+            let validator_name = match validator.exprs[0].expr_instance.as_ref() {
+                Some(ExprInstance::GByteArray(g_byte_array)) => Ok(g_byte_array.clone().into()),
+                _ => Err(CasperError::RuntimeError(
+                    "Expected GByteArray in withdrawer validator".to_string(),
+                )),
+            }?;
+
+            let stake_amount = match entry.exprs[0].expr_instance.as_ref() {
+                Some(ExprInstance::ETupleBody(tuple)) if !tuple.ps.is_empty() => {
+                    match tuple.ps[0]
+                        .exprs
+                        .first()
+                        .and_then(|e| e.expr_instance.as_ref())
+                    {
+                        Some(ExprInstance::GInt(g_int)) => Ok(*g_int),
+                        _ => Err(CasperError::RuntimeError(
+                            "Expected GInt bond in withdrawer pair".to_string(),
+                        )),
+                    }
+                }
+                _ => Err(CasperError::RuntimeError(
+                    "Expected an ETuple in withdrawer entry".to_string(),
+                )),
+            }?;
+
+            Ok(Bond {
+                validator: validator_name,
+                stake: stake_amount,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A withdrawers value that is not a map is an error, not an empty map:
+    /// read as empty, the bucket view would drop every quarantined validator.
+    #[test]
+    fn a_withdrawers_value_that_is_not_a_map_is_refused() {
+        assert!(RuntimeOps::to_withdrawer_bond_vec(Par::default()).is_err());
+        let not_a_map = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(7)),
+        }]);
+        assert!(RuntimeOps::to_withdrawer_bond_vec(not_a_map).is_err());
+    }
 
     #[test]
     fn fold_bitmask_or_empty_returns_none() {

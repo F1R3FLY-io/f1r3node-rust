@@ -60,7 +60,7 @@ async fn create_engine_cell(node: &TestNode) -> EngineCell {
 #[tokio::test]
 async fn unknown_sig_returns_pending_with_empty_fields() {
     let ctx = TestContext::new().await;
-    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None)
         .await
         .unwrap();
     let engine_cell = create_engine_cell(&nodes[0]).await;
@@ -85,7 +85,7 @@ async fn unknown_sig_returns_pending_with_empty_fields() {
 #[tokio::test]
 async fn resolve_pure_function_returns_pending_for_unknown_sig() {
     let ctx = TestContext::new().await;
-    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None)
         .await
         .unwrap();
 
@@ -110,7 +110,7 @@ async fn resolve_pure_function_returns_pending_for_unknown_sig() {
 #[tokio::test]
 async fn terminal_records_map_states_and_frozen_fields() {
     let ctx = TestContext::new().await;
-    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None)
         .await
         .unwrap();
     let dag = nodes[0].casper.block_dag().await.expect("dag");
@@ -154,7 +154,7 @@ async fn terminal_records_map_states_and_frozen_fields() {
 #[tokio::test]
 async fn terminal_lookup_is_write_once() {
     let ctx = TestContext::new().await;
-    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None, None)
+    let nodes = TestNode::create_network(ctx.genesis.clone(), 1, None, None, None)
         .await
         .unwrap();
     let dag = nodes[0].casper.block_dag().await.expect("dag");
@@ -370,14 +370,15 @@ async fn a_finality_advance_settles_the_verdict_without_another_block() {
 
     // Single-validator genesis: silent bonded validators never contribute
     // witnessing weight, so the LFB cannot advance at all without them.
-    let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    let mut genesis_parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    genesis_parameters.2.proof_of_stake.max_parent_depth = 10;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .expect("build single-validator genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
     let mut nodes = TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
-        max_parent_depth: Some(10),
         finalization_rate: Some(0),
         ..Default::default()
     })
@@ -461,14 +462,15 @@ async fn a_finality_advance_settles_the_verdict_without_another_block() {
 async fn an_advance_persisted_without_its_settle_is_settled_by_the_next_cycle() {
     use casper::rust::util::construct_deploy;
 
-    let genesis_parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    let mut genesis_parameters =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    genesis_parameters.2.proof_of_stake.max_parent_depth = 10;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(genesis_parameters))
         .await
         .expect("build single-validator genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
     let mut nodes = TestNode::create_network_with_overrides(genesis, 1, ShardOverrides {
-        max_parent_depth: Some(10),
         finalization_rate: Some(0),
         ..Default::default()
     })
@@ -547,9 +549,7 @@ async fn a_finalizer_cycle_writes_the_verdict_it_decides() {
         .await
         .expect("build single-validator genesis");
     let shard_id = genesis.genesis_block.shard_id.clone();
-    // Finite parent depth — the register's contestability bound; the
-    // TestNode default is the i32::MAX disabled sentinel.
-    let mut nodes = TestNode::create_network(genesis, 1, None, None, Some(10), None)
+    let mut nodes = TestNode::create_network(genesis, 1, None, None, None)
         .await
         .expect("create_network");
     nodes[0].allow_empty_blocks = true;

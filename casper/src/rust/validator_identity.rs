@@ -4,9 +4,11 @@ use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::{SignaturesAlg, SignaturesAlgFactory};
+use crypto::rust::signatures::signed::Signed;
 use models::casper::Signature;
-use models::rust::casper::protocol::casper_message::BlockMessage;
+use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 
+use super::errors::CasperError;
 use super::util::proto_util;
 
 #[derive(Clone)]
@@ -51,6 +53,17 @@ impl ValidatorIdentity {
         new_block.block_hash = block_hash;
 
         new_block
+    }
+
+    pub fn sign_deploy(&self, data: DeployData) -> Result<Signed<DeployData>, CasperError> {
+        let algorithm =
+            SignaturesAlgFactory::apply(&self.signature_algorithm).ok_or_else(|| {
+                CasperError::SigningError(format!(
+                    "unknown signature algorithm {}",
+                    self.signature_algorithm
+                ))
+            })?;
+        Signed::create(data, algorithm, self.private_key.clone()).map_err(CasperError::SigningError)
     }
 
     /// Fast-path variant of `sign_block` that reuses per-deploy Merkle

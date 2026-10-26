@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
@@ -19,8 +20,8 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    BlockMessage, Body, Bond, ClaimResolution, DeployData, F1r3flyState, Header, Justification,
+    LeakyBucketVote,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -31,11 +32,16 @@ use tracing;
 
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::casper::CasperSnapshot;
+use crate::rust::economics::bucket_view::LeakyBucketDecision;
+use crate::rust::economics::claims::{testimony, FloorView, VoteHistory, Voter};
+use crate::rust::economics::dishonest_vote::contradicts_own_ancestry;
 use crate::rust::errors::CasperError;
 use crate::rust::finality::block_facts::{held_block_facts, BlockFacts};
 use crate::rust::finality::floor_context::{FloorContext, RetryGateBasis};
 use crate::rust::slashing_authorization::{authorized_slash_candidates, checked_next_seq};
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
+use crate::rust::util::rholang::costacc::dishonest_vote_deploy::DishonestVoteDeploy;
+use crate::rust::util::rholang::costacc::resolve_claims_deploy::ResolveClaimsDeploy;
 use crate::rust::util::rholang::costacc::slash_deploy::SlashDeploy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -546,7 +552,7 @@ async fn derive_floor_context(
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
             casper_snapshot
                 .on_chain_state
-                .shard_conf
+                .chain
                 .fault_tolerance_threshold_ppm,
         ),
     )
@@ -613,7 +619,7 @@ async fn prepare_user_deploys_with_policy(
         };
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         block_number,
-        casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+        casper_snapshot.on_chain_state.chain.deploy_lifespan,
     )?;
     // The FLOOR-clock window bound for retry work. The floor is the only
     // clock that closes a validity window irreversibly (the merge window
@@ -625,7 +631,7 @@ async fn prepare_user_deploys_with_policy(
         .map(|ctx| {
             crate::rust::util::deploy_window::earliest_valid_after(
                 ctx.floor.block_number,
-                casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+                casper_snapshot.on_chain_state.chain.deploy_lifespan,
             )
         })
         .transpose()?;
@@ -1528,7 +1534,7 @@ fn unfinalized_cone_bounds(
     Ok(UnfinalizedConeBounds {
         last_finalized_block_number,
         earliest_block_number: current_block_number
-            .saturating_sub(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan),
+            .saturating_sub(casper_snapshot.on_chain_state.chain.deploy_lifespan),
     })
 }
 
@@ -2145,7 +2151,7 @@ fn fresh_local_deploy_stats(
         .collect();
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         block_number,
-        casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+        casper_snapshot.on_chain_state.chain.deploy_lifespan,
     )?;
     let candidates: HashSet<&Signed<DeployData>> = stored_deploys
         .iter()
@@ -2213,7 +2219,7 @@ fn in_scope_local_deploy_stats(
         .collect();
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         block_number,
-        casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+        casper_snapshot.on_chain_state.chain.deploy_lifespan,
     )?;
     let candidates: HashSet<&Signed<DeployData>> = stored_deploys
         .iter()
@@ -2294,7 +2300,7 @@ fn rejected_buffer_has_recoverable_deploys(
     }
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         block_number,
-        casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+        casper_snapshot.on_chain_state.chain.deploy_lifespan,
     )?;
     // Buffered work is retry work: its window reads the FLOOR clock, so a
     // floor-window-closed entry no longer counts as a recovery backlog and
@@ -2303,7 +2309,7 @@ fn rejected_buffer_has_recoverable_deploys(
         .map(|ctx| {
             crate::rust::util::deploy_window::earliest_valid_after(
                 ctx.floor.block_number,
-                casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
+                casper_snapshot.on_chain_state.chain.deploy_lifespan,
             )
         })
         .transpose()?
@@ -2806,7 +2812,9 @@ pub async fn create(
     >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
+    block_dag_storage: &BlockDagKeyValueStorage,
     selection: super::proposer::DeploySelection,
+    decision: LeakyBucketDecision,
 ) -> Result<BlockCreatorResult, CasperError> {
     create_with_progress(
         casper_snapshot,
@@ -2816,7 +2824,9 @@ pub async fn create(
         rejected_deploy_buffer,
         runtime_manager,
         block_store,
+        block_dag_storage,
         selection,
+        decision,
         &mut FinalityProgress::default(),
     )
     .await
@@ -2832,7 +2842,9 @@ pub async fn create_with_progress(
     >,
     runtime_manager: &RuntimeManager,
     block_store: &mut KeyValueBlockStore,
+    block_dag_storage: &BlockDagKeyValueStorage,
     selection: super::proposer::DeploySelection,
+    decision: LeakyBucketDecision,
     finality_progress: &mut FinalityProgress,
 ) -> Result<BlockCreatorResult, CasperError> {
     let allow_empty_blocks = selection.allows_empty();
@@ -3219,6 +3231,42 @@ pub async fn create_with_progress(
         }
         kept
     };
+
+    // Proposing is allowed while the main parent's committee seats this
+    // validator, but an ejection request is judged against this block's own
+    // committee, which the floor may already have moved past it.
+    let floor_and_committee: Option<(&FloorContext, Vec<Bond>)> = match floor_ctx.as_ref() {
+        Some(ctx) => Some((
+            ctx,
+            crate::rust::finality::floor::floor_committee(runtime_manager, &ctx.floor_state)
+                .await?,
+        )),
+        None => None,
+    };
+    let user_deploys: HashSet<Signed<DeployData>> = match &floor_and_committee {
+        Some((_, bonds))
+            if !bonds
+                .iter()
+                .any(|bond| bond.validator == local_validator && bond.stake > 0) =>
+        {
+            let (held, kept): (Vec<_>, Vec<_>) = user_deploys.into_iter().partition(|deploy| {
+                deploy.pk.bytes.as_ref() == local_validator.as_ref()
+                    && crate::rust::engine::multi_parent_casper::ejection_requests::is_ejection_request(
+                        &deploy.data.term,
+                    )
+            });
+            if !held.is_empty() {
+                tracing::info!(
+                    target: "f1r3fly.casper.economics",
+                    held = held.len(),
+                    block_number = next_block_num,
+                    "own ejection requests held back: this block's committee does not seat its proposer"
+                );
+            }
+            kept.into_iter().collect()
+        }
+        _ => user_deploys,
+    };
     let has_user_or_dummy_deploys = !user_deploys.is_empty() || !dummy_deploys.is_empty();
 
     // Union own slashes with merge-rejected slashes, dedup by
@@ -3231,7 +3279,7 @@ pub async fn create_with_progress(
     let own_invalid_block_hashes = slashing_deploys
         .iter()
         .map(|sd| sd.invalid_block_hash.clone());
-    let epoch_length = casper_snapshot.on_chain_state.shard_conf.epoch_length;
+    let epoch_length = casper_snapshot.on_chain_state.chain.epoch_length;
     let candidate_recovered_rejected_slashes =
         crate::rust::merging::rejected_slash::filter_recoverable(
             rejected_slashes,
@@ -3344,6 +3392,153 @@ pub async fn create_with_progress(
         }
     }
 
+    // A block's bonds are its floor committee, which its deploys read.
+    // The floor requirement is real here even for parentless fixture shapes:
+    // a snapshot with no derivable floor cannot package bonds.
+    let (ctx, block_bonds) = floor_and_committee.ok_or_else(|| {
+        CasperError::Other(
+            "finalized_floor requires a non-empty parent set; genesis pre-state comes from config"
+                .to_string(),
+        )
+    })?;
+    let floor_number = ctx.floor.block_number;
+    // The block is judged against its own floor, so it votes on what that
+    // floor records.
+    let floor = FloorView::read(&casper_snapshot.dag, runtime_manager, ctx).await?;
+    let proposal = decision(&floor.knowledge);
+
+    let reach = casper_snapshot
+        .on_chain_state
+        .chain
+        .window_basis()
+        .evidence_reach();
+    // Votes and resolutions are owed on the claims open in the pre-state, and
+    // the resolutions execute with the block's other system deploys.
+    let (leaky_bucket_votes, resolutions, grace_expiries, expiries): (
+        Vec<LeakyBucketVote>,
+        Vec<ClaimResolution>,
+        Vec<Validator>,
+        Vec<models::rust::casper::protocol::casper_message::ClaimId>,
+    ) = {
+        let book = runtime_manager.claim_book(&merge_pre_info.state).await?;
+        let records = &book.records;
+        let history = VoteHistory::new(block_dag_storage, block_store, &casper_snapshot.dag);
+        let slashed_blocks: Vec<models::rust::block_hash::BlockHash> = system_deploys_converted
+            .iter()
+            .filter_map(|deploy| {
+                deploy
+                    .as_slash()
+                    .map(|slash| slash.invalid_block_hash.clone())
+            })
+            .collect();
+        let resolvable = book.without(&history.slashed_by(&slashed_blocks)?);
+        let last_own_block = justifications
+            .iter()
+            .find(|justification| justification.validator == local_validator)
+            .map(|justification| justification.latest_block_hash.clone());
+        let voter = Voter {
+            validator: &local_validator,
+            last_own_block: last_own_block.as_ref(),
+            block_number: next_block_num,
+        };
+        let cited: Vec<BlockHash> = parents.iter().map(|p| p.block_hash.clone()).collect();
+        let mut votes = Vec::new();
+        for record in history
+            .owed(records, &voter, proposal.params.claim_deadline_blocks)?
+            .into_iter()
+            .take(proposal.params.vote_list_bound.get() as usize)
+        {
+            let mut yea = proposal.votes_yea(record);
+            // The view can miss a block its ancestry holds, so a nay is
+            // checked against what this block's own ancestry proves. A block
+            // the check needs and this node lacks is `BlockNotHeld`: the
+            // proposer fetches it rather than sign a nay it cannot check.
+            if let Some(nay) = testimony(record, false, &floor).filter(|_| !yea) {
+                yea = contradicts_own_ancestry(
+                    &casper_snapshot.dag,
+                    cited.clone(),
+                    &record.claim.target,
+                    &nay,
+                    reach,
+                    &proposal.params.reward,
+                )?;
+            }
+            votes.push(LeakyBucketVote {
+                claim: record.claim.clone(),
+                yea,
+                testimony: testimony(record, yea, &floor),
+            });
+        }
+        let resolutions = history.resolutions(&resolvable.records, &floor)?;
+        let expiries = resolvable.expiries(
+            floor.number,
+            proposal.params.claim_deadline_blocks,
+            &resolutions,
+        );
+        (
+            votes,
+            resolutions,
+            resolvable.grace_expiries(floor.number),
+            expiries,
+        )
+    };
+    if !resolutions.is_empty() || !grace_expiries.is_empty() || !expiries.is_empty() {
+        system_deploys_converted.push(SystemDeployEnum::ResolveClaims(ResolveClaimsDeploy {
+            resolutions,
+            grace_expiries,
+            expiries,
+            floor_hash: ctx.floor.hash.clone(),
+            floor_number,
+            pk: validator_identity.public_key.clone(),
+            initial_rand: system_deploy_util::generate_resolve_claims_deploy_random_seed(
+                Bytes::copy_from_slice(&validator_identity.public_key.bytes),
+                next_seq_num,
+            ),
+        }));
+    }
+
+    let mut accused = HashSet::new();
+    for pending in &proposal.accusations {
+        let accusation = &pending.accusation;
+        if accusation.accused == local_validator || accused.contains(&accusation.accused) {
+            continue;
+        }
+        let proven = match pending.proves(
+            &casper_snapshot.dag,
+            block_store,
+            floor_number,
+            reach,
+            &proposal.params.reward,
+        ) {
+            Ok(proven) => proven,
+            // Offering evidence is optional: a proposer missing part of the
+            // ancestry leaves the accusation to one that holds it.
+            Err(CasperError::BlockNotHeld(missing, _)) => {
+                tracing::debug!(
+                    target: "f1r3fly.casper.economics",
+                    missing = %hex::encode(&missing),
+                    "dishonest-vote evidence not offered: its ancestry is not held"
+                );
+                false
+            }
+            Err(error) => return Err(error),
+        };
+        if proven {
+            accused.insert(accusation.accused.clone());
+            system_deploys_converted.push(SystemDeployEnum::DishonestVote(DishonestVoteDeploy {
+                accused: accusation.accused.clone(),
+                vote_block: accusation.vote_block.clone(),
+                claim: accusation.claim.clone(),
+                pk: validator_identity.public_key.clone(),
+                initial_rand: system_deploy_util::generate_dishonest_vote_deploy_random_seed(
+                    Bytes::copy_from_slice(&validator_identity.public_key.bytes),
+                    next_seq_num,
+                    &accusation.accused,
+                ),
+            }));
+        }
+    }
+
     // Add the actual close block deploy
     system_deploys_converted.push(SystemDeployEnum::Close(CloseBlockDeploy {
         initial_rand: system_deploy_util::generate_close_deploy_random_seed_from_pk(
@@ -3372,6 +3567,7 @@ pub async fn create_with_progress(
         block_number: next_block_num,
         sender: validator_identity.public_key.clone(),
         seq_num: next_seq_num,
+        committee: block_bonds.clone(),
     };
 
     // Compute checkpoint data
@@ -3494,31 +3690,24 @@ pub async fn create_with_progress(
         block_hash_leaves,
     } = checkpoint_data;
 
-    let block_bonds = {
-        // The floor requirement is real here even for parentless fixture
-        // shapes: a block's bonds are the floor committee, so a snapshot
-        // with no derivable floor cannot package bonds.
-        let ctx = floor_ctx.as_ref().ok_or_else(|| {
-            CasperError::Other(
-                "finalized_floor requires a non-empty parent set; genesis pre-state comes from \
-                 config"
-                    .to_string(),
-            )
-        })?;
-        let committee: Vec<Bond> =
-            crate::rust::finality::floor::floor_committee(runtime_manager, &ctx.floor_state)
-                .await?;
-        if committee.len() != new_bonds.len() {
-            tracing::info!(
-                target: "f1r3fly.casper.bonds_validation",
-                floor_number = ctx.floor.block_number,
-                committee = committee.len(),
-                post_state_bonds = new_bonds.len(),
-                "block bonds field differs from post-state bonds"
-            );
-        }
-        committee
-    };
+    if block_bonds.len() != new_bonds.len() {
+        tracing::info!(
+            target: "f1r3fly.casper.bonds_validation",
+            floor_number,
+            committee = block_bonds.len(),
+            post_state_bonds = new_bonds.len(),
+            "block bonds field differs from post-state bonds"
+        );
+    }
+
+    if pre_state_hash != merge_pre_info.state {
+        return Err(CasperError::RuntimeError(format!(
+            "the checkpoint executed on pre-state {} but votes and resolutions were taken \
+             from {}",
+            hex::encode(&pre_state_hash),
+            hex::encode(&merge_pre_info.state)
+        )));
+    }
 
     let casper_version = casper_snapshot.on_chain_state.shard_conf.casper_version;
 
@@ -3532,18 +3721,28 @@ pub async fn create_with_progress(
     let package_started = std::time::Instant::now();
     let pre_state_hash_for_result = pre_state_hash.clone();
     let post_state_hash_for_result = post_state_hash.clone();
+    let body = Body {
+        state: F1r3flyState {
+            pre_state_hash,
+            post_state_hash,
+            bonds: block_bonds,
+            block_number: block_data.block_number,
+        },
+        deploys: processed_deploys,
+        rejected_deploys,
+        system_deploys: processed_system_deploys,
+        extra_bytes: Bytes::new(),
+        applied_from_scope,
+        // None = header-derivable (single-parent, genesis): recorded as
+        // empty bytes per the field contract.
+        merge_base: merge_base.unwrap_or_default(),
+        leaky_bucket_votes,
+    };
     let unsigned_block = package_block(
         &block_data,
         parents.iter().map(|p| p.block_hash.clone()).collect(),
         justifications.iter().cloned().collect(),
-        pre_state_hash,
-        post_state_hash,
-        processed_deploys,
-        rejected_deploys,
-        processed_system_deploys,
-        block_bonds,
-        applied_from_scope,
-        merge_base,
+        body,
         shard_id,
         casper_version,
         &block_hash_leaves,
@@ -3645,37 +3844,11 @@ fn package_block(
     block_data: &BlockData,
     parents: Vec<Bytes>,
     justifications: Vec<Justification>,
-    pre_state_hash: Bytes,
-    post_state_hash: Bytes,
-    deploys: Vec<ProcessedDeploy>,
-    rejected_deploys: Vec<RejectedDeploy>,
-    system_deploys: Vec<ProcessedSystemDeploy>,
-    bonds_map: Vec<Bond>,
-    applied_from_scope: Vec<Bytes>,
-    merge_base: Option<BlockHash>,
+    body: Body,
     shard_id: String,
     version: i64,
     block_hash_leaves: &[[u8; 32]],
 ) -> BlockMessage {
-    let state = F1r3flyState {
-        pre_state_hash,
-        post_state_hash,
-        bonds: bonds_map,
-        block_number: block_data.block_number,
-    };
-
-    let body = Body {
-        state,
-        deploys,
-        rejected_deploys,
-        system_deploys,
-        extra_bytes: Bytes::new(),
-        applied_from_scope,
-        // None = header-derivable (single-parent, genesis): recorded as
-        // empty bytes per the field contract.
-        merge_base: merge_base.unwrap_or_default(),
-    };
-
     let header = Header {
         parents_hash_list: parents,
         timestamp: block_data.time_stamp,
@@ -3704,6 +3877,7 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 #[cfg(test)]
 mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use models::rust::casper::protocol::casper_message::ProcessedDeploy;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -3733,17 +3907,25 @@ mod tests {
                 block_number,
                 sender: PublicKey::new(sender.clone()),
                 seq_num: block_number as i32,
+                committee: Vec::new(),
             },
             parents,
             Vec::new(),
-            Bytes::new(),
-            Bytes::new(),
-            deploys,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            None,
+            Body {
+                state: F1r3flyState {
+                    pre_state_hash: Bytes::new(),
+                    post_state_hash: Bytes::new(),
+                    bonds: Vec::new(),
+                    block_number,
+                },
+                deploys,
+                rejected_deploys: Vec::new(),
+                system_deploys: Vec::new(),
+                extra_bytes: Bytes::new(),
+                applied_from_scope: Vec::new(),
+                merge_base: Bytes::new(),
+                leaky_bucket_votes: Vec::new(),
+            },
             "test".to_string(),
             1,
             &[],
@@ -3799,7 +3981,7 @@ mod tests {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         let validator_id = validator(1);
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
+        snapshot.on_chain_state.chain.deploy_lifespan = 10;
 
         let lfb_hash = invalid_block_hash(0x51);
         let user_hash = invalid_block_hash(0x52);
@@ -3975,7 +4157,7 @@ mod tests {
         let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let deploy = |time_stamp, valid_after_block_number, expiration_timestamp| {
             Signed::create(
                 DeployData {
@@ -4125,7 +4307,7 @@ mod tests {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         snapshot.on_chain_state.active_validators = vec![validator(1), validator(2), validator(3)];
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
+        snapshot.on_chain_state.chain.deploy_lifespan = 10;
 
         let lfb_hash = invalid_block_hash(0x71);
         let user_hash = invalid_block_hash(0x72);
@@ -5220,7 +5402,7 @@ mod tests {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         snapshot.on_chain_state.active_validators = vec![validator(1), validator(2), validator(3)];
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
+        snapshot.on_chain_state.chain.deploy_lifespan = 10;
 
         let lfb_hash = invalid_block_hash(0x86);
         let first_hash = invalid_block_hash(0x87);
@@ -5282,7 +5464,7 @@ mod tests {
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
         snapshot.on_chain_state.active_validators = vec![validator(1), validator(2), validator(3)];
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
+        snapshot.on_chain_state.chain.deploy_lifespan = 10;
 
         let lfb_hash = invalid_block_hash(0x89);
         let sibling_hash = invalid_block_hash(0x8a);
@@ -5349,7 +5531,7 @@ mod tests {
             .expect("store")
             .map(|block| block.body.state.block_number);
         let earliest = (casper_snapshot.max_block_num + 1)
-            .saturating_sub(casper_snapshot.on_chain_state.shard_conf.deploy_lifespan);
+            .saturating_sub(casper_snapshot.on_chain_state.chain.deploy_lifespan);
         let walk = |roots: Vec<BlockHash>,
                     visit: &mut dyn FnMut(&BlockHash, &BlockMessage) -> bool| {
             let mut stack = roots;
@@ -5489,7 +5671,7 @@ mod tests {
                 snapshot.on_chain_state.active_validators =
                     vec![validator(1), validator(2), validator(3)];
             }
-            snapshot.on_chain_state.shard_conf.deploy_lifespan = 2 + next(9) as i64;
+            snapshot.on_chain_state.chain.deploy_lifespan = 2 + next(9) as i64;
             let hash = |i: usize| -> BlockHash {
                 let mut bytes = format!("dip-{case:05}-{i:04}").into_bytes();
                 bytes.resize(32, 0);
@@ -5896,7 +6078,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 10;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let buffered = construct_deploy::basic_deploy_data(71, None, Some("test".to_string()))
             .expect("buffered deploy");
         let ordinary = construct_deploy::basic_deploy_data(72, None, Some("test".to_string()))
@@ -5948,7 +6130,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("time")
@@ -6044,7 +6226,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 10;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .expect("time")
@@ -6119,7 +6301,7 @@ mod tests {
             .expect("block store");
         let mut snapshot =
             crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let valid = construct_deploy::basic_deploy_data(141, None, Some("test".to_string()))
             .expect("deploy");
         deploy_storage
@@ -6196,7 +6378,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 32;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let deploys: Vec<_> = (91..=130)
             .map(|id| {
                 construct_deploy::basic_deploy_data(id, None, Some("test".to_string()))
@@ -6252,7 +6434,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 128;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        snapshot.on_chain_state.chain.deploy_lifespan = 500;
         let payload = "x".repeat(USER_DEPLOY_BYTE_PROPOSAL_BUDGET / 8);
         let deploys: Vec<_> = (1..=40)
             .map(|id| {
@@ -6327,7 +6509,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 32;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        snapshot.on_chain_state.chain.deploy_lifespan = 500;
         let deploys: Vec<_> = (1..=20)
             .map(|id| {
                 construct_deploy::source_deploy(
@@ -6411,7 +6593,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 32;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        snapshot.on_chain_state.chain.deploy_lifespan = 500;
         let in_scope: Vec<_> = (1..=95)
             .map(|id| {
                 construct_deploy::source_deploy(
@@ -6517,7 +6699,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 32;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        snapshot.on_chain_state.chain.deploy_lifespan = 500;
         let deploy = construct_deploy::source_deploy(
             "@stranded_no_local_buffer!(0)".to_string(),
             1_000,
@@ -6593,7 +6775,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 128;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        snapshot.on_chain_state.chain.deploy_lifespan = 500;
         let deploys: Vec<_> = (1..=20)
             .map(|id| {
                 construct_deploy::source_deploy(
@@ -6712,7 +6894,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 128;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        snapshot.on_chain_state.chain.deploy_lifespan = 500;
         let deploy = construct_deploy::source_deploy(
             "@parent_chain!(0)".to_string(),
             1_000,
@@ -6804,7 +6986,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 128;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        snapshot.on_chain_state.chain.deploy_lifespan = 500;
         let deploy = construct_deploy::source_deploy(
             "@stranded!(0)".to_string(),
             1_000,
@@ -6919,7 +7101,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 128;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 500;
+        snapshot.on_chain_state.chain.deploy_lifespan = 500;
         let deploy = construct_deploy::source_deploy(
             "@finalized!(0)".to_string(),
             1_000,
@@ -7011,7 +7193,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 10;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let recovered = construct_deploy::basic_deploy_data(81, None, Some("test".to_string()))
             .expect("recovered deploy");
         let ordinary = construct_deploy::basic_deploy_data(82, None, Some("test".to_string()))
@@ -7146,7 +7328,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 10;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let recovered = construct_deploy::basic_deploy_data(91, None, Some("test".to_string()))
             .expect("recovered deploy");
 
@@ -7201,7 +7383,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 10;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let recovered = construct_deploy::basic_deploy_data(92, None, Some("test".to_string()))
             .expect("recovered deploy");
 
@@ -7265,7 +7447,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 10;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 10;
+        snapshot.on_chain_state.chain.deploy_lifespan = 10;
         let recovered = construct_deploy::source_deploy_now(
             "@101!(101)".to_string(),
             None,
@@ -7443,7 +7625,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 10;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
         let buffered = construct_deploy::basic_deploy_data(95, None, Some("test".to_string()))
             .expect("buffered deploy");
 
@@ -7529,7 +7711,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 10;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
 
         let retry = construct_deploy::source_deploy(
             "@71!(71)".to_string(),
@@ -7653,7 +7835,7 @@ mod tests {
             .on_chain_state
             .shard_conf
             .max_user_deploys_per_block = 10;
-        snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+        snapshot.on_chain_state.chain.deploy_lifespan = 50;
 
         let retry = construct_deploy::source_deploy(
             "@71!(71)".to_string(),

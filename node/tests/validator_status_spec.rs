@@ -83,7 +83,6 @@ fn services(
         node_discovery.clone(),
         None,
         100,
-        10,
         is_ready.clone(),
     );
     let grpc = DeployGrpcServiceV1Impl::new(

@@ -37,7 +37,7 @@ async fn network_with_carrier(cell: &str) -> (Vec<TestNode>, Signed<DeployData>)
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {

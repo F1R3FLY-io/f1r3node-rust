@@ -6,6 +6,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::chain_parameters::ChainParameters;
 use casper::rust::errors::CasperError;
 use casper::rust::genesis::contracts::proof_of_stake::ProofOfStake;
 use casper::rust::genesis::contracts::validator::Validator as GenesisValidator;
@@ -52,14 +53,17 @@ fn mk_snapshot(
 
     let mut shard_conf = CasperShardConf::new();
     shard_conf.shard_name = shard_name;
-    shard_conf.max_parent_depth = 0;
-    shard_conf.deploy_lifespan = 50;
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
     bonds_map.insert(validator.clone(), 100);
     snapshot.on_chain_state = OnChainCasperState {
         shard_conf,
+        chain: ChainParameters {
+            max_parent_depth: 0,
+            deploy_lifespan: 50,
+            ..ChainParameters::shipped()
+        },
         bonds_map,
         active_validators: vec![validator],
     };
@@ -222,6 +226,15 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             max_parent_depth: 15,
             deploy_lifespan: 50,
             min_phlo_price: 0,
+            epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON,
+            lambda_base_ppm: ProofOfStake::DEFAULT_LAMBDA_BASE_PPM,
+            theta_eject_ppm: ProofOfStake::DEFAULT_THETA_EJECT_PPM,
+            eject_observation_blocks: ProofOfStake::DEFAULT_EJECT_OBSERVATION_BLOCKS,
+            breadth_exponent: ProofOfStake::DEFAULT_BREADTH_EXPONENT,
+            recency_reference_ppm: ProofOfStake::DEFAULT_RECENCY_REFERENCE_PPM,
+            vote_list_bound: ProofOfStake::DEFAULT_VOTE_LIST_BOUND,
+            max_overflow_claim_minimum_bonds: ProofOfStake::DEFAULT_MAX_OVERFLOW_CLAIM_MINIMUM_BONDS,
+            failed_claim_fee_ppm: ProofOfStake::DEFAULT_FAILED_CLAIM_FEE_PPM,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -460,6 +473,15 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             max_parent_depth: 15,
             deploy_lifespan: 50,
             min_phlo_price: 0,
+            epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON,
+            lambda_base_ppm: ProofOfStake::DEFAULT_LAMBDA_BASE_PPM,
+            theta_eject_ppm: ProofOfStake::DEFAULT_THETA_EJECT_PPM,
+            eject_observation_blocks: ProofOfStake::DEFAULT_EJECT_OBSERVATION_BLOCKS,
+            breadth_exponent: ProofOfStake::DEFAULT_BREADTH_EXPONENT,
+            recency_reference_ppm: ProofOfStake::DEFAULT_RECENCY_REFERENCE_PPM,
+            vote_list_bound: ProofOfStake::DEFAULT_VOTE_LIST_BOUND,
+            max_overflow_claim_minimum_bonds: ProofOfStake::DEFAULT_MAX_OVERFLOW_CLAIM_MINIMUM_BONDS,
+            failed_claim_fee_ppm: ProofOfStake::DEFAULT_FAILED_CLAIM_FEE_PPM,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -723,6 +745,15 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             max_parent_depth: 15,
             deploy_lifespan: 50,
             min_phlo_price: 0,
+            epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON,
+            lambda_base_ppm: ProofOfStake::DEFAULT_LAMBDA_BASE_PPM,
+            theta_eject_ppm: ProofOfStake::DEFAULT_THETA_EJECT_PPM,
+            eject_observation_blocks: ProofOfStake::DEFAULT_EJECT_OBSERVATION_BLOCKS,
+            breadth_exponent: ProofOfStake::DEFAULT_BREADTH_EXPONENT,
+            recency_reference_ppm: ProofOfStake::DEFAULT_RECENCY_REFERENCE_PPM,
+            vote_list_bound: ProofOfStake::DEFAULT_VOTE_LIST_BOUND,
+            max_overflow_claim_minimum_bonds: ProofOfStake::DEFAULT_MAX_OVERFLOW_CLAIM_MINIMUM_BONDS,
+            failed_claim_fee_ppm: ProofOfStake::DEFAULT_FAILED_CLAIM_FEE_PPM,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -961,6 +992,15 @@ async fn run_visible_blocks_scope_test() {
             max_parent_depth: 15,
             deploy_lifespan: 50,
             min_phlo_price: 0,
+            epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON,
+            lambda_base_ppm: ProofOfStake::DEFAULT_LAMBDA_BASE_PPM,
+            theta_eject_ppm: ProofOfStake::DEFAULT_THETA_EJECT_PPM,
+            eject_observation_blocks: ProofOfStake::DEFAULT_EJECT_OBSERVATION_BLOCKS,
+            breadth_exponent: ProofOfStake::DEFAULT_BREADTH_EXPONENT,
+            recency_reference_ppm: ProofOfStake::DEFAULT_RECENCY_REFERENCE_PPM,
+            vote_list_bound: ProofOfStake::DEFAULT_VOTE_LIST_BOUND,
+            max_overflow_claim_minimum_bonds: ProofOfStake::DEFAULT_MAX_OVERFLOW_CLAIM_MINIMUM_BONDS,
+            failed_claim_fee_ppm: ProofOfStake::DEFAULT_FAILED_CLAIM_FEE_PPM,
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),

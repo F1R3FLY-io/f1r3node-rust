@@ -580,6 +580,7 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
+            chain: casper::rust::chain_parameters::ChainParameters::shipped(),
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
         },

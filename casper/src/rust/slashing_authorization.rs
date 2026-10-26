@@ -262,7 +262,7 @@ fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, 
 pub fn authorized_slash_candidates(
     snapshot: &CasperSnapshot,
 ) -> Result<Vec<AuthorizedSlashCandidate>, CasperError> {
-    let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
+    let epoch_length = snapshot.on_chain_state.chain.epoch_length;
     // P2-9: surface overflow on `max_block_num + 1` as a typed error.
     let proposed_block_num = snapshot.max_block_num.checked_add(1).ok_or_else(|| {
         CasperError::RuntimeError(format!(
@@ -395,7 +395,7 @@ pub fn validate_received_slash_deploys(
         return Ok(());
     }
 
-    let epoch_length = snapshot.on_chain_state.shard_conf.epoch_length;
+    let epoch_length = snapshot.on_chain_state.chain.epoch_length;
     let current_epoch = epoch_for_block_number(block.body.state.block_number, epoch_length)
         .map_err(SlashAuthError::from)?;
     // BTreeMap gives deterministic iteration order for the error path; the

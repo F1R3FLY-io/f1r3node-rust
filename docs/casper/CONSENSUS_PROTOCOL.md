@@ -148,6 +148,8 @@ For each selected deploy:
 
 Then execute system deploys:
 - `SlashDeploy`: Penalize known equivocators
+- `ResolveClaimsDeploy`: Resolve the ejection and rejoin claims open in the pre-state whose tally crossed at the block's finalized floor, and slash the ejected validators whose grace the block's floor has passed. Grace runs over floor blocks from the floor the ejection passed at, and a rejoin passes only at a floor within it. A claim passes when the yea stake of the votes visible at the floor exceeds two thirds of its electorate, and fails when the nay stake does; a voter the floor shows slashed counts in neither. A passed ejection ejects the target until its grace ends; a passed rejoin debits its topup from the rejoining validator's vault into the PoS vault, where it is held out of every epoch's rewards, and reinstates it, or fails if the vault cannot pay; a fail clears the slot. A rejoin is opened by the ejected validator's own `rejoinFromEjection` deploy within its grace, and is voted on by the electorate that ejected it: yea when the voter's leaky-bucket level for it plus the topup reaches its bond. Grace expiry moves every bond the validator holds to the coop vault, including one already in the unbonding quarantine. An ejection claim is opened by a validator's own `ejectValidator` deploy, an ordinary deploy paid like any other, against another seated validator its leaky-bucket view finds drained; the proposer submits one for each such validator to its own pool. An overflow claim is opened by the claimant's own `claimOverflow` deploy, for at most ten minimum bonds. Both take the committee of the block they run in, read through `rho:block:committee`, less the validators it holds ejected, as their electorate. An overflow vote is yea when the voter's leaky-bucket overflow for the claimant covers the amount. A passed claim is paid from what the PoS vault holds undistributed, held topups first, and fails if that cannot cover it; a claim refused, or still undecided at its deadline, costs its claimant the failed-claim fee, in ppm of its bond, into the coop vault
+- `DishonestVoteDeploy`: Slash a validator whose nay on an overflow claim its own vote block's ancestry contradicts: the claimant's blocks there, outside the freezes the nay records, spilled at least their reward less the claimant's stake in each block's committee, and that spill less everything the claimant was paid covers the amount. The proposer offers evidence only for the nays its own view has seen and only if this block's floor proves them, one per accused. The contract moves every bond the accused holds to the coop vault and takes it out of the active set
 - `CloseBlockDeploy`: Finalize block state, update bonds
 
 Finally: `create_checkpoint()` produces the post-state hash.
@@ -155,7 +157,8 @@ Finally: `create_checkpoint()` produces the post-state hash.
 ### Step 5: Assemble & Sign
 
 - Header: version, timestamp, sender, block number (max parent + 1), sequence number
-- Body: pre-state hash, post-state hash, processed deploys, rejected deploys, system deploys
+- Body: pre-state hash, post-state hash, processed deploys, rejected deploys, system deploys, leaky-bucket votes
+- Votes: one per claim open in the pre-state that the proposer is in the electorate of and has not voted on in its own chain, oldest claims first, up to the genesis `voteListBound`. The proposer decides them from its leaky-bucket view as the block's own finalized floor leaves it: the freezes and payments that floor's state records, applied to every block the view has observed. A nay on an overflow claim records the claim's amount and what that floor records of the claimant — its freezes and its total paid
 - Justifications: One per bonded validator
 - Bonds cache: Current validator set with stakes
 - Hash the block via Blake2b256
@@ -209,9 +212,14 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 - Structural consistency: block number progression, sender weight, justification format
 
 ### Step 6: Checkpoint Validation (Deploy Replay)
+- Check the block's bonds field against the committee at its finalized floor first. Replay reads that field: an ejection's seat check and electorate are the block's own committee
 - **Replay every deploy** via `ReplayRSpace` (replay runtime, not play runtime)
 - Verify computed post-state hash matches the block's claimed hash
 - This is the most expensive step — it proves the proposer executed correctly
+- Then check the leaky-bucket votes against the claims open in the replayed pre-state: a vote on a claim the proposer does not owe, or a nay on an overflow claim recording anything but what the block's floor records, is `InvalidLeakyBucketVote`, and fewer votes than it owes (up to the bound) is `MissingLeakyBucketVotes`
+- And check every dishonest-vote deploy: its vote block must be held, valid and the accused's, carry a nay on the named overflow claim, and its recorded freezes and payments must prove the nay dishonest over the claimant's blocks in that block's ancestry, counted back from the higher of the vote's floor and this block's floor; anything else, or two against one accused, is `InvalidDishonestVote`
+- And check that the block resolves exactly the claims its floor decides, naming that floor, expires exactly the graces of its pre-state that its floor has passed and the claims its floor leaves undecided at their deadline, and opens exactly the overflow claims its pre-state requests: a missing, extra or different resolution, expiry or opening is `InvalidClaimResolution`
+- An ejected validator receives no share of the epoch's rewards, is frozen in every node's leaky-bucket view for every block numbered from the floor its ejection passed at through the block that paid its rejoin, and is not waited for by the synchrony constraint or chosen to lead lag recovery. It stays bonded and counts towards finality. The PoS contract records each ejection's freeze, and drops a closed one once the retention window has passed it. A node rebuilds its leaky-bucket view at startup from the blocks it holds within the retention window below its finalized block
 
 ### Step 7: Equivocation Checks
 - **Simple equivocation**: Block creator's latest message should match their creator justification. If not:
@@ -308,7 +316,7 @@ The soak gate uses the repository workload and finalization limit. A runner fail
 
 ### System Deploys
 
-System deploys (`SlashDeploy`, `CloseBlockDeploy`) are deterministic and non-conflicting. They are not subject to conflict resolution.
+System deploys (`SlashDeploy`, `ResolveClaimsDeploy`, `DishonestVoteDeploy`, `CloseBlockDeploy`) are deterministic, and replay rebuilds each from the block's own record. They take part in conflict resolution like user deploys, at zero cost. A slash in a rejected chain is re-issued in the merging block.
 
 ---
 
@@ -512,8 +520,7 @@ All consensus parameters are defined in HOCON configuration files:
 Operator config files are minimal overrides — HOCON's fallback semantics merge them on top of the built-in defaults automatically.
 
 **Genesis-locked parameters** (cannot change after network creation):
-- `fault-tolerance-threshold` and `synchrony-constraint-threshold` — written into the genesis block's on-chain state
-- `max-parent-depth`, `deploy-lifespan`, `min-phlo-price` — baked into the PoS contract and exposed via its `getConsensusParameters` getter. Validity rules (parent spread, expiry, repeat-deploy, phlo floor) fork on these, so every node reads them back at casper construction and adopts the on-chain values unconditionally over local configuration; a chain whose values are absent or out of range fails startup rather than falling back. Immutable until an on-chain parameter-upgrade mechanism exists.
+- `fault-tolerance-threshold`, `max-parent-depth`, `deploy-lifespan`, `min-phlo-price`, `epoch-length`, `quarantine-length` and the `leaky-bucket-*` parameters — baked into the PoS contract and exposed together by its `getChainParameters` getter. Finality, validity (parent spread, expiry, repeat-deploy, phlo floor), slash authorization and the leaky-bucket rules fork on these, so every node reads them once at casper construction into `ChainParameters` and judges blocks by them whatever its local configuration says; a value that is absent or out of range fails startup. Local configuration supplies them only to create genesis. Immutable until an on-chain parameter-upgrade mechanism exists. `synchrony-constraint-threshold` is not among them: it is a node-local proposing constraint.
 - `native-token-name`, `native-token-symbol`, `native-token-decimals` — baked into the `TokenMetadata` Rholang contract at `rho:system:tokenMetadata` with nonce `i64::MAX`, making them immutable via the registry's `insertSigned` protocol
 
 Changing any of these requires a new genesis (new network).

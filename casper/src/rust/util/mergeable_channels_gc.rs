@@ -12,7 +12,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rust::casper::CasperShardConf;
+use crate::rust::chain_parameters::ChainParameters;
 use crate::rust::finality::floor::{floor_of_block, Floor};
 use crate::rust::metrics_constants::MERGEABLE_CHANNELS_GC_METRICS_SOURCE;
 use crate::rust::safety::clique_oracle::FtThreshold;
@@ -53,10 +53,12 @@ pub async fn collect_garbage(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
     runtime_manager: &std::sync::Arc<RuntimeManager>,
-    casper_shard_conf: &CasperShardConf,
+    chain: &ChainParameters,
+    depth_buffer: u32,
 ) -> Result<usize, KvStoreError> {
     let pass_started = std::time::Instant::now();
     let mut deleted_count = 0;
+    let max_allowed_depth = chain.max_parent_depth as i64 + depth_buffer as i64;
 
     // The deletion anchor, derived ONCE per pass: the floor of the last
     // finalized block. Deletion is irreversible and the data serves merges,
@@ -65,7 +67,7 @@ pub async fn collect_garbage(
         dag,
         block_store,
         &dag.last_finalized_block(),
-        FtThreshold::from_ppm(casper_shard_conf.fault_tolerance_threshold_ppm),
+        FtThreshold::from_ppm(chain.fault_tolerance_threshold_ppm),
     )
     .await
     .map_err(|e| KvStoreError::IoError(e.to_string()))?;
@@ -73,7 +75,7 @@ pub async fn collect_garbage(
     // The sweep shares that anchor. A tip-anchored ceiling would enumerate the
     // whole span between the floor and the tip — blocks `is_safe_to_delete`
     // refuses on every pass, which is the sweep exists to avoid doing twice.
-    enumerate_newly_in_range(sweep, dag, &floor, casper_shard_conf);
+    enumerate_newly_in_range(sweep, dag, &floor, max_allowed_depth);
     metrics::gauge!("mergeable_channels_gc_pending").set(sweep.pending.len() as f64);
 
     // The ancestor walk only ever needs to reach as low as the oldest
@@ -84,7 +86,7 @@ pub async fn collect_garbage(
     // candidates that clear that bar can pull `min_height` lower.
     let mut min_height: Option<i64> = None;
     for hash in sweep.pending.iter() {
-        if reaches_ancestor_check(dag, hash, &floor, casper_shard_conf)? {
+        if reaches_ancestor_check(dag, hash, &floor, max_allowed_depth)? {
             if let Ok(height) = dag.block_number_unsafe(hash) {
                 min_height = Some(min_height.map_or(height, |m| m.min(height)));
             }
@@ -110,7 +112,7 @@ pub async fn collect_garbage(
             dag,
             block_hash,
             &floor,
-            casper_shard_conf,
+            max_allowed_depth,
             common_strict_ancestors.as_ref(),
         )? {
             collected.push(block_hash.clone());
@@ -169,7 +171,7 @@ fn reaches_ancestor_check(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
     floor: &Floor,
-    casper_shard_conf: &CasperShardConf,
+    max_allowed_depth: i64,
 ) -> Result<bool, KvStoreError> {
     // 1. Check if block is finalized. An orphan on a losing fork never
     //    satisfies this — permanently, not just for this pass — and that is
@@ -191,9 +193,6 @@ fn reaches_ancestor_check(
     //    only delete less than before, never more.
     let block_meta = dag.lookup_unsafe(block_hash)?;
     let depth_from_floor = floor.block_number - block_meta.block_number;
-    let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
-
     if depth_from_floor <= max_allowed_depth {
         return Ok(false);
     }
@@ -211,10 +210,10 @@ fn is_safe_to_delete(
     dag: &KeyValueDagRepresentation,
     block_hash: &BlockHash,
     floor: &Floor,
-    casper_shard_conf: &CasperShardConf,
+    max_allowed_depth: i64,
     common_strict_ancestors: Option<&HashSet<BlockHash>>,
 ) -> Result<bool, KvStoreError> {
-    if !reaches_ancestor_check(dag, block_hash, floor, casper_shard_conf)? {
+    if !reaches_ancestor_check(dag, block_hash, floor, max_allowed_depth)? {
         return Ok(false);
     }
 
@@ -249,11 +248,8 @@ fn enumerate_newly_in_range(
     sweep: &mut GcSweep,
     dag: &KeyValueDagRepresentation,
     floor: &Floor,
-    casper_shard_conf: &CasperShardConf,
+    max_allowed_depth: i64,
 ) {
-    let max_allowed_depth = (casper_shard_conf.max_parent_depth as i64)
-        + (casper_shard_conf.mergeable_channels_gc_depth_buffer as i64);
-
     extend_pending_to_ceiling(
         sweep,
         floor.block_number - max_allowed_depth,
@@ -844,13 +840,8 @@ mod tests {
         }
     }
 
-    /// max_allowed_depth = max_parent_depth + gc buffer = 4.
-    fn conf() -> CasperShardConf {
-        let mut conf = CasperShardConf::new();
-        conf.max_parent_depth = 3;
-        conf.mergeable_channels_gc_depth_buffer = 1;
-        conf
-    }
+    /// max_parent_depth 3 plus a gc buffer of 1.
+    fn depth() -> i64 { 4 }
 
     fn floor_at(n: u8) -> Floor {
         Floor {
@@ -863,7 +854,7 @@ mod tests {
         dag: &KeyValueDagRepresentation,
         block_hash: &BlockHash,
         floor: &Floor,
-        conf: &CasperShardConf,
+        max_allowed_depth: i64,
     ) -> Result<bool, KvStoreError> {
         // Derived from the DAG exactly as `collect_garbage` does, so the depth
         // clause is exercised against a real citation set rather than a stub
@@ -876,7 +867,7 @@ mod tests {
             dag,
             block_hash,
             floor,
-            conf,
+            max_allowed_depth,
             common_strict_ancestors.as_ref(),
         )
     }
@@ -891,12 +882,11 @@ mod tests {
     #[test]
     fn a_block_above_the_floor_is_never_collected_however_far_the_tip_has_run() {
         let dag = linear_chain_dag();
-        let conf = conf();
         // Tip is TOP + 1 = 21, so block 12 is 9 below it — past the 4-block
         // allowance on the tip clock — but 2 ABOVE the floor at 10.
         assert_eq!(dag.latest_block_number(), TOP as i64 + 1);
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &hash(12), &floor_at(10), &conf)
+            !is_safe_to_delete_at_floor(&dag, &hash(12), &floor_at(10), depth())
                 .expect("safety check"),
             "block 12 sits above the floor at 10, so a merge based on that floor \
              still reads its mergeable data. Anchored on the tip it reads as \
@@ -911,9 +901,9 @@ mod tests {
     #[test]
     fn a_block_far_below_the_floor_is_still_collected() {
         let dag = linear_chain_dag();
-        let conf = conf();
         assert!(
-            is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), &conf).expect("safety check"),
+            is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), depth())
+                .expect("safety check"),
             "block 5 is 5 below the floor at 10, past the 4-block allowance, so \
              no merge can still need it and holding it forever leaks",
         );
@@ -927,9 +917,9 @@ mod tests {
         let mut dag = linear_chain_dag();
         dag.latest_messages_map
             .insert(Bytes::from(vec![0x07u8; 65]), hash(0));
-        let conf = conf();
         assert!(
-            is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), &conf).expect("safety check"),
+            is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), depth())
+                .expect("safety check"),
             "a slot holding a block its validator never signed is bookkeeping, \
              not a position anything moved past; counting it collects nothing \
              for as long as that validator stays silent",
@@ -941,9 +931,8 @@ mod tests {
     #[test]
     fn the_allowance_boundary_is_measured_from_the_floor() {
         let dag = linear_chain_dag();
-        let conf = conf();
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &hash(6), &floor_at(10), &conf)
+            !is_safe_to_delete_at_floor(&dag, &hash(6), &floor_at(10), depth())
                 .expect("safety check"),
             "block 6 is exactly the 4-block allowance below the floor — retained",
         );
@@ -962,9 +951,8 @@ mod tests {
             meta.directly_finalized = false;
             bms.add(meta).expect("re-add metadata");
         }
-        let conf = conf();
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), &conf)
+            !is_safe_to_delete_at_floor(&dag, &hash(5), &floor_at(10), depth())
                 .expect("safety check"),
             "an unfinalized block's data may still be needed by a branch that wins",
         );
@@ -1109,7 +1097,7 @@ mod tests {
     fn below_a_fork_both_validators_are_past_the_block_and_it_collects() {
         let dag = forked_chain_dag();
         assert!(
-            is_safe_to_delete_at_floor(&dag, &hash(3), &floor_at(TOP), &conf())
+            is_safe_to_delete_at_floor(&dag, &hash(3), &floor_at(TOP), depth())
                 .expect("safety check"),
             "block 3 is below the fork point, so both validators have moved past it"
         );
@@ -1121,7 +1109,7 @@ mod tests {
         // Deep enough and finalized, so only the citation clause can refuse it:
         // validator B branched at 4 and has never cited block 6.
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &hash(6), &floor_at(TOP), &conf())
+            !is_safe_to_delete_at_floor(&dag, &hash(6), &floor_at(TOP), depth())
                 .expect("safety check"),
             "validator B sits on the side branch, so it has not moved past block 6 \
              and a merge from its view still reads that data"
@@ -1133,7 +1121,7 @@ mod tests {
         let dag = forked_chain_dag();
         let side5 = Bytes::from(b"side5".to_vec());
         assert!(
-            !is_safe_to_delete_at_floor(&dag, &side5, &floor_at(TOP), &conf())
+            !is_safe_to_delete_at_floor(&dag, &side5, &floor_at(TOP), depth())
                 .expect("safety check"),
             "validator A never left the spine, so it has not moved past the branch"
         );

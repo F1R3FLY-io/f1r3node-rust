@@ -18,6 +18,7 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -26,6 +27,7 @@ use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use crate::rust::chain_parameters::ChainParameters;
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::multi_parent_casper::{FinalizedBondCache, MultiParentCasperImpl};
 use crate::rust::errors::CasperError;
@@ -95,6 +97,14 @@ pub trait Casper {
     /// Defaulted to a no-op so effect mocks need no retriever wiring.
     async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
 
+    fn bucket_view(&self) -> Arc<crate::rust::economics::bucket_view::BucketView>;
+
+    /// Asks for the ejections this node's view offers, as deploys it signs.
+    /// Defaulted to a no-op so effect mocks need no pool.
+    async fn request_ejections(&self, _snapshot: &CasperSnapshot) -> Result<(), CasperError> {
+        Ok(())
+    }
+
     fn contains(&self, hash: &BlockHash) -> bool;
 
     fn dag_contains(&self, hash: &BlockHash) -> bool;
@@ -135,9 +145,12 @@ pub trait Casper {
         post_state_hash: Bytes,
     ) -> Result<Either<BlockError, ValidBlock>, CasperError>;
 
+    /// Resolving `parents` is the caller's job: these effects run after the
+    /// block is accepted, so an unresolvable parent must surface before them.
     async fn handle_valid_block(
         &self,
         block: &BlockMessage,
+        parents: &[BlockMetadata],
     ) -> Result<KeyValueDagRepresentation, CasperError>;
 
     fn handle_invalid_block(
@@ -189,10 +202,11 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     /// Defaulted to `None` so effect mocks need no genesis wiring.
     fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
 
-    /// Read-only access to the shard configuration. Used by APIs that need
-    /// shard-scoped parameters such as `deploy_lifespan` to compute deploy
-    /// finalization status.
+    /// Read-only access to the node-local shard configuration.
     fn casper_shard_conf(&self) -> &CasperShardConf;
+
+    /// The parameters fixed at genesis, read from the chain.
+    fn chain_parameters(&self) -> &ChainParameters;
 
     fn rejected_deploy_buffer_contains_sig(&self, _sig: &[u8]) -> Result<bool, CasperError> {
         Ok(false)
@@ -249,102 +263,41 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     approved_block: BlockMessage,
     heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
 ) -> Result<MultiParentCasperImpl<T>, CasperError> {
-    // SINGLE ADOPTION POINT for the protocol fault-tolerance threshold.
-    //
-    // θ is a CONSENSUS value: the finalized-floor oracle runs on it, and the
-    // floor decides the multi-parent merge base — a validated, node-identical
-    // quantity. Every node (validator or observer) must therefore run the ppm
-    // baked into the PoS contract at genesis, regardless of local config.
-    //
-    // All three constructors of a running casper (`initializing`,
-    // `casper_launch`, `genesis_ceremony_master`) funnel through here, so this
-    // is the only place the adoption can be guaranteed for every path.
-    //
-    // The assignment is UNCONDITIONAL — the `if` gates only the log line. That
-    // is precisely Rocq `FtProvenance.reconcile_agrees_on_onchain`:
-    // `reconcile(local, onchain) = onchain`, so two nodes with ANY two local
-    // configs derive the same floor. Absent/out-of-range now FAILS the node
-    // (see `read_on_chain_fault_tolerance_threshold_ppm`) rather than silently
-    // reopening node-local floor divergence.
-    let onchain_ppm =
-        crate::rust::util::token_metadata_check::read_on_chain_fault_tolerance_threshold_ppm(
-            &runtime_manager,
-            &approved_block.body.state.post_state_hash,
-        )
+    // Every constructor of a running casper (`initializing`, `casper_launch`,
+    // `genesis_ceremony_master`) funnels through here, so this is the one
+    // place the chain's parameters are read: whatever a node's local
+    // configuration says, it judges blocks by these.
+    let chain_parameters = runtime_manager
+        .chain_parameters(&approved_block.body.state.post_state_hash)
         .await?;
-    if onchain_ppm != casper_shard_conf.fault_tolerance_threshold_ppm {
-        tracing::info!(
-            onchain_ppm,
-            local_ppm = casper_shard_conf.fault_tolerance_threshold_ppm,
-            "Adopting on-chain protocol fault-tolerance threshold over local configuration"
-        );
-    }
-    casper_shard_conf.fault_tolerance_threshold_ppm = onchain_ppm;
-    // Keep the display f32 in lock-step with the exact ppm that decides
-    // finalization, so the API can never report a threshold the oracle is not
-    // using. The ppm remains the sole DECISION input; this f32 is display-only.
-    casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
-    // Same adoption, same reasoning, for the parameters the VALIDITY rules
-    // fork on: parent spread (max-parent-depth), expiry and repeat-deploy
-    // windows (deploy-lifespan), and the phlo floor (min-phlo-price). The
-    // assignment is unconditional — `reconcile(local, onchain) = onchain` —
-    // and absent/out-of-range fails the node (see
-    // `read_on_chain_consensus_parameters`).
-    let (onchain_mpd, onchain_lifespan, onchain_min_phlo) =
-        crate::rust::util::token_metadata_check::read_on_chain_consensus_parameters(
-            &runtime_manager,
-            &approved_block.body.state.post_state_hash,
-        )
-        .await?;
-    if (onchain_mpd, onchain_lifespan, onchain_min_phlo)
-        != (
-            casper_shard_conf.max_parent_depth,
-            casper_shard_conf.deploy_lifespan,
-            casper_shard_conf.min_phlo_price,
-        )
-    {
-        tracing::info!(
-            onchain_max_parent_depth = onchain_mpd,
-            onchain_deploy_lifespan = onchain_lifespan,
-            onchain_min_phlo_price = onchain_min_phlo,
-            local_max_parent_depth = casper_shard_conf.max_parent_depth,
-            local_deploy_lifespan = casper_shard_conf.deploy_lifespan,
-            local_min_phlo_price = casper_shard_conf.min_phlo_price,
-            "Adopting on-chain consensus parameters over local configuration"
-        );
-    }
-    casper_shard_conf.max_parent_depth = onchain_mpd;
-    casper_shard_conf.deploy_lifespan = onchain_lifespan;
-    casper_shard_conf.min_phlo_price = onchain_min_phlo;
-
-    // Startup validation ran on the LOCAL values; everything derived from or
-    // judged against max-parent-depth is finished HERE, on the adopted one.
+    // Everything derived from or judged against max-parent-depth is finished
+    // here, on the chain's value.
     if casper_shard_conf.deploy_play_budget_is_derived
         && !casper_shard_conf.heartbeat_check_interval.is_zero()
     {
         casper_shard_conf.deploy_play_budget = Some(std::time::Duration::from_millis(
-            ((casper_shard_conf.max_parent_depth as i64).max(1)
+            ((chain_parameters.max_parent_depth as i64).max(1)
                 * (casper_shard_conf.heartbeat_check_interval.as_millis() as i64)
                 / 5) as u64,
         ));
     }
-    if casper_shard_conf.max_parent_depth != i32::MAX
-        && casper_shard_conf.deploy_lifespan <= casper_shard_conf.max_parent_depth as i64
+    if chain_parameters.max_parent_depth != i32::MAX
+        && chain_parameters.deploy_lifespan <= chain_parameters.max_parent_depth as i64
     {
         tracing::warn!(
-            deploy_lifespan = casper_shard_conf.deploy_lifespan,
-            max_parent_depth = casper_shard_conf.max_parent_depth,
-            "adopted deploy-lifespan is at or below the adopted max-parent-depth: \
+            deploy_lifespan = chain_parameters.deploy_lifespan,
+            max_parent_depth = chain_parameters.max_parent_depth,
+            "the chain's deploy-lifespan is at or below its max-parent-depth: \
              deploys can expire inside the citability window"
         );
     }
-    if casper_shard_conf.max_parent_depth != i32::MAX
+    if chain_parameters.max_parent_depth != i32::MAX
         && !casper_shard_conf.heartbeat_check_interval.is_zero()
     {
         let citability_window = casper_shard_conf
             .heartbeat_check_interval
-            .saturating_mul(casper_shard_conf.max_parent_depth as u32);
+            .saturating_mul(chain_parameters.max_parent_depth as u32);
         if let Some(budget) = casper_shard_conf.deploy_play_budget {
             if budget > citability_window / 3 {
                 tracing::warn!(
@@ -370,6 +323,17 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         }
     }
 
+    let bucket_view = Arc::new(crate::rust::economics::bucket_view::BucketView::new(
+        chain_parameters.leaky_bucket,
+    ));
+    crate::rust::economics::rebuild::rebuild(
+        &bucket_view,
+        &block_dag_storage.get_representation()?,
+        &block_store,
+        &runtime_manager,
+    )
+    .await?;
+
     let finalized_bond_cache =
         FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
     let finalization = crate::rust::engine::multi_parent_casper::FinalizationContext {
@@ -383,7 +347,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             crate::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
         ),
         deploy_storage: Arc::new(deploy_storage),
+        bucket_view: bucket_view.clone(),
         shard_conf: casper_shard_conf,
+        chain: chain_parameters,
     };
     Ok(MultiParentCasperImpl {
         observer: finalization.observer.clone(),
@@ -396,10 +362,13 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_dag_storage: finalization.block_dag_storage.clone(),
         deploy_storage: finalization.deploy_storage.clone(),
         rejected_deploy_buffer,
+        bucket_view,
+        ejection_requests: Arc::new(parking_lot::Mutex::new(Default::default())),
         casper_buffer_storage,
         validator_id,
         finalized_bond_cache,
         casper_shard_conf: finalization.shard_conf.clone(),
+        chain_parameters,
         approved_block,
         finalizer: crate::rust::engine::multi_parent_casper::Finalizer::start(finalization),
         heartbeat_signal_ref,
@@ -449,7 +418,11 @@ impl CasperSnapshot {
         let metadata = self.dag.lookup_unsafe(&parent.block_hash)?;
         Ok(metadata.weight_map.contains_key(validator))
     }
+}
 
+#[cfg(any(test, feature = "test-utils"))]
+impl CasperSnapshot {
+    /// An empty snapshot under the shipped genesis parameters.
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
         Self {
             dag,
@@ -461,7 +434,10 @@ impl CasperSnapshot {
             rejected_in_scope: Arc::new(DashSet::new()),
             max_block_num: 0,
             max_seq_nums: HashMap::new(),
-            on_chain_state: OnChainCasperState::new(CasperShardConf::new()),
+            on_chain_state: OnChainCasperState::new(
+                CasperShardConf::new(),
+                ChainParameters::shipped(),
+            ),
         }
     }
 }
@@ -469,14 +445,16 @@ impl CasperSnapshot {
 #[derive(Clone)]
 pub struct OnChainCasperState {
     pub shard_conf: CasperShardConf,
+    pub chain: ChainParameters,
     pub bonds_map: HashMap<Validator, i64>,
     pub active_validators: Vec<Validator>,
 }
 
 impl OnChainCasperState {
-    pub fn new(shard_conf: CasperShardConf) -> Self {
+    pub fn new(shard_conf: CasperShardConf, chain: ChainParameters) -> Self {
         Self {
             shard_conf,
+            chain,
             bonds_map: HashMap::new(),
             active_validators: vec![],
         }
@@ -487,27 +465,16 @@ impl OnChainCasperState {
 /// peers' blocks. Changes only with a coordinated protocol upgrade.
 pub const CASPER_PROTOCOL_VERSION: i64 = 1;
 
+/// Node-local configuration. Parameters fixed at genesis live in
+/// [`ChainParameters`], read from the chain.
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {
-    /// Display/back-compat `f32` view of the fault-tolerance threshold θ. The
-    /// finalization DECISION is derived from the exact
-    /// [`fault_tolerance_threshold_ppm`](Self::fault_tolerance_threshold_ppm),
-    /// never from this lossy value.
-    pub fault_tolerance_threshold: f32,
-    /// Exact fault-tolerance threshold θ as an on-chain ppm numerator
-    /// (θ = ppm / 1_000_000). Source of truth for the integer-exact finalization
-    /// DECISION (`CliqueOracle::ft_decides_exact`).
-    pub fault_tolerance_threshold_ppm: i64,
     pub shard_name: String,
     pub parent_shard_id: String,
     pub finalization_rate: i32,
     pub max_number_of_parents: i32,
-    pub max_parent_depth: i32,
     pub synchrony_constraint_threshold: f32,
     pub height_constraint_threshold: i64,
-    // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
-    // Required to enable protection from re-submitting duplicate deploys
-    pub deploy_lifespan: i64,
     /// Wall-clock ceiling on user-deploy execution per proposed block
     /// (`None` = unbounded). Packaging policy, not a validity rule: the
     /// block carries exactly the deploys that executed in budget. The
@@ -524,11 +491,6 @@ pub struct CasperShardConf {
     /// re-judgements.
     pub heartbeat_check_interval: std::time::Duration,
     pub casper_version: i64,
-    pub bond_minimum: i64,
-    pub bond_maximum: i64,
-    pub epoch_length: i32,
-    pub quarantine_length: i32,
-    pub min_phlo_price: i64,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
     /// wake so the heartbeat task picks up the new deploy on the next
     /// tick rather than waiting up to `check_interval` seconds. Defaults
@@ -543,7 +505,7 @@ pub struct CasperShardConf {
     pub enable_mergeable_channel_gc: bool,
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
-    pub mergeable_channels_gc_depth_buffer: i32,
+    pub mergeable_channels_gc_depth_buffer: u32,
     pub synchrony_recovery_stall_window: Duration,
     pub synchrony_recovery_cooldown: Duration,
     pub synchrony_recovery_max_bypasses: u32,
@@ -566,25 +528,16 @@ pub struct CasperShardConf {
 impl CasperShardConf {
     pub fn new() -> Self {
         Self {
-            fault_tolerance_threshold: 0.0,
-            fault_tolerance_threshold_ppm: 0,
             shard_name: "".to_string(),
             parent_shard_id: "".to_string(),
             finalization_rate: 0,
             max_number_of_parents: 0,
-            max_parent_depth: 0,
             synchrony_constraint_threshold: 0.0,
             height_constraint_threshold: 0,
-            deploy_lifespan: 0,
             deploy_play_budget: None,
             deploy_play_budget_is_derived: false,
             heartbeat_check_interval: Duration::ZERO,
             casper_version: 0,
-            bond_minimum: 0,
-            bond_maximum: 0,
-            epoch_length: 0,
-            quarantine_length: 0,
-            min_phlo_price: 0,
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
@@ -603,9 +556,8 @@ impl CasperShardConf {
     }
 }
 
-// TODO(#325): Move test_helpers to a #[cfg(test)] module or separate test-utils crate
-// to avoid including test code in production binaries.
 /// Test helpers for creating mock Casper implementations.
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_helpers {
     use async_trait::async_trait;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
@@ -738,6 +690,12 @@ pub mod test_helpers {
             Ok(self.snapshot.clone())
         }
 
+        fn bucket_view(&self) -> Arc<crate::rust::economics::bucket_view::BucketView> {
+            Arc::new(crate::rust::economics::bucket_view::BucketView::new(
+                self.snapshot.on_chain_state.chain.leaky_bucket,
+            ))
+        }
+
         fn contains(&self, _hash: &BlockHash) -> bool { false }
 
         fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
@@ -787,6 +745,7 @@ pub mod test_helpers {
         async fn handle_valid_block(
             &self,
             _block: &BlockMessage,
+            _parents: &[BlockMetadata],
         ) -> Result<KeyValueDagRepresentation, CasperError> {
             Ok(self.snapshot.dag.clone())
         }
@@ -829,6 +788,8 @@ pub mod test_helpers {
         fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
         fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
+
+        fn chain_parameters(&self) -> &ChainParameters { &self.snapshot.on_chain_state.chain }
 
         fn runtime_manager(&self) -> Arc<RuntimeManager> {
             unimplemented!("runtime_manager not needed for heartbeat tests")

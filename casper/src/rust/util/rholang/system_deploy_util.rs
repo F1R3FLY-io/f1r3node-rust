@@ -75,6 +75,36 @@ pub fn generate_slash_deploy_random_seed(
     Tools::rng(&seed).split_byte(1)
 }
 
+/// The split byte keeps it disjoint from the close-block and slash seeds
+/// drawn from the same proposer and sequence number.
+pub fn generate_resolve_claims_deploy_random_seed(
+    validator: Validator,
+    seq_num: i32,
+) -> Blake2b512Random {
+    let seed: Vec<u8> = serialize_int32_fixed(SYSTEM_DEPLOY_PREFIX)
+        .into_iter()
+        .chain(validator)
+        .chain(serialize_int32_fixed(seq_num))
+        .collect();
+    Tools::rng(&seed).split_byte(3)
+}
+
+/// Seeded from the accused, so the evidence against each accused in one
+/// block draws its own randomness.
+pub fn generate_dishonest_vote_deploy_random_seed(
+    validator: Validator,
+    seq_num: i32,
+    accused: &Validator,
+) -> Blake2b512Random {
+    let seed: Vec<u8> = serialize_int32_fixed(SYSTEM_DEPLOY_PREFIX)
+        .into_iter()
+        .chain(validator)
+        .chain(serialize_int32_fixed(seq_num))
+        .chain(accused.iter().copied())
+        .collect();
+    Tools::rng(&seed).split_byte(4)
+}
+
 pub fn generate_pre_charge_deploy_random_seed(deploy: &Signed<DeployData>) -> Blake2b512Random {
     Tools::rng(&deploy.sig).split_byte(0)
 }

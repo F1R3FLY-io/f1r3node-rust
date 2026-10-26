@@ -51,7 +51,6 @@ async fn exploratory_deploy_should_get_data_from_read_only_node() {
         3,       // network_size: 3 bonded validators
         None,    // synchrony_constraint_threshold
         None,    // max_number_of_parents
-        None,    // max_parent_depth
         Some(1), // with_read_only_size: 1 read-only node
     )
     .await
@@ -229,7 +228,7 @@ async fn unpinned_exploratory_read_does_not_see_unfinalized_state() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, Some(1))
         .await
         .expect("Failed to create network");
 
@@ -318,7 +317,6 @@ async fn exploratory_deploy_should_return_error_on_bonded_validator() {
         1,    // network_size: 1 bonded validator
         None, // synchrony_constraint_threshold
         None, // max_number_of_parents
-        None, // max_parent_depth
         None, // with_read_only_size: None (no read-only nodes)
     )
     .await
@@ -395,7 +393,7 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
         .expect("Failed to build genesis");
 
     // Create network with 3 validators + 1 read-only node
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, Some(1))
         .await
         .expect("Failed to create network");
     for node in nodes.iter_mut() {
@@ -533,7 +531,7 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, Some(1))
         .await
         .expect("Failed to create network");
     for node in nodes.iter_mut() {
@@ -620,7 +618,7 @@ async fn exploratory_deploy_deploy_id_varies_by_deployer_and_is_stable() {
         .await
         .expect("Failed to build genesis");
 
-    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, Some(1))
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, Some(1))
         .await
         .expect("Failed to create network");
     for node in nodes.iter_mut() {

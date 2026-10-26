@@ -132,9 +132,10 @@ pub struct CasperConf {
     /// Additional safety margin beyond max-parent-depth before deleting data.
     #[serde(
         rename = "mergeable-channels-gc-depth-buffer",
+        deserialize_with = "de_u32",
         default = "default_mergeable_channels_gc_depth_buffer"
     )]
-    pub mergeable_channels_gc_depth_buffer: i32,
+    pub mergeable_channels_gc_depth_buffer: u32,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -162,7 +163,7 @@ fn default_mergeable_channels_gc_interval() -> Duration {
     Duration::from_secs(5 * 60) // 5 minutes
 }
 
-fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
+fn default_mergeable_channels_gc_depth_buffer() -> u32 { 10 }
 
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +198,29 @@ pub struct GenesisBlockData {
 
     #[serde(rename = "number-of-active-validators")]
     pub number_of_active_validators: u32,
+
+    /// Leaky-bucket parameters baked into the PoS contract at genesis. Every
+    /// ceremony participant must configure these identically, as with every
+    /// other genesis parameter: the PoS generator deploy is replayed
+    /// byte-for-byte, so a disagreement fails genesis validation.
+    #[serde(rename = "epoch-phlogiston")]
+    pub epoch_phlogiston: i64,
+    #[serde(rename = "leaky-bucket-lambda-base-ppm")]
+    pub leaky_bucket_lambda_base_ppm: i64,
+    #[serde(rename = "leaky-bucket-theta-eject-ppm")]
+    pub leaky_bucket_theta_eject_ppm: i64,
+    #[serde(rename = "leaky-bucket-eject-observation-blocks")]
+    pub leaky_bucket_eject_observation_blocks: i64,
+    #[serde(rename = "leaky-bucket-breadth-exponent")]
+    pub leaky_bucket_breadth_exponent: i64,
+    #[serde(rename = "leaky-bucket-recency-reference-ppm")]
+    pub leaky_bucket_recency_reference_ppm: i64,
+    #[serde(rename = "leaky-bucket-vote-list-bound")]
+    pub leaky_bucket_vote_list_bound: i64,
+    #[serde(rename = "leaky-bucket-max-overflow-claim-minimum-bonds")]
+    pub leaky_bucket_max_overflow_claim_minimum_bonds: i64,
+    #[serde(rename = "leaky-bucket-failed-claim-fee-ppm")]
+    pub leaky_bucket_failed_claim_fee_ppm: i64,
 
     #[serde(rename = "deploy-timestamp")]
     pub deploy_timestamp: Option<i64>,
@@ -489,6 +513,17 @@ where D: serde::Deserializer<'de> {
     Ok(v)
 }
 
+/// A `u32` read through `i64`, so a value outside its range is refused. The
+/// HOCON deserializer reads a `u32` field by casting, which wraps a negative.
+fn de_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where D: serde::Deserializer<'de> {
+    use serde::de::Error as _;
+    use serde::Deserialize;
+    let v = i64::deserialize(deserializer)?;
+    u32::try_from(v)
+        .map_err(|_| D::Error::custom(format!("value must be in [0, {}], got {v}", u32::MAX)))
+}
+
 #[cfg(test)]
 mod native_token_validation_tests {
     use super::*;
@@ -503,6 +538,15 @@ mod native_token_validation_tests {
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,
+            epoch_phlogiston: 1_000_000,
+            leaky_bucket_lambda_base_ppm: 10_000,
+            leaky_bucket_theta_eject_ppm: 900_000,
+            leaky_bucket_eject_observation_blocks: 50,
+            leaky_bucket_breadth_exponent: 2,
+            leaky_bucket_recency_reference_ppm: 1_000_000,
+            leaky_bucket_vote_list_bound: 32,
+            leaky_bucket_max_overflow_claim_minimum_bonds: 10,
+            leaky_bucket_failed_claim_fee_ppm: 1_000,
             deploy_timestamp: None,
             genesis_block_number: 0,
             pos_multi_sig_public_keys: Vec::new(),

@@ -702,11 +702,12 @@ pub async fn floor_committee(
     runtime_manager: &RuntimeManager,
     floor_state: &StateHash,
 ) -> Result<Vec<Bond>, CasperError> {
-    let floor_bonds = runtime_manager.compute_bonds(floor_state).await?;
-    let active = runtime_manager.get_active_validators(floor_state).await?;
-    Ok(floor_bonds
-        .into_iter()
-        .filter(|bond| active.contains(&bond.validator))
+    let floor = runtime_manager.floor_state(floor_state).await?;
+    Ok(floor
+        .bonds
+        .iter()
+        .filter(|bond| floor.active_validators.contains(&bond.validator))
+        .cloned()
         .collect())
 }
 
@@ -2307,6 +2308,7 @@ mod frontier_determinism_tests {
                 extra_bytes: Bytes::new(),
                 applied_from_scope: applied,
                 merge_base: base.unwrap_or_default(),
+                leaky_bucket_votes: Vec::new(),
             },
             justifications: Vec::new(),
             sender: Bytes::new(),

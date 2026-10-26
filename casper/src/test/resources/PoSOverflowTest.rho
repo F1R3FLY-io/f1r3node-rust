@@ -1,0 +1,665 @@
+//scalapackage coop.rchain.rholang.mint
+
+//requires Pos, RhoSpec
+
+// Exercises overflow claims: the opening, the payout and the failed-claim
+// fee. The genesis sets an epoch of 1000, which is also the
+// claim deadline, a minimum bond of 1, so a claim may ask for at most 10, and
+// a failed-claim fee of half the bond. Every test builds on the state the
+// previous one left.
+new
+  rl(`rho:registry:lookup`),
+  makeSysAuthToken(`sys:test:authToken:make`),
+  makeDeployerId(`rho:test:deployerId:make`),
+  setBlockData(`rho:test:block:data:set`),
+  setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+  computeHash(`rho:crypto:keccak256Hash`),
+  sysAuthTokenCh, bondsCh, orderedCh, validatorsCh,
+  RhoSpecCh, PoSCh, ListOpsCh,
+  setup, byStake, failOnRefusal,
+  deployerIdFor, atBlock, posVaultBalance, payFee, withCommittee, request, resolve,
+  overflow, openEjection, ejectionPassed, rejoinPassed,
+  test_a_claim_is_refused_to_whom_it_does_not_apply,
+  test_a_claim_opens_with_its_block_committee,
+  test_a_pass_the_vault_cannot_cover_fails_without_a_fee,
+  test_a_pass_is_paid_and_recorded,
+  test_a_refused_claim_costs_its_claimant_the_fee,
+  test_an_expired_claim_costs_its_claimant_the_fee,
+  test_the_fee_reaches_a_claimant_in_quarantine,
+  test_an_ejected_validator_claims_and_is_paid_from_held_topups,
+  test_a_slashed_claimant_forfeits,
+  test_a_fee_that_takes_the_whole_bond_takes_the_seat,
+  test_a_second_withdrawal_joins_the_first_in_quarantine
+in {
+  rl!(`rho:system:pos`, *PoSCh) |
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *RhoSpecCh) |
+  rl!(`rho:lang:listOps`, *ListOpsCh) |
+  makeSysAuthToken!(*sysAuthTokenCh) |
+  for(@(_, RhoSpec)  <- RhoSpecCh &
+      @(_, PoS)      <- PoSCh &
+      @(_, ListOps)  <- ListOpsCh &
+      @sysAuthToken  <- sysAuthTokenCh) {
+    @PoS!("getBonds", *bondsCh) |
+    for (@bonds <- bondsCh) {
+      byStake!(bonds, *orderedCh)
+    } |
+    for (@ordered <- orderedCh) {
+      validatorsCh!(ordered) |
+      @RhoSpec!("testSuite", *setup,
+        [
+          ("a claim is refused to whom it does not apply", *test_a_claim_is_refused_to_whom_it_does_not_apply),
+          ("a claim opens with its block committee", *test_a_claim_opens_with_its_block_committee),
+          ("a pass the vault cannot cover fails without a fee", *test_a_pass_the_vault_cannot_cover_fails_without_a_fee),
+          ("a pass is paid and recorded", *test_a_pass_is_paid_and_recorded),
+          ("a refused claim costs its claimant the fee", *test_a_refused_claim_costs_its_claimant_the_fee),
+          ("an expired claim costs its claimant the fee", *test_an_expired_claim_costs_its_claimant_the_fee),
+          ("the fee reaches a claimant in quarantine", *test_the_fee_reaches_a_claimant_in_quarantine),
+          ("an ejected validator claims and is paid from held topups", *test_an_ejected_validator_claims_and_is_paid_from_held_topups),
+          ("a slashed claimant forfeits", *test_a_slashed_claimant_forfeits),
+          ("a fee that takes the whole bond takes the seat", *test_a_fee_that_takes_the_whole_bond_takes_the_seat),
+          ("a second withdrawal joins the first in quarantine", *test_a_second_withdrawal_joins_the_first_in_quarantine)
+        ]
+      )
+    } |
+
+    contract setup(_, retCh) = {
+      retCh!({})
+    } |
+
+    // The bonded validators, least stake first. The test genesis draws new
+    // keys every run, so in key order each position would hold a different
+    // bond each time. A map's entries list in key order.
+    contract byStake(@bonds, retCh) = {
+      new keyed, keyedCh, validatorOf in {
+        contract keyed(@(pk, stake), @acc, ret) = { ret!(acc.set((stake, pk), pk)) } |
+        contract validatorOf(@(_, pk), ret) = { ret!(pk) } |
+        @ListOps!("fold", bonds.toList(), {}, *keyed, *keyedCh) |
+        for (@byStakeAndKey <- keyedCh) {
+          @ListOps!("map", byStakeAndKey.toList(), *validatorOf, *retCh)
+        }
+      }
+    } |
+
+    // A step's guarded receive matches only success. This fails the test with
+    // a refusal, which would otherwise leave the test waiting forever.
+    contract failOnRefusal(ch, rhoSpec, ackCh) = {
+      for (@(false, reason) <- ch) {
+        rhoSpec!("assert", ((true, Nil), "==", (false, reason)), "a step the test relies on succeeds", *ackCh)
+      }
+    } |
+
+    contract deployerIdFor(@pk, retCh) = {
+      new deployerIdCh in {
+        makeDeployerId!("deployerId", pk, *deployerIdCh) |
+        for (@deployerId <- deployerIdCh) { retCh!(deployerId) }
+      }
+    } |
+
+    contract atBlock(@number, retCh) = {
+      setBlockData!("blockNumber", number, *retCh)
+    } |
+
+    contract posVaultBalance(retCh) = {
+      new posVaultCh in {
+        @PoS!("getInitialPosVault", *posVaultCh) |
+        for (@(_, posVault) <- posVaultCh) {
+          @posVault!("balance", *retCh)
+        }
+      }
+    } |
+
+    // A charged deploy leaves its fee in the PoS vault as surplus. Replies
+    // with the charge's refusal, or with the refund's reply.
+    contract payFee(@amount, retCh) = {
+      new payerCh, charged, refunded in {
+        deployerIdFor!(("eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
+                        "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
+                        "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++ "eeeeeeeeee" ++
+                        "eeeeeeeeee").hexToBytes(), *payerCh) |
+        for (@payer <- payerCh) {
+          @PoS!("chargeDeploy", payer, amount, sysAuthToken, *charged) |
+          for (@charge <- charged) {
+            match charge {
+              (true, _) => {
+                @PoS!("refundDeploy", 0, sysAuthToken, *refunded) |
+                for (@refund <- refunded) { retCh!(refund) }
+              }
+              refusal => retCh!(refusal)
+            }
+          }
+        }
+      }
+    } |
+
+    // A block's committee is its floor's bonds; here every bond stands in.
+    contract withCommittee(retCh) = {
+      new bondsCh in {
+        @PoS!("getBonds", *bondsCh) |
+        for (@committee <- bondsCh) {
+          setBlockData!("committee", committee, *retCh)
+        }
+      }
+    } |
+
+    contract request(@pk, @amount, retCh) = {
+      new deployerIdCh, committeeSetCh in {
+        deployerIdFor!(pk, *deployerIdCh) |
+        withCommittee!(*committeeSetCh) |
+        for (@deployerId <- deployerIdCh & _ <- committeeSetCh) {
+          @PoS!("claimOverflow", deployerId, amount, *retCh)
+        }
+      }
+    } |
+
+    contract resolve(@resolutions, @claimExpiries, @floorNumber, retCh) = {
+      @PoS!("resolveClaims", resolutions, [], claimExpiries,
+            "aa".hexToBytes(), floorNumber, sysAuthToken, *retCh)
+    } |
+
+    contract overflow(@target, @openedAt, @passed, retCh) = {
+      retCh!({"family": "overflow", "target": target, "openedAt": openedAt,
+              "proposer": target, "passed": passed})
+    } |
+
+    contract openEjection(@proposerPk, @target, retCh) = {
+      new deployerIdCh, committeeSetCh in {
+        deployerIdFor!(proposerPk, *deployerIdCh) |
+        withCommittee!(*committeeSetCh) |
+        for (@deployerId <- deployerIdCh & _ <- committeeSetCh) {
+          @PoS!("ejectValidator", deployerId, target, *retCh)
+        }
+      }
+    } |
+
+    contract ejectionPassed(@target, @openedAt, @proposer, retCh) = {
+      resolve!([{"family": "eject", "target": target, "openedAt": openedAt,
+                 "proposer": proposer, "passed": true}], [], openedAt, *retCh)
+    } |
+
+    contract rejoinPassed(@target, @openedAt, retCh) = {
+      new payerCh in {
+        deployerIdFor!(target, *payerCh) |
+        for (@payer <- payerCh) {
+          resolve!([{"family": "rejoin", "target": target, "openedAt": openedAt,
+                     "proposer": target, "passed": true, "payer": payer}], [], openedAt, *retCh)
+        }
+      }
+    } |
+
+    contract test_a_claim_is_refused_to_whom_it_does_not_apply(rhoSpec, _, ackCh) = {
+      new b10, notInt, zero, tooMuch, unbonded, first, second, claimsCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(10, *b10) |
+          for (_ <- b10) {
+            request!(v.nth(0), "5", *notInt) |
+            request!(v.nth(0), 0, *zero) |
+            request!(v.nth(0), 11, *tooMuch) |
+            request!("99".hexToBytes(), 5, *unbonded) |
+            for (@notIntResult <- notInt & @zeroResult <- zero & @tooMuchResult <- tooMuch &
+                 @unbondedResult <- unbonded) {
+              request!(v.nth(0), 5, *first) |
+              for (@firstResult <- first) {
+                request!(v.nth(0), 3, *second) |
+                for (@secondResult <- second) {
+                  @PoS!("getOverflowClaims", *claimsCh) |
+                  for (@claims <- claimsCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        (((false, "Claim amount must be an Int."), "==", notIntResult), "an amount is an Int"),
+                        (((false, "Claim amount must be positive."), "==", zeroResult), "an amount is positive"),
+                        (((false, "Claim amount exceeds the bound on one claim."), "==", tooMuchResult), "an amount is at most ten minimum bonds"),
+                        (((false, "Only a validator holding stake may claim overflow."), "==", unbondedResult), "a claimant holds stake"),
+                        (((true, Nil), "==", firstResult), "a staked validator may claim"),
+                        (((false, "An overflow claim is already open for this validator."), "==", secondResult), "one claim at a time"),
+                        ((5, "==", claims.get(v.nth(0)).get("amount")), "the claim records its amount")
+                      ],
+                      *ackCh
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // The claim the previous test opened at block 10.
+    contract test_a_claim_opens_with_its_block_committee(rhoSpec, _, ackCh) = {
+      new claimsCh in {
+        for (@v <<- validatorsCh) {
+          @PoS!("getOverflowClaims", *claimsCh) |
+          for (@claims <- claimsCh) {
+            rhoSpec!("assertMany",
+              [
+                ((10, "==", claims.get(v.nth(0)).get("openedAt")), "at the block that carries it"),
+                ((v.nth(0), "==", claims.get(v.nth(0)).get("proposer")), "by the claimant"),
+                ((4, "==", claims.get(v.nth(0)).get("electorate").size()), "with that block's committee as electorate")
+              ],
+              *ackCh
+            )
+          }
+        }
+      }
+    } |
+
+    // With nothing undistributed, a pass would be paid out of stake.
+    contract test_a_pass_the_vault_cannot_cover_fails_without_a_fee(rhoSpec, _, ackCh) = {
+      new b12, passCh, resolved, beforeBondsCh, beforeCh, afterCh, claimsCh, claimedCh, bondsCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(12, *b12) |
+          @PoS!("getBonds", *beforeBondsCh) |
+          posVaultBalance!(*beforeCh) |
+          overflow!(v.nth(0), 10, true, *passCh) |
+          for (_ <- b12 & @beforeBonds <- beforeBondsCh & @before <- beforeCh & @pass <- passCh) {
+            resolve!([pass], [], 11, *resolved) |
+            for (@result <- resolved) {
+              posVaultBalance!(*afterCh) |
+              @PoS!("getOverflowClaims", *claimsCh) |
+              @PoS!("getClaimedOverflow", *claimedCh) |
+              @PoS!("getBonds", *bondsCh) |
+              for (@after <- afterCh & @claims <- claimsCh & @claimed <- claimedCh & @bonds <- bondsCh) {
+                rhoSpec!("assertMany",
+                  [
+                    (((true, Nil), "==", result), "the resolution succeeds"),
+                    ((before, "==", after), "nothing is paid"),
+                    ((false, "==", claims.contains(v.nth(0))), "the slot is cleared"),
+                    ((false, "==", claimed.contains(v.nth(0))), "nothing is recorded as paid"),
+                    ((beforeBonds.get(v.nth(0)), "==", bonds.get(v.nth(0))), "and no fee is taken")
+                  ],
+                  *ackCh
+                )
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_a_pass_is_paid_and_recorded(rhoSpec, _, ackCh) = {
+      new b20, asked, fee, b22, passCh, beforeCh, resolved, afterCh, claimedCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(20, *b20) |
+          for (_ <- b20) {
+            request!(v.nth(0), 5, *asked) |
+            payFee!(100, *fee) |
+            failOnRefusal!(*asked, *rhoSpec, *ackCh) |
+            failOnRefusal!(*fee, *rhoSpec, *ackCh) |
+            for (@(true, _) <- asked & @(true, _) <- fee) {
+              atBlock!(22, *b22) |
+              overflow!(v.nth(0), 20, true, *passCh) |
+              posVaultBalance!(*beforeCh) |
+              for (_ <- b22 & @pass <- passCh & @before <- beforeCh) {
+                resolve!([pass], [], 21, *resolved) |
+                for (@result <- resolved) {
+                  posVaultBalance!(*afterCh) |
+                  @PoS!("getClaimedOverflow", *claimedCh) |
+                  for (@after <- afterCh & @claimed <- claimedCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        (((true, Nil), "==", result), "the resolution succeeds"),
+                        ((before - 5n, "==", after), "the amount leaves the PoS vault for the claimant"),
+                        (({"total": 5, "payments": {22: 5}}, "==", claimed.get(v.nth(0))), "the payment is recorded by its block, with the running total")
+                      ],
+                      *ackCh
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    contract test_a_refused_claim_costs_its_claimant_the_fee(rhoSpec, _, ackCh) = {
+      new b30, asked, b32, failCh, beforeCh, resolved, bondsCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(30, *b30) |
+          for (_ <- b30) {
+            request!(v.nth(1), 5, *asked) |
+            failOnRefusal!(*asked, *rhoSpec, *ackCh) |
+            for (@(true, _) <- asked) {
+              atBlock!(32, *b32) |
+              overflow!(v.nth(1), 30, false, *failCh) |
+              @PoS!("getBonds", *beforeCh) |
+              for (_ <- b32 & @fail <- failCh & @before <- beforeCh) {
+                resolve!([fail], [], 31, *resolved) |
+                for (@result <- resolved) {
+                  @PoS!("getBonds", *bondsCh) |
+                  for (@bonds <- bondsCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        (((true, Nil), "==", result), "the resolution succeeds"),
+                        ((before.get(v.nth(1)) / 2, "==", bonds.get(v.nth(1))), "half the bond is burned, rounded up")
+                      ],
+                      *ackCh
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // Opened at 40 with a deadline of 1000: a floor through 1039 may still
+    // decide it, and one at 1040 expires it, whatever the block's own number.
+    contract test_an_expired_claim_costs_its_claimant_the_fee(rhoSpec, _, ackCh) = {
+      new b40, asked, b1100, early, beforeCh, expired, bondsCh, claimsCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(40, *b40) |
+          for (_ <- b40) {
+            request!(v.nth(2), 5, *asked) |
+            failOnRefusal!(*asked, *rhoSpec, *ackCh) |
+            for (@(true, _) <- asked) {
+              atBlock!(1100, *b1100) |
+              for (_ <- b1100) {
+                resolve!([], [{"family": "overflow", "target": v.nth(2), "openedAt": 40, "proposer": v.nth(2)}],
+                         1039, *early) |
+                for (@earlyResult <- early) {
+                  @PoS!("getBonds", *beforeCh) |
+                  for (@before <- beforeCh) {
+                    resolve!([], [{"family": "overflow", "target": v.nth(2), "openedAt": 40, "proposer": v.nth(2)}],
+                             1040, *expired) |
+                    for (@result <- expired) {
+                      @PoS!("getBonds", *bondsCh) |
+                      @PoS!("getOverflowClaims", *claimsCh) |
+                      for (@bonds <- bondsCh & @claims <- claimsCh) {
+                        rhoSpec!("assertMany",
+                          [
+                            (((false, "A claim expiry names no claim whose deadline its floor has reached."), "==", earlyResult), "a floor inside the deadline cannot expire it, though the block is past it"),
+                            (((true, Nil), "==", result), "a floor at the deadline expires it"),
+                            ((false, "==", claims.contains(v.nth(2))), "the slot is cleared"),
+                            ((before.get(v.nth(2)) / 2, "==", bonds.get(v.nth(2))), "and half the bond is burned, rounded up")
+                          ],
+                          *ackCh
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // An unbonding validator keeps its final claim, and with it the fee.
+    contract test_the_fee_reaches_a_claimant_in_quarantine(rhoSpec, _, ackCh) = {
+      new b1100, d3, withdrawn, b2000, closed, b2001, asked, b2003,
+          failCh, beforeCh, resolved, afterCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(1100, *b1100) |
+          for (_ <- b1100) {
+            deployerIdFor!(v.nth(3), *d3) |
+            for (@id3 <- d3) {
+              @PoS!("withdraw", id3, *withdrawn) |
+              failOnRefusal!(*withdrawn, *rhoSpec, *ackCh) |
+              for (@(true, _) <- withdrawn) {
+                atBlock!(2000, *b2000) |
+                for (_ <- b2000) {
+                  @PoS!("closeBlock", sysAuthToken, *closed) |
+                  failOnRefusal!(*closed, *rhoSpec, *ackCh) |
+                  for (@(true, _) <- closed) {
+                    atBlock!(2001, *b2001) |
+                    for (_ <- b2001) {
+                      request!(v.nth(3), 5, *asked) |
+                      for (@askedResult <- asked) {
+                        atBlock!(2003, *b2003) |
+                        overflow!(v.nth(3), 2001, false, *failCh) |
+                        @PoS!("getWithdrawers", *beforeCh) |
+                        for (_ <- b2003 & @fail <- failCh & @before <- beforeCh) {
+                          resolve!([fail], [], 2002, *resolved) |
+                          for (@result <- resolved) {
+                            @PoS!("getWithdrawers", *afterCh) |
+                            for (@after <- afterCh) {
+                              match (before.get(v.nth(3)), after.get(v.nth(3))) {
+                                ((held, quarantine), (left, quarantineAfter)) => {
+                                  rhoSpec!("assertMany",
+                                    [
+                                      (((true, Nil), "==", askedResult), "a validator in quarantine may claim"),
+                                      (((true, Nil), "==", result), "the resolution succeeds"),
+                                      ((held / 2, "==", left), "the fee comes out of the quarantined bond"),
+                                      ((quarantine, "==", quarantineAfter), "which stays in quarantine as long")
+                                    ],
+                                    *ackCh
+                                  )
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // An ejected validator with only off-chain overflow claims it to fund its
+    // topup. The topups it pays are held for exactly such payouts, and drawing
+    // on them leaves the epoch's rewards as they were.
+    contract test_an_ejected_validator_claims_and_is_paid_from_held_topups(rhoSpec, _, ackCh) = {
+      new b2100, ejOpened, b2101, ejected, b2102, asked, d1, rejoinAsked, b2103,
+          rejoined, rewardsBeforeCh, b2104, passCh, beforeCh, resolved, afterCh,
+          rewardsAfterCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(2100, *b2100) |
+          for (_ <- b2100) {
+            openEjection!(v.nth(0), v.nth(1), *ejOpened) |
+            failOnRefusal!(*ejOpened, *rhoSpec, *ackCh) |
+            for (@(true, _) <- ejOpened) {
+              atBlock!(2101, *b2101) |
+              for (_ <- b2101) {
+                ejectionPassed!(v.nth(1), 2100, v.nth(0), *ejected) |
+                failOnRefusal!(*ejected, *rhoSpec, *ackCh) |
+                for (@(true, _) <- ejected) {
+                  atBlock!(2102, *b2102) |
+                  for (_ <- b2102) {
+                    request!(v.nth(1), 10, *asked) |
+                    deployerIdFor!(v.nth(1), *d1) |
+                    for (@askedResult <- asked & @id1 <- d1) {
+                      @PoS!("rejoinFromEjection", id1, 50, *rejoinAsked) |
+                      failOnRefusal!(*rejoinAsked, *rhoSpec, *ackCh) |
+                      for (@(true, _) <- rejoinAsked) {
+                        atBlock!(2103, *b2103) |
+                        for (_ <- b2103) {
+                          rejoinPassed!(v.nth(1), 2102, *rejoined) |
+                          failOnRefusal!(*rejoined, *rhoSpec, *ackCh) |
+                          for (@(true, _) <- rejoined) {
+                            @PoS!("getCurrentEpochRewards", *rewardsBeforeCh) |
+                            atBlock!(2104, *b2104) |
+                            overflow!(v.nth(1), 2102, true, *passCh) |
+                            posVaultBalance!(*beforeCh) |
+                            for (@rewardsBefore <- rewardsBeforeCh & _ <- b2104 &
+                                 @pass <- passCh & @before <- beforeCh) {
+                              resolve!([pass], [], 2103, *resolved) |
+                              for (@result <- resolved) {
+                                posVaultBalance!(*afterCh) |
+                                @PoS!("getCurrentEpochRewards", *rewardsAfterCh) |
+                                for (@after <- afterCh & @rewardsAfter <- rewardsAfterCh) {
+                                  rhoSpec!("assertMany",
+                                    [
+                                      (((true, Nil), "==", askedResult), "an ejected validator may claim"),
+                                      (((true, Nil), "==", result), "the resolution succeeds"),
+                                      ((before - 10n, "==", after), "the claim is paid from the held topup"),
+                                      ((rewardsBefore, "==", rewardsAfter), "and the epoch's rewards are untouched")
+                                    ],
+                                    *ackCh
+                                  )
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // A slashed validator forfeits its unclaimed overflow.
+    contract test_a_slashed_claimant_forfeits(rhoSpec, _, ackCh) = {
+      new b2200, asked, hashCh, invalidSet, d0, slashed, fee, b2202,
+          passCh, beforeCh, resolved, afterCh, claimedCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(2200, *b2200) |
+          for (_ <- b2200) {
+            request!(v.nth(0), 5, *asked) |
+            failOnRefusal!(*asked, *rhoSpec, *ackCh) |
+            for (@(true, _) <- asked) {
+              computeHash!(v.nth(0), *hashCh) |
+              deployerIdFor!(v.nth(0), *d0) |
+              for (@hash <- hashCh & @id0 <- d0) {
+                setInvalidBlocks!({hash : v.nth(0)}, *invalidSet) |
+                for (_ <- invalidSet) {
+                  @PoS!("slash", id0, hash, sysAuthToken, *slashed) |
+                  payFee!(100, *fee) |
+                  failOnRefusal!(*slashed, *rhoSpec, *ackCh) |
+                  failOnRefusal!(*fee, *rhoSpec, *ackCh) |
+                  for (@(true, _) <- slashed & @(true, _) <- fee) {
+                    atBlock!(2202, *b2202) |
+                    overflow!(v.nth(0), 2200, true, *passCh) |
+                    posVaultBalance!(*beforeCh) |
+                    for (_ <- b2202 & @pass <- passCh & @before <- beforeCh) {
+                      resolve!([pass], [], 2201, *resolved) |
+                      for (@result <- resolved) {
+                        posVaultBalance!(*afterCh) |
+                        @PoS!("getClaimedOverflow", *claimedCh) |
+                        for (@after <- afterCh & @claimed <- claimedCh) {
+                          rhoSpec!("assertMany",
+                            [
+                              (((true, Nil), "==", result), "the resolution succeeds"),
+                              ((before, "==", after), "nothing is paid to a slashed claimant"),
+                              ((5, "==", claimed.get(v.nth(0)).get("total")), "and its total stands as it was"),
+                              (({}, "==", claimed.get(v.nth(0)).get("payments")), "though the epoch close at 2000 dropped the payment at 22, a retention window of 1015 behind it")
+                            ],
+                            *ackCh
+                          )
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // The third validator, holding 2 after its earlier fee, withdraws, bonds 7
+    // beside its quarantine and withdraws again. Both bonds stay held, until
+    // the later of the two ends.
+    contract test_a_second_withdrawal_joins_the_first_in_quarantine(rhoSpec, _, ackCh) = {
+      new b2400, d2, w1, b3000, c1, firstCh, b3001, d2b, bonded, b3002, d2c, w2,
+          b4000, c2, withdrawersCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(2400, *b2400) |
+          deployerIdFor!(v.nth(2), *d2) |
+          for (_ <- b2400 & @id2 <- d2) {
+            @PoS!("withdraw", id2, *w1) |
+            failOnRefusal!(*w1, *rhoSpec, *ackCh) |
+            for (@(true, _) <- w1) {
+              atBlock!(3000, *b3000) |
+              for (_ <- b3000) {
+                @PoS!("closeBlock", sysAuthToken, *c1) |
+                failOnRefusal!(*c1, *rhoSpec, *ackCh) |
+                for (@(true, _) <- c1) {
+                  @PoS!("getWithdrawers", *firstCh) |
+                  atBlock!(3001, *b3001) |
+                  deployerIdFor!(v.nth(2), *d2b) |
+                  for (@first <- firstCh & _ <- b3001 & @id2b <- d2b) {
+                    @PoS!("bond", id2b, 7, *bonded) |
+                    failOnRefusal!(*bonded, *rhoSpec, *ackCh) |
+                    for (@(true, _) <- bonded) {
+                      atBlock!(3002, *b3002) |
+                      deployerIdFor!(v.nth(2), *d2c) |
+                      for (_ <- b3002 & @id2c <- d2c) {
+                        @PoS!("withdraw", id2c, *w2) |
+                        failOnRefusal!(*w2, *rhoSpec, *ackCh) |
+                        for (@(true, _) <- w2) {
+                          atBlock!(4000, *b4000) |
+                          for (_ <- b4000) {
+                            @PoS!("closeBlock", sysAuthToken, *c2) |
+                            failOnRefusal!(*c2, *rhoSpec, *ackCh) |
+                            for (@(true, _) <- c2) {
+                              @PoS!("getWithdrawers", *withdrawersCh) |
+                              for (@withdrawers <- withdrawersCh) {
+                                match (first.get(v.nth(2)), withdrawers.get(v.nth(2))) {
+                                  ((firstHeld, firstEnd), (held, end)) => {
+                                    rhoSpec!("assertMany",
+                                      [
+                                        ((2, "==", firstHeld), "the first withdrawal quarantines 2"),
+                                        ((9, "==", held), "the second joins it, 2 and 7"),
+                                        ((true, "==", end > firstEnd), "held until the later end")
+                                      ],
+                                      *ackCh
+                                    )
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } |
+
+    // The second validator holds a bond of 1 after its earlier fee, and half of
+    // it, rounded up, is all of it.
+    contract test_a_fee_that_takes_the_whole_bond_takes_the_seat(rhoSpec, _, ackCh) = {
+      new b2300, asked, beforeCh, b2302, failCh, resolved, bondsCh, activeCh in {
+        for (@v <<- validatorsCh) {
+          atBlock!(2300, *b2300) |
+          for (_ <- b2300) {
+            request!(v.nth(1), 5, *asked) |
+            failOnRefusal!(*asked, *rhoSpec, *ackCh) |
+            for (@(true, _) <- asked) {
+              @PoS!("getActiveValidators", *beforeCh) |
+              atBlock!(2302, *b2302) |
+              overflow!(v.nth(1), 2300, false, *failCh) |
+              for (@before <- beforeCh & _ <- b2302 & @fail <- failCh) {
+                resolve!([fail], [], 2301, *resolved) |
+                for (@result <- resolved) {
+                  @PoS!("getBonds", *bondsCh) |
+                  @PoS!("getActiveValidators", *activeCh) |
+                  for (@bonds <- bondsCh & @active <- activeCh) {
+                    rhoSpec!("assertMany",
+                      [
+                        (((true, Nil), "==", result), "the resolution succeeds"),
+                        (before.contains(v.nth(1)), "the claimant held a seat"),
+                        ((0, "==", bonds.get(v.nth(1))), "the fee takes the whole bond"),
+                        ((false, "==", active.contains(v.nth(1))), "and the seat with it")
+                      ],
+                      *ackCh
+                    )
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

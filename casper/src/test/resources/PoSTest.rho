@@ -12,7 +12,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       vaultAddressOps(`rho:vault:address`),
       posVaultAddressCh, posVaultCh,
       RhoSpecCh, PoSCh, SystemVaultCh, ListOpsCh,
-      setup, prepareUser,
+      setup, prepareUser, failOnRefusal,
       test_make_pos_succeeds,
       test_close_block_finishes,
       test_bonding_succeeds,
@@ -93,6 +93,14 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             }
           } |
 
+          // A step's guarded receive matches only success. This fails the test
+          // with a refusal, which would otherwise leave the test waiting forever.
+          contract failOnRefusal(ch, rhoSpec, ackCh) = {
+            for (@(false, reason) <- ch) {
+              rhoSpec!("assert", ((true, Nil), "==", (false, reason)), "a step the test relies on succeeds", *ackCh)
+            }
+          } |
+
           contract test_make_pos_succeeds(rhoSpec, _, ackCh) = {
             new bondsCh, rewardsCh, rewardsZeroCh, rewardsZeroPred in {
               @PoS!("getBonds", *bondsCh) |
@@ -124,11 +132,13 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 setBlockData!("blockNumber", 1, *initialBlockDataCh) |
                 for (_ <- initialBlockDataCh) {
                   closeBlock!(*close1Ch) |
+                  failOnRefusal!(*close1Ch, *rhoSpec, *ackCh) |
                   for (@(true, _) <- close1Ch) {
                     // epoch change closeBlock
                     setBlockData!("blockNumber", epochLength, *finalBlockDataCh) |
                     for (_ <- finalBlockDataCh) {
                       closeBlock!(*close2Ch) |
+                      failOnRefusal!(*close2Ch, *rhoSpec, *ackCh) |
                       for (@(true, _) <- close2Ch) {
                         rhoSpec!("assertMany",
                           [
@@ -163,6 +173,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                   match 100 {
                     bondAmt => {
                       @PoS!("bond", userDeployerId, bondAmt, *retCh) |
+                      failOnRefusal!(*retCh, *rhoSpec, *ackCh) |
                       for (@(true, _) <- retCh) {
                         @PoS!("getBonds", *finalBondsCh) |
                         getPosBalance!(*finalPosBalanceCh) |
@@ -226,11 +237,13 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                     (bondAmt, blockNumber) => {
                       @PoS!("bond", userDeployerId, bondAmt, *bondCh) |
                       setBlockData!("blockNumber", blockNumber, *blockDataCh) |
+                      failOnRefusal!(*bondCh, *rhoSpec, *ackCh) |
                       for (@(true, _) <- bondCh &
                            _          <- blockDataCh) {
                         @PoS!("withdraw", userDeployerId, *withdrawCh) |
                         for (_ <- withdrawCh) {
                           closeBlock!(*closeBlockCh) |
+                          failOnRefusal!(*closeBlockCh, *rhoSpec, *ackCh) |
                           for (@(true, _) <- closeBlockCh) {
                             @PoS!("getBonds", *finalBondsCh) |
                             getPosBalance!(*finalPosBalanceCh) |
@@ -290,6 +303,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                   match (100, 100, 0, 1) {
                     (bondAmt, chargeAmt, refundAmt, blockNumber) => {
                       @PoS!("bond", validatorDeployerId, bondAmt, *bondCh) |
+                      failOnRefusal!(*bondCh, *rhoSpec, *ackCh) |
                       for (@(true, _) <- bondCh) {
                         stdlog!("info", ("successfully bond.")) |
                         closeBlock!(*closeBlockCh) |
@@ -298,6 +312,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                           for (@userPubKey, _, @userVault, @userDeployerId <- setupCh) {
                             @PoS!("chargeDeploy", userDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
                             @PoS!("refundDeploy", refundAmt, sysAuthToken, *refundCh) |
+                            failOnRefusal!(*chargeCh, *rhoSpec, *ackCh) |
+                            failOnRefusal!(*refundCh, *rhoSpec, *ackCh) |
                             for (@(true, _) <- chargeCh &
                                  @(true, _) <- refundCh){
                               closeBlock!(*closeBlockCh) |
@@ -313,6 +329,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                     for (_                   <- blockDataCh &
                                          @initialWithdrawers <- withdrawersCh) {
                                       @PoS!("withdraw", validatorDeployerId, *withdrawCh) |
+                                      failOnRefusal!(*withdrawCh, *rhoSpec, *ackCh) |
                                       for (@(true, _) <- withdrawCh) {
                                         stdlog!("info", ("Successfully withdraw bbbb....")) |
                                         match quarantineLength + epochLength * (1 + blockNumber / epochLength) {
@@ -396,6 +413,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                   match (100, 200) {
                     (user1Bond, user2Bond) => {
                       @PoS!("bond", user1DeployerId, user1Bond, *user1BondCh) |
+                      failOnRefusal!(*user1BondCh, *rhoSpec, *ackCh) |
                       for (@(true, _) <- user1BondCh) {
                         stdlog!("info", "first bond") |
                         prepareUser!("3333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333", *setupCh) |
@@ -403,6 +421,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                           @user2Vault!("balance", *initialUser2BalanceCh) |
                           for (@initialUser2Balance <- initialUser2BalanceCh) {
                             @PoS!("bond", user2DeployerId, user2Bond, *user2BondCh) |
+                            failOnRefusal!(*user2BondCh, *rhoSpec, *ackCh) |
                             for (@(true, _) <- user2BondCh) {
                               @PoS!("getBonds", *finalBondsCh) |
                               getPosBalance!(*finalPosBalanceCh) |
@@ -450,6 +469,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 match (100, 100, 0) {
                   (validatorBond, userCharge, userRefund) => {
                     @PoS!("bond", validatorDeployerId, validatorBond, *setupCh) |
+                    failOnRefusal!(*setupCh, *rhoSpec, *ackCh) |
                     for (@(true, _) <- setupCh) {
                       closeBlock!(*closeBlockCh) |
                       prepareUser!("5555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555555", *setupCh) |
@@ -468,6 +488,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                           stdlog!("info", ("bonding distribution and actives before precharge and refund", initialBonds, initialActives, initialRewards)) |
                           @PoS!("chargeDeploy", userDeployerId, userCharge, sysAuthToken, *retCh0) |
                           @PoS!("refundDeploy", userRefund, sysAuthToken, *retCh1) |
+                          failOnRefusal!(*retCh0, *rhoSpec, *ackCh) |
+                          failOnRefusal!(*retCh1, *rhoSpec, *ackCh) |
                           for (@(true, _) <- retCh0 &
                                @(true, _) <- retCh1) {
                             closeBlock!(*closeBlockCh) |
@@ -534,6 +556,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 match (100, 100, 50) {
                   (validatorBond, userCharge, userRefund) => {
                     @PoS!("bond", validatorDeployerId, validatorBond, *bondAck) |
+                    failOnRefusal!(*bondAck, *rhoSpec, *ackCh) |
                     for (@(true, _) <- bondAck) {
                       closeBlock!(*closeBlockAck) |
                       prepareUser!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", *prepareUserAck) |
@@ -547,6 +570,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                              @initialRewards     <- rewardsCh) {
                           @PoS!("chargeDeploy", userDeployerId, userCharge, sysAuthToken, *chargeDeployAck) |
                           @PoS!("refundDeploy", userRefund, sysAuthToken, *refundDeployAck) |
+                          failOnRefusal!(*chargeDeployAck, *rhoSpec, *ackCh) |
+                          failOnRefusal!(*refundDeployAck, *rhoSpec, *ackCh) |
                           for (@(true, _) <- chargeDeployAck &
                                @(true, _) <- refundDeployAck) {
                             closeBlock!(*closeBlockAck) |
@@ -696,11 +721,14 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               prepareUser!("9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999", *setupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- setupCh) {
                 @PoS!("bond", validatorDeployerId, 100, *setupCh) |
+                failOnRefusal!(*setupCh, *rhoSpec, *ackCh) |
                 for (@(true, _) <- setupCh) {
                   prepareUser!("0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", *setupCh) |
                   for (@user1PubKey, _, @user1Vault, @user1DeployerId <- setupCh) {
                     @PoS!("chargeDeploy", user1DeployerId, 100, sysAuthToken, *chargeCh) |
                     @PoS!("refundDeploy", 10, sysAuthToken, *refundCh) |
+                    failOnRefusal!(*chargeCh, *rhoSpec, *ackCh) |
+                    failOnRefusal!(*refundCh, *rhoSpec, *ackCh) |
                     for (@(true, _) <- chargeCh &
                          @(true, _) <- refundCh) {
                       closeBlock!(*closeBlockCh) |
@@ -815,6 +843,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                     (chargeAmt, refundAmt) => {
                       @PoS!("chargeDeploy", userDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
                       @PoS!("refundDeploy", refundAmt, sysAuthToken, *refundCh) |
+                      failOnRefusal!(*chargeCh, *rhoSpec, *ackCh) |
+                      failOnRefusal!(*refundCh, *rhoSpec, *ackCh) |
                       for (@(true, _) <- chargeCh &
                            @(true, _) <- refundCh) {
                         match activeValidators.toList().nth(3) {
@@ -830,6 +860,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                    @initialRewards     <- initialRewardsCh &
                                    @initialPosBalance  <- initialPosBalanceCh) {
                                 @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashCh) |
+                                failOnRefusal!(*slashCh, *rhoSpec, *ackCh) |
                                 for (@(true, _) <- slashCh) {
                                   @PoS!("getBonds", *finalBondsCh) |
                                   getPosBalance!(*finalPosBalanceCh) |

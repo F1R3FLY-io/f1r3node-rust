@@ -48,7 +48,7 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, n_validators, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {
@@ -237,6 +237,7 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         .expect("parents have timestamps")
         + 1;
     let block_data = BlockData {
+        committee: Vec::new(),
         time_stamp: now_millis,
         block_number: next_block_num,
         sender: validator_identity.public_key.clone(),
@@ -295,6 +296,7 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,
         merge_base: checkpoint.merge_base.unwrap_or_default(),
+        leaky_bucket_votes: Vec::new(),
     };
     let header = Header {
         parents_hash_list: snapshot

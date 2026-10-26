@@ -96,7 +96,7 @@ async fn get_listening_name_data_response_should_work_with_unsorted_channels() {
 async fn get_listening_name_data_response_should_work_across_a_chain() {
     let ctx = TestContext::new().await;
 
-    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
         .await
         .unwrap();
 

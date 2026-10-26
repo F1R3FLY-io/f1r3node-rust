@@ -69,9 +69,7 @@ struct ShardSetup<'a> {
 pub struct ShardOverrides {
     pub synchrony_constraint_threshold: Option<f64>,
     pub max_number_of_parents: Option<i32>,
-    pub max_parent_depth: Option<i32>,
     pub with_read_only_size: Option<usize>,
-    pub deploy_lifespan: Option<i64>,
     pub finalization_rate: Option<i32>,
 }
 
@@ -146,11 +144,16 @@ impl TestNode {
             self.rejected_deploy_buffer.clone(),
             &self.runtime_manager.clone(),
             &mut self.block_store.clone(),
+            &self.block_dag_storage,
             if self.allow_empty_blocks {
                 casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty
             } else {
                 casper::rust::blocks::proposer::proposer::DeploySelection::Standard
             },
+            casper::rust::economics::bucket_view::LeakyBucketProposal::abstaining(
+                *self.casper.bucket_view().params(),
+            )
+            .fixed(),
         )
         .await
     }
@@ -809,34 +812,33 @@ impl TestNode {
 
     /// Creates a standalone TestNode (single node network)
     pub async fn standalone(genesis: GenesisContext) -> Result<TestNode, CasperError> {
-        let nodes = Self::create_network(genesis, 1, None, None, None, None).await?;
+        let nodes = Self::create_network(genesis, 1, None, None, None).await?;
 
         Ok(nodes.into_iter().next().unwrap())
     }
 
-    /// Creates a network of TestNodes
+    /// Creates a network of TestNodes. The parameters fixed at genesis — the
+    /// parent depth and deploy lifespan among them — come from `genesis`.
     pub async fn create_network(
         genesis: GenesisContext,
         network_size: usize,
         synchrony_constraint_threshold: Option<f64>,
         max_number_of_parents: Option<i32>,
-        max_parent_depth: Option<i32>,
         with_read_only_size: Option<usize>,
     ) -> Result<Vec<TestNode>, CasperError> {
         Self::create_network_with_overrides(genesis, network_size, ShardOverrides {
             synchrony_constraint_threshold,
             max_number_of_parents,
-            max_parent_depth,
             with_read_only_size,
             ..Default::default()
         })
         .await
     }
 
-    /// `create_network` with shard-conf overrides. A short `deploy_lifespan`
-    /// closes deploy validity windows within a handful of blocks instead of ~50;
-    /// `finalization_rate: Some(0)` suppresses the detached finalizer, leaving
-    /// `finalize()` as the only thing that moves the LFB.
+    /// `create_network` with shard-conf overrides. `finalization_rate: Some(0)`
+    /// suppresses the detached finalizer, leaving `finalize()` as the only thing
+    /// that moves the LFB. The parent depth and deploy lifespan are chain
+    /// parameters, so they come from `genesis`.
     pub async fn create_network_with_overrides(
         genesis: GenesisContext,
         network_size: usize,
@@ -1015,8 +1017,6 @@ impl TestNode {
         let max_number_of_parents = overrides
             .max_number_of_parents
             .unwrap_or(Estimator::UNLIMITED_PARENTS);
-        let max_parent_depth = overrides.max_parent_depth;
-        let deploy_lifespan = overrides.deploy_lifespan;
         let finalization_rate = overrides.finalization_rate;
 
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
@@ -1117,6 +1117,7 @@ impl TestNode {
                 None,
                 runtime_manager.clone(),
                 block_store.clone(),
+                block_dag_storage.clone(),
                 deploy_storage.clone(),
                 rejected_deploy_buffer.clone(),
                 block_retriever.clone(),
@@ -1165,34 +1166,26 @@ impl TestNode {
             sigs: vec![],
         };
         let shard_conf = CasperShardConf {
-            fault_tolerance_threshold: 0.1,
-            fault_tolerance_threshold_ppm: 100_000,
             shard_name: shard_id.clone(),
             parent_shard_id: "".to_string(),
             finalization_rate,
             max_number_of_parents,
-            // Realistic depth bound by default: i32::MAX disabled the depth
-            // check entirely, so fixtures could lean on unbounded parent
-            // spread that no configured shard permits. Specs that need the
-            // check off pass an explicit override.
-            max_parent_depth: max_parent_depth.unwrap_or(30),
             synchrony_constraint_threshold: synchrony_constraint_threshold as f32,
             height_constraint_threshold: i64::MAX,
-            // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
-            // Required to enable protection from re-submitting duplicate deploys
-            deploy_lifespan: deploy_lifespan.unwrap_or(50),
             casper_version: 1,
-            bond_minimum: 0,
-            bond_maximum: i64::MAX,
-            epoch_length: 10000,
-            quarantine_length: 20000,
-            min_phlo_price: 1,
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
             mergeable_channels_gc_depth_buffer: 10,
             ..CasperShardConf::new()
         };
+        let chain_parameters = runtime_manager
+            .chain_parameters(&genesis.body.state.post_state_hash)
+            .await
+            .expect("genesis carries the chain parameters");
+        let bucket_view = Arc::new(casper::rust::economics::bucket_view::BucketView::new(
+            chain_parameters.leaky_bucket,
+        ));
 
         let finalized_bond_cache =
             casper::rust::engine::multi_parent_casper::FinalizedBondCache::from_storage(
@@ -1211,7 +1204,9 @@ impl TestNode {
                 casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
             ),
             deploy_storage: deploy_storage.clone(),
+            bucket_view: bucket_view.clone(),
             shard_conf,
+            chain: chain_parameters,
         };
         let casper_impl = MultiParentCasperImpl {
             observer: finalization.observer.clone(),
@@ -1224,10 +1219,13 @@ impl TestNode {
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
+            bucket_view,
+            ejection_requests: Arc::new(parking_lot::Mutex::new(Default::default())),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
             finalized_bond_cache,
             casper_shard_conf: finalization.shard_conf.clone(),
+            chain_parameters,
             approved_block: genesis.clone(),
             finalizer: casper::rust::engine::multi_parent_casper::Finalizer::start(finalization),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),

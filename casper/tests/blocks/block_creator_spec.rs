@@ -7,10 +7,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
+use casper::rust::chain_parameters::ChainParameters;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::validator_identity::ValidatorIdentity;
 use crypto::rust::private_key::PrivateKey;
@@ -190,21 +192,13 @@ async fn stage_floor_with_block_records(
 /// Uses an in-memory DAG representation (matching Scala's TestBlockDagRepresentation).
 fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
     let shard_conf = CasperShardConf {
-        fault_tolerance_threshold: 0.0,
         shard_name: "test-shard".to_string(),
         parent_shard_id: "".to_string(),
         finalization_rate: 0,
         max_number_of_parents: 10,
-        max_parent_depth: 0,
         synchrony_constraint_threshold: 0.0,
         height_constraint_threshold: 0,
-        deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
-        bond_minimum: 0,
-        bond_maximum: i64::MAX,
-        epoch_length: 0,
-        quarantine_length: 0,
-        min_phlo_price: 0,
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
         disable_validator_progress_check: false,
@@ -220,6 +214,15 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
 
     let on_chain_state = OnChainCasperState {
         shard_conf,
+        chain: ChainParameters {
+            fault_tolerance_threshold_ppm: 0,
+            max_parent_depth: 0,
+            deploy_lifespan: DEPLOY_LIFESPAN,
+            min_phlo_price: 0,
+            epoch_length: 0,
+            quarantine_length: 0,
+            ..ChainParameters::shipped()
+        },
         bonds_map,
         active_validators: vec![validator_id],
     };
@@ -278,7 +281,14 @@ async fn recovery_empty_and_disabled_ordinary_admission_skip_full_pool_reads() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store,
+        &BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage"),
         casper::rust::blocks::proposer::proposer::DeploySelection::RecoveryEmpty,
+        casper::rust::economics::bucket_view::LeakyBucketProposal::abstaining(
+            casper::rust::economics::bucket_view::LeakyBucketParams::shipped(),
+        )
+        .fixed(),
     )
     .await;
     assert_eq!(decoded_pool_deploys(&snapshotter), 0);
@@ -324,7 +334,7 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
         .await
         .expect("block store");
     let mut snapshot = create_snapshot(20, validator_id);
-    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    snapshot.on_chain_state.chain.deploy_lifespan = 10_000;
     let deploy = create_deploy(1, None, &validator_sk);
 
     deploy_storage
@@ -448,7 +458,7 @@ async fn ordinary_deploys_are_ignored_when_user_deploy_leadership_is_disabled() 
         .await
         .expect("block store");
     let mut snapshot = create_snapshot(20, validator_id);
-    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    snapshot.on_chain_state.chain.deploy_lifespan = 10_000;
     let deploy = create_deploy(1, None, &validator_sk);
 
     deploy_storage
@@ -521,7 +531,7 @@ async fn unrelated_ordinary_deploys_remain_selectable_while_scope_has_user_work(
         .await
         .expect("block store");
     let mut snapshot = create_snapshot(20, validator_id);
-    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    snapshot.on_chain_state.chain.deploy_lifespan = 10_000;
     let in_scope = create_deploy(1, None, &validator_sk);
     let pending = create_deploy(2, None, &validator_sk);
 
@@ -575,7 +585,7 @@ async fn ordinary_deploy_selection_uses_config_cap() {
         .on_chain_state
         .shard_conf
         .max_user_deploys_per_block = 40;
-    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    snapshot.on_chain_state.chain.deploy_lifespan = 10_000;
     let deploys: Vec<Signed<DeployData>> = (1..=60)
         .map(|n| create_deploy(n, None, &validator_sk))
         .collect();
@@ -632,7 +642,7 @@ async fn ordinary_deploy_selection_is_bounded_only_by_the_configured_cap() {
         .on_chain_state
         .shard_conf
         .max_user_deploys_per_block = 150;
-    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    snapshot.on_chain_state.chain.deploy_lifespan = 10_000;
     let deploys: Vec<Signed<DeployData>> = (1..=160)
         .map(|n| create_deploy(n, None, &validator_sk))
         .collect();
@@ -688,7 +698,7 @@ async fn recovered_deploy_selection_uses_normal_retry_window() {
         .on_chain_state
         .shard_conf
         .max_user_deploys_per_block = 777_777;
-    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    snapshot.on_chain_state.chain.deploy_lifespan = 10_000;
     let recovered: Vec<Signed<DeployData>> = (1..=160)
         .map(|n| create_deploy(n, None, &validator_sk))
         .collect();
@@ -780,7 +790,7 @@ async fn rejected_in_scope_ordinary_deploy_waits_for_recovery_buffer() {
         .on_chain_state
         .shard_conf
         .max_user_deploys_per_block = 777_777;
-    snapshot.on_chain_state.shard_conf.deploy_lifespan = 10_000;
+    snapshot.on_chain_state.chain.deploy_lifespan = 10_000;
     let rejected: Vec<Signed<DeployData>> = (1..=160)
         .map(|n| create_deploy(n, None, &validator_sk))
         .collect();
@@ -849,7 +859,7 @@ async fn pool_retry_of_an_unsettled_rejection_is_deferred_by_the_gate() {
         .on_chain_state
         .shard_conf
         .max_user_deploys_per_block = 777_777;
-    snapshot.on_chain_state.shard_conf.deploy_lifespan = 50;
+    snapshot.on_chain_state.chain.deploy_lifespan = 50;
 
     // The pool holds the retry; the buffer does NOT (the deep-lag geometry
     // reaches the pool route, which bypasses the buffered gate).
@@ -1204,7 +1214,14 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store.clone(),
+        &BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage"),
         casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
+        casper::rust::economics::bucket_view::LeakyBucketProposal::abstaining(
+            casper::rust::economics::bucket_view::LeakyBucketParams::shipped(),
+        )
+        .fixed(),
     )
     .await;
 
@@ -1323,7 +1340,14 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store.clone(),
+        &BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage"),
         casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
+        casper::rust::economics::bucket_view::LeakyBucketProposal::abstaining(
+            casper::rust::economics::bucket_view::LeakyBucketParams::shipped(),
+        )
+        .fixed(),
     )
     .await;
 
@@ -1426,7 +1450,14 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
         rejected_deploy_buffer.clone(),
         &runtime_manager,
         &mut block_store.clone(),
+        &BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage"),
         casper::rust::blocks::proposer::proposer::DeploySelection::Standard,
+        casper::rust::economics::bucket_view::LeakyBucketProposal::abstaining(
+            casper::rust::economics::bucket_view::LeakyBucketParams::shipped(),
+        )
+        .fixed(),
     )
     .await;
 

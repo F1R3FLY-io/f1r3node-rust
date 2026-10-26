@@ -95,6 +95,7 @@ async fn index_real_blocks(
             block_number: number,
             sender: validator.clone(),
             seq_num,
+            committee: genesis_block.body.state.bonds.clone(),
         };
         let (post_state, processed, system) = runtime_manager
             .compute_state(

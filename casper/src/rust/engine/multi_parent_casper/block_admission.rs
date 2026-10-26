@@ -12,6 +12,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
@@ -162,6 +163,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
+    parents: &[BlockMetadata],
 ) -> Result<KeyValueDagRepresentation, CasperError> {
     // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
     // via the helper. See
@@ -192,6 +194,11 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
         );
     }
     record_dag_cardinality_metrics(&updated_dag);
+
+    this.bucket_view
+        .observe(&crate::rust::economics::bucket_view::Observation::of(
+            block, parents,
+        ));
 
     // Publish BlockAdded event
     this.event_publisher
@@ -310,7 +317,7 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
     let latest_block_number = snapshot.dag.latest_block_number();
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         latest_block_number,
-        snapshot.on_chain_state.shard_conf.deploy_lifespan,
+        snapshot.on_chain_state.chain.deploy_lifespan,
     )?;
     // Pre-epoch system clock (operationally impossible on modern
     // systems, but per-correctness directive: handle the corner). A
@@ -372,7 +379,7 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
     let latest_block_number = snapshot.dag.latest_block_number();
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
         latest_block_number,
-        snapshot.on_chain_state.shard_conf.deploy_lifespan,
+        snapshot.on_chain_state.chain.deploy_lifespan,
     )?;
     let current_time_millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

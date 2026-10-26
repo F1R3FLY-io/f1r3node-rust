@@ -68,7 +68,7 @@ async fn lagged_three_node_network() -> (Vec<TestNode>, String, BlockMessage) {
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
     let genesis_block = genesis.genesis_block.clone();
-    let mut nodes = TestNode::create_network(genesis, 3, None, None, None, None)
+    let mut nodes = TestNode::create_network(genesis, 3, None, None, None)
         .await
         .expect("create_network");
     for node in nodes.iter_mut() {
@@ -237,6 +237,11 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         let deploy_storage = nodes[2].deploy_storage.clone();
         let rejected_buffer = nodes[2].rejected_deploy_buffer.clone();
         let runtime_manager = nodes[2].runtime_manager.clone();
+        let block_dag_storage = nodes[2].block_dag_storage.clone();
+        let proposal = casper::rust::economics::bucket_view::LeakyBucketProposal::abstaining(
+            *nodes[2].casper.bucket_view().params(),
+        )
+        .fixed();
         let created = block_creator::create(
             &snapshot,
             &validator_identity,
@@ -245,7 +250,9 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
             rejected_buffer,
             &runtime_manager,
             &mut nodes[2].block_store,
+            &block_dag_storage,
             casper::rust::blocks::proposer::proposer::DeploySelection::StandardAllowEmpty,
+            proposal,
         )
         .await
         .expect("create sibling contender branch");

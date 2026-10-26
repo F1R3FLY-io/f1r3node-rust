@@ -30,7 +30,7 @@ async fn lfb_moves_with_running_validators(running: usize, rounds: usize) -> boo
     let shard_id = genesis.genesis_block.shard_id.clone();
     let genesis_hash = genesis.genesis_block.block_hash.clone();
 
-    let mut nodes = TestNode::create_network(genesis, running, Some(0.0), None, None, None)
+    let mut nodes = TestNode::create_network(genesis, running, Some(0.0), None, None)
         .await
         .unwrap();
     for node in nodes.iter_mut() {
@@ -119,7 +119,7 @@ async fn network_with_newcomer_stake(
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network(genesis, node_count, Some(0.0), None, None, None)
+    let mut nodes = TestNode::create_network(genesis, node_count, Some(0.0), None, None)
         .await
         .unwrap();
     for node in nodes.iter_mut() {
@@ -209,9 +209,13 @@ async fn a_silent_newcomer_does_not_block_the_synchrony_constraint() {
     );
 
     let identity = nodes[0].validator_id_opt.clone().unwrap();
-    let result = synchrony_constraint_checker::check(&snapshot, &identity)
-        .await
-        .unwrap();
+    let result = synchrony_constraint_checker::check(
+        &snapshot,
+        &identity,
+        &std::collections::HashSet::new(),
+    )
+    .await
+    .unwrap();
     assert!(
         matches!(result, CheckProposeConstraintsResult::Success),
         "{result:?}"

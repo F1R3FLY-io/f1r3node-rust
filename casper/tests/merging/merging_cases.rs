@@ -48,6 +48,7 @@ async fn two_deploys_executed_inside_single_state_transition_should_be_dependent
         .unwrap();
 
         let block_data = BlockData {
+            committee: Vec::new(),
             time_stamp: d1.data.time_stamp,
             seq_num,
             block_number: block_num,
