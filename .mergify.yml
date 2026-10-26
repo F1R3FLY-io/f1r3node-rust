@@ -71,6 +71,57 @@ merge_queue:
   mode: serial
   max_parallel_checks: 1
 
+# Priority. The priority rules apply across all queues, and the first rule
+# that matches sets the priority. A pull request that no rule matches gets
+# medium (2000), the lowest tier here.
+#
+#   6000  security: the security label, or a head that contains security or
+#         rustsec. A rule below adds the label to such a head. Only this tier
+#         interrupts the checks that run.
+#   5000  fix/ into dev, hotfix/ into master
+#   4000  release flow: promote/, backmerge/, and ca/ heads
+#   3000  perf/
+#   2500  ci/
+#   2000  every other head, for example feat/, feature/, docs/, and chore/
+priority_rules:
+  - name: Security fix
+    conditions:
+      - or:
+          - label=security
+          - head~=(?i)(security|rustsec)
+    priority: 6000
+    allow_checks_interruption: true
+
+  - name: Fix into dev or hotfix into master
+    conditions:
+      - or:
+          - and:
+              - base=dev
+              - head~=^fix/
+          - and:
+              - base=master
+              - head~=^hotfix/
+    priority: 5000
+    allow_checks_interruption: false
+
+  - name: Release flow
+    conditions:
+      - head~=^(promote|backmerge|ca)/
+    priority: 4000
+    allow_checks_interruption: false
+
+  - name: Performance
+    conditions:
+      - head~=^perf/
+    priority: 3000
+    allow_checks_interruption: false
+
+  - name: CI
+    conditions:
+      - head~=^ci/
+    priority: 2500
+    allow_checks_interruption: false
+
 queue_rules:
   - name: dev
     batch_size: 1
@@ -402,6 +453,16 @@ pull_request_rules:
       label:
         add:
           - ci-heavy
+
+  - name: Label a security fix
+    conditions:
+      - head~=(?i)(security|rustsec)
+      - -closed
+      - -label=security
+    actions:
+      label:
+        add:
+          - security
 
   - name: Queue a pull request into dev
     conditions:

@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "scope": "bounded-harness-writer-stop-confirmation",
+  "phase": "pre_pr216_merge",
+  "status": "change-verified-pending-acceptance",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "change": {
+    "task": "Follow-up of the PR #811 review: confirm the writer stop despite Docker races and slow daemons, and close three paths that left writers running",
+    "branch": "fix/soak-writer-stop-race",
+    "pull_request": 863,
+    "base": "9bfbb0045bc7972b5c52160fa45e972634be016d",
+    "commit": "1250e8490bb40bf3b3272e9621cfcf665674e1f0",
+    "origin": "Soak 40155878690 (manual dispatch from dev) failed closed after 14.5 h. The Docker writer stop at the end of a segment counted a failed docker inspect or docker kill of a container that exited during the stop as a failed stop, although no writer remained.",
+    "driver": "stop_node_writer_commands kills all owned containers in one docker kill call. A failed inspect or kill is a failure only when a second docker ps still lists the container as running. A failed docker ps, a failed host-control stop-owned, an invalid container ID, or another owner label still fails the stop. The end-of-segment stop has its own budget SOAK_WRITER_STOP_SECONDS (5 to 120 s, default 30 s). After a host protection breach or during an emergency it keeps DISK_STOP_SECONDS. writer-stop-failure.txt names the failed step, the container, and the Docker error. A confirmed stop with output keeps it as writer-stop.log. The exit cleanup stops the owned writers when the driver exits before the end-of-segment stop. A pytest that a signal ends gets its owned writers stopped before the evidence copy. The target_advanced early exit record starts with its reason, and early-exit.txt is read once.",
+    "host_control": "stop-owned and prefer-oom write one line on stderr for each process that they skip because its environment is unreadable. The owner scan returns the skipped PIDs. Behavior does not change. The unit tests that need an unreadable environment return early when they run as root.",
+    "fixture": "test-run-merge-recovery-soak.sh adds a fake docker with four owned containers and the cases slow, vanish, exits, stuck, persist, sigkill, and breach. The target_advanced case checks the reason prefix and a restart that keeps the reason."
+  },
+  "guarantee_change": {
+    "before": "At the end of a segment, any failed docker inspect or docker kill of an owned container failed the stop, also when the container had exited. The stop had the emergency budget of 1 to 5 s. An exit between iterations skipped the stop, and the writers of a signal-ended pytest ran until the end of the segment.",
+    "after": "The stop fails only when a container stays listed as running after the kill, or when docker ps, host-control stop-owned, a container ID, or an owner label fails its check. The end-of-segment stop has a 30 s default budget outside emergencies. An exit before the end-of-segment stop and a signal-ended pytest also stop the owned writers.",
+    "limitation": [
+      "The driver does not confirm the owner label of a container that exits before its inspect. A container that docker ps does not list as running does not write.",
+      "The end of a segment can take up to SOAK_WRITER_STOP_SECONDS plus 1 s longer than before.",
+      "The stop after a signal-ended pytest records a failure only in the writer-stop.log of that iteration. The end-of-segment stop decides the result of the soak.",
+      "Like the end-of-segment stop, the exit stop applies only to a soak without a Casper manifest (SOAK_INPUT_DIR not set), and only before the end-of-segment stop has run."
+    ],
+    "claim_record": "docs/claims/casper-soak-harness.md, the section of 2026-10-26"
+  },
+  "source_digests_before_change": {
+    "scripts/run-merge-recovery-soak.sh": "431094a0d64c5d2923474948e22112ef27292889b4c91d08bb7343d2be9fd12e",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "d70933e3d37af22aa0a0cd819d909ee86cdc700a43e820ff95153d1babb23a60",
+    "scripts/casper-soak/src/host_control.rs": "31c99688f2475b8d9756cd6fdd2f49af54981e50a07160c8a3f479ad8e80cfed"
+  },
+  "source_digests_before_change_note": "These digests equal the accepted digests of docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json.",
+  "source_digests": {
+    "scripts/run-merge-recovery-soak.sh": "b043f160546dc6b8d7b0e7d7cf251220d270430883c8a8251bf70283f306e82b",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "74298dd3ce8d251a04a467f471e088de6dd127525d8b750270a3be5cb4bfa973",
+    "scripts/casper-soak/src/host_control.rs": "427e0a7a550156cfc821e37df4fe452a03aae3b9ed8807bd897be0c80b76e6be"
+  },
+  "claim_digests_before_change": {
+    "docs/claims/casper-soak-harness.md": "670e2867bf40fb941a7e762b8624550c0feb8cdc45fe7efcfc7b69f3cc0cabc8"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "bf12f378c91e0a41e87b2b2102d93e4e17383f93be2076e920d8a289f368d0bc"
+  },
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verification": {
+    "fixture_local": {
+      "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+      "environment": "rust:bookworm container on arm64, run as UID 1000 (non-root), with a 12 GB tmpfs /tmp and the casper-soak binary built from the same tree with nightly-2026-02-09.",
+      "exit": 0,
+      "seconds": 371
+    },
+    "fixture_before_fix": {
+      "method": "Nine scratch variants of the fixture of this change. Each keeps the fixture setup (lines 1 to 646) and one new case. Each variant runs against the driver and host_control.rs of this change and against those of the base, in the same container as UID 1000. The checkout is not changed.",
+      "results": {
+        "slow": {"change": "passed", "base": "failed: the slow stop scenario failed a confirmed writer stop"},
+        "vanish": {"change": "passed", "base": "failed: the vanish stop scenario failed a confirmed writer stop"},
+        "exits": {"change": "passed", "base": "failed: the exits stop scenario failed a confirmed writer stop"},
+        "stuck": {"change": "passed", "base": "failed: writer-stop-failure.txt did not name the remaining container"},
+        "persist": {"change": "passed", "base": "failed: an exit between iterations left owned writers running"},
+        "sigkill": {"change": "passed", "base": "failed: the writers of a killed pytest ran into the next iteration"},
+        "breach": {"change": "passed", "base": "failed: the stop after a breach did not keep the emergency budget"},
+        "target_advanced_prefix": {"change": "passed", "base": "failed: early-exit.txt did not start with target_advanced:"},
+        "restart_reason": {"change": "passed", "base": "failed: a restart after target_advanced lost the reason"}
+      },
+      "survived": 0
+    },
+    "host_control_unit_tests": {
+      "command": "casper-soak bin unit test binary, filter host_control, --test-threads=1, 12 GB tmpfs /tmp",
+      "as_uid_1000": "19 passed, 1 ignored",
+      "as_root": "19 passed, 1 ignored. The five tests that need an unreadable environment return early as root.",
+      "red_before_implementation": "owner_scan_reports_a_process_whose_environment_is_unreadable does not compile at the base, because owned returns no skipped PIDs."
+    },
+    "static": {
+      "clippy": "cargo clippy -p casper-soak --all-targets -D warnings on Linux: no findings",
+      "rustfmt": "cargo fmt -p casper-soak --check: no changes",
+      "shellcheck": "no new findings in the driver or the fixture (19 and 1 at the base and after the change)",
+      "check_casper_claims": "exit 0 with the claim document of this package. CLAIM-CASPER-SOAK-001 and 002 are pending, and 003 to 008 are discharged.",
+      "ste": "the claim section passes the STE Check with no new findings. Human STE Review pending."
+    }
+  },
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "1250e8490bb40bf3b3272e9621cfcf665674e1f0",
+    "run_id": 40353305279,
+    "jobs": {
+      "Soak Harness Tests": {"job_id": 121680389116, "conclusion": "success"},
+      "Static Checks": {"job_id": 121680388986, "conclusion": "success"},
+      "Script Tests": {"job_id": 121680388962, "conclusion": "success"},
+      "Test Gate (casper)": {"job_id": 121711097545, "conclusion": "success"},
+      "Integration Gate (amd64)": {"job_id": 121720448870, "conclusion": "success"},
+      "Integration Gate (arm64)": {"job_id": 121720448750, "conclusion": "success"},
+      "cargo-deny": {
+        "job_id": 121680389473,
+        "conclusion": "failure",
+        "note": "The zstd advisories (legacy frame decompression) fail every pull request into dev until PR #865 reaches dev. The failure does not relate to this change."
+      }
+    },
+    "conclusion": "success except cargo-deny"
+  },
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "PR #863",
+    "scope": "One acceptance covers the driver, host_control.rs, the fixture, the claim section, the changed guarantee, and its four limitations."
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The three ledger records keep their accepted digests until a maintainer accepts this package.",
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "soak": "pending",
+  "waiver": null,
+  "verified_at": "2026-10-26"
+}

@@ -202,7 +202,7 @@ Both settings take effect at the next session start.
 - `master` is the default branch and release line. Maintainers promote `dev` to `master` with `just promote`.
 - `just promote` opens the promotion from a temporary `promote/*` branch. Do not open a promotion with head `dev`. GitHub deletes the head branch of a merged pull request and retargets every pull request based on it to `master`. The `Promotion Source` check rejects a pull request from `dev` to `master`.
 - `dev` is the integration branch. Feature and fix pull requests target this branch.
-- Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
+- Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `ci/`, `chore/`) branch from and target `dev`
 - `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
 - `just backmerge` opens the back-merge from a temporary `backmerge/*` branch. Do not open a pull request with head `master` or `dev`. Its **Update branch** button merges the base into the protected head through the admin bypass. The `Promotion Source` check rejects such a pull request, and the `Protected Head Guard` workflow closes it.
 - There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
@@ -221,7 +221,15 @@ Both settings take effect at the next session start.
   - To waive, add the `ci-heavy-waived` label and remove `ci-heavy`. CI then reruns with the current labels and skips the heavy pipeline. To avoid any heavy run, open the pull request with `--label ci-heavy-waived` instead of `--label ci-heavy`.
   - Promotions into `master` and `ca-release` and every hotfix always need `ci-heavy`.
 - A pull request from a fork gets no heavy run. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with the body line `Imports fork pull request #<N>.`
-- `docs/ci.md` describes the jobs, the required checks, the Mergify queues, and the merge rulesets.
+- The Mergify priority rules order the queued pull requests across all queues. The branch name or a label sets the tier:
+  1. Security fixes: the `security` label, or a head that contains `security` or `rustsec`. Only this tier interrupts the checks that run.
+  2. `fix/` into `dev`, and `hotfix/` into `master`.
+  3. The release flow: `promote/`, `backmerge/`, and `ca/` heads.
+  4. `perf/` into any branch.
+  5. `ci/`.
+  6. Every other head, for example `feat/`, `feature/`, `docs/`, and `chore/`.
+- Name a security fix `hotfix/security-<topic>` into `master` or `fix/security-<topic>` into `dev`. Mergify then adds the `security` label. For another name, add the label by hand.
+- `docs/ci.md` describes the jobs, the required checks, the Mergify queues and priorities, and the merge rulesets.
 
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
