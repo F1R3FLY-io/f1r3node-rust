@@ -77,7 +77,6 @@ impl ContractCall {
 
                     let is_replay = space.is_replay().await;
 
-                    let mut restoration_error = None;
                     let dispatch_result = match produce_result {
                         Some((cont, channels, produce)) => {
                             let (continuation, data_list, peek) =
@@ -114,14 +113,16 @@ impl ContractCall {
                                             "Reducer not initialized".to_string(),
                                         )
                                     })?;
-                                let (result, restoration) = futures::join!(
+                                let (result, restored) = futures::join!(
                                     dispatch,
                                     reducer.restore_peeked_data(data_list)
                                 );
-                                if let Err(error) = restoration {
-                                    restoration_error = Some((reducer, error));
+                                match (result, restored) {
+                                    (result, Ok(())) => result,
+                                    (Ok(_), Err(error)) => Err(error),
+                                    (Err(dispatch_error), Err(error)) => reducer
+                                        .aggregate_evaluator_errors(vec![dispatch_error, error]),
                                 }
-                                result
                             } else {
                                 dispatch.await
                             }
@@ -130,7 +131,7 @@ impl ContractCall {
                         None => Ok(DispatchType::Skip),
                     };
 
-                    let result = match dispatch_result {
+                    match dispatch_result {
                         Ok(dispatch_type) => match dispatch_type {
                             DispatchType::NonDeterministicCall(items) => items
                                 .iter()
@@ -144,19 +145,6 @@ impl ContractCall {
                             DispatchType::Skip => Ok(Vec::new()),
                         },
                         Err(e) => Err(e),
-                    };
-
-                    if let Some((reducer, error)) = restoration_error {
-                        let mut errors = Vec::new();
-                        if let Err(dispatch_error) = result {
-                            errors.push(dispatch_error);
-                        }
-                        errors.push(error);
-                        reducer
-                            .aggregate_evaluator_errors(errors)
-                            .map(|_| Vec::new())
-                    } else {
-                        result
                     }
                 })
                     as Pin<
