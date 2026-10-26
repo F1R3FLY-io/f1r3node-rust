@@ -64,16 +64,12 @@ pub fn normalize_p_send<'ast>(
         data: acc.0,
         persistent,
         locally_free: union(
-            name_match_result.par.clone().locally_free(
-                name_match_result.par.clone(),
-                input.bound_map_chain.depth() as i32,
-            ),
+            name_match_result
+                .par
+                .locally_free(input.bound_map_chain.depth() as i32),
             acc.2,
         ),
-        connective_used: name_match_result
-            .par
-            .connective_used(name_match_result.par.clone())
-            || acc.3,
+        connective_used: name_match_result.par.connective_used() || acc.3,
     };
 
     let updated_par = input.par.clone().prepend_send(send);

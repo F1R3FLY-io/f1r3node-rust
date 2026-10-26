@@ -206,7 +206,6 @@ data:
       # Base16 encoding of the private key to use for signing a proposed blocks.
       # It is not recommended to use in production since private key could be revealed through the process table.
       # validator-private-key = ''
-      # validator-private-key = {{ (index $.Values.nodeKeys $index).privateKey }} # TODO: use secret
 
       # Path to the base16 encoded private key to use for signing a proposed blocks.
       # validator-private-key-path =

@@ -567,19 +567,71 @@ pub fn hash_processed_system_deploy_leaf(psd: &ProcessedSystemDeploy) -> [u8; 32
     crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_PROCESSED_SYSTEM_DEPLOY, &proto_bytes)
 }
 
+/// Minimum combined (user + system) deploy count at which
+/// `deploys_root_leaves` switches from a sequential to a Rayon-parallel
+/// hashing pass.  Below the threshold, the sequential version avoids
+/// Rayon's per-call thread-pool wake-up overhead (tens of microseconds
+/// on cold pools) and the small per-task bookkeeping; at and above it,
+/// the embarrassingly-parallel work (`prost(pd)` + Blake2b per leaf)
+/// amortises those costs across cores.
+///
+/// Rationale (see `merkle_block_hash_tests::hash_block_timing`):
+/// sequential cost scales linearly with leaves, measured at ~1 us per
+/// user deploy on a developer laptop (release).  Rayon's cold-pool
+/// start-up overhead is in the same ballpark as the sequential cost at
+/// 16 leaves — the two curves cross somewhere in the 16-32 range.  32
+/// is a comfortable choice: below it the serial path is at worst a
+/// constant 32 us; above it the parallel path wins immediately and the
+/// margin widens.
+const PARALLEL_LEAF_THRESHOLD: usize = 32;
+
 /// Build the deploys-root leaf vector from a `BlockMessage` body in
 /// commit order: all user deploys first, then all system deploys.  This
 /// is the recomputation path used by validators that are not replaying
 /// the block (e.g., validating a stored block).  The hot path accepts
 /// pre-computed leaves via `hash_block_with_leaves`.
+///
+/// Parallelises leaf hashing with Rayon when the combined (user +
+/// system) deploy count reaches `PARALLEL_LEAF_THRESHOLD`.  Below the
+/// threshold the sequential path avoids thread-pool wake-up overhead.
+/// The output order is preserved either way — user leaves first (in
+/// `body.deploys` order), then system leaves (in `body.system_deploys`
+/// order) — which is the invariant the Merkle recipe depends on.
 fn deploys_root_leaves(block: &BlockMessage) -> Vec<[u8; 32]> {
-    let mut leaves = Vec::with_capacity(block.body.deploys.len() + block.body.system_deploys.len());
-    for pd in &block.body.deploys {
-        leaves.push(hash_processed_deploy_leaf(pd));
+    let n_user = block.body.deploys.len();
+    let n_system = block.body.system_deploys.len();
+    let total = n_user + n_system;
+
+    if total < PARALLEL_LEAF_THRESHOLD {
+        // Sequential path for small blocks.
+        let mut leaves = Vec::with_capacity(total);
+        for pd in &block.body.deploys {
+            leaves.push(hash_processed_deploy_leaf(pd));
+        }
+        for psd in &block.body.system_deploys {
+            leaves.push(hash_processed_system_deploy_leaf(psd));
+        }
+        return leaves;
     }
-    for psd in &block.body.system_deploys {
-        leaves.push(hash_processed_system_deploy_leaf(psd));
-    }
+
+    // Parallel path for larger blocks.  `par_iter().collect()` preserves
+    // the input order, so the concatenation of (user leaves, system
+    // leaves) matches the sequential path's output byte-for-byte.
+    use rayon::prelude::*;
+    let mut leaves: Vec<[u8; 32]> = block
+        .body
+        .deploys
+        .par_iter()
+        .map(hash_processed_deploy_leaf)
+        .collect();
+    leaves.reserve(n_system);
+    let sys_leaves: Vec<[u8; 32]> = block
+        .body
+        .system_deploys
+        .par_iter()
+        .map(hash_processed_system_deploy_leaf)
+        .collect();
+    leaves.extend(sys_leaves);
     leaves
 }
 
@@ -1967,6 +2019,65 @@ mod merkle_block_hash_tests {
         );
     }
 
+    /// Correctness pin for the Rayon-parallel branch of
+    /// `deploys_root_leaves` (triggered at or above
+    /// `PARALLEL_LEAF_THRESHOLD`): the parallel pass must produce a
+    /// byte-identical leaf vector to a serial recomputation.  Rayon's
+    /// `par_iter().collect()` preserves input order, so this test
+    /// exercises both (a) that invariant and (b) that leaf hashing is a
+    /// pure function of each deploy — no shared state leaked between
+    /// threads.
+    #[test]
+    fn parallel_deploys_root_leaves_matches_serial() {
+        // Pick a user-deploy count well above the threshold so the
+        // parallel branch is taken for sure.
+        let n_user = (PARALLEL_LEAF_THRESHOLD * 4).max(64);
+        let n_system = 3;
+        let mut b = empty_block();
+        b.body.deploys = (0..n_user as i64).map(processed_deploy).collect();
+        b.body.system_deploys = (0..n_system)
+            .map(|i| {
+                if i % 2 == 0 {
+                    processed_system_deploy_close()
+                } else {
+                    processed_system_deploy_slash((i as u8).wrapping_add(7))
+                }
+            })
+            .collect();
+
+        // Parallel path (via the real function).
+        let parallel_leaves = deploys_root_leaves(&b);
+        assert_eq!(parallel_leaves.len(), n_user + n_system);
+
+        // Serial recomputation inline — mirrors the sequential-branch
+        // body of `deploys_root_leaves` so this test fails if either
+        // path mutates its input or returns leaves in the wrong order.
+        let mut serial_leaves: Vec<[u8; 32]> =
+            Vec::with_capacity(b.body.deploys.len() + b.body.system_deploys.len());
+        for pd in &b.body.deploys {
+            serial_leaves.push(hash_processed_deploy_leaf(pd));
+        }
+        for psd in &b.body.system_deploys {
+            serial_leaves.push(hash_processed_system_deploy_leaf(psd));
+        }
+
+        assert_eq!(
+            parallel_leaves, serial_leaves,
+            "parallel deploys_root_leaves diverged from serial recomputation",
+        );
+
+        // And the block hash itself must come out identical on both paths.
+        let h_parallel = hash_block(&b);
+        let h_fast = hash_block_with_leaves(&b, &serial_leaves);
+        assert_eq!(
+            h_parallel.to_vec(),
+            h_fast.to_vec(),
+            "hash_block (parallel internal path) disagrees with \
+             hash_block_with_leaves (serial-recomputed leaves) — \
+             a mismatch means propose and validate would disagree",
+        );
+    }
+
     /// Golden hex for the empty block fixture.  Pins the whole hash
     /// recipe (header-preimage field order, domain bytes, scheme
     /// version, top-combiner).  Any accidental change to the Merkle
@@ -1991,5 +2102,109 @@ mod merkle_block_hash_tests {
         // sig_algorithm = "secp256k1".
         const EXPECTED: &str = "e1959261b81b13412671713f51402b701fee1e1e261970e0f9215df87b051d23";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
+    }
+
+    // ---------------------------------------------------------------
+    // Performance guard: micro-bench of hash_block / hash_block_with_leaves
+    // across representative block shapes.  Marked #[ignore] so it only
+    // runs on explicit invocation (prints wall-clock timings to stdout):
+    //
+    //   cargo test --release -p casper -- --ignored --nocapture \
+    //       merkle_block_hash_tests::hash_block_timing
+    //
+    // The paper's targets (capnp-vs-protobuf.pdf §6 Table 7, 2 vCPU Xeon
+    // 2.8 GHz baseline): end-of-block hash check on a 32-deploy block
+    // falls from ~463 us (old serial scheme) to ~7 us (new scheme, when
+    // the leaves were computed during replay).  We don't try to match
+    // those absolute numbers on arbitrary developer hardware; instead
+    // this test enforces a *loose* ceiling that regressions in the hash
+    // path would blow past.  Tighten the thresholds if the implementation
+    // gets noticeably faster.
+    // ---------------------------------------------------------------
+
+    fn bench_block(n_user: usize, n_system: usize) -> BlockMessage {
+        let mut b = empty_block();
+        b.body.deploys = (0..n_user as i64).map(processed_deploy).collect();
+        b.body.system_deploys = (0..n_system)
+            .map(|i| {
+                if i % 2 == 0 {
+                    processed_system_deploy_close()
+                } else {
+                    processed_system_deploy_slash((i as u8).wrapping_add(1))
+                }
+            })
+            .collect();
+        b
+    }
+
+    fn time_us<F: FnMut()>(iters: u32, mut f: F) -> u128 {
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters {
+            f();
+        }
+        t0.elapsed().as_micros() / iters as u128
+    }
+
+    #[test]
+    #[ignore]
+    fn hash_block_timing() {
+        // Warm up prost allocator paths once so the first measurement
+        // isn't dominated by first-call setup noise.
+        let warmup = bench_block(4, 1);
+        for _ in 0..100 {
+            std::hint::black_box(hash_block(&warmup));
+        }
+
+        let shapes = [(0usize, 0usize), (1, 0), (8, 1), (32, 1), (200, 1)];
+        println!();
+        println!(
+            "{:>8} {:>8}  {:>10}  {:>12}  {:>12}",
+            "n_user", "n_system", "recompute", "fast_path", "ratio"
+        );
+        println!(
+            "{:>8} {:>8}  {:>10}  {:>12}  {:>12}",
+            "------", "--------", "---------", "---------", "-----"
+        );
+        for (n_user, n_system) in shapes {
+            let b = bench_block(n_user, n_system);
+            let leaves = deploys_root_leaves(&b);
+            let iters: u32 = if n_user >= 32 { 50 } else { 500 };
+
+            let recompute_us = time_us(iters, || {
+                std::hint::black_box(hash_block(&b));
+            });
+            let fast_us = time_us(iters, || {
+                std::hint::black_box(hash_block_with_leaves(&b, &leaves));
+            });
+            let ratio = if fast_us > 0 {
+                recompute_us as f64 / fast_us as f64
+            } else {
+                f64::INFINITY
+            };
+            println!(
+                "{:>8} {:>8}  {:>8} us  {:>10} us  {:>12.1}x",
+                n_user, n_system, recompute_us, fast_us, ratio
+            );
+        }
+
+        // Loose regression ceiling.  The paper reports a 32-deploy
+        // end-of-block check at 7 us when leaves are pre-computed (the
+        // fast path).  Even on a slow laptop with a 10x slowdown
+        // allowance, this should stay well under 1 ms.  If this trips,
+        // either (a) something regressed on the hot path, or (b) the
+        // test is running on contended CI hardware with less headroom
+        // than the 100x slack suggests — in which case loosen deliberately
+        // rather than papering over a real slowdown.
+        const CEILING_US: u128 = 1_000;
+        let b32 = bench_block(32, 1);
+        let leaves32 = deploys_root_leaves(&b32);
+        let fast_32_us = time_us(100, || {
+            std::hint::black_box(hash_block_with_leaves(&b32, &leaves32));
+        });
+        assert!(
+            fast_32_us <= CEILING_US,
+            "hash_block_with_leaves on 32-user+1-system block took {fast_32_us} us, \
+             exceeds regression ceiling {CEILING_US} us (paper target ~7 us)"
+        );
     }
 }

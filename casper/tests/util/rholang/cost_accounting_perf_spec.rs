@@ -1020,7 +1020,6 @@ async fn measure_block_replay_cost() {
             // Bottleneck #3 epicenter — hot-store put_continuation breakdown
             let pc_calls = get_counter_value(snapshotter, "hot-store.put_continuation.calls");
             let pc_total_ns = get_counter_value(snapshotter, "hot-store.put_continuation.time_ns");
-            let pc_ident_build_ns = get_counter_value(snapshotter, "hot-store.put_continuation.identity_build_ns");
             let pc_ident_cmp_ns = get_counter_value(snapshotter, "hot-store.put_continuation.identity_compare_ns");
             let pc_existing_sum = get_counter_value(snapshotter, "hot-store.put_continuation.existing_count_sum");
             let pc_dups = get_counter_value(snapshotter, "hot-store.put_continuation.duplicates");
@@ -1042,8 +1041,6 @@ async fn measure_block_replay_cost() {
             println!("--- Hot Store Put Operations (bottleneck #3 epicenter) ---");
             println!("  put_continuation: {} calls, total {:.1}ms",
                 pc_calls, to_ms(pc_total_ns));
-            println!("    identity_build:    {:.1}ms ({:.1}% of put_cont)",
-                to_ms(pc_ident_build_ns), pct_of(pc_ident_build_ns, pc_total_ns));
             println!("    identity_compare:  {:.1}ms ({:.1}% of put_cont)",
                 to_ms(pc_ident_cmp_ns), pct_of(pc_ident_cmp_ns, pc_total_ns));
             println!("    avg existing/call: {:.2}", if pc_calls == 0 { 0.0 } else { pc_existing_sum as f64 / pc_calls as f64 });

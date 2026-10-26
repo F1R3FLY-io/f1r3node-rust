@@ -30,16 +30,16 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_HISTORY_DATA_CACHE_SIZE_METRIC, HOT_STORE_HISTORY_JOINS_CACHE_ITEMS_METRIC,
     HOT_STORE_HISTORY_JOINS_CACHE_SIZE_METRIC, HOT_STORE_PUT_CONT_CALLS_METRIC,
     HOT_STORE_PUT_CONT_DUPLICATES_METRIC, HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC,
-    HOT_STORE_PUT_CONT_HISTORY_FILL_METRIC, HOT_STORE_PUT_CONT_IDENTITY_BUILD_NS_METRIC,
-    HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, HOT_STORE_PUT_CONT_TIME_NS_METRIC,
-    HOT_STORE_PUT_DATUM_CALLS_METRIC, HOT_STORE_PUT_DATUM_HISTORY_FILL_METRIC,
-    HOT_STORE_PUT_DATUM_TIME_NS_METRIC, HOT_STORE_PUT_JOIN_CALLS_METRIC,
-    HOT_STORE_PUT_JOIN_HISTORY_FILL_METRIC, HOT_STORE_PUT_JOIN_TIME_NS_METRIC,
-    HOT_STORE_STATE_CONT_ITEMS_METRIC, HOT_STORE_STATE_CONT_SIZE_METRIC,
-    HOT_STORE_STATE_DATA_ITEMS_METRIC, HOT_STORE_STATE_DATA_SIZE_METRIC,
-    HOT_STORE_STATE_INSTALLED_CONT_ITEMS_METRIC, HOT_STORE_STATE_INSTALLED_CONT_SIZE_METRIC,
-    HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC,
-    HOT_STORE_STATE_JOINS_ITEMS_METRIC, HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
+    HOT_STORE_PUT_CONT_HISTORY_FILL_METRIC, HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC,
+    HOT_STORE_PUT_CONT_TIME_NS_METRIC, HOT_STORE_PUT_DATUM_CALLS_METRIC,
+    HOT_STORE_PUT_DATUM_HISTORY_FILL_METRIC, HOT_STORE_PUT_DATUM_TIME_NS_METRIC,
+    HOT_STORE_PUT_JOIN_CALLS_METRIC, HOT_STORE_PUT_JOIN_HISTORY_FILL_METRIC,
+    HOT_STORE_PUT_JOIN_TIME_NS_METRIC, HOT_STORE_STATE_CONT_ITEMS_METRIC,
+    HOT_STORE_STATE_CONT_SIZE_METRIC, HOT_STORE_STATE_DATA_ITEMS_METRIC,
+    HOT_STORE_STATE_DATA_SIZE_METRIC, HOT_STORE_STATE_INSTALLED_CONT_ITEMS_METRIC,
+    HOT_STORE_STATE_INSTALLED_CONT_SIZE_METRIC, HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC,
+    HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC, HOT_STORE_STATE_JOINS_ITEMS_METRIC,
+    HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
 };
 
 const MAX_HISTORY_STORE_CACHE_ENTRIES: usize = 512;
@@ -192,6 +192,7 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()>;
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
+    fn get_data_arc(&self, channel: &C) -> Vec<Arc<Datum<A>>>;
     /// Reads `channel` as it was in `state`, a snapshot of this store. A
     /// channel absent from the snapshot was unchanged since history, so the
     /// history reader answers. It fills only the base-history cache and
@@ -243,11 +244,15 @@ where
     pub continuations:
         Box<[imbl::HashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>; NUM_SHARDS]>,
     pub installed_continuations:
-        Box<[imbl::HashMap<Vec<C>, WaitingContinuation<P, K>>; NUM_SHARDS]>,
-    pub data: Box<[imbl::HashMap<C, Vec<Datum<A>>>; NUM_SHARDS]>,
+        Box<[imbl::HashMap<Vec<C>, Arc<WaitingContinuation<P, K>>>; NUM_SHARDS]>,
+    pub data: Box<[imbl::HashMap<C, Vec<Arc<Datum<A>>>>; NUM_SHARDS]>,
     pub joins: Box<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>,
     pub installed_joins: Box<[imbl::HashMap<C, Vec<Vec<C>>>; NUM_SHARDS]>,
 }
+
+fn shared<T>(values: Vec<T>) -> Vec<Arc<T>> { values.into_iter().map(Arc::new).collect() }
+
+fn owned<T: Clone>(values: &[Arc<T>]) -> Vec<T> { values.iter().map(|v| (**v).clone()).collect() }
 
 impl<C, P, A, K> Default for HotStoreState<C, P, A, K>
 where
@@ -300,11 +305,16 @@ where
             continuations: shard_flat(
                 continuations
                     .into_iter()
-                    .map(|(k, v)| (k, v.into_iter().map(Arc::new).collect()))
+                    .map(|(k, v)| (k, shared(v)))
                     .collect(),
             ),
-            installed_continuations: shard_flat(installed_continuations),
-            data: shard_flat(data),
+            installed_continuations: shard_flat(
+                installed_continuations
+                    .into_iter()
+                    .map(|(k, v)| (k, Arc::new(v)))
+                    .collect(),
+            ),
+            data: shard_flat(data.into_iter().map(|(k, v)| (k, shared(v))).collect()),
             joins: shard_flat(joins),
             installed_joins: shard_flat(installed_joins),
         }
@@ -315,25 +325,21 @@ where
     pub fn continuations_flat(&self) -> HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>> {
         self.continuations
             .iter()
-            .flat_map(|shard| {
-                shard
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.iter().map(|a| (**a).clone()).collect()))
-            })
+            .flat_map(|shard| shard.iter().map(|(k, v)| (k.clone(), owned(v))))
             .collect()
     }
 
     pub fn installed_continuations_flat(&self) -> HashMap<Vec<C>, WaitingContinuation<P, K>> {
         self.installed_continuations
             .iter()
-            .flat_map(|shard| shard.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .flat_map(|shard| shard.iter().map(|(k, v)| (k.clone(), (**v).clone())))
             .collect()
     }
 
     pub fn data_flat(&self) -> HashMap<C, Vec<Datum<A>>> {
         self.data
             .iter()
-            .flat_map(|shard| shard.iter().map(|(k, v)| (k.clone(), v.clone())))
+            .flat_map(|shard| shard.iter().map(|(k, v)| (k.clone(), owned(v))))
             .collect()
     }
 
@@ -404,18 +410,16 @@ where
     // All produce/consume operations during deploy execution use these
     // directly without any global lock -- see `ShardedMap`'s doc comment
     // for why this replaced a plain DashMap.
-    data: ShardedMap<C, Vec<Datum<A>>>,
-    // Continuations are stored behind Arc so the produce/consume matcher can
-    // probe them (get_continuations_arc) with a cheap pointer bump instead of
-    // deep-cloning the continuation body K on every operation. The continuation
-    // body of a persistent contract was being cloned once per produce on its
-    // channel — O(total_produces) deep clones.
+    // Data and continuations are stored behind Arc so that reading a channel,
+    // probing it in the matcher, and copying a shard that a snapshot still
+    // shares cost a pointer bump per entry instead of a deep copy.
+    data: ShardedMap<C, Vec<Arc<Datum<A>>>>,
     continuations: ShardedMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>,
-    installed_continuations: ShardedMap<Vec<C>, WaitingContinuation<P, K>>,
+    installed_continuations: ShardedMap<Vec<C>, Arc<WaitingContinuation<P, K>>>,
     joins: ShardedMap<C, Vec<Vec<C>>>,
     installed_joins: ShardedMap<C, Vec<Vec<C>>>,
-    history_cache_continuations: DashMap<Vec<C>, Vec<WaitingContinuation<P, K>>>,
-    history_cache_datums: DashMap<C, Vec<Datum<A>>>,
+    history_cache_continuations: DashMap<Vec<C>, Vec<Arc<WaitingContinuation<P, K>>>>,
+    history_cache_datums: DashMap<C, Vec<Arc<Datum<A>>>>,
     history_cache_joins: DashMap<C, Vec<Vec<C>>>,
     // Atomic item counters for O(1) cache bounds checking.
     // Updated on every insert/evict so enforce_history_cache_bounds never
@@ -435,9 +439,9 @@ where
 impl<C, P, A, K> HotStore<C, P, A, K> for InMemHotStore<C, P, A, K>
 where
     C: Clone + Debug + Hash + Eq + Send + Sync,
-    P: Clone + Debug + Send + Sync,
+    P: Clone + Debug + PartialEq + Send + Sync,
     A: Clone + Debug + Send + Sync,
-    K: Clone + Debug + Send + Sync,
+    K: Clone + Debug + PartialEq + Send + Sync,
 {
     fn snapshot(&self) -> HotStoreState<C, P, A, K> {
         let _guard = self.checkpoint_lock.lock().expect("checkpoint lock");
@@ -468,10 +472,7 @@ where
         let channels_vec = channels.to_vec();
         // Cloning a Vec<Arc<_>> is just refcount bumps — no continuation-body clone.
         let continuations = self.continuations.get(&channels_vec);
-        let installed = self
-            .installed_continuations
-            .get(&channels_vec)
-            .map(Arc::new);
+        let installed = self.installed_continuations.get(&channels_vec);
 
         match (continuations, installed) {
             (Some(conts), Some(inst)) => {
@@ -484,11 +485,8 @@ where
             (None, Some(inst)) => {
                 metrics::counter!(HOT_STORE_GET_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(1);
-                let from_history: Vec<Arc<WaitingContinuation<P, K>>> = self
-                    .get_cont_from_history_store(channels)
-                    .into_iter()
-                    .map(Arc::new)
-                    .collect();
+                let from_history: Vec<Arc<WaitingContinuation<P, K>>> =
+                    self.get_cont_from_history_store(channels);
                 self.continuations
                     .insert(channels_vec, from_history.clone());
                 let mut result = Vec::with_capacity(from_history.len() + 1);
@@ -499,11 +497,8 @@ where
             (None, None) => {
                 metrics::counter!(HOT_STORE_GET_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                     .increment(1);
-                let from_history: Vec<Arc<WaitingContinuation<P, K>>> = self
-                    .get_cont_from_history_store(channels)
-                    .into_iter()
-                    .map(Arc::new)
-                    .collect();
+                let from_history: Vec<Arc<WaitingContinuation<P, K>>> =
+                    self.get_cont_from_history_store(channels);
                 self.continuations
                     .insert(channels_vec, from_history.clone());
                 from_history
@@ -516,11 +511,6 @@ where
         metrics::counter!(HOT_STORE_PUT_CONT_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
 
-        let __ident_build_start = std::time::Instant::now();
-        let wc_identity = Self::continuation_identity(&wc);
-        metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_BUILD_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
-            .increment(__ident_build_start.elapsed().as_nanos() as u64);
-
         let channels_vec = channels.to_vec();
         let mut inserted = false;
         self.continuations.with_entry(&channels_vec, |map| {
@@ -532,7 +522,7 @@ where
                     let __cmp_start = std::time::Instant::now();
                     let dup = existing
                         .iter()
-                        .any(|e| Self::continuation_identity(e.as_ref()) == wc_identity);
+                        .any(|e| Self::same_continuation(e.as_ref(), &wc));
                     metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                         .increment(__cmp_start.elapsed().as_nanos() as u64);
                     if !dup {
@@ -547,17 +537,14 @@ where
                     metrics::counter!(HOT_STORE_PUT_CONT_HISTORY_FILL_METRIC, "source" => RSPACE_METRICS_SOURCE)
                         .increment(1);
                     let mut new_continuations: Vec<Arc<WaitingContinuation<P, K>>> = self
-                        .get_cont_from_history_store(channels)
-                        .into_iter()
-                        .map(Arc::new)
-                        .collect();
+                        .get_cont_from_history_store(channels);
                     let existing_count = new_continuations.len() as u64;
                     metrics::counter!(HOT_STORE_PUT_CONT_EXISTING_COUNT_METRIC, "source" => RSPACE_METRICS_SOURCE)
                         .increment(existing_count);
                     let __cmp_start = std::time::Instant::now();
                     let dup = new_continuations
                         .iter()
-                        .any(|e| Self::continuation_identity(e.as_ref()) == wc_identity);
+                        .any(|e| Self::same_continuation(e.as_ref(), &wc));
                     metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
                         .increment(__cmp_start.elapsed().as_nanos() as u64);
                     if !dup {
@@ -577,7 +564,8 @@ where
     }
 
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()> {
-        self.installed_continuations.insert(channels.to_vec(), wc);
+        self.installed_continuations
+            .insert(channels.to_vec(), Arc::new(wc));
         Some(())
     }
 
@@ -606,11 +594,8 @@ where
                     }
                 }
                 None => {
-                    let mut from_history: Vec<Arc<WaitingContinuation<P, K>>> = self
-                        .get_cont_from_history_store(channels)
-                        .into_iter()
-                        .map(Arc::new)
-                        .collect();
+                    let mut from_history: Vec<Arc<WaitingContinuation<P, K>>> =
+                        self.get_cont_from_history_store(channels);
                     let len = from_history.len();
                     let out_of_bounds = removed_index < 0 || removed_index as usize >= len;
                     let result = if out_of_bounds {
@@ -628,7 +613,9 @@ where
 
     // Data
 
-    fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
+    fn get_data(&self, channel: &C) -> Vec<Datum<A>> { owned(&self.get_data_arc(channel)) }
+
+    fn get_data_arc(&self, channel: &C) -> Vec<Arc<Datum<A>>> {
         metrics::counter!(HOT_STORE_GET_DATA_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
         if let Some(data) = self.data.get(channel) {
@@ -644,8 +631,8 @@ where
 
     fn get_data_at(&self, state: &HotStoreState<C, P, A, K>, channel: &C) -> Vec<Datum<A>> {
         match state.data[shard_of(channel)].get(channel) {
-            Some(data) => data.clone(),
-            None => self.get_data_from_history_store(channel),
+            Some(data) => owned(data),
+            None => owned(&self.get_data_from_history_store(channel)),
         }
     }
 
@@ -653,6 +640,7 @@ where
         let __start = std::time::Instant::now();
         metrics::counter!(HOT_STORE_PUT_DATUM_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);
+        let d = Arc::new(d);
         self.data.with_entry(channel, |map| match map.get_mut(channel) {
             Some(existing) => {
                 existing.insert(0, d);
@@ -834,11 +822,9 @@ where
                         channels: k,
                     }))
                 } else {
-                    let v: Vec<WaitingContinuation<P, K>> =
-                        v.iter().map(|a| (**a).clone()).collect();
                     HotStoreAction::Insert(InsertAction::InsertContinuations(InsertContinuations {
                         channels: k,
-                        continuations: v,
+                        continuations: owned(&v),
                     }))
                 }
             })
@@ -854,7 +840,7 @@ where
                 } else {
                     HotStoreAction::Insert(InsertAction::InsertData(InsertData {
                         channel: k,
-                        data: v,
+                        data: owned(&v),
                     }))
                 }
             })
@@ -891,17 +877,17 @@ where
             .data
             .iter_flat()
             .into_iter()
-            .map(|(k, v)| (vec![k], v))
+            .map(|(k, v)| (vec![k], owned(&v)))
             .collect();
 
         let mut all_continuations: HashMap<Vec<C>, Vec<WaitingContinuation<P, K>>> = self
             .continuations
             .iter_flat()
             .into_iter()
-            .map(|(k, v)| (k, v.iter().map(|a| (**a).clone()).collect()))
+            .map(|(k, v)| (k, owned(&v)))
             .collect();
         for (k, v) in self.installed_continuations.iter_flat() {
-            all_continuations.entry(k).or_default().push(v);
+            all_continuations.entry(k).or_default().push((*v).clone());
         }
 
         let mut map = HashMap::new();
@@ -1005,12 +991,23 @@ where
 impl<C, P, A, K> InMemHotStore<C, P, A, K>
 where
     C: Clone + Debug + Hash + Eq + Sync + Send,
-    P: Clone + Debug + Sync + Send,
+    P: Clone + Debug + PartialEq + Sync + Send,
     A: Clone + Debug + Sync + Send,
-    K: Clone + Debug + Sync + Send,
+    K: Clone + Debug + PartialEq + Sync + Send,
 {
-    fn continuation_identity(wc: &WaitingContinuation<P, K>) -> String {
-        format!("{:?}|{:?}|{}|{:?}", wc.patterns, wc.continuation, wc.persist, wc.peeks)
+    /// Whether two waiting continuations are duplicates: equal patterns, body,
+    /// persistence and peeks, counting fields the models' `PartialEq` skips
+    /// (such as `locally_free`), which only their `Debug` output carries.
+    /// Continuations that print the same are also `==`, so testing `==` first
+    /// changes no answer and leaves the formatting to pairs `==` cannot tell
+    /// apart.
+    fn same_continuation(a: &WaitingContinuation<P, K>, b: &WaitingContinuation<P, K>) -> bool {
+        a.persist == b.persist &&
+            a.peeks == b.peeks &&
+            a.patterns == b.patterns &&
+            a.continuation == b.continuation &&
+            format!("{:?}|{:?}", a.patterns, a.continuation) ==
+                format!("{:?}|{:?}", b.patterns, b.continuation)
     }
 
     fn now_millis() -> u64 {
@@ -1128,13 +1125,13 @@ where
         }
     }
 
-    fn get_cont_from_history_store(&self, channels: &[C]) -> Vec<WaitingContinuation<P, K>> {
+    fn get_cont_from_history_store(&self, channels: &[C]) -> Vec<Arc<WaitingContinuation<P, K>>> {
         self.enforce_history_cache_bounds();
         let channels_vec = channels.to_vec();
         let result = match self.history_cache_continuations.entry(channels_vec.clone()) {
             dashmap::Entry::Occupied(o) => o.get().clone(),
             dashmap::Entry::Vacant(v) => {
-                let ks = self.history_reader_base.get_continuations(&channels_vec);
+                let ks = shared(self.history_reader_base.get_continuations(&channels_vec));
                 self.history_cache_cont_items
                     .fetch_add(ks.len(), Ordering::Relaxed);
                 v.insert(ks.clone());
@@ -1145,12 +1142,12 @@ where
         result
     }
 
-    fn get_data_from_history_store(&self, channel: &C) -> Vec<Datum<A>> {
+    fn get_data_from_history_store(&self, channel: &C) -> Vec<Arc<Datum<A>>> {
         self.enforce_history_cache_bounds();
         let result = match self.history_cache_datums.entry(channel.clone()) {
             dashmap::Entry::Occupied(o) => o.get().clone(),
             dashmap::Entry::Vacant(v) => {
-                let datums = self.history_reader_base.get_data(channel);
+                let datums = shared(self.history_reader_base.get_data(channel));
                 self.history_cache_data_items
                     .fetch_add(datums.len(), Ordering::Relaxed);
                 v.insert(datums.clone());
@@ -1187,9 +1184,9 @@ impl HotStoreInstances {
     ) -> Box<dyn HotStore<C, P, A, K>>
     where
         C: Default + Clone + Debug + Eq + Hash + Send + Sync + 'static,
-        P: Default + Clone + Debug + Send + Sync + 'static,
+        P: Default + Clone + Debug + PartialEq + Send + Sync + 'static,
         A: Default + Clone + Debug + Send + Sync + 'static,
-        K: Default + Clone + Debug + Send + Sync + 'static,
+        K: Default + Clone + Debug + PartialEq + Send + Sync + 'static,
     {
         let store = InMemHotStore {
             data: ShardedMap::from_shards(cache.data),
@@ -1214,9 +1211,9 @@ impl HotStoreInstances {
     ) -> Box<dyn HotStore<C, P, A, K>>
     where
         C: Default + Clone + Debug + Eq + Hash + 'static + Send + Sync,
-        P: Default + Clone + Debug + 'static + Send + Sync,
+        P: Default + Clone + Debug + PartialEq + 'static + Send + Sync,
         A: Default + Clone + Debug + 'static + Send + Sync,
-        K: Default + Clone + Debug + 'static + Send + Sync,
+        K: Default + Clone + Debug + PartialEq + 'static + Send + Sync,
     {
         HotStoreInstances::create_from_hs_and_hr(HotStoreState::default(), history_reader)
     }
