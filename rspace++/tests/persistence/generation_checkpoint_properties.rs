@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR", "CR", "LT", "DC",
+        "IR", "CR", "LT", "DC", "CL",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -472,6 +472,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         ),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/IncrementalLedgerTrial.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/IncrementalDomainComposition.v"),
+        include_str!("../../../formal/rocq/stack_safe_pda/theories/CreditedClosureLedger.v"),
     ]
     .concat();
     let mut cited_tla = BTreeSet::new();
@@ -558,6 +559,10 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         formal_gate.contains("theories/IncrementalDomainComposition.v"),
         "the integrated formal gate does not compile the composition theory cited by DC rows",
     );
+    assert!(
+        formal_gate.contains("theories/CreditedClosureLedger.v"),
+        "the integrated formal gate does not compile the credited-closure theory cited by CL rows",
+    );
     for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("NV-")) {
         let witness = tla_symbols
             .iter()
@@ -581,6 +586,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     let executable_sources = [
         include_str!("checkpoint_codec.rs"),
         include_str!("checkpoint_wal.rs"),
+        include_str!("cow_reachability_ledger_properties.rs"),
         include_str!("durable_catalog.rs"),
         include_str!("durable_publication.rs"),
         include_str!("durable_recovery.rs"),

@@ -18948,6 +18948,205 @@ collector's contract (tasks 7943 to 7945), and reset to an older root alias is
 task 7756. These are agent-run results; independent review and the approved
 pgmcp verification recipe remain required.
 
+### J-246 — 2026-10-26: copy-on-write reachability ledger (task 7924)
+
+**DERIVED.** This entry follows J-245. Task 7924 carries the cursor model of
+J-065, the checked trial of J-244 and the domain composition of J-245 into the
+production closure ledger, `StructuralClosureLedgerV1`
+(`rspace++/src/rspace/persistence/closure.rs:279`). Until now that ledger kept
+one `retained_union_member` bit per digest, which cannot be decremented and so
+fails exactly as the alias control of J-245 does. The task asks for checked
+cursor add and remove transitions and typed domain accounting on that
+copy-on-write PathMap ledger, with no eager clone or enumeration of unchanged
+state, differential tests against independent cold traversal, failure atomicity
+and a bounded native stack.
+
+The new theory `formal/rocq/stack_safe_pda/theories/CreditedClosureLedger.v`
+(module `CreditedClosureLedger`, built on `IncrementalReachability`,
+`CheckedReachability` and `CheckedDomainComposition`) proves eight capstones,
+all closed under the global context. These design decisions are what a
+reconstruction must preserve:
+
+1. Counts replace the bit. Each digest's `DigestState` holds
+   `counts: [u64; 2]`, one checked reference count per domain, current and
+   retained (`closure.rs:229-234`). An object is active in a domain exactly when
+   its count is positive, so no active bit is stored and every ledger is
+   coherent by construction. The ledger gains `roots: PathMap<[u64; 2]>`, the
+   root multiplicities, and an exact inventory per domain: the number of active
+   objects and the sum of their declared canonical lengths (`closure.rs:279-283`).
+   The retained-union report is the retained inventory, and the digest-ordered
+   enumeration visits exactly the digests whose retained count is positive. The
+   ledger is never serialized, and those two derived values are the only parts
+   that reach persisted bytes, through the catalog pack state
+   (`rspace++/src/rspace/persistence/durable/publication.rs:880-905`) and the
+   checkpoint descriptor (`rspace++/src/rspace/persistence/checkpoint.rs:188-215`).
+   No persisted or consensus-visible byte changes.
+2. Cold admission derives the counts during the walk it already performs and
+   reads no additional object, because admission reads are budgeted
+   (`AdmissionReadBudgetV1`). Each work item carries a *credit*, the set of
+   domains it counts in (`ClosureCreditV1`, `closure.rs:206`). A manifest entry
+   first counts its root occurrence. Every credited entry increments its counts
+   with overflow checks, and the children of an entry are credited only with the
+   domains that crossed from zero at that entry. A crossing at a memoized entry
+   would leave its children uncredited, so it is refused with the new typed error
+   `UnexpandedClosureCrossing`
+   (`rspace++/src/rspace/persistence/canonical.rs:268`). Cold admission credits
+   the current state with both domains
+   (`rspace++/src/rspace/persistence/durable/admission.rs:1672`) and each
+   historical state with the retained domain.
+3. The theory shows that the credited epoch is the cold ledger. Suppose the
+   counts after an epoch are the counts before it, plus the added root
+   occurrences, plus one for each outgoing reference occurrence of each crossed
+   object. Then the result is quiescent for the extended roots (theorem 1),
+   equals the cold ledger on a ranked graph (theorem 2), and grows the inventory
+   by the crossed objects (theorem 3), which are exactly the newly reachable ones
+   (theorem 4). A build from the empty ledger is quiescent (theorem 5), and the
+   cold build over the entry manifests realizes the current and retained root
+   counters $`R_L(E)`$ and $`R_U(E)`$ of J-245 (theorem 6). Two negative
+   controls fail on a four-object chain: epoch-wide crediting counts a shared
+   child twice (theorem 7), and an unexpanded crossing leaves a child uncounted
+   (theorem 8). That the guard of decision 2 never fires on the ledgers the
+   callers supply is a lemma argued in the catalog, not mechanized.
+4. The trial engine, `rspace++/src/rspace/persistence/closure/ledger_trial.rs`,
+   transliterates the faithful
+   `run_trial` of `CheckedLedgerTrial` for one domain under the event-first
+   schedule (`run_ledger_trial`, `:107`). It borrows the predecessor immutably
+   and works on a private clone of `states` and `roots`. A PathMap 0.3.4 clone
+   is a reference-count increment, so the trial copies only the trie paths it
+   changes. It authorizes the removals against the predecessor's roots plus the
+   added ones before any cursor work, and it reserves the seven step axes
+   atomically at each step, as the J-244 Verus `reserve_trial_step`
+   (`formal/verus/incremental_prepare_streaming.rs:626`) does. It
+   loads an object only when the object crosses, through `load_reference`, which
+   authenticates the declared length and the digest, so quotes are sound by
+   construction. All cursors share one heap stack of references.
+   `run_domain_trials` (`:152`) runs the current trial and then the retained
+   trial on its successor, and returns the first refusal with its domain. This
+   refines `run_composed` of `CheckedDomainComposition` with the metadata domain
+   absent. Nothing calls the engine before task 7927, so it is marked
+   `expect(dead_code)` outside test builds (`closure.rs:20`).
+5. The tests build real canonical objects. They compare the production ledger
+   with independent cold traversals of an *abstract mirror* of each case and
+   with the J-244 and J-245 test models, never with itself. The model items they
+   reuse in `incremental_reachability_properties.rs` become `pub(super)`, with no
+   logic change.
+6. The metadata domain stays with tasks 7925 and 7926. No PathMap, MORK,
+   rholang-rs or Casper source changes.
+
+The task's requirements map onto the work as follows:
+
+| Requirement | Where it is met |
+|---|---|
+| checked cursor add and remove transitions | `run_ledger_trial`: activation, then deactivation, of the authorized deltas, refusing `CounterOverflow`, `ZeroCountDecrement`, `InventoryUnderflow` and `Budget(axis)`; `CL-03`, `CL-05` |
+| typed domain accounting | `ClosureDomainV1`, `ClosureCreditV1`, per-domain counts, roots and inventories; a composed refusal names its domain; `CL-01`, `CL-05`, `CL-06` |
+| against the existing PathMap copy-on-write `StructuralClosureLedgerV1` | the same ledger type, now `states: PathMap<DigestState>` plus `roots: PathMap<[u64; 2]>`; the trial clones both |
+| reuse validated references, outgoing cursors and ownership-safe APIs | the trial loads only `ObjectRefV1` references, through `load_reference`; its cursors range over a parsed object's outgoing references; it borrows the predecessor immutably and returns an owned successor |
+| no eager clone or enumeration of the unchanged ledger, root set or retained history; no per-subtree closure sets | constant-time PathMap clones, loads only at crossings, and counts instead of closure sets; `CL-07` |
+| differential tests against independent cold traversal at every generated step | `CL-06` at every history step; `CL-01`, `CL-03` |
+| shared, deep, duplicate and path-sensitive objects | shared children and duplicate children under distinct edge labels; multiplicity nodes that are both bag roots and children; 20,000-level chains in `CL-08` |
+| zero crossings | activation crossings from zero and deactivation crossings to zero, with their inventory changes, in `CL-03` and `CL-06` |
+| limits | exact per-axis and per-domain limits in `CL-05`; limits within two units of the evidence in `CL-03`; union limits in `CL-02` |
+| preserve the original authority on failure | the immutable borrow; `CL-04` |
+| bounded native stack | the walk's heap work list and the trial's shared reference stack; `CL-08` on a 256 KiB thread |
+
+The counted-ledger correspondence, the credited walk with its
+no-unexpanded-crossing lemma, the literate trial, the theorem and control tables,
+the generator and the `CL-01`–`CL-09` bindings are in the
+[generation-checkpoint invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#copy-on-write-reachability-ledger-2026-10-26),
+together with a flow figure of one credited entry
+(`figures/credited-closure-enter.svg`).
+
+**DEPARTURES FROM THE DESIGN.** Three choices differ from the design recorded
+before the theory:
+
+1. The design left the standalone verifiers uncredited. They credit the
+   retained domain instead (`closure.rs:528-546`). The union now grows at
+   retained crossings, so an uncredited walk would never grow it, while semantic
+   admission and the existing closure tests read the union report of
+   `verify_structural_closure_in_ledger_with_limits`. With the retained credit
+   those callers observe exactly the old bit's semantics.
+   `verify_structural_closure_with_limits` discards its fresh ledger, so its
+   credit is not observable.
+2. The design compared the trial with the model at every history step. The
+   tests split that comparison in two. `CL-03` compares one generated trial at a
+   time with the `TrialCase` model, from cold-built predecessors, with unrooted
+   removals and limits near the evidence. `CL-06` compares every step of a
+   generated history with the credited cold build, which `CL-01` ties to the
+   independent oracle. Together they give the per-step comparison with the
+   model: by theorem 8 of the catalog's composition section
+   (`CheckedDomainComposition.canonical_composed_step_preserves_entry_domains`)
+   a prepared canonical step yields a base valid for the new entries, and by
+   `IncrementalReachability.quiescent_ledger_is_unique` such a base is the cold
+   ledger on a ranked graph.
+3. `CL-09` covers two controls the design did not list: the epoch-wide and the
+   unexpanded crediting rules of theorems 7 and 8. Fixtures reproduce both
+   theorems value for value, and the generated differential detects both rules,
+   beside the J-244 trial mutants and the J-245 sign and alias mutants. The
+   registry requires every capstone, controls included, to be cited by a
+   derivation row.
+
+**EXECUTABLE REFINEMENT.** The production change has four parts:
+
+- `closure.rs`: the domain and credit types, the counted `DigestState`, the
+  root map and inventories, the credited walk
+  (`verify_structural_closure_in_ledger_with_credit`), and the union report and
+  enumeration over positive retained counts;
+- `closure/ledger_trial.rs`: `run_ledger_trial`, `run_domain_trials` and their
+  limit, usage, axis, refusal, delta and prepared-trial types;
+- `canonical.rs`: the `UnexpandedClosureCrossing` error;
+- `durable/admission.rs`: the current state's two-domain credit.
+
+Nine properties in `rspace++/tests/persistence/cow_reachability_ledger_properties.rs`
+bind `CL-01` to `CL-09`. The generated ones run 256 cases each; `CL-08` and the
+fixtures of `CL-09` are single cases. The trial, limit, history, independence
+and differential properties count the cases that reach their boundaries and fail
+unless every count is positive: unrooted removals and refusals, refused axes,
+history steps and alias evictions, cases with unrelated history, and the
+detection of every trial, domain and crediting mutant. The registry wiring
+changes in four ways:
+
+- `generation_checkpoint_properties.rs` adds the `CL` family;
+- it reads `CreditedClosureLedger.v` as part of its Rocq source, so every
+  capstone of the theory must be cited by a CL derivation row;
+- it requires the integrated runner to compile the theory;
+- it searches the new test file for binding targets, and `property_support.rs`
+  binds the nine rows.
+
+The registry now holds 150 IDs, up from 141. The runner rejects placeholders in
+the theory, compiles it with `rocq_compile_with_closed_count … 8`, and
+kernel-checks the publication, trial, composition and credited-ledger modules.
+The derivation matrix rows `LT-01` to `LT-05`, `LT-08`, `DC-02` and `DC-04` now
+cite the production evidence. The production reservation follows the unchanged
+J-244 Verus model of `reserve_trial_step`, which `CL-05` tests axis by axis, and
+the trials add no concurrency, so no Verus or TLA+ model changes.
+
+**VERIFICATION BOUNDARY.** The evidence ran on tree `3211181e` exported to
+`target/scratch/idx`. That tree is HEAD `a396f0e6` plus this change, before this
+journal entry and the catalog's verification-record paragraph and pinned-source
+table were written. It ran one heavy job at a time, each in a headless user
+scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| Rocq dependency closure (publication, trial, composition, credited ledger), closed capstones, placeholder scan, `coqchk` | 8 GiB | trial 20 of 20, composition 11 of 11 and credited ledger 8 of 8 closed; no placeholder; kernel check passed | `target/perf/logs/phase0/7924-rocq-20261026T051738Z.log` | `59366b67bd23c138ef22ba1767a69820e2f1787e3aecf36caa6bd1975d753a38` |
+| the 418 selected rspace++ library tests under `rspace::persistence` (CL, reachability, registry, streaming-catalog, closure, semantic, admission and publication tests), debug | 32 GiB, one test thread | 418 passed in 19.65 s; the 3 unwind-child helpers ignored by design | `target/perf/logs/phase4/7924-persistence-debug-20261026T051522Z.log` | `a52b0c4e7ab89228330cda5edc54e4e9c15d434b5a489a006e48adf2197de846` |
+| the same, release | as above | 418 passed in 8.46 s; 3 ignored | `target/perf/logs/phase4/7924-persistence-release-20261026T051606Z.log` | `d87e6c13be53ad9f8feeca06d3cf6c34fd11fb738c6d6b114596c8703c0803ab` |
+
+The commit's full export gate (`cargo check`, clippy, the release nextest suites
+for `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the doc tests)
+is recorded in the pgmcp progress note for task 7924. These results show that
+cold admission builds the exact per-domain ledgers of the model and that the
+production trial and composition compute the modeled successor from them. They
+do not wire the trials into publication. The trusted successor that derives the
+deltas, runs the trials and replaces cold re-admission is task 7927, its fault
+acceptance is task 7928, and the scaling claim against geometrically growing
+history is task 7929; `CL-07` shows work independence on small cases only. The
+no-unexpanded-crossing lemma is argued, not mechanized. A zero entry left by a
+last removal is ignored by every report, and reclaiming it is the garbage
+collector's contract (tasks 7943 to 7945). The metadata domain is tasks 7925 and
+7926. These are agent-run results; independent review and the approved pgmcp
+verification recipe remain required.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

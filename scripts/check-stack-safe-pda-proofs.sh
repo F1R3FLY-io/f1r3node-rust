@@ -852,6 +852,12 @@ rocq_compile_with_closed_count theories/IncrementalDomainComposition.v 11 \
 rocq_check_modules "current, retained and metadata inventory composition" \
   StackSafePDA.GenerationCheckpointPublication StackSafePDA.IncrementalLedgerTrial \
   StackSafePDA.IncrementalDomainComposition
+rocq_reject_placeholders theories/CreditedClosureLedger.v
+rocq_compile_with_closed_count theories/CreditedClosureLedger.v 8 \
+  "credited cold construction of the per-domain closure ledgers"
+rocq_check_modules "credited cold construction of the per-domain closure ledgers" \
+  StackSafePDA.GenerationCheckpointPublication StackSafePDA.IncrementalLedgerTrial \
+  StackSafePDA.IncrementalDomainComposition StackSafePDA.CreditedClosureLedger
 streaming_codec_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/StreamingCodecPDA.v 2>&1

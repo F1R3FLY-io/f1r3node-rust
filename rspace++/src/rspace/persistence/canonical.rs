@@ -265,6 +265,7 @@ pub enum CanonicalFormatError {
         actual: &'static str,
     },
     ObjectCycle(ObjectDigest),
+    UnexpandedClosureCrossing(ObjectDigest),
     CounterOverflow(&'static str),
     SemanticKey {
         namespace: &'static str,
@@ -413,6 +414,10 @@ impl Display for CanonicalFormatError {
             Self::ObjectCycle(digest) => {
                 write!(formatter, "canonical object graph contains a cycle at {digest}")
             }
+            Self::UnexpandedClosureCrossing(digest) => write!(
+                formatter,
+                "closure reference count of {digest} crossed from zero at a memoized entry"
+            ),
             Self::CounterOverflow(counter) => write!(formatter, "{counter} counter overflow"),
             Self::SemanticKey { namespace, detail } => {
                 write!(formatter, "invalid {namespace} key: {detail}")

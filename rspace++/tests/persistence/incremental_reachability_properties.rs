@@ -1,11 +1,11 @@
 use proptest::prelude::*;
 
-type Graph = Vec<Vec<usize>>;
+pub(super) type Graph = Vec<Vec<usize>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Ledger {
-    counts: Vec<usize>,
-    active: Vec<bool>,
+pub(super) struct Ledger {
+    pub(super) counts: Vec<usize>,
+    pub(super) active: Vec<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,7 +256,7 @@ fn checked_inventory_boundary_controls_preserve_predecessor() {
     assert_eq!(object_full.bytes, 0);
 }
 
-fn root_counts(vertex_count: usize, roots: &[usize]) -> Vec<usize> {
+pub(super) fn root_counts(vertex_count: usize, roots: &[usize]) -> Vec<usize> {
     let mut counts = vec![0; vertex_count];
     for &root in roots {
         counts[root] += 1;
@@ -264,7 +264,7 @@ fn root_counts(vertex_count: usize, roots: &[usize]) -> Vec<usize> {
     counts
 }
 
-fn cold_graph_oracle(graph: &Graph, roots: &[usize]) -> Ledger {
+pub(super) fn cold_graph_oracle(graph: &Graph, roots: &[usize]) -> Ledger {
     let mut reached = vec![false; graph.len()];
     let mut frontier = roots
         .iter()
@@ -1220,7 +1220,7 @@ fn wrong_credit_and_cursor_costs_are_detected() {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BudgetAxis {
+pub(super) enum BudgetAxis {
     Count,
     UnionObjects,
     UnionBytes,
@@ -1242,7 +1242,7 @@ const STEP_AXES: [BudgetAxis; 7] = [
     BudgetAxis::QuotedBytes,
 ];
 
-const BUDGET_AXES: [BudgetAxis; 9] = [
+pub(super) const BUDGET_AXES: [BudgetAxis; 9] = [
     BudgetAxis::Count,
     BudgetAxis::UnionObjects,
     BudgetAxis::UnionBytes,
@@ -1255,7 +1255,7 @@ const BUDGET_AXES: [BudgetAxis; 9] = [
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrialVariant {
+pub(super) enum TrialVariant {
     Faithful,
     PartialCommit,
     FinalOnUnion,
@@ -1284,10 +1284,10 @@ impl TrialVariant {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TrialLimits([u64; 9]);
+pub(super) struct TrialLimits(pub(super) [u64; 9]);
 
 impl TrialLimits {
-    const UNBOUNDED: Self = Self([u64::MAX; 9]);
+    pub(super) const UNBOUNDED: Self = Self([u64::MAX; 9]);
 
     fn get(&self, axis: BudgetAxis) -> u64 { self.0[axis as usize] }
 
@@ -1310,15 +1310,15 @@ impl TrialLimits {
 const GENEROUS: TrialLimits = TrialLimits([9; 9]);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct TrialUsage {
-    peak_count: u64,
-    peak_objects: u64,
-    peak_bytes: u64,
-    peak_scratch: u64,
-    references: u64,
-    expansions: u64,
-    quoted_bytes: u64,
-    consumed_bytes: u64,
+pub(super) struct TrialUsage {
+    pub(super) peak_count: u64,
+    pub(super) peak_objects: u64,
+    pub(super) peak_bytes: u64,
+    pub(super) peak_scratch: u64,
+    pub(super) references: u64,
+    pub(super) expansions: u64,
+    pub(super) quoted_bytes: u64,
+    pub(super) consumed_bytes: u64,
 }
 
 impl TrialUsage {
@@ -1438,11 +1438,11 @@ fn reserve_trial_step(
 }
 
 #[derive(Clone, Debug)]
-struct TrialEnvironment {
-    graph: Graph,
-    object_bytes: Vec<u64>,
-    quoted_read: Vec<u64>,
-    consumed_read: Vec<u64>,
+pub(super) struct TrialEnvironment {
+    pub(super) graph: Graph,
+    pub(super) object_bytes: Vec<u64>,
+    pub(super) quoted_read: Vec<u64>,
+    pub(super) consumed_read: Vec<u64>,
 }
 
 impl TrialEnvironment {
@@ -1457,11 +1457,11 @@ impl TrialEnvironment {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Predecessor {
-    ledger: Ledger,
-    roots: Vec<usize>,
-    objects: u64,
-    bytes: u64,
+pub(super) struct Predecessor {
+    pub(super) ledger: Ledger,
+    pub(super) roots: Vec<usize>,
+    pub(super) objects: u64,
+    pub(super) bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1479,12 +1479,12 @@ impl TrialState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct PreparedEvidence {
-    ledger: Ledger,
-    roots: Vec<usize>,
-    objects: u64,
-    bytes: u64,
-    usage: TrialUsage,
+pub(super) struct PreparedEvidence {
+    pub(super) ledger: Ledger,
+    pub(super) roots: Vec<usize>,
+    pub(super) objects: u64,
+    pub(super) bytes: u64,
+    pub(super) usage: TrialUsage,
 }
 
 impl PreparedEvidence {
@@ -1498,7 +1498,7 @@ impl PreparedEvidence {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TrialRefusal {
+pub(super) enum TrialRefusal {
     Budget(BudgetAxis),
     UnauthorizedRemoval,
     ZeroCountDecrement,
@@ -1507,15 +1507,15 @@ enum TrialRefusal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum TrialOutcome {
+pub(super) enum TrialOutcome {
     Prepared(PreparedEvidence),
     Refused(TrialRefusal),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct TrialResult {
-    retained: Predecessor,
-    outcome: TrialOutcome,
+pub(super) struct TrialResult {
+    pub(super) retained: Predecessor,
+    pub(super) outcome: TrialOutcome,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1683,16 +1683,16 @@ fn quiescent(graph: &Graph, roots: &[usize], ledger: &Ledger) -> bool {
 }
 
 #[derive(Clone, Debug)]
-struct TrialCase {
-    env: TrialEnvironment,
-    base: Predecessor,
-    added: Vec<usize>,
-    removed: Vec<usize>,
-    schedule: Vec<bool>,
+pub(super) struct TrialCase {
+    pub(super) env: TrialEnvironment,
+    pub(super) base: Predecessor,
+    pub(super) added: Vec<usize>,
+    pub(super) removed: Vec<usize>,
+    pub(super) schedule: Vec<bool>,
 }
 
 impl TrialCase {
-    fn run(&self, variant: TrialVariant, limits: &TrialLimits) -> TrialResult {
+    pub(super) fn run(&self, variant: TrialVariant, limits: &TrialLimits) -> TrialResult {
         self.run_from(variant, limits, &self.base, &mut |_, _| {})
     }
 
@@ -1788,7 +1788,7 @@ impl TrialCase {
     }
 }
 
-fn cold_predecessor(env: &TrialEnvironment, root_events: &[usize]) -> Predecessor {
+pub(super) fn cold_predecessor(env: &TrialEnvironment, root_events: &[usize]) -> Predecessor {
     let roots = root_counts(env.graph.len(), root_events);
     let ledger = cold_graph_oracle(&env.graph, &roots);
     let (objects, bytes) = env.inventory(&ledger);
@@ -1868,7 +1868,7 @@ fn trial_cases() -> impl Strategy<Value = TrialCase> {
     })
 }
 
-fn offset_limits(evidence: &PreparedEvidence, offsets: [i64; 9]) -> TrialLimits {
+pub(super) fn offset_limits(evidence: &PreparedEvidence, offsets: [i64; 9]) -> TrialLimits {
     BUDGET_AXES
         .into_iter()
         .zip(offsets)
@@ -2471,7 +2471,7 @@ enum Domain {
 const DOMAINS: [Domain; 3] = [Domain::Current, Domain::Retained, Domain::Metadata];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CompositionVariant {
+pub(super) enum CompositionVariant {
     Faithful,
     CurrentDeltaOnRetained,
     DeduplicatedRetainedRoots,
@@ -2486,19 +2486,19 @@ const COMPOSITION_VARIANTS: [CompositionVariant; 4] = [
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RetentionEntry {
-    generation: usize,
-    manifest: usize,
+pub(super) struct RetentionEntry {
+    pub(super) generation: usize,
+    pub(super) manifest: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct RetentionEntries {
-    current: RetentionEntry,
-    historical: Vec<RetentionEntry>,
+pub(super) struct RetentionEntries {
+    pub(super) current: RetentionEntry,
+    pub(super) historical: Vec<RetentionEntry>,
 }
 
 impl RetentionEntries {
-    fn manifests(&self) -> Vec<usize> {
+    pub(super) fn manifests(&self) -> Vec<usize> {
         self.historical
             .iter()
             .chain([&self.current])
@@ -2537,7 +2537,7 @@ impl RetentionEntries {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HistoryStep {
+pub(super) enum HistoryStep {
     Commit {
         next: RetentionEntry,
         metadata_root: usize,
@@ -2551,17 +2551,17 @@ enum HistoryStep {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct RootDelta {
-    added: Vec<usize>,
-    removed: Vec<usize>,
+pub(super) struct RootDelta {
+    pub(super) added: Vec<usize>,
+    pub(super) removed: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct ComposedDelta {
-    current: RootDelta,
-    retained: RootDelta,
-    metadata: RootDelta,
-    pins: RootDelta,
+pub(super) struct ComposedDelta {
+    pub(super) current: RootDelta,
+    pub(super) retained: RootDelta,
+    pub(super) metadata: RootDelta,
+    pub(super) pins: RootDelta,
 }
 
 impl ComposedDelta {
@@ -2574,14 +2574,14 @@ impl ComposedDelta {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct HistoryState {
-    entries: RetentionEntries,
-    metadata_root: usize,
-    pins: Vec<usize>,
+pub(super) struct HistoryState {
+    pub(super) entries: RetentionEntries,
+    pub(super) metadata_root: usize,
+    pub(super) pins: Vec<usize>,
 }
 
 impl HistoryState {
-    fn first(manifest: usize, metadata_root: usize) -> Self {
+    pub(super) fn first(manifest: usize, metadata_root: usize) -> Self {
         Self {
             entries: RetentionEntries {
                 current: RetentionEntry {
@@ -2595,7 +2595,7 @@ impl HistoryState {
         }
     }
 
-    fn apply(&self, step: HistoryStep) -> Self {
+    pub(super) fn apply(&self, step: HistoryStep) -> Self {
         let mut next = self.clone();
         match step {
             HistoryStep::Commit {
@@ -2625,7 +2625,7 @@ impl HistoryState {
         next
     }
 
-    fn canonical_delta(&self, step: HistoryStep) -> ComposedDelta {
+    pub(super) fn canonical_delta(&self, step: HistoryStep) -> ComposedDelta {
         let replace_metadata = |metadata_root| RootDelta {
             added: vec![metadata_root],
             removed: vec![self.metadata_root],
@@ -2709,10 +2709,10 @@ struct ComposedEnvironment {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ComposedPredecessor {
-    current: Predecessor,
-    retained: Predecessor,
-    metadata: Predecessor,
+pub(super) struct ComposedPredecessor {
+    pub(super) current: Predecessor,
+    pub(super) retained: Predecessor,
+    pub(super) metadata: Predecessor,
 }
 
 impl ComposedPredecessor {
@@ -2806,7 +2806,7 @@ fn composed_outcome_spec(outcomes: [TrialOutcome; 3]) -> ComposedOutcome {
     }
 }
 
-fn retained_delta_of(
+pub(super) fn retained_delta_of(
     variant: CompositionVariant,
     base: &ComposedPredecessor,
     delta: &ComposedDelta,

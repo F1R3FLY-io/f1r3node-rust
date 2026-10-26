@@ -15,6 +15,12 @@ use super::object::{
 use super::rewrite::{ExactPath, InheritedBoundaryKind, InheritedObjectRef, RewriteProvenance};
 use super::store::{ImmutableObjectStore, StagingObjectStore, StagingStoreError};
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "task 7927 wires the trusted successor to these trials")
+)]
+pub(crate) mod ledger_trial;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StructuralClosureReport {
     pub distinct_objects: u64,
@@ -162,7 +168,7 @@ impl Expectation {
 
 #[derive(Clone, Copy, Debug)]
 enum Work {
-    Enter(ObjectRefV1, Expectation),
+    Enter(ObjectRefV1, Expectation, ClosureCreditV1),
     Exit(ObjectDigest, Expectation),
 }
 
@@ -179,25 +185,102 @@ enum IncrementalWork {
     Exit(IncrementalVisitKey),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClosureDomainV1 {
+    Current,
+    Retained,
+}
+
+impl ClosureDomainV1 {
+    pub(crate) const ALL: [Self; 2] = [Self::Current, Self::Retained];
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Current => 0,
+            Self::Retained => 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ClosureCreditV1(u8);
+
+impl ClosureCreditV1 {
+    pub(crate) const CURRENT_AND_RETAINED: Self = Self(0b11);
+    pub(crate) const NONE: Self = Self(0);
+    pub(crate) const RETAINED: Self = Self(0b10);
+
+    pub(crate) const fn contains(self, domain: ClosureDomainV1) -> bool {
+        self.0 & (1 << domain.index()) != 0
+    }
+
+    pub(crate) const fn is_empty(self) -> bool { self.0 == 0 }
+
+    const fn with(self, domain: ClosureDomainV1) -> Self { Self(self.0 | (1 << domain.index())) }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ClosureInventoryV1 {
+    pub(crate) distinct_objects: u64,
+    pub(crate) canonical_bytes: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct DigestState {
     declared_len: u64,
     visit_epoch: u64,
     active_epoch: u64,
     verified_expectations: u32,
-    retained_union_member: bool,
+    counts: [u64; 2],
+}
+
+impl DigestState {
+    const fn fresh(declared_len: u64) -> Self {
+        Self {
+            declared_len,
+            visit_epoch: 0,
+            active_epoch: 0,
+            verified_expectations: 0,
+            counts: [0; 2],
+        }
+    }
+
+    fn credit<E>(&mut self, credit: ClosureCreditV1) -> Result<ClosureCreditV1, ClosureError<E>> {
+        let mut crossed = ClosureCreditV1::NONE;
+        for domain in ClosureDomainV1::ALL {
+            let count = &mut self.counts[domain.index()];
+            match (credit.contains(domain), *count) {
+                (false, _) => {}
+                (true, 0) => {
+                    *count = 1;
+                    crossed = crossed.with(domain);
+                }
+                (true, positive) => {
+                    *count = positive.checked_add(1).ok_or_else(|| {
+                        format_error(CanonicalFormatError::CounterOverflow(
+                            "closure reference counts",
+                        ))
+                    })?;
+                }
+            }
+        }
+        Ok(crossed)
+    }
 }
 
 /// One digest-keyed ledger shared by every state named by a retention
-/// manifest.  Epochs deduplicate one state's closure while the membership bit
-/// deduplicates the union across states.  The ledger is itself a PathMap, so no
+/// manifest.  Per domain it holds each object's checked reference count (its
+/// root multiplicity plus one per outgoing reference occurrence of an active
+/// object), the root multiplicities, and the inventory of the objects whose
+/// count is positive.  Epochs deduplicate one state's walk, while the counts
+/// deduplicate the union across states.  The ledger is itself a PathMap, so no
 /// flattened object list, sort, or surrogate identifier is introduced.
 #[derive(Clone)]
 pub(crate) struct StructuralClosureLedgerV1 {
     states: PathMap<DigestState>,
+    roots: PathMap<[u64; 2]>,
     next_epoch: u64,
-    retained_union_objects: u64,
-    retained_union_canonical_bytes: u64,
+    inventories: [ClosureInventoryV1; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -243,22 +326,72 @@ impl StructuralClosureLedgerV1 {
     pub(crate) fn new() -> Self {
         Self {
             states: PathMap::new(),
+            roots: PathMap::new(),
             next_epoch: 1,
-            retained_union_objects: 0,
-            retained_union_canonical_bytes: 0,
+            inventories: [ClosureInventoryV1::default(); 2],
         }
     }
 
     pub(crate) const fn retained_union_report(&self) -> RetainedUnionClosureReportV1 {
+        let inventory = self.inventories[ClosureDomainV1::Retained.index()];
         RetainedUnionClosureReportV1 {
-            distinct_objects: self.retained_union_objects,
-            canonical_bytes: self.retained_union_canonical_bytes,
+            distinct_objects: inventory.distinct_objects,
+            canonical_bytes: inventory.canonical_bytes,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn inventory(&self, domain: ClosureDomainV1) -> ClosureInventoryV1 {
+        self.inventories[domain.index()]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn count(&self, domain: ClosureDomainV1, digest: ObjectDigest) -> u64 {
+        self.states
+            .get_val_at(digest.as_bytes())
+            .map_or(0, |state| state.counts[domain.index()])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn root_count(&self, domain: ClosureDomainV1, digest: ObjectDigest) -> u64 {
+        self.roots
+            .get_val_at(digest.as_bytes())
+            .map_or(0, |counts| counts[domain.index()])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn counted_objects(&self) -> Vec<(ObjectRefV1, [u64; 2])> {
+        let mut objects = Vec::new();
+        let mut cursor = self.states.read_zipper_at_borrowed_path(&[]);
+        if let Some(state) = cursor.val() {
+            objects.push((object_ref_from_ledger_entry(cursor.path(), *state), state.counts));
+        }
+        while let Some(state) = cursor.to_next_get_val() {
+            objects.push((object_ref_from_ledger_entry(cursor.path(), *state), state.counts));
+        }
+        objects
+    }
+
+    #[cfg(test)]
+    pub(crate) fn root_multiplicities(&self) -> Vec<(ObjectDigest, [u64; 2])> {
+        let mut roots = Vec::new();
+        let mut cursor = self.roots.read_zipper_at_borrowed_path(&[]);
+        let digest = |path: &[u8]| {
+            ObjectDigest::from_slice(path).expect("closure roots are keyed by object digests")
+        };
+        if let Some(counts) = cursor.val() {
+            roots.push((digest(cursor.path()), *counts));
+        }
+        while let Some(counts) = cursor.to_next_get_val() {
+            roots.push((digest(cursor.path()), *counts));
+        }
+        roots
     }
 
     #[cfg(test)]
     pub(crate) fn from_test_retained_union(references: &[ObjectRefV1]) -> Self {
         let mut ledger = Self::new();
+        let retained = ClosureDomainV1::Retained.index();
         let mut previous = None;
         for reference in references {
             if let Some(previous) = previous {
@@ -267,22 +400,17 @@ impl StructuralClosureLedgerV1 {
                     "test retained-union references must be strictly digest ordered"
                 );
             }
-            let replaced = ledger
-                .states
-                .insert(reference.digest().as_bytes(), DigestState {
-                    declared_len: reference.encoded_len(),
-                    visit_epoch: 0,
-                    active_epoch: 0,
-                    verified_expectations: 0,
-                    retained_union_member: true,
-                });
+            let mut state = DigestState::fresh(reference.encoded_len());
+            state.counts[retained] = 1;
+            let replaced = ledger.states.insert(reference.digest().as_bytes(), state);
             assert!(replaced.is_none(), "strict test references cannot replace a digest");
-            ledger.retained_union_objects = ledger
-                .retained_union_objects
+            let inventory = &mut ledger.inventories[retained];
+            inventory.distinct_objects = inventory
+                .distinct_objects
                 .checked_add(1)
                 .expect("bounded property fixture object count");
-            ledger.retained_union_canonical_bytes = ledger
-                .retained_union_canonical_bytes
+            inventory.canonical_bytes = inventory
+                .canonical_bytes
                 .checked_add(reference.encoded_len())
                 .expect("bounded property fixture canonical bytes");
             previous = Some(reference.digest());
@@ -298,14 +426,15 @@ impl StructuralClosureLedgerV1 {
         &self,
         mut visitor: impl FnMut(ObjectRefV1) -> Result<(), E>,
     ) -> Result<(), E> {
+        let retained = ClosureDomainV1::Retained.index();
         let mut cursor = self.states.read_zipper_at_borrowed_path(&[]);
         if let Some(state) = cursor.val() {
-            if state.retained_union_member {
+            if state.counts[retained] > 0 {
                 visitor(object_ref_from_ledger_entry(cursor.path(), *state))?;
             }
         }
         while let Some(state) = cursor.to_next_get_val() {
-            if state.retained_union_member {
+            if state.counts[retained] > 0 {
                 visitor(object_ref_from_ledger_entry(cursor.path(), *state))?;
             }
         }
@@ -318,6 +447,33 @@ impl StructuralClosureLedgerV1 {
             format_error(CanonicalFormatError::CounterOverflow("structural closure epochs"))
         })?;
         Ok(epoch)
+    }
+
+    fn credit_root<E>(
+        &mut self,
+        manifest: ObjectDigest,
+        credit: ClosureCreditV1,
+    ) -> Result<(), ClosureError<E>> {
+        if credit.is_empty() {
+            return Ok(());
+        }
+        let mut counts = self
+            .roots
+            .get_val_at(manifest.as_bytes())
+            .copied()
+            .unwrap_or([0; 2]);
+        for domain in ClosureDomainV1::ALL {
+            if credit.contains(domain) {
+                counts[domain.index()] =
+                    counts[domain.index()].checked_add(1).ok_or_else(|| {
+                        format_error(CanonicalFormatError::CounterOverflow(
+                            "closure root multiplicities",
+                        ))
+                    })?;
+            }
+        }
+        self.roots.insert(manifest.as_bytes(), counts);
+        Ok(())
     }
 }
 
@@ -379,12 +535,39 @@ pub(crate) fn verify_structural_closure_in_ledger_with_limits<S>(
 where
     S: ImmutableObjectStore,
 {
+    verify_structural_closure_in_ledger_with_credit(
+        store,
+        manifest,
+        limits,
+        ledger,
+        union_limits,
+        ClosureCreditV1::RETAINED,
+    )
+}
+
+pub(crate) fn verify_structural_closure_in_ledger_with_credit<S>(
+    store: &S,
+    manifest: ObjectRefV1,
+    limits: StructuralValidationLimits,
+    ledger: &mut StructuralClosureLedgerV1,
+    union_limits: RetainedUnionClosureLimitsV1,
+    credit: ClosureCreditV1,
+) -> Result<StructurallyAdmittedStateV1, ClosureError<S::Error>>
+where
+    S: ImmutableObjectStore,
+{
     let epoch = ledger.begin_epoch()?;
+    ledger.credit_root(manifest.digest(), credit)?;
     let mut report = StructuralClosureReport::default();
     let mut active_objects = 0u64;
     let mut admitted_manifest = None;
     let mut work = Vec::new();
-    push_work(&mut work, Work::Enter(manifest, Expectation::Manifest), limits, &mut report)?;
+    push_work(
+        &mut work,
+        Work::Enter(manifest, Expectation::Manifest, credit),
+        limits,
+        &mut report,
+    )?;
 
     while let Some(next) = work.pop() {
         match next {
@@ -401,7 +584,7 @@ where
                 debug_assert!(replaced.is_some());
                 active_objects -= 1;
             }
-            Work::Enter(reference, expectation) => {
+            Work::Enter(reference, expectation, credit) => {
                 let digest = reference.digest();
                 let existing = ledger.states.get_val_at(digest.as_bytes()).copied();
                 let first_visit = existing.is_none_or(|state| state.visit_epoch != epoch);
@@ -426,13 +609,7 @@ where
                 } else {
                     None
                 };
-                let mut state = existing.unwrap_or(DigestState {
-                    declared_len: reference.encoded_len(),
-                    visit_epoch: 0,
-                    active_epoch: 0,
-                    verified_expectations: 0,
-                    retained_union_member: false,
-                });
+                let mut state = existing.unwrap_or(DigestState::fresh(reference.encoded_len()));
                 if state.declared_len != reference.encoded_len() {
                     return Err(format_error(CanonicalFormatError::ObjectLengthMismatch {
                         expected: state.declared_len,
@@ -444,8 +621,17 @@ where
                     state.active_epoch = 0;
                     state.verified_expectations = 0;
                 }
+                let crossed = state.credit(credit)?;
                 let expectation_bit = expectation.bit();
                 if state.verified_expectations & expectation_bit != 0 {
+                    if !crossed.is_empty() {
+                        return Err(format_error(CanonicalFormatError::UnexpandedClosureCrossing(
+                            digest,
+                        )));
+                    }
+                    if !credit.is_empty() {
+                        ledger.states.insert(digest.as_bytes(), state);
+                    }
                     continue;
                 }
                 if state.active_epoch == epoch {
@@ -455,23 +641,20 @@ where
                 }
                 state.active_epoch = epoch;
 
-                let admitted_union = if first_visit && !state.retained_union_member {
-                    let objects =
-                        ledger
-                            .retained_union_objects
-                            .checked_add(1)
-                            .ok_or_else(|| {
-                                format_error(CanonicalFormatError::CounterOverflow(
-                                    "retained union objects",
-                                ))
-                            })?;
+                let admitted_union = if crossed.contains(ClosureDomainV1::Retained) {
+                    let union = ledger.inventories[ClosureDomainV1::Retained.index()];
+                    let objects = union.distinct_objects.checked_add(1).ok_or_else(|| {
+                        format_error(CanonicalFormatError::CounterOverflow(
+                            "retained union objects",
+                        ))
+                    })?;
                     check_limit(
                         "retained union objects",
                         union_limits.max_distinct_objects,
                         objects,
                     )?;
-                    let bytes = ledger
-                        .retained_union_canonical_bytes
+                    let bytes = union
+                        .canonical_bytes
                         .checked_add(reference.encoded_len())
                         .ok_or_else(|| {
                             format_error(CanonicalFormatError::CounterOverflow(
@@ -483,7 +666,32 @@ where
                         union_limits.max_canonical_bytes,
                         bytes,
                     )?;
-                    Some((objects, bytes))
+                    Some(ClosureInventoryV1 {
+                        distinct_objects: objects,
+                        canonical_bytes: bytes,
+                    })
+                } else {
+                    None
+                };
+                let admitted_current = if crossed.contains(ClosureDomainV1::Current) {
+                    let current = ledger.inventories[ClosureDomainV1::Current.index()];
+                    Some(ClosureInventoryV1 {
+                        distinct_objects: current.distinct_objects.checked_add(1).ok_or_else(
+                            || {
+                                format_error(CanonicalFormatError::CounterOverflow(
+                                    "current closure objects",
+                                ))
+                            },
+                        )?,
+                        canonical_bytes: current
+                            .canonical_bytes
+                            .checked_add(reference.encoded_len())
+                            .ok_or_else(|| {
+                                format_error(CanonicalFormatError::CounterOverflow(
+                                    "current closure canonical bytes",
+                                ))
+                            })?,
+                    })
                 } else {
                     None
                 };
@@ -501,14 +709,11 @@ where
                     report.canonical_bytes =
                         admitted_canonical_bytes.expect("first visits preflight canonical bytes");
                 }
-                if let Some((objects, canonical_bytes)) = admitted_union {
-                    let state = ledger
-                        .states
-                        .get_val_mut_at(digest.as_bytes())
-                        .expect("entered digest remains in the closure ledger");
-                    state.retained_union_member = true;
-                    ledger.retained_union_objects = objects;
-                    ledger.retained_union_canonical_bytes = canonical_bytes;
+                if let Some(union) = admitted_union {
+                    ledger.inventories[ClosureDomainV1::Retained.index()] = union;
+                }
+                if let Some(current) = admitted_current {
+                    ledger.inventories[ClosureDomainV1::Current.index()] = current;
                 }
                 let object = CanonicalObjectView::parse(bytes).map_err(format_error)?;
                 push_work(
@@ -527,7 +732,7 @@ where
                             )));
                         };
                         admitted_manifest = Some((manifest.profile_id(), manifest.roots()));
-                        schedule_manifest_roots(manifest, &mut work, limits, &mut report)?;
+                        schedule_manifest_roots(manifest, &mut work, limits, &mut report, crossed)?;
                     }
                     Expectation::Node {
                         namespace,
@@ -561,7 +766,11 @@ where
                             )?;
                             push_work(
                                 &mut work,
-                                Work::Enter(content, Expectation::Blob { namespace, kind }),
+                                Work::Enter(
+                                    content,
+                                    Expectation::Blob { namespace, kind },
+                                    crossed,
+                                ),
                                 limits,
                                 &mut report,
                             )?;
@@ -575,11 +784,15 @@ where
                             )?;
                             push_work(
                                 &mut work,
-                                Work::Enter(child.target, Expectation::Node {
-                                    namespace,
-                                    policy,
-                                    root: false,
-                                }),
+                                Work::Enter(
+                                    child.target,
+                                    Expectation::Node {
+                                        namespace,
+                                        policy,
+                                        root: false,
+                                    },
+                                    crossed,
+                                ),
                                 limits,
                                 &mut report,
                             )?;
@@ -958,17 +1171,22 @@ fn schedule_manifest_roots<E>(
     work: &mut Vec<Work>,
     limits: StructuralValidationLimits,
     report: &mut StructuralClosureReport,
+    credit: ClosureCreditV1,
 ) -> Result<(), ClosureError<E>> {
     for (namespace, root) in manifest.roots().iter().into_iter().rev() {
         increment(&mut report.references, 1, "object references")?;
         check_limit("object references", limits.max_references, report.references)?;
         push_work(
             work,
-            Work::Enter(root, Expectation::Node {
-                namespace,
-                policy: endpoint_policy(namespace),
-                root: true,
-            }),
+            Work::Enter(
+                root,
+                Expectation::Node {
+                    namespace,
+                    policy: endpoint_policy(namespace),
+                    root: true,
+                },
+                credit,
+            ),
             limits,
             report,
         )?;

@@ -27,8 +27,9 @@ use crate::rspace::persistence::checkpoint::{
     try_visit_checkpoint_references,
 };
 use crate::rspace::persistence::closure::{
-    ClosureError, RetainedUnionClosureLimitsV1, RetainedUnionClosureReportV1,
+    ClosureCreditV1, ClosureError, RetainedUnionClosureLimitsV1, RetainedUnionClosureReportV1,
     StructuralClosureLedgerV1, StructuralClosureReport, StructuralValidationLimits,
+    verify_structural_closure_in_ledger_with_credit,
     verify_structural_closure_in_ledger_with_limits,
 };
 use crate::rspace::persistence::mutation::MutationBatchViewV1;
@@ -1662,12 +1663,13 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
         max_canonical_bytes: limits.max_union_canonical_bytes,
     };
     let mut ledger = StructuralClosureLedgerV1::new();
-    let current_structural = verify_structural_closure_in_ledger_with_limits(
+    let current_structural = verify_structural_closure_in_ledger_with_credit(
         &bounded,
         catalog.state().manifest(),
         limits.per_state_structural,
         &mut ledger,
         union_limits,
+        ClosureCreditV1::CURRENT_AND_RETAINED,
     )?;
     let mut maximum_per_state_structural = current_structural.report();
     compare_inventory(

@@ -1,0 +1,67 @@
+@startuml credited-closure-enter
+' ============================================================================
+' One credited entry of the structural closure walk (task 7924): the work
+' item Enter(r, x, c) of verify_structural_closure_in_ledger_with_credit in
+' rspace++/src/rspace/persistence/closure.rs, whose counts realize the
+' credited epoch of formal/rocq/stack_safe_pda/theories/CreditedClosureLedger.v.
+'   GREY   #616161  the work item and the memoized path that only counts
+'   BLUE   #1565C0  checks and the counting the old walk did not do
+'   AMBER  #EF6C00  decisions
+'   GREEN  #2E7D32  inventory growth and the credited expansion
+'   RED    #C62828  refusals: each one aborts the walk, and the caller
+'                   discards its ledger
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam StateBorderColor #455A64
+skinparam StateFontSize 13
+skinparam NoteBorderColor #455A64
+
+title <b>One credited entry of the closure walk</b>\ncounts move only by credit, and children are credited only by the domains that crossed
+
+state "Enter(r, x, c)" as Enter #E0E0E0 : reference <latex>r</latex>, expectation <latex>x</latex>,\ncredit <latex>c \subseteq \{\mathrm{Current}, \mathrm{Retained}\}</latex>
+state "Admit the visit" as Admit #BBDEFB : first visit in the epoch: distinct-object\nand byte limits; declared-length check
+state "Count the credit" as Count #BBDEFB : for each <latex>d \in c</latex>: <latex>C_d(r) \leftarrow C_d(r) + 1</latex>, checked\n<latex>\kappa = \{\, d \in c \mid C_d(r) = 0 \text{ before} \,\}</latex>
+state "Expectation verified\nin this epoch?" as Memo #FFE0B2
+state "Store the counts" as Store #E0E0E0 : no expansion, no read
+state "Cycle check" as Cycle #FFE0B2 : is <latex>r</latex> active in this epoch?
+state "Grow the inventories" as Grow #C8E6C9 : <latex>\mathrm{Retained} \in \kappa</latex>: union limits, then <latex>O_U + 1</latex>, <latex>B_U + w(r)</latex>\n<latex>\mathrm{Current} \in \kappa</latex>: <latex>O_L + 1</latex>, <latex>B_L + w(r)</latex>
+state "Load and parse" as Load #BBDEFB : bounded read, length and digest check,\nkind and context validation
+state "Expand with credit κ" as Expand #A5D6A7 : push Exit(r, x), then one Enter(t, x', <latex>\kappa</latex>)\nper outgoing reference occurrence t
+state "Refused" as Refused #FFCDD2 : UnexpandedClosureCrossing, ObjectCycle,\nResourceLimit, CounterOverflow, or a load error
+
+[*] --> Enter
+Enter --> Admit
+Admit -[#C62828]-> Refused : limit or length
+Admit -[#1565C0]-> Count
+Count -[#C62828]-> Refused : CounterOverflow
+Count -[#EF6C00]-> Memo
+Memo -[#616161]-> Store : yes, <latex>\kappa = \varnothing</latex>
+Memo -[#C62828]-> Refused : yes, <latex>\kappa \ne \varnothing</latex>
+Memo -[#EF6C00]-> Cycle : no
+Cycle -[#C62828]-> Refused : ObjectCycle
+Cycle -[#2E7D32]-> Grow : acyclic so far
+Grow -[#C62828]-> Refused : union limit
+Grow -[#1565C0]-> Load
+Load -[#C62828]-> Refused : load or format error
+Load -[#2E7D32]-> Expand
+Store --> [*]
+Expand --> [*]
+
+note right of Enter #E3F2FD
+  The epoch's root: <latex>R_d(m) \leftarrow R_d(m) + 1</latex> for each <latex>d \in D</latex>,
+  then Enter(<latex>m</latex>, Manifest, <latex>D</latex>). Callers choose <latex>D</latex>:
+  cold current state: Current and Retained;
+  each historical state and the successor inventory: Retained.
+end note
+
+note left of Expand #F1F8E9
+  On a quiescent predecessor, the first entry of an object
+  whose count in <latex>d</latex> is zero carries <latex>d</latex>, so every crossing
+  happens at a first visit, which always expands:
+  the yes, <latex>\kappa \ne \varnothing</latex> refusal never fires. After the epoch
+  <latex>C'_d(v) = C_d(v) + \mathrm{occ}([m])(v) + I(\kappa_d, v)</latex>.
+end note
+@enduml

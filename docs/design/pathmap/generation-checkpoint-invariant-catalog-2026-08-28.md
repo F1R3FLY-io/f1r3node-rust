@@ -1168,6 +1168,358 @@ The composition evidence in the verification record was taken at these sources:
 | `rspace++/tests/persistence/property_support.rs` | `1c72135f5fb4d2071fe31f1e76f18ad98725c2eae895fe6546bc7087551f41e2` |
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `7d1cf5076d3b54a2523682a4ee664c8beb445ef8cc8cda19d06607bd231c2254` |
 
+### Copy-on-write reachability ledger (2026-10-26)
+
+Task 7924 carries the three preceding models into production. Until now the
+production closure ledger, `StructuralClosureLedgerV1`, kept one
+`retained_union_member` bit per digest. The boundary of the previous section
+explains why a bit is not enough: it cannot be decremented, so the ledger cannot
+tell whether an object stays reachable after one of the states that reach it is
+removed. The task makes four changes:
+
+1. It replaces the bit with checked reference counts in two domains, *current*
+   and *retained*, together with root multiplicities and exact per-domain
+   inventories.
+2. It derives those counts during the cold admission walk that already runs.
+   The walk reads no additional object, so the admission read budget is
+   unchanged.
+3. It adds the checked add-before-remove trial of the 7921 section as
+   production code, running on a private copy-on-write clone of the ledger.
+4. It composes a current and a retained trial with first-refusal semantics, as
+   the 7922 section does for three domains.
+
+Four artifacts implement the task:
+
+- the Rocq theory `formal/rocq/stack_safe_pda/theories/CreditedClosureLedger.v`
+  (module `CreditedClosureLedger`, built on `IncrementalReachability`,
+  `CheckedReachability` and `CheckedDomainComposition`), which proves that the
+  counts the walk derives are the cold ledgers of the composition model;
+- `rspace++/src/rspace/persistence/closure.rs`, which holds the counted ledger
+  and the credited walk;
+- `rspace++/src/rspace/persistence/closure/ledger_trial.rs`, which holds the
+  trial engine and the two-domain composition;
+- the properties in
+  `rspace++/tests/persistence/cow_reachability_ledger_properties.rs`, which build
+  real canonical objects and compare the production ledger with independent cold
+  traversals and with the test models of the two preceding sections.
+
+The trial engine has no production caller yet: task 7927 builds the trusted
+successor that will call it. Until then the engine is compiled in every build,
+exercised only by tests, and marked as expected dead code outside test builds.
+The metadata domain remains with tasks 7925 and 7926. The ledger itself is never
+serialized. Only its retained-union report and the digest-ordered enumeration of
+that union reach persisted bytes, through the catalog pack state
+(`rspace++/src/rspace/persistence/durable/publication.rs:880-905`) and the
+checkpoint descriptor (`rspace++/src/rspace/persistence/checkpoint.rs:188-215`),
+and both are unchanged.
+
+![One credited entry of the closure walk: the entry counts its credit with checked increments and records which domains crossed from zero; a memoized entry only stores its counts, and refuses if anything crossed; otherwise the cycle check, inventory growth at the crossings, the bounded load, and an expansion that credits each outgoing reference with exactly the crossed domains](figures/credited-closure-enter.svg)
+
+**The counted ledger.** Every component of the model has one production
+counterpart:
+
+| Model component | Production counterpart |
+|---|---|
+| a vertex | an object digest, a key of `states: PathMap<DigestState>` |
+| the children of a vertex, duplicates kept | the outgoing references of the parsed object: a semantic manifest's data-bag, continuation-map and join-bag roots, in that order; a DAG node's content endpoint, if it has one, then its children in edge order; nothing for a blob |
+| the reference count $`C_d(v)`$ in domain $`d`$ | `DigestState::counts[d]`, a `u64` |
+| the active bit $`A_d(v)`$ | not stored: it is `counts[d] > 0`, so every ledger is coherent by construction |
+| the root multiplicity $`R_d(v)`$ | `roots: PathMap<[u64; 2]>`, keyed by digest |
+| the inventories $`(O_d, B_d)`$ | `inventories[d]`: the number of active objects and the sum of their declared canonical lengths |
+| the byte weight $`w(v)`$, quoted read $`q(v)`$ and consumed read $`r(v)`$ | all three are the reference's declared canonical length; `load_reference` refuses an object whose length or digest differs, so quotes are sound by construction |
+
+`ClosureDomainV1` names the two domains, and a `ClosureCreditV1` is a set of
+them. The retained-union report is `inventories[Retained]`, and the
+digest-ordered enumeration visits exactly the digests whose retained count is
+positive.
+
+**Credited cold construction.** The structural verifier visits one state
+manifest per *epoch*. Its memo is keyed by digest and expectation and is cleared
+at an object's first visit in each epoch, so every epoch walks the whole closure
+of its manifest again. A count therefore cannot be incremented at every visit:
+an object shared by two states would be counted once per state, not once per
+active parent. Instead every work item carries a *credit* $`c`$, the set of
+domains in which it counts. An epoch for manifest $`m`$ with caller-chosen
+credit $`D`$ runs as follows. Every refusal aborts the walk, and every caller
+then discards its ledger.
+
+0. ⟨Credit the root⟩. Increment $`R_d(m)`$ for each $`d \in D`$, refusing
+   `CounterOverflow` above `u64::MAX`, and push the entry of $`m`$ with credit
+   $`D`$.
+
+Each entry of a reference $`r`$ with credit $`c`$ then takes the following
+steps:
+
+1. ⟨Admit the visit⟩. As before: on the epoch's first visit of $`r`$, the
+   distinct-object and byte limits; then the declared-length check.
+2. ⟨Count the credit⟩. For each $`d \in c`$, increment $`C_d(r)`$, refusing
+   `CounterOverflow`. The *crossing set* $`\kappa`$ holds each $`d \in c`$ whose
+   count was zero before its increment.
+3. ⟨Memoized entry⟩. If the entry's expectation is already verified for $`r`$
+   in this epoch, store the counts and stop when $`\kappa = \varnothing`$, and
+   otherwise refuse `UnexpandedClosureCrossing`: the children of such a crossing
+   would never be credited.
+4. ⟨Cycle check⟩. As before.
+5. ⟨Grow the inventories⟩. If $`\mathrm{Retained} \in \kappa`$, check the union
+   limits and grow the retained inventory, at the point where the old walk grew
+   the union. If $`\mathrm{Current} \in \kappa`$, grow the current inventory.
+6. ⟨Load and expand⟩. Load, parse and validate the object as before, then push
+   one entry for each outgoing reference occurrence, each with credit
+   $`\kappa`$.
+
+The callers choose the credit:
+
+| Caller | Credit $`D`$ | Result |
+|---|---|---|
+| cold admission, the current state (`admission.rs`) | current and retained | both domains, built from the empty ledger |
+| cold admission, each historical state | retained | the retained domain gains the state's closure |
+| `successor_inventory` | retained | the successor's retained union, on a private clone discarded after its report |
+| `verify_structural_closure_in_ledger_with_limits` (semantic admission and existing tests) | retained | the union semantics of the old bit |
+| `verify_structural_closure_with_limits` | retained, on a fresh ledger that is then discarded | nothing observable |
+
+**Why no crossing is left unexpanded.** The refusal in step 3 is a guard. On
+the ledgers that the callers supply it never fires, so the walk derives exactly
+the credited epoch of the theory. The argument below is not mechanized, and the
+CL properties test it.
+
+*Lemma.* Let an epoch with credit $`D`$ start from a ledger that is quiescent,
+for each $`d \in D`$, for its roots $`R_d`$ over the graph of outgoing
+references, and suppose the walk succeeds. If $`C_d(x) = 0`$ at the start of
+the epoch for some $`d \in D`$, then the first entry of $`x`$ in the epoch, if
+there is one, carries $`d`$.
+
+*Proof.* By strong induction on the order in which entries leave the work
+stack. Let $`e`$ be the first entry of $`x`$ in the epoch.
+
+- If $`e`$ is the root entry, it carries $`D`$, which contains $`d`$.
+- Otherwise the expansion of an entry $`e_y`$ of some object $`y`$ pushed
+  $`e`$, so $`x`$ is an outgoing reference of $`y`$ and $`e_y`$ left the stack
+  before $`e`$. Let $`f_y`$ be the first entry of $`y`$ in the epoch, which left
+  the stack no later than $`e_y`$.
+  - Suppose $`C_d(y) > 0`$ at the start of the epoch. The starting ledger is
+    quiescent for $`R_d`$ and $`y`$ is active and references $`x`$, so
+    $`C_d(x) = R_d(x) + I(A_d, x) \ge 1`$, which contradicts $`C_d(x) = 0`$.
+  - So $`C_d(y) = 0`$ at the start of the epoch. By the induction hypothesis
+    $`f_y`$ carries $`d`$, so $`d`$ crosses at $`f_y`$. The first visit of a
+    digest in an epoch clears its verified expectations and its active mark, so
+    $`f_y`$ expands, and it pushes entries of $`x`$ that carry $`d`$ above the
+    exit item of $`y`$.
+    - If $`e_y = f_y`$, then $`e`$ is one of those entries and carries $`d`$.
+    - If $`e_y \ne f_y`$, then $`e_y`$ was either already below the exit item of
+      $`y`$ when $`f_y`$ expanded, or pushed after that exit item left the
+      stack, or pushed while $`y`$ was still active. In the last case a
+      descendant of $`y`$ pushed it, so popping it finds $`y`$ active and
+      refuses `ObjectCycle`, which contradicts the success of the walk. In the
+      first two cases an entry of $`x`$ pushed by $`f_y`$ leaves the stack before
+      $`e_y`$, hence before $`e`$, which contradicts the choice of $`e`$. ∎
+
+*Corollary.* If $`d`$ crosses at an entry of $`x`$, that entry is the first
+entry of $`x`$ in the epoch, and it expands. A crossing needs $`C_d(x) = 0`$
+just before the entry. Counts never decrease during a walk, so no earlier entry
+of $`x`$ carried $`d`$. By the lemma the first entry carries $`d`$, so it is the
+crossing entry, and a first entry always expands. Hence the guard of step 3
+never fires.
+
+*Consequence.* Each object that crosses $`d`$ in the epoch crosses exactly once,
+at its first entry, whose expansion credits $`d`$ to each of its outgoing
+reference occurrences. Every later expansion of the same object, under another
+expectation, credits nothing in $`d`$, and every pushed entry leaves the stack
+before a successful walk returns. So for every $`d \in D`$ the counts after the
+epoch satisfy
+
+```math
+C'_d(v) = C_d(v) + \mathrm{occ}\bigl([\,m\,]\bigr)(v) + I(\kappa_d, v),
+\qquad
+\kappa_d = \{\, y \mid C_d(y) = 0 \land C'_d(y) > 0 \,\},
+```
+
+which is the theory's `credited_epoch` with the added roots $`[\,m\,]`$. Counts in
+a domain outside $`D`$ do not change. Cold admission starts from the empty
+ledger, which is quiescent for zero roots, and theorem 1 below supplies the
+premise of each later epoch. The successor-inventory walk starts from a clone of
+a cold-built ledger.
+
+The union also grows exactly where the old bit grew it. When the retained domain
+is in every epoch's credit, an object's retained count is zero exactly when its
+old bit was clear. By the corollary a retained crossing happens at the first
+visit of an object whose count was zero, which is where the old walk grew the
+union, and by the lemma every such first visit crosses. The union therefore
+grows at the same entries, in the same order and under the same limits, and
+reports the same objects and bytes.
+
+**Theorems.** The module proves eight capstones. Each has a `Print Assumptions`
+line, every one reports a closed context, and the compiled module passes
+independent kernel checking. Its credited epoch relates two coherent ledgers:
+the counts after it are the counts before it, plus the added root occurrences,
+plus one for each outgoing reference occurrence of a crossed object.
+
+| # | Theorem (`CreditedClosureLedger.`…) | Statement |
+|---|---|---|
+| 1 | `credited_epoch_is_quiescent_for_added_roots` | If a coherent ledger is quiescent for roots $`R`$ and a coherent ledger follows it by a credited epoch for added roots $`\alpha`$, the second ledger is quiescent for $`R + \mathrm{occ}(\alpha)`$. |
+| 2 | `credited_epoch_agrees_with_cold_ledger` | On a ranked graph, under the premises of theorem 1, the credited ledger equals any coherent quiescent ledger for $`R + \mathrm{occ}(\alpha)`$, count for count and bit for bit. |
+| 3 | `credited_epoch_inventory_grows_by_crossed_objects` | For every weight, the inventory after a credited epoch is the inventory before it plus the weight of the crossed objects. |
+| 4 | `credited_crossings_are_newly_reachable_objects` | On a ranked graph, under the premises of theorem 1, an object crosses exactly when it is reachable from the added roots and was inactive before. |
+| 5 | `credited_build_is_quiescent` | A sequence of credited epochs from the empty ledger yields a coherent ledger that is quiescent for the occurrences of all the epochs' roots. |
+| 6 | `credited_cold_build_realizes_entry_domains` | The current build, one epoch for $`m(e_c)`$, is coherent and quiescent for $`R_L(E)`$. The retained build, one epoch for $`m(e_c)`$ and then one for each historical manifest in order, is coherent and quiescent for $`R_U(E)`$. |
+| 7 | `epoch_wide_credit_mutant_double_counts_a_shared_child` | Negative control: crediting the children of every object an epoch visits, not only of the crossed ones, counts a shared child twice. |
+| 8 | `unexpanded_crossing_mutant_leaves_an_uncredited_child` | Negative control: a crossing that credits no children leaves the child of an active parent uncounted. |
+
+Theorems 7 and 8 are closed computations on one fixture: four objects numbered 0
+to 3 and the chain of edges $`3 \to 2 \to 1 \to 0`$. The required count is the
+root count plus the incoming count from the variant's own active set, which is
+the quiescence equation each control violates. In both rows the faithful counts
+satisfy that equation at every object.
+
+| Control | Starting ledger | Added root | Faithful count | Control's count | Required count |
+|---|---|---|---|---|---|
+| epoch-wide crediting | quiescent for root 1: $`C(1) = C(0) = 1`$ | 2 | 1 at object 0 | 2 at object 0 | 1 at object 0 |
+| unexpanded crossing | empty | 3 | 1 at object 2 | 0 at object 2 | 1 at object 2 |
+
+**The trial engine, in literate form.** `run_ledger_trial` transliterates the
+faithful `run_trial` of `CheckedLedgerTrial` for one domain $`d`$, under the
+schedule that always prefers an event to a cursor. It borrows the predecessor
+ledger immutably and returns either a prepared successor or a typed refusal, so
+a refusal cannot change the predecessor: the borrow enforces theorem 4 of the
+trial section. Its private state starts as a clone of `states` and of `roots`.
+Each clone is a reference-count increment, so the trial copies only the trie
+paths it changes. Every refusal in parts 1–6 drops that private state.
+
+1. ⟨Authorize the removals⟩. On the cloned roots, add one occurrence of each
+   added root, refusing `CounterOverflow` above `u64::MAX`, then remove one
+   occurrence of each removed root, refusing `UnauthorizedRemoval` at zero. This
+   is the model's check against $`R + \mathrm{occ}_\alpha`$, and it precedes all
+   cursor work.
+2. ⟨Start activation⟩. The events are the added roots in order, and there are
+   no cursors. Reserve the model's start charge, or refuse
+   `Budget(axis)`.
+3. ⟨Drain activation⟩. Repeat one checked step until no event and no cursor
+   remains:
+   - if an event remains, take the last one, $`v`$. Charge the increment of
+     $`C_d(v)`$, where an absent digest counts zero and a declared length that
+     differs from the stored one is refused. Reserve all seven step axes, which
+     records the new usage. On a zero crossing, load and parse $`v`$ and push a
+     cursor over its outgoing references. Then pop the event and store the count
+     and the inventory;
+   - otherwise, if the top cursor has a reference left, transfer it to the
+     events, charging one reference and one unit of live scratch;
+   - otherwise discard the exhausted top cursor.
+4. ⟨Start deactivation⟩ and 5. ⟨Drain deactivation⟩. As in parts 2 and 3, with
+   the removed roots and decrements. A zero count is refused
+   `ZeroCountDecrement`, and an inventory underflow `InventoryUnderflow`.
+6. ⟨Final guard⟩. Refuse `Budget(FinalObjects)`, then `Budget(FinalBytes)`.
+7. ⟨Prepare⟩. Return the successor ledger and the usage. The successor holds
+   the changed `states` and `roots`, the other domain's counts, roots and
+   inventory unchanged, and the drained inventory of domain $`d`$.
+
+All cursors share one stack of references. A crossing appends the object's
+outgoing references, each cursor records its start, next and end positions, and
+discarding the top cursor truncates the stack to its start, which is the end of
+the cursor below it. Nothing recurses, and live scratch counts events and
+cursors, as in the model. An object is loaded only when it crosses, after the
+step's reservation is accepted, and a failed load, parse or kind check is
+refused as `Closure`. The model has no counterpart of the load or of the
+declared-length check, because its vertices are already authenticated digests.
+The engine keeps no potential counter: the ghost potential of the cursor model is
+proof instrumentation, and its termination theorem bounds the number of steps.
+
+**The composition.** `run_domain_trials` runs the current trial on the
+predecessor and then the retained trial on the current trial's successor, and it
+returns the first refusal together with its domain. Each trial reads and writes
+only its own domain's counts, roots and inventory, so the retained trial gives
+the same result on the current successor as on the predecessor, and the final
+successor carries both domains. Each domain has its own limits. This refines
+`run_composed` of `CheckedDomainComposition` with the metadata domain absent.
+The deltas of a retention step come from the caller, as the delta table of the
+7922 section specifies; task 7927 derives them.
+
+**Executable bindings.** Each generated case builds real canonical objects in a
+`CanonicalObjectStore`:
+
+- one to four *multiplicity* nodes, each with a distinct multiplicity endpoint
+  and up to three children drawn from the earlier multiplicity nodes, duplicates
+  kept under distinct edge labels;
+- zero to two *content* nodes, each with a content endpoint on the single
+  continuation-source blob and up to two children drawn from the earlier
+  content nodes;
+- the empty node, which may appear only as a namespace root;
+- one to four state manifests. Each takes its data-bag and join-bag roots from
+  the empty node and the multiplicity nodes, and its continuation-map root from
+  the empty node and the content nodes.
+
+A multiplicity node may be the root of both bags and also a child, and the walk
+then verifies it once per expectation in every epoch: these are the task's
+path-sensitive objects. A case holds at most eight objects below its one to
+four manifests. The *abstract
+mirror* of a case lists its objects in creation order, with each object's
+outgoing references as indices and its declared length as its weight, quoted
+read and consumed read. The mirror drives the independent cold oracle (a
+traversal from the entry-derived roots) and the test models of the two preceding
+sections, and the production ledger is never its own oracle. A history adds one
+to three steps after its initial entry, drawn with weight 3 for a commit of any
+generated manifest, 2 for a commit of the manifest of an existing entry and 2
+for an eviction; an eviction with no historical entry is skipped. Each generated
+property runs 256 cases.
+
+| ID | Required property and negative-control boundary | Test |
+|---|---|---|
+| CL-01 | The credited cold build of every generated entry list (the current state with both domains, then each historical state with the retained domain) equals the independent cold oracle domain by domain: every digest's count, every root multiplicity and both inventories. The guard of step 3 never fires. | `credited_cold_build_matches_independent_domain_oracles` |
+| CL-02 | Credits change no observation of cold admission. Per-state reports equal the standalone verifier's. The retained-union report and its digest-ordered enumeration equal the set union of the per-state closures and equal those of a build that credits only the retained domain, which reads the same objects the same number of times. Under union limits one below the exact union, both builds refuse with the same error. | `credited_cold_build_matches_independent_domain_oracles` |
+| CL-03 | For either domain, a generated trial prepares or refuses exactly as the `TrialCase` model does on the abstract mirror under the event-first schedule: the same refusal, or the same counts, roots, inventory and all eight usage quantities. A trial starts from a cold-built predecessor, adds up to four manifest occurrences, removes a subset of the old and added roots, and in some cases also removes an unrooted manifest. Generated limits lie within two units of the measured evidence on every axis. | `production_ledger_trial_refines_the_model_trial` |
+| CL-04 | Every refused trial leaves the predecessor's observation identical, and a retry from it with covering limits prepares the unbounded evidence. An unauthorized removal is refused before any read, and an added manifest missing from the store is refused as a load failure; both keep the predecessor. | `production_ledger_trial_refines_the_model_trial` |
+| CL-05 | Exact measured limits accept with identical evidence, and lowering one positive axis by one refuses on exactly that axis, for each domain trial and for each domain of the composition. When both domains are tightened, the current domain refuses. | `production_trial_limits_are_exact_per_axis_and_domain` |
+| CL-06 | At every step of a generated history, the composed trial, run without limits from the previous step's successor, prepares a successor equal to the credited cold build for the new entries, domain by domain. The two have the same retained-union enumeration and the same checkpoint object inventory: its object count, its bytes and its ordered digest. Some history evicts one of two entries that share a manifest. | `composed_production_trials_match_cold_domains_and_checkpoint_inventory` |
+| CL-07 | A commit's trials do the same cursor work, read the same objects and reach the same count and scratch peaks whether the predecessor holds only the current state or also up to eight unrelated historical states. Only the union and final inventories differ, by exactly the unrelated states' objects and bytes. | `production_trial_work_is_independent_of_unchanged_history` |
+| CL-08 | On a thread with a 256 KiB stack, the credited cold build of a state whose data-bag root heads a 20,000-node chain succeeds, and so does a composed commit that replaces that state with one over a disjoint 20,000-node chain; both ledgers equal the cold oracle. | `twenty_thousand_level_chain_is_credited_and_traded_on_a_small_stack` |
+| CL-09 | Fixtures reproduce theorems 7 and 8 value for value. On generated cases the differential detects every mutant. Each non-faithful `TrialVariant` of the trial model differs from the production trial on some case. The composition fed the `CurrentDeltaOnRetained` or the `DeduplicatedRetainedRoots` retained delta differs from the cold retained domain on some history. The epoch-wide and the unexpanded crediting rules, applied to the abstract mirror, differ from the cold oracle on some entry list. | `cold_oracle_differential_detects_credit_trial_and_domain_mutants` |
+
+`model_property_manifest_is_unique_and_exhaustive` checks these nine bindings.
+It reads `CreditedClosureLedger.v` as part of its Rocq source, requires each of
+the theory's eight `Print Assumptions` capstones to be cited by a CL row of the
+derivation matrix, and requires the integrated runner to compile the theory.
+
+**Boundary.** These results show that production ledgers built by cold
+admission hold the exact per-domain counts, roots and inventories of the model,
+and that the production trial and composition compute the modeled successor
+from them. They leave these questions open:
+
+- The no-unexpanded-crossing lemma is argued, not mechanized. CL-01 and CL-02
+  test it.
+- Production runs one schedule, the event-first one. The model's results for
+  every schedule are not re-tested in production.
+- Nothing calls the trials yet. The trusted successor that derives the deltas,
+  runs the trials and replaces cold re-admission is task 7927, its fault
+  acceptance is task 7928, and the scaling claim against geometrically growing
+  history is task 7929. CL-07 shows work independence on small cases only.
+- A trial that removes an object's last reference in both domains leaves a
+  zero entry in `states`. Every report, enumeration and inventory ignores it.
+  Production retention is keep-all, so no production path creates one before
+  eviction exists, and reclaiming such entries is the garbage collector's
+  contract (tasks 7943 to 7945).
+- The trial reads outgoing references only, and refuses an object of any other
+  kind. Expectation validation (namespaces, endpoint policies and root
+  normalization) stays with the structural verifier, which has admitted every
+  object a trial can load.
+- Exact rooted support still requires an acyclic graph. The verifier refuses
+  cycles.
+
+The production-ledger evidence in the verification record was taken at these
+sources:
+
+| Pinned source | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/CreditedClosureLedger.v` | `959ac7a2f796574537a64f6921c6b21a59302870769d5ed235c38e7806d311ba` |
+| `formal/rocq/stack_safe_pda/_CoqProject` | `f0bda5edd3868c4f2572072ca2313104cd4888647bb600f8022a3896d14cfe53` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `00a051c6d0c89d034e154f088c17f2220ebe063e5df87645773e03134c57aedf` |
+| `rspace++/src/rspace/persistence/closure.rs` | `f93416fdca113f0211bd8dd0972f638a8a38d0d6f4bee0d92cca5cf14a6950fb` |
+| `rspace++/src/rspace/persistence/closure/ledger_trial.rs` | `43175d7046d6642edc9979248f541391c825a1e2696170d4c760e769bf393d0c` |
+| `rspace++/src/rspace/persistence/canonical.rs` | `82cec4237febd1f5e10cf5b66b36a45835639f5f2a67794573d9f7eb22e4a7f2` |
+| `rspace++/src/rspace/persistence/durable/admission.rs` | `dca108062c614d4f8224b156e0db78f45b464d50a0d0cb66ba4b5bd79ae928dc` |
+| `rspace++/tests/persistence/cow_reachability_ledger_properties.rs` | `8397c7a4969057b30c13b91f4ff22e11a530cc256f8f13b96d17f2a9226de796` |
+| `rspace++/tests/persistence/incremental_reachability_properties.rs` | `aa8518010c4c203a92e8da9b4738b95af2332e777f43ff46d2c6f60fd1d458a4` |
+| `rspace++/tests/persistence/property_support.rs` | `c387935b91a6f045929302c167b0e63317c1d24a21e014e3eba3f6b6cdd154d2` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `99beab63dff1a686a6c8332e33330e18f685d68392f440f6151497f93213e193` |
+| `rspace++/tests/persistence/mod.rs` | `10141ebee87e4e8a38ed53031256fd87dbfdec19138036e93a411cc1dce931f4` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -1199,25 +1551,34 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | CR-02 | `EXEC_ONLY` | `CheckedReachability.checked_sub_is_exact`, `CheckedReachability.checked_sub_refuses_exactly_underflow`, `CheckedReachability.checked_decrement_refines_natural_update`, `CheckedReachability.checked_decrement_refuses_exactly_zero`, `CheckedReachability.checked_decrement_preserves_bounded_counts`, `CheckedReachability.checked_updates_preserve_coherence` | P | Zero and positive counts distinguish checked refusal from natural-number saturation; a refused trial preserves its input. |
 | CR-03 | `EXEC_ONLY` | `CheckedReachability.increment_changes_unique_inventory`, `CheckedReachability.checked_inventory_add_is_exact`, `CheckedReachability.checked_inventory_add_refuses_exactly_above_limit` | P | A symbolic unchanged background reaches one-below and exact `u64::MAX` distinct-object counts; generated large byte weights and duplicate references independently check byte refusal and zero-crossing behavior. The zero-byte-weight abstract case isolates arithmetic overflow, not production object admission. |
 | CR-04 | `EXEC_ONLY` | `CheckedReachability.decrement_changes_unique_inventory`, `CheckedReachability.deactivated_inventory_is_funded`, `CheckedReachability.checked_inventory_remove_is_exact`, `CheckedReachability.exact_inventory_removal_cannot_underflow` | P | Last-reference removal subtracts one unique contribution; repeated-edge removal and invalid underflow are negative controls. |
-| LT-01 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_attempts_are_exactly_scheduled_cursor_steps` | P | Every accepted test-model step is the executable cursor machine's scheduled step, observed at every generated microstep; refinement by the production successor (tasks 7924 and 7927) remains open. |
-| LT-02 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_step_is_failure_atomic`, `CheckedLedgerTrial.accepted_event_reservations_are_checked_arithmetic` | P | The natural-number reservations are refined by the test model's `u64` usage with `u128` candidates and by the Verus counters; production counters remain open. |
-| LT-03 | `EXEC_ONLY` | `CheckedLedgerTrial.every_trial_retains_the_bit_identical_predecessor`, `CheckedLedgerTrial.checked_step_is_failure_atomic` | P | Retained predecessors are compared by value in the test model; production copy-on-write nonmutation remains open (task 7924). |
-| LT-04 | `EXEC_ONLY` | `CheckedLedgerTrial.prepared_trial_agrees_with_cold_ledger`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.every_valid_authorized_trial_prepares_without_limits` | P | The cold oracle is an independent traversal of the test-only vector graph; production ledgers and object authentication remain open. |
-| LT-05 | `EXEC_ONLY` | `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.final_union_conflation_mutant_refuses_exact_final_limit` | P | Union and final inventories are separate abstract axes; the current, retained and metadata domains compose in DC-01 to DC-08, and the production domains remain open (task 7924). |
+| LT-01 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_attempts_are_exactly_scheduled_cursor_steps` | P | Every accepted test-model step is the executable cursor machine's scheduled step, observed at every generated microstep; the production trial refines the event-first schedule (CL-03), and its use by the trusted successor (task 7927) remains open. |
+| LT-02 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_step_is_failure_atomic`, `CheckedLedgerTrial.accepted_event_reservations_are_checked_arithmetic` | P | The natural-number reservations are refined by the test model's `u64` usage with `u128` candidates and by the Verus counters; the production trial reserves the same way and matches the test model's usage (CL-03). |
+| LT-03 | `EXEC_ONLY` | `CheckedLedgerTrial.every_trial_retains_the_bit_identical_predecessor`, `CheckedLedgerTrial.checked_step_is_failure_atomic` | P | Retained predecessors are compared by value in the test model; in production the trial borrows its predecessor immutably, and CL-04 compares the predecessor's observation before and after every trial. |
+| LT-04 | `EXEC_ONLY` | `CheckedLedgerTrial.prepared_trial_agrees_with_cold_ledger`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.every_valid_authorized_trial_prepares_without_limits` | P | The cold oracle is an independent traversal of the test-only vector graph; production ledgers built over authenticated canonical objects match it in CL-01 and CL-03. |
+| LT-05 | `EXEC_ONLY` | `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.final_union_conflation_mutant_refuses_exact_final_limit` | P | Union and final inventories are separate abstract axes; the current, retained and metadata domains compose in DC-01 to DC-08, and the production current and retained domains are checked in CL-01 to CL-06. |
 | LT-06 | `EXEC_ONLY` | `CheckedLedgerTrial.live_scratch_is_bounded_by_its_reserved_peak`, `CheckedLedgerTrial.uncharged_phase_initialization_mutant_overruns_scratch` | P | Scratch counts pending events and suspended frames; byte-level scratch accounting remains open. |
 | LT-07 | `EXEC_ONLY` | `CheckedLedgerTrial.live_scratch_is_bounded_by_its_reserved_peak`, `CheckedLedgerTrial.scratch_allocation_conflation_mutant_refuses_admissible_trial` | P | The peak-versus-allocation distinction is checked on abstract scratch; production allocation accounting remains open. |
-| LT-08 | `EXEC_ONLY` | `CheckedLedgerTrial.sound_quotes_bound_consumed_read_bytes`, `CheckedLedgerTrial.unsound_quote_admits_unbounded_consumption` | P | Quote soundness is a premise, and the unsound-quote witness shows it cannot be dropped; production read quotes remain open. |
+| LT-08 | `EXEC_ONLY` | `CheckedLedgerTrial.sound_quotes_bound_consumed_read_bytes`, `CheckedLedgerTrial.unsound_quote_admits_unbounded_consumption` | P | Quote soundness is a premise, and the unsound-quote witness shows it cannot be dropped; production quotes are declared lengths, which `load_reference` authenticates, so they are sound by construction (CL-03). |
 | LT-09 | `EXEC_ONLY` | `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis` | P | Exact boundaries are checked per axis on generated trials; production limit configuration remains open. |
 | LT-10 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_trial_is_the_guarded_unbounded_trial`, `CheckedLedgerTrial.refused_trial_retries_from_identical_predecessor` | P | Retry equivalence is checked under generated limits near the measured evidence; the production retry policy remains open. |
 | LT-11 | `EXEC_ONLY` | `CheckedLedgerTrial.partial_commit_mutant_replaces_the_predecessor`, `CheckedLedgerTrial.skipped_cursor_contribution_mutant_is_not_quiescent`, `CheckedLedgerTrial.duplicated_cursor_contribution_mutant_is_not_quiescent` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must both be positive. |
 | DC-01 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials` | P | First-refusal composition and per-domain limits are checked for all four variants on generated histories; the production domain order and limit configuration remain open (task 7927). |
-| DC-02 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_agrees_with_cold_domains`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains` | P | Successor bases are compared with independent cold traversals after every generated step; production per-domain counts remain open (task 7924). |
+| DC-02 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_agrees_with_cold_domains`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains` | P | Successor bases are compared with independent cold traversals after every generated step; production per-domain counts are compared with the same oracles in CL-01 and CL-06. |
 | DC-03 | `EXEC_ONLY` | `CheckedDomainComposition.canonical_retention_deltas_realize_entry_roots` | P | Signed deltas are derived from test-model entries; production retention entries are only appended today (`admission.rs:1479-1483`). |
-| DC-04 | `EXEC_ONLY` | `CheckedDomainComposition.current_closure_is_within_retained_union` | P | Inclusion and the exact difference are checked on cold ledgers; the production current and union inventories remain open (task 7924). |
+| DC-04 | `EXEC_ONLY` | `CheckedDomainComposition.current_closure_is_within_retained_union` | P | Inclusion and the exact difference are checked on cold ledgers; the production current and union inventories equal the cold oracle's in CL-01. |
 | DC-05 | `EXEC_ONLY` | `CheckedDomainComposition.evicting_one_root_alias_keeps_retained_support` | P | Alias evictions are generated in the test model; production has no eviction today. |
 | DC-06 | `EXEC_ONLY` | `CheckedDomainComposition.data_inventory_is_disjoint_retained_plus_metadata`, `existing_digest_is_rejected` | P | Disjoint universes are a premise; production refuses a shared digest with `DuplicateInventoryDigest` where the retained union meets the retention manifest. |
 | DC-07 | `EXEC_ONLY` | `CheckedDomainComposition.pins_protect_physically_without_changing_semantic_evidence` | P | A model pin protects the pinned object itself; the closure a production pin protects is the garbage collector's contract (tasks 7943 to 7945). |
 | DC-08 | `EXEC_ONLY` | `CheckedDomainComposition.retained_sign_mutant_drops_the_predecessor_closure`, `CheckedDomainComposition.deduplicated_alias_mutant_drops_a_shared_closure`, `CheckedDomainComposition.pinned_root_mutant_inflates_the_retained_union` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must all be positive. |
+| CL-01 | `EXEC_ONLY` | `CreditedClosureLedger.credited_epoch_is_quiescent_for_added_roots`, `CreditedClosureLedger.credited_build_is_quiescent`, `CreditedClosureLedger.credited_cold_build_realizes_entry_domains`, `CreditedClosureLedger.credited_epoch_agrees_with_cold_ledger` | P | The theorems characterize credited epochs. That the production walk performs exactly a credited epoch is the no-unexpanded-crossing lemma, which is argued in prose and checked on generated canonical stores, not mechanized. |
+| CL-02 | `EXEC_ONLY` | `CreditedClosureLedger.credited_epoch_inventory_grows_by_crossed_objects`, `CreditedClosureLedger.credited_crossings_are_newly_reachable_objects` | P | The inventory growth is entailed; equal reports, reads and limit errors against a retained-only build are executable observations. |
+| CL-03 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_attempts_are_exactly_scheduled_cursor_steps`, `CheckedLedgerTrial.prepared_trial_agrees_with_cold_ledger`, `CheckedLedgerTrial.checked_trial_is_the_guarded_unbounded_trial` | P | Production runs only the event-first schedule; the mirror maps digests to vertices and declared lengths to weights, quotes and consumed reads. |
+| CL-04 | `EXEC_ONLY` | `CheckedLedgerTrial.every_trial_retains_the_bit_identical_predecessor`, `CheckedLedgerTrial.refused_trial_retries_from_identical_predecessor` | P | The immutable borrow of the predecessor enforces retention; load and parse refusals have no model counterpart. |
+| CL-05 | `EXEC_ONLY` | `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis`, `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials` | P | Exact boundaries are checked per axis and domain on generated trials; the production limit configuration remains open (task 7927). |
+| CL-06 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_agrees_with_cold_domains`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains`, `CheckedDomainComposition.evicting_one_root_alias_keeps_retained_support` | P | The deltas come from the test model's entries; their production derivation is task 7927, and the metadata domain belongs to tasks 7925 and 7926. |
+| CL-07 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory` | P | Work independence is checked on small generated cases; the scaling claim against geometrically growing history is task 7929. |
+| CL-08 | `EXEC_ONLY` | `EXEC_ONLY` | E | Stack bounds are platform evidence; both walks keep their work on the heap. |
+| CL-09 | `EXEC_ONLY` | `CreditedClosureLedger.epoch_wide_credit_mutant_double_counts_a_shared_child`, `CreditedClosureLedger.unexpanded_crossing_mutant_leaves_an_uncredited_child`, `CheckedLedgerTrial.partial_commit_mutant_replaces_the_predecessor`, `CheckedDomainComposition.retained_sign_mutant_drops_the_predecessor_closure`, `CheckedDomainComposition.deduplicated_alias_mutant_drops_a_shared_closure` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must all be positive. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -1375,6 +1736,23 @@ streaming-catalog test passed **28/28** single-threaded in debug (0.59 s) and
 release (0.09 s). These results cover the abstract composition and its test
 model only. See engineering journal J-245 for caps, evidence hashes and the
 remaining production obligations.
+
+The 2026-10-26 copy-on-write ledger extension adds `CL-01` through `CL-09`. The
+catalog/derivation/binding registry now contains **150** IDs: the 141 above and
+the nine production-ledger rows. On an isolated export of the candidate tree,
+`CreditedClosureLedger.v` compiled with all **8** capstones closed under the
+global context, its trial and composition dependencies again closed all **20**
+and **11**, and the publication, trial, composition and credited-ledger modules
+passed independent kernel checking. All 418 selected rspace++ library tests
+under `rspace::persistence` passed single-threaded in debug (19.65 s) and
+release (8.46 s), with the three unwind-child helpers ignored by design. They
+include the seven CL properties, the twenty-six reachability properties, this
+registry test, the streaming-catalog test, and the closure, semantic, admission
+and publication tests that run the credited walk. Unlike the two preceding
+extensions, these results cover production code: the counted ledger, the
+credited cold construction, and the trial and composition engines. See
+engineering journal J-246 for caps, evidence hashes and the remaining
+obligations.
 
 ## Caller-authority contract (2026-09-06)
 
