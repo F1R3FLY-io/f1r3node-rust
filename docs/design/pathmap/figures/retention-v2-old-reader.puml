@@ -1,0 +1,64 @@
+@startuml retention-v2-old-reader
+' ============================================================================
+' Opening a durable catalog after the first V2 publication (task 7923): the
+' reader behaviour that formal/tlaplus/stack_safe_pda/RSpaceRetentionV2Upgrade.tla
+' checks, with the four negative controls that each break one decision.
+'   GREY   #616161  catalog selection, which reads only the unchanged envelope
+'   BLUE   #1565C0  reading the appointed retention object
+'   AMBER  #EF6C00  V1 content, which every reader adopts
+'   GREEN  #2E7D32  V2 content, which only a dual reader adopts
+'   RED    #C62828  refusals, all terminal; and the mutants' stale adoptions
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #FFE0B2
+skinparam ActivityDiamondBorderColor #EF6C00
+skinparam NoteBorderColor #455A64
+
+title <b>Opening a catalog under the shared retention V2 format</b>\nselection reads only the envelope, the appointed object decides, and a refusal never falls back
+
+start
+:Parse both catalog slots:
+CRC, domain, version, reserved bytes, flags,
+commit length and the slot fields; <<#E0E0E0>>
+if (Is any slot valid?) then (no)
+  :Refuse: NoValidCatalog; <<#FFCDD2>>
+  stop
+else (yes)
+endif
+:Select the newest valid slot.
+V2 changes no envelope byte, so a V1-only
+reader and a dual reader select the same slot; <<#E0E0E0>>
+note right #FFEBEE
+  <b>CatalogEnvelopeMutant</b>: a V2 publication changes the
+  envelope; the V1-only reader cannot parse the new slot,
+  selects the older one and adopts its stale V1 state.
+  <b>SelectionDivergenceMutant</b>: selection consults the
+  appointed format, so the two readers select different slots.
+end note
+:Read the object the retention reference appoints; <<#BBDEFB>>
+switch (Domain of the appointed object?)
+case (RSpaceDAG.Retn)
+  :Parse the V1 manifest and adopt the
+  selected state (every reader); <<#FFE0B2>>
+case (RSpaceDAG.RetA)
+  if (Does the reader support V2?) then (dual reader)
+    :Parse the anchor, unfold the radix history,
+    check the count and adopt the selected state; <<#C8E6C9>>
+  else (V1-only reader)
+    :Refuse: UnknownObjectDomain, or
+    InvalidDomain(RSpaceDAG.Retn); <<#FFCDD2>>
+    note right #FFEBEE
+      Terminal: the reader never falls back to the older slot.
+      <b>FallbackOnUnsupportedMutant</b>: it adopts the older
+      slot's stale state instead.
+      <b>AdoptUnsupportedMutant</b>: it adopts the V2 state
+      without checking the format.
+    end note
+  endif
+endswitch
+stop
+@enduml

@@ -3,14 +3,18 @@ use std::convert::Infallible;
 use super::durable_recovery::valid_checkpoint_image;
 use super::support::{TEST_SEMANTIC_PROFILE_ID, TestSemanticProfile, synthetic_ref};
 use super::transaction_sealing::{base_state, data_batch, seal_data};
+use crate::rspace::persistence::retention::v2_format::{
+    RetentionAnchorV2, empty_retention_radix_ref,
+};
 use crate::rspace::persistence::wal::GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1;
 use crate::rspace::persistence::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CanonicalObjectStore, CatalogAuthorityTokenV1,
     CatalogPackStateV1, CatalogSelectionV1, CatalogSlotV1, CommittedObjectComparison,
     CommittedObjectLookup, DurableFormatError, LogPackAddress, LogPackDecodeLimits,
     LogPackFormatError, LogPackObjectPlanV1, LogPackSequence, ObjectRefV1, PhysicalDigest,
-    PreparedLogPackTransactionV1, SemanticProfileId, StateVersionV1, StoreId,
-    TRANSACTION_COMMIT_RECORD_LEN_V1, TransactionCommitRecordV1, TransactionCommitViewV1,
+    PreparedLogPackTransactionV1, RetainedStateV1, RetentionManifestV1, SemanticProfileId,
+    StateVersionV1, StoreId, TRANSACTION_COMMIT_RECORD_LEN_V1, TransactionCommitRecordV1,
+    TransactionCommitViewV1,
 };
 
 struct MissingLookup;
@@ -546,4 +550,179 @@ fn selected_catalog_authority_is_bound_to_every_terminal_commit_field() {
         .verify_commit(commit),
         Err(DurableFormatError::CatalogCommitPublication { .. })
     ));
+}
+
+#[derive(Clone, Copy, Debug)]
+enum AppointedRetention {
+    V1,
+    V2,
+}
+
+fn slot_with_retention(epoch: u64, generation: u64, retention: ObjectRefV1) -> CatalogSlotV1 {
+    let template = slot(epoch, generation);
+    let pack = template.pack();
+    CatalogSlotV1::new(
+        template.store_id(),
+        template.epoch(),
+        template.state(),
+        template.profile_id(),
+        template.commit_digest(),
+        template.commit_sequence(),
+        template.commit_address(),
+        CatalogPackStateV1::new(
+            pack.first_live_pack(),
+            pack.active_pack(),
+            pack.durable_pack_tail(),
+            pack.index_generation(),
+            pack.durable_index_tail(),
+            retention,
+            pack.current_state_canonical_bytes(),
+            pack.retained_canonical_bytes(),
+        )
+        .expect("only the retention reference changes"),
+    )
+    .expect("only the retention reference changes")
+}
+
+fn appointed_retention(epoch: u64, generation: u64, format: AppointedRetention) -> CatalogSlotV1 {
+    let template = slot(epoch, generation);
+    let current =
+        RetainedStateV1::new(template.state(), template.pack().current_state_canonical_bytes())
+            .expect("the catalog current closure covers its manifest");
+    let retention = match format {
+        AppointedRetention::V1 => RetentionManifestV1::new(current, Vec::new())
+            .expect("an empty V1 history is valid")
+            .object_ref(),
+        AppointedRetention::V2 => RetentionAnchorV2::new(current, 0, empty_retention_radix_ref())
+            .expect("an empty V2 history appoints the empty radix node")
+            .object_ref(),
+    };
+    slot_with_retention(epoch, generation, retention)
+}
+
+fn slot_pair(
+    first: [u8; CATALOG_SLOT_LEN],
+    second: [u8; CATALOG_SLOT_LEN],
+) -> [u8; CATALOG_IMAGE_LEN] {
+    let mut image = [0u8; CATALOG_IMAGE_LEN];
+    image[..CATALOG_SLOT_LEN].copy_from_slice(&first);
+    image[CATALOG_SLOT_LEN..].copy_from_slice(&second);
+    image
+}
+
+#[test]
+fn catalog_selection_is_blind_to_the_appointed_retention_format() {
+    let v1 = appointed_retention(41, 81, AppointedRetention::V1).encode();
+    let v2 = appointed_retention(41, 81, AppointedRetention::V2).encode();
+    let retention_extent = 216..256;
+    let checksum_extent = CATALOG_SLOT_LEN - 8..CATALOG_SLOT_LEN;
+    let differing = (0..CATALOG_SLOT_LEN)
+        .filter(|offset| v1[*offset] != v2[*offset])
+        .collect::<Vec<_>>();
+    assert!(
+        differing
+            .iter()
+            .any(|offset| retention_extent.contains(offset))
+    );
+    assert!(
+        differing
+            .iter()
+            .all(|offset| retention_extent.contains(offset) || checksum_extent.contains(offset))
+    );
+    for format in [AppointedRetention::V1, AppointedRetention::V2] {
+        let slot = appointed_retention(41, 81, format);
+        assert_eq!(CatalogSlotV1::parse(&slot.encode()), Ok(Some(slot)));
+    }
+
+    for (older_format, newer_format) in [
+        (AppointedRetention::V1, AppointedRetention::V1),
+        (AppointedRetention::V1, AppointedRetention::V2),
+        (AppointedRetention::V2, AppointedRetention::V2),
+    ] {
+        let older = appointed_retention(40, 80, older_format);
+        let newer = appointed_retention(41, 81, newer_format);
+        for (first, second, newest_index) in [(older, newer, 1), (newer, older, 0)] {
+            let selected = CatalogSelectionV1::select(&image(Some(first), Some(second)))
+                .expect("adjacent valid slots select")
+                .expect("a populated catalog selects a slot");
+            assert_eq!(selected.slot(), newer, "{older_format:?} -> {newer_format:?}");
+            assert_eq!(selected.slot_index(), newest_index);
+            assert_eq!(selected.ignored_corrupt_slot(), None);
+        }
+    }
+}
+
+#[test]
+fn every_catalog_envelope_change_makes_old_readers_select_the_stale_slot() {
+    fn resealed(mut bytes: [u8; CATALOG_SLOT_LEN]) -> [u8; CATALOG_SLOT_LEN] {
+        let auth_len = CATALOG_SLOT_LEN - 8;
+        let crc = crate::rspace::persistence::checksum::crc32c(&bytes[..auth_len]);
+        bytes[auth_len..]
+            .copy_from_slice(&crate::rspace::persistence::checksum::encode_crc32c(crc));
+        bytes
+    }
+    fn with_u64(
+        mut bytes: [u8; CATALOG_SLOT_LEN],
+        offset: usize,
+        value: u64,
+    ) -> [u8; CATALOG_SLOT_LEN] {
+        bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        bytes
+    }
+
+    let older = appointed_retention(50, 90, AppointedRetention::V1);
+    let newer = appointed_retention(51, 91, AppointedRetention::V2);
+    let newer_bytes = newer.encode();
+    for (first, second, newest_index) in
+        [(older.encode(), newer_bytes, 1), (newer_bytes, older.encode(), 0)]
+    {
+        let selected = CatalogSelectionV1::select(&slot_pair(first, second))
+            .expect("adjacent valid slots select")
+            .expect("a populated catalog selects a slot");
+        assert_eq!(selected.slot(), newer);
+        assert_eq!(selected.slot_index(), newest_index);
+        assert_eq!(selected.ignored_corrupt_slot(), None);
+    }
+
+    let reserved_extent = 288..CATALOG_SLOT_LEN - 8;
+    let mut changes = Vec::with_capacity(5 + reserved_extent.len());
+    let mut domain = newer_bytes;
+    domain[..16].copy_from_slice(b"RSpaceCatalogV2\0");
+    changes.push((domain, DurableFormatError::InvalidCatalogDomain));
+    changes.push((with_u64(newer_bytes, 16, 2), DurableFormatError::UnsupportedCatalogVersion(2)));
+    changes.push((with_u64(newer_bytes, 256, 1), DurableFormatError::NonzeroCatalogReserved));
+    changes.push((with_u64(newer_bytes, 280, 1), DurableFormatError::UnsupportedCatalogFlags(1)));
+    for offset in reserved_extent {
+        let mut reserved = newer_bytes;
+        reserved[offset] = 1;
+        changes.push((reserved, DurableFormatError::NonzeroCatalogReserved));
+    }
+    let longer_commit = TRANSACTION_COMMIT_RECORD_LEN_V1 + 32;
+    changes.push((
+        with_u64(
+            with_u64(newer_bytes, 168, longer_commit),
+            192,
+            newer.pack().durable_pack_tail() + 32,
+        ),
+        DurableFormatError::CatalogCommitLength {
+            incremental: TRANSACTION_COMMIT_RECORD_LEN_V1,
+            checkpoint: GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1,
+            actual: longer_commit,
+        },
+    ));
+
+    for (changed, expected) in changes {
+        let changed = resealed(changed);
+        assert_eq!(CatalogSlotV1::parse(&changed), Err(expected));
+        for (first, second, older_index, changed_index) in
+            [(older.encode(), changed, 0, 1), (changed, older.encode(), 1, 0)]
+        {
+            let selected = CatalogSelectionV1::select(&slot_pair(first, second))
+                .expect("one valid slot selects")
+                .expect("a populated catalog selects a slot");
+            assert_eq!(selected.slot(), older);
+            assert_eq!(selected.slot_index(), older_index);
+            assert_eq!(selected.ignored_corrupt_slot(), Some(changed_index));
+        }
+    }
 }

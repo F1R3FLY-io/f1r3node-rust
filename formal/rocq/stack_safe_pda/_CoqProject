@@ -14,6 +14,7 @@ theories/GenerationCheckpointPublication.v
 theories/IncrementalLedgerTrial.v
 theories/IncrementalDomainComposition.v
 theories/CreditedClosureLedger.v
+theories/RetentionV2Format.v
 theories/EPM1.v
 theories/CanonicalEPathMapImport.v
 theories/OpaqueCanonicalSegmentImport.v

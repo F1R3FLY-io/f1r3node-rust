@@ -5,15 +5,18 @@ use super::support::{TestSemanticProfile, nonzero};
 use crate::rspace::data_index::RSpaceDataIndex;
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::checkpoint::{
-    CheckpointObjectInventoryV1, CheckpointReferenceVisitErrorV1, GenerationCheckpointDescriptorV1,
-    GenerationCheckpointDescriptorViewV1, GenerationCheckpointErrorV1,
-    OrderedObjectInventoryBuilderV1,
+    CheckpointObjectInventoryV1, CheckpointReferenceVisitErrorV1, GENERATION_CHECKPOINT_DOMAIN,
+    GenerationCheckpointDescriptorV1, GenerationCheckpointDescriptorViewV1,
+    GenerationCheckpointErrorV1, OrderedObjectInventoryBuilderV1,
 };
 use crate::rspace::persistence::closure::{RetainedUnionClosureReportV1, StructuralClosureReport};
 use crate::rspace::persistence::durable::{
     INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexGenerationV1, ObjectIndexHeaderV1,
     PACK_HEADER_LEN_V1, PreparedGenerationCheckpointIndexV1,
     PreparedGenerationCheckpointIndexVisitErrorV1,
+};
+use crate::rspace::persistence::retention::v2_format::{
+    GENERATION_CHECKPOINT_V2_DOMAIN, RetentionAnchorV2, empty_retention_radix_ref,
 };
 use crate::rspace::persistence::wal::{
     GENERATION_CHECKPOINT_COMMIT_RECORD_LEN_V1, GENERATION_CHECKPOINT_PREPARE_HEADER_LEN_V1,
@@ -1606,5 +1609,102 @@ fn fresh_index_rejects_store_address_and_offset_drift_before_visiting() {
                 actual,
             }) if actual == offset
         ));
+    }
+}
+
+#[test]
+fn v1_checkpoint_records_refuse_the_frozen_v2_descriptor() {
+    const PREPARE_DESCRIPTOR_OFFSET: usize = 64;
+    const COMMIT_DESCRIPTOR_OFFSET: usize = 152;
+    const DESCRIPTOR_LEN: usize = 216;
+    const RETENTION_REFERENCE_OFFSET: usize = 96;
+    const DATA_OBJECTS_OFFSET: usize = 168;
+    const DATA_BYTES_OFFSET: usize = 176;
+    let source = fixture();
+    let prepare = encode_checkpoint(&source);
+    let (commit, _, _, _) = checkpoint_commit_fixture(&source);
+    let prepare_descriptor = PREPARE_DESCRIPTOR_OFFSET..PREPARE_DESCRIPTOR_OFFSET + DESCRIPTOR_LEN;
+    let commit_descriptor = COMMIT_DESCRIPTOR_OFFSET..COMMIT_DESCRIPTOR_OFFSET + DESCRIPTOR_LEN;
+    let descriptor = prepare[prepare_descriptor.clone()].to_vec();
+    assert_eq!(descriptor, commit[commit_descriptor.clone()]);
+    assert!(GenerationCheckpointDescriptorViewV1::parse(&descriptor).is_ok());
+    assert!(
+        GenerationCheckpointPrepareRecordViewV1::parse(&prepare, LogPackDecodeLimits::UNBOUNDED)
+            .is_ok()
+    );
+    assert!(GenerationCheckpointCommitViewV1::parse(&commit).is_ok());
+
+    let current = RetainedStateV1::new(
+        source.descriptor.state(),
+        source.descriptor.current_state_canonical_bytes().get(),
+    )
+    .expect("the fixture's current closure covers its manifest");
+    let anchor = RetentionAnchorV2::new(current, 0, empty_retention_radix_ref())
+        .expect("an empty history appoints the empty radix node")
+        .object_ref();
+    let metadata_bytes = anchor.encoded_len() + empty_retention_radix_ref().encoded_len();
+    assert_eq!(metadata_bytes, 186);
+    let inventory = source.descriptor.inventory();
+    let retained_objects = inventory.retained_union_objects();
+    let retained_bytes = inventory.retained_union_canonical_bytes().get();
+
+    let retag = |descriptor: &mut [u8]| {
+        descriptor[..16].copy_from_slice(GENERATION_CHECKPOINT_V2_DOMAIN);
+    };
+    let appoint_v2_inventory = |descriptor: &mut [u8]| {
+        descriptor[RETENTION_REFERENCE_OFFSET..RETENTION_REFERENCE_OFFSET + 32]
+            .copy_from_slice(anchor.digest().as_bytes());
+        replace_u64(descriptor, RETENTION_REFERENCE_OFFSET + 32, anchor.encoded_len());
+        replace_u64(descriptor, DATA_OBJECTS_OFFSET, retained_objects + 2);
+        replace_u64(descriptor, DATA_BYTES_OFFSET, retained_bytes + metadata_bytes);
+    };
+    let invalid_domain =
+        GenerationCheckpointErrorV1::Canonical(CanonicalFormatError::InvalidDomain {
+            expected: GENERATION_CHECKPOINT_DOMAIN,
+        });
+    let incoherent = GenerationCheckpointErrorV1::InventoryIncoherent {
+        expected_objects: retained_objects + 1,
+        actual_objects: retained_objects + 2,
+        expected_bytes: retained_bytes + anchor.encoded_len(),
+        actual_bytes: retained_bytes + metadata_bytes,
+    };
+    let mutations: [(&dyn Fn(&mut [u8]), GenerationCheckpointErrorV1); 3] = [
+        (&retag, invalid_domain.clone()),
+        (&appoint_v2_inventory, incoherent),
+        (
+            &|descriptor: &mut [u8]| {
+                appoint_v2_inventory(descriptor);
+                retag(descriptor);
+            },
+            invalid_domain,
+        ),
+    ];
+    for (mutate, expected) in mutations {
+        let mut changed = descriptor.clone();
+        mutate(&mut changed);
+        assert_eq!(
+            GenerationCheckpointDescriptorViewV1::parse(&changed).err(),
+            Some(expected.clone())
+        );
+
+        let mut changed = prepare.clone();
+        mutate(&mut changed[prepare_descriptor.clone()]);
+        reseal_prepare(&mut changed);
+        assert_eq!(
+            GenerationCheckpointPrepareRecordViewV1::parse(
+                &changed,
+                LogPackDecodeLimits::UNBOUNDED
+            )
+            .err(),
+            Some(LogPackFormatError::Checkpoint(expected.clone()))
+        );
+
+        let mut changed = commit.clone();
+        mutate(&mut changed[commit_descriptor.clone()]);
+        rewrite_commit_crc(&mut changed);
+        assert_eq!(
+            GenerationCheckpointCommitViewV1::parse(&changed).err(),
+            Some(LogPackFormatError::Checkpoint(expected))
+        );
     }
 }

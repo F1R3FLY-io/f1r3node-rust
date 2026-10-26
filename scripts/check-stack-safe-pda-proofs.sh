@@ -858,6 +858,13 @@ rocq_compile_with_closed_count theories/CreditedClosureLedger.v 8 \
 rocq_check_modules "credited cold construction of the per-domain closure ledgers" \
   StackSafePDA.GenerationCheckpointPublication StackSafePDA.IncrementalLedgerTrial \
   StackSafePDA.IncrementalDomainComposition StackSafePDA.CreditedClosureLedger
+rocq_reject_placeholders theories/RetentionV2Format.v
+rocq_compile_with_closed_count theories/RetentionV2Format.v 15 \
+  "shared retention V2 format and V1 migration"
+rocq_check_modules "shared retention V2 format and V1 migration" \
+  StackSafePDA.ChannelImage StackSafePDA.GenerationCheckpointPublication \
+  StackSafePDA.IncrementalLedgerTrial StackSafePDA.IncrementalDomainComposition \
+  StackSafePDA.RetentionV2Format
 streaming_codec_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/StreamingCodecPDA.v 2>&1
@@ -1681,6 +1688,58 @@ do
   if ! grep -q "Invariant ${generation_checkpoint_invariant} is violated" \
       <<<"$generation_checkpoint_output"; then
     echo "stack-safe-pda: ${generation_checkpoint_label} generation-checkpoint witness failed without ${generation_checkpoint_invariant}" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
+  RSpaceRetentionV2Upgrade.cfg \
+  RSpaceRetentionV2Upgrade.tla -cleanup
+for retention_v2_mutant in \
+  "catalog-envelope:RSpaceRetentionV2UpgradeCatalogEnvelopeMutant.cfg:AdoptionIsNewestPublished" \
+  "selection-divergence:RSpaceRetentionV2UpgradeSelectionDivergenceMutant.cfg:ReadersSelectTheSameSlot" \
+  "fallback-on-unsupported:RSpaceRetentionV2UpgradeFallbackOnUnsupportedMutant.cfg:AdoptionIsNewestPublished" \
+  "adopt-unsupported:RSpaceRetentionV2UpgradeAdoptUnsupportedMutant.cfg:NoReaderAdoptsUnsupportedContent"
+do
+  retention_v2_label="${retention_v2_mutant%%:*}"
+  retention_v2_tail="${retention_v2_mutant#*:}"
+  retention_v2_cfg="${retention_v2_tail%%:*}"
+  retention_v2_invariant="${retention_v2_tail#*:}"
+  if retention_v2_output="$({
+    tlc_run "$tla_metadir" \
+      "$retention_v2_cfg" RSpaceRetentionV2Upgrade.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$retention_v2_output"
+    echo "stack-safe-pda: ${retention_v2_label} retention V2 mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$retention_v2_output"
+  if ! grep -q "Invariant ${retention_v2_invariant} is violated" \
+      <<<"$retention_v2_output"; then
+    echo "stack-safe-pda: ${retention_v2_label} retention V2 mutant failed without ${retention_v2_invariant}" >&2
+    exit 1
+  fi
+done
+for retention_v2_witness in \
+  "old-reader-refusal:RSpaceRetentionV2UpgradeNeverOldReaderRefusesV2.cfg:NeverOldReaderRefusesV2" \
+  "dual-reader-adoption:RSpaceRetentionV2UpgradeNeverDualReaderAdoptsV2.cfg:NeverDualReaderAdoptsV2" \
+  "torn-successor:RSpaceRetentionV2UpgradeNeverAdoptsBehindTornSuccessor.cfg:NeverAdoptsBehindTornSuccessor"
+do
+  retention_v2_witness_label="${retention_v2_witness%%:*}"
+  retention_v2_witness_tail="${retention_v2_witness#*:}"
+  retention_v2_witness_cfg="${retention_v2_witness_tail%%:*}"
+  retention_v2_witness_invariant="${retention_v2_witness_tail#*:}"
+  if retention_v2_witness_output="$({
+    tlc_run "$tla_metadir" \
+      "$retention_v2_witness_cfg" RSpaceRetentionV2Upgrade.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$retention_v2_witness_output"
+    echo "stack-safe-pda: ${retention_v2_witness_label} retention V2 non-vacuity witness was unreachable" >&2
+    exit 1
+  fi
+  printf '%s\n' "$retention_v2_witness_output"
+  if ! grep -q "Invariant ${retention_v2_witness_invariant} is violated" \
+      <<<"$retention_v2_witness_output"; then
+    echo "stack-safe-pda: ${retention_v2_witness_label} retention V2 witness failed without ${retention_v2_witness_invariant}" >&2
     exit 1
   fi
 done

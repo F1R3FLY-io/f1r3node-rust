@@ -1520,6 +1520,548 @@ sources:
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `99beab63dff1a686a6c8332e33330e18f685d68392f440f6151497f93213e193` |
 | `rspace++/tests/persistence/mod.rs` | `10141ebee87e4e8a38ed53031256fd87dbfdec19138036e93a411cc1dce931f4` |
 
+### Shared retention V2 format (2026-10-26)
+
+Task 7923 freezes the shared retention format that engineering journal entry
+J-063 proposed and J-066 constrained. It proves the format's properties and its
+compatibility with readers that know only V1, and it extracts every property
+into tests, before any code writes the format. The V1 retention manifest stores
+the current retained state and the complete list of historical retained states
+in one object, so every successor collects and re-encodes the whole history
+(`bind_durable_transaction`, J-063). V2 keeps the same information but splits
+it. A constant-size *anchor* carries the current entry and an exact count of the
+historical entries, and a radix tree of content-addressed nodes carries the
+history itself. A successor that changes one entry can then copy one
+root-to-leaf path and share every other node with its predecessor, which is the
+path copying of Driscoll et al. (1989). Task 7926 implements that editing. This
+task changes no persisted byte. The production module that freezes the domains,
+the key and the anchor is compiled into every build but has no production
+caller, and it is marked as expected dead code outside test builds until task
+7925 (the cold reader) and task 7926 (the writer) use it.
+
+Five artifacts implement the task:
+
+- the Rocq theory `formal/rocq/stack_safe_pda/theories/RetentionV2Format.v`
+  (module `RetentionV2Format`, built on `ChannelImage` and on the
+  `CheckedDomainComposition` model of the 7922 section), which proves the format
+  properties;
+- the TLA+ module `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2Upgrade.tla`,
+  with its base configuration, four negative-control configurations and three
+  non-vacuity configurations, which checks old-reader compatibility;
+- `rspace++/src/rspace/persistence/retention/v2_format.rs`, which holds the
+  frozen constants, `RetentionKeyV2` and `RetentionAnchorV2`, together with the
+  anchor's refusal `RetentionHistoryRootMismatch` in
+  `rspace++/src/rspace/persistence/canonical.rs`;
+- the properties in
+  `rspace++/tests/persistence/retention_v2_format_properties.rs`, which compare
+  the production key and anchor with an independent test model of the radix
+  tree;
+- one checkpoint-record property in `rspace++/tests/persistence/checkpoint_wal.rs`
+  and two catalog properties in `rspace++/tests/persistence/durable_catalog.rs`,
+  which run the unchanged V1 codecs against V2 bytes.
+
+![The objects of the shared retention V2 format. The catalog slot keeps its envelope unchanged, and its opaque retention reference at bytes 216 to 256 appoints either a V1 retention manifest or a 136-byte V2 anchor. The anchor carries the V1 current entry verbatim, the historical count n and the historical root, which is the 50-byte empty radix node when n is 0, a single leaf when n is 1, and an inner node otherwise. Inner nodes branch on edge bytes; a leaf's path and prefix spell a 48-byte key of big-endian generation, manifest digest and big-endian length, which decodes to the state identity that names a semantic state manifest](figures/retention-v2-format.svg)
+
+**Vocabulary.**
+
+- A *state identity* is a generation $`g`$ together with the `ObjectRefV1` of a
+  semantic state manifest: the manifest's 32-byte BLAKE2b-256 digest $`d`$ and
+  its encoded length $`\ell`$ in bytes. An encoded length includes the 32-byte
+  object envelope, so $`\ell \ge 32`$.
+- A *retained state entry* adds a byte claim $`c \ge \ell`$ to a state identity.
+  V1 encodes an entry in 56 bytes: $`g`$ as a little-endian `u64`, the digest,
+  $`\ell`$ as a little-endian `u64`, and $`c`$ as a little-endian `u64`.
+- The *entry order* compares generations, then digests byte by byte, then
+  encoded lengths. The V1 manifest requires its historical entries to increase
+  strictly in this order and refuses `RetainedStatesNotStrict` otherwise. V1
+  accepts two entries that share a generation, two that share a manifest at
+  different generations, and two that share a generation and a digest with
+  different lengths. Each such pair is an *alias pair*.
+- Every canonical object begins with a 32-byte *envelope*: a 16-byte domain,
+  then the format version 1 and the body length, each a little-endian `u64`.
+- The *retained semantic union* $`R`$ is the set of objects reachable from the
+  manifests of all retained states, current and historical, and
+  $`\mathrm{bytes}(X)`$ is the sum of the encoded lengths of the objects in a set
+  $`X`$.
+
+**The retention key.** A V2 history is keyed by the identity of each entry:
+
+```math
+\kappa(g, d, \ell) \;=\; \mathrm{BE}_{64}(g) \,\Vert\, d \,\Vert\, \mathrm{BE}_{64}(\ell),
+\qquad
+\lvert \kappa(g, d, \ell) \rvert \;=\; 8 + 32 + 8 \;=\; 48,
+```
+
+where $`\mathrm{BE}_{64}`$ is the 8-byte big-endian encoding of an unsigned
+integer and $`\Vert`$ is concatenation. A 48-byte string is a key exactly when
+its last eight bytes decode to a length of at least 32. Two choices carry the
+design:
+
+- *Big-endian integers.* Lexicographic order on fixed-width big-endian strings
+  is numeric order, so byte order on keys is the entry order (theorem 2), and a
+  radix tree over keys lists its entries in V1 order. Little-endian integers
+  break this: with $`\mathrm{LE}_{64}`$ the 8-byte little-endian encoding,
+  $`\mathrm{LE}_{64}(256)`$ begins with the byte `00` and
+  $`\mathrm{LE}_{64}(1)`$ with `01`, so generation 256 would sort before
+  generation 1 (theorem 3).
+- *All three fields.* Each kind of alias pair differs in exactly one field. A
+  key of the generation alone, of the digest and length alone, or of the
+  generation and digest alone would map some alias pair to one key (theorem 4),
+  and the history would lose an entry.
+
+The key is a bijection between valid identities and keys, so no surrogate
+identifier is needed (theorem 1).
+
+**The anchor.** The anchor has the domain `RSpaceDAG.RetA\0\0` and exactly 136
+bytes:
+
+| Bytes | Field | Encoding |
+|---|---|---|
+| 0..16 | domain `RSpaceDAG.RetA\0\0` | ASCII padded with NUL bytes |
+| 16..24 | format version 1 | little-endian `u64` |
+| 24..32 | body length 104 | little-endian `u64` |
+| 32..88 | current entry | the 56-byte V1 entry, verbatim |
+| 88..96 | historical count $`n`$ | little-endian `u64` |
+| 96..136 | historical root | an `ObjectRefV1`: the 32-byte digest, then the length as a little-endian `u64` |
+
+The count is zero exactly when the historical root is the empty radix node.
+`RetentionAnchorV2::new` and `RetentionAnchorV2::parse` refuse every other
+combination with `RetentionHistoryRootMismatch`. The current entry is not
+re-encoded: bytes 32..88 of an anchor equal bytes 32..88 of the V1 manifest with
+the same current entry.
+
+**Radix nodes.** A radix node has the domain `RSpaceDAG.RetR\0\0`, followed by
+the canonical DAG node body without any change: the prefix length as a
+little-endian `u64`, the prefix bytes, the endpoint (a tag and its payload), the
+branch tag (`Leaf` 0, `Node4` 1, `Node16` 2, `Node48` 3, `Node256` 4), the child
+count as a little-endian `u64`, and the children, each an edge byte and an
+`ObjectRefV1`. Reusing the body reuses the existing iterative radix editor,
+staging store and validators, as J-063 requires. The body parser already refuses
+the noncanonical shapes: an empty node with a prefix, an absent endpoint with
+exactly one child, and edges that do not strictly increase. A one-child chain is
+therefore always compressed into a prefix, as in Morrison's PATRICIA (1968), and
+the branch encodings are the adaptive node sizes of Leis et al. (2013). The
+domain must differ from the semantic node domain because the empty radix node
+and the empty semantic node have the same body. Under one domain they would be
+one object with one digest, and a checkpoint inventory would refuse the second
+copy as a duplicate (theorem 7).
+
+A radix tree with declared count $`n`$ is valid when it satisfies eight rules.
+Each node is reached along a *path* $`\pi`$, the bytes spelled by the prefixes
+and edges above it. Let $`\rho = 48 - \lvert \pi \rvert`$ be the number of key
+bytes that remain at the node, and $`p`$ its prefix.
+
+| Rule | Requirement | Refusal of the reference decoder |
+|---|---|---|
+| R1 | Every endpoint is `Absent` or `Multiplicity`; `ValueFree`, `Unit` and `Content` never occur. | `EndpointKind` |
+| R2 | A `Multiplicity` endpoint occurs only on a node without children at full depth, $`\lvert p \rvert = \rho`$. Such a node is a *leaf*. | `EndpointDepth` |
+| R3 | Every other node except an empty root is *inner*: its endpoint is `Absent`, $`\lvert p \rvert < \rho`$, it has at least two children with strictly increasing edges, and every child is a radix node. | `EndpointDepth`, `Body`, `NotRadixDomain` |
+| R4 | The empty node, with an absent endpoint, no prefix and no children, occurs only as the root, and exactly when $`n = 0`$. | `EmptyBelowRoot`, `CountMismatch`, `RetentionHistoryRootMismatch` |
+| R5 | The key $`\pi \Vert p`$ of a leaf decodes to an identity, and the leaf's claim is at least that identity's length $`\ell`$. | `LeafKey`, `LeafClaim` |
+| R6 | One object may occur on several paths, because equal subtrees are one content-addressed object. A count is a function of the object and $`\rho`$, and is memoized on that pair, never on the digest alone. | none |
+| R7 | $`n`$ equals the number of leaf occurrences, counting a shared leaf once for each path that reaches it. | `CountMismatch`, `CountOverflow` |
+| R8 | Every historical generation is less than the current generation. | `NonHistoricalState`, in admission |
+
+Rules R1 to R7 belong to the codec and hold for any reader of the format. Rule
+R8 relates the history to the current state, so it stays in cold admission,
+where V1 already checks it
+(`rspace++/src/rspace/persistence/durable/admission.rs:1706-1713`), and the V2
+reader of task 7925 inherits it.
+
+The frozen encodings are pinned by length and BLAKE2b-256 digest (RV-04). In the
+table, $`\texttt{aa}^{32}`$ is 32 bytes of value `aa`, and an entry is written
+$`(g, d, \ell, c)`$:
+
+| Object | Bytes | Digest |
+|---|---|---|
+| the empty radix node | 50 | `50e61ba04a451666697cf575964a1c6ada6a5d6a3a43f321c31f898d79f5cda8` |
+| the empty semantic node, for contrast | 50 | `21dd2a72f6a9d98af1a2fd6cf2a871f2076bec013ce1cd6c7cca6d46ff4c0dc2` |
+| the anchor of an empty history with current entry $`(1, \texttt{aa}^{32}, 50, 50)`$ | 136 | `aafa9f0acc53e37a3a686374191493dbaae8041691ed96f1e8af8b3e6730511a` |
+| the leaf of the single entry $`(1, \texttt{bb}^{32}, 50, 50)`$ | 106 | `ed69c9c67bfd19d28914472c29d1082d30017a86e4b31186db5d2e292d3abfd2` |
+| the anchor of that one-entry history with current entry $`(2, \texttt{aa}^{32}, 50, 50)`$ | 136 | `c618aca6611095642bc65d31754660b79ecbaf6da0d5c30f9134b18263770571` |
+
+The empty radix node is the 32-byte envelope followed by an 18-byte body of
+zeros: a zero prefix length, the `Absent` tag, the `Leaf` branch tag and a zero
+child count. A leaf is 106 bytes: the envelope, the prefix length, a 48-byte
+prefix, a 9-byte `Multiplicity` endpoint, the branch tag and the child count.
+
+**The reference decoder, in literate form.** The test model's `unfold_radix` is
+the decoder that the reader of task 7925 must refine. It keeps all of its work
+on an explicit stack, so its native stack depth does not depend on the tree.
+Given a store, the historical root and the declared count $`n`$:
+
+1. ⟨Start⟩. Push the root with the empty path. The leaf list is empty.
+2. ⟨Load⟩. Pop a reference $`r`$ and its path $`\pi`$. Refuse `MissingObject` if
+   the store lacks the digest of $`r`$, and `ReferenceMismatch` if the stored
+   bytes differ from $`r`$ in length or digest. Refuse `NotRadixDomain` unless
+   the domain is `RSpaceDAG.RetR`. Parse the body with the production DAG node
+   parser, and map its refusals to `Body`. Set $`\rho = 48 - \lvert \pi \rvert`$.
+3. ⟨Dispatch⟩. Select on the endpoint, on whether the node has children, and on
+   whether $`\pi`$ is empty:
+   - an absent endpoint, no children and an empty path: the empty history.
+     Return no leaves if $`n = 0`$, and otherwise refuse `CountMismatch`;
+   - an absent endpoint, no children and a nonempty path: refuse
+     `EmptyBelowRoot`;
+   - a `Multiplicity` endpoint with claim $`c`$, no children and
+     $`\lvert p \rvert = \rho`$: a leaf.
+     Form the key $`k = \pi \Vert p`$. Refuse `LeafKey` unless $`k`$ decodes to
+     an identity, and `LeafClaim` unless $`c \ge \ell`$. Append $`(k, c)`$;
+   - an absent endpoint, children and $`\lvert p \rvert < \rho`$: an inner node.
+     Push each child with the path $`\pi \Vert p \Vert e`$, where $`e`$ is the
+     child's edge byte, in decreasing edge order, so that the smallest edge is
+     popped first;
+   - any other node with an `Absent` or `Multiplicity` endpoint: refuse
+     `EndpointDepth`;
+   - any other endpoint: refuse `EndpointKind`.
+4. ⟨Count⟩. When the stack is empty, refuse `CountMismatch` unless exactly
+   $`n`$ leaves were appended, and return them.
+
+Children are popped in increasing edge order and each key extends its path, so
+the leaves come out in strictly increasing key order, which is the entry order
+by theorem 2. The decoder does work proportional to $`n`$. A check that needs
+only the count runs the memoized post-order count, `memoized_count`, instead:
+the empty node counts 0, a leaf 1, and an inner node the checked sum of its
+children's counts. Memoized on the pair of digest and $`\rho`$ (rule R6), it
+loads each distinct object at each depth once. The two differ exactly when
+sharing is counted wrongly. In RV-06 two entries that differ only in their
+generation share one leaf object: the decoder appends two leaves and the
+memoized count returns 2, while a count of distinct leaf objects would return 1
+(theorem 9).
+
+**Metadata closure and checkpoint inventory.** The *metadata closure* $`M`$ of
+an anchor is the anchor together with every radix node reachable from its
+historical root. It always holds the anchor and the root, which is the empty
+node when $`n = 0`$, so
+
+```math
+\lvert M \rvert \;\ge\; 2,
+\qquad
+\mathrm{bytes}(M) \;\ge\; 136 + 50 \;=\; 186 .
+```
+
+A V2 checkpoint must make $`M`$ durable beside $`R`$. The V1 descriptor counts
+exactly one retention object
+(`rspace++/src/rspace/persistence/checkpoint.rs:222-240`):
+
+```math
+\mathrm{DATA}_{\mathrm{objects}} \;=\; \lvert R \rvert + 1,
+\qquad
+\mathrm{DATA}_{\mathrm{bytes}} \;=\; \mathrm{bytes}(R) + \ell_{\mathrm{ret}},
+```
+
+where $`\ell_{\mathrm{ret}}`$ is the encoded length of the retention manifest.
+The V2 descriptor keeps the 216-byte V1 layout under its own domain
+`RSpaceDAG.Chkp2\0` and counts the union of the two sets:
+
+```math
+\mathrm{DATA}_{\mathrm{objects}} \;=\; \lvert R \rvert + \lvert M \rvert,
+\qquad
+\mathrm{DATA}_{\mathrm{bytes}} \;=\; \mathrm{bytes}(R) + \mathrm{bytes}(M) .
+```
+
+Three facts make the V2 rule sound:
+
+1. *The union is disjoint.* The metadata domains differ from every existing
+   domain (theorem 5). Under collision-checked storage, where equal digests
+   imply equal bytes, no metadata object therefore shares a digest with a
+   semantic object (theorem 6), and the checked digest-ordered merge of $`M`$
+   into $`R`$ succeeds and adds both counts and bytes (theorem 10). A collision
+   that storage failed to prevent is refused as `DuplicateInventoryDigest`
+   (RV-14).
+2. *The rules cannot be confused.* Because $`\lvert M \rvert \ge 2`$, no V2
+   inventory satisfies the V1 rule (theorem 11). The V1 codec therefore refuses
+   a V2 inventory even when it is presented under the V1 domain (RV-10).
+3. *The inventory is closed.* It must hold every reachable radix node. An
+   inventory of the anchor alone, which is what the V1 rule would produce, is
+   not closed under references (theorem 12).
+
+J-066 records the consequence for reads. Its exact read count for cold admission
+charges V1 one read for the retention manifest, and V2 cannot inherit that single
+read: its reader must charge the reads of the metadata closure. That refinement
+belongs to task 7925.
+
+**Old-reader compatibility.** The question is what a reader that knows only V1
+does with a store after its first V2 publication. J-063 located the danger in
+catalog selection (`CatalogSelectionV1::select`,
+`rspace++/src/rspace/persistence/durable/catalog.rs:421-470`). When one slot
+fails to parse and the other parses, selection takes the parsable slot and
+records the other as ignored. If a V2 publication changed the catalog envelope,
+a V1 reader would therefore select the older slot and adopt a stale state
+without any error. J-063 named two remedies: keep the supported envelope and
+version only the appointed content, or prove a whole-store upgrade fence. V2
+takes the first and changes no envelope byte. A slot that appoints a V2 anchor
+differs from a slot that appoints a V1 manifest only in the 40-byte retention
+reference at bytes 216..256 and in the CRC at bytes 328..336 (RV-11). Every
+reader parses both slots, and every reader selects the same, newest one. The
+format is decided only after selection, by the domain of the appointed object:
+a dual reader parses a `RSpaceDAG.RetA` anchor, while a V1-only reader refuses
+it with `UnknownObjectDomain` from the object classifier
+(`rspace++/src/rspace/persistence/object.rs:763-785`) or with `InvalidDomain`
+from the V1 manifest parser (RV-09). The refusal is terminal: recovery never
+falls back to the other slot after the selected slot fails (RV-13).
+
+![Opening a catalog under the V2 format. Both slots are parsed, and if neither is valid the reader refuses with NoValidCatalog. Otherwise the newest valid slot is selected from the unchanged envelope, so a V1-only reader and a dual reader select the same slot. The domain of the appointed retention object then decides: every reader adopts a V1 manifest; a dual reader adopts a V2 anchor after unfolding its history and checking the count; a V1-only reader refuses the anchor terminally, without falling back to the older slot. Notes name the four negative controls, each of which breaks one of these decisions](figures/retention-v2-old-reader.svg)
+
+`RSpaceRetentionV2Upgrade` checks this design in TLA+ (Lamport, 1994). Its state
+has four parts:
+
+- two catalog slots, each with an epoch, an image (`empty`, `valid` or `torn`),
+  the appointed format and the envelope;
+- `published`, the newest acknowledged epoch;
+- `migrated`, which becomes true at the first acknowledged V2 publication;
+- one view for each reader, `old` (supports V1) and `dual` (supports V1 and V2),
+  each `closed`, `adopted` or `refused`, with the slot it selected and the epoch
+  and format it read.
+
+Three actions interleave. `Publish` writes epoch `published + 1` into the
+inactive slot, with either format until `migrated` holds and with V2 afterwards,
+acknowledges it and closes both views. `CrashDuringPublish` leaves the inactive
+slot torn, acknowledges nothing and closes both views. `Open` selects the newest
+valid slot whose envelope the reader can parse, then adopts its state if the
+reader supports the appointed format and refuses otherwise. The base
+configuration, with `MaxEpoch = 4`, checks four invariants:
+
+- `RetentionV2TypeInvariant`: every variable stays in its domain;
+- `AdoptionIsNewestPublished`: an adopted view holds the active slot and the
+  acknowledged epoch, so no reader adopts a stale state;
+- `NoReaderAdoptsUnsupportedContent`: an adopted format is one the reader
+  supports;
+- `ReadersSelectTheSameSlot`: any two open views name the same slot.
+
+Each negative control adds one action that breaks one decision, and TLC must
+report the named violation. Each non-vacuity configuration checks a `Never…`
+predicate that the faithful specification must violate, which shows that the
+behavior the predicate denies is reachable.
+
+| Configuration | What it changes | Required TLC result | Generated / distinct states, depth (evidence run) |
+|---|---|---|---|
+| base | nothing | no error | 349 / 92, 7 |
+| `CatalogEnvelopeMutant` | a V2 publication changes the envelope | violates `AdoptionIsNewestPublished` | 201 / 86, 5 |
+| `SelectionDivergenceMutant` | selection consults the appointed format | violates `ReadersSelectTheSameSlot` | 223 / 77, 6 |
+| `FallbackOnUnsupportedMutant` | a refusing reader falls back to the other slot | violates `AdoptionIsNewestPublished` | 93 / 46, 4 |
+| `AdoptUnsupportedMutant` | a reader adopts without checking the format | violates `NoReaderAdoptsUnsupportedContent` | 64 / 38, 4 |
+| `NeverOldReaderRefusesV2` | non-vacuity | violated: a V1-only reader refuses V2 content | 55 / 41, 5 |
+| `NeverDualReaderAdoptsV2` | non-vacuity | violated: a dual reader adopts V2 content | 59 / 45, 5 |
+| `NeverAdoptsBehindTornSuccessor` | non-vacuity | violated: a reader adopts the previous authority while the inactive slot is torn | 50 / 34, 4 |
+
+The counts come from the evidence run named in the verification record. A
+configuration that must fail stops at its first violation, and the number of
+states TLC has generated by then depends on its random seed and on how its four
+workers interleave, so only the base configuration's counts are exactly
+reproducible. What each failing configuration must reproduce is its named
+violation.
+
+The model abstracts bytes into its envelope, format and image fields, and the
+executable properties bind those fields to bytes. RV-11 shows that real V1 and
+V2 slots differ only in the retention reference and the CRC, and that selection
+picks the newer slot for every pair of formats in both slot orders. RV-12
+changes each envelope field that a V2 publication could change: the domain, the
+version, the reserved word at bytes 256..264, the flags, each reserved byte in
+288..328, and the commit length. Each change makes the V1 parser refuse the
+newer slot with its typed error, so selection returns the older slot, which is
+exactly the stale adoption of `CatalogEnvelopeMutant`. RV-09 and RV-10 show that
+V1 readers refuse every V2 object and descriptor, and RV-13 and RV-19 bind the
+existing no-fallback and torn-slot tests to the model's terminal refusal and
+torn-successor witness.
+
+**Migration and the resume binding.** The migration from V1 happens once and in
+one direction. It copies the current entry verbatim, sets $`n`$ to the number of
+historical entries, and inserts each historical entry under its key with its
+claim. Reading the result back yields the original V1 manifest; the count is the
+length of the history, the keys strictly increase, and the current and retained
+root counters of `CheckedDomainComposition` are unchanged (theorem 13). The
+executable property also re-encodes the restored manifest and compares it byte
+for byte with the original, including an alias set whose entries share a
+generation, a digest or a length (RV-15), and it checks that the three semantic
+roots are unchanged (RV-17). The flag `migrated` of the TLA+ model records the
+one-way rule: once a V2 publication is acknowledged, every later publication
+appoints V2. There is no export from V2 to V1.
+
+A state then has two durable representations, one in each format, with the same
+state version. A transfer session or resume token that binds only the state
+version would let a V2 token resume a V1 session and the reverse (theorem 15).
+The binding must therefore include the retention reference and the two domains
+that name the format:
+
+```math
+\beta \;=\; H\bigl(\, g \,\Vert\, \mathrm{ref}(m) \,\Vert\, \mathrm{ref}(a) \,\Vert\, \delta_{\mathrm{ret}} \,\Vert\, \delta_{\mathrm{desc}} \,\bigr),
+```
+
+where $`m`$ is the semantic manifest, $`a`$ the appointed retention object,
+$`\mathrm{ref}(\cdot)`$ the 40-byte encoding of an object reference,
+$`\delta_{\mathrm{ret}}`$ the retention domain (`RSpaceDAG.Retn` or
+`RSpaceDAG.RetA`), $`\delta_{\mathrm{desc}}`$ the descriptor domain
+(`RSpaceDAG.Chkpt` or `RSpaceDAG.Chkp2`), and $`H`$ a collision-resistant hash;
+the test model uses BLAKE2b-256. With the domains in the binding, a token of one
+format never resumes a session of the other, even for the same state and the
+same retention reference (theorem 14, RV-16).
+
+**The contract for tasks 5689, 5690 and 5691.** J-063 asked for a compatibility
+matrix covering V1 stores, V2 stores, unsupported appointed content, mixed and
+torn catalog slots, migration, cold recovery and interrupted transfers. Three
+tasks consume it. Task 5689 (the LMDB contract and migration) uses it for
+import, restart, transfer and rollback. Task 5690 (DAG export, import and state
+synchronization) must freeze reader, exporter and importer behavior and must
+never let a resumed import change the physical retention version. Task 5691 (the
+consensus root epoch) needs to know whether the format reaches consensus
+identity. This section freezes the matrix:
+
+| Situation | V1-only reader | Dual reader | Evidence | Remaining work |
+|---|---|---|---|---|
+| V1 store | adopts | adopts | `AdoptionIsNewestPublished` | none |
+| V2 store | refuses with `UnknownObjectDomain` or `InvalidDomain`, terminally | adopts after unfolding the history and checking the count | `NeverOldReaderRefusesV2`, `NeverDualReaderAdoptsV2`; RV-09 | the reader, task 7925 |
+| unsupported appointed content | refuses; never falls back | refuses unknown domains; never falls back | `NoReaderAdoptsUnsupportedContent`; RV-13 | the reader, task 7925 |
+| a V1 slot beside a V2 slot | selects the newest slot | selects the same slot | `ReadersSelectTheSameSlot`; RV-11, RV-12 | none |
+| a torn inactive slot | adopts the previous authority | adopts the previous authority | `NeverAdoptsBehindTornSuccessor`; RV-19 | none |
+| migration | not applicable | migrates once, at the first V2 publication; no export to V1 | theorem 13; RV-15 | the writer, task 7926 |
+| cold recovery | V1 admission, unchanged | charges the reads of $`M`$ and keeps rule R8 | J-066; theorems 10 to 12 | the reader, task 7925 |
+| interrupted transfer | resumes only within V1 | resumes only within V2 | theorems 14 and 15; RV-16 | tasks 5690 and 7938 |
+| consensus identity | the three semantic roots | the same three roots; retention metadata never enters identity | theorem 13; RV-17 | task 5691 |
+
+**Theorems.** The module proves fifteen capstones without axioms. Each has a
+`Print Assumptions` line that reports a closed context, and the compiled module
+passes independent kernel checking.
+
+| # | Theorem (`RetentionV2Format.`…) | Statement |
+|---|---|---|
+| 1 | `retention_key_is_an_exact_48_byte_bijection` | The key of a valid identity has 48 bytes and decodes to that identity; a string that decodes is the key of the identity it decodes to; and distinct valid identities have distinct keys. |
+| 2 | `retention_key_order_is_entry_order` | For valid identities, byte order on their keys equals the entry order. |
+| 3 | `little_endian_key_mutant_inverts_generation_order` | Negative control: two concrete identities in entry order have keys in byte order, while their little-endian keys are in the reverse order. |
+| 4 | `lossy_key_mutants_collapse_v1_aliases` | Negative control: a key of the generation alone, a key of the reference alone and a key without the length each map one V1-accepted alias pair to a single key, while the exact keys of each pair differ. |
+| 5 | `retention_domains_are_pairwise_distinct` | The eighteen persistence domains, namely the fifteen existing ones, the two metadata domains and the V2 descriptor domain, are pairwise distinct and have 16 bytes each. |
+| 6 | `domain_separation_excludes_cross_universe_digest_aliases` | For any digest function under which equal digests imply equal bytes, a metadata object and an object of an existing domain have different digests. |
+| 7 | `shared_node_domain_mutant_aliases_empty_metadata_and_semantic_roots` | Negative control: the empty radix and empty semantic nodes are distinct 50-byte objects, but under the semantic node domain the empty radix node is the empty semantic node, and for any digest function the checked inventory insertion refuses it beside that node. |
+| 8 | `radix_count_denotes_entry_occurrences` | Whenever the unfold of a node succeeds, the count recursion returns the number of unfolded leaves, every leaf key has the remaining width, the keys increase strictly, and there is at least one leaf. |
+| 9 | `distinct_leaf_count_mutant_undercounts_shared_entries` | Negative control: in a store where two entries that differ only in generation share one leaf, the count and the unfold both give 2 and decode to the two entries, while the count of distinct leaf objects is 1. |
+| 10 | `v2_checkpoint_inventory_is_retained_plus_metadata` | A successful checked merge of the metadata objects into a sorted retained inventory is a sorted permutation of the two lists and satisfies the V2 rule, and the merge succeeds whenever all digests are distinct. |
+| 11 | `plus_one_rule_mutant_rejects_every_v2_inventory` | Negative control: when the metadata holds at least two objects, an inventory that satisfies the V2 rule violates the V1 rule for every retention-manifest length. |
+| 12 | `anchor_only_checkpoint_mutant_is_not_reference_closed` | Negative control: on a fixture of two state manifests, an anchor and a one-leaf radix root, the faithful inventory is closed under references and the anchor-only inventory is not. |
+| 13 | `v1_migration_preserves_entries_order_count_and_roots` | For every valid V1 manifest, reading its migration returns the manifest, the count is the length of the history, the history keys increase strictly, and the current and retained root counters of `CheckedDomainComposition` are unchanged for every numbering of manifests. |
+| 14 | `retention_format_binding_separates_representations_of_one_state` | For every state and every pair of retention references, a V1 token never resumes a V2 session and a V2 token never resumes a V1 session. |
+| 15 | `state_version_only_binding_mutant_resumes_across_formats` | Negative control: a binding of the state version alone is equal for the V1 and V2 representations of one state. |
+
+**Executable bindings.** The generators bias every field toward its boundaries:
+
+- identities draw generations from 0, 1, 255, 256, $`2^{64} - 1`$ and arbitrary
+  values; digests from all zeros, all `ff` bytes and arbitrary values; and
+  lengths from 32, 33, 50, $`2^{64} - 1`$ and arbitrary values of at least 32;
+- *clustered* identities draw generations from 0 to 3, 255, 256 and
+  $`2^{64} - 1`$, digests from six values that agree in their first 31 bytes, and
+  lengths from 32, 50 and 51, so that the keys of a history share long prefixes,
+  form alias pairs and build deep radix trees;
+- a *history* maps the keys of up to 24 clustered identities to claims of the
+  identity's length plus 0 to 2;
+- a *product history* crosses two to four generations at one random base with
+  one to four digests, so that each digest's leaf is shared by every generation;
+- a *retained union* holds one to eleven references with random digests and
+  lengths from 32 to 4095.
+
+The independent test model builds a radix image with an explicit-stack planner.
+It splits each range of sorted keys at the longest common prefix of the range's
+first and last keys, groups the range by the next byte, and then encodes the
+planned nodes in reverse order, so that every child is encoded before its
+parent. It encodes each node with the production `CanonicalDagNode` encoder,
+retagged to the radix domain, and reads images back with the reference decoder.
+The production key and anchor are compared with the model's own byte layouts,
+never with themselves. The generated properties run 256 cases, except the
+key-codec, V1-refusal, collision and totality properties, which run 64.
+
+| ID | Required property and negative-control boundary | Test |
+|---|---|---|
+| RV-01 | Every key has exactly 48 bytes: parsing refuses every other width from 0 to 49 as `LengthOutOfRange`, and a length below 32 as `ObjectLengthTooSmall`. The production key equals the model key, parses back and decodes to its identity, and on arbitrary 48-byte strings the production parser and the model decoder agree. | `retention_keys_are_exact_48_byte_bijections` |
+| RV-02 | Production key order, raw byte order and model key order all equal the entry order. Histories of clustered identities in key order are valid V1 manifests, and two or more of their entries in reverse order are refused `RetainedStatesNotStrict`. Little-endian keys put generation 256 before generation 1. | `retention_key_bytes_sort_like_v1_identities_but_little_endian_keys_do_not` |
+| RV-03 | A generation alias, a digest alias and a length alias each form a pair that V1 accepts. The key without the generation, the key without the reference and the key without the length each collapse one pair, and the exact keys keep all three distinct. On generated single-field variations, two keys are equal exactly when their identities are. | `generation_and_reference_aliases_keep_distinct_keys` |
+| RV-04 | The three domains, the 48-byte width, the 136-byte anchor and the 50-byte empty node equal their model values. The empty radix node is the empty semantic node retagged, and the five objects of the golden table match their pinned lengths and digests. Anchor bytes 32..88 equal the V1 manifest's current entry. | `retention_v2_encodings_are_frozen` |
+| RV-05 | Radix nodes are canonical DAG node bodies under `RSpaceDAG.RetR`, and the reference decoder enforces rules R1 to R5 and R7 with typed refusals: of `ValueFree`, `Unit` and `Content` endpoints, a short leaf, a `Multiplicity` node with children, a full-width inner node, a child under the semantic domain, an anchor in place of a node, an empty child, a claim below the length, an undecodable key, a wrong count, a unary node, unordered edges, a missing child and a substituted reference. The anchor refuses both mismatches of count and empty root. Generated histories round-trip with strictly increasing keys and a memoized count of $`n`$. | `radix_nodes_reuse_the_dag_body_under_the_metadata_domain` |
+| RV-06 | Two entries that differ only in generation share one leaf: the decoder yields two leaves and the memoized count is 2. A product history of $`G`$ generations and $`D`$ digests counts $`G \cdot D`$ entries with only $`D`$ distinct leaf objects, and declaring $`D`$ is refused `CountMismatch`. The anchor constructor alone accepts that count, so checking it is the reader's duty. | `radix_count_is_entry_occurrences_under_leaf_sharing` |
+| RV-07 | The metadata closure of every generated history is exactly the anchor plus the radix image. It contains the historical root, is closed under child references, has at least two members and 186 bytes, carries only the anchor and radix domains, and excludes the current semantic manifest and the empty semantic node; no radix node's digest equals that of its retagging to the semantic domain. A 4096-entry history yields 4114 members, the anchor, the root, 16 inner nodes and 4096 leaves, on a thread with a 256 KiB stack. | `metadata_closure_is_complete_closed_and_domain_separated` |
+| RV-08 | For generated retained unions and histories, the metadata closure is disjoint from the union by digest, and the checked ordered inventory builder accepts their merge with exactly $`\lvert R \rvert + \lvert M \rvert`$ objects, $`\mathrm{bytes}(R) + \mathrm{bytes}(M)`$ bytes and the independently computed inventory digest. The V1 inventory rule refuses the same inventory with the exact `InventoryIncoherent` counts, and an anchor-only inventory omits the historical root. | `v2_checkpoint_data_is_the_disjoint_union_of_retained_and_metadata` |
+| RV-09 | Every V2 object is refused by every V1 reader: the empty radix node, a leaf, an empty-history anchor, and generated anchors and radix nodes. The domain classifier, the object view and the streaming validator refuse with `UnknownObjectDomain`, and the V1 manifest and DAG node parsers with `InvalidDomain`. The anchor parser refuses a V1 manifest. | `v1_object_readers_refuse_every_frozen_v2_object` |
+| RV-10 | The V1 checkpoint codec refuses a frozen V2 descriptor, whether its domain is retagged, its inventory appoints an anchor and its metadata, or both, with the exact `InvalidDomain` or `InventoryIncoherent` error. It does so for the descriptor alone, inside a resealed prepare record and inside a commit record with a corrected CRC, while the unchanged records parse. | `v1_checkpoint_records_refuse_the_frozen_v2_descriptor` |
+| RV-11 | Catalog slots that appoint a V1 manifest and a V2 anchor for one state differ only in the retention reference, bytes 216..256, and in the CRC. Both round-trip, and for every pair of formats in both slot orders selection picks the newer slot and ignores none. | `catalog_selection_is_blind_to_the_appointed_retention_format` |
+| RV-12 | Each envelope change, of the domain, the version, the reserved word at 256, the flags, each reserved byte in 288..328, or the commit length, makes the V1 slot parser refuse the newer slot with its typed error. Selection then returns the older slot and reports the changed one as ignored, in both positions: the stale adoption of `CatalogEnvelopeMutant`. | `every_catalog_envelope_change_makes_old_readers_select_the_stale_slot` |
+| RV-13 | An existing test, bound as the executable counterpart of terminal refusal: damage to the selected successor pack is refused with a typed recovery error, leaves the catalog unchanged and never falls back to the previous slot, while damage to its derived index is repaired from the selected pack. | `selected_successor_damage_never_falls_back_and_repairs_safe_index` |
+| RV-14 | The fifteen existing and three new domains are distinct, and the new ones are unknown to the V1 classifier. The empty radix and empty semantic nodes share a body but not a digest, and retagging the radix node to the semantic domain makes the inventory refuse a duplicate. A generated inventory that also holds an impostor, with a metadata object's digest and a different length, is refused with the exact `DuplicateInventoryDigest`. | `metadata_and_semantic_universes_are_disjoint_and_collisions_fail_closed` |
+| RV-15 | Migrating generated V1 manifests, and a fixed set of alias entries, preserves the current entry, the count and every historical entry in order: the anchor parses back, the history unfolds to the V1 entries, and re-encoding the restored manifest reproduces the V1 bytes. | `v1_migration_preserves_entries_order_count_aliases_and_roots` |
+| RV-16 | For generated states, the binding that includes the format separates the V1 and V2 representations, with their real retention references, with arbitrary references, and even with one shared reference, while the binding of the state version alone cannot. | `resume_binding_separates_v1_and_v2_representations_of_one_state` |
+| RV-17 | Migration preserves the three semantic roots: the migrated current entry still names the semantic manifest, whose parsed roots are unchanged. | `v1_migration_preserves_entries_order_count_aliases_and_roots` |
+| RV-18 | The key parser, the anchor parser, the reference decoder and the memoized count terminate without panicking on arbitrary bytes and on bit flips, truncations and extensions of valid keys, anchors and nodes, and whatever the key and anchor parsers accept re-encodes to the same bytes. | `arbitrary_retention_v2_bytes_are_total` |
+| RV-19 | An existing test, bound as the executable counterpart of `NeverAdoptsBehindTornSuccessor`: for every torn prefix of a successor slot in the inactive position, selection keeps the previous authority and reports the torn slot as ignored, until the image is byte for byte the complete successor. | `every_observably_torn_inactive_slot_preserves_the_previous_authority` |
+
+`model_property_manifest_is_unique_and_exhaustive` checks these nineteen bindings
+among its 169. It reads `RetentionV2Format.v` as part of its Rocq source, and
+`RSpaceRetentionV2Upgrade.tla` with its base configuration as part of its TLA+
+source. It requires each of the theory's fifteen `Print Assumptions` capstones and
+each of the four base invariants to be cited by an RV row of the derivation
+matrix. It requires each `Never…` witness that an RV row cites to have a
+configuration whose `INVARIANT` line names it, and the integrated runner to name
+that configuration and to compile the theory.
+
+**Boundary.** These results freeze the bytes and prove that the format is sound
+and compatible with V1 readers. They leave these questions open:
+
+- Nothing writes or reads V2 in production. The cold reader that unfolds a V2
+  history, charges its metadata reads and keeps rule R8 is task 7925. The
+  path-local writer that emits the first V2 publication is task 7926. That
+  emission changes persisted bytes, so it stops for an explicit confirmation
+  before it becomes the default.
+- The reference decoder and the memoized count are test models. Their
+  production refinement, with its object, byte and work limits, is task 7925.
+- The V2 descriptor rule is frozen as a contract. The descriptor codec that
+  accepts it is task 7925, and the inventory builder that produces it is task
+  7926.
+- The resume binding is a contract, not an implementation. The transfer
+  protocol that realizes it is tasks 5690 and 7938.
+- The TLA+ model is bounded at four epochs and abstracts bytes. RV-09 to RV-13
+  and RV-19 bind its abstractions to bytes.
+- Each V2 successor supersedes the radix nodes on its changed path. Reclaiming
+  metadata objects that no catalog slot appoints follows the garbage collector's
+  contract (tasks 7943 to 7945).
+
+Cited works:
+
+- J. R. Driscoll, N. Sarnak, D. D. Sleator and R. E. Tarjan, "Making data
+  structures persistent", *Journal of Computer and System Sciences* 38(1):86–124,
+  1989, [doi:10.1016/0022-0000(89)90034-2](<https://doi.org/10.1016/0022-0000(89)90034-2>).
+- L. Lamport, "The temporal logic of actions", *ACM Transactions on Programming
+  Languages and Systems* 16(3):872–923, 1994,
+  [doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726).
+- V. Leis, A. Kemper and T. Neumann, "The adaptive radix tree: ARTful indexing
+  for main-memory databases", *2013 IEEE 29th International Conference on Data
+  Engineering*, 38–49, 2013,
+  [doi:10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812).
+- D. R. Morrison, "PATRICIA—Practical Algorithm To Retrieve Information Coded in
+  Alphanumeric", *Journal of the ACM* 15(4):514–534, 1968,
+  [doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481).
+
+The retention-format evidence in the verification record was taken at these
+sources:
+
+| Pinned source | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/RetentionV2Format.v` | `aa2750b94222ab8d3f36f00f5e1551ec5ed874158a85d5f699d76a3e2d74ea1e` |
+| `formal/rocq/stack_safe_pda/_CoqProject` | `f754dbe3f5663238c12cd381ceb7c25888b8fc6a6f53d391373ee4ce712c1be3` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2Upgrade.tla` | `455d55405917277d1cff07fbd2248cf57547f54b2ddcf1acdde3a43b5add88db` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2Upgrade.cfg` | `1097087b71ed72e3b49b917e08834ff4610eff89827051bec730e346049f17b2` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2UpgradeCatalogEnvelopeMutant.cfg` | `807fe344daae51b2062beff44912dfa41700afc6bfb0ca3900c016f540d021ae` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2UpgradeSelectionDivergenceMutant.cfg` | `dc31f0b191dca75e62c036d090c07bcf13eb72d9ba5d049fb0d9f48cb2fd33c2` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2UpgradeFallbackOnUnsupportedMutant.cfg` | `11e60a952d3d379f4f36bd0b01988190bec250e55c43962a3f367c42a1eb8c90` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2UpgradeAdoptUnsupportedMutant.cfg` | `28f9772509d7ee8d93ce780d31a14a14571f921dd4bdb523570ac0a57e0da04f` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2UpgradeNeverOldReaderRefusesV2.cfg` | `4faad9ee0ee1a87e5dbd9a05c701c24d1c1d56afefb148531767d53f8caeeba4` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2UpgradeNeverDualReaderAdoptsV2.cfg` | `1b906349800ddc23e03b14f5d070dbcd0539798407e0f78586b3ca608a7978ff` |
+| `formal/tlaplus/stack_safe_pda/RSpaceRetentionV2UpgradeNeverAdoptsBehindTornSuccessor.cfg` | `167e78f9ce730d27c1f0661f027c7c220a27ec0ab53964491477133f75740e81` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `4d1dfdaa5ec88924be766cba19d183adf8f6c4383514d0218c0871f225d8e4e4` |
+| `rspace++/src/rspace/persistence/retention/v2_format.rs` | `5ba756aa6ff2ded5e9116669884ebdeab5b33804205dd8a7bf0ae1e5c2d5be74` |
+| `rspace++/src/rspace/persistence/retention.rs` | `6b552c902392fdd6f33619e5eb26d643c8190fe41d6883d8f7f65f668e3669ed` |
+| `rspace++/src/rspace/persistence/canonical.rs` | `5476bc048bbd46fa9e44e41d23180cdac01e7d3f96c5697ff58653e44d787003` |
+| `rspace++/tests/persistence/retention_v2_format_properties.rs` | `07964557cdd3b5c542c3b055869e995141d3d2f041a6e06ffdcf91d29b0bc1d5` |
+| `rspace++/tests/persistence/checkpoint_wal.rs` | `9a2443532894e61771f1ad8974fdd5ebbcdee6cbd7ea639ee40a164629a9e559` |
+| `rspace++/tests/persistence/durable_catalog.rs` | `dec0de63a24433b6af01bc1a420322646227d15cf5aaacda6ec34c02953b145a` |
+| `rspace++/tests/persistence/durable_publication.rs` | `1d45872beaa832504b1682f7849f0454d3afd66465dca6cf0c0f34d00fb775e2` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `0b548fbd3aade06e64fab0281b42b1a33501675ee44bde7106277197058c6e68` |
+| `rspace++/tests/persistence/property_support.rs` | `baa2c0415898412559e80bfe2d83df297269f54e8e044ea0522fe0844236862e` |
+| `rspace++/tests/persistence/mod.rs` | `b11541ecfd8fc4992678a1bc70ec39348b3b28c53dc0d936b9f09f1a9bf784f0` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -1579,6 +2121,25 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | CL-07 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory` | P | Work independence is checked on small generated cases; the scaling claim against geometrically growing history is task 7929. |
 | CL-08 | `EXEC_ONLY` | `EXEC_ONLY` | E | Stack bounds are platform evidence; both walks keep their work on the heap. |
 | CL-09 | `EXEC_ONLY` | `CreditedClosureLedger.epoch_wide_credit_mutant_double_counts_a_shared_child`, `CreditedClosureLedger.unexpanded_crossing_mutant_leaves_an_uncredited_child`, `CheckedLedgerTrial.partial_commit_mutant_replaces_the_predecessor`, `CheckedDomainComposition.retained_sign_mutant_drops_the_predecessor_closure`, `CheckedDomainComposition.deduplicated_alias_mutant_drops_a_shared_closure` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must all be positive. |
+| RV-01 | `EXEC_ONLY` | `RetentionV2Format.retention_key_is_an_exact_48_byte_bijection` | D | Identity validity in the theory is the production `ObjectRefV1` length rule; the production parser and the model decoder are also compared on arbitrary 48-byte strings. |
+| RV-02 | `EXEC_ONLY` | `RetentionV2Format.retention_key_order_is_entry_order`, `RetentionV2Format.little_endian_key_mutant_inverts_generation_order` | D | Entry order is the V1 `(generation, ObjectRefV1)` order; agreement with the strictness check of the V1 manifest parser is executable. |
+| RV-03 | `EXEC_ONLY` | `RetentionV2Format.lossy_key_mutants_collapse_v1_aliases`, `RetentionV2Format.retention_key_is_an_exact_48_byte_bijection` | D | That the V1 manifest parser accepts each kind of alias pair is checked executably. |
+| RV-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Byte goldens are executable evidence; the theory models domains, widths and lengths, not digests. |
+| RV-05 | `EXEC_ONLY` | `RetentionV2Format.radix_count_denotes_entry_occurrences` | P | The theory abstracts the DAG body; the body parser's canonical-shape refusals and the typed refusal of each rule are executable, and the production decoder is task 7925. |
+| RV-06 | `EXEC_ONLY` | `RetentionV2Format.radix_count_denotes_entry_occurrences`, `RetentionV2Format.distinct_leaf_count_mutant_undercounts_shared_entries` | P | Sharing is generated over product histories; the memoized count is a test model that task 7925 refines. |
+| RV-07 | `EXEC_ONLY` | `RetentionV2Format.domain_separation_excludes_cross_universe_digest_aliases`, `RetentionV2Format.anchor_only_checkpoint_mutant_is_not_reference_closed` | P | Closure completeness is checked on the test model's images; the stack bound is platform evidence. |
+| RV-08 | `EXEC_ONLY` | `RetentionV2Format.v2_checkpoint_inventory_is_retained_plus_metadata`, `RetentionV2Format.plus_one_rule_mutant_rejects_every_v2_inventory`, `RetentionV2Format.anchor_only_checkpoint_mutant_is_not_reference_closed` | P | The V2 descriptor rule is a frozen contract; the codec that accepts it is task 7925 and the builder that produces it is task 7926. |
+| RV-09 | `NoReaderAdoptsUnsupportedContent` | `RetentionV2Format.retention_domains_are_pairwise_distinct` | P | The model's format check is realized by the domain refusal of every V1 object reader. |
+| RV-10 | `EXEC_ONLY` | `RetentionV2Format.plus_one_rule_mutant_rejects_every_v2_inventory`, `RetentionV2Format.retention_domains_are_pairwise_distinct` | P | The V1 codec checks the domain before the inventory; both refusals and their order are exercised in descriptors, prepare records and commit records. |
+| RV-11 | `ReadersSelectTheSameSlot`, `RetentionV2TypeInvariant` | `EXEC_ONLY` | P | The model's envelope is the 336-byte slot outside the retention reference and the CRC. |
+| RV-12 | `AdoptionIsNewestPublished` | `EXEC_ONLY` | P | Each executable envelope change realizes the model's changed envelope, and the observed fallback is the negative control's stale adoption. |
+| RV-13 | `AdoptionIsNewestPublished`, `NeverOldReaderRefusesV2`, `CrashRecoverySelectsOnlyValidAuthority` | `EXEC_ONLY` | P | Terminal refusal is the existing no-fallback recovery; the refusal of a real V2 publication by an old reader is a fixture of task 7925. |
+| RV-14 | `EXEC_ONLY` | `RetentionV2Format.retention_domains_are_pairwise_distinct`, `RetentionV2Format.domain_separation_excludes_cross_universe_digest_aliases`, `RetentionV2Format.shared_node_domain_mutant_aliases_empty_metadata_and_semantic_roots` | D | Collision checking is the duplicate-digest refusal of the production inventory builder. |
+| RV-15 | `NeverDualReaderAdoptsV2` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots` | P | The migration runs on the test model's radix builder; the production migration is task 7926. |
+| RV-16 | `EXEC_ONLY` | `RetentionV2Format.retention_format_binding_separates_representations_of_one_state`, `RetentionV2Format.state_version_only_binding_mutant_resumes_across_formats` | P | The binding is a contract; its realization in the transfer protocol is tasks 5690 and 7938. |
+| RV-17 | `EXEC_ONLY` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots` | P | Root preservation is checked on parsed semantic manifests; consensus identity remains the contract of task 5691. |
+| RV-18 | `EXEC_ONLY` | `EXEC_ONLY` | E | Totality is executable evidence over arbitrary and perturbed bytes. |
+| RV-19 | `NeverAdoptsBehindTornSuccessor` | `EXEC_ONLY` | D | The existing torn-slot test realizes the witness behavior at the byte level. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -1753,6 +2314,24 @@ extensions, these results cover production code: the counted ledger, the
 credited cold construction, and the trial and composition engines. See
 engineering journal J-246 for caps, evidence hashes and the remaining
 obligations.
+
+The 2026-10-26 retention-format extension adds `RV-01` through `RV-19`. The
+catalog/derivation/binding registry now contains **169** IDs: the 150 above and
+the nineteen retention rows. On an isolated export of the candidate tree,
+`RetentionV2Format.v` compiled with all **15** capstones closed under the global
+context, and the module passed independent kernel checking. TLC checked
+`RSpaceRetentionV2Upgrade` with `MaxEpoch = 4`: the base configuration found no
+error in 349 generated and 92 distinct states at depth 7, each of the four
+negative controls violated its named
+invariant, and each of the three non-vacuity witnesses was reached. All
+434 selected rspace++ library tests under `rspace::persistence` passed
+single-threaded in debug (20.85 s) and release (8.40 s),
+with the three unwind-child helpers ignored by design. They include the thirteen
+format tests, the checkpoint-record test and the two catalog tests, the two
+existing tests bound as `RV-13` and `RV-19`, and this registry test. These
+results freeze the format and its compatibility contract; no production code
+writes or reads V2 yet. See engineering journal J-247 for caps, evidence hashes
+and the remaining obligations.
 
 ## Caller-authority contract (2026-09-06)
 

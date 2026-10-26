@@ -243,6 +243,9 @@ pub enum CanonicalFormatError {
     },
     RetentionContainsCurrent,
     RetainedStatesNotStrict,
+    RetentionHistoryRootMismatch {
+        count: u64,
+    },
     MissingObject(ObjectDigest),
     DigestMismatch {
         expected: ObjectDigest,
@@ -381,6 +384,11 @@ impl Display for CanonicalFormatError {
             }
             Self::RetainedStatesNotStrict => formatter
                 .write_str("retained historical states are not in strict canonical identity order"),
+            Self::RetentionHistoryRootMismatch { count } => write!(
+                formatter,
+                "retention anchor declares {count} historical states but its history root \
+                 disagrees with the empty radix node"
+            ),
             Self::MissingObject(digest) => write!(formatter, "missing canonical object {digest}"),
             Self::DigestMismatch { expected, actual } => {
                 write!(formatter, "object digest mismatch: expected {expected}, got {actual}")

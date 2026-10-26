@@ -1,0 +1,98 @@
+@startuml retention-v2-format
+' ============================================================================
+' The shared retention V2 format (task 7923): the objects a catalog slot
+' appoints, frozen in rspace++/src/rspace/persistence/retention/v2_format.rs
+' and modeled in formal/rocq/stack_safe_pda/theories/RetentionV2Format.v.
+'   GREY    #616161  the catalog slot, whose envelope V2 does not change
+'   AMBER   #EF6C00  the V1 retention manifest, which stays readable
+'   GREEN   #2E7D32  the V2 metadata objects: the anchor and the radix nodes
+'   PURPLE  #6A1B9A  the semantic state manifests both formats name
+'   BLUE    #1565C0  the 48-byte retention key
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ObjectBorderColor #455A64
+skinparam ObjectFontSize 13
+skinparam NoteBorderColor #455A64
+
+title <b>The shared retention V2 format</b>\nthe catalog's opaque retention reference appoints either a V1 manifest or a V2 anchor
+
+object "Catalog slot · RSpaceCatalogV1 · 336 bytes" as Slot #E0E0E0 {
+  0..16 domain · 16..24 version 1
+  48..96 current state: generation, manifest reference
+  168..176 commit length: 384 or 400
+  <b>216..256 retention reference: digest, length</b>
+  256..264 reserved · 280..288 flags · 288..328 reserved
+  328..336 CRC32C
+}
+
+object "V1 retention manifest · RSpaceDAG.Retn" as V1 #FFE0B2 {
+  32-byte envelope
+  current entry: 56 bytes
+  historical count: u64
+  historical entries: 56 bytes each, strictly increasing
+}
+
+object "V2 retention anchor · RSpaceDAG.RetA · 136 bytes" as Anchor #C8E6C9 {
+  32-byte envelope (body 104)
+  current entry: 56 bytes, the V1 entry verbatim
+  historical count <latex>n</latex>: u64, little-endian
+  historical root: ObjectRefV1, 40 bytes
+}
+
+object "Empty radix node · RSpaceDAG.RetR · 50 bytes" as Empty #DCEDC8 {
+  the canonical empty DAG body
+  appointed exactly when <latex>n = 0</latex>
+  digest 50e61ba0…
+}
+
+object "Radix inner node · RSpaceDAG.RetR" as Inner #DCEDC8 {
+  the canonical DAG node body, unchanged
+  prefix shorter than the remaining key
+  endpoint Absent
+  two or more children, strictly increasing edges
+}
+
+object "Radix leaf · RSpaceDAG.RetR" as Leaf #DCEDC8 {
+  prefix = every remaining key byte
+  endpoint Multiplicity(claim), claim <latex>\ge</latex> manifest length
+  no children
+}
+
+object "Retention key · 48 bytes" as Key #BBDEFB {
+  0..8 generation, big-endian
+  8..40 manifest digest
+  40..48 manifest length, big-endian
+}
+
+object "Semantic state manifest · RSpaceDAG.SMan" as SMan #E1BEE7 {
+  data-bag, continuation-map and join-bag roots
+}
+
+Slot -[#616161]-> SMan : current state
+Slot -[#EF6C00]-> V1 : retention reference\n(V1 publication)
+Slot -[#2E7D32]-> Anchor : retention reference\n(V2 publication)
+Anchor -[#2E7D32]-> Empty : root when <latex>n = 0</latex>
+Anchor -[#2E7D32]-> Leaf : root when <latex>n = 1</latex>
+Anchor -[#2E7D32]-> Inner : root when <latex>n \ge 2</latex>
+Inner -[#2E7D32]-> Inner : edge byte
+Inner -[#2E7D32]-> Leaf : edge byte
+Leaf .[#1565C0].> Key : path bytes followed by\nthe prefix spell the key
+Key .[#6A1B9A].> SMan : decodes to the state\n(generation, manifest reference)
+V1 .[#6A1B9A].> SMan : each entry names\na state manifest
+
+note right of Anchor #F1F8E9
+  <b>Metadata closure</b> <latex>M</latex>: the anchor and every radix node reachable
+  from its root; <latex>|M| \ge 2</latex> and at least 186 bytes.
+  <b>V2 checkpoint</b> (domain RSpaceDAG.Chkp2, same 216-byte layout):
+  DATA = retained semantic objects <latex>R</latex> plus <latex>M</latex>, a disjoint union.
+  The V1 rule, DATA objects = <latex>|R| + 1</latex>, refuses every V2 inventory.
+end note
+
+note bottom of Leaf #F1F8E9
+  <latex>n</latex> counts entry occurrences, not leaf objects:
+  equal claims under equal suffixes share one leaf.
+end note
+@enduml

@@ -29,6 +29,7 @@ mod path_provenance;
 mod property_support;
 mod generation_checkpoint_properties;
 mod retention_manifest;
+mod retention_v2_format_properties;
 mod rho_path_streaming_properties;
 mod rba1_checkpoint_recovery_properties;
 mod rewrite_differential;

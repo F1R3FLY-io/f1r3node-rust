@@ -20,6 +20,12 @@ use super::canonical::{
 use super::durable::CatalogSlotV1;
 use super::mutation::StateVersionV1;
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "task 7925 reads and task 7926 writes the V2 retention format")
+)]
+pub(crate) mod v2_format;
+
 pub(crate) const RETENTION_MANIFEST_DOMAIN: &[u8; OBJECT_DOMAIN_LEN] = b"RSpaceDAG.Retn\0\0";
 const STATE_ENTRY_LEN: u64 = 8 + 32 + 8 + 8;
 

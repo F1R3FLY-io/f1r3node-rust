@@ -19147,6 +19147,212 @@ collector's contract (tasks 7943 to 7945). The metadata domain is tasks 7925 and
 7926. These are agent-run results; independent review and the approved pgmcp
 verification recipe remain required.
 
+### J-247 — 2026-10-26: shared retention V2 format and old-reader compatibility (task 7923)
+
+**DERIVED.** This entry follows J-246 and takes up the retained-root
+representation candidate of J-063. The V1 retention manifest holds the whole
+historical list, so every successor collects and re-encodes it
+(`bind_durable_transaction`). J-063 proposed a constant-size anchor with the
+current entry, an exact historical count and the root of a path-copied radix
+tree over 48-byte keys, and it listed the compatibility constraints any new
+representation must meet. J-066 added that V2 metadata cannot inherit V1's single
+retention-manifest read. Task 7923 asks to freeze that candidate: the exact
+48-byte generation and reference keys, the metadata domains and the complete
+metadata closure. It asks to prove V1 and V2 parsing and refusal, checkpoint
+inventory semantics and catalog compatibility, so that an old reader refuses
+unsupported appointed metadata instead of selecting a stale catalog slot. It
+asks to preserve the three semantic roots and the catalog envelope unless an
+upgrade fence is proved, to extract the format, version, collision, alias,
+migration and resume properties before anything emits the format, and to fix
+the contract with tasks 5689, 5690 and 5691, with no automatic export from V2
+to V1 and no new storage framework.
+
+The new theory `formal/rocq/stack_safe_pda/theories/RetentionV2Format.v`
+(module `RetentionV2Format`) proves fifteen capstones, all closed under the
+global context, and the new TLA+ module
+`formal/tlaplus/stack_safe_pda/RSpaceRetentionV2Upgrade.tla` checks old-reader
+compatibility with four negative controls and three non-vacuity witnesses. These
+design decisions are what a reconstruction must preserve:
+
+1. The key of an entry is
+   $`\mathrm{BE}_{64}(g) \Vert d \Vert \mathrm{BE}_{64}(\ell)`$, 48 bytes:
+   the big-endian generation, the manifest digest and the big-endian encoded
+   length (`RetentionKeyV2`,
+   `rspace++/src/rspace/persistence/retention/v2_format.rs:53`). Big-endian
+   integers make byte order the V1 entry order, and all three fields are needed
+   because V1 accepts alias pairs that differ in exactly one of them. The theory
+   proves the key an exact bijection whose order is the entry order
+   (theorems 1 and 2), and refutes a little-endian key and three lossy keys with
+   closed counterexamples (theorems 3 and 4).
+2. The anchor, `RetentionAnchorV2` (`v2_format.rs:98`), has the domain
+   `RSpaceDAG.RetA\0\0` and 136 bytes: the 56-byte V1 current entry verbatim,
+   the historical count as a little-endian `u64`, and the historical root as an
+   `ObjectRefV1`. The count is zero exactly when the root is the 50-byte empty
+   radix node; any other combination is refused with the new error
+   `RetentionHistoryRootMismatch`
+   (`rspace++/src/rspace/persistence/canonical.rs:246`).
+3. Radix nodes reuse the canonical DAG node body unchanged under the domain
+   `RSpaceDAG.RetR\0\0`, so the existing iterative editor, staging store and
+   body validators apply. A separate domain is required because the empty radix
+   node and the empty semantic node share their body; under one domain they
+   would be one object (theorem 7). The catalog's rules R1 to R7 define a valid
+   tree: endpoints are absent or multiplicities; a multiplicity sits only on a
+   childless node at full depth; every other node is an inner node with at least
+   two children; the empty node appears only as the root of an empty history;
+   every leaf key decodes, with a claim of at least its length; a shared subtree
+   is counted once per path, memoized on its digest and remaining depth; and the
+   anchor's count is the number of leaf occurrences (theorem 8), which a count of
+   distinct leaf objects undercounts (theorem 9). The eighth rule, that historical generations precede
+   the current one, stays in cold admission
+   (`rspace++/src/rspace/persistence/durable/admission.rs:1706-1713`).
+4. The metadata closure $`M`$ is the anchor plus every reachable radix node, so
+   $`\lvert M \rvert \ge 2`$ and $`M`$ holds at least 186 bytes. The V2
+   checkpoint descriptor keeps the 216-byte layout under `RSpaceDAG.Chkp2\0` and
+   counts $`\lvert R \rvert + \lvert M \rvert`$ objects and
+   $`\mathrm{bytes}(R) + \mathrm{bytes}(M)`$ bytes, where $`R`$ is the retained
+   semantic union. The union is disjoint by domain separation (theorems 5, 6 and
+   10), the V1 rule of $`\lvert R \rvert + 1`$ objects refuses every V2
+   inventory (theorem 11), and an anchor-only inventory is not closed under
+   references (theorem 12).
+5. V2 changes no catalog envelope byte. J-063 found that
+   `CatalogSelectionV1::select` takes the parsable slot when the other fails to
+   parse, so an envelope change would make an old reader adopt a stale state.
+   Of J-063's two remedies, keeping the envelope and versioning only the
+   appointed content was chosen over a whole-store upgrade fence. A V2 slot
+   differs from a V1 slot only in the retention reference and the CRC, every
+   reader selects the same newest slot, and the domain of the appointed object
+   decides the format: a V1-only reader refuses an anchor terminally, and a dual
+   reader adopts it.
+6. Migration from V1 is one-time and one-way, and its read-back is the original
+   manifest with its order, count and root counters (theorem 13). There is no
+   export from V2 to V1.
+7. A transfer session or resume token must bind the retention reference and the
+   retention and descriptor domains as well as the state version; otherwise a
+   token of one format resumes a session of the other (theorems 14 and 15).
+8. Nothing writes or reads V2 in production yet. The module is declared with
+   `expect(dead_code)` outside test builds
+   (`rspace++/src/rspace/persistence/retention.rs:23-27`),
+   no persisted or consensus-visible byte changes, and no PathMap, MORK,
+   rholang-rs or Casper source changes.
+
+The task's requirements map onto the work as follows:
+
+| Requirement | Where it is met |
+|---|---|
+| constant anchor with the current entry, historical radix root and count | `RetentionAnchorV2`; the anchor layout and goldens; `RV-04`, `RV-05` |
+| exact 48-byte generation and reference keys | `RetentionKeyV2`; theorems 1 to 4; `RV-01` to `RV-03` |
+| metadata domains | `RSpaceDAG.RetA`, `RSpaceDAG.RetR`, `RSpaceDAG.Chkp2`; theorems 5 to 7; `RV-14` |
+| complete metadata closure | the closure and inventory rule; theorems 10 to 12; `RV-07`, `RV-08` |
+| V1 and V2 parsing and refusal | the reference decoder and its typed refusals, `RV-05`, `RV-18`; V1 readers refuse V2 objects and descriptors, `RV-09`, `RV-10` |
+| checkpoint inventory semantics | the V2 descriptor rule; theorems 10 and 11; `RV-08`, `RV-10` |
+| selected-catalog compatibility; refusal instead of a stale slot | the TLA+ model, its controls and witnesses; `RV-11` to `RV-13`, `RV-19` |
+| preserve the three semantic roots and the catalog envelope | no envelope change, `RV-11`, `RV-12`; root counters, theorem 13, `RV-17` |
+| format, version, collision, alias, migration and resume properties before emission | `RV-01` to `RV-19`, with no production writer |
+| the contract with tasks 5689, 5690 and 5691 | the compatibility matrix in the catalog |
+| no automatic export from V2 to V1; no new storage framework | one-way migration; the DAG body, editor and stores reused |
+
+The key and anchor layouts, the radix rules, the literate reference decoder, the
+inventory rule, the old-reader model with its TLC table, the migration and
+resume binding, the compatibility matrix, the theorem table and the
+`RV-01`–`RV-19` bindings are in the
+[generation-checkpoint invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#shared-retention-v2-format-2026-10-26),
+with a figure of the format (`figures/retention-v2-format.svg`) and a flow figure
+of opening a catalog (`figures/retention-v2-old-reader.svg`).
+
+**DEPARTURES FROM THE DESIGN.** Five choices differ from the design recorded
+before the theory:
+
+1. The plan described the TLA+ module as an upgrade fence whose negative control
+   writes V2 beside V1. No fence was built, because the envelope is unchanged
+   (decision 5) and the task requires a fence only for an envelope change. The
+   planned control became `CatalogEnvelopeMutant`, a V2 publication that changes
+   the envelope, which reproduces J-063's stale adoption and shows why the
+   envelope must stay.
+2. The plan's validity rules included the generation rule. It stays in cold
+   admission, because it relates the history to the current state rather than
+   to the bytes of the history.
+3. The test model reads radix bytes with the production DAG node parser, after
+   retagging them to the semantic node domain, instead of a separate decoder of
+   the body. The body rules therefore have one implementation, and the model adds
+   only the radix rules.
+4. The memoized count refuses `CountOverflow` when a sum exceeds `u64::MAX`. The
+   design did not mention overflow; an overflowing count can equal no anchor
+   count, so a reader must refuse it rather than wrap.
+5. `RV-15` and `RV-17` share one test,
+   `v1_migration_preserves_entries_order_count_aliases_and_roots`, because both
+   read the same migrated anchor; the two claims remain separate rows.
+
+**EXECUTABLE REFINEMENT.** The production change has three parts:
+
+- `retention/v2_format.rs`: the three domains, the key width, the empty radix
+  node as a constant built at compile time, `empty_retention_radix_ref`,
+  `RetentionKeyV2` and `RetentionAnchorV2`;
+- `retention.rs`: the module declaration with its `expect(dead_code)` reason;
+- `canonical.rs`: the `RetentionHistoryRootMismatch` error.
+
+Thirteen tests in `rspace++/tests/persistence/retention_v2_format_properties.rs`
+bind `RV-01` to `RV-09` and `RV-14` to `RV-18`, with `RV-15` and `RV-17` sharing
+one test. `checkpoint_wal.rs` binds `RV-10`, `durable_catalog.rs` binds `RV-11`
+and `RV-12`, and two existing tests are bound unchanged as `RV-13` and `RV-19`.
+The generated properties run 256 cases, except the key-codec, V1-refusal,
+collision and totality properties, which run 64. The registry wiring changes in
+five ways:
+
+- `generation_checkpoint_properties.rs` adds the `RV` family;
+- it reads `RSpaceRetentionV2Upgrade.tla` and its base configuration with the
+  publication model, so every base invariant must be cited;
+- it reads `RetentionV2Format.v` as part of its Rocq source, so every capstone
+  must be cited by an RV derivation row;
+- it requires each cited `Never…` witness to have its configuration and to be
+  named by the integrated runner, and the runner to compile the theory;
+- it searches the new test file for binding targets, and `property_support.rs`
+  binds the nineteen rows.
+
+The registry now holds 169 IDs, up from 150. The runner rejects placeholders in
+the theory, compiles it with `rocq_compile_with_closed_count … 15`, and
+kernel-checks it with its dependencies; `_CoqProject` lists the theory. The
+runner also checks the base configuration with TLC, requires each negative
+control to violate its named invariant, and requires each witness to be reached.
+
+**VERIFICATION BOUNDARY.** The evidence ran on tree `4ba76c52` exported to
+`target/scratch/idx`. That tree is HEAD `50d0c4cb` plus this change, with this
+journal entry and the catalog's verification-record paragraph and pinned-source
+table still holding placeholders. It ran one heavy job at a time, each in a
+headless user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| Rocq dependency closure (channel image, publication, trial, composition), retention-format closed capstones, placeholder scan, `coqchk` | 8 GiB | the four dependencies compiled; retention format 15 of 15 closed; no placeholder; kernel check passed | `target/perf/logs/phase0/7923-rocq-20261026T085407Z.log` | `353180508120932a55f59891e5affcc0c9a22556620b450533522cd9afd60ef2` |
+| TLC on `RSpaceRetentionV2Upgrade` with `MaxEpoch = 4`: the base configuration, the four negative controls and the three non-vacuity witnesses | 12 GiB, 4 GiB heap, 4 workers | base: no error in 349 generated and 92 distinct states at depth 7; each control violated its named invariant; each witness was reached | `target/perf/logs/phase4/7923-tlc-20261026T085502Z.log` | `0280b901818b1038dc63c4fd05a09a46dc84c4eca2a16b8509d0de50bd69bd5b` |
+| the 434 selected rspace++ library tests under `rspace::persistence` (the thirteen format tests, the `RV-10` to `RV-12` tests, the tests bound as `RV-13` and `RV-19`, the registry test, and the earlier CL, reachability, closure, semantic, admission and publication tests), debug | 48 GiB, one test thread | 434 passed in 20.85 s; the 3 unwind-child helpers ignored by design | `target/perf/logs/phase4/7923-focused-debug-20261026T085727Z.log` | `ee77c6a31928c56dd5a05da42dcd1e48cbf55aac678729d5cbfa2717903ac920` |
+| the same, release | as above | 434 passed in 8.40 s; 3 ignored | `target/perf/logs/phase4/7923-focused-release-20261026T085727Z.log` | `11fad3c16916a6d06a82ba1246544a6c47787c3a1a5ae839081149779f451f9a` |
+
+The commit's full export gate (`cargo check`, clippy, the release nextest suites
+for `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the doc
+tests) is recorded in the pgmcp progress note for task 7923. These results freeze
+the format, prove it sound and compatible with V1 readers, and bind every
+property to a test. They do not read or write V2 in production. The cold reader,
+with its metadata read charge and the generation rule, is task 7925; the
+path-local writer, whose first emission changes persisted bytes and stops for an
+explicit confirmation, is task 7926. The resume binding is realized by tasks 5690
+and 7938. These are agent-run results; independent review and the approved
+pgmcp verification recipe remain required.
+
+Cited works: J. R. Driscoll, N. Sarnak, D. D. Sleator and R. E. Tarjan, "Making
+data structures persistent", *Journal of Computer and System Sciences*
+38(1):86–124, 1989,
+[doi:10.1016/0022-0000(89)90034-2](<https://doi.org/10.1016/0022-0000(89)90034-2>);
+L. Lamport, "The temporal logic of actions", *ACM Transactions on Programming
+Languages and Systems* 16(3):872–923, 1994,
+[doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726); V. Leis,
+A. Kemper and T. Neumann, "The adaptive radix tree: ARTful indexing for
+main-memory databases", *2013 IEEE 29th International Conference on Data
+Engineering*, 38–49, 2013,
+[doi:10.1109/ICDE.2013.6544812](https://doi.org/10.1109/ICDE.2013.6544812);
+D. R. Morrison, "PATRICIA—Practical Algorithm To Retrieve Information Coded in
+Alphanumeric", *Journal of the ACM* 15(4):514–534, 1968,
+[doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481).
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
