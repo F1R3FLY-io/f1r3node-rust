@@ -11,6 +11,7 @@ theories/RSpaceCallerAuthorityMutants.v
 theories/RSpaceConsensusIdentity.v
 theories/RSpaceConsensusIdentityMutants.v
 theories/GenerationCheckpointPublication.v
+theories/IncrementalLedgerTrial.v
 theories/EPM1.v
 theories/CanonicalEPathMapImport.v
 theories/OpaqueCanonicalSegmentImport.v

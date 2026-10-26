@@ -18702,6 +18702,110 @@ matching and persistence are unchanged, so no consensus-register entry is needed
 the schema, so it is unchanged. Inputs and outputs of both captures are reproducible
 from the blobs above.
 
+### J-244 — 2026-10-25: failure-atomic bounded private ledger trials (task 7921)
+
+**DERIVED.** This entry follows J-065 and J-242. Task 7921 adds the trial layer
+that the incremental successor needs before it may touch real state. A *trial*
+runs the two-phase cursor machine of `IncrementalReachability` on a private copy
+of a predecessor $`\pi = (\Lambda, R, O, B)`$: a ledger $`\Lambda`$ of reference
+counts and active bits, root multiplicities $`R`$, and exact object and byte
+inventories $`O`$ and $`B`$. Activation of the added root occurrences $`\alpha`$
+drains first, then deactivation of the removed occurrences $`\rho`$. The new
+theory `formal/rocq/stack_safe_pda/theories/IncrementalLedgerTrial.v` (module
+`CheckedLedgerTrial`) proves twenty capstones, all closed under the global
+context. These design decisions are what a reconstruction must preserve:
+
+1. Every transition is charged against nine budget axes and refused, with no
+   state change, at the first exceeded step axis. The order is Count,
+   UnionObjects, UnionBytes, Scratch, References, Expansions, QuotedBytes. The
+   predecessor is never written: every variant except the partial-commit control
+   retains it.
+2. The union peak and the final inventory are separate axes. Add-before-remove
+   holds the closures of both the old and the new roots, so the union peak can
+   exceed the final inventory.
+3. Scratch is the peak of live pending events plus suspended frames, not a count
+   of allocations.
+4. Each phase start is charged: $`\lvert\alpha\rvert`$ or $`\lvert\rho\rvert`$
+   live scratch and references. The activation start also records the
+   predecessor's inventory as the first union peak.
+5. Consumed read bytes are recorded but have no budget. Bounding them by quoted
+   bytes requires sound quotes (theorem 13), and theorem 14 shows that this
+   premise cannot be dropped.
+6. Each phase is bounded by the ghost potential of J-065. Theorem 10 shows that
+   valid input drains before that bound is reached, so, as in J-065, a production
+   trial needs no runtime fuel.
+
+The full axis table, literate pseudocode, theorem list and LT-01–LT-11 bindings
+are in the
+[generation-checkpoint invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#failure-atomic-bounded-private-ledger-trials-2026-10-25),
+together with a lifecycle figure (`figures/ledger-trial-lifecycle.svg`).
+
+**VERUS COUNTERS.** `formal/verus/incremental_prepare_streaming.rs` gains the
+`u64` reservation code that a production trial would run on each step:
+`checked_trial_reserve`, `checked_trial_peak`, `checked_trial_release`,
+`reserve_trial_step` and four boundary lemmas. `reserve_trial_step` reserves all
+seven step axes into locals before it writes `usage`. Its postcondition states
+that a refusal names `first_refused_axis_spec` and leaves `usage` unchanged, and
+that an acceptance commits exactly `committed_usage_spec`. The file now verifies
+23 functions, up from 15. `scripts/generate-ledger-trial-verus-mutant.py`
+derives three mutants, and the runner function `incremental_ledger_trial_verus`
+requires each one to fail at a named postcondition:
+
+| Mutant | Change | Postcondition that fails |
+|---|---|---|
+| `partial_commit` | writes the Count peak before a later axis refuses | a refusal leaves `usage` unchanged |
+| `unchecked_limit` | refuses only on machine overflow | the cumulative reservation equals its specification |
+| `scratch_conflation` | charges expansions as scratch | the refused axis is `first_refused_axis_spec` |
+
+**EXECUTABLE REFINEMENT.** The Rust test model in
+`rspace++/tests/persistence/incremental_reachability_properties.rs` mirrors the
+Rocq semantics. It is checked against the independent cold-graph traversal that
+the cursor properties already use. Three changes to the existing model make the
+refinement exact:
+
+- `Machine::step` is split into a pure `scheduled_action` and its application, so
+  a trial charges exactly the transition that the machine then takes.
+- The activation increment is checked and refuses with `Refusal::CountOverflow`.
+- Trial usage is held in `u64`, and candidate live values are computed in `u128`,
+  so a value above `u64::MAX` is a limit refusal, as in the Verus counters.
+
+Six properties, at 256 generated cases each, bind LT-01 to LT-11. The registry
+wiring changes in three ways:
+
+- `generation_checkpoint_properties.rs` adds the `LT` family.
+- It reads `IncrementalLedgerTrial.v` beside `GenerationCheckpointPublication.v`,
+  so every trial capstone must be cited by an LT derivation row.
+- It requires the integrated gate to compile the theory.
+
+The registry now holds 133 IDs, up from 122. The gate compiles the theory with
+`rocq_compile_with_closed_count … 20` and kernel-checks it, and it replaces its
+plain Verus call for this file with `incremental_ledger_trial_verus`.
+
+**VERIFICATION BOUNDARY.** The evidence ran on tree `75b659c5` exported to
+`target/scratch/idx`. That tree is HEAD `a87df65f5` plus this change, before this
+journal entry and the catalog's verification-record paragraph were written. It
+ran one heavy job at a time, each in a headless user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| Rocq dependency closure, closed capstones, `coqchk` | 8 GiB, 2 CPUs | 20 of 20 closed; kernel check passed | `target/perf/logs/phase0/7921-evidence-rocq-20261026T012625Z.log` | `2f3d24514b1ee2e53005040c8fe442380da90f54128a6c00acf6a9c127a068fe` |
+| Verus runner function `incremental_ledger_trial_verus` | 8 GiB outer scope; each verifier call 1 GiB, 1 CPU, 900 s | baseline 23 verified, 0 errors; three mutants rejected | `target/perf/logs/phase4/7921-evidence-verus-20261026T012704Z.log` | `4c4bc75f21324deb457822670a11cf1e0a438280d5817f0e8e87eff9f51218e7` |
+| `partial_commit` mutant | as above | 22 verified, 1 error, at the named postcondition | `target/perf/logs/phase4/7921-evidence-verus-mutants-20261026T012704Z/partial_commit.log` | `a4c506bcb97a1d68780a59b4dc577ac979ebe3b72e583b110e19001469d03a97` |
+| `unchecked_limit` mutant | as above | 22 verified, 1 error, at the named postcondition | `target/perf/logs/phase4/7921-evidence-verus-mutants-20261026T012704Z/unchecked_limit.log` | `659362597068d4fd9d36e1b2b3e2b5c5c3e45ee33e9aded790ab07f14ed576f5` |
+| `scratch_conflation` mutant | as above | 22 verified, 1 error, at the named postcondition | `target/perf/logs/phase4/7921-evidence-verus-mutants-20261026T012704Z/scratch_conflation.log` | `d7d99383a7e2f840a10086cf6d27ca9a7a914d471663a9c55130ceef896de70b` |
+| 23 reachability properties, registry test, streaming-catalog test, debug | 32 GiB, 16 CPUs, one test thread | 25 of 25 passed in 0.39 s | `target/perf/logs/phase4/7921-properties-debug-20261026T012720Z.log` | `7fe89468bac5049e14dbb87dde97e1ac6407a7a291623676cc0c0f0aa655353e` |
+| the same, release | as above | 25 of 25 passed in 0.05 s | `target/perf/logs/phase4/7921-properties-release-20261026T012720Z.log` | `ad7808140ac095243a01235060beecdfa87ffb5b2042ded693672c7d1709a3e0` |
+
+The commit's full export gate (`cargo check`, clippy, the release nextest suites
+for `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the doc tests)
+is recorded in the pgmcp progress note for task 7921. These results hold for the
+abstract trial, its Verus counters and its test model. They do not show that the
+production successor runs this trial, that the copy-on-write reachability ledger
+(task 7924) or the trusted successor (task 7927) refines it, that the inventory
+domains compose (task 7922), that object bytes are authenticated, or that quoted
+read sizes are sound. These are agent-run results; independent review and the
+approved pgmcp verification recipe remain required.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

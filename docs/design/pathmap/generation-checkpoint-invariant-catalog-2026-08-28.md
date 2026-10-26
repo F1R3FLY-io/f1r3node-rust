@@ -661,13 +661,15 @@ formal targets; their compiled theory is independently kernel-checked.
 | Pinned source | SHA-256 |
 |---|---|
 | `formal/rocq/stack_safe_pda/theories/GenerationCheckpointPublication.v` | `5b9e5199c4001e9620d25ff4b0c700f2670fe23303ca5d1b293d53df2a8b7500` |
-| `rspace++/tests/persistence/incremental_reachability_properties.rs` | `b5e97ee5226238566bbcb537f6dfede875ec21981baa078c91e9bd29722ef797` |
-| `rspace++/tests/persistence/property_support.rs` | `b8e2aa87da27c9a8bfdc8c611a4e9245fb412475406a3398a5f26a8a28d0588b` |
-| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `2f4080420cdd91c233e0137c2941abd67864d1190ec1cb6483f528138b65388b` |
+| `rspace++/tests/persistence/incremental_reachability_properties.rs` | `b7dd63b1d5c2adc6fb6b3d59cc0c690e2c4d506cdf21be772fca8581566be307` |
+| `rspace++/tests/persistence/property_support.rs` | `5a3d0c00ce1c4afb1c547bf7164198a0e7533e08b49f754bdd6cd4eb95bcd7c3` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `7b6f0504278b474155ab53f86ef8c4f4677c4a33d9489d0f099a5cd0f99733fb` |
 
-These are abstract checked-arithmetic and test-model bindings. They do not yet
-prove that a production successor maintains the exact ledger, authenticates
-objects, or performs a failed copy-on-write trial without mutation.
+These are abstract checked-arithmetic and test-model bindings. They do not prove
+that a production successor maintains the exact ledger or authenticates objects.
+Failure-atomic bounded trials are covered at the model and test-model level in
+[Failure-atomic bounded private ledger trials](#failure-atomic-bounded-private-ledger-trials-2026-10-25);
+production copy-on-write nonmutation remains task 7924.
 
 ### Exact abstract work and termination
 
@@ -713,7 +715,9 @@ acyclicity is still required for the separate exact rooted-support result.
 
 **Coverage boundary.** Natural-number proofs and bounded test arithmetic do not yet
 establish checked production `u64` overflow/refusal, failed CoW-trial nonmutation,
-unique-byte/kind inventories, or cold-resource certificates. Abstract termination
+unique-byte/kind inventories, or cold-resource certificates. The next section proves
+checked refusal and failure atomicity for the abstract trial, its Verus counters and
+its test model only. Abstract termination
 and the exact changed-frontier step formula are proved; runtime initialization,
 byte access, lookup, validation, allocation and CoW costs need separate refinement.
 The test-only graph scans and vector operations are not production complexity
@@ -721,6 +725,226 @@ evidence. `authenticated_cursor` means only
 an exact suffix of an abstract parent's children; digest/length/kind, source identity
 and namespace/exact-path authorization require their own concrete refinement.
 Acyclicity and complete drainage remain essential for exact rooted support.
+
+### Failure-atomic bounded private ledger trials (2026-10-25)
+
+Task 7921 adds the trial layer that the incremental successor (task 7755) needs
+before it may touch real state. A *trial* runs the two-phase cursor machine of
+the previous sections on a private copy of the predecessor's ledger: activation
+of the added root occurrences drains first, then deactivation of the removed
+ones. Every transition is charged against separate budgets *before* it is
+accepted. A refused trial returns its predecessor unchanged. A drained trial
+returns prepared evidence, which carries no durable receipt and no owner
+authority. Three artifacts implement the layer:
+
+- the Rocq theory `formal/rocq/stack_safe_pda/theories/IncrementalLedgerTrial.v`
+  (module `CheckedLedgerTrial`, built on `IncrementalReachability` and
+  `CheckedReachability`);
+- the Verus model of the `u64` reservation code in
+  `formal/verus/incremental_prepare_streaming.rs`;
+- the executable test model in
+  `rspace++/tests/persistence/incremental_reachability_properties.rs`.
+
+None of them is the production successor constructor. That constructor is the
+subject of tasks 7924 (copy-on-write reachability ledger) and 7927 (trusted
+successor).
+
+![Lifecycle of a bounded private ledger trial: authorization, two charged phases, the final guard, and the refusal edges that all return the predecessor](figures/ledger-trial-lifecycle.svg)
+
+**Inputs.** A predecessor $`\pi = (\Lambda, R, O, B)`$ consists of a ledger
+$`\Lambda`$ (reference counts and active bits), root multiplicities $`R`$, and
+the exact object and byte inventories $`O`$ and $`B`$ of $`\Lambda`$. A trial
+adds the root occurrences in the list $`\alpha`$ and removes those in the list
+$`\rho`$. Write $`\mathrm{occ}_\rho(v)`$ for the number of occurrences of
+$`v`$ in $`\rho`$, and $`c_v`$ for the reference count of $`v`$ in the current
+ledger. Each object $`v`$ has a byte weight $`w(v)`$ (its canonical
+length), an externally quoted read size $`q(v)`$, and an actual read size
+$`r(v)`$. A schedule chooses, at step $`i`$ of a phase, between the top cursor
+and the top event whenever both exist. It is the same rule the executable
+cursor machine uses.
+
+**Budget axes.** A trial's usage $`u`$ records seven step quantities and one
+unbudgeted observation. Limits $`L`$ assign a natural number to each of nine
+axes. A *peak* axis records the largest value a live quantity has reached; a
+*cumulative* axis records a running total; a *final* axis is checked once, on
+the drained ledger.
+
+| Axis | Kind | What it measures | Charged by |
+|---|---|---|---|
+| Count | peak | the largest reference count an increment reaches | an activation event on $`v`$: $`c_v + 1`$ |
+| UnionObjects | peak | distinct objects held by the add-before-remove union | the activation start ($`O`$), then each activation zero-crossing ($`+1`$) |
+| UnionBytes | peak | bytes held by that union | the activation start ($`B`$), then each activation zero-crossing ($`+w(v)`$) |
+| Scratch | peak | live scratch: pending events plus suspended frames, $`\lvert E\rvert + \lvert F\rvert`$ | every step and every phase start |
+| References | cumulative | reference events: root occurrences plus cursor transfers | the phase starts ($`\lvert\alpha\rvert`$, then $`\lvert\rho\rvert`$) and each transfer ($`+1`$) |
+| Expansions | cumulative | child-list expansions, the zero-crossings of either phase | $`+1`$ per expansion |
+| QuotedBytes | cumulative | externally quoted read bytes | $`+q(v)`$ per expansion |
+| FinalObjects | final | the drained ledger's object inventory | checked after deactivation drains |
+| FinalBytes | final | the drained ledger's byte inventory | checked after deactivation drains |
+
+The consumed read bytes $`\sum r(v)`$ over expansions are recorded but have no
+limit: they are what an external quote promises to bound. The union axes and
+the final axes are separate domains on purpose. During add-before-remove the
+ledger holds the closures of both the old and the new roots, so the union peak
+can exceed the final inventory. Live scratch is the peak of a live quantity,
+not a count of allocations.
+
+**One checked step.** Let $`k`$ be the charge of the scheduled transition: the
+count, objects, bytes and live scratch it would reach, and the reference,
+expansion and quoted-byte amounts it would add. The committed usage is
+
+```math
+\mathrm{commit}(u, k)_a =
+\begin{cases}
+\max(u_a, k_a) & \text{if } a \text{ is a peak axis},\\
+u_a + k_a & \text{if } a \text{ is a cumulative axis}.
+\end{cases}
+```
+
+The step is refused at the first axis $`a`$, in the order of the table's first
+seven rows, with $`\mathrm{commit}(u, k)_a > L_a`$. A refusal changes nothing:
+not the ledger, the inventories, or the usage. A deactivation event on a zero
+count is refused as `ZeroCountDecrement`, and an inventory subtraction that
+would underflow as `InventoryUnderflow`; neither can occur from a valid
+configuration. Each phase runs for at most its ghost potential $`\Phi`$ steps
+(previous section). A phase that has not drained by then is refused as
+`PotentialExhausted`, which valid input never reaches.
+
+**The trial, in literate form.** Each numbered part names one refinement
+obligation; every refusal in parts 1–6 returns
+$`(\pi, \mathrm{Refused}(\mathit{why}))`$.
+
+1. ⟨Authorize the removals⟩. Refuse `UnauthorizedRemoval` unless
+   $`\mathrm{occ}_\rho(v) \le R(v) + \mathrm{occ}_\alpha(v)`$ for every $`v`$ in
+   $`\rho`$. The check precedes all work, so an unauthorized trial costs
+   nothing.
+2. ⟨Start activation⟩. The workspace is $`(\Lambda, \alpha, [\,])`$ with
+   inventories $`(O, B)`$. Reserve the start charge: $`\lvert\alpha\rvert`$ live
+   scratch, $`\lvert\alpha\rvert`$ references, and the predecessor's inventory
+   as the first union peak. Refuse on the first exceeded axis.
+3. ⟨Drain activation⟩. Repeat ⟨one checked step⟩ with the schedule's bit for
+   step $`i`$ until the workspace has no events and no frames.
+4. ⟨Start deactivation⟩. The workspace is $`(\Lambda_{\mathrm{mid}}, \rho, [\,])`$.
+   Reserve $`\lvert\rho\rvert`$ live scratch (as a peak) and
+   $`\lvert\rho\rvert`$ references, or refuse.
+5. ⟨Drain deactivation⟩. As in part 3.
+6. ⟨Final guard⟩. Refuse on FinalObjects if the drained object inventory
+   exceeds its limit, otherwise on FinalBytes if the byte inventory does.
+7. ⟨Prepare⟩. Return the evidence
+   $`(\Lambda_{\mathrm{fin}}, R + \alpha - \rho, O_{\mathrm{fin}}, B_{\mathrm{fin}}, u)`$
+   together with the untouched predecessor.
+
+**Theorems.** The module proves twenty capstones. Each has a
+`Print Assumptions` line, every one reports a closed context, and the compiled
+module passes independent kernel checking.
+
+| # | Theorem (`CheckedLedgerTrial.`…) | Statement |
+|---|---|---|
+| 1 | `checked_attempts_are_exactly_scheduled_cursor_steps` | An accepted attempt is a `cursor_step`. An attempt reports drained exactly when events and frames are empty. From a valid configuration with exact counters, no attempt is invalid, and every cursor step is the attempt of some schedule bit. |
+| 2 | `checked_step_is_failure_atomic` | A refused step returns the phase's current state. Its reason is either the first exceeded axis of the attempted usage or an invalid attempt. |
+| 3 | `accepted_event_reservations_are_checked_arithmetic` | An accepted activation event is `checked_increment` under the Count limit and `checked_add` under the union limits. An accepted deactivation event is `checked_decrement` and `checked_sub`. |
+| 4 | `every_trial_retains_the_bit_identical_predecessor` | For every variant except the partial-commit control, the retained predecessor is the input. |
+| 5 | `prepared_trial_agrees_with_cold_ledger` | On a ranked graph, a prepared ledger equals any coherent quiescent ledger for the final roots, with exact roots and inventories. |
+| 6 | `union_peak_is_the_add_phase_cold_inventory` | On a ranked graph, the union peak equals the inventory of the quiescent ledger for $`R + \alpha`$. |
+| 7 | `checked_trial_is_the_guarded_unbounded_trial` | The trial under $`L`$ prepares evidence $`e`$ exactly when the unbounded trial prepares $`e`$ and $`L`$ covers $`e`$, that is, $`e_a \le L_a`$ for every axis $`a`$. |
+| 8 | `trial_accepts_at_exact_measured_limits` | Limits equal to the measured evidence are accepted. |
+| 9 | `trial_refuses_one_below_on_that_axis` | From the exact limits, lowering one positive axis by one refuses on exactly that axis. |
+| 10 | `every_valid_authorized_trial_prepares_without_limits` | Valid, authorized input always prepares when unbounded. |
+| 11 | `refused_trial_retries_from_identical_predecessor` | Retrying from the retained predecessor with covering limits prepares the unbounded evidence. |
+| 12 | `live_scratch_is_bounded_by_its_reserved_peak` | Each phase start charges one reference per root occurrence. Live scratch stays at or below its reserved peak, which stays within the limit. |
+| 13 | `sound_quotes_bound_consumed_read_bytes` | If $`r(v) \le q(v)`$ for every $`v`$, then consumed bytes $`\le`$ quoted bytes $`\le L_{\mathrm{QuotedBytes}}`$. |
+| 14 | `unsound_quote_admits_unbounded_consumption` | With $`q = 0`$ and a zero quote limit, a trial that consumes $`r = n + 1`$ bytes is admitted for every $`n`$. |
+| 15 | `partial_commit_mutant_replaces_the_predecessor` | Negative control: committing in-flight state on refusal changes the predecessor. |
+| 16 | `final_union_conflation_mutant_refuses_exact_final_limit` | Negative control: checking the union peak against the final limit refuses an admissible trial. |
+| 17 | `scratch_allocation_conflation_mutant_refuses_admissible_trial` | Negative control: charging expansions as scratch refuses an admissible trial. |
+| 18 | `skipped_cursor_contribution_mutant_is_not_quiescent` | Negative control: dropping a transferred child yields a non-quiescent prepared ledger. |
+| 19 | `duplicated_cursor_contribution_mutant_is_not_quiescent` | Negative control: transferring a child twice yields a non-quiescent prepared ledger. |
+| 20 | `uncharged_phase_initialization_mutant_overruns_scratch` | Negative control: leaving phase starts uncharged admits live scratch above the limit. |
+
+**Verus counters.** `incremental_prepare_streaming.rs` gains the `u64`
+reservation code that a production trial would run on each step:
+
+- `checked_trial_reserve` reserves a cumulative axis. It forms the sum only
+  when the sum fits the limit, so machine overflow is a limit refusal.
+- `checked_trial_peak` reserves a peak axis, and `checked_trial_release`
+  releases live scratch or inventory without underflow.
+- `reserve_trial_step` reserves all seven axes into locals before it writes
+  `usage`. Its postcondition says that a refusal names
+  `first_refused_axis_spec` and leaves `usage` unchanged, and that an
+  acceptance commits exactly `committed_usage_spec`.
+- Four proof functions pin the boundaries: `exact_trial_limit_is_accepted`,
+  `one_below_trial_limit_is_refused`, `trial_overflow_is_a_limit_refusal`
+  and `released_scratch_is_reusable_under_its_peak`.
+
+The file now verifies 23 functions, up from 15.
+`scripts/generate-ledger-trial-verus-mutant.py` derives three mutants, and the
+integrated runner requires each to fail at its named obligation:
+
+| Mutant | Change | Obligation that must fail |
+|---|---|---|
+| `partial_commit` | writes the Count peak before a later axis refuses | `reserve_trial_step`: a refusal leaves `usage` unchanged |
+| `unchecked_limit` | refuses only on machine overflow, never on the limit | `checked_trial_reserve`: the result equals the specified reservation |
+| `scratch_conflation` | charges expansions as scratch | `reserve_trial_step`: the refused axis is `first_refused_axis_spec` |
+
+**Executable bindings.** The Rust test model mirrors the Rocq semantics and is
+checked against an independent cold-graph oracle. `Machine::step` is split into
+a pure `scheduled_action` and its application, so the trial charges exactly the
+transition that the cursor machine then takes. The activation increment is now
+checked, refusing with `Refusal::CountOverflow`. Usage is held in `u64`, and
+candidate live values are computed in `u128`, so a value above `u64::MAX` is a
+limit refusal, as in Verus. Each generated case has:
+
+- a DAG of one to six objects, each with up to three children of lower index,
+  duplicates kept;
+- byte weights and quoted and consumed read sizes from 0 to 4;
+- a cold predecessor for up to four root occurrences;
+- up to four added occurrences, and an authorized removal subset of the old
+  and added roots;
+- a schedule of one to eight bits, repeated cyclically.
+
+Each property runs 256 cases.
+
+| ID | Required property and negative-control boundary | Test |
+|---|---|---|
+| LT-01 | Every accepted step equals the executable cursor machine's scheduled step from the same configuration and schedule bit. It keeps the cursor-model configuration invariants and exact inventories, spends one unit of potential and lowers no usage counter, and the two schedule bits reach every available step. | `checked_trial_refines_cursor_steps_and_matches_cold_oracle` |
+| LT-02 | A refused step leaves the whole trial state unchanged and names the axis it exceeded. Each axis that a step raises is accepted at exactly the reached value and refused one below it. Accepted events are checked increments, decrements, sums and differences. Host controls: `u64` count, background-object and quoted-byte overflow are limit refusals, and the cursor machine's own increment refuses at `usize::MAX`. | `checked_trial_budget_boundaries_are_exact_and_atomic` |
+| LT-03 | Every trial of every variant except partial commit, whether prepared or refused, retains the bit-identical predecessor. An unauthorized removal is refused before any work: even the partial-commit variant then retains the predecessor. | `refused_trial_retry_matches_unbounded_evidence` |
+| LT-04 | A prepared trial equals the independently computed cold ledger and inventory for $`R + \alpha - \rho`$, with exact final roots. Its union peak equals the cold inventory for $`R + \alpha`$. Every valid authorized trial prepares without limits, and both complementary schedules prepare the same ledger. | `checked_trial_refines_cursor_steps_and_matches_cold_oracle` |
+| LT-05 | The union peak and the final inventory are separate domains, and the peak is never below the final inventory. The union-on-final-limit mutant refuses exactly when the peak exceeds the final inventory, on the exceeded union axis, and a lowered final limit refuses on its own axis. | `budget_domains_are_not_conflated` |
+| LT-06 | Live scratch never exceeds its reserved peak, which never exceeds the limit, and each phase start charges one reference per root occurrence. Without initialization charges, references fall short by exactly $`\lvert\alpha\rvert + \lvert\rho\rvert`$, the activation start's live scratch exceeds its reservation exactly when $`\alpha`$ is non-empty, and on a fixture the uncharged variant admits live scratch above the limit. | `budget_domains_are_not_conflated` |
+| LT-07 | Scratch is a live peak, not cumulative allocation: the expansions-as-scratch mutant refuses exactly when expansions exceed the scratch peak. | `budget_domains_are_not_conflated` |
+| LT-08 | Expansion charges are exact: their count and their quoted and consumed bytes are sums over the vertices whose sign changes. With sound quotes, consumed $`\le`$ quoted $`\le`$ limit under the generated limits of LT-10. An unsound quote is admitted under a zero quote limit with consumption above every tested excess, up to `u64::MAX - 1`. | `external_quotes_bound_consumption_only_when_sound` |
+| LT-09 | Exact measured limits accept with identical evidence, and one below any positive axis refuses on exactly that axis. | `checked_trial_budget_boundaries_are_exact_and_atomic` |
+| LT-10 | Under generated limits within two units of the measured evidence on every axis, the checked trial prepares exactly when the limits cover the unbounded evidence, and then with identical evidence. A refused trial retried from its retained predecessor with covering limits prepares the unbounded evidence. | `refused_trial_retry_matches_unbounded_evidence` |
+| LT-11 | Partial commit retains the in-flight ledger at every generated refusal and changes the predecessor on some of them. Whenever an activation-only trial transfers a contribution, skipped contributions always prepare a non-quiescent ledger and duplicated ones never prepare a quiescent one. | `trial_mutants_violate_atomicity_or_cold_oracle` |
+
+`model_property_manifest_is_unique_and_exhaustive` checks these eleven
+bindings. It reads `IncrementalLedgerTrial.v` as part of its Rocq source,
+requires each of the theory's twenty `Print Assumptions` capstones to be cited
+by an LT row of the derivation matrix, and requires the integrated runner to
+compile the theory.
+
+**Boundary.** These results hold for the abstract trial, its Verus counters and
+its test model. They do not show that the production successor runs this
+trial, that its copy-on-write ledger or trusted successor refines it, that
+object bytes are authenticated, or that quoted read sizes are sound. Quote
+soundness is a premise of theorem 13, and theorem 14 shows that it cannot be
+dropped. Peak scratch counts events and frames, not their byte sizes.
+The models bound each phase by the ghost potential of the previous section,
+which is proof instrumentation, not a production counter; theorem 10 shows that
+valid input drains before that bound is reached. Exact rooted support still
+requires an acyclic graph.
+
+The trial evidence in the verification record was taken at these sources:
+
+| Pinned source | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/IncrementalLedgerTrial.v` | `4545a7d762bf5e9b70ace4576305f4f2aad1f328e15c50c0f073824fabdc3258` |
+| `formal/verus/incremental_prepare_streaming.rs` | `b5a54606e927a98c6408b8c5210f4842b75128c5bc7857d23aabebbb74b5d388` |
+| `scripts/generate-ledger-trial-verus-mutant.py` | `d9b277da4353ff311e51df4fe3ed202ffd7ddfdcc9a3d82545085f072fbdad7e` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `3b482473d67814358b3dbc4449aa52c098fff4fd7551dcdb1f1f0090143ab677` |
+| `rspace++/tests/persistence/incremental_reachability_properties.rs` | `b7dd63b1d5c2adc6fb6b3d59cc0c690e2c4d506cdf21be772fca8581566be307` |
+| `rspace++/tests/persistence/property_support.rs` | `5a3d0c00ce1c4afb1c547bf7164198a0e7533e08b49f754bdd6cd4eb95bcd7c3` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `7b6f0504278b474155ab53f86ef8c4f4677c4a33d9489d0f099a5cd0f99733fb` |
 
 ## Formal-to-executable derivation matrix
 
@@ -753,6 +977,17 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | CR-02 | `EXEC_ONLY` | `CheckedReachability.checked_sub_is_exact`, `CheckedReachability.checked_sub_refuses_exactly_underflow`, `CheckedReachability.checked_decrement_refines_natural_update`, `CheckedReachability.checked_decrement_refuses_exactly_zero`, `CheckedReachability.checked_decrement_preserves_bounded_counts`, `CheckedReachability.checked_updates_preserve_coherence` | P | Zero and positive counts distinguish checked refusal from natural-number saturation; a refused trial preserves its input. |
 | CR-03 | `EXEC_ONLY` | `CheckedReachability.increment_changes_unique_inventory`, `CheckedReachability.checked_inventory_add_is_exact`, `CheckedReachability.checked_inventory_add_refuses_exactly_above_limit` | P | A symbolic unchanged background reaches one-below and exact `u64::MAX` distinct-object counts; generated large byte weights and duplicate references independently check byte refusal and zero-crossing behavior. The zero-byte-weight abstract case isolates arithmetic overflow, not production object admission. |
 | CR-04 | `EXEC_ONLY` | `CheckedReachability.decrement_changes_unique_inventory`, `CheckedReachability.deactivated_inventory_is_funded`, `CheckedReachability.checked_inventory_remove_is_exact`, `CheckedReachability.exact_inventory_removal_cannot_underflow` | P | Last-reference removal subtracts one unique contribution; repeated-edge removal and invalid underflow are negative controls. |
+| LT-01 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_attempts_are_exactly_scheduled_cursor_steps` | P | Every accepted test-model step is the executable cursor machine's scheduled step, observed at every generated microstep; refinement by the production successor (tasks 7924 and 7927) remains open. |
+| LT-02 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_step_is_failure_atomic`, `CheckedLedgerTrial.accepted_event_reservations_are_checked_arithmetic` | P | The natural-number reservations are refined by the test model's `u64` usage with `u128` candidates and by the Verus counters; production counters remain open. |
+| LT-03 | `EXEC_ONLY` | `CheckedLedgerTrial.every_trial_retains_the_bit_identical_predecessor`, `CheckedLedgerTrial.checked_step_is_failure_atomic` | P | Retained predecessors are compared by value in the test model; production copy-on-write nonmutation remains open (task 7924). |
+| LT-04 | `EXEC_ONLY` | `CheckedLedgerTrial.prepared_trial_agrees_with_cold_ledger`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.every_valid_authorized_trial_prepares_without_limits` | P | The cold oracle is an independent traversal of the test-only vector graph; production ledgers and object authentication remain open. |
+| LT-05 | `EXEC_ONLY` | `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.final_union_conflation_mutant_refuses_exact_final_limit` | P | Union and final inventories are separate abstract axes; the production inventory domains are task 7922. |
+| LT-06 | `EXEC_ONLY` | `CheckedLedgerTrial.live_scratch_is_bounded_by_its_reserved_peak`, `CheckedLedgerTrial.uncharged_phase_initialization_mutant_overruns_scratch` | P | Scratch counts pending events and suspended frames; byte-level scratch accounting remains open. |
+| LT-07 | `EXEC_ONLY` | `CheckedLedgerTrial.live_scratch_is_bounded_by_its_reserved_peak`, `CheckedLedgerTrial.scratch_allocation_conflation_mutant_refuses_admissible_trial` | P | The peak-versus-allocation distinction is checked on abstract scratch; production allocation accounting remains open. |
+| LT-08 | `EXEC_ONLY` | `CheckedLedgerTrial.sound_quotes_bound_consumed_read_bytes`, `CheckedLedgerTrial.unsound_quote_admits_unbounded_consumption` | P | Quote soundness is a premise, and the unsound-quote witness shows it cannot be dropped; production read quotes remain open. |
+| LT-09 | `EXEC_ONLY` | `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis` | P | Exact boundaries are checked per axis on generated trials; production limit configuration remains open. |
+| LT-10 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_trial_is_the_guarded_unbounded_trial`, `CheckedLedgerTrial.refused_trial_retries_from_identical_predecessor` | P | Retry equivalence is checked under generated limits near the measured evidence; the production retry policy remains open. |
+| LT-11 | `EXEC_ONLY` | `CheckedLedgerTrial.partial_commit_mutant_replaces_the_predecessor`, `CheckedLedgerTrial.skipped_cursor_contribution_mutant_is_not_quiescent`, `CheckedLedgerTrial.duplicated_cursor_contribution_mutant_is_not_quiescent` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must both be positive. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -885,6 +1120,19 @@ distinguish the theorem boundaries. The remaining 635 library tests were not
 selected. These results do not update the earlier full-package counts or establish
 production successor refinement. See engineering journal J-065 for caps, evidence
 hashes and remaining checked-resource/implementation obligations.
+
+The 2026-10-25 ledger-trial extension adds `LT-01` through `LT-11`. The
+catalog/derivation/binding registry now contains **133** IDs: the 118 above, the
+four checked-counter rows `CR-01` through `CR-04`, and the eleven trial rows.
+On an isolated export of the candidate tree, `IncrementalLedgerTrial.v` compiled
+with all **20** capstones closed under the global context and passed independent
+kernel checking. The Verus model verified **23** functions with `--no-cheating`,
+and each of its three reservation mutants failed at its named postcondition. The
+six trial properties, the seventeen earlier reachability properties, this registry
+test and the streaming-catalog test passed **25/25** single-threaded in debug
+(0.39 s) and release (0.05 s). These results cover the abstract trial and its test
+model only. See engineering journal J-244
+for caps, evidence hashes and the remaining production obligations.
 
 ## Caller-authority contract (2026-09-06)
 

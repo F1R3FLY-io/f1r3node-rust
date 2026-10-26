@@ -1,0 +1,68 @@
+@startuml ledger-trial-lifecycle
+' ============================================================================
+' Failure-atomic bounded private ledger trial (task 7921): the control flow of
+' run_trial in IncrementalLedgerTrial.v and of TrialCase::run_from in the Rust
+' test model rspace++/tests/persistence/incremental_reachability_properties.rs.
+'   GREY   #616161  the predecessor: read, never written
+'   BLUE   #1565C0  a phase start: its charge is reserved before any step
+'   GREEN  #2E7D32  accepted cursor steps and the prepared evidence
+'   AMBER  #EF6C00  budget guards
+'   RED    #C62828  refusals: each one returns the predecessor unchanged
+'   PURPLE #6A1B9A  the partial-commit negative control
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam StateBorderColor #455A64
+skinparam StateFontSize 13
+skinparam NoteBorderColor #455A64
+
+title <b>A bounded private ledger trial</b>\nevery transition is charged before it is accepted, and every refusal keeps the predecessor
+
+state "Predecessor" as Base #E0E0E0 : <latex>\pi = (\Lambda, R, O, B)</latex>\nledger, root multiplicities,\nobject and byte inventory
+state "Authorize removals" as Authorize #FFE0B2 : <latex>\mathrm{occ}_\rho(v) \le R(v) + \mathrm{occ}_\alpha(v)</latex>\nfor every removed vertex
+state "Activation start" as ActivationStart #BBDEFB : events = added occurrences, no frames\nreserve <latex>|\alpha|</latex> live scratch and <latex>|\alpha|</latex> references
+state "Activation steps" as Activation #C8E6C9 : the scheduled cursor step:\nevent (increment), transfer, or discard
+state "Deactivation start" as DeactivationStart #BBDEFB : events = removed occurrences, no frames\nreserve <latex>|\rho|</latex> live scratch and <latex>|\rho|</latex> references
+state "Deactivation steps" as Deactivation #C8E6C9 : the scheduled cursor step:\nevent (decrement), transfer, or discard
+state "Final guard" as Final #FFE0B2 : final objects, then final bytes
+state "Prepared evidence" as Prepared #A5D6A7 : ledger, roots, objects, bytes, usage\nno durable receipt, no owner authority
+state "Refused(why)" as Refused #FFCDD2 : retained predecessor = <latex>\pi</latex>, bit for bit
+state "PartialCommit mutant" as Partial #E1BEE7 : retained = the in-flight ledger
+
+[*] --> Base
+Base --> Authorize
+Authorize -[#C62828]-> Refused : UnauthorizedRemoval
+Authorize -[#1565C0]-> ActivationStart : authorized
+ActivationStart -[#C62828]-> Refused : Budget(first exceeded step axis)
+ActivationStart -[#2E7D32]-> Activation : within limits
+Activation -[#2E7D32]-> Activation : charge, guard, accept
+Activation -[#C62828]-> Refused : Budget(axis) or PotentialExhausted
+Activation -[#1565C0]-> DeactivationStart : drained
+DeactivationStart -[#C62828]-> Refused : Budget(first exceeded step axis)
+DeactivationStart -[#2E7D32]-> Deactivation : within limits
+Deactivation -[#2E7D32]-> Deactivation : charge, guard, accept
+Deactivation -[#C62828]-> Refused : Budget(axis), ZeroCountDecrement,\nInventoryUnderflow or PotentialExhausted
+Deactivation -[#EF6C00]-> Final : drained
+Final -[#C62828]-> Refused : Budget(FinalObjects or FinalBytes)
+Final -[#2E7D32]-> Prepared : within limits
+Refused -[#6A1B9A,dashed]-> Partial : negative control only
+Prepared --> [*]
+Refused --> [*]
+
+note right of Activation #F1F8E9
+  One step from usage <latex>u</latex> with charge <latex>k</latex>:
+  <latex>u' = \mathrm{commit}(u, k)</latex>
+  refuse at the first step axis <latex>a</latex> with <latex>u'_a > L_a</latex>,
+  in the order Count, UnionObjects, UnionBytes,
+  Scratch, References, Expansions, QuotedBytes.
+  A refusal leaves the whole trial state unchanged.
+end note
+
+note left of Refused #FFEBEE
+  Retry from the retained predecessor with limits
+  that cover the unbounded evidence <latex>e</latex>
+  (<latex>\forall a.\ e_a \le L_a</latex>) prepares exactly <latex>e</latex>.
+end note
+@enduml

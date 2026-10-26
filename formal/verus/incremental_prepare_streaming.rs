@@ -412,6 +412,332 @@ pub proof fn replay_complete_candidate_remains_private_until_catalog_verificatio
 {
 }
 
+/// Step axes of a bounded private ledger trial, in the order the trial checks
+/// them (`step_axes` in `IncrementalLedgerTrial.v`).  The two final-inventory
+/// limits are checked only on the drained state, so they are not step axes.
+pub enum TrialAxis {
+    Count,
+    UnionObjects,
+    UnionBytes,
+    Scratch,
+    References,
+    Expansions,
+    QuotedBytes,
+}
+
+/// Charges accepted so far.  The first four are peaks of live quantities;
+/// the last three are cumulative event counts.
+pub struct TrialUsage {
+    pub peak_count: u64,
+    pub peak_objects: u64,
+    pub peak_bytes: u64,
+    pub peak_scratch: u64,
+    pub references: u64,
+    pub expansions: u64,
+    pub quoted_bytes: u64,
+}
+
+pub struct TrialLimits {
+    pub count: u64,
+    pub union_objects: u64,
+    pub union_bytes: u64,
+    pub scratch: u64,
+    pub references: u64,
+    pub expansions: u64,
+    pub quoted_bytes: u64,
+}
+
+/// One candidate transition: the live values it would reach and the
+/// cumulative events it would add.
+pub struct TrialCharge {
+    pub count: u64,
+    pub objects: u64,
+    pub bytes: u64,
+    pub live_scratch: u64,
+    pub references: u64,
+    pub expansions: u64,
+    pub quoted_bytes: u64,
+}
+
+pub open spec fn trial_reserve_spec(used: int, amount: int, limit: int) -> Option<int> {
+    if used + amount <= limit {
+        Some(used + amount)
+    } else {
+        None
+    }
+}
+
+pub open spec fn raised_peak_spec(peak: int, live: int) -> int {
+    if peak < live {
+        live
+    } else {
+        peak
+    }
+}
+
+pub open spec fn trial_peak_spec(peak: int, live: int, limit: int) -> Option<int> {
+    if raised_peak_spec(peak, live) <= limit {
+        Some(raised_peak_spec(peak, live))
+    } else {
+        None
+    }
+}
+
+pub open spec fn committed_axis_spec(
+    usage: TrialUsage,
+    charge: TrialCharge,
+    axis: TrialAxis,
+) -> int {
+    match axis {
+        TrialAxis::Count => raised_peak_spec(usage.peak_count as int, charge.count as int),
+        TrialAxis::UnionObjects => raised_peak_spec(
+            usage.peak_objects as int,
+            charge.objects as int,
+        ),
+        TrialAxis::UnionBytes => raised_peak_spec(usage.peak_bytes as int, charge.bytes as int),
+        TrialAxis::Scratch => raised_peak_spec(
+            usage.peak_scratch as int,
+            charge.live_scratch as int,
+        ),
+        TrialAxis::References => usage.references as int + charge.references as int,
+        TrialAxis::Expansions => usage.expansions as int + charge.expansions as int,
+        TrialAxis::QuotedBytes => usage.quoted_bytes as int + charge.quoted_bytes as int,
+    }
+}
+
+pub open spec fn axis_limit_spec(limits: TrialLimits, axis: TrialAxis) -> int {
+    match axis {
+        TrialAxis::Count => limits.count as int,
+        TrialAxis::UnionObjects => limits.union_objects as int,
+        TrialAxis::UnionBytes => limits.union_bytes as int,
+        TrialAxis::Scratch => limits.scratch as int,
+        TrialAxis::References => limits.references as int,
+        TrialAxis::Expansions => limits.expansions as int,
+        TrialAxis::QuotedBytes => limits.quoted_bytes as int,
+    }
+}
+
+pub open spec fn axis_refused_spec(
+    usage: TrialUsage,
+    charge: TrialCharge,
+    limits: TrialLimits,
+    axis: TrialAxis,
+) -> bool {
+    committed_axis_spec(usage, charge, axis) > axis_limit_spec(limits, axis)
+}
+
+pub open spec fn first_refused_axis_spec(
+    usage: TrialUsage,
+    charge: TrialCharge,
+    limits: TrialLimits,
+) -> Option<TrialAxis> {
+    if axis_refused_spec(usage, charge, limits, TrialAxis::Count) {
+        Some(TrialAxis::Count)
+    } else if axis_refused_spec(usage, charge, limits, TrialAxis::UnionObjects) {
+        Some(TrialAxis::UnionObjects)
+    } else if axis_refused_spec(usage, charge, limits, TrialAxis::UnionBytes) {
+        Some(TrialAxis::UnionBytes)
+    } else if axis_refused_spec(usage, charge, limits, TrialAxis::Scratch) {
+        Some(TrialAxis::Scratch)
+    } else if axis_refused_spec(usage, charge, limits, TrialAxis::References) {
+        Some(TrialAxis::References)
+    } else if axis_refused_spec(usage, charge, limits, TrialAxis::Expansions) {
+        Some(TrialAxis::Expansions)
+    } else if axis_refused_spec(usage, charge, limits, TrialAxis::QuotedBytes) {
+        Some(TrialAxis::QuotedBytes)
+    } else {
+        None
+    }
+}
+
+pub open spec fn committed_usage_spec(
+    before: TrialUsage,
+    charge: TrialCharge,
+    after: TrialUsage,
+) -> bool {
+    &&& after.peak_count as int == committed_axis_spec(before, charge, TrialAxis::Count)
+    &&& after.peak_objects as int == committed_axis_spec(before, charge, TrialAxis::UnionObjects)
+    &&& after.peak_bytes as int == committed_axis_spec(before, charge, TrialAxis::UnionBytes)
+    &&& after.peak_scratch as int == committed_axis_spec(before, charge, TrialAxis::Scratch)
+    &&& after.references as int == committed_axis_spec(before, charge, TrialAxis::References)
+    &&& after.expansions as int == committed_axis_spec(before, charge, TrialAxis::Expansions)
+    &&& after.quoted_bytes as int == committed_axis_spec(before, charge, TrialAxis::QuotedBytes)
+}
+
+/// Cumulative reservation.  The sum is never formed unless it fits the limit,
+/// so machine overflow is a limit refusal rather than a wrapped charge.
+pub fn checked_trial_reserve(used: u64, amount: u64, limit: u64) -> (result: Option<u64>)
+    ensures
+        match result {
+            Some(total) => trial_reserve_spec(used as int, amount as int, limit as int) == Some(
+                total as int,
+            ),
+            None => trial_reserve_spec(used as int, amount as int, limit as int).is_none(),
+        },
+{
+    if amount > limit || used > limit - amount {
+        None
+    } else {
+        Some(used + amount)
+    }
+}
+
+/// Peak reservation for a live quantity: the reserved value is the larger of
+/// the recorded peak and the candidate live value.
+pub fn checked_trial_peak(peak: u64, live: u64, limit: u64) -> (result: Option<u64>)
+    ensures
+        match result {
+            Some(next) => trial_peak_spec(peak as int, live as int, limit as int) == Some(
+                next as int,
+            ),
+            None => trial_peak_spec(peak as int, live as int, limit as int).is_none(),
+        },
+{
+    let next = if peak < live {
+        live
+    } else {
+        peak
+    };
+    if next <= limit {
+        Some(next)
+    } else {
+        None
+    }
+}
+
+/// Releasing live scratch or inventory never underflows.
+pub fn checked_trial_release(live: u64, released: u64) -> (result: Option<u64>)
+    ensures
+        match result {
+            Some(next) => next as int == live as int - released as int && released <= live,
+            None => live < released,
+        },
+{
+    if released <= live {
+        Some(live - released)
+    } else {
+        None
+    }
+}
+
+/// Failure-atomic reservation of one trial transition.  All seven axes are
+/// computed into locals before `usage` is written, so a refusal leaves it
+/// unchanged and names the first refused axis in step-axis order.
+pub fn reserve_trial_step(
+    usage: &mut TrialUsage,
+    charge: &TrialCharge,
+    limits: &TrialLimits,
+) -> (refused: Option<TrialAxis>)
+    ensures
+        refused == first_refused_axis_spec(*old(usage), *charge, *limits),
+        refused.is_some() ==> *final(usage) == *old(usage),
+        refused.is_none() ==> committed_usage_spec(*old(usage), *charge, *final(usage)),
+{
+    let count = match checked_trial_peak(usage.peak_count, charge.count, limits.count) {
+        Some(value) => value,
+        None => return Some(TrialAxis::Count),
+    };
+    let objects = match checked_trial_peak(
+        usage.peak_objects,
+        charge.objects,
+        limits.union_objects,
+    ) {
+        Some(value) => value,
+        None => return Some(TrialAxis::UnionObjects),
+    };
+    let bytes = match checked_trial_peak(usage.peak_bytes, charge.bytes, limits.union_bytes) {
+        Some(value) => value,
+        None => return Some(TrialAxis::UnionBytes),
+    };
+    let scratch = match checked_trial_peak(
+        usage.peak_scratch,
+        charge.live_scratch,
+        limits.scratch,
+    ) {
+        Some(value) => value,
+        None => return Some(TrialAxis::Scratch),
+    };
+    let references = match checked_trial_reserve(
+        usage.references,
+        charge.references,
+        limits.references,
+    ) {
+        Some(value) => value,
+        None => return Some(TrialAxis::References),
+    };
+    let expansions = match checked_trial_reserve(
+        usage.expansions,
+        charge.expansions,
+        limits.expansions,
+    ) {
+        Some(value) => value,
+        None => return Some(TrialAxis::Expansions),
+    };
+    let quoted_bytes = match checked_trial_reserve(
+        usage.quoted_bytes,
+        charge.quoted_bytes,
+        limits.quoted_bytes,
+    ) {
+        Some(value) => value,
+        None => return Some(TrialAxis::QuotedBytes),
+    };
+    usage.peak_count = count;
+    usage.peak_objects = objects;
+    usage.peak_bytes = bytes;
+    usage.peak_scratch = scratch;
+    usage.references = references;
+    usage.expansions = expansions;
+    usage.quoted_bytes = quoted_bytes;
+    None
+}
+
+pub proof fn exact_trial_limit_is_accepted(used: u64, amount: u64)
+    requires
+        used as int + amount as int <= u64::MAX as int,
+    ensures
+        trial_reserve_spec(used as int, amount as int, used as int + amount as int) == Some(
+            used as int + amount as int,
+        ),
+{
+}
+
+pub proof fn one_below_trial_limit_is_refused(used: u64, amount: u64)
+    requires
+        0 < used as int + amount as int,
+    ensures
+        trial_reserve_spec(used as int, amount as int, used as int + amount as int - 1).is_none(),
+{
+}
+
+pub proof fn trial_overflow_is_a_limit_refusal(used: u64, amount: u64, limit: u64)
+    requires
+        used as int + amount as int > u64::MAX as int,
+    ensures
+        trial_reserve_spec(used as int, amount as int, limit as int).is_none(),
+{
+}
+
+/// Peak live scratch is not cumulative allocation: scratch released and then
+/// reacquired within the recorded peak fits a limit equal to that peak.
+pub proof fn released_scratch_is_reusable_under_its_peak(
+    peak: u64,
+    live: u64,
+    released: u64,
+    reacquired: u64,
+)
+    requires
+        live <= peak,
+        released <= live,
+        live as int - released as int + reacquired as int <= peak as int,
+    ensures
+        trial_peak_spec(
+            peak as int,
+            live as int - released as int + reacquired as int,
+            peak as int,
+        ) == Some(peak as int),
+{
+}
+
 } // verus!
 
 fn main() {}

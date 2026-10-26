@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR", "CR",
+        "IR", "CR", "LT",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -466,9 +466,13 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     let tla_config = include_str!(
         "../../../formal/tlaplus/stack_safe_pda/RSpaceGenerationCheckpointPublication.cfg"
     );
-    let rocq_source = include_str!(
-        "../../../formal/rocq/stack_safe_pda/theories/GenerationCheckpointPublication.v"
-    );
+    let rocq_source = [
+        include_str!(
+            "../../../formal/rocq/stack_safe_pda/theories/GenerationCheckpointPublication.v"
+        ),
+        include_str!("../../../formal/rocq/stack_safe_pda/theories/IncrementalLedgerTrial.v"),
+    ]
+    .concat();
     let mut cited_tla = BTreeSet::new();
     let mut cited_rocq = BTreeSet::new();
     for (id, (tla_symbols, rocq_symbols, class)) in &derivations {
@@ -545,6 +549,10 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     let formal_gate =
         std::fs::read_to_string(repository_root.join("scripts/check-stack-safe-pda-proofs.sh"))
             .unwrap();
+    assert!(
+        formal_gate.contains("theories/IncrementalLedgerTrial.v"),
+        "the integrated formal gate does not compile the ledger-trial theory cited by LT rows",
+    );
     for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("NV-")) {
         let witness = tla_symbols
             .iter()

@@ -242,6 +242,58 @@ canonical_connective_owner_verus() {
   echo "stack-safe-pda: five canonical Connective owner mutants rejected"
 }
 
+incremental_ledger_trial_verus() {
+  local model="$repo_root/formal/verus/incremental_prepare_streaming.rs"
+  local generator="$repo_root/scripts/generate-ledger-trial-verus-mutant.py"
+  local evidence_dir="$repo_root/target/verification/ledger-trial"
+  local baseline_log mutant mutant_source mutant_log expected_obligation
+  mkdir -p "$evidence_dir"
+  baseline_log="$evidence_dir/normal-gate.log"
+  if ! tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+    "$model" >"$baseline_log" 2>&1; then
+    cat "$baseline_log"
+    echo "stack-safe-pda: incremental prepare streaming proof failed" >&2
+    return 1
+  fi
+  if ! rg -q '^verification results:: 23 verified, 0 errors$' "$baseline_log"; then
+    cat "$baseline_log"
+    echo "stack-safe-pda: expected 23 incremental prepare streaming verifications" >&2
+    return 1
+  fi
+  for mutant in partial_commit unchecked_limit scratch_conflation; do
+    mutant_source="$evidence_dir/$mutant.rs"
+    mutant_log="$evidence_dir/$mutant.log"
+    case "$mutant" in
+      partial_commit)
+        expected_obligation='refused.is_some() ==> *final(usage) == *old(usage),' ;;
+      unchecked_limit)
+        expected_obligation='Some(total) => trial_reserve_spec(used as int, amount as int, limit as int) == Some(' ;;
+      scratch_conflation)
+        expected_obligation='refused == first_refused_axis_spec(*old(usage), *charge, *limits),' ;;
+    esac
+    python3 "$generator" "$mutant" "$model" "$mutant_source"
+    if tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
+      "$mutant_source" >"$mutant_log" 2>&1; then
+      cat "$mutant_log"
+      echo "stack-safe-pda: ledger trial $mutant mutant unexpectedly verified" >&2
+      return 1
+    fi
+    if ! rg -Fq 'error: postcondition not satisfied' "$mutant_log" \
+      || ! rg -Fq "$expected_obligation" "$mutant_log"; then
+      cat "$mutant_log"
+      echo "stack-safe-pda: ledger trial $mutant failed outside its expected obligation" >&2
+      return 1
+    fi
+    if ! rg -q '^verification results:: [0-9]+ verified, [1-9][0-9]* errors$' "$mutant_log"; then
+      cat "$mutant_log"
+      echo "stack-safe-pda: ledger trial $mutant had no verifier counterexample" >&2
+      return 1
+    fi
+  done
+  cat "$baseline_log"
+  echo "stack-safe-pda: three ledger trial reservation mutants rejected"
+}
+
 free_map_journal_tlc() {
   local tla_metadir
   tla_metadir="$(tlc_metadir free-map-journal)"
@@ -789,6 +841,11 @@ if [[ "$generation_checkpoint_closed_capstones" != "112" ]]; then
   echo "stack-safe-pda: expected all 112 publication/journal/inventory/cursor/work/checked-arithmetic Rocq capstones to be closed; got $generation_checkpoint_closed_capstones" >&2
   exit 1
 fi
+rocq_reject_placeholders theories/IncrementalLedgerTrial.v
+rocq_compile_with_closed_count theories/IncrementalLedgerTrial.v 20 \
+  "failure-atomic bounded private ledger trials"
+rocq_check_modules "failure-atomic bounded private ledger trials" \
+  StackSafePDA.GenerationCheckpointPublication StackSafePDA.IncrementalLedgerTrial
 streaming_codec_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/StreamingCodecPDA.v 2>&1
@@ -1121,8 +1178,7 @@ tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/rpb3_admission_cursor.rs"
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/rspace_canonical_egress.rs"
-tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
-  "$repo_root/formal/verus/incremental_prepare_streaming.rs"
+incremental_ledger_trial_verus
 tlc_bounded "$verus_bin" --no-cheating --num-threads 1 \
   "$repo_root/formal/verus/streaming_codec_pda.rs"
 

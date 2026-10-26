@@ -34,6 +34,24 @@ enum Refusal {
     PendingWork,
     UnauthorizedRootRemoval,
     ZeroCountDecrement,
+    CountOverflow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScheduledAction {
+    TransferCursor { child: usize },
+    DiscardCursor,
+    Event { vertex: usize },
+    Drained,
+}
+
+impl Cursor {
+    fn action(&self) -> ScheduledAction {
+        match self.remaining.first() {
+            Some(&child) => ScheduledAction::TransferCursor { child },
+            None => ScheduledAction::DiscardCursor,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -391,33 +409,46 @@ impl Machine {
         })
     }
 
+    fn scheduled_action(&self, prefer_cursor: bool) -> ScheduledAction {
+        match (self.cursors.last(), self.events.last()) {
+            (Some(cursor), None) => cursor.action(),
+            (Some(cursor), Some(_)) if prefer_cursor => cursor.action(),
+            (_, Some(&vertex)) => ScheduledAction::Event { vertex },
+            (None, None) => ScheduledAction::Drained,
+        }
+    }
+
     fn step(
         &mut self,
         graph: &Graph,
         prefer_cursor: bool,
         mutation: Mutation,
     ) -> Result<bool, Refusal> {
-        if !self.cursors.is_empty() && (prefer_cursor || self.events.is_empty()) {
-            let cursor = self.cursors.last_mut().unwrap();
-            if cursor.remaining.is_empty() {
+        let vertex = match self.scheduled_action(prefer_cursor) {
+            ScheduledAction::Drained => return Ok(false),
+            ScheduledAction::DiscardCursor => {
                 self.cursors.pop();
-            } else {
-                let child = cursor.remaining.remove(0);
+                return Ok(true);
+            }
+            ScheduledAction::TransferCursor { child } => {
+                self.cursors
+                    .last_mut()
+                    .expect("a scheduled transfer has a top cursor")
+                    .remaining
+                    .remove(0);
                 if mutation != Mutation::DropCursorEdge {
                     self.events.push(child);
                 }
                 if mutation == Mutation::RepeatCursorEdge {
                     self.events.push(child);
                 }
+                return Ok(true);
             }
-            return Ok(true);
-        }
-        let Some(&vertex) = self.events.last() else {
-            return Ok(false);
+            ScheduledAction::Event { vertex } => vertex,
         };
         let before = self.ledger.counts[vertex];
         let after = match self.phase {
-            Phase::Activation => before + 1,
+            Phase::Activation => before.checked_add(1).ok_or(Refusal::CountOverflow)?,
             Phase::Deactivation => before.checked_sub(1).ok_or(Refusal::ZeroCountDecrement)?,
         };
         let install_cursor = match self.phase {
@@ -1186,4 +1217,1246 @@ fn wrong_credit_and_cursor_costs_are_detected() {
             assert_eq!(machine.ledger, cold_graph_oracle(&graph, &machine.roots));
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BudgetAxis {
+    Count,
+    UnionObjects,
+    UnionBytes,
+    Scratch,
+    References,
+    Expansions,
+    QuotedBytes,
+    FinalObjects,
+    FinalBytes,
+}
+
+const STEP_AXES: [BudgetAxis; 7] = [
+    BudgetAxis::Count,
+    BudgetAxis::UnionObjects,
+    BudgetAxis::UnionBytes,
+    BudgetAxis::Scratch,
+    BudgetAxis::References,
+    BudgetAxis::Expansions,
+    BudgetAxis::QuotedBytes,
+];
+
+const BUDGET_AXES: [BudgetAxis; 9] = [
+    BudgetAxis::Count,
+    BudgetAxis::UnionObjects,
+    BudgetAxis::UnionBytes,
+    BudgetAxis::Scratch,
+    BudgetAxis::References,
+    BudgetAxis::Expansions,
+    BudgetAxis::QuotedBytes,
+    BudgetAxis::FinalObjects,
+    BudgetAxis::FinalBytes,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrialVariant {
+    Faithful,
+    PartialCommit,
+    FinalOnUnion,
+    AllocationsAsScratch,
+    SkipContribution,
+    DuplicateContribution,
+    UnchargedInitialization,
+}
+
+impl TrialVariant {
+    fn cursor_mutation(self) -> Mutation {
+        match self {
+            Self::SkipContribution => Mutation::DropCursorEdge,
+            Self::DuplicateContribution => Mutation::RepeatCursorEdge,
+            _ => Mutation::None,
+        }
+    }
+
+    fn transferred_events(self) -> u128 {
+        match self {
+            Self::SkipContribution => 0,
+            Self::DuplicateContribution => 2,
+            _ => 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TrialLimits([u64; 9]);
+
+impl TrialLimits {
+    const UNBOUNDED: Self = Self([u64::MAX; 9]);
+
+    fn get(&self, axis: BudgetAxis) -> u64 { self.0[axis as usize] }
+
+    fn with(mut self, axis: BudgetAxis, value: u64) -> Self {
+        self.0[axis as usize] = value;
+        self
+    }
+
+    fn exact(evidence: &PreparedEvidence) -> Self {
+        Self(BUDGET_AXES.map(|axis| evidence.measured(axis)))
+    }
+
+    fn covers(&self, evidence: &PreparedEvidence) -> bool {
+        BUDGET_AXES
+            .into_iter()
+            .all(|axis| evidence.measured(axis) <= self.get(axis))
+    }
+}
+
+const GENEROUS: TrialLimits = TrialLimits([9; 9]);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TrialUsage {
+    peak_count: u64,
+    peak_objects: u64,
+    peak_bytes: u64,
+    peak_scratch: u64,
+    references: u64,
+    expansions: u64,
+    quoted_bytes: u64,
+    consumed_bytes: u64,
+}
+
+impl TrialUsage {
+    fn step_usage(&self, axis: BudgetAxis) -> u64 {
+        match axis {
+            BudgetAxis::Count => self.peak_count,
+            BudgetAxis::UnionObjects => self.peak_objects,
+            BudgetAxis::UnionBytes => self.peak_bytes,
+            BudgetAxis::Scratch => self.peak_scratch,
+            BudgetAxis::References => self.references,
+            BudgetAxis::Expansions => self.expansions,
+            BudgetAxis::QuotedBytes => self.quoted_bytes,
+            BudgetAxis::FinalObjects | BudgetAxis::FinalBytes => 0,
+        }
+    }
+
+    fn bounded_by(&self, after: &Self) -> bool {
+        STEP_AXES
+            .into_iter()
+            .all(|axis| self.step_usage(axis) <= after.step_usage(axis)) &&
+            self.consumed_bytes <= after.consumed_bytes
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TrialCharge {
+    count: u128,
+    objects: u128,
+    bytes: u128,
+    live_scratch: u128,
+    references: u64,
+    expansions: u64,
+    quoted_bytes: u64,
+    consumed_bytes: u64,
+}
+
+fn reserve_trial_peak(peak: u64, live: u128, limit: u64) -> Option<u64> {
+    let raised = u128::from(peak).max(live);
+    (raised <= u128::from(limit))
+        .then(|| u64::try_from(raised).expect("a reserved peak is within its u64 limit"))
+}
+
+fn reserve_trial_sum(used: u64, amount: u64, limit: u64) -> Option<u64> {
+    if amount > limit || used > limit - amount {
+        None
+    } else {
+        Some(used + amount)
+    }
+}
+
+fn reserve_trial_step(
+    variant: TrialVariant,
+    usage: &mut TrialUsage,
+    charge: &TrialCharge,
+    limits: &TrialLimits,
+) -> Option<BudgetAxis> {
+    let (objects_limit, bytes_limit) = match variant {
+        TrialVariant::FinalOnUnion => {
+            (limits.get(BudgetAxis::FinalObjects), limits.get(BudgetAxis::FinalBytes))
+        }
+        _ => (limits.get(BudgetAxis::UnionObjects), limits.get(BudgetAxis::UnionBytes)),
+    };
+    let Some(count) =
+        reserve_trial_peak(usage.peak_count, charge.count, limits.get(BudgetAxis::Count))
+    else {
+        return Some(BudgetAxis::Count);
+    };
+    let Some(objects) = reserve_trial_peak(usage.peak_objects, charge.objects, objects_limit)
+    else {
+        return Some(BudgetAxis::UnionObjects);
+    };
+    let Some(bytes) = reserve_trial_peak(usage.peak_bytes, charge.bytes, bytes_limit) else {
+        return Some(BudgetAxis::UnionBytes);
+    };
+    let scratch_limit = limits.get(BudgetAxis::Scratch);
+    let scratch = match variant {
+        TrialVariant::AllocationsAsScratch => {
+            reserve_trial_sum(usage.expansions, charge.expansions, scratch_limit)
+                .and(reserve_trial_peak(usage.peak_scratch, charge.live_scratch, u64::MAX))
+        }
+        _ => reserve_trial_peak(usage.peak_scratch, charge.live_scratch, scratch_limit),
+    };
+    let Some(scratch) = scratch else {
+        return Some(BudgetAxis::Scratch);
+    };
+    let Some(references) =
+        reserve_trial_sum(usage.references, charge.references, limits.get(BudgetAxis::References))
+    else {
+        return Some(BudgetAxis::References);
+    };
+    let Some(expansions) =
+        reserve_trial_sum(usage.expansions, charge.expansions, limits.get(BudgetAxis::Expansions))
+    else {
+        return Some(BudgetAxis::Expansions);
+    };
+    let Some(quoted_bytes) = reserve_trial_sum(
+        usage.quoted_bytes,
+        charge.quoted_bytes,
+        limits.get(BudgetAxis::QuotedBytes),
+    ) else {
+        return Some(BudgetAxis::QuotedBytes);
+    };
+    *usage = TrialUsage {
+        peak_count: count,
+        peak_objects: objects,
+        peak_bytes: bytes,
+        peak_scratch: scratch,
+        references,
+        expansions,
+        quoted_bytes,
+        consumed_bytes: usage
+            .consumed_bytes
+            .checked_add(charge.consumed_bytes)
+            .expect("generated consumed read bytes fit u64"),
+    };
+    None
+}
+
+#[derive(Clone, Debug)]
+struct TrialEnvironment {
+    graph: Graph,
+    object_bytes: Vec<u64>,
+    quoted_read: Vec<u64>,
+    consumed_read: Vec<u64>,
+}
+
+impl TrialEnvironment {
+    fn inventory(&self, ledger: &Ledger) -> (u64, u64) {
+        ledger
+            .active
+            .iter()
+            .zip(&self.object_bytes)
+            .filter(|(active, _)| **active)
+            .fold((0, 0), |(objects, bytes), (_, weight)| (objects + 1, bytes + weight))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Predecessor {
+    ledger: Ledger,
+    roots: Vec<usize>,
+    objects: u64,
+    bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TrialState {
+    machine: Machine,
+    live_objects: u64,
+    live_bytes: u64,
+    usage: TrialUsage,
+}
+
+impl TrialState {
+    fn live_scratch(&self) -> u64 {
+        (self.machine.events.len() + self.machine.cursors.len()) as u64
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreparedEvidence {
+    ledger: Ledger,
+    roots: Vec<usize>,
+    objects: u64,
+    bytes: u64,
+    usage: TrialUsage,
+}
+
+impl PreparedEvidence {
+    fn measured(&self, axis: BudgetAxis) -> u64 {
+        match axis {
+            BudgetAxis::FinalObjects => self.objects,
+            BudgetAxis::FinalBytes => self.bytes,
+            _ => self.usage.step_usage(axis),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrialRefusal {
+    Budget(BudgetAxis),
+    UnauthorizedRemoval,
+    ZeroCountDecrement,
+    InventoryUnderflow,
+    PotentialExhausted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TrialOutcome {
+    Prepared(PreparedEvidence),
+    Refused(TrialRefusal),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TrialResult {
+    retained: Predecessor,
+    outcome: TrialOutcome,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrialStep {
+    Accepted,
+    Refused(TrialRefusal),
+    Drained,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrialMoment {
+    PhaseStart,
+    Accepted { prefer_cursor: bool },
+}
+
+fn trial_charge(
+    env: &TrialEnvironment,
+    variant: TrialVariant,
+    current: &TrialState,
+    action: ScheduledAction,
+) -> Result<TrialCharge, TrialRefusal> {
+    let machine = &current.machine;
+    let mut charge = TrialCharge {
+        count: 0,
+        objects: u128::from(current.live_objects),
+        bytes: u128::from(current.live_bytes),
+        live_scratch: u128::from(current.live_scratch()),
+        references: 0,
+        expansions: 0,
+        quoted_bytes: 0,
+        consumed_bytes: 0,
+    };
+    let vertex = match action {
+        ScheduledAction::Drained => return Ok(charge),
+        ScheduledAction::DiscardCursor => {
+            charge.live_scratch -= 1;
+            return Ok(charge);
+        }
+        ScheduledAction::TransferCursor { .. } => {
+            charge.live_scratch += variant.transferred_events();
+            charge.references = 1;
+            return Ok(charge);
+        }
+        ScheduledAction::Event { vertex } => vertex,
+    };
+    let before = machine.ledger.counts[vertex];
+    let crossing = match (machine.phase, before) {
+        (Phase::Activation, _) => {
+            charge.count = before as u128 + 1;
+            before == 0
+        }
+        (Phase::Deactivation, 0) => return Err(TrialRefusal::ZeroCountDecrement),
+        (Phase::Deactivation, _) => before == 1,
+    };
+    charge.live_scratch = charge.live_scratch - 1 + u128::from(crossing);
+    if crossing {
+        let weight = u128::from(env.object_bytes[vertex]);
+        charge.expansions = 1;
+        charge.quoted_bytes = env.quoted_read[vertex];
+        charge.consumed_bytes = env.consumed_read[vertex];
+        match machine.phase {
+            Phase::Activation => {
+                charge.objects += 1;
+                charge.bytes += weight;
+            }
+            Phase::Deactivation => {
+                charge.objects = charge
+                    .objects
+                    .checked_sub(1)
+                    .ok_or(TrialRefusal::InventoryUnderflow)?;
+                charge.bytes = charge
+                    .bytes
+                    .checked_sub(weight)
+                    .ok_or(TrialRefusal::InventoryUnderflow)?;
+            }
+        }
+    }
+    Ok(charge)
+}
+
+fn checked_trial_step(
+    env: &TrialEnvironment,
+    variant: TrialVariant,
+    limits: &TrialLimits,
+    current: &mut TrialState,
+    prefer_cursor: bool,
+) -> TrialStep {
+    let charge = match current.machine.scheduled_action(prefer_cursor) {
+        ScheduledAction::Drained => return TrialStep::Drained,
+        action => match trial_charge(env, variant, current, action) {
+            Ok(charge) => charge,
+            Err(why) => return TrialStep::Refused(why),
+        },
+    };
+    if let Some(axis) = reserve_trial_step(variant, &mut current.usage, &charge, limits) {
+        return TrialStep::Refused(TrialRefusal::Budget(axis));
+    }
+    assert!(
+        current
+            .machine
+            .step(&env.graph, prefer_cursor, variant.cursor_mutation())
+            .expect("a reserved transition is a legal cursor step"),
+        "a reserved transition is not a drained configuration"
+    );
+    current.live_objects =
+        u64::try_from(charge.objects).expect("accepted live objects are within their peak");
+    current.live_bytes =
+        u64::try_from(charge.bytes).expect("accepted live bytes are within their peak");
+    TrialStep::Accepted
+}
+
+fn run_trial_phase(
+    env: &TrialEnvironment,
+    variant: TrialVariant,
+    limits: &TrialLimits,
+    schedule: &[bool],
+    current: &mut TrialState,
+    observe: &mut dyn FnMut(TrialMoment, &TrialState),
+) -> Result<(), TrialRefusal> {
+    let (live_scratch, references) = match variant {
+        TrialVariant::UnchargedInitialization => (0, 0),
+        _ => (current.live_scratch(), current.machine.events.len() as u64),
+    };
+    let start = TrialCharge {
+        count: 0,
+        objects: u128::from(current.live_objects),
+        bytes: u128::from(current.live_bytes),
+        live_scratch: u128::from(live_scratch),
+        references,
+        expansions: 0,
+        quoted_bytes: 0,
+        consumed_bytes: 0,
+    };
+    if let Some(axis) = reserve_trial_step(variant, &mut current.usage, &start, limits) {
+        return Err(TrialRefusal::Budget(axis));
+    }
+    observe(TrialMoment::PhaseStart, current);
+    let fuel = potential(&env.graph, &current.machine);
+    for index in 0..fuel {
+        let prefer_cursor = schedule[index % schedule.len()];
+        match checked_trial_step(env, variant, limits, current, prefer_cursor) {
+            TrialStep::Accepted => observe(TrialMoment::Accepted { prefer_cursor }, current),
+            TrialStep::Refused(why) => return Err(why),
+            TrialStep::Drained => return Ok(()),
+        }
+    }
+    if current.machine.drained() {
+        Ok(())
+    } else {
+        Err(TrialRefusal::PotentialExhausted)
+    }
+}
+
+fn authorized(roots: &[usize], removed: &[usize]) -> bool {
+    removed.iter().all(|&vertex| vertex < roots.len()) &&
+        root_counts(roots.len(), removed)
+            .iter()
+            .zip(roots)
+            .all(|(removed, roots)| removed <= roots)
+}
+
+fn quiescent(graph: &Graph, roots: &[usize], ledger: &Ledger) -> bool {
+    (0..graph.len())
+        .all(|vertex| ledger.counts[vertex] == roots[vertex] + incoming(graph, ledger, vertex))
+}
+
+#[derive(Clone, Debug)]
+struct TrialCase {
+    env: TrialEnvironment,
+    base: Predecessor,
+    added: Vec<usize>,
+    removed: Vec<usize>,
+    schedule: Vec<bool>,
+}
+
+impl TrialCase {
+    fn run(&self, variant: TrialVariant, limits: &TrialLimits) -> TrialResult {
+        self.run_from(variant, limits, &self.base, &mut |_, _| {})
+    }
+
+    fn run_from(
+        &self,
+        variant: TrialVariant,
+        limits: &TrialLimits,
+        base: &Predecessor,
+        observe: &mut dyn FnMut(TrialMoment, &TrialState),
+    ) -> TrialResult {
+        let refused = |why: TrialRefusal, at_refusal: &TrialState| TrialResult {
+            retained: match variant {
+                TrialVariant::PartialCommit => Predecessor {
+                    ledger: at_refusal.machine.ledger.clone(),
+                    roots: base.roots.clone(),
+                    objects: at_refusal.live_objects,
+                    bytes: at_refusal.live_bytes,
+                },
+                _ => base.clone(),
+            },
+            outcome: TrialOutcome::Refused(why),
+        };
+        let mut current = TrialState {
+            machine: Machine::activate(&base.ledger, &base.roots, &self.added),
+            live_objects: base.objects,
+            live_bytes: base.bytes,
+            usage: TrialUsage::default(),
+        };
+        if !authorized(&current.machine.roots, &self.removed) {
+            return refused(TrialRefusal::UnauthorizedRemoval, &current);
+        }
+        if let Err(why) =
+            run_trial_phase(&self.env, variant, limits, &self.schedule, &mut current, observe)
+        {
+            return refused(why, &current);
+        }
+        current.machine = current
+            .machine
+            .begin_deactivation(&self.removed)
+            .expect("an authorized removal begins from a drained activation");
+        if let Err(why) =
+            run_trial_phase(&self.env, variant, limits, &self.schedule, &mut current, observe)
+        {
+            return refused(why, &current);
+        }
+        for (axis, live) in [
+            (BudgetAxis::FinalObjects, current.live_objects),
+            (BudgetAxis::FinalBytes, current.live_bytes),
+        ] {
+            if live > limits.get(axis) {
+                return refused(TrialRefusal::Budget(axis), &current);
+            }
+        }
+        TrialResult {
+            retained: base.clone(),
+            outcome: TrialOutcome::Prepared(PreparedEvidence {
+                ledger: current.machine.ledger,
+                roots: current.machine.roots,
+                objects: current.live_objects,
+                bytes: current.live_bytes,
+                usage: current.usage,
+            }),
+        }
+    }
+
+    fn union_roots(&self) -> Vec<usize> {
+        let mut roots = self.base.roots.clone();
+        for &vertex in &self.added {
+            roots[vertex] += 1;
+        }
+        roots
+    }
+
+    fn final_roots(&self) -> Vec<usize> {
+        let mut roots = self.union_roots();
+        for &vertex in &self.removed {
+            roots[vertex] -= 1;
+        }
+        roots
+    }
+
+    fn prepared_unbounded(&self) -> Result<(TrialResult, PreparedEvidence), TestCaseError> {
+        let result = self.run(TrialVariant::Faithful, &TrialLimits::UNBOUNDED);
+        match &result.outcome {
+            TrialOutcome::Prepared(evidence) => {
+                let evidence = evidence.clone();
+                Ok((result, evidence))
+            }
+            TrialOutcome::Refused(why) => Err(TestCaseError::fail(format!(
+                "a valid authorized trial was refused without limits: {why:?}"
+            ))),
+        }
+    }
+}
+
+fn cold_predecessor(env: &TrialEnvironment, root_events: &[usize]) -> Predecessor {
+    let roots = root_counts(env.graph.len(), root_events);
+    let ledger = cold_graph_oracle(&env.graph, &roots);
+    let (objects, bytes) = env.inventory(&ledger);
+    Predecessor {
+        ledger,
+        roots,
+        objects,
+        bytes,
+    }
+}
+
+fn fixture_case(
+    graph: Graph,
+    consumed: u64,
+    base_roots: &[usize],
+    added: &[usize],
+    removed: &[usize],
+) -> TrialCase {
+    let vertex_count = graph.len();
+    let env = TrialEnvironment {
+        graph,
+        object_bytes: vec![1; vertex_count],
+        quoted_read: vec![0; vertex_count],
+        consumed_read: vec![consumed; vertex_count],
+    };
+    TrialCase {
+        base: cold_predecessor(&env, base_roots),
+        env,
+        added: added.to_vec(),
+        removed: removed.to_vec(),
+        schedule: vec![true],
+    }
+}
+
+fn trial_cases() -> impl Strategy<Value = TrialCase> {
+    (1usize..7).prop_flat_map(|vertex_count| {
+        (
+            prop::collection::vec(prop::collection::vec(any::<u8>(), 0..4), vertex_count),
+            prop::collection::vec((0u64..5, 0u64..5, 0u64..5), vertex_count),
+            prop::collection::vec(0usize..vertex_count, 0..5),
+            prop::collection::vec(0usize..vertex_count, 0..5),
+            prop::collection::vec(any::<bool>(), 0..10),
+            prop::collection::vec(any::<bool>(), 1..9),
+        )
+            .prop_map(|(raw_graph, weights, base_roots, added, removal_mask, schedule)| {
+                let graph = raw_graph
+                    .into_iter()
+                    .enumerate()
+                    .map(|(parent, raw_children)| match parent {
+                        0 => Vec::new(),
+                        _ => raw_children
+                            .into_iter()
+                            .map(|child| usize::from(child) % parent)
+                            .collect(),
+                    })
+                    .collect();
+                let env = TrialEnvironment {
+                    graph,
+                    object_bytes: weights.iter().map(|(bytes, _, _)| *bytes).collect(),
+                    quoted_read: weights.iter().map(|(_, quoted, _)| *quoted).collect(),
+                    consumed_read: weights.iter().map(|(_, _, consumed)| *consumed).collect(),
+                };
+                let removed = base_roots
+                    .iter()
+                    .chain(&added)
+                    .zip(removal_mask.into_iter().chain(std::iter::repeat(false)))
+                    .filter_map(|(&vertex, remove)| remove.then_some(vertex))
+                    .collect();
+                TrialCase {
+                    base: cold_predecessor(&env, &base_roots),
+                    env,
+                    added,
+                    removed,
+                    schedule,
+                }
+            })
+    })
+}
+
+fn offset_limits(evidence: &PreparedEvidence, offsets: [i64; 9]) -> TrialLimits {
+    BUDGET_AXES
+        .into_iter()
+        .zip(offsets)
+        .fold(TrialLimits::UNBOUNDED, |limits, (axis, offset)| {
+            limits.with(axis, evidence.measured(axis).saturating_add_signed(offset))
+        })
+}
+
+fn trial_runner() -> prop::test_runner::TestRunner {
+    prop::test_runner::TestRunner::new(ProptestConfig {
+        cases: 256,
+        source_file: Some(file!()),
+        ..ProptestConfig::default()
+    })
+}
+
+#[test]
+fn checked_trial_refines_cursor_steps_and_matches_cold_oracle() {
+    trial_runner()
+        .run(&trial_cases(), |case| {
+            let graph = &case.env.graph;
+            let mut previous: Option<TrialState> = None;
+            let result = case.run_from(
+                TrialVariant::Faithful,
+                &TrialLimits::UNBOUNDED,
+                &case.base,
+                &mut |moment, state| {
+                    assert!(
+                        valid_configuration(graph, &state.machine),
+                        "trial left the cursor invariants: {state:?}"
+                    );
+                    assert_eq!(
+                        case.env.inventory(&state.machine.ledger),
+                        (state.live_objects, state.live_bytes)
+                    );
+                    let schedulable =
+                        match (state.machine.cursors.last(), state.machine.events.last()) {
+                            (Some(cursor), Some(&vertex)) => {
+                                [cursor.action(), ScheduledAction::Event { vertex }]
+                            }
+                            (Some(cursor), None) => [cursor.action(); 2],
+                            (None, Some(&vertex)) => [ScheduledAction::Event { vertex }; 2],
+                            (None, None) => [ScheduledAction::Drained; 2],
+                        };
+                    assert_eq!(
+                        [true, false].map(|prefer| state.machine.scheduled_action(prefer)),
+                        schedulable
+                    );
+                    if let TrialMoment::Accepted { prefer_cursor } = moment {
+                        let before = previous
+                            .as_ref()
+                            .expect("an accepted step follows an observed state");
+                        let mut expected = before.machine.clone();
+                        assert!(
+                            expected
+                                .step(graph, prefer_cursor, Mutation::None)
+                                .expect("a valid configuration has a legal scheduled step")
+                        );
+                        assert_eq!(state.machine, expected);
+                        assert_eq!(
+                            potential(graph, &before.machine),
+                            1 + potential(graph, &state.machine)
+                        );
+                        assert!(before.usage.bounded_by(&state.usage));
+                    }
+                    previous = Some(state.clone());
+                },
+            );
+            prop_assert_eq!(&result.retained, &case.base);
+            let TrialOutcome::Prepared(evidence) = &result.outcome else {
+                return Err(TestCaseError::fail(format!(
+                    "a valid authorized trial was refused without limits: {result:?}"
+                )));
+            };
+            let final_roots = case.final_roots();
+            let cold = cold_graph_oracle(graph, &final_roots);
+            prop_assert_eq!(&evidence.roots, &final_roots);
+            prop_assert_eq!(&evidence.ledger, &cold);
+            prop_assert!(quiescent(graph, &evidence.roots, &evidence.ledger));
+            prop_assert_eq!((evidence.objects, evidence.bytes), case.env.inventory(&cold));
+            let union = cold_graph_oracle(graph, &case.union_roots());
+            prop_assert_eq!(
+                (evidence.usage.peak_objects, evidence.usage.peak_bytes),
+                case.env.inventory(&union)
+            );
+            let alternate = TrialCase {
+                schedule: case.schedule.iter().map(|choice| !choice).collect(),
+                ..case.clone()
+            };
+            let (_, other) = alternate.prepared_unbounded()?;
+            prop_assert_eq!(&other.ledger, &evidence.ledger);
+            prop_assert_eq!((other.objects, other.bytes), (evidence.objects, evidence.bytes));
+            Ok(())
+        })
+        .expect("generated trials refine the cursor machine and agree with the cold ledger");
+}
+
+#[test]
+fn checked_trial_budget_boundaries_are_exact_and_atomic() {
+    let saturated = Machine::activate(
+        &Ledger {
+            counts: vec![usize::MAX],
+            active: vec![true],
+        },
+        &[0],
+        &[0],
+    );
+    let mut stepped = saturated.clone();
+    assert_eq!(stepped.step(&vec![vec![]], false, Mutation::None), Err(Refusal::CountOverflow));
+    assert_eq!(stepped, saturated);
+    let mut count_overflow = fixture_case(vec![vec![]], 0, &[], &[0], &[]);
+    count_overflow.base.ledger = saturated.ledger.clone();
+    count_overflow.base.objects = 1;
+    count_overflow.base.bytes = 1;
+    let mut object_overflow = fixture_case(vec![vec![]], 0, &[], &[0], &[]);
+    object_overflow.base.objects = u64::MAX;
+    let mut quoted_overflow = fixture_case(vec![vec![]; 2], 0, &[], &[0, 1], &[]);
+    quoted_overflow.env.quoted_read = vec![u64::MAX, 1];
+    for (case, axis) in [
+        (count_overflow, BudgetAxis::Count),
+        (object_overflow, BudgetAxis::UnionObjects),
+        (quoted_overflow, BudgetAxis::QuotedBytes),
+    ] {
+        assert_eq!(case.run(TrialVariant::Faithful, &TrialLimits::UNBOUNDED), TrialResult {
+            retained: case.base.clone(),
+            outcome: TrialOutcome::Refused(TrialRefusal::Budget(axis)),
+        });
+    }
+
+    trial_runner()
+        .run(&trial_cases(), |case| {
+            let (unbounded, evidence) = case.prepared_unbounded()?;
+            let exact = TrialLimits::exact(&evidence);
+            let mut previous: Option<TrialState> = None;
+            let at_exact =
+                case.run_from(TrialVariant::Faithful, &exact, &case.base, &mut |moment, state| {
+                    if let TrialMoment::Accepted { prefer_cursor } = moment {
+                        let before = previous
+                            .as_ref()
+                            .expect("an accepted step follows an observed state");
+                        for axis in STEP_AXES {
+                            let reached = state.usage.step_usage(axis);
+                            if reached == before.usage.step_usage(axis) {
+                                continue;
+                            }
+                            let mut at_limit = before.clone();
+                            assert_eq!(
+                                checked_trial_step(
+                                    &case.env,
+                                    TrialVariant::Faithful,
+                                    &TrialLimits::UNBOUNDED.with(axis, reached),
+                                    &mut at_limit,
+                                    prefer_cursor,
+                                ),
+                                TrialStep::Accepted
+                            );
+                            assert_eq!(&at_limit, state);
+                            let mut below = before.clone();
+                            assert_eq!(
+                                checked_trial_step(
+                                    &case.env,
+                                    TrialVariant::Faithful,
+                                    &TrialLimits::UNBOUNDED.with(axis, reached - 1),
+                                    &mut below,
+                                    prefer_cursor,
+                                ),
+                                TrialStep::Refused(TrialRefusal::Budget(axis))
+                            );
+                            assert_eq!(&below, before);
+                        }
+                        if let ScheduledAction::Event { vertex } =
+                            before.machine.scheduled_action(prefer_cursor)
+                        {
+                            let count = before.machine.ledger.counts[vertex];
+                            let crossing = match before.machine.phase {
+                                Phase::Activation => count == 0,
+                                Phase::Deactivation => count == 1,
+                            };
+                            let (objects, bytes) = if crossing {
+                                (1, case.env.object_bytes[vertex])
+                            } else {
+                                (0, 0)
+                            };
+                            match before.machine.phase {
+                                Phase::Activation => {
+                                    assert!((count as u64) < exact.get(BudgetAxis::Count));
+                                    assert_eq!(state.machine.ledger.counts[vertex], count + 1);
+                                    assert_eq!(
+                                        Some(state.live_objects),
+                                        before
+                                            .live_objects
+                                            .checked_add(objects)
+                                            .filter(|total| *total <=
+                                                exact.get(BudgetAxis::UnionObjects))
+                                    );
+                                    assert_eq!(
+                                        Some(state.live_bytes),
+                                        before.live_bytes.checked_add(bytes).filter(
+                                            |total| *total <= exact.get(BudgetAxis::UnionBytes)
+                                        )
+                                    );
+                                }
+                                Phase::Deactivation => {
+                                    assert_eq!(state.machine.ledger.counts[vertex] + 1, count);
+                                    assert_eq!(
+                                        Some(state.live_objects),
+                                        before.live_objects.checked_sub(objects)
+                                    );
+                                    assert_eq!(
+                                        Some(state.live_bytes),
+                                        before.live_bytes.checked_sub(bytes)
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    previous = Some(state.clone());
+                });
+            prop_assert_eq!(&at_exact, &unbounded);
+            for axis in BUDGET_AXES {
+                let measured = evidence.measured(axis);
+                if measured == 0 {
+                    continue;
+                }
+                prop_assert_eq!(
+                    case.run(TrialVariant::Faithful, &exact.with(axis, measured - 1)),
+                    TrialResult {
+                        retained: case.base.clone(),
+                        outcome: TrialOutcome::Refused(TrialRefusal::Budget(axis)),
+                    }
+                );
+            }
+            Ok(())
+        })
+        .expect("generated trials have exact and failure-atomic budget boundaries");
+}
+
+#[test]
+fn refused_trial_retry_matches_unbounded_evidence() {
+    trial_runner()
+        .run(&(trial_cases(), prop::array::uniform9(-2i64..3)), |(case, offsets)| {
+            let (unbounded, evidence) = case.prepared_unbounded()?;
+            prop_assert_eq!(&unbounded.retained, &case.base);
+            let limits = offset_limits(&evidence, offsets);
+            let checked = case.run(TrialVariant::Faithful, &limits);
+            prop_assert_eq!(&checked.retained, &case.base);
+            prop_assert_eq!(checked.outcome == unbounded.outcome, limits.covers(&evidence));
+            if let TrialOutcome::Refused(_) = checked.outcome {
+                let retry = BUDGET_AXES.into_iter().fold(limits, |retry, axis| {
+                    retry.with(axis, limits.get(axis).max(evidence.measured(axis)))
+                });
+                prop_assert!(retry.covers(&evidence));
+                prop_assert_eq!(
+                    case.run_from(
+                        TrialVariant::Faithful,
+                        &retry,
+                        &checked.retained,
+                        &mut |_, _| {}
+                    ),
+                    unbounded.clone()
+                );
+            }
+            for variant in [
+                TrialVariant::FinalOnUnion,
+                TrialVariant::AllocationsAsScratch,
+                TrialVariant::SkipContribution,
+                TrialVariant::DuplicateContribution,
+                TrialVariant::UnchargedInitialization,
+            ] {
+                prop_assert_eq!(&case.run(variant, &limits).retained, &case.base);
+            }
+            if let Some(vertex) = case.final_roots().iter().position(|&roots| roots == 0) {
+                let unauthorized = TrialCase {
+                    removed: case.removed.iter().copied().chain([vertex]).collect(),
+                    ..case.clone()
+                };
+                for variant in [TrialVariant::Faithful, TrialVariant::PartialCommit] {
+                    prop_assert_eq!(unauthorized.run(variant, &limits), TrialResult {
+                        retained: case.base.clone(),
+                        outcome: TrialOutcome::Refused(TrialRefusal::UnauthorizedRemoval),
+                    });
+                }
+            }
+            Ok(())
+        })
+        .expect("generated refused trials retry from the identical predecessor");
+}
+
+#[test]
+fn budget_domains_are_not_conflated() {
+    let swap = fixture_case(vec![vec![]; 2], 0, &[0], &[1], &[0]);
+    let swap_limits = GENEROUS
+        .with(BudgetAxis::UnionObjects, 2)
+        .with(BudgetAxis::FinalObjects, 1);
+    let TrialOutcome::Prepared(swapped) = swap.run(TrialVariant::Faithful, &swap_limits).outcome
+    else {
+        panic!("the swap fixture prepares within its union and final limits");
+    };
+    assert_eq!((swapped.usage.peak_objects, swapped.objects), (2, 1));
+    assert_eq!(
+        swap.run(TrialVariant::FinalOnUnion, &swap_limits).outcome,
+        TrialOutcome::Refused(TrialRefusal::Budget(BudgetAxis::UnionObjects))
+    );
+    assert_eq!(
+        swap.run(TrialVariant::Faithful, &swap_limits.with(BudgetAxis::FinalObjects, 0))
+            .outcome,
+        TrialOutcome::Refused(TrialRefusal::Budget(BudgetAxis::FinalObjects))
+    );
+    let chain = fixture_case(vec![vec![], vec![0], vec![1], vec![2]], 0, &[], &[3], &[]);
+    let scratch_limits = GENEROUS.with(BudgetAxis::Scratch, 2);
+    let TrialOutcome::Prepared(chained) =
+        chain.run(TrialVariant::Faithful, &scratch_limits).outcome
+    else {
+        panic!("the chain fixture prepares within its scratch limit");
+    };
+    assert_eq!((chained.usage.peak_scratch, chained.usage.expansions), (2, 4));
+    assert_eq!(
+        chain
+            .run(TrialVariant::AllocationsAsScratch, &scratch_limits)
+            .outcome,
+        TrialOutcome::Refused(TrialRefusal::Budget(BudgetAxis::Scratch))
+    );
+    let isolated = fixture_case(vec![vec![]], 0, &[0], &[0, 0, 0], &[]);
+    assert_eq!(
+        isolated
+            .run(TrialVariant::Faithful, &scratch_limits)
+            .outcome,
+        TrialOutcome::Refused(TrialRefusal::Budget(BudgetAxis::Scratch))
+    );
+    let TrialOutcome::Prepared(uncharged) = isolated
+        .run(TrialVariant::UnchargedInitialization, &scratch_limits)
+        .outcome
+    else {
+        panic!("the uncharged initialization mutant admits the isolated fixture");
+    };
+    assert!(uncharged.usage.peak_scratch <= scratch_limits.get(BudgetAxis::Scratch));
+    assert!(scratch_limits.get(BudgetAxis::Scratch) < isolated.added.len() as u64);
+
+    trial_runner()
+        .run(&trial_cases(), |case| {
+            let (unbounded, evidence) = case.prepared_unbounded()?;
+            let exact = TrialLimits::exact(&evidence);
+            let mut last: Option<TrialState> = None;
+            let mut starts = 0;
+            let at_exact =
+                case.run_from(TrialVariant::Faithful, &exact, &case.base, &mut |moment, state| {
+                    assert!(state.live_scratch() <= state.usage.peak_scratch);
+                    assert!(state.usage.peak_scratch <= exact.get(BudgetAxis::Scratch));
+                    if moment == TrialMoment::PhaseStart {
+                        let (inherited, root_events) = match &last {
+                            None => (0, case.added.len()),
+                            Some(middle) => (middle.usage.references, case.removed.len()),
+                        };
+                        assert_eq!(state.usage.references, inherited + root_events as u64);
+                        starts += 1;
+                    }
+                    last = Some(state.clone());
+                });
+            prop_assert_eq!(&at_exact, &unbounded);
+            prop_assert_eq!(starts, 2);
+
+            prop_assert!(evidence.usage.peak_objects >= evidence.objects);
+            prop_assert!(evidence.usage.peak_bytes >= evidence.bytes);
+            let conflated = case.run(TrialVariant::FinalOnUnion, &exact).outcome;
+            match (
+                evidence.usage.peak_objects > evidence.objects,
+                evidence.usage.peak_bytes > evidence.bytes,
+            ) {
+                (false, false) => prop_assert_eq!(conflated, unbounded.outcome.clone()),
+                (true, false) => prop_assert_eq!(
+                    conflated,
+                    TrialOutcome::Refused(TrialRefusal::Budget(BudgetAxis::UnionObjects))
+                ),
+                (false, true) => prop_assert_eq!(
+                    conflated,
+                    TrialOutcome::Refused(TrialRefusal::Budget(BudgetAxis::UnionBytes))
+                ),
+                (true, true) => prop_assert!(matches!(
+                    conflated,
+                    TrialOutcome::Refused(TrialRefusal::Budget(
+                        BudgetAxis::UnionObjects | BudgetAxis::UnionBytes
+                    ))
+                )),
+            }
+
+            let allocations = case.run(TrialVariant::AllocationsAsScratch, &exact).outcome;
+            if evidence.usage.expansions > evidence.usage.peak_scratch {
+                prop_assert_eq!(
+                    allocations,
+                    TrialOutcome::Refused(TrialRefusal::Budget(BudgetAxis::Scratch))
+                );
+            } else {
+                prop_assert_eq!(allocations, unbounded.outcome.clone());
+            }
+
+            let mut uncharged_starts = Vec::with_capacity(2);
+            let uncharged = case.run_from(
+                TrialVariant::UnchargedInitialization,
+                &exact,
+                &case.base,
+                &mut |moment, state| {
+                    if moment == TrialMoment::PhaseStart {
+                        uncharged_starts.push((state.live_scratch(), state.usage.peak_scratch));
+                    }
+                },
+            );
+            let TrialOutcome::Prepared(undercharged) = &uncharged.outcome else {
+                return Err(TestCaseError::fail(format!(
+                    "uncharged initialization refused under the faithful exact limits: \
+                     {uncharged:?}"
+                )));
+            };
+            prop_assert_eq!(&undercharged.ledger, &evidence.ledger);
+            prop_assert_eq!(
+                undercharged.usage.references + (case.added.len() + case.removed.len()) as u64,
+                evidence.usage.references
+            );
+            prop_assert!(undercharged.usage.peak_scratch <= evidence.usage.peak_scratch);
+            let (live, reserved) = uncharged_starts[0];
+            prop_assert_eq!(live > reserved, !case.added.is_empty());
+            Ok(())
+        })
+        .expect("generated trials keep the union, final, scratch and allocation domains apart");
+}
+
+#[test]
+fn external_quotes_bound_consumption_only_when_sound() {
+    let quote_limits = GENEROUS.with(BudgetAxis::QuotedBytes, 0);
+    for excess in [0, 1, u64::from(u32::MAX), u64::MAX - 1] {
+        let unsound = fixture_case(vec![vec![]], excess + 1, &[], &[0], &[]);
+        let TrialOutcome::Prepared(evidence) =
+            unsound.run(TrialVariant::Faithful, &quote_limits).outcome
+        else {
+            panic!("an unsound quote is admitted within a zero quote limit");
+        };
+        assert!(evidence.usage.quoted_bytes <= quote_limits.get(BudgetAxis::QuotedBytes));
+        assert!(excess < evidence.usage.consumed_bytes);
+    }
+
+    trial_runner()
+        .run(&(trial_cases(), prop::array::uniform9(-2i64..3)), |(case, offsets)| {
+            let (_, evidence) = case.prepared_unbounded()?;
+            let union = cold_graph_oracle(&case.env.graph, &case.union_roots());
+            let charged = (0..case.env.graph.len()).fold(
+                (0u64, 0u64, 0u64),
+                |(expansions, quoted, consumed), vertex| {
+                    let crossings =
+                        u64::from(union.active[vertex] && !case.base.ledger.active[vertex]) +
+                            u64::from(union.active[vertex] && !evidence.ledger.active[vertex]);
+                    (
+                        expansions + crossings,
+                        quoted + crossings * case.env.quoted_read[vertex],
+                        consumed + crossings * case.env.consumed_read[vertex],
+                    )
+                },
+            );
+            prop_assert_eq!(
+                (
+                    evidence.usage.expansions,
+                    evidence.usage.quoted_bytes,
+                    evidence.usage.consumed_bytes
+                ),
+                charged
+            );
+            let sound = TrialCase {
+                env: TrialEnvironment {
+                    consumed_read: case
+                        .env
+                        .consumed_read
+                        .iter()
+                        .zip(&case.env.quoted_read)
+                        .map(|(consumed, quoted)| (*consumed).min(*quoted))
+                        .collect(),
+                    ..case.env.clone()
+                },
+                ..case.clone()
+            };
+            let limits = offset_limits(&evidence, offsets);
+            if let TrialOutcome::Prepared(bounded) =
+                sound.run(TrialVariant::Faithful, &limits).outcome
+            {
+                prop_assert!(bounded.usage.consumed_bytes <= bounded.usage.quoted_bytes);
+                prop_assert!(bounded.usage.quoted_bytes <= limits.get(BudgetAxis::QuotedBytes));
+            }
+            Ok(())
+        })
+        .expect("generated sound quotes bound consumed read bytes");
+}
+
+#[test]
+fn trial_mutants_violate_atomicity_or_cold_oracle() {
+    let edge = fixture_case(vec![vec![], vec![0]], 0, &[], &[1], &[]);
+    let reference_limits = GENEROUS.with(BudgetAxis::References, 1);
+    let refused = TrialOutcome::Refused(TrialRefusal::Budget(BudgetAxis::References));
+    assert_eq!(edge.run(TrialVariant::Faithful, &reference_limits), TrialResult {
+        retained: edge.base.clone(),
+        outcome: refused.clone(),
+    });
+    let partial = edge.run(TrialVariant::PartialCommit, &reference_limits);
+    assert_eq!(partial.outcome, refused);
+    assert_eq!(partial.retained.ledger.counts[1], 1);
+    assert_eq!(edge.base.ledger.counts[1], 0);
+    let TrialOutcome::Prepared(skipped) = edge
+        .run(TrialVariant::SkipContribution, &TrialLimits::UNBOUNDED)
+        .outcome
+    else {
+        panic!("the skipped-contribution mutant prepares the edge fixture");
+    };
+    assert!(!quiescent(&edge.env.graph, &skipped.roots, &skipped.ledger));
+    let duplicate = fixture_case(vec![vec![], vec![0], vec![]], 0, &[], &[1], &[]);
+    let TrialOutcome::Prepared(duplicated) = duplicate
+        .run(TrialVariant::DuplicateContribution, &TrialLimits::UNBOUNDED)
+        .outcome
+    else {
+        panic!("the duplicated-contribution mutant prepares the duplicate fixture");
+    };
+    assert!(!quiescent(&duplicate.env.graph, &duplicated.roots, &duplicated.ledger));
+
+    let partial_detections = std::cell::Cell::new(0usize);
+    let contribution_detections = std::cell::Cell::new(0usize);
+    trial_runner()
+        .run(&trial_cases(), |case| {
+            let (_, evidence) = case.prepared_unbounded()?;
+            let exact = TrialLimits::exact(&evidence);
+            for axis in BUDGET_AXES {
+                let measured = evidence.measured(axis);
+                if measured == 0 {
+                    continue;
+                }
+                let tight = exact.with(axis, measured - 1);
+                let mut last: Option<TrialState> = None;
+                let partial = case.run_from(
+                    TrialVariant::PartialCommit,
+                    &tight,
+                    &case.base,
+                    &mut |_, state| last = Some(state.clone()),
+                );
+                let faithful = case.run(TrialVariant::Faithful, &tight);
+                prop_assert_eq!(&partial.outcome, &faithful.outcome);
+                prop_assert_eq!(&faithful.retained, &case.base);
+                let in_flight = last.map_or_else(
+                    || case.base.clone(),
+                    |state| Predecessor {
+                        ledger: state.machine.ledger,
+                        roots: case.base.roots.clone(),
+                        objects: state.live_objects,
+                        bytes: state.live_bytes,
+                    },
+                );
+                prop_assert_eq!(&partial.retained, &in_flight);
+                if partial.retained != case.base {
+                    partial_detections.set(partial_detections.get() + 1);
+                }
+            }
+            let activation_only = TrialCase {
+                removed: Vec::new(),
+                ..case.clone()
+            };
+            let (_, activated) = activation_only.prepared_unbounded()?;
+            if activated.usage.references > activation_only.added.len() as u64 {
+                match activation_only
+                    .run(TrialVariant::SkipContribution, &TrialLimits::UNBOUNDED)
+                    .outcome
+                {
+                    TrialOutcome::Prepared(skipped) => prop_assert!(
+                        !quiescent(&case.env.graph, &skipped.roots, &skipped.ledger),
+                        "the skipped-contribution mutant prepared a quiescent ledger"
+                    ),
+                    refused => {
+                        return Err(TestCaseError::fail(format!(
+                            "the skipped-contribution mutant refused without limits: {refused:?}"
+                        )));
+                    }
+                }
+                if let TrialOutcome::Prepared(duplicated) = activation_only
+                    .run(TrialVariant::DuplicateContribution, &TrialLimits::UNBOUNDED)
+                    .outcome
+                {
+                    prop_assert!(
+                        !quiescent(&case.env.graph, &duplicated.roots, &duplicated.ledger),
+                        "the duplicated-contribution mutant prepared a quiescent ledger"
+                    );
+                }
+                contribution_detections.set(contribution_detections.get() + 1);
+            }
+            Ok(())
+        })
+        .expect("generated trials reject every partial-commit and contribution mutant");
+    assert!(partial_detections.get() > 0, "no generated refusal exposed partial commit");
+    assert!(contribution_detections.get() > 0, "no generated trial transferred a contribution");
 }
