@@ -814,6 +814,56 @@ mod embedded_defaults_tests {
         }
     }
 
+    #[test]
+    fn every_shipped_config_passes_startup_validation() {
+        let shipped = [
+            (
+                "docker/conf/bootstrap.conf",
+                include_str!("../../../../docker/conf/bootstrap.conf"),
+            ),
+            (
+                "docker/conf/default.conf",
+                include_str!("../../../../docker/conf/default.conf"),
+            ),
+            (
+                "docker/conf/readonly-remote.conf",
+                include_str!("../../../../docker/conf/readonly-remote.conf"),
+            ),
+            (
+                "docker/conf/standalone-dev.conf",
+                include_str!("../../../../docker/conf/standalone-dev.conf"),
+            ),
+            (
+                "docker/conf/validator1-remote.conf",
+                include_str!("../../../../docker/conf/validator1-remote.conf"),
+            ),
+            (
+                "docker/conf/validator2-remote.conf",
+                include_str!("../../../../docker/conf/validator2-remote.conf"),
+            ),
+            (
+                "run-local/conf/standalone.conf",
+                include_str!("../../../../run-local/conf/standalone.conf"),
+            ),
+        ];
+        let refused: Vec<String> = shipped
+            .iter()
+            .filter_map(|(path, contents)| {
+                let cfg: NodeConf = hocon::HoconLoader::new()
+                    .load_str(EMBEDDED_DEFAULTS)
+                    .unwrap()
+                    .load_str(contents)
+                    .unwrap_or_else(|error| panic!("{path} does not parse: {error}"))
+                    .resolve()
+                    .unwrap_or_else(|error| panic!("{path} does not resolve: {error}"));
+                builder::validate_config(&cfg)
+                    .err()
+                    .map(|error| format!("{path}: {error}"))
+            })
+            .collect();
+        assert!(refused.is_empty(), "{refused:#?}");
+    }
+
     /// The buffer widens every window it is added to, so a negative one would
     /// fetch, import and retain less than the parent reach and the retention
     /// window need.
