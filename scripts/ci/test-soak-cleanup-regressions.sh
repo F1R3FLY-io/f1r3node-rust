@@ -6,7 +6,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 original="$(cat "$ROOT/scripts/run-merge-recovery-soak.sh")"
 : >"$TMP/results"
-for name in clean missing-owner-stop missing-residual-stop ignored-stop-failure overwritten-reason; do
+for name in clean missing-owner-stop missing-residual-stop ignored-stop-failure ignored-residual-failure overwritten-record overwritten-reason; do
     case "$name" in
         clean) assertion="" ;;
         missing-owner-stop)
@@ -18,6 +18,12 @@ for name in clean missing-owner-stop missing-residual-stop ignored-stop-failure 
         ignored-stop-failure)
             old=$'if [ "$FAILURES" -eq 0 ]; then\n\t\tFAILURES=1\n\tfi'
             new=$'if false; then\n\t\tFAILURES=1\n\tfi'; assertion='FAIL: unconfirmed stop passed' ;;
+        ignored-residual-failure)
+            old=$'if [ "$FAILURES" -eq 0 ]; then\n\t\t\tFAILURES=1\n\t\tfi'
+            new=$'if false; then\n\t\t\tFAILURES=1\n\t\tfi'; assertion='FAIL: unconfirmed residual stop passed' ;;
+        overwritten-record)
+            old='is unconfirmed at the end of the segment.\n'"' >>"'"$OUTPUT_DIR/writer-stop-failure.txt"'
+            new='is unconfirmed at the end of the segment.\n'"' >"'"$OUTPUT_DIR/writer-stop-failure.txt"'; assertion='FAIL: owner stop record overwritten' ;;
         overwritten-reason)
             old='${EARLY_EXIT_REASON:-${PRIOR_EARLY_EXIT_REASON:-none}}'
             new='${EARLY_EXIT_REASON:-none}'; assertion='FAIL: earlier reason overwritten' ;;
@@ -50,4 +56,4 @@ for name in clean missing-owner-stop missing-residual-stop ignored-stop-failure 
 done
 mkdir -p "$(dirname "$output")"
 jq -s '{schema:"soak-cleanup-regressions/v1",results:.}' "$TMP/results" >"$output"
-printf 'Two-segment fixture and four negative controls passed.\n'
+printf 'Two-segment fixture and six negative controls passed.\n'

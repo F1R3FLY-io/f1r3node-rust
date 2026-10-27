@@ -2490,7 +2490,7 @@ if [ "$CASPER_RUNTIME" -eq 0 ] && [ -d "$SUBPROCESS_DATA_DIR" ]; then
 		--owner "$SOAK_WRITER_OWNER" --quiet-ms "$residual_quiet_ms" "$SUBPROCESS_DATA_DIR" 2>/dev/null)" || residual_status=$?
 	[ -z "$residual_lines" ] || printf '%s\n' "$residual_lines" | sed "s/^/segment=$SEGMENT /" >>"$OUTPUT_DIR/residual-writers.txt"
 	if [ "$residual_status" -ne 0 ]; then
-		printf 'Residual writer termination under .subprocess-data is unconfirmed at the end of the segment.\n' >"$OUTPUT_DIR/writer-stop-failure.txt"
+		printf 'Residual writer termination under .subprocess-data is unconfirmed at the end of the segment.\n' >>"$OUTPUT_DIR/writer-stop-failure.txt"
 		if [ -z "$EARLY_EXIT_REASON" ] && [ -z "$PRIOR_EARLY_EXIT_REASON" ]; then
 			EARLY_EXIT_REASON="writer_stop_failed"
 			publish_record "$OUTPUT_DIR/early-exit.txt" printf 'writer_stop_failed: Writer termination is unconfirmed.\n'

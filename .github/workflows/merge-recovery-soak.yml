@@ -2069,26 +2069,6 @@ jobs:
           path: ci-control
           persist-credentials: false
 
-      - name: Configure cleanup acceptance trust
-        working-directory: ci-control
-        env:
-          CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
-        run: bash scripts/ci/configure-cbc-trust.sh
-
-      - name: Install the pinned CbC runtime on this runner
-        timeout-minutes: 5
-        working-directory: ci-control
-        run: bash scripts/ci/install-cbc-runtime.sh
-
-      - name: Require accepted cleanup on this runner
-        env:
-          CBC_CONTROL_REVISION: ${{ github.workflow_sha }}
-          CBC_CANDIDATE_REVISION: ${{ needs.schedule_gate.outputs.target_sha }}
-        run: >-
-          bash ci-control/scripts/ci/check-soak-cleanup.sh --root ci-control
-          --control-revision "$CBC_CONTROL_REVISION" --candidate-revision "$CBC_CANDIDATE_REVISION"
-          --output "$RUNNER_TEMP/soak-cleanup-admission.json"
-
       # FIRST, before the expensive image build: this job must exempt the
       # instance it is ACTUALLY RUNNING ON from ci-runner-reaper.yml.
       #
@@ -2190,6 +2170,28 @@ jobs:
           fi
           echo "instance_id=$iid" >> "$GITHUB_OUTPUT"
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
+
+      # The cleanup gate runs after the reaper exemption. Its runtime download
+      # can take minutes, and an unexempt runner can be reaped in that time.
+      - name: Configure cleanup acceptance trust
+        working-directory: ci-control
+        env:
+          CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
+        run: bash scripts/ci/configure-cbc-trust.sh
+
+      - name: Install the pinned CbC runtime on this runner
+        timeout-minutes: 5
+        working-directory: ci-control
+        run: bash scripts/ci/install-cbc-runtime.sh
+
+      - name: Require accepted cleanup on this runner
+        env:
+          CBC_CONTROL_REVISION: ${{ github.workflow_sha }}
+          CBC_CANDIDATE_REVISION: ${{ needs.schedule_gate.outputs.target_sha }}
+        run: >-
+          bash ci-control/scripts/ci/check-soak-cleanup.sh --root ci-control
+          --control-revision "$CBC_CONTROL_REVISION" --candidate-revision "$CBC_CANDIDATE_REVISION"
+          --output "$RUNNER_TEMP/soak-cleanup-admission.json"
 
       - name: Checkout code under test
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0

@@ -43,16 +43,18 @@ DOCKER
 cat >"$TMP/bin/harness" <<WRAPPER
 #!/usr/bin/env bash
 if [ "\${CASE_STOP_FAIL:-0}" = 1 ] && [ "\${1:-} \${2:-}" = 'host-control stop-owned' ]; then exit 2; fi
+if [ "\${CASE_RESIDUAL_FAIL:-0}" = 1 ] && [ "\${1:-} \${2:-}" = 'host-control stop-under' ]; then exit 2; fi
 exec "$HARNESS" "\$@"
 WRAPPER
 chmod +x "$TMP/bin/poetry" "$TMP/bin/docker" "$TMP/bin/harness"
 setsid bash -c 'printf "%s\n" "$$" >"$1"; while :; do sleep 0.1; done' unrelated "$TMP/unrelated.pid" \
     </dev/null >/dev/null 2>&1 &
 run_segment() {
-    local label="$1" output="$2" stop_fail="$3"
+    local label="$1" output="$2" stop_fail="$3" residual_fail="${4:-0}"
     status=0
     timeout --signal=TERM --kill-after=2 35 env PATH="$TMP/bin:$PATH" \
         SOAK_HARNESS_BIN="$TMP/bin/harness" CASE_ROOT="$TMP" CASE_SEGMENT="$label" CASE_STOP_FAIL="$stop_fail" \
+        CASE_RESIDUAL_FAIL="$residual_fail" \
         SOAK_DURATION_SECONDS=60 SOAK_DEADLINE_EPOCH="$(($(date +%s) + 3))" SOAK_OUTPUT_DIR="$output" SYSTEM_INTEGRATION_DIR="$TMP/si" \
         SOAK_RSS_CEILING_MB=0 SOAK_HOST_FREE_FLOOR_MB=0 SOAK_DISK_FREE_FLOOR_MB=0 \
         SOAK_CONTAINER_LOG_BUDGET_MB=0 SOAK_NODE_LOG_BUDGET_MB=0 \
@@ -82,4 +84,13 @@ run_segment restart "$TMP/failed" 1
 [ ! -e "$TMP/owner-restart" ] || fail 'failed restart launched work'
 grep -q '^early_exit_reason=writer_stop_failed$' "$TMP/failed/summary.txt" || fail 'earlier reason overwritten'
 grep -q '^FAILURES=1$' "$TMP/failed/.soak-state" || fail 'restart changed failure count'
-printf 'Two-segment cleanup and failed restart passed.\n'
+run_segment residual "$TMP/residual-failed" 0 1
+[ "$status" -ne 0 ] || fail 'unconfirmed residual stop passed'
+grep -q '^Residual writer termination' "$TMP/residual-failed/writer-stop-failure.txt" || fail 'residual failure marker missing'
+grep -q '^writer_stop_failed:' "$TMP/residual-failed/early-exit.txt" || fail 'residual stop reason missing'
+grep -q '^FAILURES=1$' "$TMP/residual-failed/.soak-state" || fail 'unconfirmed residual stop passed'
+run_segment both "$TMP/both-failed" 1 1
+[ "$status" -ne 0 ] || fail 'unconfirmed stops passed'
+grep -q '^Writer termination is unconfirmed' "$TMP/both-failed/writer-stop-failure.txt" || fail 'owner stop record overwritten'
+grep -q '^Residual writer termination' "$TMP/both-failed/writer-stop-failure.txt" || fail 'residual failure marker missing'
+printf 'Two-segment cleanup, failed restart, and failed residual stop passed.\n'

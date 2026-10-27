@@ -754,6 +754,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-run-integration-preflight.sh
 
+      - name: Verify heartbeat timing driver
+        shell: bash -euo pipefail {0}
+        run: bash scripts/bench/test-run-heartbeat-timing.sh
+
       - name: Verify soak dashboard restoration
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-restore-soak-dashboard-run.sh

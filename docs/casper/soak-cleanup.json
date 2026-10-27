@@ -64,6 +64,9 @@
     "scripts/ci/install-cbc-runtime.sh": [
       "CLAIM-SOAK-CLEANUP-001"
     ],
+    "scripts/ci/soak-cleanup-lock-closure.sh": [
+      "CLAIM-SOAK-CLEANUP-001"
+    ],
     "scripts/ci/test-cbc-runtime.sh": [
       "CLAIM-SOAK-CLEANUP-001"
     ],
@@ -86,8 +89,6 @@
   },
   "build_inputs": [
     ".cargo/config.toml",
-    "Cargo.lock",
-    "Cargo.toml",
     "rust-toolchain.toml",
     "scripts/casper-soak/Cargo.toml",
     "scripts/casper-soak/src/authority_execution.rs",

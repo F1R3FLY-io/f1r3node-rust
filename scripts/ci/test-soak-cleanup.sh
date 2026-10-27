@@ -15,7 +15,7 @@ while IFS= read -r path; do
     mkdir -p "$base/$(dirname "$path")"
     cp "$ROOT/$path" "$base/$path"
 done < <(jq -r '[.artifacts|keys[]]+[.claims[]]+.build_inputs|unique[]' "$ROOT/$manifest")
-for path in .github/.gitattributes docs/.gitattributes formal/.gitattributes scripts/.gitattributes; do
+for path in .github/.gitattributes docs/.gitattributes formal/.gitattributes scripts/.gitattributes Cargo.lock; do
     mkdir -p "$base/$(dirname "$path")"
     cp "$ROOT/$path" "$base/$path"
 done
@@ -27,9 +27,12 @@ cd "$base"
 while IFS= read -r path; do
     jq -nc --arg path "$path" --arg hash "$(shasum -a 256 "$path" | awk '{print $1}')" '{key:$path,value:$hash}' >>"$TMP/digests"
 done < <(jq -r '[.artifacts|keys[]]+[.claims[]]+.build_inputs|unique[]' "$manifest")
+closure="$(bash scripts/ci/soak-cleanup-lock-closure.sh --digest)"
 jq -s --slurpfile runtime scripts/cbc-runtime.lock.json \
+    --arg closure "$closure" \
     '{schema:"soak-cleanup-verification/v1",source_digests:from_entries,
-      runtime:($runtime[0]|{repository,revision,source_directory,sha256})}' "$TMP/digests" >report.json
+      runtime:($runtime[0]|{repository,revision,source_directory,sha256}),
+      lock_closure_sha256:$closure}' "$TMP/digests" >report.json
 while IFS= read -r path; do
     ledger="$(bash "$cbc" attributes evidence-path "$path")"
     ids=()
@@ -45,8 +48,14 @@ while IFS= read -r path; do
     bash "$cbc" accept "$path" --claim-id "$claim" --approval "$TMP/approval.json" --signature "$TMP/approval.json.sig" >/dev/null
 done < <(jq -r '.artifacts|keys[]' "$manifest")
 cd "$ROOT"
+# bump_lock_version LOCK NAME: changes the version of every NAME entry in LOCK.
+bump_lock_version() {
+    awk -v entry="name = \"$2\"" 'previous == entry && /^version = "/ { sub(/"/, "\"999.") } { print; previous = $0 }' \
+        "$1" >"$1.new"
+    mv "$1.new" "$1"
+}
 checks=0
-for name in current stale-control changed-claim changed-build changed-report missing-signature invalid-signature missing-policy missing-record wrong-control missing-runtime corrupt-runtime changed-runtime-pin; do
+for name in current unrelated-lock changed-closure stale-control changed-claim changed-build changed-report missing-signature invalid-signature missing-policy missing-record wrong-control missing-runtime corrupt-runtime changed-runtime-pin; do
     directory="$TMP/$name"
     cp -R "$base" "$directory"
     expected=4
@@ -56,7 +65,14 @@ for name in current stale-control changed-claim changed-build changed-report mis
         current) expected=0 ;;
         stale-control) printf 'old control source\n' >"$directory/scripts/run-merge-recovery-soak.sh" ;;
         changed-claim) printf '\nChanged claim.\n' >>"$directory/$specification" ;;
-        changed-build) printf 'changed dependencies\n' >"$directory/Cargo.lock" ;;
+        unrelated-lock)
+            expected=0
+            outside="$(comm -23 <(awk -F'"' '/^name = /{print $2}' "$directory/Cargo.lock" | sort -u) \
+                <(bash "$directory/scripts/ci/soak-cleanup-lock-closure.sh" --root "$directory" | awk '{print $1}' | sort -u) | head -1)"
+            [ -n "$outside" ]
+            bump_lock_version "$directory/Cargo.lock" "$outside" ;;
+        changed-closure) bump_lock_version "$directory/Cargo.lock" regex ;;
+        changed-build) printf '\nchanged toolchain\n' >>"$directory/rust-toolchain.toml" ;;
         changed-report) printf '{}\n' >"$directory/report.json" ;;
         missing-signature)
             signature="$(find "$directory/docs/casper/cbc-evidence" -name '*.acceptance.json' -print -quit)"
@@ -112,6 +128,8 @@ runner_install="$(awk '/^      - name: Install the pinned CbC runtime on this ru
 launch_install="$(awk '/^      - name: Install the pinned CbC runtime before runner launch$/{print NR}' "$workflow")"
 launch_gate="$(awk '/^      - name: Require accepted cleanup before runner launch$/{print NR}' "$workflow")"
 node_build="$(awk '/^      - name: Build node image$/{print NR}' "$workflow")"
+reaper_exempt="$(awk '/^      - name: Exempt this runner from the CI reaper$/{print NR}' "$workflow")"
+[ -n "$reaper_exempt" ] && [ "$reaper_exempt" -lt "$runner_install" ]
 [ "$launch_install" -lt "$launch_gate" ]
 [ "$runner_install" -lt "$runner_gate" ]
 [ "$runner_gate" -lt "$node_build" ]

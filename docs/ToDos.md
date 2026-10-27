@@ -167,6 +167,29 @@ tasks:
       - "The launcher, installer, lockfile, and tests have mandatory attributes and current verification records."
       - "The refreshed evidence binds current repository inputs and the validated runtime identity."
       - "The test suite covers cold installation, verified reuse, failed downloads, and corrupted runtime files."
+  - id: TASK-030-3
+    title: "Separate the optional heartbeat timing benchmark from preflight"
+    status: in_progress
+    claimed_by: codex-session-heartbeat-selection
+    claimed_at: 2026-10-27T05:27:17Z
+    finding: "Run 40438920821 passed 124 tests but failed preflight because the optional heartbeat timing test skipped."
+    progress: "Implementation and local checks pass. A hosted benchmark run remains pending after merge."
+    files:
+      - scripts/run-integration-preflight.sh
+      - scripts/bench/test-run-integration-preflight.sh
+      - scripts/bench/run-heartbeat-timing.sh
+      - scripts/bench/test-run-heartbeat-timing.sh
+      - .github/scripts/test-ephemeral-run-tagging.sh
+      - .github/workflows/heartbeat-timing.yml
+      - .github/workflows/ci-runner-reclaim.yml
+      - .github/workflows/ci.yml
+      - docs/ci.md
+    acceptance:
+      - "Routine preflight excludes the timing benchmark from collection and execution, including when HEARTBEAT_TIMING is inherited."
+      - "Preflight still rejects skipped, failed, missing, and incomplete test results."
+      - "A manual workflow selects the node revision and 1 to 20 repetitions on one 64 GB runner."
+      - "The benchmark has a 45-minute test limit and retains revision identities, timing measurements, and failure logs."
+      - "Runner cleanup covers successful, failed, and cancelled manual runs."
 ```
 
 ---

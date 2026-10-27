@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$ROOT"
 output=""
 record=0
@@ -34,6 +34,7 @@ snapshot() {
     done < <(jq -r '[.artifacts|keys[]]+[.claims[]]+.build_inputs|unique[]' "$manifest")
 }
 snapshot | jq -s from_entries >"$TMP/before.json"
+closure="$(bash scripts/ci/soak-cleanup-lock-closure.sh --digest)"
 : >"$TMP/checks"
 run_check() {
     local index="$1" linux="$2" logical="$3" status=0
@@ -45,7 +46,7 @@ run_check() {
             -e SOAK_HARNESS_BIN=/harness/casper-soak -w "$ROOT" "$image" \
             timeout --signal=TERM --kill-after=5 550 "$@" >"$TMP/check-$index.log" 2>&1 || status=$?
     else
-        "$@" >"$TMP/check-$index.log" 2>&1 || status=$?
+        SOAK_HARNESS_BIN="$harness" "$@" >"$TMP/check-$index.log" 2>&1 || status=$?
     fi
     sed "s|$ROOT|[WORKTREE]|g" "$TMP/check-$index.log" >"$output/check-$index.log"
     [ "$status" -eq 0 ] || { cat "$output/check-$index.log"; printf 'Cleanup verification failed.\n' >&2; exit 4; }
@@ -61,15 +62,18 @@ run_check 3 1 '["bash","scripts/bench/test-run-merge-recovery-soak.sh"]' \
     bash scripts/bench/test-run-merge-recovery-soak.sh
 snapshot | jq -s from_entries >"$TMP/after.json"
 cmp -s "$TMP/before.json" "$TMP/after.json" || { printf 'A verification input changed.\n' >&2; exit 4; }
+[ "$(bash scripts/ci/soak-cleanup-lock-closure.sh --digest)" = "$closure" ] ||
+    { printf 'The harness dependency closure changed.\n' >&2; exit 4; }
 jq -n --slurpfile sources "$TMP/before.json" --slurpfile checks "$TMP/checks" \
     --slurpfile model "$output/model.json" --slurpfile regressions "$output/regressions.json" \
     --slurpfile runtime scripts/cbc-runtime.lock.json \
     --arg at "$(date -u +%FT%TZ)" --arg revision "$(git rev-parse HEAD)" \
     --arg jar "$(hash "${TLA2TOOLS_JAR:?TLA2TOOLS_JAR is required}")" --arg harness "$(hash "$harness")" \
+    --arg closure "$closure" \
     '{schema:"soak-cleanup-verification/v1",verified_at:$at,control_revision:$revision,
       source_digests:$sources[0],runtime:($runtime[0]|{repository,revision,source_directory,sha256}),
       checks:$checks,model:$model[0],regressions:$regressions[0],
-      tlc_sha256:$jar,harness_binary_sha256:$harness,scope:"bounded-segment-cleanup",
+      tlc_sha256:$jar,harness_binary_sha256:$harness,lock_closure_sha256:$closure,scope:"bounded-segment-cleanup",
       node_execution:false,maintainer_acceptance:"pending",live_soak:"pending"}' >"$output/report.json"
 if [ "$record" -eq 1 ]; then
     reference="${output#"$ROOT/"}/report.json"

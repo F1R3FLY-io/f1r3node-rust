@@ -52,10 +52,12 @@ jq -e '.schema=="soak-cleanup/v1" and (.artifacts|type=="object") and (.claims|t
 for required in "$manifest" scripts/ci/check-soak-cleanup.sh scripts/run-merge-recovery-soak.sh \
     scripts/cbc.sh scripts/cbc-runtime.lock.json scripts/ci/install-cbc-runtime.sh \
     scripts/casper-soak/src/host_control.rs .github/actions/soak-segment/action.yml \
-    .github/workflows/merge-recovery-soak.yml docs/claims/soak-segment-cleanup.md; do
+    .github/workflows/merge-recovery-soak.yml docs/claims/soak-segment-cleanup.md \
+    scripts/ci/soak-cleanup-lock-closure.sh; do
     jq -e --arg path "$required" '.artifacts|has($path)' "$manifest" >/dev/null || reject 'The cleanup manifest omits a required artifact.'
 done
 inputs="$(jq -c '[.artifacts|keys[]]+[.claims[]]+.build_inputs|unique' "$manifest")"
+closure="$(bash scripts/ci/soak-cleanup-lock-closure.sh --digest)" || reject 'The harness dependency closure cannot be computed.'
 rows="$(mktemp)"
 trap 'rm -f "$rows"' EXIT
 checked="|"
@@ -80,6 +82,7 @@ while IFS= read -r path; do
         [ "$(jq -r '.schema' "$reference")" = soak-cleanup-verification/v1 ] || reject 'The cleanup report schema differs.'
         [ "$(jq -cS '.runtime' "$reference")" = "$(jq -cS '{repository,revision,source_directory,sha256}' scripts/cbc-runtime.lock.json)" ] || reject 'The cleanup runtime binding differs.'
         [ "$(jq -c '.source_digests|keys|sort' "$reference")" = "$inputs" ] || reject 'The cleanup report does not bind the complete source set.'
+        [ "$(jq -r '.lock_closure_sha256 // ""' "$reference")" = "$closure" ] || reject 'The harness dependency closure changed.'
         while IFS= read -r source; do
             local_file "$source"
             expected_hash="$(jq -r --arg source "$source" '.source_digests[$source]' "$reference")"

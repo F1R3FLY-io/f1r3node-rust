@@ -51,6 +51,12 @@ This path is the driver, `host_control.rs`, the soak workflow, the segment actio
 The gate does not cover `.github/workflows/ci.yml` or the `.gitattributes` files.
 A change to those files therefore does not stop a soak.
 
+The verification binds the dependency closure of the harness, not the workspace `Cargo.lock`.
+`scripts/ci/soak-cleanup-lock-closure.sh` computes this closure from `Cargo.lock`.
+Its roots are the non-optional dependencies of `scripts/casper-soak/Cargo.toml`.
+A dependency change outside the closure therefore does not stop a soak.
+The workspace `Cargo.toml` profiles are not bound.
+
 Each segment can end after a deadline, a checkpoint, finalization, or a protection breach.
 The Linux fixture uses pidfds and runs as an unprivileged user in an isolated container.
 The host-control implementation can inspect the claimed processes under the stated visibility assumptions.
@@ -75,7 +81,8 @@ The reusable artifacts are the bounded model, two-segment fixture, negative cont
 
 ## Current verification package
 
-The [verification report](../casper/cbc-evidence/runs/soak-cleanup-20261026-01/report.json) records the checked source bytes and outcomes.
-The [status report](../casper/cbc-evidence/runs/soak-cleanup-20261026-01/status.json) records verification-time acceptance and independent claim gaps.
-The earlier package `soak-cleanup-20261025-01` bound the driver before PR #863 and PR #870, and it stays as history.
+The [verification report](../casper/cbc-evidence/runs/soak-cleanup-20261027-01/report.json) records the checked source bytes and outcomes.
+The [status report](../casper/cbc-evidence/runs/soak-cleanup-20261027-01/status.json) records verification-time acceptance and independent claim gaps.
+The earlier packages `soak-cleanup-20261025-01` and `soak-cleanup-20261026-01` stay as history.
+The package `soak-cleanup-20261026-01` bound the workspace `Cargo.lock` and predates the review fixes of 2026-10-27.
 Unsigned payloads in that package require independent maintainer review and signatures.
