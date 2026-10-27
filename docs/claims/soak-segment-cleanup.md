@@ -1,0 +1,94 @@
+# Soak Segment Cleanup Contract
+
+```yaml
+claim_id: CLAIM-SOAK-CLEANUP-001
+status: pending
+scope: bounded-harness-cleanup
+construction: not-applicable
+refutation: pending
+binding: pending
+acceptance: required
+soak: pending
+```
+
+## Required behavior
+
+A completed segment stops readable owned writers before its owner marker changes.
+A completed segment also stops visible same-user writers whose arguments or working directory name its subprocess data directory.
+Clearing the pytest PID does not remove either cleanup obligation.
+
+A completed segment also kills each Docker container that carries its owner label, directly after an inspect confirms that label.
+A Docker container that `docker ps` no longer lists as running counts as stopped.
+A container that stays listed as running after its kill is an unconfirmed stop.
+An unrelated process outside both ownership scopes remains alive.
+
+An unconfirmed stop writes writer-stop-failure.txt and makes the saved failure count at least one.
+A repeated unconfirmed stop preserves a higher failure count.
+A later segment preserves the earlier stop reason and cannot erase failure information.
+Evidence capture precedes any deletion of evidence sources.
+
+Launch requires current verification and independent signed acceptance for the actual control sources.
+Candidate node sources cannot establish acceptance for control sources.
+A source, claim, or evidence change invalidates the corresponding acceptance.
+Missing policy, records, trust configuration, or signatures prevents launch.
+
+The launcher uses the pinned shared CbC runtime from an external cache.
+Missing or modified runtime files prevent verification and launch.
+The runtime lockfile records an immutable revision and the expected source hashes.
+Verification binds that lockfile and the validated runtime identity into the evidence.
+Repository source contains no shared-runtime copy.
+
+## Bounds and assumptions
+
+The bounded model covers two segments, one owned writer, one residual writer, and one unrelated process.
+The model does not separate subprocess writers from Docker writers.
+The writer stop cases of `scripts/bench/test-run-merge-recovery-soak.sh` cover the Docker path.
+These cases are slow, vanish, exits, stuck, breach, and breach-inspect.
+The verification runs that fixture as its fourth check.
+
+The launch gate covers the soak control path.
+This path is the driver, `host_control.rs`, the soak workflow, the segment action, the claims, the model, the soak tests, and the gate scripts.
+The gate does not cover `.github/workflows/ci.yml` or the `.gitattributes` files.
+A change to those files therefore does not stop a soak.
+
+The verification binds the dependency closure of the harness, not the workspace `Cargo.lock`.
+`scripts/ci/soak-cleanup-lock-closure.sh` computes this closure from `Cargo.lock`.
+Its roots are the non-optional dependencies of `scripts/casper-soak/Cargo.toml`.
+A dependency change outside the closure therefore does not stop a soak.
+
+The closure digest also binds the workspace `Cargo.toml` parts that reach the harness build.
+These parts are the inherited `[workspace.dependencies]` entries of the harness, and the `[patch.*]` and `[profile.*]` tables.
+Other workspace members and their dependencies stay unbound.
+The walk follows every edge that `Cargo.lock` records, also optional edges that the harness features do not activate.
+A change to such a package therefore stops a soak until a new verification and acceptance exist.
+
+Each segment can end after a deadline, a checkpoint, finalization, or a protection breach.
+The Linux fixture uses pidfds and runs as an unprivileged user in an isolated container.
+The host-control implementation can inspect the claimed processes under the stated visibility assumptions.
+The kernel schedules the cleanup process and delivers supported signals within the configured budgets.
+
+An owned process with an unreadable environment can escape the owner scan.
+A residual process with unreadable arguments and working directory can escape direct termination.
+The two-second write check cannot detect every intermittent writer.
+After a protection breach, the residual stop skips that write check to preserve the emergency deadline.
+The owner label of a container that exits before its inspect is not confirmed.
+These accepted limits remain explicit and do not establish complete host containment.
+
+## Evidence and correction
+
+The verification runner records source hashes before it runs tests.
+The report records expected failures for the permanent negative controls.
+Each artifact ledger binds this specification and the report to the current source bytes.
+A passing fixture is verification evidence, not maintainer acceptance.
+The separate acceptance record authenticates the source, claim, and evidence bindings.
+
+The reusable artifacts are the bounded model, two-segment fixture, negative controls, and launch gate.
+
+## Current verification package
+
+The [verification report](../casper/cbc-evidence/runs/soak-cleanup-20261027-03/report.json) records the checked source bytes and outcomes.
+The [status report](../casper/cbc-evidence/runs/soak-cleanup-20261027-03/status.json) records verification-time acceptance and independent claim gaps.
+The earlier packages `soak-cleanup-20261025-01`, `soak-cleanup-20261026-01`, `soak-cleanup-20261027-01`, and `soak-cleanup-20261027-02` stay as history.
+The packages `soak-cleanup-20261026-01` and `soak-cleanup-20261027-01` did not bind the workspace `Cargo.toml` parts of the harness build.
+The gate tests of `soak-cleanup-20261027-02` failed on Linux because `comm` received SIGPIPE from `head`.
+Unsigned payloads in that package require independent maintainer review and signatures.
