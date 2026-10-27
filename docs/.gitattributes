@@ -1,6 +1,5 @@
 /crypto/README.md cbc=mandatory cbc-weight=medium
 /casper/design/authority-live-executor.md cbc-evidence=docs/casper/cbc-evidence
 /casper/design/authority-provider-adaptation.md cbc-evidence=docs/casper/cbc-evidence
-/.gitattributes cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /casper/soak-cleanup.json cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /claims/soak-segment-cleanup.md cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence

@@ -15,6 +15,10 @@ while IFS= read -r path; do
     mkdir -p "$base/$(dirname "$path")"
     cp "$ROOT/$path" "$base/$path"
 done < <(jq -r '[.artifacts|keys[]]+[.claims[]]+.build_inputs|unique[]' "$ROOT/$manifest")
+for path in .github/.gitattributes docs/.gitattributes formal/.gitattributes scripts/.gitattributes; do
+    mkdir -p "$base/$(dirname "$path")"
+    cp "$ROOT/$path" "$base/$path"
+done
 ssh-keygen -q -t ed25519 -N '' -f "$TMP/fixture-key"
 printf 'fixture %s\n' "$(cat "$TMP/fixture-key.pub")" >"$TMP/allowed-signers"
 git -C "$base" config --local cbc.acceptanceAllowedSigners "$TMP/allowed-signers"

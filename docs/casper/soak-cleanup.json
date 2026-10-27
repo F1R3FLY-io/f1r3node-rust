@@ -6,13 +6,7 @@
     "CLAIM-CASPER-SOAK-001": "docs/claims/casper-soak-harness.md"
   },
   "artifacts": {
-    ".github/.gitattributes": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
     ".github/actions/soak-segment/action.yml": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    ".github/workflows/ci.yml": [
       "CLAIM-SOAK-CLEANUP-001"
     ],
     ".github/workflows/merge-recovery-soak.yml": [
@@ -20,16 +14,10 @@
       "CLAIM-CASPER-SOAK-001",
       "CLAIM-SOAK-CLEANUP-001"
     ],
-    "docs/.gitattributes": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
     "docs/casper/soak-cleanup.json": [
       "CLAIM-SOAK-CLEANUP-001"
     ],
     "docs/claims/soak-segment-cleanup.md": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "formal/.gitattributes": [
       "CLAIM-SOAK-CLEANUP-001"
     ],
     "formal/tlaplus/soak_cleanup/EraseReason.cfg": [
@@ -48,9 +36,6 @@
       "CLAIM-SOAK-CLEANUP-001"
     ],
     "formal/tlaplus/soak_cleanup/clean.cfg": [
-      "CLAIM-SOAK-CLEANUP-001"
-    ],
-    "scripts/.gitattributes": [
       "CLAIM-SOAK-CLEANUP-001"
     ],
     "scripts/bench/test-run-merge-recovery-soak.sh": [

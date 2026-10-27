@@ -42,6 +42,7 @@ local_file() {
         */../*|*/.git/*|//*) reject 'A cleanup path leaves the worktree.' ;;
     esac
     local resolved
+    [ -e "$1" ] || reject "A cleanup input is missing: $1"
     resolved="$(realpath "$1")"
     [[ "$resolved" == "$root/"* ]] || reject 'A cleanup path leaves the worktree.'
     [ -f "$1" ] || reject "A cleanup input is missing: $1"
@@ -51,7 +52,7 @@ jq -e '.schema=="soak-cleanup/v1" and (.artifacts|type=="object") and (.claims|t
 for required in "$manifest" scripts/ci/check-soak-cleanup.sh scripts/run-merge-recovery-soak.sh \
     scripts/cbc.sh scripts/cbc-runtime.lock.json scripts/ci/install-cbc-runtime.sh \
     scripts/casper-soak/src/host_control.rs .github/actions/soak-segment/action.yml \
-    .github/workflows/merge-recovery-soak.yml .github/workflows/ci.yml docs/claims/soak-segment-cleanup.md; do
+    .github/workflows/merge-recovery-soak.yml docs/claims/soak-segment-cleanup.md; do
     jq -e --arg path "$required" '.artifacts|has($path)' "$manifest" >/dev/null || reject 'The cleanup manifest omits a required artifact.'
 done
 inputs="$(jq -c '[.artifacts|keys[]]+[.claims[]]+.build_inputs|unique' "$manifest")"

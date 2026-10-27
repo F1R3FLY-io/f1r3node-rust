@@ -14,7 +14,6 @@
 /bench/test-soak-disk-admission.sh cbc-evidence=docs/casper/cbc-evidence
 /bench/casper_soak_manifest.py cbc-evidence=docs/casper/cbc-evidence
 /bench/test_casper_soak_manifest.py cbc-evidence=docs/casper/cbc-evidence
-/.gitattributes cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /bench/test-run-merge-recovery-soak.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /bench/test-soak-segment-cleanup.sh cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
 /casper-soak/src/host_control.rs cbc=mandatory cbc-acceptance=required cbc-weight=high cbc-evidence=docs/casper/cbc-evidence

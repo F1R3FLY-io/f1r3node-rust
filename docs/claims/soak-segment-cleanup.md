@@ -16,6 +16,10 @@ soak: pending
 A completed segment stops readable owned writers before its owner marker changes.
 A completed segment also stops visible same-user writers whose arguments or working directory name its subprocess data directory.
 Clearing the pytest PID does not remove either cleanup obligation.
+
+A completed segment also kills each Docker container that carries its owner label, directly after an inspect confirms that label.
+A Docker container that `docker ps` no longer lists as running counts as stopped.
+A container that stays listed as running after its kill is an unconfirmed stop.
 An unrelated process outside both ownership scopes remains alive.
 
 An unconfirmed stop writes writer-stop-failure.txt and makes the saved failure count at least one.
@@ -37,6 +41,16 @@ Repository source contains no shared-runtime copy.
 ## Bounds and assumptions
 
 The bounded model covers two segments, one owned writer, one residual writer, and one unrelated process.
+The model does not separate subprocess writers from Docker writers.
+The writer stop cases of `scripts/bench/test-run-merge-recovery-soak.sh` cover the Docker path.
+These cases are slow, vanish, exits, stuck, breach, and breach-inspect.
+The verification runs that fixture as its fourth check.
+
+The launch gate covers the soak control path.
+This path is the driver, `host_control.rs`, the soak workflow, the segment action, the claims, the model, the soak tests, and the gate scripts.
+The gate does not cover `.github/workflows/ci.yml` or the `.gitattributes` files.
+A change to those files therefore does not stop a soak.
+
 Each segment can end after a deadline, a checkpoint, finalization, or a protection breach.
 The Linux fixture uses pidfds and runs as an unprivileged user in an isolated container.
 The host-control implementation can inspect the claimed processes under the stated visibility assumptions.
@@ -46,6 +60,7 @@ An owned process with an unreadable environment can escape the owner scan.
 A residual process with unreadable arguments and working directory can escape direct termination.
 The two-second write check cannot detect every intermittent writer.
 After a protection breach, the residual stop skips that write check to preserve the emergency deadline.
+The owner label of a container that exits before its inspect is not confirmed.
 These accepted limits remain explicit and do not establish complete host containment.
 
 ## Evidence and correction
@@ -60,6 +75,7 @@ The reusable artifacts are the bounded model, two-segment fixture, negative cont
 
 ## Current verification package
 
-The [verification report](../casper/cbc-evidence/runs/soak-cleanup-20261025-01/report.json) records the checked source bytes and outcomes.
-The [status report](../casper/cbc-evidence/runs/soak-cleanup-20261025-01/status.json) records verification-time acceptance and independent claim gaps.
+The [verification report](../casper/cbc-evidence/runs/soak-cleanup-20261026-01/report.json) records the checked source bytes and outcomes.
+The [status report](../casper/cbc-evidence/runs/soak-cleanup-20261026-01/status.json) records verification-time acceptance and independent claim gaps.
+The earlier package `soak-cleanup-20261025-01` bound the driver before PR #863 and PR #870, and it stays as history.
 Unsigned payloads in that package require independent maintainer review and signatures.
