@@ -9,6 +9,7 @@ mod fileio_quarantine_spec;
 mod fileio_replay_spec;
 mod fileio_stream_spec;
 mod cli_smoke_spec;
+mod continuation_dedup_spec;
 mod crypto_channels_spec;
 mod demo_verification;
 mod deferred_dispatch_spec;

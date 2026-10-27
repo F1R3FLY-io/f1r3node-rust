@@ -207,6 +207,7 @@ pub async fn equivocate_block(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves: _,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -346,6 +347,7 @@ pub async fn propose_with_explicit_justifications(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves: _,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -411,6 +413,13 @@ pub async fn process_block_bypassing_of_interest_filter(
     CasperError,
 > {
     use casper::rust::block_status::BlockStatus;
+    use casper::rust::blocks::block_processor::SenderAuthorization;
+    if node.block_processor.check_sender_authorization(&block)? == SenderAuthorization::Unauthorized
+    {
+        return Ok(rspace_plus_plus::rspace::history::Either::Left(
+            BlockStatus::invalid_sender(),
+        ));
+    }
     let is_well_formed = node
         .block_processor
         .check_if_well_formed_and_store(&block)
@@ -519,6 +528,7 @@ pub async fn propose_with_block_mutation(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves: _,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;
@@ -667,6 +677,7 @@ pub async fn propose_neglecting_block(
         bonds: new_bonds,
         applied_from_scope,
         merge_base,
+        block_hash_leaves: _,
     } = checkpoint;
 
     let casper_version = snapshot.on_chain_state.shard_conf.casper_version;

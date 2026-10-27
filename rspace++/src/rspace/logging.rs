@@ -7,13 +7,12 @@ use super::trace::event::{COMM, Consume, Produce};
 pub trait RSpaceLogger<C, P: Clone, A: Clone, K: Clone>: Send + Sync {
     fn log_comm(
         &self,
-        _data_candidates: &Vec<ConsumeCandidate<C, A>>,
-        _channels: &Vec<C>,
-        _wk: WaitingContinuation<P, K>,
-        comm: COMM,
+        _data_candidates: &[ConsumeCandidate<C, A>],
+        _channels: &[C],
+        _wk: &WaitingContinuation<P, K>,
+        _comm: &COMM,
         _label: &str,
-    ) -> COMM {
-        comm
+    ) {
     }
 
     fn log_consume(

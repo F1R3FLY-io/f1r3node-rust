@@ -27,7 +27,7 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::engine::block_retriever::BlockRetriever;
-use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
+use crate::rust::engine::multi_parent_casper::{FinalizedBondCache, MultiParentCasperImpl};
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -174,10 +174,14 @@ pub trait MultiParentCasper: Casper + Send + Sync {
         weights: HashMap<Validator, u64>,
     ) -> Result<f32, CasperError>;
 
+    /// The persisted LFB. Reading it never advances finality.
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError>;
 
     // Equivalent to Scala's blockDag: F[BlockDagRepresentation[F]]
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError>;
+
+    /// Whether this node's validator is bonded at the persisted LFB.
+    fn is_local_validator_bonded(&self) -> bool;
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
@@ -366,29 +370,38 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         }
     }
 
-    Ok(MultiParentCasperImpl {
-        observer: std::sync::OnceLock::new(),
-        divergence_monitor: std::sync::Arc::new(
-            crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
-        ),
-        block_retriever,
-        event_publisher,
-        runtime_manager,
-        estimator,
-        block_store,
+    let finalized_bond_cache =
+        FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
+    let finalization = crate::rust::engine::multi_parent_casper::FinalizationContext {
+        observer: Arc::new(std::sync::OnceLock::new()),
+        finalized_bond_cache: finalized_bond_cache.clone(),
         block_dag_storage,
-        deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
-        rejected_deploy_buffer,
-        deploy_lifecycle: Arc::new(
-            crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+        block_store,
+        runtime_manager,
+        event_publisher,
+        divergence_monitor: Arc::new(
+            crate::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
         ),
+        deploy_storage: Arc::new(deploy_storage),
+        shard_conf: casper_shard_conf,
+    };
+    Ok(MultiParentCasperImpl {
+        observer: finalization.observer.clone(),
+        divergence_monitor: finalization.divergence_monitor.clone(),
+        block_retriever,
+        event_publisher: finalization.event_publisher.clone(),
+        runtime_manager: finalization.runtime_manager.clone(),
+        estimator,
+        block_store: finalization.block_store.clone(),
+        block_dag_storage: finalization.block_dag_storage.clone(),
+        deploy_storage: finalization.deploy_storage.clone(),
+        rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
-        casper_shard_conf,
+        finalized_bond_cache,
+        casper_shard_conf: finalization.shard_conf.clone(),
         approved_block,
-        finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer: crate::rust::engine::multi_parent_casper::Finalizer::start(finalization),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -429,6 +442,17 @@ pub struct CasperSnapshot {
 }
 
 impl CasperSnapshot {
+    pub fn is_validator_bonded(&self, validator: &[u8]) -> Result<bool, CasperError> {
+        let Some(parent) = self.parents.first() else {
+            return Ok(false);
+        };
+        let metadata = self.dag.lookup_unsafe(&parent.block_hash)?;
+        Ok(metadata
+            .weight_map
+            .get(validator)
+            .is_some_and(|stake| *stake > 0))
+    }
+
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
         Self {
             dag,
@@ -814,6 +838,8 @@ pub mod test_helpers {
         }
 
         fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+
+        fn is_local_validator_bonded(&self) -> bool { false }
 
         async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
             unimplemented!("get_history_exporter not needed for heartbeat tests")

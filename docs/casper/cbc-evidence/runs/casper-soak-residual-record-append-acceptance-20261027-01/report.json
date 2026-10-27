@@ -1,0 +1,57 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-27T05:42:39Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/859#issuecomment-6434728509",
+  "review_body_sha256": "e1dd81745755350946304e207cd02224deb1a263e507762b73f5830c9fdf42d6",
+  "review_body_sha256_method": "sha256 of the body bytes that the GitHub API returns for the acceptance comment (658 bytes). The body names the review package digest, the source digest, the commit, and the previous digest.",
+  "revision": "9cf831185a913d6afc8c3ba82e40be13c8824e27",
+  "tested_commit": "9cf831185a913d6afc8c3ba82e40be13c8824e27"
+ },
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-residual-record-append-20261027-01/report.json",
+  "sha256": "5aa327b5d11d93015f8093bfc5a67d75cf9e85723d1c9c0fc9acc7737936d71a"
+ },
+ "previous_acceptance": {
+  "scripts/run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-race-acceptance-20261026-01/report.json",
+   "sha256": "a0d27b8e73a7e9b798639203ad84e00739daa94d9e6e8b5f1374a2e3e1f82c8f"
+  }
+ },
+ "accepted_scope": {
+  "commits": [
+   "9cf831185"
+  ],
+  "guarantee": [
+   "When the owner stop and the residual stop both fail in one segment, writer-stop-failure.txt keeps the owner-stop record.",
+   "The residual-stop failure line follows the owner-stop record."
+  ],
+  "limitations": [],
+  "unchanged": "The stop decisions, the failure count, the early-exit reason, and the four limitations of the PR #870 acceptance.",
+  "excluded": "Node correctness, the profile claims, and a live soak result."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "92c82d3eb42331aa2fda2e6c53dd4b74dd3a1cd166855dd0c2db4b38cdbbda2c"
+ },
+ "claim_digests_note": "The claim document does not change. It is a bound input of the soak cleanup gate.",
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-residual-record-append",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/run-merge-recovery-soak.sh": "90fe5bc24632ea6abdfa93b1077f7c8df0c8f3076d2555cc52a8002bcf28fd43"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-27",
+ "waiver": null
+}

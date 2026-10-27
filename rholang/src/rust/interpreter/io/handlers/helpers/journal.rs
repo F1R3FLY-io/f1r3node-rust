@@ -55,7 +55,7 @@ use std::path::PathBuf;
 use models::rhoapi::Par;
 
 use super::ack_hash::ack_channel_hash;
-use crate::rust::interpreter::io::errors::fserr_to_code;
+use crate::rust::interpreter::io::errors::{fserr_to_code, FSERR_CONSENSUS_DIVERGENCE};
 use crate::rust::interpreter::io::handle_table::FileHandleTable;
 use crate::rust::interpreter::io::response::extract_err_code;
 use crate::rust::interpreter::io::wal::{PayloadRef, WalEntry, WalOp, WalOutcome};
@@ -384,6 +384,127 @@ pub fn journal_state_read_via_table(
     );
 }
 
+/// Journal a successful consensus-mode read against an open fd.
+///
+/// Appends a `WalOp::Read` (sequential) or `WalOp::ReadAt`
+/// (positional) entry recording the bytes' content hash + the
+/// resolved offset.  Load-bearing for Phase-2 follower
+/// re-execution: the leader's WAL records what bytes it read; the
+/// follower runs the same syscall against its local fd and compares
+/// bytes via `verify_reply_hash_matches_cached` → the WAL entry
+/// hashes must match, so this helper must produce the same bytes-
+/// hash on both sides.
+///
+/// Fd-based cmode lookup — the shadow handle carries `cmode` AND the
+/// current `position` (for sequential reads).  `offset = None`
+/// resolves to the handle's position; `offset = Some(off)` becomes
+/// `WalOp::ReadAt`.
+///
+/// Oracular self-guards: returns `Ok(false)` under Oracular (no WAL
+/// entry — host-local reads don't contribute to consensus WAL).
+///
+/// Returns:
+///   - `Ok(true)` — Consensus; WAL append succeeded.
+///   - `Ok(false)` — Oracular or missing fd.
+///   - `Err(())` — WAL append failed (cap exhaustion).
+#[allow(clippy::result_unit_err)]
+pub async fn journal_read_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+    bytes: &[u8],
+    offset: Option<u64>,
+    ack: &Par,
+) -> Result<bool, ()> {
+    let wal_meta = handles
+        .with_mut(fd, |h| (h.cmode, h.canon_path.clone(), h.position))
+        .await;
+    match wal_meta {
+        Some((ConsensusMode::Consensus, canon_path, position)) => {
+            let (op, resolved_offset) = match offset {
+                Some(off) => (WalOp::ReadAt, Some(off)),
+                None => (WalOp::Read, Some(position)),
+            };
+            handles
+                .wal
+                .append_with_ack(
+                    WalEntry {
+                        op,
+                        path: canon_path,
+                        extra_path: None,
+                        offset: resolved_offset,
+                        length: Some(bytes.len() as u64),
+                        payload_ref: Some(PayloadRef::hash(bytes)),
+                        mode_bits: None,
+                        owner: None,
+                        group: None,
+                        outcome: WalOutcome::Success,
+                    },
+                    ack_channel_hash(ack),
+                )
+                .map(|()| true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Journal a consensus-divergence read failure.
+///
+/// Call site: the follower's re-execution branch when the local
+/// read produced bytes that didn't match the leader's cached reply
+/// hash — a `FSERR_CONSENSUS_DIVERGENCE` outcome, not a successful
+/// read.  Appends a `WalOp::Read`/`ReadAt` entry with `payload_ref =
+/// None` and `outcome = Failure { code:
+/// FSERR_CODE_CONSENSUS_DIVERGENCE }` so the WAL fingerprint
+/// diverges from the leader's at the same slot and the block is
+/// rejected at the next consensus boundary.
+///
+/// Oracular self-guards: returns `false` under Oracular — Oracular
+/// reads can't diverge (no cross-validator byte-identity contract).
+///
+/// Fire-and-forget on WAL cap exhaustion: a cap-exhausted
+/// divergence journal is already a block-failing posture (the
+/// follower is halting anyway); logging over-and-above would be
+/// defense-in-depth that complicates the call path.  Returns
+/// `true`/`false` to signal "WAL entry attempted" vs "self-
+/// guarded", matching fileio's shape.
+pub async fn journal_read_divergence_via_table(
+    handles: &FileHandleTable,
+    fd: u64,
+    offset: Option<u64>,
+    ack: &Par,
+) -> bool {
+    let wal_meta = handles
+        .with_mut(fd, |h| (h.cmode, h.canon_path.clone()))
+        .await;
+    match wal_meta {
+        Some((ConsensusMode::Consensus, canon_path)) => {
+            let op = match offset {
+                Some(_) => WalOp::ReadAt,
+                None => WalOp::Read,
+            };
+            let _ = handles.wal.append_with_ack(
+                WalEntry {
+                    op,
+                    path: canon_path,
+                    extra_path: None,
+                    offset,
+                    length: None,
+                    payload_ref: None,
+                    mode_bits: None,
+                    owner: None,
+                    group: None,
+                    outcome: WalOutcome::Failure {
+                        code: fserr_to_code(FSERR_CONSENSUS_DIVERGENCE.as_str()),
+                    },
+                },
+                ack_channel_hash(ack),
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,5 +714,125 @@ mod tests {
         // No reserve made.
         finalize_failure_journal_via_table(&handles, 99, &ack);
         assert_eq!(handles.wal.len(), 0);
+    }
+
+    /// Consensus sequential read (offset=None) appends a `WalOp::Read`
+    /// entry resolving the offset to the fd's current `position`.
+    /// Pins the position-advance invariant for the WAL: a follower
+    /// re-executing the same sequential read sees the SAME position,
+    /// so the WAL offset must match on both sides.
+    #[tokio::test]
+    async fn journal_read_consensus_sequential_appends_wal_entry() {
+        let handles = FileHandleTable::new();
+        let fd = handles
+            .insert(mk_handle(ConsensusMode::Consensus, "/consensus/file"))
+            .await
+            .expect("insert");
+        let ack = mk_ack("ack-read-seq");
+        let before = handles.wal.len();
+        let ok = journal_read_via_table(&handles, fd, b"hello world", None, &ack)
+            .await
+            .expect("ok");
+        assert!(ok);
+        assert_eq!(handles.wal.len(), before + 1);
+    }
+
+    /// Consensus positional read (offset=Some(_)) appends a
+    /// `WalOp::ReadAt` entry carrying the caller-supplied offset.
+    /// Distinct from the sequential case because positional reads
+    /// don't advance the fd position — the WAL offset is the exact
+    /// caller argument, not a derived value.
+    #[tokio::test]
+    async fn journal_read_consensus_positional_appends_wal_entry() {
+        let handles = FileHandleTable::new();
+        let fd = handles
+            .insert(mk_handle(ConsensusMode::Consensus, "/consensus/file"))
+            .await
+            .expect("insert");
+        let ack = mk_ack("ack-read-at");
+        let before = handles.wal.len();
+        let ok = journal_read_via_table(&handles, fd, b"\x00\x01\x02\x03", Some(1024), &ack)
+            .await
+            .expect("ok");
+        assert!(ok);
+        assert_eq!(handles.wal.len(), before + 1);
+    }
+
+    /// Oracular read is a no-op — host-local reads don't contribute
+    /// to the consensus WAL.  Mirrors the self-guard shape of
+    /// `journal_truncate_via_table` under Oracular.
+    #[tokio::test]
+    async fn journal_read_oracular_is_noop() {
+        let handles = FileHandleTable::new();
+        let fd = handles
+            .insert(mk_handle(ConsensusMode::Oracular, "/oracular/file"))
+            .await
+            .expect("insert");
+        let ack = mk_ack("ack-read-oracular");
+        let before = handles.wal.len();
+        let ok = journal_read_via_table(&handles, fd, b"host-local", None, &ack)
+            .await
+            .expect("ok");
+        assert!(!ok);
+        assert_eq!(handles.wal.len(), before);
+    }
+
+    /// Unknown fd — same self-guard shape as the truncate case.
+    /// Returns `Ok(false)` without touching the WAL; the handler's
+    /// dispatch body produces the `FSERR_CLOSED` reply separately.
+    #[tokio::test]
+    async fn journal_read_unknown_fd_is_noop() {
+        let handles = FileHandleTable::new();
+        let ack = mk_ack("ack-read-unknown");
+        let ok = journal_read_via_table(&handles, 0xdeadbeef, b"ignored", None, &ack)
+            .await
+            .expect("ok");
+        assert!(!ok);
+        assert_eq!(handles.wal.len(), 0);
+    }
+
+    /// Consensus-mode read divergence appends a WAL entry with
+    /// `WalOutcome::Failure { code: FSERR_CODE_CONSENSUS_DIVERGENCE }`.
+    /// Load-bearing for Phase-2: a follower whose local re-execution
+    /// produces bytes that don't match the leader's cached reply
+    /// hash journals this failure so the next consensus-boundary
+    /// WAL compare rejects the block.
+    #[tokio::test]
+    async fn journal_read_divergence_consensus_appends_failure() {
+        use crate::rust::interpreter::io::errors::FSERR_CODE_CONSENSUS_DIVERGENCE;
+        let handles = FileHandleTable::new();
+        let fd = handles
+            .insert(mk_handle(ConsensusMode::Consensus, "/consensus/file"))
+            .await
+            .expect("insert");
+        let ack = mk_ack("ack-divergence");
+        let before = handles.wal.len();
+        let appended = journal_read_divergence_via_table(&handles, fd, Some(42), &ack).await;
+        assert!(
+            appended,
+            "divergence under Consensus must attempt a WAL append"
+        );
+        assert_eq!(handles.wal.len(), before + 1);
+        // Pin the code constant exists + matches the fileio-canonical value.
+        assert_eq!(FSERR_CODE_CONSENSUS_DIVERGENCE, 13);
+    }
+
+    /// Oracular-mode divergence is a no-op — Oracular reads have no
+    /// cross-validator byte-identity contract to diverge against.
+    #[tokio::test]
+    async fn journal_read_divergence_oracular_is_noop() {
+        let handles = FileHandleTable::new();
+        let fd = handles
+            .insert(mk_handle(ConsensusMode::Oracular, "/oracular/file"))
+            .await
+            .expect("insert");
+        let ack = mk_ack("ack-oracular-divergence");
+        let before = handles.wal.len();
+        let appended = journal_read_divergence_via_table(&handles, fd, None, &ack).await;
+        assert!(
+            !appended,
+            "Oracular divergence must be a self-guarded no-op"
+        );
+        assert_eq!(handles.wal.len(), before);
     }
 }

@@ -1,12 +1,6 @@
 // Quarantine of undecodable records in the node-local deploy stores. The
 // behavior and the operator procedure are in docs/block-storage/README.md.
 //
-// Locking requirement: `read_all` and `any` write. They read a damaged record
-// and later delete it from the live store if its bytes are unchanged. Callers
-// must run them under the same lock that guards `add` and `remove` on the
-// store, as casper does with `Arc<Mutex<...>>`. Without that lock, an `add`
-// between the read and the delete of the same key can be removed.
-
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -105,7 +99,8 @@ impl DeployRecordQuarantine {
         }
         let total = quarantined.len();
         let live = store.raw_store();
-        let (mut restored, mut duplicates, mut conflicts) = (0usize, 0usize, 0usize);
+        let (mut restored, mut duplicates, mut conflicts, mut removed) =
+            (0usize, 0usize, 0usize, 0usize);
         for (key, value) in quarantined {
             if decode_record(store, &key, &value)
                 .and_then(super::deploy_codec::verify_signature)
@@ -113,15 +108,19 @@ impl DeployRecordQuarantine {
             {
                 continue;
             }
-            if live.put_one_if_absent(key.clone(), value.clone())? {
+            let inserted = live.put_one_if_absent(key.clone(), value.clone())?;
+            if inserted {
                 restored += 1;
-            } else if live.get_one(&key)?.as_ref() == Some(&value) {
-                duplicates += 1;
-            } else {
+            } else if live.get_one(&key)?.as_ref() != Some(&value) {
                 conflicts += 1;
                 continue;
             }
-            self.quarantine.delete(vec![key])?;
+            if self.quarantine.delete_if_value(&key, &value)? {
+                removed += 1;
+                if !inserted {
+                    duplicates += 1;
+                }
+            }
         }
         if restored > 0 {
             metrics::counter!(RESTORED_RECORDS_METRIC, "store" => self.store_name)
@@ -132,7 +131,7 @@ impl DeployRecordQuarantine {
             restored,
             duplicates_removed = duplicates,
             kept_on_conflict = conflicts,
-            remaining = total - restored - duplicates,
+            remaining = total - removed,
             "Deploy store opened with quarantined records"
         );
         Ok(())
@@ -194,8 +193,8 @@ impl DeployRecordQuarantine {
                 }
                 continue;
             }
-            if live.get_one(&record.key)?.as_ref() == Some(&record.value) {
-                live.delete(vec![record.key.clone()])?;
+            if !live.delete_if_value(&record.key, &record.value)? {
+                continue;
             }
             moved += 1;
             metrics::counter!(QUARANTINED_RECORDS_METRIC, "store" => self.store_name).increment(1);
@@ -248,7 +247,8 @@ fn bounded_error(error: &KvStoreError) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Barrier, Mutex};
 
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -358,6 +358,224 @@ mod tests {
 
     fn in_memory() -> Arc<dyn KeyValueStore> { Arc::new(InMemoryKeyValueStore::new()) }
 
+    struct InterleavingStore {
+        inner: Arc<dyn KeyValueStore>,
+        before_delete: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        after_scan: Option<Arc<Barrier>>,
+        reads: AtomicUsize,
+        deletes: AtomicUsize,
+    }
+
+    impl InterleavingStore {
+        fn new(inner: Arc<dyn KeyValueStore>, after_scan: Option<Arc<Barrier>>) -> Arc<Self> {
+            Arc::new(Self {
+                inner,
+                before_delete: Mutex::new(None),
+                after_scan,
+                reads: AtomicUsize::new(0),
+                deletes: AtomicUsize::new(0),
+            })
+        }
+
+        fn run_hook(&self) {
+            let hook = self.before_delete.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+    }
+
+    impl KeyValueStore for InterleavingStore {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
+        fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            let values = self.inner.get(keys)?;
+            self.run_hook();
+            Ok(values)
+        }
+
+        fn put(&self, pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
+            self.inner.put(pairs)
+        }
+
+        fn put_one_if_absent(
+            &self,
+            key: ByteBuffer,
+            value: ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            self.inner.put_one_if_absent(key, value)
+        }
+
+        fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
+            self.deletes.fetch_add(1, Ordering::SeqCst);
+            self.run_hook();
+            self.inner.delete(keys)
+        }
+
+        fn delete_if_value(
+            &self,
+            key: &ByteBuffer,
+            expected: &ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            self.run_hook();
+            self.inner.delete_if_value(key, expected)
+        }
+
+        fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> {
+            for (key, value) in self.to_map()? {
+                f(key, value);
+            }
+            Ok(())
+        }
+
+        fn iterate_while(
+            &self,
+            f: &mut dyn FnMut(ByteBuffer, ByteBuffer) -> Result<bool, KvStoreError>,
+        ) -> Result<(), KvStoreError> {
+            for (key, value) in self.to_map()? {
+                if !f(key, value)? {
+                    break;
+                }
+            }
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { self.inner.clone_box() }
+
+        fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError> {
+            let records = self.inner.to_map()?;
+            if let Some(barrier) = &self.after_scan {
+                barrier.wait();
+            }
+            Ok(records)
+        }
+
+        fn print_store(&self) -> Result<(), KvStoreError> { self.inner.print_store() }
+
+        fn non_empty(&self) -> Result<bool, KvStoreError> { self.inner.non_empty() }
+
+        fn size_bytes(&self) -> usize { self.inner.size_bytes() }
+    }
+
+    #[test]
+    fn scans_preserve_a_live_record_replaced_before_deletion() {
+        for name in POOLS {
+            for use_any in [false, true] {
+                let inner = in_memory();
+                let live = InterleavingStore::new(inner.clone(), None);
+                let quarantine = in_memory();
+                let pool = Pool::open(name, &(live.clone() as Arc<dyn KeyValueStore>), &quarantine);
+                let valid = deploy(1);
+                let key = key_for(&valid.sig);
+                inner
+                    .put_one(key.clone(), MALFORMED_VALUE.to_vec())
+                    .unwrap();
+                let replacement = super::super::deploy_codec::encode(&valid).unwrap();
+                let replacement_key = key.clone();
+                let replacement_bytes = replacement.clone();
+                let writer = inner.clone();
+                *live.before_delete.lock().unwrap() = Some(Box::new(move || {
+                    writer.put_one(replacement_key, replacement_bytes).unwrap();
+                }));
+                let recorder = DebuggingRecorder::new();
+                let snapshotter = recorder.snapshotter();
+                metrics::with_local_recorder(&recorder, || {
+                    if use_any {
+                        match &pool {
+                            Pool::Storage(storage) => assert!(!storage.any(|_| Ok(false)).unwrap()),
+                            Pool::Buffer(buffer) => assert!(!buffer.any(|_| Ok(false)).unwrap()),
+                        }
+                    } else {
+                        assert!(pool.read_all().unwrap().is_empty());
+                    }
+                });
+                assert_eq!(inner.get_one(&key).unwrap(), Some(replacement));
+                assert_eq!(
+                    quarantine.get_one(&key).unwrap(),
+                    Some(MALFORMED_VALUE.to_vec())
+                );
+                assert_eq!(counter(&snapshotter, QUARANTINED_RECORDS_METRIC, name), 0);
+                assert_eq!(pool.read_all().unwrap(), HashSet::from([valid]));
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_scans_count_one_actual_quarantine_move() {
+        let inner = in_memory();
+        let live = InterleavingStore::new(inner.clone(), Some(Arc::new(Barrier::new(2))));
+        let quarantine = in_memory();
+        let storage = KeyValueDeployStorage::from_stores(live, quarantine.clone()).unwrap();
+        let key = key_for(&deploy(1).sig);
+        inner
+            .put_one(key.clone(), MALFORMED_VALUE.to_vec())
+            .unwrap();
+        let handles: Vec<_> = [false, true]
+            .into_iter()
+            .map(|use_any| {
+                let storage = storage.clone();
+                std::thread::spawn(move || {
+                    let recorder = DebuggingRecorder::new();
+                    let snapshotter = recorder.snapshotter();
+                    metrics::with_local_recorder(&recorder, || {
+                        if use_any {
+                            assert!(!storage.any(|_| Ok(false)).unwrap());
+                        } else {
+                            assert!(storage.read_all().unwrap().is_empty());
+                        }
+                    });
+                    counter(&snapshotter, QUARANTINED_RECORDS_METRIC, DEPLOY_STORAGE_DB)
+                })
+            })
+            .collect();
+        assert_eq!(
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .sum::<u64>(),
+            1
+        );
+        assert_eq!(inner.get_one(&key).unwrap(), None);
+        assert_eq!(
+            quarantine.get_one(&key).unwrap(),
+            Some(MALFORMED_VALUE.to_vec())
+        );
+    }
+
+    #[test]
+    fn restore_preserves_quarantined_bytes_replaced_before_cleanup() {
+        let live = in_memory();
+        let inner = in_memory();
+        let quarantine = InterleavingStore::new(inner.clone(), None);
+        let valid = deploy(1);
+        let key = key_for(&valid.sig);
+        let encoded = super::super::deploy_codec::encode(&valid).unwrap();
+        inner.put_one(key.clone(), encoded.clone()).unwrap();
+        let writer = inner.clone();
+        let replacement_key = key.clone();
+        *quarantine.before_delete.lock().unwrap() = Some(Box::new(move || {
+            writer
+                .put_one(replacement_key, MALFORMED_VALUE.to_vec())
+                .unwrap();
+        }));
+        KeyValueDeployStorage::from_stores(live.clone(), quarantine).unwrap();
+        assert_eq!(live.get_one(&key).unwrap(), Some(encoded));
+        assert_eq!(inner.get_one(&key).unwrap(), Some(MALFORMED_VALUE.to_vec()));
+    }
+
+    #[test]
+    fn signature_removal_uses_one_delete_without_a_presence_read() {
+        let live = InterleavingStore::new(in_memory(), None);
+        let storage = KeyValueDeployStorage::from_stores(live.clone(), in_memory()).unwrap();
+        let valid = deploy(1);
+        storage.add(vec![valid.clone()]).unwrap();
+        assert!(storage.remove_by_sig(&valid.sig).unwrap());
+        assert!(!storage.remove_by_sig(&valid.sig).unwrap());
+        assert_eq!(live.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(live.deletes.load(Ordering::SeqCst), 2);
+    }
+
     fn counter(snapshotter: &Snapshotter, name: &str, store: &str) -> u64 {
         snapshotter
             .snapshot()
@@ -448,8 +666,7 @@ mod tests {
     #[test]
     fn any_skips_damaged_records_and_still_finds_matches() {
         let (live, quarantine) = (in_memory(), in_memory());
-        let mut storage =
-            KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+        let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
         storage.add(vec![deploy(1), deploy(2)]).unwrap();
         seed_damaged(&live);
 
@@ -626,7 +843,7 @@ mod tests {
         let live = FailingStore::new(false, false);
         let live_dyn: Arc<dyn KeyValueStore> = live.clone();
         let quarantine = in_memory();
-        let mut storage =
+        let storage =
             KeyValueDeployStorage::from_stores(live_dyn.clone(), quarantine.clone()).unwrap();
         let valid = deploy(1);
         storage.add(vec![valid.clone()]).unwrap();
@@ -661,12 +878,12 @@ mod tests {
             let (malformed_key, _) = seed_damaged(&live);
             let read = match name {
                 DEPLOY_STORAGE_DB => {
-                    let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+                    let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
                     storage.add(vec![d1.clone()]).unwrap();
                     storage.read_all().unwrap()
                 }
                 _ => {
-                    let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+                    let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
                     buffer.add(vec![d1.clone()]).unwrap();
                     buffer.read_all().unwrap()
                 }
@@ -723,6 +940,11 @@ mod tests {
         ) -> Result<bool, KvStoreError> {
             Self::check(&self.fail_writes)?;
             self.inner.put_one_if_absent(key, value)
+        }
+
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            Self::check(&self.fail_writes)?;
+            self.inner.delete_if_value(key, expected)
         }
 
         fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
@@ -794,6 +1016,34 @@ mod tests {
         assert!(matches!(storage.read_all(), Err(KvStoreError::IoError(_))));
         assert_eq!(
             live.get_one(&malformed_key).unwrap(),
+            Some(MALFORMED_VALUE.to_vec())
+        );
+    }
+
+    #[test]
+    fn conditional_delete_failures_preserve_both_copies_until_retry() {
+        let live = FailingStore::new(false, false);
+        let quarantine = in_memory();
+        let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+        let key = key_for(&deploy(1).sig);
+        live.inner
+            .put_one(key.clone(), MALFORMED_VALUE.to_vec())
+            .unwrap();
+        live.fail_writes.store(true, Ordering::SeqCst);
+        assert!(matches!(storage.read_all(), Err(KvStoreError::IoError(_))));
+        assert_eq!(
+            live.inner.get_one(&key).unwrap(),
+            Some(MALFORMED_VALUE.to_vec())
+        );
+        assert_eq!(
+            quarantine.get_one(&key).unwrap(),
+            Some(MALFORMED_VALUE.to_vec())
+        );
+        live.fail_writes.store(false, Ordering::SeqCst);
+        assert!(storage.read_all().unwrap().is_empty());
+        assert_eq!(live.inner.get_one(&key).unwrap(), None);
+        assert_eq!(
+            quarantine.get_one(&key).unwrap(),
             Some(MALFORMED_VALUE.to_vec())
         );
     }

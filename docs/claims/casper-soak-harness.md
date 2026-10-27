@@ -214,6 +214,51 @@ Only the workflow-copy line differs among the 39 accepted artifacts. Fresh isola
 
 The renewal preserves the previous ledgers and unsuccessful inventory controls. It restores this bounded pre-merge discharge without authorizing node execution.
 
+On 2026-10-21, PR #811 changed the owner scan of `scripts/casper-soak/src/host_control.rs`. The change narrows the ownership guarantee, and it needs a fresh acceptance.
+
+- Before the change, one same-user process with an unreadable environment failed every `stop-owned` and `prefer-oom` call. A non-root runner has such processes, so every stop failed even when no owned writer remained (hosted run 39639227494).
+- After the change, the scan skips a same-user process when the environment read fails with EACCES or EPERM. Every other scan error still fails the call. A writer that does not stop still fails `stop-owned`.
+- **Limitation:** an owned process with an unreadable environment escapes cleanup. `stop-owned` does not kill it, and `prefer-oom` does not change its OOM score. A writer has an unreadable environment only when it is not dumpable, for example after a set-user-ID execution or a `PR_SET_DUMPABLE` change. The soak node, pytest, and the Docker CLI do not do this.
+- The unit tests `stop_skips_a_process_whose_environment_is_unreadable` and `oom_preference_skips_a_process_whose_environment_is_unreadable` run as UID 65534 in the binding container. Each requires an unreadable unrelated process, kills or marks the readable owned writer, and leaves the unrelated process unchanged.
+
+On 2026-10-21 the maintainer accepted this change, the narrower guarantee, and its limitation (PR #811, comment 6324960804) at revision `32798242d`. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-01/report.json).
+
+Later on 2026-10-21 the maintainer accepted a fixture fix (PR #811, comment 6326106207) at revision `c3a9a0a28`. Three assertions of `scripts/bench/test-run-merge-recovery-soak.sh` could not fail under `set -e`, and they now fail with a message. The [second acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-02/report.json) binds the fixture to its [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-02/report.json).
+
+On 2026-10-22, TASK-021-27 added a residual stop to the end of each segment. The change widens the cleanup guarantee, and it needs a fresh acceptance.
+
+- In daily soak 39711861154, the nodes of two deadline-stopped subprocess sessions kept running and filled the disk after 18.3 h (issue #24, comment 6354292291). The scheduled soak runs the driver of `master`. `master` did not contain PR #811, so the owner stop of PR #811 did not run in that soak. The residual stop is a second, independent stop. It does not depend on the owner marker.
+- After the owner stop, `host-control stop-under` kills every same-user process whose arguments or working directory are under `.subprocess-data`, whatever its owner marker. It does not consider its own process and its ancestors. A writer that does not stop fails the segment like a failed owner stop.
+- Sometimes the working directory of a same-user process cannot be read (EACCES or EPERM), and its arguments do not name the directory. Such a process is recorded as `uninspected` and is not stopped. After the stop, `stop-under` records the inode, size, modification time, and change time of each entry under the directory, before and after a 2 s wait. A changed, added, or removed entry means that a writer remains, and the stop fails. A process cannot set the change time, so a future-dated file cannot hide a write.
+- `residual-writers.txt` records each such process with its segment, name, match reason, environment readability, and owner-marker state. The record shows why the owner stop missed the process.
+- Under `.subprocess-data`, the failure-evidence copy takes only the session directories that the failed iteration created. A directory that existed before the iteration started is not copied.
+- **Limitation:** a same-user process that names a path under `.subprocess-data` in its arguments is stopped, also when it is not a soak writer. The soak runner is dedicated to one soak, so such a process is part of the soak.
+- **Limitation:** an `uninspected` writer that writes less often than once in 2 s can pass the write check. It does not stop, but it also does not fill the disk quickly.
+- **Limitation:** after a host protection breach, the soak already fails and must publish that failure promptly. The residual stop then kills and records within the disk stop budget, and it skips the write check.
+- Six unit tests and the fixture scenarios 2 and 6 of `scripts/bench/test-run-merge-recovery-soak.sh` cover the stop, the record, the write check, and the evidence scope. The unit tests are `residual_scan_records_why_the_owner_stop_missed_a_writer`, `residual_stop_fails_when_an_uninspectable_writer_keeps_writing`, `residual_stop_detects_writes_beside_a_future_dated_file`, `residual_stop_accepts_an_unchanged_tree_with_a_future_dated_file`, `residual_stop_without_a_quiet_window_still_kills_and_returns_promptly`, and `residual_stop_accepts_an_uninspectable_process_that_writes_elsewhere`.
+
+On 2026-10-23 the maintainer accepted this change, the wider cleanup guarantee, and its three limitations (PR #827, review 5627170022) at revision `c1cf31d7e`. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-20261022-01/report.json).
+
+On 2026-10-26, PR #863 changed how the driver confirms the writer stop. The change fixes a false stop failure and closes three paths that left writers running. It needs a fresh acceptance.
+
+- In soak 40155878690, the Docker writer stop at the end of a segment failed closed after 14.5 h. A container that exits between `docker ps` and `docker inspect` or `docker kill` made the stop fail, although no writer remained.
+- `stop_node_writer_commands` kills each owned container directly after its inspect confirms the owner. A failed inspect or kill is a failure only when a second `docker ps` still lists that container as running.
+- The Docker CLI sends one request for each inspected container. A slow daemon therefore delays the first kill by one inspect, not by the inspects of all containers.
+- A failed `docker ps`, a failed `host-control stop-owned`, an invalid container ID, or a container with another owner label still fails the stop.
+- The end-of-segment stop has its own budget, `SOAK_WRITER_STOP_SECONDS` (5 to 120 s, default 30 s). After a host protection breach or during an emergency, the stop keeps the disk stop budget of 1 to 5 s.
+- `writer-stop-failure.txt` names the failed step, the container, and the Docker error. A confirmed stop that wrote output keeps it as `writer-stop.log`.
+- An exit of the driver before the end-of-segment stop, for example after a failed state write, now stops the owned writers. A failed stop there records `writer_stop_failed` and a failure count of at least 1.
+- After a pytest that a signal ends, the driver stops the owned writers before the evidence copy. The writers then do not run into the next iteration.
+- The `target_advanced` early exit record starts with its reason. A later segment of the same soak then keeps `target_advanced` in its summary.
+- `host-control stop-owned` and `prefer-oom` write one line for each process that they skip because its environment is unreadable. Their behavior does not change.
+- **Limitation:** the driver does not confirm the owner label of a container that exits before its inspect. A container that `docker ps` does not list as running does not write.
+- **Limitation:** the end of a segment can take up to `SOAK_WRITER_STOP_SECONDS` plus 1 s longer than before.
+- **Limitation:** the stop after a signal-ended pytest records a failure only in the `writer-stop.log` of that iteration. The end-of-segment stop decides the result of the soak.
+- **Limitation:** like the end-of-segment stop, the exit stop applies only to a soak without a Casper manifest (`SOAK_INPUT_DIR` is not set). It applies only before the end-of-segment stop has run.
+- Nine fixture cases of `scripts/bench/test-run-merge-recovery-soak.sh` cover these rules: slow, vanish, exits, stuck, persist, sigkill, breach, breach-inspect, and a restart after `target_advanced`. The unit test `owner_scan_reports_a_process_whose_environment_is_unreadable` covers the skip report.
+
+On 2026-10-26 the maintainer accepted this change, the changed stop guarantee, and its four limitations (PR #870, comment 6429833007) at revision `6dd029064`. The acceptance includes the fix `85b04c07e` for the inspect-before-kill regression that PR #863 merged. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-race-acceptance-20261026-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-race-20261026-01/report.json).
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.
