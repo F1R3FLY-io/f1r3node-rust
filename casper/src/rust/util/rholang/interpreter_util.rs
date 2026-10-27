@@ -11,7 +11,6 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, DeployData, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy,
-    SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -575,23 +574,8 @@ async fn replay_block(
     // creation and replay (see proto_util::slashed_block_senders). A DAG-derived
     // view is node-view-dependent and makes the slash deploy fail replay
     // (ConsumeFailed) because the map is produced into a content-addressed COMM.
-    let slashed_hashes: Vec<BlockHash> = block
-        .body
-        .system_deploys
-        .iter()
-        .filter_map(|psd| match psd {
-            ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash, ..
-                    },
-                ..
-            } => Some(invalid_block_hash.clone()),
-            _ => None,
-        })
-        .collect();
     let invalid_blocks: HashMap<BlockHash, Validator> =
-        proto_util::slashed_block_senders(dag, &slashed_hashes)?;
+        proto_util::block_slash_invalid_blocks(dag, block)?;
 
     // Create block data and check if genesis
     let block_data = BlockData::from_block(block);
@@ -922,23 +906,8 @@ pub(crate) async fn ensure_scope_mergeable_present(
         // one validation/creation used (slashed_block_senders — the block's own
         // slash targets) so the replay reproduces the block's post_state_hash and
         // the entry is stored under the correct key.
-        let slashed_hashes: Vec<BlockHash> = block
-            .body
-            .system_deploys
-            .iter()
-            .filter_map(|psd| match psd {
-                ProcessedSystemDeploy::Succeeded {
-                    system_deploy:
-                        SystemDeployData::Slash {
-                            invalid_block_hash, ..
-                        },
-                    ..
-                } => Some(invalid_block_hash.clone()),
-                _ => None,
-            })
-            .collect();
         let invalid_blocks: HashMap<BlockHash, Validator> =
-            proto_util::slashed_block_senders(dag, &slashed_hashes)?;
+            proto_util::block_slash_invalid_blocks(dag, &block)?;
 
         runtime_manager
             .ensure_mergeable_entry(&block, invalid_blocks)

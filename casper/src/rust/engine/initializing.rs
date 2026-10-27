@@ -1503,9 +1503,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
         let is_genesis = parents.is_empty();
 
-        // Get invalid blocks map for replay
+        // The same invalid-blocks map that block creation and validation used:
+        // the block's own slash targets, not this node's DAG invalid set.
         let dag = self.block_dag_storage.get_representation()?;
-        let invalid_blocks_map = dag.invalid_blocks_map()?;
+        let invalid_blocks_map = proto_util::block_slash_invalid_blocks(&dag, block)?;
 
         tracing::debug!(
             "Replaying block #{} ({}) with {} deploys, {} parents",

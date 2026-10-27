@@ -14,7 +14,7 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
@@ -925,6 +925,32 @@ pub fn slashed_block_senders(
         map.insert(h.clone(), meta.sender.clone());
     }
     Ok(map)
+}
+
+/// Invalid-blocks map for executing or replaying `block`: the targets of the
+/// block's own succeeded slash system deploys (see `slashed_block_senders`).
+/// Every replay of a recorded block must use this map, never the DAG's
+/// invalid set, or the slash deploy cannot reproduce its COMM events.
+pub fn block_slash_invalid_blocks(
+    dag: &KeyValueDagRepresentation,
+    block: &BlockMessage,
+) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
+    let slashed_hashes: Vec<BlockHash> = block
+        .body
+        .system_deploys
+        .iter()
+        .filter_map(|psd| match psd {
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    SystemDeployData::Slash {
+                        invalid_block_hash, ..
+                    },
+                ..
+            } => Some(invalid_block_hash.clone()),
+            _ => None,
+        })
+        .collect();
+    slashed_block_senders(dag, &slashed_hashes)
 }
 
 fn get_creator_blocks_between(
