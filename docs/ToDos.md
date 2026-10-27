@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-13
+last_updated: 2026-10-19
 mr_status:
   ready: false
   target_branch: master
@@ -70,6 +70,127 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-030: Verified Soak Segment Cleanup
+
+```yaml
+epic_id: EPIC-030
+title: "Verified Soak Segment Cleanup"
+status: in_progress
+priority: p1
+user_story: US-014
+branch: fix/soak-driver-shard-stop
+design: docs/designs/soak-cleanup-verification.md
+specification: docs/claims/soak-segment-cleanup.md
+tasks:
+  - id: TASK-030-1
+    title: "Verify segment cleanup and bind launch to accepted control sources"
+    status: in_progress
+    claimed_by: codex-session-soak-cleanup
+    decision: "2026-10-25: the user chose Rust/Bash repository checks and the unchanged pinned shared CbC runtime."
+    integration: "2026-10-25: the user moved this branch to dev. PR #700 supplies the CbC migration. Promote dev to master before the weekend soak."
+    progress: "All four verification stages pass on dev with the external runtime. Evidence binds 77 inputs and 29 cleanup records. Signed acceptance remains pending."
+    review_requested_at: 2026-10-25
+    review_type: human
+    claimed_at: 2026-10-25T16:22:36Z
+    files:
+      - .github/.gitattributes
+      - .github/actions/soak-segment/action.yml
+      - .github/workflows/ci.yml
+      - .github/workflows/merge-recovery-soak.yml
+      - docs/.gitattributes
+      - docs/casper/soak-cleanup.json
+      - docs/claims/soak-segment-cleanup.md
+      - formal/.gitattributes
+      - formal/tlaplus/soak_cleanup/EraseReason.cfg
+      - formal/tlaplus/soak_cleanup/IgnoreStopFailure.cfg
+      - formal/tlaplus/soak_cleanup/SkipOwnerStop.cfg
+      - formal/tlaplus/soak_cleanup/SkipResidualStop.cfg
+      - formal/tlaplus/soak_cleanup/SoakCleanup.tla
+      - formal/tlaplus/soak_cleanup/clean.cfg
+      - scripts/.gitattributes
+      - scripts/bench/test-run-merge-recovery-soak.sh
+      - scripts/bench/test-soak-segment-cleanup.sh
+      - scripts/casper-soak/src/host_control.rs
+      - scripts/cbc.sh
+      - scripts/ci/check-soak-cleanup.sh
+      - scripts/ci/configure-cbc-trust.sh
+      - scripts/ci/test-soak-cleanup-model.sh
+      - scripts/ci/test-soak-cleanup-regressions.sh
+      - scripts/ci/test-soak-cleanup.sh
+      - scripts/ci/verify-soak-cleanup.sh
+      - scripts/run-merge-recovery-soak.sh
+    acceptance:
+      - "The bounded cleanup model and its negative controls report their expected verdicts."
+      - "A Linux fixture verifies two segments with different owners and retained failure reasons."
+      - "Permanent mutations reject missing owner cleanup, missing residual cleanup, ignored stop failure, and overwritten reasons."
+      - "CI and soak admission reject missing, stale, or unsigned cleanup evidence for the actual control checkout."
+      - "Nested Git attributes declare mandatory coverage, required acceptance, and evidence routing."
+      - "The PR #700 reader tests pass, and owner policies preserve existing mandatory coverage and weights."
+      - "Current source-bound verification records preserve historical evidence and expose pending acceptance."
+      - "A maintainer supplies independent signed acceptance before discharge or launch succeeds."
+  - id: TASK-030-2
+    title: "Use the pinned shared CbC runtime as an external dependency"
+    status: in_progress
+    claimed_by: codex-session-soak-cleanup
+    claimed_at: 2026-10-25T19:24:00Z
+    decision: "The user approved removing the copied runtime and installing a pinned external dependency."
+    progress: "The external runtime is implemented. All four verification stages pass, including 14 dependency tests and 18 admission checks. Signed acceptance remains pending."
+    review_requested_at: 2026-10-25
+    review_type: human
+    files:
+      - AGENTS.md
+      - CLAUDE.md
+      - scripts/cbc.sh
+      - scripts/cbc-runtime.lock.json
+      - scripts/ci/install-cbc-runtime.sh
+      - scripts/ci/test-cbc-runtime.sh
+      - scripts/ci/check-soak-cleanup.sh
+      - scripts/ci/test-soak-cleanup.sh
+      - scripts/ci/verify-soak-cleanup.sh
+      - scripts/.gitattributes
+      - docs/casper/soak-cleanup.json
+      - docs/claims/soak-segment-cleanup.md
+      - .github/workflows/ci.yml
+      - .github/workflows/merge-recovery-soak.yml
+      - docs/Glossary.md
+      - docs/UserStories.md
+      - docs/designs/soak-cleanup-verification.md
+    acceptance:
+      - "The repository contains no copied shared CbC runtime source."
+      - "The installer checks the immutable revision and every runtime file hash before use."
+      - "Local commands and CI use the same external runtime and preserve the project working directory."
+      - "Missing, modified, or incorrectly pinned runtime files prevent verification and admission."
+      - "Repository checks use the launcher command interfaces instead of runtime source paths."
+      - "The launcher, installer, lockfile, and tests have mandatory attributes and current verification records."
+      - "The refreshed evidence binds current repository inputs and the validated runtime identity."
+      - "The test suite covers cold installation, verified reuse, failed downloads, and corrupted runtime files."
+  - id: TASK-030-3
+    title: "Separate the optional heartbeat timing benchmark from preflight"
+    status: in_progress
+    claimed_by: codex-session-heartbeat-selection
+    claimed_at: 2026-10-27T05:27:17Z
+    finding: "Run 40438920821 passed 124 tests but failed preflight because the optional heartbeat timing test skipped."
+    progress: "Implementation and local checks pass. A hosted benchmark run remains pending after merge."
+    files:
+      - scripts/run-integration-preflight.sh
+      - scripts/bench/test-run-integration-preflight.sh
+      - scripts/bench/run-heartbeat-timing.sh
+      - scripts/bench/test-run-heartbeat-timing.sh
+      - .github/scripts/test-ephemeral-run-tagging.sh
+      - .github/workflows/heartbeat-timing.yml
+      - .github/workflows/ci-runner-reclaim.yml
+      - .github/workflows/ci.yml
+      - docs/ci.md
+    acceptance:
+      - "Routine preflight excludes the timing benchmark from collection and execution, including when HEARTBEAT_TIMING is inherited."
+      - "Preflight still rejects skipped, failed, missing, and incomplete test results."
+      - "A manual workflow selects the node revision and 1 to 20 repetitions on one 64 GB runner."
+      - "The benchmark has a 45-minute test limit and retains revision identities, timing measurements, and failure logs."
+      - "Runner cleanup covers successful, failed, and cancelled manual runs."
+```
 
 ---
 
@@ -206,79 +327,6 @@ tasks:
       - "The record also evaluates the Tokio options: a dedicated runtime or thread pool for consensus work (as the HTTP API already has), the worker count, explicit yield points in long CPU work, and an OS thread priority for the proposer."
       - "Each option that reduces durability states the crash-recovery result before a maintainer accepts it."
       - "No option changes code unless TASK-024-3 shows a disk cause."
----
-```
-
----
-
-### EPIC-026: Hierarchical CbC Attributes (Nested .gitattributes Files)
-
-```yaml
----
-epic_id: EPIC-026
-title: "Hierarchical CbC Attributes (Nested .gitattributes Files)"
-status: blocked
-priority: p2
-user_story: null
-blocked_by: ["top-level-gitlab-profile docs/ToDos.md INBOX: hierarchical cbc .gitattributes design (2026-10-12)"]
-created_at: 2026-10-12
-updated_at: 2026-10-12
-plan: docs/plans/cbc-hierarchical-attributes.md
-claimed_by: claude-session-dfac55a4
-claimed_at: 2026-10-12T14:00:00Z
-branch: chore/cbc-hierarchical-attributes
-pr_base_branch: dev
-origin: "On 2026-10-12 the maintainer asked to move the cbc=mandatory tags out of the flat root .gitattributes (160 lines) into .gitattributes files in subdirectories, following the new CbC workflow in top-level-gitlab-profile."
-roles:
-  design: "top-level-gitlab-profile owns the design, the tooling change, and its tests (its docs/ToDos.md INBOX entry of 2026-10-12)."
-  implementation: "This epic. It applies the ratified design to this repository and reorganizes the .gitattributes files."
-execution_contract:
-  design_policy: "No change to any .gitattributes file before the maintainer approves the design. The rule moves follow docs/plans/cbc-hierarchical-attributes.md. The revised R1 to R7 apply: the owner map routes proposals only, existing rules keep their coverage, and R7 is a separate change."
-  git_policy: "Commits require /quick-commit consent. The user runs push, merge, and PR operations."
-baseline:
-  root_file: ".gitattributes has 160 cbc lines. Two are duplicates: .github/workflows/slashing-tests.yml (lines 13 and 125) and scripts/ci/check-tla-invariants.sh (lines 10 and 117)."
-  evidence_dirs: "docs/cbc-evidence/ (tooling default) and docs/casper/cbc-evidence/ (selected through CBC_EVIDENCE_DIR in docs/casper/README.md)."
-  acceptance: "No entry sets cbc-acceptance yet."
-tasks:
-  - id: TASK-026-1
-    title: "Record the attribute baseline"
-    status: pending
-    blocked_by: []
-    acceptance:
-      - "The snapshot command of the plan (section 3) runs at the branch base, and its output is kept with the pull request as the reference."
-  - id: TASK-026-2
-    title: "Declare the owner directories"
-    status: pending
-    blocked_by: ["design approval", "shared owner map interface (R1)"]
-    acceptance:
-      - "The owner map of the shared tooling lists the nine owner directories of plan section 4."
-      - "The owner map routes new proposals only. The snapshot diff stays empty."
-  - id: TASK-026-3
-    title: "Move the rules into the owner .gitattributes files"
-    status: pending
-    blocked_by: [TASK-026-1, TASK-026-2]
-    acceptance:
-      - "Each commit moves one owner directory: it creates the owner file and removes the matching root lines."
-      - "Each moved pattern loses its owner prefix and gains a leading slash. The attributes stay the same."
-      - "No owner file uses an [attr] macro."
-      - "The snapshot diff against the previous commit is empty after each commit."
-      - "The root file keeps only rholang/src/rust/interpreter/reduce.rs and docs/crypto/README.md."
-  - id: TASK-026-4
-    title: "Remove the duplicate lines"
-    status: pending
-    blocked_by: [TASK-026-3]
-    acceptance:
-      - "A separate commit removes the second copy of .github/workflows/slashing-tests.yml and scripts/ci/check-tla-invariants.sh."
-      - "The snapshot diff is empty."
-  - id: TASK-026-5
-    title: "Prove that the migration is exact"
-    status: pending
-    blocked_by: [TASK-026-4, "shared R5 snapshot command"]
-    acceptance:
-      - "The snapshot at the branch head equals the baseline, except for paths that dev changed during the work. Each such path is recorded with its commit."
-      - "The R5 warnings report no override, duplicate, unanchored single-file pattern, or ambient attribute source."
-      - "cbc discharge --strict gives the same result at the branch base and the branch head."
-      - "The independent verifier in top-level-gitlab-profile confirms the result."
 ---
 ```
 
@@ -1346,6 +1394,33 @@ tasks:
       - "A maintainer accepts the review package for the driver, the fixture, and the workflow under CLAIM-CASPER-SOAK-001."
       - "A soak with the record names the component that grows, with its growth rate."
       - "After the growth fix, a weekend soak runs past 24 hours without a disk floor stop."
+  - id: TASK-021-27
+    title: "Stop the subprocess nodes of a deadline-stopped soak session, and fail closed when a writer remains"
+    status: in_progress
+    claimed_by: claude-session-0f4d8053
+    claimed_at: 2026-10-22T23:55:00Z
+    branch: fix/soak-deadline-shard-stop
+    pr_base_branch: dev
+    pull_request: null
+    blocked_by: []
+    finding: "Daily soak 39711861154 on dev f9340ed61 (PR #811 merged) stopped at the disk floor after 18.3 h. The six nodes of session 58 (PIDs 2082849 to 2082858) ran after the segment 1 deadline until the end of the job, and the nodes of session 92 after the segment 2 deadline. .subprocess-data was 1 MB through session 57, then grew about 95 MB and later 195 MB for each session. The scheduled soak runs the driver of ci-control at github.workflow_sha (master 679e2b4c1), and master did not contain PR #811, so the owner stop of PR #811 did not run in that soak. The failure-evidence copy also copied the logs of these nodes (1.6 to 5.7 GB for each failure). Evidence: issue #24 comment 6354292291 and its correction."
+    notes:
+      - "Follows TASK-021-26. Its last acceptance item (a weekend soak past 24 hours without a disk floor stop) depends on this task."
+      - "scripts/run-merge-recovery-soak.sh and scripts/casper-soak/src/host_control.rs are CbC-mandatory. The change needs a review package and a maintainer acceptance, as for PR #811."
+      - "Plan: (1) host-control residual reports each process under a directory with its dumpable state, environment readability, and owner-marker match; (2) the end-of-segment stop kills every residual writer under .subprocess-data and fails the segment when one remains; (3) the failure-evidence copy takes only session directories created after the iteration started; (4) tests for each; (5) review package and acceptance."
+      - "2026-10-22 implemented: host-control stop-under (arguments and working directory match with a path boundary, excludes itself and its ancestors), the end-of-segment residual stop with residual-writers.txt and the fail-closed rule, and the session-scoped evidence copy under .subprocess-data. Fixture RED before the fix (a node without the owner marker survived the segment), GREEN after it. host_control tests 13 passed as root and UID 65534. Review package runs/casper-soak-deadline-shard-stop-20261022-01, pending acceptance."
+      - "Open: .subprocess-data keeps the data directory of each deadline-stopped session (about 1.7 GB in soak 39711861154). Removal after a confirmed stop is a possible follow-up."
+      - "2026-10-23 correction: an earlier note on this task said that the owner stop of PR #811 missed the nodes. It did not run, because the scheduled soak uses the master driver. The residual stop is a second stop that does not depend on the owner marker."
+      - "2026-10-23 review fix (Pi agent, P2 on 793ca6c13): a non-dumpable writer with no target path in its arguments was silently excluded. stop-under now records such a process as uninspected and fails when a file under the directory changes during a 2 s window after the stop. host_control tests 15 passed as root and UID 65534. Driver fixture passed."
+      - "2026-10-23 second review fix (Pi agent, P2 on 621507755): a future-dated file hid writes from the newest-timestamp check. The write check now compares a per-entry snapshot of inode, size, modification time, and change time. host_control tests 17 passed as root and UID 65534."
+      - "2026-10-23 hosted regression: run 39889530851 failed the stop-timeout scenario of test-soak-disk-admission.sh, because the residual stop delayed failure publication past the 5 s deadline. After a host protection breach the driver now passes --quiet-ms 0 and bounds the stop by DISK_STOP_SECONDS. host_control tests 18 passed."
+      - "A scheduled soak exercises this change only after it is on master. A manual dispatch from dev (gh workflow run merge-recovery-soak.yml --ref dev) runs the dev driver."
+    acceptance:
+      - "scripts/bench/test-run-merge-recovery-soak.sh has a deadline-stop fixture with a node that the owner marker cannot match. No fixture process runs after the segment, and residual-writers.txt records the process."
+      - "host_control.rs unit tests cover residual for a marked process, an unmarked process, and a process with an unreadable environment."
+      - "An evidence-copy test with a stale session directory that is still written copies only the files of the failed session."
+      - "A maintainer accepts the review package for both CbC-mandatory files."
+      - "A daily soak after the merge has .subprocess-data near 1 MB after each segment, and residual-writers.txt names why the owner match missed."
 ---
 ```
 
@@ -3821,6 +3896,46 @@ tasks:
       - "Each ephemeral runner registers with a label that names the run that launched it, and every ephemeral job in _integration-pipeline.yml requires that label"
       - "Two Heavy Pipelines started within one minute of each other both complete without a job waiting on a runner that another run consumed"
       - "An idle ephemeral VM that its run no longer needs still self-terminates on the idle timeout"
+
+  - id: TASK-012-31
+    title: "Plan deploy pool read reuse for issue #711"
+    status: complete
+    issues: [711]
+    pr_base_branch: dev
+    branch: perf/711-deploy-pool-snapshot
+    claimed_by: null
+    claimed_at: null
+    completed_at: 2026-10-19
+    blocked_by: []
+    notes:
+      - "The user requested investigation and a plan before implementation."
+      - "The plan belongs in docs/plans/issue-711-deploy-pool-snapshot.md."
+      - "The plan records snapshot behavior, S1 through S8, stage metrics, regression tests, and the independent PR #730."
+    acceptance:
+      - "The plan identifies the four reads, the shared snapshot boundary, and the relevant claim requirements."
+      - "The plan defines regression tests, measurement criteria, and the pull request target dev."
+      - "The investigation changes no Rust code and creates no commit or pull request."
+
+  - id: TASK-012-32
+    title: "Reuse the deploy pool snapshot during block creation"
+    status: review
+    issues: [711]
+    pr: "https://github.com/F1R3FLY-io/f1r3node-rust/pull/771"
+    pr_base_branch: dev
+    branch: perf/711-deploy-pool-snapshot
+    claimed_by: null
+    claimed_at: null
+    blocked_by: []
+    notes:
+      - "Implement docs/plans/issue-711-deploy-pool-snapshot.md."
+      - "Preserve admission statements S1 through S8 and the existing stage metric definitions."
+    progress: "All 72 focused unit tests and 15 focused integration tests pass. Formatting and workspace clippy pass. The full release suite remains in progress."
+    acceptance:
+      - "Normal proposal preparation performs one full deploy pool read, and RecoveryEmpty performs none."
+      - "Both statistics functions and selection use the same captured deploy set."
+      - "Scope checks stop at the first matching deploy through any."
+      - "Snapshot, admission, quarantine, retry, and metric regression tests pass."
+      - "The pull request targets dev and records the test results and claim evidence."
 ---
 ```
 

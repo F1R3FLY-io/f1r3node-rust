@@ -35,10 +35,21 @@ message HeartbeatResponse {
 
 message ProtocolHandshake {
   bytes nonce       = 1;
+  // Protocol-format version advertised by the sender.  0 (proto3
+  // default) means the peer predates this field and makes no claim; any
+  // non-zero value is an explicit assertion that the sender speaks a
+  // specific wire + consensus format family.  See
+  // comm::rp::protocol_helper::PROTOCOL_FORMAT_VERSION for the value a
+  // current node advertises and the handshake-mismatch handling in
+  // comm::rp::handle_messages::handle_protocol_handshake.
+  uint32 formatVersion = 2;
 }
 
 message ProtocolHandshakeResponse {
   bytes nonce       = 1;
+  // Protocol-format version advertised by the responder.  Same
+  // semantics as ProtocolHandshake.formatVersion.
+  uint32 formatVersion = 2;
 }
 
 message Packet {

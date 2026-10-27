@@ -325,7 +325,32 @@ env:
   #   requires its own LFB to list it as bonded. Companion to f1r3node-rust
   #   #718. No other changes since 942de7b. Verified: descends from 942de7b
   #   (merge-base --is-ancestor).
-  SYSTEM_INTEGRATION_REF: 20873986abe42d896efbf780bca2b1da188d06a1
+  # 2026-10-24: 2087398 -> 1a35dd9 (system-integration MAIN — the #163 merge
+  #   commit). #162 + #163 move the test shard's heartbeat check-interval and
+  #   max-lfb-age from 5s to 3s (cooldown stays 3s), so blocks and finality
+  #   come faster under every soak and integration leg. #163 also changes
+  #   test_load, which the soak runs: a deploy counts as finalized only when
+  #   all six nodes report it (the phase line keeps its shape, with
+  #   last-node latency), deploys go to all four validators, and the test
+  #   sets no node flags of its own. Expect soak finalization latencies a
+  #   little above the pre-bump baseline from the stricter rule. Also brings
+  #   #161 (dev -> main), which carries #160: an opt-in heartbeat-timing
+  #   harness. Verified: descends from 2087398 (merge-base --is-ancestor).
+  # 2026-10-24: 1a35dd9 -> 2d3a8d4 (system-integration MAIN — the #164 merge
+  #   commit). #164 removes the two duplicate genesis wallets (V4's, added by
+  #   #163, and 111125xD9x…) and makes the genesis writer reject a repeated
+  #   address: the node loses credits to a duplicated vault (f1r3node-rust
+  #   #851), which failed test_validator_lifecycle on 1a35dd9. Verified:
+  #   descends from 1a35dd9; test_validator_lifecycle passes locally without
+  #   the duplicate.
+  # 2026-10-24: 2d3a8d4 -> e1e00ee (system-integration MAIN — the #165 merge
+  #   commit). #165 raises the test shard's max-parent-depth from 15 to 25,
+  #   so the 3s tick keeps a 75s citability window above the node's 58s
+  #   block re-request span, and sets protocol-client.network-timeout to 3s.
+  #   Clears three startup warnings on every shard. Verified: descends from
+  #   2d3a8d4; test_concurrent_bridge_locks passes locally with none of the
+  #   warnings on any node.
+  SYSTEM_INTEGRATION_REF: e1e00ee503ea3071c03abb84245cc0d48e441e82
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
@@ -1338,6 +1363,37 @@ jobs:
               end_epoch: $end, duration_seconds: $duration}' > "$RUNNER_TEMP/soak-window/soak-window.json"
           fi
 
+      - name: Checkout cleanup control sources
+        if: steps.resolve.outputs.should_run == 'true'
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-control
+          persist-credentials: false
+
+      - name: Install the pinned CbC runtime before runner launch
+        if: steps.resolve.outputs.should_run == 'true'
+        timeout-minutes: 5
+        working-directory: ci-control
+        run: bash scripts/ci/install-cbc-runtime.sh
+
+      - name: Configure cleanup acceptance trust
+        if: steps.resolve.outputs.should_run == 'true'
+        working-directory: ci-control
+        env:
+          CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
+        run: bash scripts/ci/configure-cbc-trust.sh
+
+      - name: Require accepted cleanup before runner launch
+        if: steps.resolve.outputs.should_run == 'true'
+        env:
+          CBC_CONTROL_REVISION: ${{ github.workflow_sha }}
+          CBC_CANDIDATE_REVISION: ${{ steps.resolve.outputs.target_sha }}
+        run: >-
+          bash ci-control/scripts/ci/check-soak-cleanup.sh --root ci-control
+          --control-revision "$CBC_CONTROL_REVISION" --candidate-revision "$CBC_CANDIDATE_REVISION"
+          --output "$RUNNER_TEMP/soak-cleanup-admission.json"
+
       - name: Record the candidate soak window
         if: inputs.candidate_tag != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -2114,6 +2170,28 @@ jobs:
           fi
           echo "instance_id=$iid" >> "$GITHUB_OUTPUT"
           echo "tagged $iid — reapable after $(date -u -d "@${deadline}" +%FT%TZ)"
+
+      # The cleanup gate runs after the reaper exemption. Its runtime download
+      # can take minutes, and an unexempt runner can be reaped in that time.
+      - name: Configure cleanup acceptance trust
+        working-directory: ci-control
+        env:
+          CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
+        run: bash scripts/ci/configure-cbc-trust.sh
+
+      - name: Install the pinned CbC runtime on this runner
+        timeout-minutes: 5
+        working-directory: ci-control
+        run: bash scripts/ci/install-cbc-runtime.sh
+
+      - name: Require accepted cleanup on this runner
+        env:
+          CBC_CONTROL_REVISION: ${{ github.workflow_sha }}
+          CBC_CANDIDATE_REVISION: ${{ needs.schedule_gate.outputs.target_sha }}
+        run: >-
+          bash ci-control/scripts/ci/check-soak-cleanup.sh --root ci-control
+          --control-revision "$CBC_CONTROL_REVISION" --candidate-revision "$CBC_CANDIDATE_REVISION"
+          --output "$RUNNER_TEMP/soak-cleanup-admission.json"
 
       - name: Checkout code under test
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0

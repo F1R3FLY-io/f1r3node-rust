@@ -57,7 +57,7 @@ The job verifies the commit identities of pull request commits (pull requests on
 
 ### Script Tests
 
-The job runs 21 script tests:
+The job runs these script tests:
 
 - Commit trailer check
 - Pre-push hook
@@ -80,6 +80,7 @@ The job runs 21 script tests:
 - Soak verdicts
 - Latency benchmark readiness and finalization
 - Integration preflight driver
+- Heartbeat timing driver
 - Soak dashboard restoration
 
 ### Soak Harness Tests
@@ -88,6 +89,26 @@ The job runs 21 script tests:
 2. Verify soak fail-closed driver (`scripts/bench/test-run-merge-recovery-soak.sh`)
 3. Verify isolated disk admission and emergency scenarios (`scripts/bench/test-soak-disk-admission.sh`)
 4. Verify the disk admission failure report and bounded-command liveness (`scripts/bench/test-soak-disk-admission-timing.sh`, with `SOAK_DISK_TEST_SKIP_TIMING=1`)
+
+### Heartbeat timing benchmark
+
+Routine integration preflight excludes the optional heartbeat timing benchmark from collection and execution.
+The preflight still rejects a skipped test in its selected suites.
+
+The manual `Heartbeat Timing Benchmark` workflow runs the timing benchmark against a selected node revision.
+It uses one 64 GB OCI runner and defaults to 20 measured repetitions after one warm-up.
+The timing test has a 45-minute limit.
+The full runner job has a 100-minute limit, which includes the node image build and artifact upload.
+The workflow records the node revision, harness revision, image identity, test output, and timing measurements.
+Runner cleanup applies after success, failure, or cancellation.
+The benchmark does not publish a preflight or release-gate result.
+
+Select `Heartbeat Timing Benchmark` in GitHub Actions, then select `Run workflow`.
+Set `target_ref` to the node branch, tag, or commit.
+Set `repetitions` to an integer from 1 to 20.
+The workflow enables `HEARTBEAT_TIMING=1` for this benchmark only.
+No repository variable is required.
+The workflow must reach the default branch before GitHub exposes its manual entry point.
 
 ## Jobs of the integration pipeline
 
@@ -189,16 +210,16 @@ The cost-accounting release train of issue #764 adds two long-lived branches. `c
 
 | Flow | Command | Temporary branch |
 |---|---|---|
-| Promotion from `ca-canary` to `ca-release` | `just ca-promote` | `promote/ca-release-<UTC timestamp>` |
+| Promotion from `ca-canary` to `ca-release` | `just ca-promote`, or operation `ca-promote` | `promote/ca-release-<UTC timestamp>` |
 | Back-merge from `ca-release` to `ca-canary` | `just ca-backmerge` | `backmerge/ca-release-<12-character SHA>` |
-| Occasional sync from `dev` to `ca-canary` | `just ca-sync` | `ca/sync-dev-<12-character SHA>` |
+| Occasional sync from `dev` to `ca-canary` | `just ca-sync`, or operation `ca-sync` | `ca/sync-dev-<12-character SHA>` |
 
-The commands run the same scripts as `just promote` and `just backmerge`. The scripts accept only these three pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
+The commands run the same scripts as `just promote` and `just backmerge`. The operations are inputs of the **Promote and Back-merge** workflow, which runs the same scripts from `master` with the promotion app token. Do not open a pull request with head `dev` into `ca-canary`, because the protected head guard closes it. Use `ca-sync` instead. The scripts accept only these three pairs and the `dev` and `master` pairs. The protected head guard rejects and closes a pull request with head `ca-canary` or `ca-release`.
 
 CI treats the two branches like `dev` and `master`:
 
 - A push to `ca-canary` or `ca-release` runs the heavy pipeline. The merge group reuse applies to `dev` only, so every push runs the OCI integration tests.
-- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to an approved pull request. Its head must not be a protected branch.
+- A pull request to `ca-canary` or `ca-release` with the `ci-heavy` label runs the heavy pipeline. Mergify adds the label to every pull request when it opens. Its head must not be a protected branch.
 - An accepted `ca-release` commit gets a tag of the form `ca-v<version>`, for example `ca-v0.5.0-rc.1`. The tag runs the heavy pipeline. It does not match `v*`, so the GitHub release job does not run for it.
 
 Image publication:
@@ -228,24 +249,53 @@ The workflow uses the promotion app token from `release-credentials`, as the Pro
 
 Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-release`. Every merge is a merge commit. Each queue checks one pull request at a time. Mergify first merges the current base into the pull request, and then it waits for the checks on the pull request head.
 
-Mergify adds the `ci-heavy` label to an approved pull request of this repository. The label runs the heavy pipeline on the pull request. A queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`, so a pull request without a heavy run cannot merge.
+The rulesets require a branch to be up to date before a merge. Mergify then accepts only in-place checks on the pull request head, not checks on a temporary draft pull request. A draft pull request has no `ci-heavy` label, so it would get no Integration Gate result. `.mergify.yml` therefore sets these values:
 
-| Queue | Pull requests | Merge conditions |
+- `merge_queue.mode: serial` and `merge_queue.max_parallel_checks: 1`
+- `batch_size: 1` and `max_checks_retries: 0` in each queue
+- `merge_conditions` identical to `queue_conditions` in each queue
+
+Each queue lists its checks in both condition lists. A pull request therefore enters a queue only after its checks pass.
+
+Mergify adds the `ci-heavy` label to every open pull request of this repository into `dev`, `master`, `ca-canary`, and `ca-release`. It does not label a protected head, or a `ca-canary` pull request that is not a `ca/` item. A draft gets the label when it is ready for review. If someone removes the label, Mergify adds it again. The label runs the heavy pipeline on the pull request.
+
+Each push to a labeled pull request runs the heavy pipeline again. Each heavy run uses OCI instances from the shared daily quota, so push in batches. A `LimitExceeded` error means that the quota is used up for the day.
+
+Without a waiver, a queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`.
+
+A member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run on the member's own pull request into `dev` or `ca-canary`. To avoid any heavy run, open the pull request with `--label ci-heavy-waived`. On an open pull request:
+
+1. Add the `ci-heavy-waived` label. Mergify then does not add `ci-heavy` again.
+2. Remove the `ci-heavy` label.
+
+When the pull request has `ci-heavy-waived` and no `ci-heavy`, the **CI Heavy Label** workflow cancels the running CI run, including its OCI jobs. It then reruns CI with the current labels, so the heavy pipeline is skipped and the Integration Gate checks report skipped. Failed gate results of an earlier heavy run are replaced in the same way.
+
+The `dev` and `ca-item` queues accept the waiver only when the author is a ci-maintainers member. A waiver on another pull request does not count, so the pull request cannot merge until `ci-heavy` is back. `devProtect` requires both Integration Gate checks, and GitHub counts a skipped gate job as passing, so a waived pull request can merge into `dev`. The `master` and `ca-release` queues have no waiver. Every promotion and every hotfix needs `ci-heavy` and both gates.
+
+CI does not run on a `labeled` event. A run for a label replaces the checks of the pull request head with pending checks. The merge queue adds the `queued` label when it queues a pull request, so the required checks became pending and the merge failed (pull request #826).
+
+The **CI Heavy Label** workflow reruns the newest CI run of the head when the `ci-heavy` label is added, and when a waiver takes effect. It does not rerun a run whose heavy pipeline already runs or passed, so the label that Mergify adds at open does not restart CI. The rerun keeps the `pull_request` event, and Resolve Target reads the current labels to start or skip the heavy pipeline. Other labels, for example `queued` and `dequeued`, do not start CI. An edit of the pull request still starts CI, because a base change arrives as an edit.
+
+| Queue | Pull requests | Queue and merge conditions |
 |---|---|---|
-| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | To enter the queue: an approving review, no requested changes, and the `ci-heavy` label. To merge: the `devProtect` checks, Promotion Source, and the Integration Gates. |
-| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | To enter the queue: as for `dev`. To merge: the `masterProtect` checks, the casper shards, and the Integration Gates. |
-| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | To enter the queue: as for `dev`, and also the `ca-soaked` label. To merge: as for `dev`. |
+| `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approval or a `ci-maintainers` author, requested reviews, no requested changes, the `devProtect` checks, Promotion Source, and `ci-heavy` with the gates, or a maintainer waiver |
+| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | An approving review, no requested changes, the `ci-heavy` label, the `masterProtect` checks, Promotion Source, the casper shards, and the Integration Gates |
+| `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`, and also the `ca-soaked` label |
 | `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
-| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | To enter the queue: as for `dev`. To merge: as for `dev`. |
+| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | As for `master`, with the `dev` checks |
 
-To merge a pull request into `dev`, `master`, or `ca-release`, get an approving review. Mergify adds `ci-heavy`, queues the pull request, and merges it after the checks pass. A push to the pull request starts the checks again.
+To merge a pull request into `master` or `ca-release`, get an approving review.
+
+A member of `@F1R3FLY-io/ci-maintainers` can merge a pull request into `dev` or `ca-canary` without an approval. Any other author needs an approving review. In both cases, each requested reviewer or team must submit a review, and no review can request changes. A reviewer who does not agree must use **Request changes**. A comment-only review removes the request and does not block the merge.
+
+To merge any other pull request into `dev`, get an approving review. Mergify adds `ci-heavy` when the pull request opens, queues it, and merges it after the checks pass. A push to the pull request starts the checks again.
 
 To merge a `ca/<item>` pull request:
 
 1. Add the `ca-soak` label to start its 22-hour soak. A passed soak adds the `ca-soaked` label.
-2. Get an approving review.
+2. Get an approving review, or be a member of `@F1R3FLY-io/ci-maintainers`. Each requested reviewer must submit a review.
 
-Mergify then adds `ci-heavy` and queues the pull request.
+Mergify queues the pull request. It added `ci-heavy` when the pull request opened.
 
 A pull request from a fork gets no heavy run, so no queue accepts it. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with this body line:
 
@@ -255,7 +305,22 @@ Imports fork pull request #<N>.
 
 Commit Policy then exempts each commit that the fork pull request lists and attributes to its author. The commit must also be in the new pull request. A rebase or an amended commit gets a new SHA, so it loses the exemption.
 
-`test-mergify-config.sh` checks the queues. It holds copies of the required checks of `devProtect` and `masterProtect`. A change of a ruleset changes that copy and the `merge_conditions` of `.mergify.yml` in the same pull request.
+#### Queue priority
+
+The priority rules of `.mergify.yml` set the order of the queued pull requests across all queues. The queue order in the file does not set a priority. In each tier, the pull requests keep the order in which they entered the queue.
+
+| Priority | Pull requests | Interrupts running checks |
+|---|---|---|
+| 6000 | Security fixes: the `security` label, or a head that contains `security` or `rustsec` | Yes |
+| 5000 | `fix/*` into `dev`, and `hotfix/*` into `master` | No |
+| 4000 | The release flow: `promote/*`, `backmerge/*`, and `ca/*` heads | No |
+| 3000 | `perf/*` into any branch | No |
+| 2500 | `ci/*` | No |
+| 2000 | Every other head, for example `feat/*`, `feature/*`, `docs/*`, and `chore/*` | No |
+
+Name a security fix `hotfix/security-<topic>` into `master` or `fix/security-<topic>` into `dev`. Mergify then adds the `security` label. If a security fix has another name, add the `security` label by hand. A security fix interrupts the checks of the pull request that Mergify checks, and that pull request goes back into the queue. Its heavy run starts again later. A pull request of a lower tier waits until the running checks complete.
+
+`test-mergify-config.sh` checks the queues. It holds copies of the required checks of `devProtect` and `masterProtect`. A change of a ruleset changes that copy and both condition lists of `.mergify.yml` in the same pull request. The test also checks the serial in-place settings.
 
 The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`.
 
@@ -269,7 +334,7 @@ On 2026-10-21, PR #794 merged into `dev` outside the merge queue. An organizatio
 
 | Ruleset | Change |
 |---|---|
-| `mergify-only` (new) | Targets `dev` and `master`. The **Restrict updates** rule blocks every update of the branch. The bypass actors are the Mergify app (10562) and the CI automation app (4428544) only. |
+| `mergify-only` (new) | Targets `dev`, `master`, `ca-canary`, and `ca-release`. The **Restrict updates** rule blocks every update of the branch. The bypass actors are the Mergify app (10562) and the CI automation app (4428544) only. |
 | `devProtect` | Remove the `merge_queue` rule, so Mergify can merge. Keep the pull request and required check rules. |
 | `masterProtect` | No change. |
 

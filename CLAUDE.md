@@ -89,6 +89,7 @@ just clean-standalone                # Reset node data
 
 # Docker
 docker build -f node/Dockerfile -t f1r3fly-rust:local .
+cp -n docker/.env.example docker/.env  # docker/.env is not tracked
 docker compose -f docker/standalone.yml up
 docker compose -f docker/shard.yml up
 ```
@@ -98,6 +99,8 @@ docker compose -f docker/shard.yml up
 ### Rust Guidelines
 - **No comments** unless explicitly requested by user
 - **Rust and bash only for new work.** Do not add Python, Ruby, or other languages. Legacy Python remains in the z3 witnesses under `formal/` and in a few inline `python3` calls in older scripts. It leaves when that code is next touched. One scoped exception stays: `scripts/bench/extend-issue24-metrics.py` and its test. They edit and verify the external system-integration harness's own Python module, and they run only where that harness runs.
+  - The pinned shared CbC runtime is an external tool dependency. Install its source outside this repository.
+  - Keep the CbC launcher, installer, and repository checks in Rust or Bash.
 - Zero-cost abstractions, proper ownership
 - Async/await with Tokio runtime
 - Error handling: `eyre` for application errors, `thiserror` for library errors
@@ -199,7 +202,7 @@ Both settings take effect at the next session start.
 - `master` is the default branch and release line. Maintainers promote `dev` to `master` with `just promote`.
 - `just promote` opens the promotion from a temporary `promote/*` branch. Do not open a promotion with head `dev`. GitHub deletes the head branch of a merged pull request and retargets every pull request based on it to `master`. The `Promotion Source` check rejects a pull request from `dev` to `master`.
 - `dev` is the integration branch. Feature and fix pull requests target this branch.
-- Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `chore/`) branch from and target `dev`
+- Feature branches (`feature/`, `fix/`, `docs/`, `perf/`, `ci/`, `chore/`) branch from and target `dev`
 - `hotfix/` branches from and target `master`, then `master` is merged back into `dev`
 - `just backmerge` opens the back-merge from a temporary `backmerge/*` branch. Do not open a pull request with head `master` or `dev`. Its **Update branch** button merges the base into the protected head through the admin bypass. The `Promotion Source` check rejects such a pull request, and the `Protected Head Guard` workflow closes it.
 - There is no `main` branch, and `staging` is deprecated (fully contained in `dev`)
@@ -211,14 +214,22 @@ Both settings take effect at the next session start.
   - a pull request with the `ci-heavy` label
   - a push to `dev`, `master`, or a tag. A push to `dev` skips the OCI tests when the merged head or its merge group passed them on the same tree. It still builds and publishes the images.
   - every merge group, until the GitHub merge queue leaves `dev`
-- Mergify adds `ci-heavy` to an approved pull request and merges it only after both Integration gates succeed. Do not wait for the label to see an integration result early. Add the label yourself for these changes:
-  - Rust code in a workspace crate
-  - `Cargo.toml` or `Cargo.lock`
-  - `node/src/main/resources/defaults.conf`
-  - `node/Dockerfile` or the files in `docker/`
-- Add the label once, after the last planned push. A push, a label change, or a `gh pr edit` cancels a running heavy run.
+- Mergify adds `ci-heavy` to every open, non-draft pull request into `dev`, `master`, `ca-canary` (`ca/` heads), and `ca-release`. It adds the label again when someone removes it. Open a new pull request with `--label ci-heavy`.
+- Each push to a pull request runs the heavy pipeline again on OCI. Push in batches, because each heavy run uses the shared daily OCI instance quota. A push or a `gh pr edit` cancels a running heavy run.
+- A queue merges only after both Integration gates succeed, except with a waiver:
+  - Only a member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run, only on that member's own pull request, and only into `dev` or `ca-canary`.
+  - To waive, add the `ci-heavy-waived` label and remove `ci-heavy`. CI then reruns with the current labels and skips the heavy pipeline. To avoid any heavy run, open the pull request with `--label ci-heavy-waived` instead of `--label ci-heavy`.
+  - Promotions into `master` and `ca-release` and every hotfix always need `ci-heavy`.
 - A pull request from a fork gets no heavy run. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with the body line `Imports fork pull request #<N>.`
-- `docs/ci.md` describes the jobs, the required checks, the Mergify queues, and the merge rulesets.
+- The Mergify priority rules order the queued pull requests across all queues. The branch name or a label sets the tier:
+  1. Security fixes: the `security` label, or a head that contains `security` or `rustsec`. Only this tier interrupts the checks that run.
+  2. `fix/` into `dev`, and `hotfix/` into `master`.
+  3. The release flow: `promote/`, `backmerge/`, and `ca/` heads.
+  4. `perf/` into any branch.
+  5. `ci/`.
+  6. Every other head, for example `feat/`, `feature/`, `docs/`, and `chore/`.
+- Name a security fix `hotfix/security-<topic>` into `master` or `fix/security-<topic>` into `dev`. Mergify then adds the `security` label. For another name, add the label by hand.
+- `docs/ci.md` describes the jobs, the required checks, the Mergify queues and priorities, and the merge rulesets.
 
 ## Relationship to f1r3node
 This repo was extracted from `F1R3FLY-io/f1r3fly` (`rust/dev` branch). Key differences:
