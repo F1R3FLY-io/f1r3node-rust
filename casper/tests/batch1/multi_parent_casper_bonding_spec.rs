@@ -74,9 +74,20 @@ async fn multi_parent_casper_should_allow_uint256_bonding() {
     let bond_deploy =
         bonding_util::bonding_deploy(amount.clone(), &DEFAULT_SEC, Some(shard_id.clone()))
             .expect("bond deploy");
-    let b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[bond_deploy])
+    let b1 = nodes[0]
+        .add_block_from_deploys(&[bond_deploy])
         .await
-        .expect("propagate the bond block");
+        .unwrap();
+    for node in nodes.iter_mut().skip(1) {
+        let validation = node.process_block(b1.clone()).await.unwrap();
+        assert!(
+            matches!(
+                validation,
+                rspace_plus_plus::rspace::history::Either::Right(_)
+            ),
+            "{validation:?}"
+        );
+    }
 
     for node in &nodes {
         let bonds = node

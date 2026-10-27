@@ -651,9 +651,9 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
             Some(genesis.genesis_block.shard_id.clone()),
         )
         .unwrap();
-        let block = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy])
-            .await
-            .unwrap();
+        let block = nodes[0].add_block_from_deploys(&[deploy]).await.unwrap();
+        let validation = nodes[1].process_block(block.clone()).await.unwrap();
+        assert!(matches!(validation, Either::Right(_)), "{validation:?}");
         assert_eq!(block.body.deploys.len(), 1);
         let processed = &block.body.deploys[0];
         assert_eq!(processed.is_failed, failed);
