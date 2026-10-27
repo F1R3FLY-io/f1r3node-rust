@@ -32,6 +32,8 @@ for control in \
   "WrongPreparedWitnessMutant:PreparedWitnessBound" \
   "UnwindGateReleaseMutant:GateHeldUntilResolution" \
   "CancelGateReleaseMutant:GateHeldUntilResolution" \
+  "ColdLimitIgnoredMutant:ColdRecoveryHonorsIncomingLimits" \
+  "FabricatedColdMutant:TrustedSuccessorHasNoColdEvidence" \
   "NeverAcknowledged:NeverAcknowledged" \
   "NeverRecoveredOld:NeverRecoveredOld" \
   "NeverRecoveredNew:NeverRecoveredNew" \
@@ -39,7 +41,9 @@ for control in \
   "NeverAbortedCapture:NeverAbortedCapture" \
   "NeverUnwound:NeverUnwound" \
   "NeverCancelled:NeverCancelled" \
-  "NeverRetriedAcknowledgementAfterUnwind:NeverRetriedAcknowledgementAfterUnwind"
+  "NeverRetriedAcknowledgementAfterUnwind:NeverRetriedAcknowledgementAfterUnwind" \
+  "NeverEmptyCheckpointUnderTightenedColdLimits:NeverEmptyCheckpointUnderTightenedColdLimits" \
+  "NeverAwaitingAckRetryUnderTightenedColdLimits:NeverAwaitingAckRetryUnderTightenedColdLimits"
 do
   config="${control%%:*}"
   invariant="${control#*:}"
@@ -54,4 +58,4 @@ do
     exit 1
   fi
 done
-echo "journal-owner: control, fifteen causal mutants and eight reachability witnesses passed"
+echo "journal-owner: control, seventeen causal mutants and ten reachability witnesses passed"

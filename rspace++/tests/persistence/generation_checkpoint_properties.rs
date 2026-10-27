@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR", "CR", "LT", "DC", "CL", "RV",
+        "IR", "CR", "LT", "DC", "CL", "RV", "TS",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -465,6 +465,9 @@ fn model_property_manifest_is_unique_and_exhaustive() {
             "../../../formal/tlaplus/stack_safe_pda/RSpaceGenerationCheckpointPublication.tla"
         ),
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceRetentionV2Upgrade.tla"),
+        include_str!(
+            "../../../formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublication.tla"
+        ),
     ]
     .concat();
     let tla_configs = [
@@ -472,6 +475,9 @@ fn model_property_manifest_is_unique_and_exhaustive() {
             "../../../formal/tlaplus/stack_safe_pda/RSpaceGenerationCheckpointPublication.cfg"
         ),
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceRetentionV2Upgrade.cfg"),
+        include_str!(
+            "../../../formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublication.cfg"
+        ),
     ];
     let rocq_source = [
         include_str!(
@@ -482,6 +488,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("../../../formal/rocq/stack_safe_pda/theories/CreditedClosureLedger.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/RetentionV2Format.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/RetentionV2Editor.v"),
+        include_str!("../../../formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v"),
     ]
     .concat();
     let mut cited_tla = BTreeSet::new();
@@ -581,6 +588,10 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         formal_gate.contains("theories/RetentionV2Editor.v"),
         "the integrated formal gate does not compile the radix editor theory cited by RV rows",
     );
+    assert!(
+        formal_gate.contains("theories/TrustedSuccessorCapability.v"),
+        "the integrated formal gate does not compile the trusted successor theory cited by TS rows",
+    );
     for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("NV-")) {
         let witness = tla_symbols
             .iter()
@@ -621,6 +632,26 @@ fn model_property_manifest_is_unique_and_exhaustive() {
             );
         }
     }
+    for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("TS-")) {
+        for witness in tla_symbols
+            .iter()
+            .copied()
+            .filter(|symbol| symbol.starts_with("Never"))
+        {
+            let config_name = format!("RSpaceTrustedIncrementalPublication{witness}.cfg");
+            let config = std::fs::read_to_string(
+                repository_root
+                    .join("formal/tlaplus/stack_safe_pda")
+                    .join(&config_name),
+            )
+            .unwrap_or_else(|error| panic!("trusted row {id} lacks {config_name}: {error}"));
+            assert!(config.contains(&format!("INVARIANT {witness}")));
+            assert!(
+                formal_gate.contains(&config_name) && formal_gate.contains(witness),
+                "trusted row {id} witness {witness} is not enforced by the integrated formal gate",
+            );
+        }
+    }
 
     let executable_sources = [
         include_str!("checkpoint_codec.rs"),
@@ -634,6 +665,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("incremental_reachability_properties.rs"),
         include_str!("retention_v2_editor_properties.rs"),
         include_str!("retention_v2_format_properties.rs"),
+        include_str!("trusted_successor_properties.rs"),
         include_str!("wal_codec.rs"),
         include_str!("../hot_store/journal_commit.rs"),
     ]

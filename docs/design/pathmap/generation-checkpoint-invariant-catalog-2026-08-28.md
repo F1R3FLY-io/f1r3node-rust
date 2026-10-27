@@ -149,6 +149,13 @@ The completed command was `bash scripts/check-rspace-journal-owner-model.sh`; ra
 The existing runner enforces the resource bounds stated above and validates each named
 counterexample rather than treating an arbitrary failed invocation as evidence.
 
+The 2026-10-27 [trusted successor](#trusted-successor-capability-2026-10-27) extension adds
+tightened cold limits, the empty checkpoint and the absence of cold evidence on trusted adoption
+to this model: two invariants (`ColdRecoveryHonorsIncomingLimits` and
+`TrustedSuccessorHasNoColdEvidence`), two causal mutants and two reachability witnesses. The
+counts above are those of the 2026-09-06 revision; the verification record gives the extended
+model's counts.
+
 The concrete implementation must preserve `DurableWriterLeaseV1` through physical recovery and
 semantic-admission errors. `DurableDirectoryV1::try_clone_reader` shares the opened directory
 capability and generation registry; reopening `PathBuf` does not. Factor borrowed recovery and
@@ -3188,6 +3195,232 @@ The activation evidence in the verification record was taken at these sources:
 | `rspace++/tests/persistence/property_support.rs` | `46573d3b4365f648d39bb1512dafb8e89bf2e9350e3b68662637cdf010946aa4` |
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `e5aebfbb8bb7d655fd334a17abb3492e977d8e4eff891aba7fd0ace101100993` |
 
+### Trusted successor capability (2026-10-27)
+
+Task 7927 replaces the physical recovery and cold admission that follow every
+ordinary incremental publication with a *trusted successor*, as engineering
+journal J-067 rules: the publication returns the successor core that it derived
+before writing, without re-reading the store. This section records the first of
+the task's five slices, task 11942: the formal models, and the test-model
+extraction of every property that the production refinement must satisfy. The
+slice changes no production code. The durable backend is still dormant, every
+incremental publication still runs physical recovery and cold admission, and
+every TS row below is a test-only model extraction whose production refinement
+remains open. The other slices are the exact shape summary (task 11943), the
+split of the authority core from cold-checked admission evidence (task 11944),
+the trusted bind under an explicit hot policy (task 11945), and trusted
+publication with the switch of the journal owner (task 11946), which also
+completes this section.
+
+**The successor rule.** Let $`s`$ be a predecessor authority and $`t`$ the
+successor that a sealed receipt names. Write
+
+- $`A_s`$ for *$`s`$ is an exact authority*: its current, retained and metadata
+  ledgers are the coherent quiescent ledgers of its retention entries and its
+  metadata roots, its retained-state maxima are the componentwise maxima of the
+  cold per-state inventories, its validity token is its current manifest, and
+  its object index is the cold rebuild of its index records;
+- $`D_{s,t}`$ for *the receipt is delta-sound*: it turns a semantically valid
+  base into a valid target inside the semantic object universe, and every
+  metadata root that it adds or removes lies in the metadata universe;
+- $`R_{s,t}`$ for *the trusted publication of the receipt returned $`t`$*;
+- $`C_{t,L}`$ for *cold execution evidence*: physical recovery and cold
+  admission of $`t`$ succeeded under the incoming admission limits $`L`$.
+
+J-067 keeps the authority apart from the cold evidence:
+
+```math
+A_s \wedge D_{s,t} \wedge R_{s,t} \;\Longrightarrow\; A_t
+\qquad\text{and}\qquad
+A_t \;\not\Longrightarrow\; C_{t,L}.
+```
+
+The implication is the theorem `trusted_successor_rule`. The non-implication
+has two witnesses: cold demand is not a function of the inventory summary that a
+trusted core carries (`cold_demand_is_not_a_function_of_the_inventory_summary`),
+and the TLA+ model reaches a trusted success under incoming limits that cold
+admission of the same catalog refuses (`NeverTrustedReady`). A trusted successor
+therefore never carries a cold report, and a fresh checkpoint from a trusted
+core measures its cold demand anew. Delta soundness is a premise of the rule:
+the theorems that need it take it as an explicit argument. Cold startup, import
+and fresh-checkpoint preflight stay exact.
+
+**The publication.** Both models describe one publication of a sealed
+transaction. Its *bind* checks the receipt's base token and profile against the
+predecessor core, runs one failure-atomic ledger trial per inventory domain, in
+the order current, retained, metadata, on the shared three-count ledger, and
+checks the final ceilings of the hot policy. It writes nothing. The sealed
+transaction carries the publication mode, trusted or cold-checked, and the
+policy. The *preflight* requires the call's mode, and in the trusted mode its
+policy, to equal the sealed ones, and the catalog to hold the predecessor image
+that the core's token names. The trusted mode then
+
+1. assembles the successor's object index in memory, so that a duplicate or
+   conflicting record refuses before any write;
+2. appends the transaction, with the same writes as the cold-checked mode;
+3. stages the successor token and pins the store;
+4. swaps the catalog slot and syncs the catalog directory;
+5. resolves the reclamation sidecar;
+6. adopts the successor core after an exact re-read of the catalog image.
+
+The cold-checked mode instead runs physical recovery, which also resolves the
+sidecar, and then cold admission under the incoming limits. A refusal precedes
+the first durable write. A failure before the slot write is *definitely not
+published*, a failure during it is *indeterminate*, and a failure once the
+catalog file is durable is *published with an error*.
+
+**Artifacts.** Four artifacts implement the slice:
+
+- the Rocq theory `formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v`
+  (module `TrustedSuccessorCapability`), with eleven positive capstones and five
+  negative controls, all sixteen closed under the global context. `_CoqProject`
+  lists it, and the integrated runner (`scripts/check-stack-safe-pda-proofs.sh`)
+  compiles it and requires that closed count;
+- the TLA+ model `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublication.tla`
+  (Lamport, 1994). Its base configuration checks nine invariants, each of its
+  eight negative-control configurations must violate its named invariant, and
+  each of its six non-vacuity witnesses must be reached; the integrated runner
+  checks all fifteen configurations;
+- an extension of the journal owner's model `RSpaceJournalPublicationOwner.tla`
+  with tightened cold limits, the empty checkpoint, and no cold evidence on
+  trusted adoption: two invariants (`ColdRecoveryHonorsIncomingLimits`,
+  `TrustedSuccessorHasNoColdEvidence`), two negative controls, and two witnesses
+  (`NeverEmptyCheckpointUnderTightenedColdLimits`,
+  `NeverAwaitingAckRetryUnderTightenedColdLimits`), which
+  `scripts/check-rspace-journal-owner-model.sh` checks;
+- the test model `rspace++/tests/persistence/trusted_successor_properties.rs`,
+  with the four owner rows bound in `durable_rspace_authority.rs`.
+
+**The test model.** The test model has three layers.
+
+1. A transliteration of the TLA+ next-state relation, action by action, in
+   which a `CASE` is decided by its first true guard, as TLC decides it.
+   Breadth-first exploration from all 64 initial scenarios must reach exactly
+   the 588 distinct states that TLC reaches; every reachable state must satisfy
+   the nine invariants; every witness must fail in some state; and each of the
+   eight negative controls must violate its named invariant. A bridge maps each
+   trace of the second layer, with the catalog image that persisted, to a model
+   behavior, so every generated fault is replayed in the model.
+2. A mirror of the theory's bind and publication, built on the composed ledger
+   trials of `incremental_reachability_properties.rs`, with four
+   negative-control variants: skipping the retained trial, skipping the
+   metadata trial, ignoring the sealed policy at the preflight, and appending
+   before the trials. A trace records every decision and every durable write.
+   A trusted trace passes the thirteen hooks
+   `FORMAL_PUBLICATION_PHASE_ORDER[2..=14]` (`durable_publication.rs:74-93`); a
+   cold-checked trace also passes the physical-recovery hook and the two
+   semantic-admission hooks, sixteen in all.
+3. A mirror of the theory's journal owner, with the empty checkpoint, the
+   awaiting-acknowledgement retry, recovery and the trusted checkpoint, and
+   probes that count cold checks and publication attempts.
+
+Histories are generated over a semantic DAG of one to seven objects of zero to
+four bytes each and a metadata DAG of one to four objects of one to four bytes
+each. Every object has up to three children, two in the metadata DAG, among the
+lower-numbered objects, with repeats allowed, so every graph is acyclic. A
+history starts from a cold-admitted core, with a current manifest, a metadata
+anchor, a shape summary, a profile from 0 to 2 and up to two index records, and
+makes one to four commits. Each commit chooses a target manifest, a metadata
+anchor, a shape summary and up to three index records, under a cursor schedule
+of one to eight choices. The *exact policy* of a step sets every trial work axis
+to its measured value and every final ceiling to the successor's value; its 32
+axes are the 21 work axes (seven per domain) and the 11 state ceilings.
+
+| ID | Required property and negative-control boundary | Test |
+|---|---|---|
+| TS-01 | On 256 generated histories, every trusted successor is an exact authority, and it equals, field by field, the core that cold admission derives from the same retention entries, metadata roots, shape, profile and index records. Its entries are the predecessor's with the receipt's commit, its metadata roots are the predecessor's with the receipt's delta applied, its retained-state count is one more, its validity token is the receipt's target, its profile is the predecessor's, and its index records are the predecessor's followed by the receipt's plan. The transliteration satisfies `AdoptedSuccessorIsExactCatalog` in all 588 states, and adoption without the catalog re-read violates it. | `trusted_successor_matches_cold_admission_at_every_history_step` |
+| TS-02 | On 256 generated pairs of up to five prefix records and up to five appended records under capacities from 0 to 7, appending to the prefix's index gives exactly the cold rebuild of all the records: the same records, the same count $`n`$ and the tail $`64 + 72n`$, or the same refusal (a duplicate record, a digest bound to two references, or a count above the capacity), and all four outcomes occur. On 64 generated histories, a plan that repeats an existing record, conflicts with one, repeats a fresh record or conflicts with a fresh record, and a plan for an index already at its capacity, are refused at assembly with the cold rebuild's record and reason, definitely not published, before any durable write. | `trusted_successor_index_frontier_equals_cold_recovery` |
+| TS-03 | On a fixture that commits a new manifest and replaces the metadata anchor, skipping the retained trial keeps 2 retained objects where cold traversal counts 3, and skipping the metadata trial keeps 1 metadata object where it counts 2. On 128 generated histories, at every step the production order prepares exactly the composed trial's evidence and successor; the metadata trial gives the same result after the two semantic trials as on the predecessor; lowering any positive measured trial axis of any domain by one refuses at that domain and axis, as the composed trial does, and both keep the predecessor; and a publication under the exact policy lowered by one on a work axis is refused at the bind after exactly the trials up to that domain, with the predecessor unchanged. Refusals in all three domains, and divergence of both skipped-trial variants from cold traversal, occur. | `trusted_bind_runs_domains_in_order_and_keeps_the_predecessor_on_first_refusal` |
+| TS-04 | Each of the seven ceilings (state objects and bytes, retained states, logical nodes, endpoints, logical path bytes and payload bytes) accepts at the successor's value and refuses one below on its own axis. On 64 generated histories, the exact policy binds the cold successor's ledger and maxima and seals that policy. Lowering any positive one of its 32 axes by one is refused with the expected trial or ceiling refusal, by the bind and by a publication, which is definitely not published with only the bind in its trace, writes nothing, and leaves the predecessor unchanged; a state ceiling that the current state attains is refused by the current trial, which runs first. Ceiling and trial refusals both occur. The transliteration satisfies `TrustedRefusalPrecedesAllMutation` and reaches a trusted policy refusal; the late-refusal and append-before-trials controls violate it. | `trusted_policy_accepts_exact_and_refuses_one_below_on_every_axis` |
+| TS-05 | On a swap of one root for another, the union peak is 2 objects and the final inventory 1: a union budget of 2 with a final limit of 1 prepares, the control that checks the union against the final limit refuses on union objects, and a final limit of 0 refuses on final objects. On 128 generated histories, every domain's measured union peak equals the cold inventory of its base roots plus the added roots. Where a domain's peak exceeds its final size, lowering its union budget to the final size refuses on that union axis, and such steps occur; under the exact policy the control refuses on a union axis that exceeds the final limit and otherwise agrees with the faithful trial. | `trusted_policy_permits_budgeted_union_scratch_above_final_state_size` |
+| TS-06 | On a fixture, a publication called with a policy other than the sealed one is refused `TrustedPolicyMismatch` by the preflight before any durable write; the control that ignores the policy publishes a successor above the changed policy's union ceiling, which the faithful bind refuses under that policy. On 64 generated histories, the sealed exact policy passes the preflight, and changing any of its 32 axes by one, up or down, is refused `TrustedPolicyMismatch` with only the preflight in the trace. A cold-checked binding is refused `PublicationModeMismatch` by the trusted preflight, and a trusted binding by the cold preflight; the cold binding passes its own preflight and refuses each of its three demand axes raised by one (`AdmissionPolicyMismatch`). The transliteration satisfies `PublishedPolicyIsSealedPolicy`, and the changed-policy control violates it. | `trusted_policy_and_mode_cannot_change_after_preparation` |
+| TS-07 | In the transliteration a stale authority is refused without a durable write while the catalog holds a foreign image, and a re-read mismatch is reachable; the append-before-trials control violates `TrustedRefusalPrecedesAllMutation`, and in the test model it swaps the catalog for a successor that the faithful bind refuses. On 128 generated histories, a receipt with a foreign base, with an earlier validity token, replayed against its own successor, or with another profile is refused at the receipt check under each of the six fault settings (none, a pin failure, a catalog mismatch, an interrupted catalog write, a directory-sync failure and a sidecar failure), with only that check in the trace and the authority unchanged. Under the unbounded, exact and one-below policies and each fault setting, every refused publication writes nothing, and every first durable write follows the trusted safe prefix with equal bind and publication policies. Stale and replayed receipts and writing publications occur. | `trusted_binding_refuses_foreign_stale_and_resequenced_authority_before_mutation` |
+| TS-08 | On a four-object fixture, two states with the same inventory of 2 objects and 15 bytes have cold demands of 2 and 1 references. Under limits of 1 reference, preflight with the measured demand accepts the single-reference state and refuses the shared-child state, which preflight with the predecessor's demand and preflight with the summary's demand both accept. On 256 generated histories, the measured demand of every successor equals that of a fresh cold traversal of its current manifest, and preflight accepts at it and refuses one below on each positive axis; each of the two controls accepts a state that the measured preflight refuses on some generated step. | `fresh_checkpoint_from_a_trusted_core_measures_new_cold_demand` |
+| TS-09 | On 128 generated histories, every trusted publication passes exactly the thirteen trusted hooks, with no physical recovery and no cold admission. The cold-checked publication of the same receipt under the successor's measured demand returns the same core with that demand as its evidence, passes the sixteen cold-checked hooks, and runs physical recovery and cold admission once each. The transliteration satisfies `NoPhysicalRecoveryOnTrustedSuccess` and `TrustedSuccessorHasNoColdEvidence` and reaches a trusted success under tight cold limits (`NeverTrustedReady`); the trusted-recovery and fabricated-evidence controls violate the two invariants. | `trusted_publication_performs_no_physical_recovery_or_cold_admission` |
+| TS-10 | On 128 generated histories, for each reclamation sidecar (absent, deferred because it is pinned, and reclaimable), the trusted and cold-checked publications of a step make the same durable writes, ending with the same sidecar resolution (nothing, keeping the intent bytes, and removing the superseded files), and both return the cold successor; the three sidecars give pairwise different writes. The transliteration satisfies `AdoptionFollowsDirectorySyncAndResolution`, and adoption before the directory sync violates it. | `trusted_and_cold_checked_publication_write_identical_bytes` |
+| TS-11 | The transliteration satisfies all nine invariants and reaches an indeterminate catalog write, a published failure of the sidecar resolution and a staging failure before the swap. Every one of the thirteen trusted hooks has a failure behavior, every such behavior replays in the model to its production class (definitely not published from the prepare write through the swap's verification, indeterminate at the slot write, published with an error from the catalog file sync on) with every invariant intact, and the fault-free path replays to ready. On 64 generated histories, every fault setting of every step, with the old, torn or new catalog image persisted, replays to the publication's outcome class; a changed policy replays to the policy refusal; and a retry publishes the same successor. At every trusted hook, every interrupted pack image (each prefix of the transaction between its synced and its written end, with and without a torn tail, under each catalog image that the hook allows) recovers the appointed prefix: the predecessor's entries under an old, torn or foreign catalog, the successor's under the new one. A retry from that prefix rebuilds exactly the uninterrupted pack. | `trusted_incremental_publication_recovers_and_retries_every_phase` |
+| TS-12 | On 256 generated owner requests with an empty journal, a checkpoint under the incoming cold limits and under tightened ones (all zero, or loose with one axis at zero) accepts the current authority with no change, makes no cold check and attempts no publication. | `owner_empty_checkpoint_under_tightened_cold_limits_performs_no_cold_check` |
+| TS-13 | On 256 generated owners awaiting acknowledgement, reconciliation and the checkpoint retry acknowledge the pending successor exactly once and make no cold check, with the same outcome under the incoming and the tightened cold limits. Recovery, by contrast, consults the cold limits once: it accepts the recovered authority under loose limits and refuses under zero limits. | `owner_awaiting_ack_retry_under_tightened_cold_limits_acknowledges_once_without_cold_check` |
+| TS-14 | On 128 generated histories, for every positive axis of the successor's measured cold demand, the cold-checked publication under limits one below on that axis runs cold admission and is refused after publication with the measured demand, while the trusted publication of the same receipt returns the successor; such axes occur. The transliteration satisfies `ColdModeSuccessIncludesColdAdmission`, reaches cold success (`NeverColdReady`) and trusted success under tight limits, and the skipped-admission control violates the invariant. | `trusted_success_does_not_imply_cold_admission_under_incoming_limits` |
+| TS-15 | On 64 generated histories, for every positive axis of the exact policy lowered by one, the owner's checkpoint of a captured journal is refused and stays ready, emits no event, makes no cold check, and makes exactly one publication attempt, which writes nothing. The transliteration reaches a trusted policy refusal. | `owner_trusted_policy_refusal_leaves_files_journals_and_authority_unchanged` |
+| TS-16 | On a four-object fixture, two retention histories whose maxima are both 1 object and 3 bytes have maxima of 1 object and 3 bytes, and of 1 object and 2 bytes, after evicting the same entry, so the maxima cannot follow an eviction without a recomputation. On 256 generated histories, every successor's maxima equal the componentwise maxima of the cold per-state inventories, and the componentwise maximum of the predecessor's maxima and the target's inventory; per-state preflight accepts at the maxima and refuses one below on each positive component. | `trusted_retained_state_maxima_equal_cold_requirements` |
+| TS-18 | On 256 generated histories, every successor's validity token is the receipt's target and its profile is the predecessor's; the bind refuses two foreign bases (`ForeignBase`) and two foreign profiles (`ProfileMismatch`), and refuses the next step's receipt against the predecessor whenever their tokens differ, which occurs. | `trusted_validity_is_bound_to_the_exact_predecessor_and_receipt` |
+| TS-19 | On 256 generated histories started from a V1 source, which has no metadata root, only the first successor migrates: its receipt removes no root, and every later receipt removes the previous anchor. Every successor's metadata roots are its anchor alone, its metadata ledger is the cold traversal of that anchor, and it is an exact authority. Migrating a migrated source a second time keeps the old anchor counted and diverges from the cold seed; later extensions occur. | `trusted_successor_migrates_a_v1_source_once_and_matches_the_cold_seed` |
+
+`model_property_manifest_is_unique_and_exhaustive` checks these eighteen
+bindings. It reads the TLA+ model with its base configuration and the Rocq
+theory as part of its sources. It requires each of the nine base invariants and
+each of the sixteen `Print Assumptions` capstones to be cited by a TS row of the
+derivation matrix, every witness that a TS row cites to have its configuration
+and to be checked by the integrated runner, and the runner to compile the
+theory. The journal owner's model stays outside the manifest, as the
+journal-owner rows do: the qualifications of TS-12 and TS-13 name its two
+witnesses, which its own checker runs. The shape-summary property joins the
+family with task 11943.
+
+**Boundary.**
+
+- These results hold for the models and the test model. No production code
+  binds, publishes or adopts a trusted successor yet. Tasks 11943 to 11946
+  refine every row in production, and the same test functions then gain the
+  production checks, so the bindings stay stable.
+- The maxima are exact only while retention appends
+  (`retained_state_maxima_is_cold_componentwise_max`); an eviction needs a
+  recomputation (`eviction_requires_recomputation_counterexample`), which is the
+  concern of task 7756.
+- No scaling is claimed (task 7929), and no fault acceptance on real files
+  (task 7928).
+- Damage to the catalog after adoption is the trade that J-067 accepts: the next
+  cold boundary finds it.
+
+Cited works:
+
+- K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing
+  of Haskell programs", *Proceedings of the Fifth ACM SIGPLAN International
+  Conference on Functional Programming (ICFP '00)*, 268–279, 2000,
+  [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266), for the
+  generated properties.
+- L. Lamport, "The temporal logic of actions", *ACM Transactions on Programming
+  Languages and Systems* 16(3):872–923, 1994,
+  [doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726).
+
+The trusted successor evidence in the verification record was taken at these
+sources. The production sources are those of the parent commit, which this
+slice does not change.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v` | `a1319b94208910b243967fe272c4c5da88e0a098c68b507fd3db092f15d9a579` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublication.tla` | `659975b286d258d374c9a1f15b02675a25bd1c3963cdeb5f458d8c52362d7ea4` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublication.cfg` | `c86314b6494792e1711951c52a482893389574f87c14e84546b0e7678ee557df` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationLateTrustedRefusalMutant.cfg` | `e506bb205c3997796f98291ee674ce23138b9b40f80c4ae40b3f7fd23b89d153` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationFabricatedColdEvidenceMutant.cfg` | `09f299e54d1efe4e11578d29e115789ea186f174e25eac71d94ba93ea3f1158c` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationChangedPolicyMutant.cfg` | `df1af8eea5ad1a27a79f1a024141fb5e3a4e61ac62396ffbdc5032a7972ad906` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationPublicationBeforeTrialsMutant.cfg` | `6c705c540d4fbc18834bb18d8b28790647dd5bf7dbb017275ffe2708b483dd25` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationTrustedRecoveryMutant.cfg` | `2d175d58199554c3ab74edaa155cb17fb2f7077e094a806ab860a567d3f7f593` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationEarlyAdoptionMutant.cfg` | `4b693def03869b41e020eec93afb6998cce2934c8360bdebd79d533e840dc0ef` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationWrongCatalogAdoptionMutant.cfg` | `66629356c4f6e0e4ae31cea1f3e79a8f197fc0549de3017a6f02a125f6157197` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationSkippedColdAdmissionMutant.cfg` | `5a48d569c7bfb779b31e043c805c9c5284f25e650a06066d7d0c1fe9ad593c91` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationNeverTrustedReady.cfg` | `09103f34e95e749a20775c5cf50ab85aa0470ae9faab0de24968280e132411e5` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationNeverColdReady.cfg` | `f6e212351baae6426ceaedca7c7f5de47069287837988183b0e510ba4b8af027` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationNeverTrustedRefusal.cfg` | `906b06db17a39a151f72644fbb6fc5d7bca3f55967831520078d7066370ca29a` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationNeverPublishedResolutionFailure.cfg` | `4e155535373706f2209655cb883be985ff678a9acc023db126d4a4c8cb4786f4` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationNeverStageFailureBeforeCas.cfg` | `58cceea4ee9b5b073623b1548318a9cc7660362f8e2c72403d6a7cbde9487e10` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublicationNeverIndeterminate.cfg` | `fd653a1dfbcb5d660948eb57752a2ff735e871e317de04a5a5cf86f7372e6ac2` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla` | `bacb3ac1e05f23a3b6e01b263aa1cb8556f21ca04775fe2be9d320f3d4a88ed0` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.cfg` | `d14a572fe87c35e54cc29d99b721e2f5968c267537b7d111e3e245e01dbdd6a3` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwnerColdLimitIgnoredMutant.cfg` | `3b1923659d581a7c3c95d713b3503a9cb32b3d137c6005dd6435e9c05a8a3518` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwnerFabricatedColdMutant.cfg` | `e5f2fe985b1474abf0d8d781423d869064ef5a854ea761befe3f1fdc9ffaa317` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwnerNeverEmptyCheckpointUnderTightenedColdLimits.cfg` | `75e86f27aaf1a59add53d1cc55ddd2566a55426f0b6f56f65449d85eb6fe5b98` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwnerNeverAwaitingAckRetryUnderTightenedColdLimits.cfg` | `dcfe841466e135afdf9967098cc32c745958cde26c3bf45c4e91fb34c5cc58ef` |
+| `scripts/check-rspace-journal-owner-model.sh` | `ba1009d1c6bea5a106f67f308e264e29cd811db74c3386691fac151a35a345ca` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `87ab5ce4cd1d047e1aa7964791c40bbe4639a0221f1e4ffc21fab16b9af603db` |
+| `rspace++/tests/persistence/trusted_successor_properties.rs` | `14c95644aecd4094bbf6a32e896ee0c66221a85bf34482a4c3379c7d38ea772e` |
+| `rspace++/tests/persistence/incremental_reachability_properties.rs` | `a8fef80b962ba87aeae939cd1e3eedfe3632448166478f8de91fc439960913bd` |
+| `rspace++/tests/persistence/durable_rspace_authority.rs` | `a71cfde7b9c82aef3bdd44b7b972652ee76892028f7225ee7430cc4d4afd09a4` |
+| `rspace++/tests/persistence/property_support.rs` | `df451a1dc45ce9b6d7c0d395b2b9d0de25fa8aafdf7da43e957233201222eb61` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `489d9344c520a6fa4c7577e57609fcbb7498aa775b0e74daf48c5494809a14cc` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -3284,6 +3517,24 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | RV-35 | `EXEC_ONLY` | `RetentionV2Editor.metadata_trial_work_is_the_changed_objects`, `RetentionV2Editor.deactivate_first_mutant_expands_the_shared_history` | P | The theory counts cursor steps by expansion credit; the production trial's expansion, reference and read counters are compared exactly with the oracle's changed objects. |
 | RV-36 | `EXEC_ONLY` | `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger`, `RetentionV2Editor.set_seed_mutant_drops_a_shared_radix_child` | P | The reader's occurrence counts realize the theory's seed; its equality with the ledger of an activation from an empty domain is executable. |
 | RV-37 | `NoReaderAdoptsUnsupportedContent` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.current_in_history_migration_mutant_duplicates_the_current_entry` | P | Both V1 readers refuse every migrated object, which realizes the model's format check; `v2_writer_migrates_a_v1_source_at_its_first_successor` shows recovery refusing the migration transaction. |
+| TS-01 | `AdoptedSuccessorIsExactCatalog` | `TrustedSuccessorCapability.trusted_successor_rule`, `TrustedSuccessorCapability.trusted_inventory_equals_cold_admission`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains` | P | Test-only model extraction; production refinement remains open (task 11945). The successor is compared field by field with the core that cold admission derives from the same history; the transliteration adopts only the exactly re-read catalog image. |
+| TS-02 | `EXEC_ONLY` | `TrustedSuccessorCapability.appended_index_is_cold_rebuild` | P | Test-only model extraction; production refinement remains open (task 11946). The appended index is compared with the cold rebuild on generated record lists, including the duplicate, conflict and capacity refusals, before any durable write. |
+| TS-03 | `EXEC_ONLY` | `TrustedSuccessorCapability.production_order_is_run_composed`, `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials`, `TrustedSuccessorCapability.skipped_domain_trial_mutant_breaks_cold_agreement` | P | Test-only model extraction; production refinement remains open (task 11945). The production order is the theorem's projection onto the shared ledger; the two skipped-trial variants realize the mutant theorem. |
+| TS-04 | `TrustedRefusalPrecedesAllMutation` | `TrustedSuccessorCapability.ceiling_decisions_are_exact`, `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis` | P | Test-only model extraction; production refinement remains open (task 11945). Exact acceptance and one-below refusal are checked on all 32 axes of the exact policy, by the bind and by a publication that writes nothing. |
+| TS-05 | `EXEC_ONLY` | `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.final_union_conflation_mutant_refuses_exact_final_limit` | P | Test-only model extraction; production refinement remains open (task 11945). Each domain's union peak is compared with the cold inventory of its base and added roots; the conflation control realizes the mutant theorem. |
+| TS-06 | `PublishedPolicyIsSealedPolicy` | `TrustedSuccessorCapability.sealed_policy_binding_is_exact`, `TrustedSuccessorCapability.changed_policy_mutant_accepts_unbound_limits` | P | Test-only model extraction; production refinement remains open (task 11945). Policy and mode equality at the preflight realize the sealed binding; the policy-ignoring variant realizes the changed-policy mutant. |
+| TS-07 | `TrustedRefusalPrecedesAllMutation` | `TrustedSuccessorCapability.trials_precede_mutation`, `TrustedSuccessorCapability.publication_before_trials_mutant_publishes_refused_successor` | P | Test-only model extraction; production refinement remains open (task 11945). Every receipt refusal is checked before the first durable write under all six fault settings; the append-before-trials variant realizes the mutant theorem. |
+| TS-08 | `EXEC_ONLY` | `TrustedSuccessorCapability.cold_demand_is_not_a_function_of_the_inventory_summary`, `TrustedSuccessorCapability.reused_predecessor_demand_mutant_fabricates_cold_evidence`, `TrustedSuccessorCapability.trusted_source_preflight_mutant_accepts_minus_one` | P | Test-only model extraction; production refinement remains open (task 11946). Cold demand is measured by a fresh traversal of the successor; the predecessor-demand and summary-demand controls realize the two mutant theorems. |
+| TS-09 | `NoPhysicalRecoveryOnTrustedSuccess`, `TrustedSuccessorHasNoColdEvidence`, `NeverTrustedReady` | `EXEC_ONLY` | P | Test-only model extraction; production refinement remains open (task 11946). No theorem models the publication hooks; the test model's hook trace is compared with `FORMAL_PUBLICATION_PHASE_ORDER`. |
+| TS-10 | `AdoptionFollowsDirectorySyncAndResolution` | `EXEC_ONLY` | P | Test-only model extraction; production refinement remains open (task 11946, which shows byte identity on real files). The two modes' durable writes are compared in the test model under the three sidecars. |
+| TS-11 | `TrustedOutcomeBoundaryIsExact`, `TrustedPublicationTypeInvariant`, `NeverIndeterminate`, `NeverPublishedResolutionFailure`, `NeverStageFailureBeforeCas` | `CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes` | P | Test-only model extraction; production refinement remains open (task 11946; kill tests on real files are task 7928). Every trusted hook's failure is replayed in the transliteration, and every interrupted pack image recovers the appointed prefix. |
+| TS-12 | `EXEC_ONLY` | `TrustedSuccessorCapability.empty_and_awaiting_ack_branches_do_not_consult_cold_limits` | P | Test-only model extraction; production refinement remains open (task 11946). The owner mirror counts cold checks; the owner model's witness `NeverEmptyCheckpointUnderTightenedColdLimits`, checked by `scripts/check-rspace-journal-owner-model.sh`, reaches the same branch. |
+| TS-13 | `EXEC_ONLY` | `TrustedSuccessorCapability.empty_and_awaiting_ack_branches_do_not_consult_cold_limits` | P | Test-only model extraction; production refinement remains open (task 11946). The owner mirror counts cold checks and acknowledgements; the owner model's witness `NeverAwaitingAckRetryUnderTightenedColdLimits` reaches the same branch. |
+| TS-14 | `ColdModeSuccessIncludesColdAdmission`, `NeverColdReady` | `TrustedSuccessorCapability.cold_demand_is_not_a_function_of_the_inventory_summary` | P | Test-only model extraction; production refinement remains open (task 11946). The cold-checked refusal and the trusted success of one receipt realize the non-implication on every positive demand axis. |
+| TS-15 | `NeverTrustedRefusal` | `TrustedSuccessorCapability.trials_precede_mutation` | P | Test-only model extraction; production refinement remains open (task 11946). The owner mirror's checkpoint is refused by the bind before any write, so the owner emits no event and stays ready. |
+| TS-16 | `EXEC_ONLY` | `TrustedSuccessorCapability.retained_state_maxima_is_cold_componentwise_max`, `TrustedSuccessorCapability.eviction_requires_recomputation_counterexample` | P | Test-only model extraction; production refinement remains open (task 11945). The maxima are checked while retention appends; the eviction counterexample is reproduced on its fixture, and eviction is task 7756. |
+| TS-18 | `EXEC_ONLY` | `TrustedSuccessorCapability.trusted_successor_rule` | P | Test-only model extraction; production refinement remains open (task 11945). The rule's token and profile premises are checked as refusals at the receipt check. |
+| TS-19 | `EXEC_ONLY` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger` | P | Test-only model extraction; production refinement remains open (task 11945). The first successor's migration and the seeded metadata ledger are compared with the cold traversal; the double-migration control keeps the old anchor counted. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -3522,6 +3773,28 @@ design. They include `RV-28` under the V1 writer, which its test now selects,
 admission, publication and recovery test that opens a directory by default and
 therefore now runs the V2 writer. See engineering journal J-250 for the
 activation probe, caps, evidence hashes and the release note.
+
+The 2026-10-27 trusted successor models add `TS-01` through `TS-16`, `TS-18`
+and `TS-19`. The catalog/derivation/binding registry now contains **205** IDs:
+the 187 above and the eighteen trusted rows. `TrustedSuccessorCapability.v`
+compiled with all **16** capstones closed under the global context, and the
+module passed independent kernel checking (pgmcp artifact 1116). TLC explored
+`RSpaceTrustedIncrementalPublication` from its 64 initial states, generating 664
+states, **588** of them distinct, to depth 13, with the nine invariants
+satisfied; each of the eight negative controls violated its named invariant, and
+each of the six witnesses was reached (artifact 1117). The integrated runner's
+block for the model passed again on the export of the candidate tree (artifact
+1120). The extended journal owner model generated 865,820 states, **44,272** of
+them distinct, to depth 21 (13,784 distinct before the extension), with the
+seventeen invariants satisfied, and its seventeen causal mutants and ten
+witnesses passed their designated checks (artifact 1118). On that export, all
+475 selected rspace++ library tests under `rspace::persistence` passed
+single-threaded in debug (45.54 s) and release (16.38 s), with the three
+unwind-child helpers ignored by design (artifact 1119). They include the
+eighteen trusted rows, whose transliteration reaches exactly TLC's 588 states,
+and this registry test. These results cover the models and the test model only:
+no production code changed, and every TS row remains a test-only extraction
+until tasks 11943 to 11946 refine it.
 
 ## Caller-authority contract (2026-09-06)
 

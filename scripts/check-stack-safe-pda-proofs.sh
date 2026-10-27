@@ -873,6 +873,14 @@ rocq_check_modules "path-local retention V2 metadata editor" \
   StackSafePDA.IncrementalLedgerTrial StackSafePDA.IncrementalDomainComposition \
   StackSafePDA.CreditedClosureLedger StackSafePDA.RetentionV2Format \
   StackSafePDA.RetentionV2Editor
+rocq_reject_placeholders theories/TrustedSuccessorCapability.v
+rocq_compile_with_closed_count theories/TrustedSuccessorCapability.v 16 \
+  "trusted successor capability"
+rocq_check_modules "trusted successor capability" \
+  StackSafePDA.ChannelImage StackSafePDA.GenerationCheckpointPublication \
+  StackSafePDA.IncrementalLedgerTrial StackSafePDA.IncrementalDomainComposition \
+  StackSafePDA.CreditedClosureLedger StackSafePDA.RetentionV2Format \
+  StackSafePDA.RetentionV2Editor StackSafePDA.TrustedSuccessorCapability
 streaming_codec_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/StreamingCodecPDA.v 2>&1
@@ -1748,6 +1756,65 @@ do
   if ! grep -q "Invariant ${retention_v2_witness_invariant} is violated" \
       <<<"$retention_v2_witness_output"; then
     echo "stack-safe-pda: ${retention_v2_witness_label} retention V2 witness failed without ${retention_v2_witness_invariant}" >&2
+    exit 1
+  fi
+done
+tlc_run "$tla_metadir" \
+  RSpaceTrustedIncrementalPublication.cfg \
+  RSpaceTrustedIncrementalPublication.tla -cleanup
+for trusted_publication_mutant in \
+  "late-trusted-refusal:RSpaceTrustedIncrementalPublicationLateTrustedRefusalMutant.cfg:TrustedRefusalPrecedesAllMutation" \
+  "fabricated-cold-evidence:RSpaceTrustedIncrementalPublicationFabricatedColdEvidenceMutant.cfg:TrustedSuccessorHasNoColdEvidence" \
+  "changed-policy:RSpaceTrustedIncrementalPublicationChangedPolicyMutant.cfg:PublishedPolicyIsSealedPolicy" \
+  "publication-before-trials:RSpaceTrustedIncrementalPublicationPublicationBeforeTrialsMutant.cfg:TrustedRefusalPrecedesAllMutation" \
+  "trusted-recovery:RSpaceTrustedIncrementalPublicationTrustedRecoveryMutant.cfg:NoPhysicalRecoveryOnTrustedSuccess" \
+  "early-adoption:RSpaceTrustedIncrementalPublicationEarlyAdoptionMutant.cfg:AdoptionFollowsDirectorySyncAndResolution" \
+  "wrong-catalog-adoption:RSpaceTrustedIncrementalPublicationWrongCatalogAdoptionMutant.cfg:AdoptedSuccessorIsExactCatalog" \
+  "skipped-cold-admission:RSpaceTrustedIncrementalPublicationSkippedColdAdmissionMutant.cfg:ColdModeSuccessIncludesColdAdmission"
+do
+  trusted_publication_label="${trusted_publication_mutant%%:*}"
+  trusted_publication_tail="${trusted_publication_mutant#*:}"
+  trusted_publication_cfg="${trusted_publication_tail%%:*}"
+  trusted_publication_invariant="${trusted_publication_tail#*:}"
+  if trusted_publication_output="$({
+    tlc_run "$tla_metadir" \
+      "$trusted_publication_cfg" RSpaceTrustedIncrementalPublication.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$trusted_publication_output"
+    echo "stack-safe-pda: ${trusted_publication_label} trusted publication mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$trusted_publication_output"
+  if ! grep -q "Invariant ${trusted_publication_invariant} is violated" \
+      <<<"$trusted_publication_output"; then
+    echo "stack-safe-pda: ${trusted_publication_label} trusted publication mutant failed without ${trusted_publication_invariant}" >&2
+    exit 1
+  fi
+done
+for trusted_publication_witness in \
+  "trusted-ready:RSpaceTrustedIncrementalPublicationNeverTrustedReady.cfg:NeverTrustedReady" \
+  "cold-ready:RSpaceTrustedIncrementalPublicationNeverColdReady.cfg:NeverColdReady" \
+  "trusted-refusal:RSpaceTrustedIncrementalPublicationNeverTrustedRefusal.cfg:NeverTrustedRefusal" \
+  "published-resolution-failure:RSpaceTrustedIncrementalPublicationNeverPublishedResolutionFailure.cfg:NeverPublishedResolutionFailure" \
+  "stage-failure-before-cas:RSpaceTrustedIncrementalPublicationNeverStageFailureBeforeCas.cfg:NeverStageFailureBeforeCas" \
+  "indeterminate:RSpaceTrustedIncrementalPublicationNeverIndeterminate.cfg:NeverIndeterminate"
+do
+  trusted_publication_witness_label="${trusted_publication_witness%%:*}"
+  trusted_publication_witness_tail="${trusted_publication_witness#*:}"
+  trusted_publication_witness_cfg="${trusted_publication_witness_tail%%:*}"
+  trusted_publication_witness_invariant="${trusted_publication_witness_tail#*:}"
+  if trusted_publication_witness_output="$({
+    tlc_run "$tla_metadir" \
+      "$trusted_publication_witness_cfg" RSpaceTrustedIncrementalPublication.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$trusted_publication_witness_output"
+    echo "stack-safe-pda: ${trusted_publication_witness_label} trusted publication non-vacuity witness was unreachable" >&2
+    exit 1
+  fi
+  printf '%s\n' "$trusted_publication_witness_output"
+  if ! grep -q "Invariant ${trusted_publication_witness_invariant} is violated" \
+      <<<"$trusted_publication_witness_output"; then
+    echo "stack-safe-pda: ${trusted_publication_witness_label} trusted publication witness failed without ${trusted_publication_witness_invariant}" >&2
     exit 1
   fi
 done

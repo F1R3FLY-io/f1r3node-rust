@@ -75,7 +75,10 @@ Init ==
        acceptedAck |-> FALSE,
        lastAcceptedAck |-> [receipt |-> Receipt("local", incarnation, epoch), terminal |-> Old],
        aborted |-> FALSE, unwound |-> FALSE, cancelled |-> FALSE,
-       unwoundAfterAck |-> FALSE, ackRetriedAfterUnwind |-> FALSE]
+       unwoundAfterAck |-> FALSE, ackRetriedAfterUnwind |-> FALSE,
+       coldLimit |-> "loose", coldEvidence |-> "admitted",
+       emptyCheckpointUnderTightLimits |-> FALSE,
+       acknowledgedUnderTightLimits |-> FALSE]
 
 Capture(receipt) ==
     /\ state.phase = "Ready"
@@ -104,14 +107,18 @@ Publish(outcome) ==
            !.durable = IF committed THEN state.expected ELSE Old,
            !.admitted = IF outcome = "new" THEN state.expected ELSE Old,
            !.publications = IF committed THEN @ + 1 ELSE @,
-           !.acceptedRecovery = FALSE]
+           !.acceptedRecovery = FALSE,
+           !.coldEvidence = IF outcome = "new"
+                            THEN IF Fault = "fabricated-cold" THEN "fabricated" ELSE "none"
+                            ELSE @]
 
 Recover(report) ==
     /\ state.phase = "RecoveryRequired"
     /\ report \in Reports
     /\ LET exact == report = state.durable /\ report \in {Old, state.expected}
            weak == Fault = "wrong-recovery" /\ report.version = 1
-       IN IF exact \/ weak
+           withinLimits == state.coldLimit = "loose" \/ Fault = "cold-limit-ignored"
+       IN IF (exact \/ weak) /\ withinLimits
           THEN state' = [state EXCEPT
               !.phase = IF report = Old THEN "Ready" ELSE "AwaitingAck",
               !.gate = report # Old,
@@ -119,7 +126,8 @@ Recover(report) ==
               !.acceptedRecovery = TRUE,
               !.recoveryReport = report,
               !.recoveredOld = @ \/ report = Old,
-              !.recoveredNew = @ \/ report = New]
+              !.recoveredNew = @ \/ report = New,
+              !.coldEvidence = IF state.coldLimit = "loose" THEN "admitted" ELSE "exceeds-limits"]
           ELSE state' = [state EXCEPT !.acceptedRecovery = FALSE,
                           !.recoveryReport = report]
 
@@ -140,7 +148,8 @@ Acknowledge(receipt, terminal) ==
                  !.ackRetriedAfterUnwind = @ \/ state.unwoundAfterAck,
                  !.acceptedAck = TRUE,
                  !.lastAcceptedAck = [receipt |-> receipt, terminal |-> terminal],
-                 !.ackCommits = IF Fault = "double-ack" THEN @ + 1 ELSE @]
+                 !.ackCommits = IF Fault = "double-ack" THEN @ + 1 ELSE @,
+                 !.acknowledgedUnderTightLimits = @ \/ state.coldLimit = "tight"]
             ELSE state' = [state EXCEPT !.rejectedBinding = TRUE]
        ELSE IF receipt = state.receipt /\ Bound(receipt) /\ state.sealed
                /\ state.admitted = state.expected /\ state.durable = state.expected
@@ -149,8 +158,19 @@ Acknowledge(receipt, terminal) ==
                  !.journal = Empty, !.epoch = 1 - @, !.ackCommitted = TRUE,
                  !.ackReceipt = receipt, !.ackTerminal = state.expected, !.ackCommits = @ + 1,
                  !.acceptedAck = TRUE,
-                 !.lastAcceptedAck = [receipt |-> receipt, terminal |-> terminal]]
+                 !.lastAcceptedAck = [receipt |-> receipt, terminal |-> terminal],
+                 !.acknowledgedUnderTightLimits = @ \/ state.coldLimit = "tight"]
             ELSE state' = [state EXCEPT !.rejectedBinding = TRUE]
+
+TightenColdLimits ==
+    /\ state.coldLimit = "loose"
+    /\ state' = [state EXCEPT !.coldLimit = "tight"]
+
+EmptyCheckpoint ==
+    /\ state.phase \in {"Ready", "Done", "Reopened"}
+    /\ state.journal = Empty
+    /\ state' = [state EXCEPT
+        !.emptyCheckpointUnderTightLimits = @ \/ state.coldLimit = "tight"]
 
 FinishAcknowledgement ==
     /\ state.phase = "AwaitingAck"
@@ -233,6 +253,7 @@ Next ==
     \/ PinSuccessor
     \/ \E receipt \in AckReceipts, terminal \in Reports: Acknowledge(receipt, terminal)
     \/ FinishAcknowledgement \/ Unwind \/ CancelCall
+    \/ TightenColdLimits \/ EmptyCheckpoint
     \/ CrashAndReopen
     \/ EarlyAck \/ PartialClear \/ LosePin \/ UnresolvedRebase
     \/ DuplicatePublish \/ MutationDuringGate
@@ -255,6 +276,10 @@ TypeInvariant ==
     /\ state.expected \in Reports
     /\ state.acceptedAck \in BOOLEAN
     /\ state.lastAcceptedAck \in [receipt : AckReceipts, terminal : Reports]
+    /\ state.coldLimit \in {"loose", "tight"}
+    /\ state.coldEvidence \in {"none", "admitted", "exceeds-limits", "fabricated"}
+    /\ state.emptyCheckpointUnderTightLimits \in BOOLEAN
+    /\ state.acknowledgedUnderTightLimits \in BOOLEAN
 GateHeldUntilResolution == state.phase \in OpenPhases => state.gate
 ContinuousAuthority == state.writer /\ (state.oldPin \/ state.newPin)
 ExactPendingReceipt ==
@@ -282,6 +307,10 @@ AcknowledgementAcceptsOnlyExactInput ==
         /\ state.lastAcceptedAck.terminal = state.ackTerminal
 ReopenDiscardsVolatileJournal ==
     state.phase = "Reopened" => state.journal = Empty /\ state.hotBase = state.durable.version
+ColdRecoveryHonorsIncomingLimits ==
+    state.acceptedRecovery => state.coldEvidence = "admitted"
+TrustedSuccessorHasNoColdEvidence ==
+    state.phase = "AwaitingAck" /\ ~state.acceptedRecovery => state.coldEvidence = "none"
 NeverAcknowledged == ~state.acknowledged
 NeverRecoveredOld == ~state.recoveredOld
 NeverRecoveredNew == ~state.recoveredNew
@@ -290,4 +319,6 @@ NeverAbortedCapture == ~state.aborted
 NeverUnwound == ~state.unwound
 NeverCancelled == ~state.cancelled
 NeverRetriedAcknowledgementAfterUnwind == ~state.ackRetriedAfterUnwind
+NeverEmptyCheckpointUnderTightenedColdLimits == ~state.emptyCheckpointUnderTightLimits
+NeverAwaitingAckRetryUnderTightenedColdLimits == ~state.acknowledgedUnderTightLimits
 =============================================================================

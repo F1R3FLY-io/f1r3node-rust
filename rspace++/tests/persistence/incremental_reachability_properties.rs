@@ -1232,7 +1232,7 @@ pub(super) enum BudgetAxis {
     FinalBytes,
 }
 
-const STEP_AXES: [BudgetAxis; 7] = [
+pub(super) const STEP_AXES: [BudgetAxis; 7] = [
     BudgetAxis::Count,
     BudgetAxis::UnionObjects,
     BudgetAxis::UnionBytes,
@@ -1289,14 +1289,14 @@ pub(super) struct TrialLimits(pub(super) [u64; 9]);
 impl TrialLimits {
     pub(super) const UNBOUNDED: Self = Self([u64::MAX; 9]);
 
-    fn get(&self, axis: BudgetAxis) -> u64 { self.0[axis as usize] }
+    pub(super) fn get(&self, axis: BudgetAxis) -> u64 { self.0[axis as usize] }
 
-    fn with(mut self, axis: BudgetAxis, value: u64) -> Self {
+    pub(super) fn with(mut self, axis: BudgetAxis, value: u64) -> Self {
         self.0[axis as usize] = value;
         self
     }
 
-    fn exact(evidence: &PreparedEvidence) -> Self {
+    pub(super) fn exact(evidence: &PreparedEvidence) -> Self {
         Self(BUDGET_AXES.map(|axis| evidence.measured(axis)))
     }
 
@@ -1446,7 +1446,7 @@ pub(super) struct TrialEnvironment {
 }
 
 impl TrialEnvironment {
-    fn inventory(&self, ledger: &Ledger) -> (u64, u64) {
+    pub(super) fn inventory(&self, ledger: &Ledger) -> (u64, u64) {
         ledger
             .active
             .iter()
@@ -1488,7 +1488,7 @@ pub(super) struct PreparedEvidence {
 }
 
 impl PreparedEvidence {
-    fn measured(&self, axis: BudgetAxis) -> u64 {
+    pub(super) fn measured(&self, axis: BudgetAxis) -> u64 {
         match axis {
             BudgetAxis::FinalObjects => self.objects,
             BudgetAxis::FinalBytes => self.bytes,
@@ -2462,13 +2462,13 @@ fn trial_mutants_violate_atomicity_or_cold_oracle() {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Domain {
+pub(super) enum Domain {
     Current,
     Retained,
     Metadata,
 }
 
-const DOMAINS: [Domain; 3] = [Domain::Current, Domain::Retained, Domain::Metadata];
+pub(super) const DOMAINS: [Domain; 3] = [Domain::Current, Domain::Retained, Domain::Metadata];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CompositionVariant {
@@ -2514,7 +2514,7 @@ impl RetentionEntries {
         root_counts(vertex_count, &self.manifests())
     }
 
-    fn commit(&self, next: RetentionEntry) -> Self {
+    pub(super) fn commit(&self, next: RetentionEntry) -> Self {
         let mut historical = Vec::with_capacity(self.historical.len() + 1);
         historical.extend_from_slice(&self.historical);
         historical.push(self.current);
@@ -2524,7 +2524,7 @@ impl RetentionEntries {
         }
     }
 
-    fn evict(&self, victim: RetentionEntry) -> Self {
+    pub(super) fn evict(&self, victim: RetentionEntry) -> Self {
         let mut historical = self.historical.clone();
         if let Some(position) = historical.iter().position(|entry| *entry == victim) {
             historical.remove(position);
@@ -2676,7 +2676,7 @@ impl HistoryState {
     }
 }
 
-fn apply_delta(roots: &[usize], change: &RootDelta) -> Option<Vec<usize>> {
+pub(super) fn apply_delta(roots: &[usize], change: &RootDelta) -> Option<Vec<usize>> {
     let mut applied = roots.to_vec();
     for &vertex in &change.added {
         applied[vertex] += 1;
@@ -2703,9 +2703,9 @@ fn set_insertions(roots: &[usize], added: &[usize]) -> Vec<usize> {
 }
 
 #[derive(Clone, Debug)]
-struct ComposedEnvironment {
-    semantic: TrialEnvironment,
-    metadata: TrialEnvironment,
+pub(super) struct ComposedEnvironment {
+    pub(super) semantic: TrialEnvironment,
+    pub(super) metadata: TrialEnvironment,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2716,7 +2716,7 @@ pub(super) struct ComposedPredecessor {
 }
 
 impl ComposedPredecessor {
-    fn domain(&self, domain: Domain) -> &Predecessor {
+    pub(super) fn domain(&self, domain: Domain) -> &Predecessor {
         match domain {
             Domain::Current => &self.current,
             Domain::Retained => &self.retained,
@@ -2726,32 +2726,32 @@ impl ComposedPredecessor {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ComposedLimits([TrialLimits; 3]);
+pub(super) struct ComposedLimits(pub(super) [TrialLimits; 3]);
 
 impl ComposedLimits {
-    const UNBOUNDED: Self = Self([TrialLimits::UNBOUNDED; 3]);
+    pub(super) const UNBOUNDED: Self = Self([TrialLimits::UNBOUNDED; 3]);
 
-    fn get(&self, domain: Domain) -> &TrialLimits { &self.0[domain as usize] }
+    pub(super) fn get(&self, domain: Domain) -> &TrialLimits { &self.0[domain as usize] }
 
-    fn with(mut self, domain: Domain, axis: BudgetAxis, value: u64) -> Self {
+    pub(super) fn with(mut self, domain: Domain, axis: BudgetAxis, value: u64) -> Self {
         self.0[domain as usize] = self.0[domain as usize].with(axis, value);
         self
     }
 
-    fn exact(evidence: &ComposedEvidence) -> Self {
+    pub(super) fn exact(evidence: &ComposedEvidence) -> Self {
         Self(DOMAINS.map(|domain| TrialLimits::exact(evidence.domain(domain))))
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ComposedEvidence {
-    current: PreparedEvidence,
-    retained: PreparedEvidence,
-    metadata: PreparedEvidence,
+pub(super) struct ComposedEvidence {
+    pub(super) current: PreparedEvidence,
+    pub(super) retained: PreparedEvidence,
+    pub(super) metadata: PreparedEvidence,
 }
 
 impl ComposedEvidence {
-    fn domain(&self, domain: Domain) -> &PreparedEvidence {
+    pub(super) fn domain(&self, domain: Domain) -> &PreparedEvidence {
         match domain {
             Domain::Current => &self.current,
             Domain::Retained => &self.retained,
@@ -2759,7 +2759,7 @@ impl ComposedEvidence {
         }
     }
 
-    fn successor_base(&self) -> ComposedPredecessor {
+    pub(super) fn successor_base(&self) -> ComposedPredecessor {
         ComposedPredecessor {
             current: as_predecessor(&self.current),
             retained: as_predecessor(&self.retained),
@@ -2768,7 +2768,7 @@ impl ComposedEvidence {
     }
 }
 
-fn as_predecessor(evidence: &PreparedEvidence) -> Predecessor {
+pub(super) fn as_predecessor(evidence: &PreparedEvidence) -> Predecessor {
     Predecessor {
         ledger: evidence.ledger.clone(),
         roots: evidence.roots.clone(),
@@ -2778,15 +2778,15 @@ fn as_predecessor(evidence: &PreparedEvidence) -> Predecessor {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ComposedOutcome {
+pub(super) enum ComposedOutcome {
     Prepared(ComposedEvidence),
     Refused(Domain, TrialRefusal),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct ComposedResult {
-    kept: ComposedPredecessor,
-    outcome: ComposedOutcome,
+pub(super) struct ComposedResult {
+    pub(super) kept: ComposedPredecessor,
+    pub(super) outcome: ComposedOutcome,
 }
 
 fn composed_outcome_spec(outcomes: [TrialOutcome; 3]) -> ComposedOutcome {
@@ -2826,11 +2826,11 @@ pub(super) fn retained_delta_of(
 }
 
 #[derive(Clone, Debug)]
-struct ComposedCase {
-    env: ComposedEnvironment,
-    base: ComposedPredecessor,
-    delta: ComposedDelta,
-    schedule: Vec<bool>,
+pub(super) struct ComposedCase {
+    pub(super) env: ComposedEnvironment,
+    pub(super) base: ComposedPredecessor,
+    pub(super) delta: ComposedDelta,
+    pub(super) schedule: Vec<bool>,
 }
 
 impl ComposedCase {
@@ -2857,7 +2857,11 @@ impl ComposedCase {
         .run(TrialVariant::Faithful, limits.get(domain))
     }
 
-    fn run(&self, variant: CompositionVariant, limits: &ComposedLimits) -> ComposedResult {
+    pub(super) fn run(
+        &self,
+        variant: CompositionVariant,
+        limits: &ComposedLimits,
+    ) -> ComposedResult {
         let refused = |domain, why| ComposedResult {
             kept: self.base.clone(),
             outcome: ComposedOutcome::Refused(domain, why),
@@ -2990,7 +2994,10 @@ impl ComposedHistory {
     }
 }
 
-fn history_environment(raw_graph: Vec<Vec<u8>>, object_bytes: Vec<u64>) -> TrialEnvironment {
+pub(super) fn history_environment(
+    raw_graph: Vec<Vec<u8>>,
+    object_bytes: Vec<u64>,
+) -> TrialEnvironment {
     let vertex_count = raw_graph.len();
     TrialEnvironment {
         graph: raw_graph

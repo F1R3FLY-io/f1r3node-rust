@@ -10,6 +10,11 @@ use super::durable_publication::install_checkpoint_image;
 use super::durable_recovery::{checkpoint_image_for_profile, limits};
 use super::retention_v2_format_properties::migrate_checkpoint_source_to_v2;
 use super::support::{PersistenceTrialDir, trial_scratch};
+use super::trusted_successor_properties::{
+    owner_awaiting_ack_retry_model_property, owner_empty_checkpoint_model_property,
+    owner_trusted_policy_refusal_model_property,
+    trusted_success_without_cold_admission_model_property,
+};
 use crate::rspace::hot_store::{DurableHotStoreBootstrapLimits, HotStore, HotStoreInstances};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::durable::{
@@ -1195,4 +1200,24 @@ async fn constructor_refuses_foreign_or_invalidated_hot_authority_without_losing
         assert_empty(&correct);
         assert_empty(&other_hot);
     }
+}
+
+#[test]
+fn owner_empty_checkpoint_under_tightened_cold_limits_performs_no_cold_check() {
+    owner_empty_checkpoint_model_property();
+}
+
+#[test]
+fn owner_awaiting_ack_retry_under_tightened_cold_limits_acknowledges_once_without_cold_check() {
+    owner_awaiting_ack_retry_model_property();
+}
+
+#[test]
+fn trusted_success_does_not_imply_cold_admission_under_incoming_limits() {
+    trusted_success_without_cold_admission_model_property();
+}
+
+#[test]
+fn owner_trusted_policy_refusal_leaves_files_journals_and_authority_unchanged() {
+    owner_trusted_policy_refusal_model_property();
 }

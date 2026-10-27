@@ -16,6 +16,7 @@ theories/IncrementalDomainComposition.v
 theories/CreditedClosureLedger.v
 theories/RetentionV2Format.v
 theories/RetentionV2Editor.v
+theories/TrustedSuccessorCapability.v
 theories/EPM1.v
 theories/CanonicalEPathMapImport.v
 theories/OpaqueCanonicalSegmentImport.v
