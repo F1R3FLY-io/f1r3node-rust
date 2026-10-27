@@ -40,6 +40,11 @@ pub(crate) use admission::{
 };
 #[cfg(test)]
 pub(crate) use admission::{
+    PreparedTrustedSuccessorV1, SealedDurableTransactionV1, SuccessorBindingV1,
+    TrustedCeilingAxisV1, TrustedStateCeilingsV1, TrustedSuccessorPolicyV1, TrustedTrialWorkV1,
+};
+#[cfg(test)]
+pub(crate) use admission::{
     acquire_cold_checked, admit_physical_source, admit_physical_writer, cold_admissions,
     copy_verified_canonical_with_scratch, reset_cold_admissions,
 };

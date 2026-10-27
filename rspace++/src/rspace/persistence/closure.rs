@@ -16,10 +16,6 @@ use super::retention::v2_reader::RetentionMetadataInventoryV2;
 use super::rewrite::{ExactPath, InheritedBoundaryKind, InheritedObjectRef, RewriteProvenance};
 use super::store::{ImmutableObjectStore, StagingObjectStore, StagingStoreError};
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "task 7927 wires the trusted successor to these trials")
-)]
 pub(crate) mod ledger_trial;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -355,7 +351,6 @@ impl StructuralClosureLedgerV1 {
         self.inventories[ClosureDomainV1::Metadata.index()]
     }
 
-    #[cfg(test)]
     pub(crate) const fn inventory(&self, domain: ClosureDomainV1) -> ClosureInventoryV1 {
         self.inventories[domain.index()]
     }

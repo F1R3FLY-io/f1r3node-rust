@@ -41,6 +41,7 @@ mod shape_summary_properties;
 mod staging_store;
 mod support;
 mod transaction_sealing;
+mod trusted_successor_production;
 mod trusted_successor_properties;
 mod wal_codec;
 #[cfg(windows)]

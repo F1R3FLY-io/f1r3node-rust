@@ -28,7 +28,8 @@ use crate::rspace::persistence::checkpoint::{
     try_visit_checkpoint_references, try_visit_checkpoint_references_v2,
 };
 use crate::rspace::persistence::closure::ledger_trial::{
-    LedgerTrialAxisV1, LedgerTrialLimitsV1, LedgerTrialRefusalV1, run_ledger_trial,
+    LedgerTrialAxisV1, LedgerTrialLimitsV1, LedgerTrialRefusalV1, RootDeltaV1, run_domain_trials,
+    run_ledger_trial,
 };
 use crate::rspace::persistence::closure::{
     ClosureCreditV1, ClosureDomainV1, ClosureError, ClosureInventoryV1,
@@ -102,6 +103,110 @@ impl DurableAdmissionLimitsV1 {
 
 impl Default for DurableAdmissionLimitsV1 {
     fn default() -> Self { Self::UNBOUNDED }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TrustedStateCeilingsV1 {
+    pub(crate) max_state_objects: u64,
+    pub(crate) max_state_canonical_bytes: u64,
+    pub(crate) max_retained_states: u64,
+    pub(crate) max_union_objects: u64,
+    pub(crate) max_union_canonical_bytes: u64,
+    pub(crate) max_metadata_objects: u64,
+    pub(crate) max_metadata_canonical_bytes: u64,
+    pub(crate) max_logical_nodes: u64,
+    pub(crate) max_endpoints: u64,
+    pub(crate) max_logical_path_bytes: u64,
+    pub(crate) max_payload_bytes: u64,
+}
+
+impl TrustedStateCeilingsV1 {
+    pub(crate) const UNBOUNDED: Self = Self {
+        max_state_objects: u64::MAX,
+        max_state_canonical_bytes: u64::MAX,
+        max_retained_states: u64::MAX,
+        max_union_objects: u64::MAX,
+        max_union_canonical_bytes: u64::MAX,
+        max_metadata_objects: u64::MAX,
+        max_metadata_canonical_bytes: u64::MAX,
+        max_logical_nodes: u64::MAX,
+        max_endpoints: u64::MAX,
+        max_logical_path_bytes: u64::MAX,
+        max_payload_bytes: u64::MAX,
+    };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TrustedTrialWorkV1 {
+    pub(crate) count: u64,
+    pub(crate) union_objects: u64,
+    pub(crate) union_bytes: u64,
+    pub(crate) scratch: u64,
+    pub(crate) references: u64,
+    pub(crate) expansions: u64,
+    pub(crate) quoted_bytes: u64,
+}
+
+impl TrustedTrialWorkV1 {
+    pub(crate) const UNBOUNDED: Self = Self {
+        count: u64::MAX,
+        union_objects: u64::MAX,
+        union_bytes: u64::MAX,
+        scratch: u64::MAX,
+        references: u64::MAX,
+        expansions: u64::MAX,
+        quoted_bytes: u64::MAX,
+    };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TrustedSuccessorPolicyV1 {
+    pub(crate) state: TrustedStateCeilingsV1,
+    pub(crate) work: [TrustedTrialWorkV1; 3],
+}
+
+impl TrustedSuccessorPolicyV1 {
+    pub(crate) const UNBOUNDED: Self = Self {
+        state: TrustedStateCeilingsV1::UNBOUNDED,
+        work: [TrustedTrialWorkV1::UNBOUNDED; 3],
+    };
+
+    const fn trial_limits(&self, domain: ClosureDomainV1) -> LedgerTrialLimitsV1 {
+        let (work, final_objects, final_bytes) = match domain {
+            ClosureDomainV1::Current => {
+                (self.work[0], self.state.max_state_objects, self.state.max_state_canonical_bytes)
+            }
+            ClosureDomainV1::Retained => {
+                (self.work[1], self.state.max_union_objects, self.state.max_union_canonical_bytes)
+            }
+            ClosureDomainV1::Metadata => (
+                self.work[2],
+                self.state.max_metadata_objects,
+                self.state.max_metadata_canonical_bytes,
+            ),
+        };
+        LedgerTrialLimitsV1::UNBOUNDED
+            .with(LedgerTrialAxisV1::Count, work.count)
+            .with(LedgerTrialAxisV1::UnionObjects, work.union_objects)
+            .with(LedgerTrialAxisV1::UnionBytes, work.union_bytes)
+            .with(LedgerTrialAxisV1::Scratch, work.scratch)
+            .with(LedgerTrialAxisV1::References, work.references)
+            .with(LedgerTrialAxisV1::Expansions, work.expansions)
+            .with(LedgerTrialAxisV1::QuotedBytes, work.quoted_bytes)
+            .with(LedgerTrialAxisV1::FinalObjects, final_objects)
+            .with(LedgerTrialAxisV1::FinalBytes, final_bytes)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrustedCeilingAxisV1 {
+    StateObjects,
+    StateBytes,
+    RetainedStates,
+    LogicalNodes,
+    Endpoints,
+    LogicalPathBytes,
+    PayloadBytes,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1213,6 +1318,195 @@ impl<P: SemanticProfile> DurableAuthorityCoreV1<P> {
             sealed: transaction,
         })
     }
+
+    pub(crate) fn bind_trusted_transaction<'mutation>(
+        &self,
+        lease: &DurableWriterLeaseV1,
+        sealed: SealedDagTransaction<'mutation, P>,
+        policy: TrustedSuccessorPolicyV1,
+    ) -> Result<SealedDurableTransactionV1<'mutation, P>, DurableTransactionPreparationError> {
+        self.preflight_writer(lease)?;
+        let receipt = sealed.receipt();
+        if receipt.base() != self.authority.slot().state() || receipt.profile_id() != P::ID {
+            return Err(DurableTransactionPreparationError::AuthorityMismatch);
+        }
+        self.require_writable_retention()?;
+        let retained_states = self
+            .retained_states
+            .checked_add(1)
+            .ok_or(CanonicalFormatError::CounterOverflow("successor retained states"))?;
+        let staging = StagingObjectStore::new(&self.store);
+        for object in sealed.objects() {
+            staging
+                .stage(object.canonical_bytes_arc())
+                .map_err(|error| inventory_error(SuccessorInventoryError::Staging(error)))?;
+        }
+        let target = receipt.target();
+        let trials = run_domain_trials(
+            &staging,
+            &self.retained_closure,
+            RootDeltaV1 {
+                added: &[target.manifest()],
+                removed: &[receipt.base().manifest()],
+            },
+            RootDeltaV1 {
+                added: &[target.manifest()],
+                removed: &[],
+            },
+            [
+                policy.trial_limits(ClosureDomainV1::Current),
+                policy.trial_limits(ClosureDomainV1::Retained),
+            ],
+        )
+        .map_err(|(domain, refusal)| DurableTransactionPreparationError::TrustedTrial {
+            domain,
+            refusal: Box::new(refusal),
+        })?;
+        let current = trials.successor.inventory(ClosureDomainV1::Current);
+        let retained_union = trials.successor.retained_union_report();
+        require_current_within_retained_union(current, retained_union).map_err(inventory_error)?;
+        let maxima = ClosureInventoryV1 {
+            distinct_objects: self
+                .retained_state_maxima
+                .distinct_objects
+                .max(current.distinct_objects),
+            canonical_bytes: self
+                .retained_state_maxima
+                .canonical_bytes
+                .max(current.canonical_bytes),
+        };
+        let mutation = MutationBatchViewV1::parse(sealed.mutation_bytes())
+            .map_err(|error| DurableTransactionPreparationError::Format(error.into()))?;
+        let shape = self
+            .shape
+            .successor(mutation, sealed.diagnostics().rewrite)?;
+        let target_state = RetainedStateV1::new(target, current.canonical_bytes)?;
+        let appointed =
+            AppointedRetention::parse(&self.retention_manifest_bytes, RetentionReader::Dual)?;
+        let (sealed, retention, ledger, metadata) = match (appointed, self.retention_writer) {
+            (AppointedRetention::V1(appointed), RetentionFormat::V1) => {
+                let mut historical = appointed.historical().collect::<Result<Vec<_>, _>>()?;
+                historical.push(appointed.current());
+                let manifest =
+                    RetentionManifestV1::new(target_state, historical.into_boxed_slice())?;
+                let retention = manifest.object_ref();
+                (sealed.with_retention_manifest(manifest)?, retention, trials.successor, None)
+            }
+            (AppointedRetention::V1(appointed), RetentionFormat::V2) => {
+                let staging = self.retention_staging();
+                let step = migrate_retention_v1(
+                    &staging,
+                    appointed,
+                    target_state,
+                    DagRewriteLimits::UNBOUNDED,
+                )
+                .map_err(RetentionWriteErrorV2::Edit)?;
+                let (sealed, successor) = attach_retention_v2(
+                    sealed,
+                    staging,
+                    &trials.successor,
+                    step.anchor(),
+                    &[],
+                    policy.trial_limits(ClosureDomainV1::Metadata),
+                )
+                .map_err(trusted_retention_error)?;
+                let metadata = successor.metadata_inventory();
+                (sealed, step.anchor().object_ref(), successor, Some(metadata))
+            }
+            (AppointedRetention::V2(predecessor), RetentionFormat::V2) => {
+                let staging = self.retention_staging();
+                let step = commit_retention_v2(
+                    &staging,
+                    predecessor,
+                    target_state,
+                    DagRewriteLimits::UNBOUNDED,
+                )
+                .map_err(RetentionWriteErrorV2::Edit)?;
+                let (sealed, successor) = attach_retention_v2(
+                    sealed,
+                    staging,
+                    &trials.successor,
+                    step.anchor(),
+                    &[predecessor.object_ref()],
+                    policy.trial_limits(ClosureDomainV1::Metadata),
+                )
+                .map_err(trusted_retention_error)?;
+                let metadata = successor.metadata_inventory();
+                (sealed, step.anchor().object_ref(), successor, Some(metadata))
+            }
+            (AppointedRetention::V2(_), RetentionFormat::V1) => {
+                return Err(DurableTransactionPreparationError::RetentionFormatNotWritable(
+                    RetentionFormat::V2,
+                ));
+            }
+        };
+        let ceilings = [
+            (
+                TrustedCeilingAxisV1::StateObjects,
+                policy.state.max_state_objects,
+                maxima.distinct_objects,
+            ),
+            (
+                TrustedCeilingAxisV1::StateBytes,
+                policy.state.max_state_canonical_bytes,
+                maxima.canonical_bytes,
+            ),
+            (
+                TrustedCeilingAxisV1::RetainedStates,
+                policy.state.max_retained_states,
+                retained_states,
+            ),
+            (
+                TrustedCeilingAxisV1::LogicalNodes,
+                policy.state.max_logical_nodes,
+                shape.logical_nodes(),
+            ),
+            (TrustedCeilingAxisV1::Endpoints, policy.state.max_endpoints, shape.endpoints()),
+            (
+                TrustedCeilingAxisV1::LogicalPathBytes,
+                policy.state.max_logical_path_bytes,
+                shape.maximum_logical_path_bytes()?,
+            ),
+            (
+                TrustedCeilingAxisV1::PayloadBytes,
+                policy.state.max_payload_bytes,
+                shape.source_payload_bytes(),
+            ),
+        ];
+        if let Some(&(axis, limit, attempted)) = ceilings
+            .iter()
+            .find(|(_, limit, attempted)| attempted > limit)
+        {
+            return Err(DurableTransactionPreparationError::TrustedCeiling {
+                axis,
+                limit,
+                attempted,
+            });
+        }
+        let retention_manifest_bytes = sealed_object_bytes(&sealed, retention)?;
+        let validity = self.validity.successor(&sealed)?;
+        Ok(SealedDurableTransactionV1 {
+            sealed,
+            predecessor: self.authority.clone(),
+            registry: self.registry.clone(),
+            inventory: DurableSuccessorInventoryV1 {
+                current,
+                retained_union,
+                metadata,
+            },
+            binding: SuccessorBindingV1::Trusted {
+                policy,
+                successor: Box::new(PreparedTrustedSuccessorV1 {
+                    retention_manifest_bytes,
+                    validity,
+                    shape,
+                    retained_closure: ledger,
+                    retained_states,
+                    retained_state_maxima: maxima,
+                }),
+            },
+        })
+    }
 }
 
 /// Immutable checkpoint source pinned to one exact catalog authority.
@@ -1375,9 +1669,28 @@ pub(crate) enum SuccessorInventoryError {
     Staging(StagingStoreError<DurableObjectReadErrorV1>),
     Closure(ClosureError<StagingStoreError<DurableObjectReadErrorV1>>),
     CurrentOutsideRetainedUnion {
-        current: StructuralClosureReport,
+        current: ClosureInventoryV1,
         retained_union: RetainedUnionClosureReportV1,
     },
+}
+
+fn require_current_within_retained_union(
+    current: ClosureInventoryV1,
+    retained_union: RetainedUnionClosureReportV1,
+) -> Result<(), SuccessorInventoryError> {
+    if current.distinct_objects > retained_union.distinct_objects ||
+        current.canonical_bytes > retained_union.canonical_bytes
+    {
+        return Err(SuccessorInventoryError::CurrentOutsideRetainedUnion {
+            current,
+            retained_union,
+        });
+    }
+    Ok(())
+}
+
+fn inventory_error(error: SuccessorInventoryError) -> DurableTransactionPreparationError {
+    DurableTransactionPreparationError::Inventory(Box::new(error))
 }
 
 #[derive(Debug)]
@@ -1392,6 +1705,17 @@ pub(crate) enum DurableTransactionPreparationError {
     AdmissionPolicyMismatch,
     RetentionFormatNotWritable(RetentionFormat),
     RetentionWrite(Box<RetentionWriteErrorV2>),
+    TrustedTrial {
+        domain: ClosureDomainV1,
+        refusal: Box<LedgerTrialRefusalV1<StagingStoreError<DurableObjectReadErrorV1>>>,
+    },
+    TrustedCeiling {
+        axis: TrustedCeilingAxisV1,
+        limit: u64,
+        attempted: u64,
+    },
+    PublicationModeMismatch,
+    TrustedPolicyMismatch,
 }
 
 impl std::fmt::Display for DurableTransactionPreparationError {
@@ -1415,6 +1739,24 @@ impl std::fmt::Display for DurableTransactionPreparationError {
                  retention writer"
             ),
             Self::RetentionWrite(error) => Display::fmt(error, formatter),
+            Self::TrustedTrial { domain, refusal } => write!(
+                formatter,
+                "the trusted {domain:?} ledger trial refused the successor: {refusal:?}"
+            ),
+            Self::TrustedCeiling {
+                axis,
+                limit,
+                attempted,
+            } => write!(
+                formatter,
+                "trusted successor {axis:?} ceiling exceeded: limit {limit}, required {attempted}"
+            ),
+            Self::PublicationModeMismatch => {
+                formatter.write_str("durable transaction publication mode mismatch")
+            }
+            Self::TrustedPolicyMismatch => {
+                formatter.write_str("durable transaction trusted policy mismatch")
+            }
         }
     }
 }
@@ -1461,12 +1803,50 @@ pub(super) struct DurableSuccessorInventoryV1 {
     pub(super) metadata: Option<ClosureInventoryV1>,
 }
 
+pub(crate) struct PreparedTrustedSuccessorV1 {
+    retention_manifest_bytes: Box<[u8]>,
+    validity: SemanticValidityV1,
+    shape: CurrentShapeSummaryV1,
+    retained_closure: StructuralClosureLedgerV1,
+    retained_states: u64,
+    retained_state_maxima: ClosureInventoryV1,
+}
+
+#[cfg(test)]
+impl PreparedTrustedSuccessorV1 {
+    pub(crate) fn retention_manifest_bytes(&self) -> &[u8] { &self.retention_manifest_bytes }
+
+    pub(crate) const fn validity(&self) -> SemanticValidityV1 { self.validity }
+
+    pub(crate) const fn shape(&self) -> &CurrentShapeSummaryV1 { &self.shape }
+
+    pub(crate) const fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
+        &self.retained_closure
+    }
+
+    pub(crate) const fn retained_states(&self) -> u64 { self.retained_states }
+
+    pub(crate) const fn retained_state_maxima(&self) -> ClosureInventoryV1 {
+        self.retained_state_maxima
+    }
+}
+
+pub(crate) enum SuccessorBindingV1 {
+    ColdChecked {
+        limits: DurableAdmissionLimitsV1,
+    },
+    Trusted {
+        policy: TrustedSuccessorPolicyV1,
+        successor: Box<PreparedTrustedSuccessorV1>,
+    },
+}
+
 pub(crate) struct SealedDurableTransactionV1<'mutation, P: SemanticProfile> {
     sealed: SealedDagTransaction<'mutation, P>,
     predecessor: CatalogAuthorityTokenV1,
     registry: GenerationLeaseRegistryV1,
     inventory: DurableSuccessorInventoryV1,
-    admission_limits: DurableAdmissionLimitsV1,
+    binding: SuccessorBindingV1,
 }
 
 impl<P: SemanticProfile> SealedDurableTransactionV1<'_, P> {
@@ -1479,6 +1859,16 @@ impl<P: SemanticProfile> SealedDurableTransactionV1<'_, P> {
     pub(crate) fn retention_manifest(&self) -> Option<ObjectRefV1> {
         self.sealed.retention_manifest()
     }
+
+    #[cfg(test)]
+    pub(crate) const fn binding(&self) -> &SuccessorBindingV1 { &self.binding }
+
+    #[cfg(test)]
+    pub(crate) const fn successor_inventory(
+        &self,
+    ) -> (ClosureInventoryV1, RetainedUnionClosureReportV1, Option<ClosureInventoryV1>) {
+        (self.inventory.current, self.inventory.retained_union, self.inventory.metadata)
+    }
 }
 
 pub(crate) struct PreparedDurableLogPackTransactionV1<'transaction, 'mutation, P: SemanticProfile> {
@@ -1489,18 +1879,50 @@ pub(crate) struct PreparedDurableLogPackTransactionV1<'transaction, 'mutation, P
 impl<'transaction, 'mutation, P: SemanticProfile>
     PreparedDurableLogPackTransactionV1<'transaction, 'mutation, P>
 {
-    pub(super) fn preflight(
+    pub(crate) fn preflight(
         &self,
         authority: &CatalogAuthorityTokenV1,
         registry: &GenerationLeaseRegistryV1,
         limits: DurableAdmissionLimitsV1,
     ) -> Result<(), DurableTransactionPreparationError> {
+        self.preflight_authority(authority, registry)?;
+        match &self.sealed.binding {
+            SuccessorBindingV1::ColdChecked { limits: sealed } if *sealed == limits => Ok(()),
+            SuccessorBindingV1::ColdChecked { .. } => {
+                Err(DurableTransactionPreparationError::AdmissionPolicyMismatch)
+            }
+            SuccessorBindingV1::Trusted { .. } => {
+                Err(DurableTransactionPreparationError::PublicationModeMismatch)
+            }
+        }
+    }
+
+    pub(crate) fn preflight_trusted(
+        &self,
+        authority: &CatalogAuthorityTokenV1,
+        registry: &GenerationLeaseRegistryV1,
+        policy: TrustedSuccessorPolicyV1,
+    ) -> Result<(), DurableTransactionPreparationError> {
+        self.preflight_authority(authority, registry)?;
+        match &self.sealed.binding {
+            SuccessorBindingV1::ColdChecked { .. } => {
+                Err(DurableTransactionPreparationError::PublicationModeMismatch)
+            }
+            SuccessorBindingV1::Trusted { policy: sealed, .. } if *sealed == policy => Ok(()),
+            SuccessorBindingV1::Trusted { .. } => {
+                Err(DurableTransactionPreparationError::TrustedPolicyMismatch)
+            }
+        }
+    }
+
+    fn preflight_authority(
+        &self,
+        authority: &CatalogAuthorityTokenV1,
+        registry: &GenerationLeaseRegistryV1,
+    ) -> Result<(), DurableTransactionPreparationError> {
         if self.sealed.predecessor != *authority || !self.sealed.registry.shares_registry(registry)
         {
             return Err(DurableTransactionPreparationError::AuthorityMismatch);
-        }
-        if self.sealed.admission_limits != limits {
-            return Err(DurableTransactionPreparationError::AdmissionPolicyMismatch);
         }
         Ok(())
     }
@@ -1809,7 +2231,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
                 metadata,
                 ..inventory
             },
-            admission_limits: limits,
+            binding: SuccessorBindingV1::ColdChecked { limits },
         })
     }
 
@@ -1874,21 +2296,14 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
             },
         )
         .map_err(SuccessorInventoryError::Closure)?;
-        let current = current.report();
+        let current = ClosureInventoryV1 {
+            distinct_objects: current.report().distinct_objects,
+            canonical_bytes: current.report().canonical_bytes,
+        };
         let retained_union = ledger.retained_union_report();
-        if current.distinct_objects > retained_union.distinct_objects ||
-            current.canonical_bytes > retained_union.canonical_bytes
-        {
-            return Err(SuccessorInventoryError::CurrentOutsideRetainedUnion {
-                current,
-                retained_union,
-            });
-        }
+        require_current_within_retained_union(current, retained_union)?;
         Ok(DurableSuccessorInventoryV1 {
-            current: ClosureInventoryV1 {
-                distinct_objects: current.distinct_objects,
-                canonical_bytes: current.canonical_bytes,
-            },
+            current,
             retained_union,
             metadata: None,
         })
@@ -2217,6 +2632,39 @@ fn attach_retention_v2<'mutation, P: SemanticProfile>(
         .with_retention_metadata(anchor, staging)
         .map_err(RetentionWriteErrorV2::Staging)?;
     Ok((sealed, trial.successor))
+}
+
+fn trusted_retention_error(error: RetentionWriteErrorV2) -> DurableTransactionPreparationError {
+    match error {
+        RetentionWriteErrorV2::Trial(refusal) => DurableTransactionPreparationError::TrustedTrial {
+            domain: ClosureDomainV1::Metadata,
+            refusal: Box::new(refusal),
+        },
+        error @ (RetentionWriteErrorV2::Edit(_) | RetentionWriteErrorV2::Staging(_)) => {
+            error.into()
+        }
+    }
+}
+
+fn sealed_object_bytes<P: SemanticProfile>(
+    sealed: &SealedDagTransaction<'_, P>,
+    reference: ObjectRefV1,
+) -> Result<Box<[u8]>, CanonicalFormatError> {
+    let objects = sealed.objects();
+    let source = match objects
+        .binary_search_by_key(&reference.digest(), |object| object.reference().digest())
+    {
+        Ok(index) => objects[index].canonical_bytes(),
+        Err(_) => return Err(CanonicalFormatError::MissingObject(reference.digest())),
+    };
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(source.len())
+        .map_err(|_| CanonicalFormatError::AllocationFailure {
+            requested: u64::try_from(source.len()).unwrap_or(u64::MAX),
+        })?;
+    bytes.extend_from_slice(source);
+    Ok(bytes.into_boxed_slice())
 }
 
 /// The metadata trial's budgets, drawn from the admission limits that bound

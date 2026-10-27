@@ -1,0 +1,113 @@
+@startuml trusted-successor-bind
+' ============================================================================
+' The trusted bind of a sealed transaction to a durable authority core
+' (task 11945, the fourth slice of task 7927): bind_trusted_transaction in
+' durable/admission.rs:1322-1505, and the two publication-mode preflights at
+' durable/admission.rs:1882-1928.
+' Theory: formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v
+'   GREY   #607D8B  checks that existed before this slice
+'   BLUE   #1565C0  the bind's derivations: staging, trials, successor fields
+'   AMBER  #EF6C00  the trusted policy: trial limits and state ceilings
+'   GREEN  #2E7D32  the sealed trusted binding and an accepted preflight
+'   RED    #C62828  refusals, each before any durable write
+'   PURPLE #6A1B9A  the publication-mode preflights
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+skinparam NoteBorderColor #455A64
+
+title <b>The trusted bind of a sealed transaction to a durable authority core</b>\nbind_trusted_transaction(lease, sealed, policy) writes no file, so every refusal leaves the directory byte-unchanged
+
+start
+:writer preflight: the lease shares\nthe core's generation-lease registry; <<#CFD8DC>>
+if (shared?) then (no)
+  :refuse AuthorityMismatch; <<#FFCDD2>>
+  stop
+endif
+if (receipt base = the core's state\nand receipt profile = P?) then (no)
+  :refuse AuthorityMismatch\n(a foreign, stale or replayed receipt,\nor another profile); <<#FFCDD2>>
+  stop
+endif
+if (a V2 source under the V1 writer?) then (yes)
+  :refuse RetentionFormatNotWritable(V2); <<#FFCDD2>>
+  stop
+endif
+:retained states := predecessor's + 1 (checked); <<#BBDEFB>>
+:stage the sealed objects in memory\nover the core's pinned store; <<#BBDEFB>>
+:current trial: add the target manifest,\nremove the base manifest,\nunder work[0] and the state ceilings; <<#FFE0B2>>
+if (refused?) then (yes)
+  :refuse TrustedTrial(Current, axis); <<#FFCDD2>>
+  stop
+endif
+:retained trial: add the target manifest\nunder work[1] and the union ceilings; <<#FFE0B2>>
+if (refused?) then (yes)
+  :refuse TrustedTrial(Retained, axis); <<#FFCDD2>>
+  stop
+endif
+:require the current closure inside\nthe retained union (unchanged check); <<#CFD8DC>>
+note left #ECEFF1
+  <b>Refusals with their existing variants</b>
+  a staging failure and this union check (Inventory);
+  a mutation batch that does not parse (Format);
+  a counter overflow, a batch inconsistent with its
+  rewrite report, and the validity token's own
+  profile and base checks (Canonical);
+  a failed retention edit (RetentionWrite)
+end note
+:maxima := componentwise max of the\npredecessor's maxima and the current inventory\n<latex>m' = \max(m, \mathrm{inv}(t))</latex>; <<#BBDEFB>>
+:shape := the predecessor's summary advanced by\nthe parsed mutation batch and the rewrite report; <<#BBDEFB>>
+if (a V1 source under the V1 writer?) then (yes)
+  :append the target to the V1 manifest;\nno metadata trial; <<#BBDEFB>>
+elseif (a V1 source under the V2 writer?) then (yes)
+  :migrate the V1 history once;\nmetadata trial adds the new anchor\nunder work[2] and the metadata ceilings; <<#FFE0B2>>
+else (a V2 source under the V2 writer)
+  :commit the target to the V2 radix;\nmetadata trial adds the new anchor\nand removes the predecessor's,\nunder work[2] and the metadata ceilings; <<#FFE0B2>>
+endif
+if (metadata trial refused?) then (yes)
+  :refuse TrustedTrial(Metadata, axis); <<#FFCDD2>>
+  stop
+endif
+:check the seven state ceilings in order:\nstate objects, state bytes, retained states,\nlogical nodes, endpoints, logical path bytes,\npayload bytes; <<#FFE0B2>>
+if (attempted > limit on some axis?) then (yes)
+  :refuse TrustedCeiling(first such axis,\nlimit, attempted); <<#FFCDD2>>
+  stop
+endif
+:validity := the receipt's target manifest; <<#BBDEFB>>
+:seal the binding Trusted(policy, successor):\nretention bytes, validity, shape, ledger,\nretained states and maxima; <<#C8E6C9>>
+:prepare the transaction (unchanged); <<#CFD8DC>>
+:preflight_trusted(authority, registry, policy); <<#E1BEE7>>
+if (the sealed predecessor authority\nand registry?) then (no)
+  :refuse AuthorityMismatch; <<#FFCDD2>>
+elseif (a trusted binding?) then (no)
+  :refuse PublicationModeMismatch; <<#FFCDD2>>
+elseif (the sealed policy?) then (no)
+  :refuse TrustedPolicyMismatch; <<#FFCDD2>>
+else (yes)
+  :accept: publication may begin\n(task 11946); <<#C8E6C9>>
+endif
+stop
+
+note right #E1BEE7
+  <b>Two preflights, one per mode.</b>
+  preflight(limits) accepts only a cold-checked
+  binding sealed with the same admission limits
+  and refuses a trusted one with
+  PublicationModeMismatch; preflight_trusted(policy)
+  accepts only a trusted binding sealed with the
+  same policy. A transaction cannot change its mode
+  or its policy after it is sealed (TS-06).
+  ----
+  <b>Exact policy.</b> The production checks measure
+  every work axis and every final inventory by an
+  independent run of the same ledger trials, and take
+  the state ceilings from the successor's maxima,
+  retained-state count and shape, which they compare
+  with the cold successor after publication. The bind
+  accepts that policy and refuses each of its positive
+  axes lowered by one (TS-04).
+end note
+@enduml

@@ -11,6 +11,16 @@ use super::incremental_reachability_properties::{
     TrialVariant, apply_delta, as_predecessor, cold_graph_oracle, cold_predecessor,
     history_environment, root_counts,
 };
+use super::trusted_successor_production::{
+    production_bind_refuses_foreign_stale_and_replayed_receipts,
+    production_binding_fixes_publication_mode_and_policy,
+    production_maxima_equal_cold_requirements,
+    production_policy_accepts_exact_and_refuses_one_below,
+    production_retention_migrates_once_and_matches_the_cold_seed,
+    production_trials_refuse_in_domain_order, production_trusted_successor_equals_cold_successor,
+    production_union_budget_admits_scratch_above_final_size,
+    production_validity_binds_the_exact_predecessor_and_receipt,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct SharedLedger([Predecessor; 3]);
@@ -144,7 +154,7 @@ impl TrustedPolicy {
     }
 }
 
-fn policy_axes() -> Vec<PolicyAxis> {
+pub(super) fn policy_axes() -> Vec<PolicyAxis> {
     let mut axes = Vec::with_capacity(STATE_CEILINGS.len() + DOMAINS.len() * STEP_AXES.len());
     axes.extend(STATE_CEILINGS.map(PolicyAxis::State));
     for domain in DOMAINS {
@@ -2498,25 +2508,21 @@ fn exact_policy(
     policy
 }
 
-fn expected_refusal(
+pub(super) fn expected_refusal(
     axis: PolicyAxis,
-    values: &SuccessorValues,
-    evidence: &ComposedEvidence,
+    current: (u64, u64),
+    maxima: (u64, u64),
 ) -> BindRefusal {
     let refused_at = |domain, axis| BindRefusal::TrialRefusedAt(domain, TrialRefusal::Budget(axis));
     match axis {
         PolicyAxis::Work(domain, axis) => refused_at(domain, axis),
-        PolicyAxis::State(StateCeiling::StateObjects)
-            if evidence.current.objects == values.maxima.0 =>
-        {
+        PolicyAxis::State(StateCeiling::StateObjects) if current.0 == maxima.0 => {
             refused_at(Domain::Current, BudgetAxis::FinalObjects)
         }
         PolicyAxis::State(StateCeiling::StateObjects) => {
             BindRefusal::CeilingRefused(CeilingAxis::StateObjects)
         }
-        PolicyAxis::State(StateCeiling::StateBytes)
-            if evidence.current.bytes == values.maxima.1 =>
-        {
+        PolicyAxis::State(StateCeiling::StateBytes) if current.1 == maxima.1 => {
             refused_at(Domain::Current, BudgetAxis::FinalBytes)
         }
         PolicyAxis::State(StateCeiling::StateBytes) => {
@@ -2711,6 +2717,7 @@ fn trusted_successor_matches_cold_admission_at_every_history_step() {
             Ok(())
         })
         .expect("generated trusted histories equal cold admission at every step");
+    production_trusted_successor_equals_cold_successor(64);
 }
 
 fn index_records(max: usize) -> impl Strategy<Value = Vec<IndexRecord>> {
@@ -3049,6 +3056,7 @@ fn trusted_bind_runs_domains_in_order_and_keeps_the_predecessor_on_first_refusal
     {
         assert!(seen[slot] > 0, "no generated history exposed a {event}: {seen:?}");
     }
+    production_trials_refuse_in_domain_order(64);
 }
 
 #[test]
@@ -3105,7 +3113,8 @@ fn trusted_policy_accepts_exact_and_refuses_one_below_on_every_axis() {
                         continue;
                     }
                     let lowered = policy.with(axis, value - 1);
-                    let why = expected_refusal(axis, &values, &evidence);
+                    let why =
+                        expected_refusal(axis, final_inventory(&evidence.current), values.maxima);
                     prop_assert_eq!(
                         world.bind(TrustedVariant::Faithful, core, receipt, &lowered),
                         BindResult::Refused(why)
@@ -3141,6 +3150,7 @@ fn trusted_policy_accepts_exact_and_refuses_one_below_on_every_axis() {
         .expect("every policy axis accepts its exact value and refuses one below before mutation");
     let seen = coverage.get();
     assert!(seen[0] > 0 && seen[1] > 0, "ceiling and trial refusals were not both exercised");
+    production_policy_accepts_exact_and_refuses_one_below(64);
 }
 
 #[test]
@@ -3261,6 +3271,7 @@ fn trusted_policy_permits_budgeted_union_scratch_above_final_state_size() {
         })
         .expect("union scratch above the final state size is budgeted separately");
     assert!(coverage.get() > 0, "no generated step had a union peak above its final inventory");
+    production_union_budget_admits_scratch_above_final_size(64);
 }
 
 #[test]
@@ -3397,6 +3408,7 @@ fn trusted_policy_and_mode_cannot_change_after_preparation() {
             Ok(())
         })
         .expect("the sealed policy and mode bind every publication");
+    production_binding_fixes_publication_mode_and_policy(64);
 }
 
 #[test]
@@ -3559,6 +3571,7 @@ fn trusted_binding_refuses_foreign_stale_and_resequenced_authority_before_mutati
     {
         assert!(seen[slot] > 0, "no generated history exercised a {event}: {seen:?}");
     }
+    production_bind_refuses_foreign_stale_and_replayed_receipts(64);
 }
 
 #[test]
@@ -3970,6 +3983,7 @@ fn trusted_retained_state_maxima_equal_cold_requirements() {
             Ok(())
         })
         .expect("trusted maxima are the cold per-state maxima while retention appends");
+    production_maxima_equal_cold_requirements(64);
 }
 
 #[test]
@@ -4032,6 +4046,7 @@ fn trusted_validity_is_bound_to_the_exact_predecessor_and_receipt() {
         coverage.get() > 0,
         "no generated history bound a successor's receipt to its predecessor"
     );
+    production_validity_binds_the_exact_predecessor_and_receipt(64);
 }
 
 #[test]
@@ -4105,6 +4120,7 @@ fn trusted_successor_migrates_a_v1_source_once_and_matches_the_cold_seed() {
     let seen = coverage.get();
     assert!(seen[0] > 0, "no generated history exposed a second migration: {seen:?}");
     assert!(seen[1] > 0, "no generated history extended a migrated source: {seen:?}");
+    production_retention_migrates_once_and_matches_the_cold_seed(64);
 }
 
 fn tightened_cold_limits() -> impl Strategy<Value = ColdDemand> {

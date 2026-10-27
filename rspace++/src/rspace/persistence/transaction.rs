@@ -882,4 +882,15 @@ impl<'mutation, P: SemanticProfile> SealedDagTransaction<'mutation, P> {
     pub(crate) const fn retention_manifest(&self) -> Option<ObjectRefV1> { self.retention_manifest }
 
     pub(crate) const fn retention_reader(&self) -> RetentionReader { self.retention_reader }
+
+    #[cfg(test)]
+    pub(crate) fn with_receipt_profile_for_test(mut self, profile_id: SemanticProfileId) -> Self {
+        self.receipt = SealedTransitionV1::new_for_persistence(
+            self.receipt.base,
+            self.receipt.target,
+            self.receipt.mutation_digest,
+            profile_id,
+        );
+        self
+    }
 }

@@ -3732,7 +3732,7 @@ fn refused_bounded(
 }
 
 /// Every durable file but the advisory writer lock that admission takes.
-fn directory_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
+pub(super) fn directory_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fs::read_dir(root)
         .expect("list the durable trial directory")
         .map(|entry| entry.expect("read a durable directory entry"))

@@ -1212,9 +1212,11 @@ Four artifacts implement the task:
   real canonical objects and compare the production ledger with independent cold
   traversals and with the test models of the two preceding sections.
 
-The trial engine has no production caller yet: task 7927 builds the trusted
-successor that will call it. Until then the engine is compiled in every build,
-exercised only by tests, and marked as expected dead code outside test builds.
+The trial engine's production caller is the trusted bind of task 11945 (the
+trusted successor bind section), whose successor task 11946 publishes. Like the
+rest of the persistence substrate, the engine is compiled in every build and
+exercised only by tests until task 7931 wires the substrate into RSpace, and it
+no longer carries a dead-code expectation of its own.
 The metadata domain remains with tasks 7925 and 7926. The ledger itself is never
 serialized. Only its retained-union report and the digest-ordered enumeration of
 that union reach persisted bytes, through the catalog pack state
@@ -1495,8 +1497,8 @@ from them. They leave these questions open:
   test it.
 - Production runs one schedule, the event-first one. The model's results for
   every schedule are not re-tested in production.
-- Nothing calls the trials yet. The trusted successor that derives the deltas,
-  runs the trials and replaces cold re-admission is task 7927, its fault
+- The trusted bind of task 11945 derives the deltas and runs the trials; the
+  trusted publication that replaces cold re-admission is task 11946, its fault
   acceptance is task 7928, and the scaling claim against geometrically growing
   history is task 7929. CL-07 shows work independence on small cases only.
 - A trial that removes an object's last reference in both domains leaves a
@@ -3364,11 +3366,13 @@ is described in the next section.
 
 **Boundary.**
 
-- These results hold for the models and the test model, except TS-17, which
-  checks production code (next section). No production code binds, publishes
-  or adopts a trusted successor yet. Tasks 11944 to 11946 refine the other rows
-  in production, and the same test functions then gain the production checks,
-  so the bindings stay stable.
+- These results hold for the models and the test model. TS-17 checks
+  production code (next section), and since task 11945 the test functions of
+  TS-01, TS-03 to TS-07, TS-16, TS-18 and TS-19 also check the production bind
+  (the trusted successor bind section), so their bindings are unchanged. No
+  production code publishes or adopts a trusted successor yet: task 11946
+  refines the remaining rows and the publication halves of TS-03, TS-04, TS-06
+  and TS-07.
 - The maxima are exact only while retention appends
   (`retained_state_maxima_is_cold_componentwise_max`); an eviction needs a
   recomputation (`eviction_requires_recomputation_counterexample`), which is the
@@ -4204,6 +4208,248 @@ sources.
 | `rspace++/tests/persistence/property_support.rs` | `c45b844dfbe4fa550a799c8be47501a277ff9d0fdeccc1b8433645f7fadb91e5` |
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `d7c993b31f1289d04376975d869651a1a6d2d7a24b297454ba4936ce261876f6` |
 
+### Trusted successor bind (2026-10-27)
+
+Task 11945, the fourth slice of task 7927 (engineering journal J-067), binds a
+sealed transaction to a durable authority core under a *trusted successor
+policy*, deriving the successor's authority without physical recovery or cold
+admission. The trusted successor section above states the rule
+(`trusted_successor_rule`, `TrustedSuccessorCapability.v:1636-1650`), and the
+authority core section gives the type it acts on. This slice adds the bind,
+records in each sealed transaction which of the two publication modes it was
+bound for, and adds production checks to nine of the TS rows: TS-01, TS-03 to
+TS-07, TS-16, TS-18 and TS-19. It changes no persisted byte, identity, cold
+report or cold-checked outcome. No publication path calls the bind yet: the
+trusted publication and the journal owner's switch to it are task 11946, and
+every incremental publication still runs physical recovery and cold
+admission. Like the rest of the persistence substrate, the bind is exercised
+only by tests until task 7931 wires the substrate into RSpace
+(`rspace/mod.rs:11-18`).
+
+**The policy.** A trusted successor policy, `TrustedSuccessorPolicyV1`
+(`durable/admission.rs:108-199`), bounds everything that the bind derives. It
+has 32 axes, the 32 of the trusted successor section's exact policy.
+
+- Eleven state ceilings, `TrustedStateCeilingsV1`: the state's distinct
+  objects and canonical bytes, the retained states, the retained union's
+  objects and bytes, the metadata closure's objects and bytes, the logical
+  nodes, the endpoints, the longest logical path in bytes, and the source
+  payload bytes.
+- Three times seven work budgets, `TrustedTrialWorkV1`, one per closure domain
+  in the order current, retained, metadata: the peak count, the union peak in
+  objects and in bytes, the scratch peak, the references, the expansions and
+  the quoted bytes of that domain's ledger trial.
+
+`trial_limits(domain)` (`durable/admission.rs:174-198`) gives a domain's
+ledger trial its seven work budgets and, as the trial's final limits, the
+domain's pair of state ceilings: the state objects and bytes for the current
+domain, the union pair for the retained domain, and the metadata pair for the
+metadata domain. The policy is a plain value, and `UNBOUNDED` sets every axis
+to `u64::MAX`.
+
+**The bind.** `bind_trusted_transaction(lease, sealed, policy)`
+(`durable/admission.rs:1322-1509`) is a method of the core. It writes no file:
+it stages the sealed objects in an in-memory overlay of the core's pinned
+store, and every derived value lives in the returned transaction. Its steps
+run in this order, and the first refusal ends the bind.
+
+1. ⟨Check the writer and the receipt⟩. The writer preflight refuses
+   `AuthorityMismatch` unless the lease shares the core's generation-lease
+   registry. The receipt check refuses `AuthorityMismatch` unless the
+   receipt's base is the core's state and its profile is `P`
+   (`durable/admission.rs:1330-1332`). A foreign, stale or replayed receipt
+   names another base, so this one comparison refuses all three.
+2. ⟨Check the writer's format⟩. A V2 source under the V1 writer is refused
+   `RetentionFormatNotWritable(V2)` (`durable/admission.rs:1246-1253`), as in
+   the cold-checked bind.
+3. ⟨Run the two semantic trials⟩. The retained-state count is the
+   predecessor's plus one, with checked addition. After staging the sealed
+   objects, `run_domain_trials` (`closure/ledger_trial.rs:163`) runs the
+   current trial, which adds the
+   target manifest and removes the base manifest, and then the retained trial,
+   which adds the target manifest, each under its `trial_limits`. A refusal
+   becomes `TrustedTrial { domain, refusal }`. The retained union must then
+   contain the current closure (`require_current_within_retained_union`,
+   `durable/admission.rs:1677-1689`), the check that cold sealing makes.
+4. ⟨Derive the successor's fields⟩. The maxima are the componentwise maximum
+   of the predecessor's maxima and the target's inventory,
+
+   ```math
+   m' = \bigl(\max(m_{\mathrm{obj}},\ \mathrm{inv}_{\mathrm{obj}}(t)),\ \max(m_{\mathrm{bytes}},\ \mathrm{inv}_{\mathrm{bytes}}(t))\bigr),
+   ```
+
+   where $`m = (m_{\mathrm{obj}}, m_{\mathrm{bytes}})`$ is the predecessor's
+   pair of maxima, in distinct objects and canonical bytes, and
+   $`\mathrm{inv}(t) = (\mathrm{inv}_{\mathrm{obj}}(t), \mathrm{inv}_{\mathrm{bytes}}(t))`$
+   is the same pair for the target state $`t`$, which the current trial
+   measured. The shape summary advances along
+   the parsed mutation batch and the rewrite report (the shape summary
+   section's `successor`).
+5. ⟨Write the retention⟩. A V1 source under the V1 writer writes a V1
+   manifest whose current state is the target and whose history is the
+   predecessor's history followed by the predecessor's current state, and
+   runs no metadata trial. A V1 source under the V2
+   writer migrates its history once and runs the metadata trial, which adds
+   the new anchor and removes none. A V2 source under the V2 writer commits
+   the target to its radix and runs the metadata trial, which adds the new
+   anchor and removes the predecessor's. A metadata refusal becomes
+   `TrustedTrial { domain: Metadata, .. }` (`trusted_retention_error`,
+   `durable/admission.rs:2637-2647`).
+6. ⟨Check the ceilings⟩. Seven ceilings are checked in this order: state
+   objects and state bytes against the maxima, retained states, logical
+   nodes, endpoints, the longest logical path and the payload bytes. The bind
+   refuses `TrustedCeiling { axis, limit, attempted }` at the first axis whose
+   attempted value exceeds its limit (`durable/admission.rs:1443-1485`). The
+   union and metadata ceilings need no check here: they are the final limits
+   of their trials. A state ceiling below the target's own inventory is
+   refused earlier, by the current trial's final limit.
+7. ⟨Seal the binding⟩. The validity token advances to the receipt's target,
+   and the bind returns the sealed transaction with the binding
+   `Trusted { policy, successor }`. The successor, a
+   `PreparedTrustedSuccessorV1` (`durable/admission.rs:1806-1813`), holds the
+   successor's retention manifest bytes, validity token, shape summary,
+   closure ledger, retained-state count and maxima: the fields of the
+   successor core that the bind derives. The successor shares the store and
+   the registry, its retention format is the writer's, and only publication
+   fixes its version and catalog token.
+
+The refusals that other steps can raise keep their existing variants: a
+staging failure and the union check (`Inventory`); a mutation batch that does
+not parse (`Format`); a counter overflow, a batch that the shape summary's
+`successor` refuses, and the validity token's own profile and base checks,
+which step 1 already decides (`Canonical`); and a failed retention edit
+(`RetentionWrite`).
+
+![The trusted bind of a sealed transaction to a durable authority core. The bind writes no file. In grey, the checks that existed before this slice: the writer preflight, which refuses AuthorityMismatch unless the lease shares the core's registry, the union check, and the unchanged preparation. In red, every refusal: AuthorityMismatch for a receipt whose base is not the core's state or whose profile is not P, which covers foreign, stale and replayed receipts; RetentionFormatNotWritable for a V2 source under the V1 writer; TrustedTrial for the current, retained and metadata trials; TrustedCeiling at the first of the seven state ceilings exceeded; and, at the trusted preflight, AuthorityMismatch, PublicationModeMismatch and TrustedPolicyMismatch. In blue, the derivations: the retained-state count plus one, the in-memory staging, the componentwise maxima, the shape summary, the V1 append and the validity token. In amber, the steps that the trusted policy bounds: the current trial under the first work budget and the state ceilings, the retained trial under the second and the union ceilings, the migration or commit with its metadata trial under the third and the metadata ceilings, and the seven state ceilings. In green, the sealed binding Trusted with the prepared successor, and the accepting preflight. A grey note lists the refusals that keep their existing variants. A purple note states that each mode has its own preflight, so a transaction cannot change its mode or policy after it is sealed, and how the production checks derive the exact policy](figures/trusted-successor-bind.svg)
+
+**The binding.** `SealedDurableTransactionV1` replaces its admission limits
+with a `SuccessorBindingV1` (`durable/admission.rs:1834-1850`): either
+`ColdChecked { limits }`, which the cold-checked bind seals
+(`durable/admission.rs:2234`), or `Trusted { policy, successor }`. Each mode
+has its own preflight, and each runs after the authority check, which refuses
+`AuthorityMismatch` unless the transaction's predecessor authority and
+registry are the publisher's (`preflight_authority`,
+`durable/admission.rs:1918-1928`).
+
+| Preflight | `ColdChecked { limits }` | `Trusted { policy, .. }` |
+|---|---|---|
+| `preflight(limits')` | accepts if $`\mathit{limits}' = \mathit{limits}`$, else `AdmissionPolicyMismatch` | `PublicationModeMismatch` |
+| `preflight_trusted(policy')` | `PublicationModeMismatch` | accepts if $`\mathit{policy}' = \mathit{policy}`$, else `TrustedPolicyMismatch` |
+
+The cold-checked row is the former preflight's behavior; the trusted row is
+the guard of the theory's `sealed_policy_binding_is_exact`. Because the
+cold-checked publication calls `preflight`, a transaction bound for trusted
+publication is refused by it before any durable write.
+
+**Production refinement.** The production checks live in
+`rspace++/tests/persistence/trusted_successor_production.rs`. Each TS test
+function runs its model checks first and then its production check at 64
+cases, so the property bindings of the trusted successor section are
+unchanged. These maps carry the test model's vocabulary to production.
+
+| Model | Production |
+|---|---|
+| `Domain`: current, retained, metadata | `ClosureDomainV1` |
+| `BudgetAxis`: the seven work axes and the two final axes | `LedgerTrialAxisV1` |
+| `CeilingAxis`: the seven ceilings | `TrustedCeilingAxisV1` |
+| `PolicyAxis`: the 32 policy axes | one field of `TrustedSuccessorPolicyV1`: a state ceiling, or work budget $`a`$ of `work[i]`, with $`i \in \{0, 1, 2\}`$ for the current, retained and metadata domains |
+| `expected_refusal(axis, current, maxima)` | the expected `BindOutcome`: a work axis lowered by one is refused by its domain's trial on that axis; the union and metadata ceilings by the retained and metadata trials on their final axes; a state ceiling by the current trial on its final axis when the target's own inventory equals the maxima, and otherwise by the ceiling check; the other five ceilings by the ceiling check |
+
+**Generated histories.** Every production check runs on generated histories in
+four scenarios, the V1 and V2 writers on each of two checkpoint fixtures,
+each fixture having the other as its foreign source. A history is up to eleven
+operations, each setting the count of one of four datums on one channel to a
+value from 0 to 4; an operation that leaves the count unchanged is skipped.
+Each step is sealed and bound through the production API and is then published
+by the cold-checked incremental publication, because trusted publication is
+task 11946; the published source becomes the next step's predecessor.
+
+**Independent measurement.** The exact policy is measured without the bind.
+The check runs production `run_domain_trials` and, when the writer is V2,
+`run_ledger_trial` for the metadata domain, all under unbounded limits, on the
+predecessor's ledger. They read through a test overlay that finds the bound
+transaction's sealed objects by digest and otherwise reads the core's indexed
+store. The deltas are built in the test from the receipt: the current domain
+adds the target and removes the base, the retained domain adds the target, and
+the metadata domain adds the new anchor and removes the predecessor's (V2 to
+V2), adds it alone (V1 to V2), or is not run (the V1 writer). The *exact
+policy* then sets each work budget to the measured usage, each union and
+metadata ceiling to the measured final inventory, and the other seven ceilings
+to the successor's maxima, retained-state count and shape. Under the V1 writer
+the metadata usage and inventory are zero. TS-04 and TS-16 compare those
+values with the cold successor after publication, so the policy does not take
+the bind's word for them. A *positive
+axis* is an axis whose exact value is above zero; only those can be lowered by
+one. Every check that expects a refused bind or publication (TS-03 to TS-07
+and TS-18) takes a *witness* before the refused calls, the bytes of every file
+in the directory except the writer lock together with the core's catalog token
+and ledger, and requires it unchanged after them; TS-19 compares the directory
+bytes around its refused bind.
+
+| Row | Production check | What it requires at every step |
+|---|---|---|
+| TS-01 | `production_trusted_successor_equals_cold_successor` | The trusted and the cold-checked binds of one batch, both unbounded, give the same receipt, sealed object bytes, retention manifest and successor inventory. After the cold-checked publication, the trusted successor's version, validity, retention bytes, shape, retained-state count, maxima and per-domain ledger equal those of the cold successor. |
+| TS-03 | `production_trials_refuse_in_domain_order` | The trusted ledger equals the independently measured one. Under the V2 writer, the metadata trial alone on the predecessor's ledger has the same usage and the same metadata domain as after the two semantic trials. The exact policy binds the same ledger. One positive work axis is chosen per domain, rotating with the step; lowering any contiguous run of those axes by one is refused by the first lowered domain, on its axis. Refusals occur in all three domains. |
+| TS-04 | `production_policy_accepts_exact_and_refuses_one_below` | The exact policy binds. Each positive axis lowered by one is refused as `expected_refusal` predicts, with the lowered value as the limit and the exact value as the attempted one. After publication, the policy's ceilings are the cold successor's maxima, retained-state count and shape, and the measured ledger is the cold ledger. Ceiling and trial refusals both occur. |
+| TS-05 | `production_union_budget_admits_scratch_above_final_size` | The exact policy, whose union budgets are the measured peaks, binds. In each domain the union peak is at least the final size in objects and in bytes, and where it exceeds the final size, lowering that union budget to the final size is refused on that union axis: the bind admits scratch above the final size exactly within the budget. Such steps occur. |
+| TS-06 | `production_binding_fixes_publication_mode_and_policy` | A trusted-bound transaction passes `preflight_trusted` with its sealed exact policy, is refused `TrustedPolicyMismatch` with any of the 32 axes changed by one up or, where positive, down, and is refused `PublicationModeMismatch` by `preflight`. A cold-bound transaction is refused `PublicationModeMismatch` by `preflight_trusted`, passes `preflight` with its own limits, and is refused `AdmissionPolicyMismatch` under each of three changed limits, which lower one per-state structural limit (distinct objects, canonical bytes or references) from the unbounded $`2^{64} - 1`$ to $`2^{64} - 2`$. The cold-checked publication of a trusted-bound transaction returns `PublicationModeMismatch`, definitely not published. |
+| TS-07 | `production_bind_refuses_foreign_stale_and_replayed_receipts` | A receipt sealed in a foreign directory, bound with this directory's lease, and this directory's receipt bound with the foreign lease, are refused `AuthorityMismatch`. The receipt that produced the current state, replayed against it, and an earlier step's receipt (stale), each resealed on the current store, are refused `AuthorityMismatch`. All four cases occur. |
+| TS-16 | `production_maxima_equal_cold_requirements` | The trusted maxima are the componentwise maximum of the predecessor's maxima and the target's structural inventory, and equal the cold successor's maxima. The cold successor's per-state checkpoint preflight accepts at the trusted maxima and refuses one below on each positive component, naming that component, the lowered limit and the maximum. |
+| TS-18 | `production_validity_binds_the_exact_predecessor_and_receipt` | A receipt with a forged profile is refused `AuthorityMismatch`. The successor's validity token names the target manifest and equals the cold successor's. A batch sealed on the successor is refused against the predecessor and binds against the successor. |
+| TS-19 | `production_retention_migrates_once_and_matches_the_cold_seed` | The V1 writer has no metadata domain. Under the V2 writer, the successor's metadata roots are its anchor alone with count 1, its metadata inventory is the measured one, migration happens exactly at the first step, and the cold successor's format and metadata domain are the trusted ones. A V2 directory reopened under the V1 writer refuses a bind with `RetentionFormatNotWritable(V2)`. Migration, V2 successors and that refusal occur. |
+
+**Negative controls.** Each control applies one mutation to the production
+sources of an export of the candidate tree, runs the one TS test that names
+it, and requires the test to fail inside its production check. The model
+checks run first in each test and pass, so every failure below is the
+production check's.
+
+| Control | Mutation | Killed by, with the observed failure |
+|---|---|---|
+| The V2 ledger skips the metadata trial | the V2 commit arm returns the ledger of the two semantic trials | TS-01: the trusted successor differs from the cold successor |
+| The retained trial runs first | `run_domain_trials` swaps the domain order | TS-03: lowering the current and retained count budgets is refused by the retained trial, not the current one |
+| A ceiling refuses its exact value | the ceiling check compares with $`\geq`$ instead of $`>`$ | TS-04: the exact policy is refused `TrustedCeiling(StateObjects, 3, 3)` |
+| The union budget is capped at the final size | the union-objects budget becomes the minimum of the budget and the final limit | TS-05: the exact policy is refused by the current trial on union objects |
+| The preflight ignores the sealed policy | `preflight_trusted` accepts any policy | TS-06: a changed policy passes the trusted preflight |
+| The base is not checked | the receipt check compares only the profile | TS-07: a foreign receipt is refused only by the current trial (`UnauthorizedRemoval`), after staging |
+| The maxima forget the history | the maxima's objects are the target's alone | TS-16: the maxima fall from 3 objects to 2 |
+| The profile is not checked | the receipt check compares only the base | TS-18: a forged profile is refused only by the validity token's own check (`Canonical`), after every trial |
+| The migration removes the V1 manifest | the migration arm's metadata trial removes the predecessor's V1 manifest | TS-19: the metadata trial refuses that removal (`UnauthorizedRemoval`) under the unbounded policy |
+
+All nine controls were killed: each test exited with status 101, failing in
+its production check after 0.03 to 0.32 s. The base and profile controls show
+why the receipt check comes first: without it the bind still refuses, but only
+after staging the objects, or after every trial, and with another variant.
+
+**Boundary.**
+
+- The bind derives the successor; it does not publish or adopt it. Rows TS-02
+  and TS-08 to TS-15, and the publication halves of TS-03, TS-04, TS-06 and
+  TS-07 (a trusted publication refused at its bind or preflight, under the six
+  fault settings), are task 11946.
+- Each step's successor becomes the next predecessor by cold-checked
+  publication, so the checks compare a trusted successor with the cold one at
+  every step, never a chain of trusted successors.
+- The production checks run 64 cases of four scenarios each. Each case opens,
+  installs, admits and publishes real directories, so they run fewer cases
+  than most model checks.
+- No persisted byte, identity, cold report or cold-checked refusal changes.
+
+The trusted successor bind evidence in the verification record was taken at
+these sources.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `rspace++/src/rspace/persistence/transaction.rs` | `9b71c3c51c02ef7eeb1a8157417e0b455158d3a1aa7f8befa316ff89ac26456b` |
+| `rspace++/src/rspace/persistence/closure.rs` | `362010373e2d62084a731bddc1c0428de61e23f9b8bea46f9ca3928c86418692` |
+| `rspace++/src/rspace/persistence/durable/admission.rs` | `13c1360d35d5aadde8735ddd9878fee09cccbf8dafb5a337c3b348fb534be869` |
+| `rspace++/src/rspace/persistence/durable/mod.rs` | `77bec4e4db3e7bd0a6469596e9bab912d34882463c8eb137fc0fa2cba9319fc4` |
+| `rspace++/tests/persistence/mod.rs` | `e063cd4cbdda3daf06397b9e3d1a4155622c97431e56b99ca3c364204657fafe` |
+| `rspace++/tests/persistence/durable_publication.rs` | `2036a6a6a492a3e7e7307ec033ea69cfdbe66f836c79f7ebcb60ee4e08488165` |
+| `rspace++/tests/persistence/trusted_successor_properties.rs` | `735ebd79949630fab031efd571c0728c528dad164e61b5de566c517e87c8e443` |
+| `rspace++/tests/persistence/trusted_successor_production.rs` | `886701b7fbce6607bbb910d471ca1c1620917fcd3ef4184b4d3a40967ffffb9f` |
+| `docs/design/pathmap/figures/trusted-successor-bind.puml` | `f8cd102bcec4630ced25f7b966b63741a1e54f2d280dcbb7f74292f1e9542ab5` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -4235,7 +4481,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | CR-02 | `EXEC_ONLY` | `CheckedReachability.checked_sub_is_exact`, `CheckedReachability.checked_sub_refuses_exactly_underflow`, `CheckedReachability.checked_decrement_refines_natural_update`, `CheckedReachability.checked_decrement_refuses_exactly_zero`, `CheckedReachability.checked_decrement_preserves_bounded_counts`, `CheckedReachability.checked_updates_preserve_coherence` | P | Zero and positive counts distinguish checked refusal from natural-number saturation; a refused trial preserves its input. |
 | CR-03 | `EXEC_ONLY` | `CheckedReachability.increment_changes_unique_inventory`, `CheckedReachability.checked_inventory_add_is_exact`, `CheckedReachability.checked_inventory_add_refuses_exactly_above_limit` | P | A symbolic unchanged background reaches one-below and exact `u64::MAX` distinct-object counts; generated large byte weights and duplicate references independently check byte refusal and zero-crossing behavior. The zero-byte-weight abstract case isolates arithmetic overflow, not production object admission. |
 | CR-04 | `EXEC_ONLY` | `CheckedReachability.decrement_changes_unique_inventory`, `CheckedReachability.deactivated_inventory_is_funded`, `CheckedReachability.checked_inventory_remove_is_exact`, `CheckedReachability.exact_inventory_removal_cannot_underflow` | P | Last-reference removal subtracts one unique contribution; repeated-edge removal and invalid underflow are negative controls. |
-| LT-01 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_attempts_are_exactly_scheduled_cursor_steps` | P | Every accepted test-model step is the executable cursor machine's scheduled step, observed at every generated microstep; the production trial refines the event-first schedule (CL-03), and its use by the trusted successor (task 7927) remains open. |
+| LT-01 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_attempts_are_exactly_scheduled_cursor_steps` | P | Every accepted test-model step is the executable cursor machine's scheduled step, observed at every generated microstep; the production trial refines the event-first schedule (CL-03), and the trusted bind runs it in each domain (TS-03, task 11945). |
 | LT-02 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_step_is_failure_atomic`, `CheckedLedgerTrial.accepted_event_reservations_are_checked_arithmetic` | P | The natural-number reservations are refined by the test model's `u64` usage with `u128` candidates and by the Verus counters; the production trial reserves the same way and matches the test model's usage (CL-03). |
 | LT-03 | `EXEC_ONLY` | `CheckedLedgerTrial.every_trial_retains_the_bit_identical_predecessor`, `CheckedLedgerTrial.checked_step_is_failure_atomic` | P | Retained predecessors are compared by value in the test model; in production the trial borrows its predecessor immutably, and CL-04 compares the predecessor's observation before and after every trial. |
 | LT-04 | `EXEC_ONLY` | `CheckedLedgerTrial.prepared_trial_agrees_with_cold_ledger`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.every_valid_authorized_trial_prepares_without_limits` | P | The cold oracle is an independent traversal of the test-only vector graph; production ledgers built over authenticated canonical objects match it in CL-01 and CL-03. |
@@ -4246,7 +4492,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | LT-09 | `EXEC_ONLY` | `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis` | P | Exact boundaries are checked per axis on generated trials; production limit configuration remains open. |
 | LT-10 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_trial_is_the_guarded_unbounded_trial`, `CheckedLedgerTrial.refused_trial_retries_from_identical_predecessor` | P | Retry equivalence is checked under generated limits near the measured evidence; the production retry policy remains open. |
 | LT-11 | `EXEC_ONLY` | `CheckedLedgerTrial.partial_commit_mutant_replaces_the_predecessor`, `CheckedLedgerTrial.skipped_cursor_contribution_mutant_is_not_quiescent`, `CheckedLedgerTrial.duplicated_cursor_contribution_mutant_is_not_quiescent` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must both be positive. |
-| DC-01 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials` | P | First-refusal composition and per-domain limits are checked for all four variants on generated histories; the production domain order and limit configuration remain open (task 7927). |
+| DC-01 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials` | P | First-refusal composition and per-domain limits are checked for all four variants on generated histories; the trusted bind realizes the production domain order and per-domain limits (TS-03 and TS-04, task 11945). |
 | DC-02 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_agrees_with_cold_domains`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains` | P | Successor bases are compared with independent cold traversals after every generated step; production per-domain counts are compared with the same oracles in CL-01 and CL-06. |
 | DC-03 | `EXEC_ONLY` | `CheckedDomainComposition.canonical_retention_deltas_realize_entry_roots` | P | Signed deltas are derived from test-model entries; production retention entries are only appended today (`admission.rs:1479-1483`). |
 | DC-04 | `EXEC_ONLY` | `CheckedDomainComposition.current_closure_is_within_retained_union` | P | Inclusion and the exact difference are checked on cold ledgers; the production current and union inventories equal the cold oracle's in CL-01. |
@@ -4258,8 +4504,8 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | CL-02 | `EXEC_ONLY` | `CreditedClosureLedger.credited_epoch_inventory_grows_by_crossed_objects`, `CreditedClosureLedger.credited_crossings_are_newly_reachable_objects` | P | The inventory growth is entailed; equal reports, reads and limit errors against a retained-only build are executable observations. |
 | CL-03 | `EXEC_ONLY` | `CheckedLedgerTrial.checked_attempts_are_exactly_scheduled_cursor_steps`, `CheckedLedgerTrial.prepared_trial_agrees_with_cold_ledger`, `CheckedLedgerTrial.checked_trial_is_the_guarded_unbounded_trial` | P | Production runs only the event-first schedule; the mirror maps digests to vertices and declared lengths to weights, quotes and consumed reads. |
 | CL-04 | `EXEC_ONLY` | `CheckedLedgerTrial.every_trial_retains_the_bit_identical_predecessor`, `CheckedLedgerTrial.refused_trial_retries_from_identical_predecessor` | P | The immutable borrow of the predecessor enforces retention; load and parse refusals have no model counterpart. |
-| CL-05 | `EXEC_ONLY` | `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis`, `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials` | P | Exact boundaries are checked per axis and domain on generated trials; the production limit configuration remains open (task 7927). |
-| CL-06 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_agrees_with_cold_domains`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains`, `CheckedDomainComposition.evicting_one_root_alias_keeps_retained_support` | P | The deltas come from the test model's entries; their production derivation is task 7927, and the metadata domain belongs to tasks 7925 and 7926. |
+| CL-05 | `EXEC_ONLY` | `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis`, `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials` | P | Exact boundaries are checked per axis and domain on generated trials; the trusted bind's per-domain limits are checked at their exact values and one below (TS-04, task 11945). |
+| CL-06 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_agrees_with_cold_domains`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains`, `CheckedDomainComposition.evicting_one_root_alias_keeps_retained_support` | P | The deltas come from the test model's entries; the trusted bind derives them from the receipt (TS-01 and TS-03, task 11945), and the metadata domain belongs to tasks 7925 and 7926. |
 | CL-07 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory` | P | Work independence is checked on small generated cases; the scaling claim against geometrically growing history is task 7929. |
 | CL-08 | `EXEC_ONLY` | `EXEC_ONLY` | E | Stack bounds are platform evidence; both walks keep their work on the heap. |
 | CL-09 | `EXEC_ONLY` | `CreditedClosureLedger.epoch_wide_credit_mutant_double_counts_a_shared_child`, `CreditedClosureLedger.unexpanded_crossing_mutant_leaves_an_uncredited_child`, `CheckedLedgerTrial.partial_commit_mutant_replaces_the_predecessor`, `CheckedDomainComposition.retained_sign_mutant_drops_the_predecessor_closure`, `CheckedDomainComposition.deduplicated_alias_mutant_drops_a_shared_closure` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must all be positive. |
@@ -4300,13 +4546,13 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | RV-35 | `EXEC_ONLY` | `RetentionV2Editor.metadata_trial_work_is_the_changed_objects`, `RetentionV2Editor.deactivate_first_mutant_expands_the_shared_history` | P | The theory counts cursor steps by expansion credit; the production trial's expansion, reference and read counters are compared exactly with the oracle's changed objects. |
 | RV-36 | `EXEC_ONLY` | `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger`, `RetentionV2Editor.set_seed_mutant_drops_a_shared_radix_child` | P | The reader's occurrence counts realize the theory's seed; its equality with the ledger of an activation from an empty domain is executable. |
 | RV-37 | `NoReaderAdoptsUnsupportedContent` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.current_in_history_migration_mutant_duplicates_the_current_entry` | P | Both V1 readers refuse every migrated object, which realizes the model's format check; `v2_writer_migrates_a_v1_source_at_its_first_successor` shows recovery refusing the migration transaction. |
-| TS-01 | `AdoptedSuccessorIsExactCatalog` | `TrustedSuccessorCapability.trusted_successor_rule`, `TrustedSuccessorCapability.trusted_inventory_equals_cold_admission`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains` | P | Test-only model extraction; production refinement remains open (task 11945). The successor is compared field by field with the core that cold admission derives from the same history; the transliteration adopts only the exactly re-read catalog image. |
+| TS-01 | `AdoptedSuccessorIsExactCatalog` | `TrustedSuccessorCapability.trusted_successor_rule`, `TrustedSuccessorCapability.trusted_inventory_equals_cold_admission`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). The successor is compared field by field with the core that cold admission derives from the same history; the transliteration adopts only the exactly re-read catalog image. |
 | TS-02 | `EXEC_ONLY` | `TrustedSuccessorCapability.appended_index_is_cold_rebuild` | P | Test-only model extraction; production refinement remains open (task 11946). The appended index is compared with the cold rebuild on generated record lists, including the duplicate, conflict and capacity refusals, before any durable write. |
-| TS-03 | `EXEC_ONLY` | `TrustedSuccessorCapability.production_order_is_run_composed`, `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials`, `TrustedSuccessorCapability.skipped_domain_trial_mutant_breaks_cold_agreement` | P | Test-only model extraction; production refinement remains open (task 11945). The production order is the theorem's projection onto the shared ledger; the two skipped-trial variants realize the mutant theorem. |
-| TS-04 | `TrustedRefusalPrecedesAllMutation` | `TrustedSuccessorCapability.ceiling_decisions_are_exact`, `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis` | P | Test-only model extraction; production refinement remains open (task 11945). Exact acceptance and one-below refusal are checked on all 32 axes of the exact policy, by the bind and by a publication that writes nothing. |
-| TS-05 | `EXEC_ONLY` | `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.final_union_conflation_mutant_refuses_exact_final_limit` | P | Test-only model extraction; production refinement remains open (task 11945). Each domain's union peak is compared with the cold inventory of its base and added roots; the conflation control realizes the mutant theorem. |
-| TS-06 | `PublishedPolicyIsSealedPolicy` | `TrustedSuccessorCapability.sealed_policy_binding_is_exact`, `TrustedSuccessorCapability.changed_policy_mutant_accepts_unbound_limits` | P | Test-only model extraction; production refinement remains open (task 11945). Policy and mode equality at the preflight realize the sealed binding; the policy-ignoring variant realizes the changed-policy mutant. |
-| TS-07 | `TrustedRefusalPrecedesAllMutation` | `TrustedSuccessorCapability.trials_precede_mutation`, `TrustedSuccessorCapability.publication_before_trials_mutant_publishes_refused_successor` | P | Test-only model extraction; production refinement remains open (task 11945). Every receipt refusal is checked before the first durable write under all six fault settings; the append-before-trials variant realizes the mutant theorem. |
+| TS-03 | `EXEC_ONLY` | `TrustedSuccessorCapability.production_order_is_run_composed`, `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials`, `TrustedSuccessorCapability.skipped_domain_trial_mutant_breaks_cold_agreement` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). The production order is the theorem's projection onto the shared ledger; the two skipped-trial variants realize the mutant theorem. |
+| TS-04 | `TrustedRefusalPrecedesAllMutation` | `TrustedSuccessorCapability.ceiling_decisions_are_exact`, `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). Exact acceptance and one-below refusal are checked on all 32 axes of the exact policy, by the bind and by a publication that writes nothing. |
+| TS-05 | `EXEC_ONLY` | `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory`, `CheckedLedgerTrial.final_union_conflation_mutant_refuses_exact_final_limit` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). Each domain's union peak is compared with the cold inventory of its base and added roots; the conflation control realizes the mutant theorem. |
+| TS-06 | `PublishedPolicyIsSealedPolicy` | `TrustedSuccessorCapability.sealed_policy_binding_is_exact`, `TrustedSuccessorCapability.changed_policy_mutant_accepts_unbound_limits` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). Policy and mode equality at the preflight realize the sealed binding; the policy-ignoring variant realizes the changed-policy mutant. |
+| TS-07 | `TrustedRefusalPrecedesAllMutation` | `TrustedSuccessorCapability.trials_precede_mutation`, `TrustedSuccessorCapability.publication_before_trials_mutant_publishes_refused_successor` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). Every receipt refusal is checked before the first durable write under all six fault settings; the append-before-trials variant realizes the mutant theorem. |
 | TS-08 | `EXEC_ONLY` | `TrustedSuccessorCapability.cold_demand_is_not_a_function_of_the_inventory_summary`, `TrustedSuccessorCapability.reused_predecessor_demand_mutant_fabricates_cold_evidence`, `TrustedSuccessorCapability.trusted_source_preflight_mutant_accepts_minus_one` | P | Test-only model extraction; production refinement remains open (task 11946). Cold demand is measured by a fresh traversal of the successor; the predecessor-demand and summary-demand controls realize the two mutant theorems. |
 | TS-09 | `NoPhysicalRecoveryOnTrustedSuccess`, `TrustedSuccessorHasNoColdEvidence`, `NeverTrustedReady` | `EXEC_ONLY` | P | Test-only model extraction; production refinement remains open (task 11946). No theorem models the publication hooks; the test model's hook trace is compared with `FORMAL_PUBLICATION_PHASE_ORDER`. |
 | TS-10 | `AdoptionFollowsDirectorySyncAndResolution` | `EXEC_ONLY` | P | Test-only model extraction; production refinement remains open (task 11946, which shows byte identity on real files). The two modes' durable writes are compared in the test model under the three sidecars. |
@@ -4315,10 +4561,10 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | TS-13 | `EXEC_ONLY` | `TrustedSuccessorCapability.empty_and_awaiting_ack_branches_do_not_consult_cold_limits` | P | Test-only model extraction; production refinement remains open (task 11946). The owner mirror counts cold checks and acknowledgements; the owner model's witness `NeverAwaitingAckRetryUnderTightenedColdLimits` reaches the same branch. |
 | TS-14 | `ColdModeSuccessIncludesColdAdmission`, `NeverColdReady` | `TrustedSuccessorCapability.cold_demand_is_not_a_function_of_the_inventory_summary` | P | Test-only model extraction; production refinement remains open (task 11946). The cold-checked refusal and the trusted success of one receipt realize the non-implication on every positive demand axis. |
 | TS-15 | `NeverTrustedRefusal` | `TrustedSuccessorCapability.trials_precede_mutation` | P | Test-only model extraction; production refinement remains open (task 11946). The owner mirror's checkpoint is refused by the bind before any write, so the owner emits no event and stays ready. |
-| TS-16 | `EXEC_ONLY` | `TrustedSuccessorCapability.retained_state_maxima_is_cold_componentwise_max`, `TrustedSuccessorCapability.eviction_requires_recomputation_counterexample` | P | Test-only model extraction; production refinement remains open (task 11945). The maxima are checked while retention appends; the eviction counterexample is reproduced on its fixture, and eviction is task 7756. |
+| TS-16 | `EXEC_ONLY` | `TrustedSuccessorCapability.retained_state_maxima_is_cold_componentwise_max`, `TrustedSuccessorCapability.eviction_requires_recomputation_counterexample` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). The maxima are checked while retention appends; the eviction counterexample is reproduced on its fixture, and eviction is task 7756. |
 | TS-17 | `EXEC_ONLY` | `ExactStateShapeSummary.admitted_tries_have_no_empty_leaf`, `ExactStateShapeSummary.maximum_logical_path_is_the_longest_key`, `ExactStateShapeSummary.combined_maximum_is_the_walk_maximum`, `ExactStateShapeSummary.batch_weight_delta_is_exact`, `ExactStateShapeSummary.endpoint_existence_delta_is_exact`, `ExactStateShapeSummary.payload_delta_is_exact`, `ExactStateShapeSummary.key_length_multiset_tracks_the_batch`, `ExactStateShapeSummary.largest_nonempty_bucket_is_the_longest_key`, `ExactStateShapeSummary.rewrite_moves_logical_positions_exactly`, `ExactStateShapeSummary.absorbed_reports_move_positions_exactly`, `ExactStateShapeSummary.counted_rewrite_is_the_radix_edit`, `ExactStateShapeSummary.trusted_shape_summary_equals_the_cold_walk`, `ExactStateShapeSummary.emitted_minus_loaded_mutant_miscounts_a_compression_merge`, `ExactStateShapeSummary.digest_dedup_counter_mutant_undercounts_equal_leaves`, `ExactStateShapeSummary.running_maximum_mutant_keeps_a_deleted_longest_key`, `ExactStateShapeSummary.empty_leaf_mutant_breaks_the_path_maximum` | P | Production refinement of the derivation; the trusted publication that returns the summary remains open (task 11946). The production summary is compared with the production cold walk in memory, with durable cold admission after every publication and with restart admission, on shared subtrees, an absorbing merge, deletion of the unique and of tied longest keys, and batches across all three namespaces; the composed theorem's premise that the rewrite lists the batch applied to the entries is checked against an independent rebuild. |
-| TS-18 | `EXEC_ONLY` | `TrustedSuccessorCapability.trusted_successor_rule` | P | Test-only model extraction; production refinement remains open (task 11945). The rule's token and profile premises are checked as refusals at the receipt check. |
-| TS-19 | `EXEC_ONLY` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger` | P | Test-only model extraction; production refinement remains open (task 11945). The first successor's migration and the seeded metadata ledger are compared with the cold traversal; the double-migration control keeps the old anchor counted. |
+| TS-18 | `EXEC_ONLY` | `TrustedSuccessorCapability.trusted_successor_rule` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). The rule's token and profile premises are checked as refusals at the receipt check. |
+| TS-19 | `EXEC_ONLY` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). The first successor's migration and the seeded metadata ledger are compared with the cold traversal; the double-migration control keeps the old anchor counted. |
 | PX-01 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_refuses_a_valid_delta_at_a_coincident_certificate`, `PathExactIncrementalClosure.certificate_first_verifier_complete` | P | Production refinement on the theory's coincidence fixture in canonical bytes, with the two certificates admitted directly; the report's counts and the logical-visit limit bind the model's eight visits. |
 | PX-02 | `EXEC_ONLY` | `PathExactIncrementalClosure.digest_only_certificate_mutant_admits_an_uncovered_occurrence`, `PathExactIncrementalClosure.certificate_first_verifier_sound` | P | Production refinement of exactness: a certificate that differs from the exact one in its path, namespace, kind or reference does not stop the walk, the executable side of the digest-only mutant. |
 | PX-03 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_accepts_a_staged_object_owned_only_at_inherited_positions`, `PathExactIncrementalClosure.skipped_reachability_mutant_admits_an_unreached_staged_object` | P | Production refinement of the second outcome change: the final reachability check refuses a staged object that the walk reaches only at a certified occurrence. |
@@ -4637,6 +4883,25 @@ doc tests. These results cover a production change that changes no behavior:
 the durable authority is split by type into its core and its cold evidence,
 and no persisted byte, identity, cold report or refusal changes. See pgmcp
 artifact 1132 for caps and evidence hashes.
+
+The 2026-10-27 trusted successor bind adds no ID, so the
+catalog/derivation/binding registry still contains **211** IDs, and it changes
+no Rocq or TLA+ source, so no model was re-run. On an export of the candidate
+tree, all 486 selected rspace++ library tests under `rspace::persistence`
+passed single-threaded in debug (68.07 s) and release (28.87 s), with the three
+unwind-child helpers ignored by design. They include the nine TS test
+functions with their production checks at 64 cases, every other test
+unchanged, and this registry test. The fourteen TS tests took 33.79 s in debug,
+nearly all of it in the production checks, which raise the suite's debug time
+from 35.36 s. Each of the nine production negative controls was killed by its
+row's production check (pgmcp artifact 1134). The candidate's export gate also
+passed: `cargo check` of all targets, clippy, all 4,424 release nextest tests
+of `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the release
+doc tests. These results cover a production change: the core gains the trusted
+bind, and every sealed transaction records its publication mode. No
+publication calls the bind yet, and no persisted byte, identity, cold report
+or cold-checked outcome changes. See pgmcp artifact 1135 for caps and evidence
+hashes.
 
 ## Caller-authority contract (2026-09-06)
 
