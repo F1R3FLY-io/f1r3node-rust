@@ -181,7 +181,7 @@ mod tests {
             DeployData {
                 term: "Nil".to_string(),
                 time_stamp,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 100_000,
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
@@ -399,7 +399,7 @@ mod tests {
             DeployData {
                 term: "Nil".to_string(),
                 time_stamp: 1,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 100_000,
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),

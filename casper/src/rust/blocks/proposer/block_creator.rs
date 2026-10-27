@@ -3983,7 +3983,7 @@ mod tests {
                 DeployData {
                     term: format!("@{}!(Nil)", time_stamp),
                     time_stamp,
-                    phlo_price: 1,
+                    phlo_price: (1).into(),
                     phlo_limit: 100_000,
                     valid_after_block_number,
                     shard_id: "test".to_string(),

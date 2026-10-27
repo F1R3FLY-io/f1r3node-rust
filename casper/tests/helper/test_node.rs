@@ -1191,7 +1191,7 @@ impl TestNode {
             bond_maximum: i64::MAX.into(),
             epoch_length: 10000,
             quarantine_length: 20000,
-            min_phlo_price: 1,
+            min_phlo_price: (1).into(),
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled

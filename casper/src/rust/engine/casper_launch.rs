@@ -194,7 +194,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             bond_maximum: conf.genesis_block_data.bond_maximum.clone(),
             epoch_length: conf.genesis_block_data.epoch_length,
             quarantine_length: conf.genesis_block_data.quarantine_length,
-            min_phlo_price: conf.min_phlo_price,
+            min_phlo_price: conf.min_phlo_price.clone(),
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: standalone,
             enable_mergeable_channel_gc: conf.enable_mergeable_channel_gc,
@@ -641,7 +641,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.casper_shard_conf.fault_tolerance_threshold_ppm,
             self.casper_shard_conf.max_parent_depth,
             self.casper_shard_conf.deploy_lifespan,
-            self.casper_shard_conf.min_phlo_price,
+            self.casper_shard_conf.min_phlo_price.clone(),
             self.conf.genesis_ceremony.required_signatures,
             self.conf
                 .genesis_block_data
@@ -752,7 +752,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.casper_shard_conf.fault_tolerance_threshold_ppm,
             self.casper_shard_conf.max_parent_depth,
             self.casper_shard_conf.deploy_lifespan,
-            self.casper_shard_conf.min_phlo_price,
+            self.casper_shard_conf.min_phlo_price.clone(),
             self.casper_shard_conf.shard_name.clone(),
             self.conf.genesis_block_data.deploy_timestamp,
             self.conf.genesis_ceremony.required_signatures,

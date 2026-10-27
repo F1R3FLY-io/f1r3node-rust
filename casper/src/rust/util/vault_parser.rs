@@ -130,11 +130,21 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("wallets.txt");
         let address = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
-        for value in [num_bigint::BigInt::from(0), 1.into(), num_bigint::BigInt::from(1u8) << 128, shared::rust::asi_amount::maximum()] {
+        for value in [
+            num_bigint::BigInt::from(0),
+            1.into(),
+            num_bigint::BigInt::from(1u8) << 128,
+            shared::rust::asi_amount::maximum(),
+        ] {
             fs::write(&path, format!("{address},{value}\n")).unwrap();
             assert_eq!(VaultParser::parse(&path).unwrap()[0].initial_balance, value);
         }
-        for value in ["-1".to_string(), "01".into(), "1garbage".into(), (shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1)).to_string()] {
+        for value in [
+            "-1".to_string(),
+            "01".into(),
+            "1garbage".into(),
+            (shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1)).to_string(),
+        ] {
             fs::write(&path, format!("{address},{value}\n")).unwrap();
             assert!(VaultParser::parse(&path).is_err(), "accepted {value}");
         }
@@ -305,7 +315,10 @@ mod tests {
         assert_eq!(vaults.len(), 1);
 
         let vault = &vaults[0];
-        assert_eq!(vault.initial_balance, num_bigint::BigInt::from(50_000_000_000_000u64));
+        assert_eq!(
+            vault.initial_balance,
+            num_bigint::BigInt::from(50_000_000_000_000u64)
+        );
         assert_eq!(
             vault.vault_address.to_base58(),
             "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP"

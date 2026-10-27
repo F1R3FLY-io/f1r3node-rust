@@ -441,7 +441,7 @@ async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
     let underpriced = construct_deploy::source_deploy_now_full(
         "Nil".to_string(),
         None,
-        Some(0),
+        Some((0).into()),
         None,
         None,
         Some(ctx.shard_id.clone()),

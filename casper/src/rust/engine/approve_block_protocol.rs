@@ -98,7 +98,7 @@ impl ApproveBlockProtocolFactory {
         fault_tolerance_threshold_ppm: i64,
         max_parent_depth: i32,
         deploy_lifespan: i64,
-        min_phlo_price: i64,
+        min_phlo_price: num_bigint::BigInt,
         shard_id: String,
         deploy_timestamp: Option<i64>,
         required_sigs: i32,

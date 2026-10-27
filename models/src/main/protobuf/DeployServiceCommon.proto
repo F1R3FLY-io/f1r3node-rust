@@ -139,7 +139,8 @@ message DeployInfo{
   int64  timestamp            = 3;
   string  sig                 = 4;
   string sigAlgorithm         = 5;
-  int64 phloPrice             = 7;
+  reserved 7;
+  string phloPrice            = 16;
   int64 phloLimit             = 8;
   int64 validAfterBlockNumber = 9;
   uint64 cost                 = 10;
@@ -308,7 +309,8 @@ message Status {
   string shardId              = 4;
   int32 peers                 = 5;
   int32 nodes                 = 6;
-  int64 minPhloPrice          = 7;
+  reserved 7;
+  string minPhloPrice         = 18;
   repeated PeerInfo peerList  = 8;  // Detailed peer list
   // Native token metadata baked into genesis state. Queryable on-chain via
   // the TokenMetadata contract at `rho:system:tokenMetadata`.

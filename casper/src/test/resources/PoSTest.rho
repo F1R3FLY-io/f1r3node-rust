@@ -287,7 +287,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                      @initialBonds            <- initialBondsCh &
                      @epochLength             <- epochCh &
                      @quarantineLength        <- quarantineCh) {
-                  match (100n, 100, 0, 1) {
+                  match (100n, 100n, 0n, 1) {
                     (bondAmt, chargeAmt, refundAmt, blockNumber) => {
                       @PoS!("bond", validatorDeployerId, bondAmt, *bondCh) |
                       for (@(true, _) <- bondCh) {
@@ -447,7 +447,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             in {
               prepareUser!("4444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444", *setupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- setupCh) {
-                match (100n, 100, 0) {
+                match (100n, 100n, 0n) {
                   (validatorBond, userCharge, userRefund) => {
                     @PoS!("bond", validatorDeployerId, validatorBond, *setupCh) |
                     for (@(true, _) <- setupCh) {
@@ -531,7 +531,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             in {
               prepareUser!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", *prepareUserAck) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- prepareUserAck) {
-                match (100n, 100, 50) {
+                match (100n, 100n, 50n) {
                   (validatorBond, userCharge, userRefund) => {
                     @PoS!("bond", validatorDeployerId, validatorBond, *bondAck) |
                     for (@(true, _) <- bondAck) {
@@ -698,8 +698,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 for (@(true, _) <- setupCh) {
                   prepareUser!("0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", *setupCh) |
                   for (@user1PubKey, _, @user1Vault, @user1DeployerId <- setupCh) {
-                    @PoS!("chargeDeploy", user1DeployerId, 100, sysAuthToken, *chargeCh) |
-                    @PoS!("refundDeploy", 10, sysAuthToken, *refundCh) |
+                    @PoS!("chargeDeploy", user1DeployerId, 100n, sysAuthToken, *chargeCh) |
+                    @PoS!("refundDeploy", 10n, sysAuthToken, *refundCh) |
                     for (@(true, _) <- chargeCh &
                          @(true, _) <- refundCh) {
                       closeBlock!(*closeBlockCh) |
@@ -810,7 +810,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 for (@activeValidators   <- activeValidatorsCh &
                      @initialBonds       <- initialBondsCh &
                      @initialCoopBalance <- initialCoopBalanceCh) {
-                  match (100, 0) {
+                  match (100n, 0n) {
                     (chargeAmt, refundAmt) => {
                       @PoS!("chargeDeploy", userDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
                       @PoS!("refundDeploy", refundAmt, sysAuthToken, *refundCh) |

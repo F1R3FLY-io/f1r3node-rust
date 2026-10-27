@@ -199,10 +199,14 @@ impl Genesis {
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
-        genesis.proof_of_stake.validate_amounts().map_err(CasperError::RuntimeError)?;
+        genesis
+            .proof_of_stake
+            .validate_amounts()
+            .map_err(CasperError::RuntimeError)?;
         shared::rust::asi_amount::validate(&genesis.supply).map_err(CasperError::RuntimeError)?;
         for vault in &genesis.vaults {
-            shared::rust::asi_amount::validate(&vault.initial_balance).map_err(CasperError::RuntimeError)?;
+            shared::rust::asi_amount::validate(&vault.initial_balance)
+                .map_err(CasperError::RuntimeError)?;
         }
         let blessed_terms = Self::default_blessed_terms(
             &genesis.proof_of_stake,
@@ -321,7 +325,7 @@ mod tests {
             fault_tolerance_threshold_ppm: 100_000,
             max_parent_depth: 1,
             deploy_lifespan: 1,
-            min_phlo_price: 1,
+            min_phlo_price: (1).into(),
             pos_multi_sig_public_keys: vec![hex::encode(
                 &*standard_deploys::POS_GENERATOR_PUB_KEY.bytes,
             )],

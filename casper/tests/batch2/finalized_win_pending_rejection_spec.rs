@@ -80,7 +80,7 @@ async fn build_conflict_siblings(ctx: &TestContext) -> ConflictFixture {
         construct_deploy::source_deploy_now_full(
             CONFLICT_RHO.to_string(),
             Some(PHLO_LIMIT),
-            Some(PHLO_PRICE),
+            Some((PHLO_PRICE).into()),
             Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),
@@ -92,7 +92,7 @@ async fn build_conflict_siblings(ctx: &TestContext) -> ConflictFixture {
         construct_deploy::source_deploy_now_full(
             CONFLICT_RHO.to_string(),
             Some(PHLO_LIMIT),
-            Some(PHLO_PRICE),
+            Some((PHLO_PRICE).into()),
             Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),

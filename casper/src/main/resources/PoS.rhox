@@ -315,7 +315,7 @@ in {
               // and runs them regardless of local configuration. Immutable
               // until an on-chain parameter-upgrade mechanism exists.
               contract PoS(@"getConsensusParameters", returnCh) = {
-                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$))
+                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$n))
               } |
               contract PoS(@"posVaultTransfer", @targetAddress, @amount, @deployerID, @transferRet) = {
                 // human transfer would just use this method
@@ -432,7 +432,7 @@ in {
                     for (@isValid <- isValidTokenCh) {
                       if (isValid) {
                         for (@(deployerId, initialPaymentAmount) <- currentDeployerData){
-                          if (refundAmount > 0) {
+                          if (refundAmount > 0n) {
                             new vaultAddressCh, transferCh in {
                               vaultAddressOps!("fromDeployerId", deployerId, *vaultAddressCh) |
                               for (@deployerVaultAddress <- vaultAddressCh) {

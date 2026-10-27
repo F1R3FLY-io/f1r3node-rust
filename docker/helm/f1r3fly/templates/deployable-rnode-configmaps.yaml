@@ -370,7 +370,7 @@ data:
 
       # The minimum Phlogiston price. Value can be configured to provide sufficient transaction fees to cover
       # the cost of the network and equipment
-      min-phlo-price = 1
+      min-phlo-price = "1"
     }
 
     # Metrics reporter configuration. The Rust node uses hand-rolled

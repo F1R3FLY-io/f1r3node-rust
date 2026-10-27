@@ -18,7 +18,7 @@ pub struct ProofOfStake {
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: num_bigint::BigInt,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
 }
@@ -27,6 +27,7 @@ impl ProofOfStake {
     pub fn validate_amounts(&self) -> Result<(), String> {
         shared::rust::asi_amount::validate(&self.minimum_bond)?;
         shared::rust::asi_amount::validate(&self.maximum_bond)?;
+        shared::rust::asi_amount::validate(&self.min_phlo_price)?;
         for validator in &self.validators {
             shared::rust::asi_amount::validate(&validator.stake)?;
         }

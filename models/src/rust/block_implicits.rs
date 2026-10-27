@@ -68,7 +68,7 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
         Signed::create(
             DeployData {
                 time_stamp: timestamp,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 9000000,
                 valid_after_block_number: 1,
                 term,

@@ -272,12 +272,8 @@ pub mod builder {
                 node_conf.casper.deploy_lifespan,
             ));
         }
-        if node_conf.casper.min_phlo_price < 0 {
-            return Err(eyre::eyre!(
-                "casper.min-phlo-price ({}) must be non-negative",
-                node_conf.casper.min_phlo_price,
-            ));
-        }
+        shared::rust::asi_amount::validate(&node_conf.casper.min_phlo_price)
+            .map_err(|error| eyre::eyre!("casper.min-phlo-price: {error}"))?;
         if node_conf.casper.genesis_block_data.epoch_length <= 0 {
             return Err(eyre::eyre!(
                 "casper.genesis-block-data.epoch-length ({}) must be positive: epoch \
@@ -785,13 +781,55 @@ mod embedded_defaults_tests {
     }
 
     #[test]
+    fn cli_accepts_uint256_bond_and_fee_limits() {
+        use clap::Parser;
+
+        use super::commandline::options::{Options, OptionsSubCommand};
+        let max = shared::rust::asi_amount::MAX_DECIMAL;
+        let parsed = Options::try_parse_from([
+            "node",
+            "run",
+            "--bond-maximum",
+            max,
+            "--min-phlo-price",
+            max,
+        ])
+        .unwrap();
+        match parsed.subcommand.unwrap() {
+            OptionsSubCommand::Run(run) => {
+                assert_eq!(run.bond_maximum, Some(shared::rust::asi_amount::maximum()));
+                assert_eq!(
+                    run.min_phlo_price,
+                    Some(shared::rust::asi_amount::maximum())
+                );
+            }
+            _ => panic!("expected run command"),
+        }
+        for flag in ["--bond-maximum", "--min-phlo-price"] {
+            for value in [
+                "-1".to_string(),
+                (shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1)).to_string(),
+            ] {
+                assert!(Options::try_parse_from(["node", "run", flag, &value]).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn bigint_bond_limits_reject_values_outside_the_token_range() {
         for field in ["bond-minimum", "bond-maximum"] {
-            for value in ["-1".to_string(), (shared::rust::asi_amount::maximum() + 1u8).to_string()] {
-                let override_config = format!("casper.genesis-block-data {{ {field} = \"{value}\" }}");
+            for value in [
+                "-1".to_string(),
+                (shared::rust::asi_amount::maximum() + 1u8).to_string(),
+            ] {
+                let override_config =
+                    format!("casper.genesis-block-data {{ {field} = \"{value}\" }}");
                 let result: Result<NodeConf, _> = hocon::HoconLoader::new()
-                    .load_str(EMBEDDED_DEFAULTS).unwrap()
-                    .load_str(&override_config).unwrap().resolve();
+                    .load_str(EMBEDDED_DEFAULTS)
+                    .unwrap()
+                    .load_str(&override_config)
+                    .unwrap()
+                    .resolve();
                 assert!(result.is_err(), "{field}={value}");
             }
         }
@@ -983,7 +1021,7 @@ mod embedded_defaults_tests {
         );
 
         let mut cfg = base.clone();
-        cfg.casper.min_phlo_price = -1;
+        cfg.casper.min_phlo_price = (-1).into();
         assert!(
             builder::validate_config(&cfg).is_err(),
             "negative min-phlo-price must fail startup"

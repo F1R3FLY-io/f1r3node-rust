@@ -2468,12 +2468,20 @@ async fn bigint_metadata_reopen_rejects_out_of_range_persisted_weights() {
         validator: vec![1u8; 33].into(),
         stake: amount.parse().unwrap(),
     }];
-    storage.insert(&genesis, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved).unwrap();
+    storage
+        .insert(
+            &genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
     drop(storage);
     let raw = manager.store("block-metadata".to_string()).await.unwrap();
     let key = bincode::serialize(&BlockHashSerde(genesis.block_hash)).unwrap();
     let mut value = raw.get_one(&key).unwrap().unwrap();
-    let offset = value.windows(amount.len()).position(|bytes| bytes == amount.as_bytes()).unwrap();
+    let offset = value
+        .windows(amount.len())
+        .position(|bytes| bytes == amount.as_bytes())
+        .unwrap();
     value[offset] = b'-';
     raw.put_one(key, value).unwrap();
     assert!(BlockDagKeyValueStorage::new(&mut manager).await.is_err());

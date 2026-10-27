@@ -243,7 +243,10 @@ pub fn weight_from_validator(
             context: MissingBlockContext::new("weight_from_validator: main parent"),
         })?;
 
-    Ok(weight_map(&parent).get(validator).cloned().unwrap_or_default())
+    Ok(weight_map(&parent)
+        .get(validator)
+        .cloned()
+        .unwrap_or_default())
 }
 
 /// Get weight from sender
@@ -710,8 +713,7 @@ fn applied_from_scope_root(block: &BlockMessage) -> [u8; 32] {
 
 /// Merkle root over the bonds sub-tree.  Bonds are sorted by validator
 /// public key before leaf-hashing so the root is independent of
-/// in-memory order.  Each leaf is
-/// `Blake2b256(LEAF_BOND || validator_pk || stake_le)`.
+/// in-memory order.
 fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
     let mut sorted: Vec<&Bond> = bonds.iter().collect();
     sorted.sort_by(|a, b| a.validator.as_ref().cmp(b.validator.as_ref()));
@@ -1361,7 +1363,7 @@ mod merkle_block_hash_tests {
         let data = DeployData {
             term: format!("@{nonce}!({nonce})"),
             time_stamp: nonce,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 100_000,
             valid_after_block_number: 0,
             shard_id: "test-shard".to_string(),
@@ -1635,12 +1637,27 @@ mod merkle_block_hash_tests {
     #[test]
     fn bigint_bonds_root_uses_canonical_amounts() {
         use prost::Message;
-        let first = Bond { validator: Bytes::from_static(b"v"), stake: shared::rust::asi_amount::maximum() };
-        let second = Bond { validator: Bytes::from_static(b"v\x01"), stake: BigInt::from(1) << 248 };
-        let leaf = crypto::rust::hash::merkle::hash_leaf_tagged(0x16, &first.clone().to_proto().encode_to_vec());
-        assert_eq!(bonds_root(&[first.clone()]), crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &[leaf]));
+        let first = Bond {
+            validator: Bytes::from_static(b"v"),
+            stake: shared::rust::asi_amount::maximum(),
+        };
+        let second = Bond {
+            validator: Bytes::from_static(b"v\x01"),
+            stake: BigInt::from(1) << 248,
+        };
+        let leaf = crypto::rust::hash::merkle::hash_leaf_tagged(
+            0x16,
+            &first.clone().to_proto().encode_to_vec(),
+        );
+        assert_eq!(
+            bonds_root(&[first.clone()]),
+            crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &[leaf])
+        );
         assert_ne!(bonds_root(&[first.clone()]), bonds_root(&[second.clone()]));
-        assert_eq!(bonds_root(&[first.clone(), second.clone()]), bonds_root(&[second, first]));
+        assert_eq!(
+            bonds_root(&[first.clone(), second.clone()]),
+            bonds_root(&[second, first])
+        );
     }
 
     #[test]

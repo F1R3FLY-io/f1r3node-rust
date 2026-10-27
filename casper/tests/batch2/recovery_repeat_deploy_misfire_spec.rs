@@ -61,7 +61,7 @@ fn mk_casper_snapshot(
         bond_maximum: i64::MAX.into(),
         epoch_length: 0,
         quarantine_length: 0,
-        min_phlo_price: 0,
+        min_phlo_price: (0).into(),
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
         disable_validator_progress_check: false,

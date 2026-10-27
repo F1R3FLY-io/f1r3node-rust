@@ -581,7 +581,9 @@ impl BlockAPI {
         }
 
         // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), DeployValidationError> = Ok(())
+        let validation_result: Result<(), DeployValidationError> = d.data
+            .validate_amounts()
+            .map_err(|message| DeployValidationError { message })
             .and_then(|_| {
                 if is_node_read_only {
                     Err(DeployValidationError {
@@ -651,7 +653,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             // The floor check reads the SAME value the validity rule reads
             // (the shard conf), never a second node-conf copy.
-            let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
+            let min_phlo_price = casper.casper_shard_conf().min_phlo_price.clone();
             if d.data.phlo_price < min_phlo_price {
                 return Err(eyre::Report::new(DeployValidationError {
                     message: format!(

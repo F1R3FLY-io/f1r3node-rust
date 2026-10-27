@@ -199,10 +199,14 @@ pub fn extract_transfers_from_report(
             );
 
             let precharge_amount = deploy_info
-                .map(|info| info.phlo_limit.wrapping_mul(info.phlo_price))
-                .unwrap_or(0);
+                .and_then(|info| {
+                    shared::rust::asi_amount::parse(&info.phlo_price)
+                        .ok()
+                        .map(|price| price * info.phlo_limit)
+                })
+                .unwrap_or_default();
 
-            let batches: &[models::casper::SingleReport] = if precharge_amount == 0 {
+            let batches: &[models::casper::SingleReport] = if precharge_amount == num_bigint::BigInt::from(0) {
                 &deploy.report
             } else {
                 let first = &deploy.report[0];
@@ -219,7 +223,7 @@ pub fn extract_transfers_from_report(
                         tracing::warn!(
                             target: "f1r3fly.node.web.enricher",
                             deploy_sig = %deploy_sig,
-                            expected_amount = precharge_amount,
+                            expected_amount = %precharge_amount,
                             found_transfers = 1,
                             found_amount = found[0].amount,
                             found_sender = %found[0].from_addr,
@@ -230,7 +234,7 @@ pub fn extract_transfers_from_report(
                         tracing::warn!(
                             target: "f1r3fly.node.web.enricher",
                             deploy_sig = %deploy_sig,
-                            expected_amount = precharge_amount,
+                            expected_amount = %precharge_amount,
                             found_transfers = found.len(),
                             "report[0] does not match the expected precharge shape; \
                              not skipping it — the precharge may appear as a user transfer"
@@ -394,42 +398,78 @@ mod tests {
             (num_bigint::BigInt::from(1u8) << 63, true),
             (shared::rust::asi_amount::maximum(), true),
             (num_bigint::BigInt::from(-1), false),
-            (shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1), false),
+            (
+                shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1),
+                false,
+            ),
         ] {
             let mut comm = make_comm_event(&channel, &sender, "recipient", 0);
             let produce = &mut comm.produces[0];
             produce.data.as_mut().unwrap().pars[3] = Par {
-                exprs: vec![models::rust::utils::new_gbigint_expr(amount.to_signed_bytes_be())],
+                exprs: vec![models::rust::utils::new_gbigint_expr(
+                    amount.to_signed_bytes_be(),
+                )],
                 ..Default::default()
             };
             let ret = produce.data.as_ref().unwrap().pars[5].clone();
             let failure = Par {
-                exprs: vec![Expr { expr_instance: Some(ExprInstance::ETupleBody(models::rhoapi::ETuple {
-                    ps: vec![Par { exprs: vec![models::rust::utils::new_gbool_expr(success)], ..Default::default() }, make_par_string("rejected amount")],
-                    ..Default::default()
-                })) }],
+                exprs: vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(models::rhoapi::ETuple {
+                        ps: vec![
+                            Par {
+                                exprs: vec![models::rust::utils::new_gbool_expr(success)],
+                                ..Default::default()
+                            },
+                            make_par_string("rejected amount"),
+                        ],
+                        ..Default::default()
+                    })),
+                }],
                 ..Default::default()
             };
             let report = SingleReport {
                 events: vec![
-                    ReportProto { report: Some(report_proto::Report::Comm(comm)) },
-                    ReportProto { report: Some(report_proto::Report::Produce(ReportProduceProto {
-                        channel: Some(ret), data: Some(ListParWithRandom { pars: vec![failure], random_state: vec![] })
-                    })) },
-                ], phase: ReportPhase::User as i32,
+                    ReportProto {
+                        report: Some(report_proto::Report::Comm(comm)),
+                    },
+                    ReportProto {
+                        report: Some(report_proto::Report::Produce(ReportProduceProto {
+                            channel: Some(ret),
+                            data: Some(ListParWithRandom {
+                                pars: vec![failure],
+                                random_state: vec![],
+                            }),
+                        })),
+                    },
+                ],
+                phase: ReportPhase::User as i32,
             };
             let transfers = find_transfers_in_report(&report, &channel, Some(&sender));
             assert_eq!(transfers.len(), 1);
             let transfer = &transfers[0];
             assert_eq!(transfer.amount, amount.to_string());
             assert_eq!(transfer.success, success);
-            assert_eq!(TransferInfo::decode(transfer.encode_to_vec().as_slice()).unwrap(), *transfer);
-            let http = crate::rust::api::serde_types::deploy_info::TransferInfoSerde::from(transfer.clone());
-            assert_eq!(serde_json::to_value(http).unwrap()["amount"], amount.to_string());
+            assert_eq!(
+                TransferInfo::decode(transfer.encode_to_vec().as_slice()).unwrap(),
+                *transfer
+            );
+            let http = crate::rust::api::serde_types::deploy_info::TransferInfoSerde::from(
+                transfer.clone(),
+            );
+            assert_eq!(
+                serde_json::to_value(http).unwrap()["amount"],
+                amount.to_string()
+            );
             let event = shared::rust::shared::f1r3fly_event::TransferEvent {
-                from_addr: sender.clone(), to_addr: "recipient".into(), amount: transfer.amount.clone(), success,
+                from_addr: sender.clone(),
+                to_addr: "recipient".into(),
+                amount: transfer.amount.clone(),
+                success,
             };
-            assert_eq!(serde_json::to_value(event).unwrap()["amount"], amount.to_string());
+            assert_eq!(
+                serde_json::to_value(event).unwrap()["amount"],
+                amount.to_string()
+            );
         }
     }
 
@@ -554,13 +594,13 @@ mod tests {
         deploy_sig: &str,
         deployer_hex: &str,
         phlo_limit: i64,
-        phlo_price: i64,
+        phlo_price: impl ToString,
     ) -> DeployInfo {
         DeployInfo {
             sig: deploy_sig.to_string(),
             deployer: deployer_hex.to_string(),
             phlo_limit,
-            phlo_price,
+            phlo_price: phlo_price.to_string(),
             ..Default::default()
         }
     }
@@ -891,7 +931,7 @@ mod tests {
                 sig: "deploy_bad_deployer".to_string(),
                 deployer: "not-hex".to_string(),
                 phlo_limit: 100,
-                phlo_price: 1,
+                phlo_price: (1).to_string(),
                 ..Default::default()
             })
             .into(),

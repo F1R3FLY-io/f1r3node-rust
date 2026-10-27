@@ -103,7 +103,8 @@ pub enum OptionsSubCommand {
     Repl,
     Deploy {
         phlo_limit: i64,
-        phlo_price: i64,
+        #[arg(value_parser = shared::rust::asi_amount::parse)]
+        phlo_price: num_bigint::BigInt,
         valid_after_block: i64,
         #[arg(value_parser = ValueParser::new(PrivateKeyConverter::parse))]
         private_key: Option<PrivateKey>,
@@ -529,7 +530,8 @@ pub struct RunOptions {
 
     /// MinPhloPrice
     #[arg(long = "min-phlo-price")]
-    pub min_phlo_price: Option<i64>,
+    #[arg(value_parser = shared::rust::asi_amount::parse)]
+    pub min_phlo_price: Option<num_bigint::BigInt>,
 
     /// Enable ceremony master mode (creates genesis block if none found)
     #[arg(long = "ceremony-master-mode", action = ArgAction::SetTrue)]
@@ -694,7 +696,8 @@ pub struct DeployOptions {
 
     /// The price of phlo for this transaction in units dust/phlo
     #[arg(long = "phlo-price")]
-    pub phlo_price: u64,
+    #[arg(value_parser = shared::rust::asi_amount::parse)]
+    pub phlo_price: num_bigint::BigInt,
 
     /// Set this value to one less than the current block height
     #[arg(long = "valid-after-block-number")]

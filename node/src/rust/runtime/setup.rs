@@ -1032,7 +1032,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         transfer_unforgeable.clone(),
         conf.protocol_server.network_id.clone(),
         conf.casper.shard_name.clone(),
-        conf.casper.min_phlo_price,
+        conf.casper.min_phlo_price.clone(),
         conf.casper.genesis_block_data.native_token_name.clone(),
         conf.casper.genesis_block_data.native_token_symbol.clone(),
         conf.casper.genesis_block_data.native_token_decimals,
@@ -1193,7 +1193,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.dev_mode,
             conf.protocol_server.network_id.clone(),
             conf.casper.shard_name.clone(),
-            conf.casper.min_phlo_price,
+            conf.casper.min_phlo_price.clone(),
             conf.casper.genesis_block_data.native_token_name.clone(),
             conf.casper.genesis_block_data.native_token_symbol.clone(),
             conf.casper.genesis_block_data.native_token_decimals,
@@ -1433,7 +1433,7 @@ fn build_deploy_transfers(
                 .map(|t| TransferEvent {
                     from_addr: t.from_addr,
                     to_addr: t.to_addr,
-                    amount: t.amount.clone(),
+                    amount: t.amount,
                     success: t.success,
                 })
                 .collect(),

@@ -229,7 +229,7 @@ impl GenesisBuilder {
                 fault_tolerance_threshold_ppm: 0,
                 max_parent_depth: 15,
                 deploy_lifespan: 50,
-                min_phlo_price: 0,
+                min_phlo_price: (0).into(),
                 validators: bonds
                     .iter()
                     .map(|(pk, stake)| Validator {

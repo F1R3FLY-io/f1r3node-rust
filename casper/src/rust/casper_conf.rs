@@ -71,8 +71,8 @@ pub struct CasperConf {
     #[serde(rename = "genesis-ceremony")]
     pub genesis_ceremony: GenesisCeremony,
 
-    #[serde(rename = "min-phlo-price")]
-    pub min_phlo_price: i64,
+    #[serde(rename = "min-phlo-price", with = "shared::rust::asi_amount")]
+    pub min_phlo_price: num_bigint::BigInt,
 
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
@@ -186,15 +186,9 @@ pub struct GenesisBlockData {
     #[serde(rename = "wallets-file")]
     pub wallets_file: String,
 
-    #[serde(
-        rename = "bond-minimum",
-        with = "shared::rust::asi_amount"
-    )]
+    #[serde(rename = "bond-minimum", with = "shared::rust::asi_amount")]
     pub bond_minimum: BigInt,
-    #[serde(
-        rename = "bond-maximum",
-        with = "shared::rust::asi_amount"
-    )]
+    #[serde(rename = "bond-maximum", with = "shared::rust::asi_amount")]
     pub bond_maximum: BigInt,
 
     #[serde(rename = "epoch-length")]

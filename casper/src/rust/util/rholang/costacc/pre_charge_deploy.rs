@@ -5,8 +5,7 @@ use std::collections::HashMap;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::Par;
-use models::rust::utils::new_gint_par;
-use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNil, RhoString};
+use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoBoolean, RhoNil, RhoString};
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::rust::errors::CasperError;
@@ -14,7 +13,7 @@ use crate::rust::util::rholang::system_deploy::SystemDeployTrait;
 use crate::rust::util::rholang::system_deploy_user_error::SystemDeployUserError;
 
 pub struct PreChargeDeploy {
-    pub charge_amount: i64,
+    pub charge_amount: num_bigint::BigInt,
     pub pk: PublicKey,
     pub rand: Blake2b512Random,
 }
@@ -59,7 +58,7 @@ impl SystemDeployTrait for PreChargeDeploy {
 
         env.insert(
             "sys:casper:chargeAmount".to_string(),
-            new_gint_par(self.charge_amount, Vec::new(), false),
+            RhoBigInt::create_par(&self.charge_amount),
         );
 
         let (sys_key, sys_value) = self.mk_sys_auth_token();

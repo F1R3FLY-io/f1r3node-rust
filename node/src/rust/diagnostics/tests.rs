@@ -68,7 +68,7 @@ mod tests {
                 genesis_validator_mode: false,
                 ceremony_master_mode: false,
             },
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             heartbeat_conf: HeartbeatConf {
                 enabled: false,
                 check_interval: Duration::from_secs(60),

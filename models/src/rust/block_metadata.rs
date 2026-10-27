@@ -220,9 +220,10 @@ mod tests {
     #[test]
     fn bigint_metadata_round_trip_and_invalid_wire_errors() {
         let mut metadata = sample();
-        metadata
-            .weight_map
-            .insert(Bytes::from_static(b"huge"), shared::rust::asi_amount::maximum());
+        metadata.weight_map.insert(
+            Bytes::from_static(b"huge"),
+            shared::rust::asi_amount::maximum(),
+        );
         assert_eq!(
             BlockMetadata::from_bytes(&metadata.to_bytes()).unwrap(),
             metadata
@@ -259,7 +260,11 @@ mod tests {
     fn to_proto_maps_weight_map_to_bonds() {
         let proto = sample().to_proto();
         let validators: Vec<&[u8]> = proto.bonds.iter().map(|b| b.validator.as_ref()).collect();
-        let stakes: Vec<BigInt> = proto.bonds.iter().map(|b| shared::rust::asi_amount::decode(&b.stake).unwrap()).collect();
+        let stakes: Vec<BigInt> = proto
+            .bonds
+            .iter()
+            .map(|b| shared::rust::asi_amount::decode(&b.stake).unwrap())
+            .collect();
         assert_eq!(validators, vec![b"v1".as_ref(), b"v2".as_ref()]);
         assert_eq!(stakes, vec![10.into(), 20.into()]);
     }

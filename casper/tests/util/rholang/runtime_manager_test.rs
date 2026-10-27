@@ -623,12 +623,12 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &genesis_context,
                 &genesis_block.body.state.post_state_hash,
                 &mut PreChargeDeploy {
-                    charge_amount: 9000000,
+                    charge_amount: (9000000).into(),
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
                 &mut PreChargeDeploy {
-                    charge_amount: 9000000,
+                    charge_amount: (9000000).into(),
                     pk: user_pk.clone(),
                     rand: Blake2b512Random::create_from_bytes(&[0]),
                 },
@@ -659,11 +659,11 @@ async fn pre_charge_deploy_should_reduce_user_account_balance_by_correct_amount(
                 &genesis_context,
                 &state_hash_1,
                 &mut RefundDeploy {
-                    refund_amount: 9000000,
+                    refund_amount: (9000000).into(),
                     rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 &mut RefundDeploy {
-                    refund_amount: 9000000,
+                    refund_amount: (9000000).into(),
                     rand: Blake2b512Random::create_from_bytes(&[2]),
                 },
                 |_| true,
@@ -3877,7 +3877,7 @@ async fn consensus_parameters_round_trip_through_genesis() {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
-    parameters.2.proof_of_stake.min_phlo_price = 3;
+    parameters.2.proof_of_stake.min_phlo_price = (3).into();
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -3900,7 +3900,7 @@ async fn consensus_parameters_round_trip_through_genesis() {
 
     assert_eq!(
         read,
-        Some((21, 70, 3)),
+        Some((21, 70, 3.into())),
         "genesis must bake the consensus parameters into the PoS contract and \
          expose them via getConsensusParameters"
     );
@@ -3974,7 +3974,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
-    parameters.2.proof_of_stake.min_phlo_price = 3;
+    parameters.2.proof_of_stake.min_phlo_price = (3).into();
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -4017,7 +4017,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     let mut local_conf = CasperShardConf::new();
     local_conf.max_parent_depth = 15;
     local_conf.deploy_lifespan = 50;
-    local_conf.min_phlo_price = 1;
+    local_conf.min_phlo_price = (1).into();
 
     let casper = hash_set_casper(
         block_retriever,
@@ -4042,9 +4042,9 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
         (
             adopted.max_parent_depth,
             adopted.deploy_lifespan,
-            adopted.min_phlo_price
+            adopted.min_phlo_price.clone()
         ),
-        (21, 70, 3),
+        (21, 70, 3.into()),
         "the on-chain consensus parameters must be adopted over local configuration"
     );
 }

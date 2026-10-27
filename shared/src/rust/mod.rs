@@ -90,20 +90,28 @@ pub mod serde_btreemap_bytes {
     #[derive(Serialize, Deserialize)]
     struct Amount(#[serde(with = "super::asi_amount")] num_bigint::BigInt);
 
-    pub fn serialize<S>(map: &BTreeMap<Bytes, num_bigint::BigInt>, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
+    pub fn serialize<S>(
+        map: &BTreeMap<Bytes, num_bigint::BigInt>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
         map.iter()
             .map(|(key, value)| (BytesKey(key.clone()), Amount(value.clone())))
             .collect::<BTreeMap<_, _>>()
             .serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<BTreeMap<Bytes, num_bigint::BigInt>, D::Error>
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<Bytes, num_bigint::BigInt>, D::Error>
     where D: Deserializer<'de> {
         Ok(BTreeMap::<BytesKey, Amount>::deserialize(deserializer)?
-            .into_iter().map(|(key, value)| (key.0, value.0)).collect())
+            .into_iter()
+            .map(|(key, value)| (key.0, value.0))
+            .collect())
     }
-
 }
 
 pub mod serde_hex_bytes {
@@ -175,7 +183,9 @@ mod tests {
     struct VecBytesWrapper(#[serde(with = "super::serde_vec_bytes")] Vec<Bytes>);
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    struct MapWrapper(#[serde(with = "super::serde_btreemap_bytes")] BTreeMap<Bytes, num_bigint::BigInt>);
+    struct MapWrapper(
+        #[serde(with = "super::serde_btreemap_bytes")] BTreeMap<Bytes, num_bigint::BigInt>,
+    );
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     struct HexBytesWrapper(#[serde(with = "super::serde_hex_bytes")] Bytes);

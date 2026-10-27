@@ -439,6 +439,10 @@ impl RuntimeOps {
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "start", rss_kb);
         }
+        deploy
+            .data
+            .validate_amounts()
+            .map_err(CasperError::RuntimeError)?;
         let mut eval_collector_state = EvalCollector::new();
 
         let deploy_pk = deploy.pk.bytes.clone();
@@ -1053,7 +1057,7 @@ impl RuntimeOps {
             let data = DeployData {
                 term,
                 time_stamp: 0,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit,
                 valid_after_block_number: 0,
                 shard_id: String::new(),
@@ -1568,7 +1572,7 @@ impl RuntimeOps {
     pub async fn get_consensus_parameters(
         &mut self,
         start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+    ) -> Result<Option<(i32, i64, num_bigint::BigInt)>, CasperError> {
         // STRICT query — same rationale as the protocol-FTT read: a runtime
         // failure must fail startup, never degrade into the local-config arm.
         let pars = self
@@ -1609,7 +1613,10 @@ impl RuntimeOps {
             Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 3 => {
                 let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
                 let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
-                let min_phlo = int_at(tuple, 2).ok_or_else(|| bad("non-integer minPhloPrice"))?;
+                let min_phlo = match tuple.ps[2].exprs.first().and_then(|expr| expr.expr_instance.as_ref()) {
+                    Some(ExprInstance::GBigInt(bytes)) => num_bigint::BigInt::from_signed_bytes_be(bytes),
+                    _ => return Err(bad("non-BigInt minPhloPrice")),
+                };
                 // RANGE GATES at the single read choke point. The parent-spread
                 // rule takes mpd as i32 (i32::MAX = depth check disabled); a
                 // window of zero or less inverts the expiry and repeat rules;
@@ -1626,11 +1633,7 @@ impl RuntimeOps {
                         "deployLifespan out of range [1, i32::MAX]: {lifespan}"
                     )));
                 }
-                if min_phlo < 0 {
-                    return Err(bad(&format!(
-                        "minPhloPrice out of range [0, i64::MAX]: {min_phlo}"
-                    )));
-                }
+                shared::rust::asi_amount::validate(&min_phlo).map_err(|error| bad(&error))?;
                 Ok(Some((mpd as i32, lifespan, min_phlo)))
             }
             other => Err(bad(&format!("expected a 3-tuple, got {other:?}"))),

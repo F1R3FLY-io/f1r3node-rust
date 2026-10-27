@@ -650,7 +650,7 @@ mod tests {
                 None
             },
             system_deploy_error: if is_full { Some(String::new()) } else { None },
-            phlo_price: if is_full { Some(10) } else { None },
+            phlo_price: if is_full { Some(10.to_string()) } else { None },
             phlo_limit: if is_full { Some(100000) } else { None },
             sig_algorithm: if is_full {
                 Some("secp256k1".to_string())
@@ -743,7 +743,7 @@ mod tests {
                 Some(pk) if !pk.is_empty() => vec![PendingDeployJson {
                     term: "for (x <- ch) { return!(x) }".to_string(),
                     timestamp: 1770028092477,
-                    phlo_price: 1,
+                    phlo_price: (1).to_string(),
                     phlo_limit: 100_000,
                     valid_after_block_number: 0,
                     shard_id: String::new(),
@@ -757,7 +757,7 @@ mod tests {
                     PendingDeployJson {
                         term: "Nil".to_string(),
                         timestamp: 1770028092477,
-                        phlo_price: 1,
+                        phlo_price: (1).to_string(),
                         phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
@@ -770,7 +770,7 @@ mod tests {
                     PendingDeployJson {
                         term: "@0!(42)".to_string(),
                         timestamp: 1770028092478,
-                        phlo_price: 1,
+                        phlo_price: (1).to_string(),
                         phlo_limit: 100_000,
                         valid_after_block_number: 0,
                         shard_id: String::new(),
@@ -1104,7 +1104,7 @@ mod router_tests {
                 shard_id: "root".to_string(),
                 peers: 1,
                 nodes: 2,
-                min_phlo_price: 1,
+                min_phlo_price: (1).to_string(),
                 peer_list: vec![],
                 native_token_name: "F1R3".to_string(),
                 native_token_symbol: "F1R3".to_string(),
@@ -1449,7 +1449,7 @@ mod router_tests {
             "data": {
                 "term": "Nil",
                 "timestamp": 1,
-                "phloPrice": 1,
+                "phloPrice": "1",
                 "phloLimit": 100,
                 "validAfterBlockNumber": 0,
                 "shardId": "root",
@@ -1561,7 +1561,7 @@ mod router_tests {
 
         let (status, json) = get_response("/validators").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["totalStake"], 10);
+        assert_eq!(json["totalStake"], "10");
 
         let (status, json) = get_response("/validator/04aa").await;
         assert_eq!(status, StatusCode::OK);

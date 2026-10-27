@@ -42,7 +42,7 @@ pub fn source_deploy(
     source: String,
     timestamp: i64,
     phlo_limit: Option<i64>,
-    phlo_price: Option<i64>,
+    phlo_price: Option<num_bigint::BigInt>,
     sec: Option<PrivateKey>,
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
@@ -52,7 +52,7 @@ pub fn source_deploy(
     #[cfg(not(any(test, feature = "test-utils")))]
     let sec = sec.expect("ConstructDeploy: private key is required");
     let phlo_limit = phlo_limit.unwrap_or(90000);
-    let phlo_price = phlo_price.unwrap_or(1);
+    let phlo_price = phlo_price.unwrap_or_else(|| 1.into());
     let valid_after_block_number = valid_after_block_number.unwrap_or(0);
     let shard_id = shard_id.unwrap_or_default();
 
@@ -67,6 +67,7 @@ pub fn source_deploy(
         parameters: Vec::new(),
     };
 
+    data.validate_amounts().map_err(CasperError::RuntimeError)?;
     Signed::create(data, Box::new(Secp256k1), sec).map_err(|e| CasperError::SigningError(e))
 }
 
@@ -92,7 +93,7 @@ pub fn source_deploy_now(
 pub fn source_deploy_now_full(
     source: String,
     phlo_limit: Option<i64>,
-    phlo_price: Option<i64>,
+    phlo_price: Option<num_bigint::BigInt>,
     sec: Option<PrivateKey>,
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,

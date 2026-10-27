@@ -298,20 +298,20 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             &approved_block.body.state.post_state_hash,
         )
         .await?;
-    if (onchain_mpd, onchain_lifespan, onchain_min_phlo)
+    if (onchain_mpd, onchain_lifespan, &onchain_min_phlo)
         != (
             casper_shard_conf.max_parent_depth,
             casper_shard_conf.deploy_lifespan,
-            casper_shard_conf.min_phlo_price,
+            &casper_shard_conf.min_phlo_price,
         )
     {
         tracing::info!(
             onchain_max_parent_depth = onchain_mpd,
             onchain_deploy_lifespan = onchain_lifespan,
-            onchain_min_phlo_price = onchain_min_phlo,
+            onchain_min_phlo_price = %onchain_min_phlo,
             local_max_parent_depth = casper_shard_conf.max_parent_depth,
             local_deploy_lifespan = casper_shard_conf.deploy_lifespan,
-            local_min_phlo_price = casper_shard_conf.min_phlo_price,
+            local_min_phlo_price = %casper_shard_conf.min_phlo_price,
             "Adopting on-chain consensus parameters over local configuration"
         );
     }
@@ -532,7 +532,7 @@ pub struct CasperShardConf {
     pub bond_maximum: BigInt,
     pub epoch_length: i32,
     pub quarantine_length: i32,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: num_bigint::BigInt,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
     /// wake so the heartbeat task picks up the new deploy on the next
     /// tick rather than waiting up to `check_interval` seconds. Defaults
@@ -588,7 +588,7 @@ impl CasperShardConf {
             bond_maximum: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,

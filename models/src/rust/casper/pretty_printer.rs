@@ -151,7 +151,7 @@ mod tests {
             DeployData {
                 term: "new x in { x!(1) }".to_string(),
                 time_stamp: 42,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 1000,
                 valid_after_block_number: 5,
                 shard_id: "root".to_string(),
@@ -299,7 +299,7 @@ mod tests {
         let deploy = DeployData {
             term: "Nil".to_string(),
             time_stamp: 99,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 10,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),

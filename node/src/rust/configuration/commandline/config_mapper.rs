@@ -710,7 +710,7 @@ mod tests {
                 deploy_timestamp: Some(111111),
                 dev_mode: true,
                 deployer_private_key: Some("test-key".to_string()),
-                min_phlo_price: Some(1),
+                min_phlo_price: Some((1).into()),
                 ceremony_master_mode: false,
                 enable_mergeable_channel_gc: false,
                 disable_mergeable_channel_gc: false,
@@ -852,7 +852,7 @@ mod tests {
                     genesis_validator_mode: false,
                     ceremony_master_mode: false,
                 },
-                min_phlo_price: 1,
+                min_phlo_price: (1).into(),
                 heartbeat_conf: casper::rust::casper_conf::HeartbeatConf {
                     enabled: false,
                     check_interval: Duration::from_secs(30),
@@ -1079,7 +1079,7 @@ mod tests {
         );
         assert_eq!(default_config.casper.height_constraint_threshold, 111111);
         assert_eq!(default_config.casper.max_user_deploys_per_block, 777777);
-        assert_eq!(default_config.casper.min_phlo_price, 1);
+        assert_eq!(default_config.casper.min_phlo_price, 1.into());
 
         // Heartbeat configuration
         // --heartbeat-disabled takes precedence over --heartbeat-enabled (both set in test options)

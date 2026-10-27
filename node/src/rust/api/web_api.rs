@@ -169,7 +169,7 @@ pub struct PendingDeployJson {
     pub term: String,
     pub timestamp: i64,
     #[serde(rename = "phloPrice")]
-    pub phlo_price: i64,
+    pub phlo_price: String,
     #[serde(rename = "phloLimit")]
     pub phlo_limit: i64,
     #[serde(rename = "validAfterBlockNumber")]
@@ -220,7 +220,7 @@ pub struct WebApiImpl {
     dev_mode: bool,
     network_id: String,
     shard_id: String,
-    min_phlo_price: i64,
+    min_phlo_price: num_bigint::BigInt,
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
@@ -244,7 +244,7 @@ impl WebApiImpl {
         dev_mode: bool,
         network_id: String,
         shard_id: String,
-        min_phlo_price: i64,
+        min_phlo_price: num_bigint::BigInt,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
@@ -433,8 +433,8 @@ impl WebApi for WebApiImpl {
         // Advertise the floor admission and validity actually enforce — the
         // chain-adopted value; local conf only until casper is up.
         let min_phlo_price = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => casper.casper_shard_conf().min_phlo_price,
-            None => self.min_phlo_price,
+            Some(casper) => casper.casper_shard_conf().min_phlo_price.clone(),
+            None => self.min_phlo_price.clone(),
         };
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
@@ -452,7 +452,7 @@ impl WebApi for WebApiImpl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price,
+            min_phlo_price: min_phlo_price.to_string(),
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),
@@ -790,7 +790,7 @@ impl WebApi for WebApiImpl {
                 PendingDeployJson {
                     term: dd.term.clone(),
                     timestamp: dd.time_stamp,
-                    phlo_price: dd.phlo_price,
+                    phlo_price: dd.phlo_price.to_string(),
                     phlo_limit: dd.phlo_limit,
                     valid_after_block_number: dd.valid_after_block_number,
                     shard_id: dd.shard_id.clone(),
@@ -1443,7 +1443,7 @@ pub struct ApiStatus {
     pub peers: i32,
     pub nodes: i32,
     #[serde(rename = "minPhloPrice")]
-    pub min_phlo_price: i64,
+    pub min_phlo_price: String,
     #[serde(rename = "peerList")]
     pub peer_list: Vec<PeerInfoData>,
     /// Full display name of the native token. Baked into genesis state via
@@ -1511,7 +1511,7 @@ pub struct DeployResponse {
     #[serde(skip_serializing_if = "Option::is_none", rename = "systemDeployError")]
     pub system_deploy_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "phloPrice")]
-    pub phlo_price: Option<i64>,
+    pub phlo_price: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "phloLimit")]
     pub phlo_limit: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "sigAlgorithm")]
@@ -1701,6 +1701,10 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
 
 /// Convert DeployRequest to Signed DeployData
 fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
+    request
+        .data
+        .validate_amounts()
+        .map_err(|error| eyre!("Invalid deploy amount: {error}"))?;
     models::rust::deploy_parameters::validate_parameters(&request.data.parameters)
         .map_err(|error| eyre!("Invalid deploy parameters: {}", error))?;
     // Decode hex strings
@@ -2144,7 +2148,7 @@ mod tests {
             deployer: Some("deployer1".to_string()),
             term: Some("new ret in { ret!(42) }".to_string()),
             system_deploy_error: Some(String::new()),
-            phlo_price: Some(10),
+            phlo_price: Some((10).to_string()),
             phlo_limit: Some(100000),
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
@@ -2223,7 +2227,7 @@ mod tests {
             data: DeployData {
                 term: "contract".to_string(),
                 time_stamp: 1234567890,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 1000000,
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
@@ -3136,7 +3140,7 @@ mod tests {
         DeployData {
             term: "new x in { x!(1) }".to_string(),
             time_stamp: 1,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 1000,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),

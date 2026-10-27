@@ -54,7 +54,7 @@ async fn deploy_parameters_execute_as_rholang_values() {
                 DeployData {
                     term,
                     time_stamp: 1,
-                    phlo_price: 1,
+                    phlo_price: (1).into(),
                     phlo_limit: 1_000_000,
                     valid_after_block_number: 0,
                     shard_id: "root".into(),
