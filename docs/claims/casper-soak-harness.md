@@ -239,6 +239,26 @@ On 2026-10-22, TASK-021-27 added a residual stop to the end of each segment. The
 
 On 2026-10-23 the maintainer accepted this change, the wider cleanup guarantee, and its three limitations (PR #827, review 5627170022) at revision `c1cf31d7e`. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-20261022-01/report.json).
 
+On 2026-10-26, PR #863 changed how the driver confirms the writer stop. The change fixes a false stop failure and closes three paths that left writers running. It needs a fresh acceptance.
+
+- In soak 40155878690, the Docker writer stop at the end of a segment failed closed after 14.5 h. A container that exits between `docker ps` and `docker inspect` or `docker kill` made the stop fail, although no writer remained.
+- `stop_node_writer_commands` kills each owned container directly after its inspect confirms the owner. A failed inspect or kill is a failure only when a second `docker ps` still lists that container as running.
+- The Docker CLI sends one request for each inspected container. A slow daemon therefore delays the first kill by one inspect, not by the inspects of all containers.
+- A failed `docker ps`, a failed `host-control stop-owned`, an invalid container ID, or a container with another owner label still fails the stop.
+- The end-of-segment stop has its own budget, `SOAK_WRITER_STOP_SECONDS` (5 to 120 s, default 30 s). After a host protection breach or during an emergency, the stop keeps the disk stop budget of 1 to 5 s.
+- `writer-stop-failure.txt` names the failed step, the container, and the Docker error. A confirmed stop that wrote output keeps it as `writer-stop.log`.
+- An exit of the driver before the end-of-segment stop, for example after a failed state write, now stops the owned writers. A failed stop there records `writer_stop_failed` and a failure count of at least 1.
+- After a pytest that a signal ends, the driver stops the owned writers before the evidence copy. The writers then do not run into the next iteration.
+- The `target_advanced` early exit record starts with its reason. A later segment of the same soak then keeps `target_advanced` in its summary.
+- `host-control stop-owned` and `prefer-oom` write one line for each process that they skip because its environment is unreadable. Their behavior does not change.
+- **Limitation:** the driver does not confirm the owner label of a container that exits before its inspect. A container that `docker ps` does not list as running does not write.
+- **Limitation:** the end of a segment can take up to `SOAK_WRITER_STOP_SECONDS` plus 1 s longer than before.
+- **Limitation:** the stop after a signal-ended pytest records a failure only in the `writer-stop.log` of that iteration. The end-of-segment stop decides the result of the soak.
+- **Limitation:** like the end-of-segment stop, the exit stop applies only to a soak without a Casper manifest (`SOAK_INPUT_DIR` is not set). It applies only before the end-of-segment stop has run.
+- Nine fixture cases of `scripts/bench/test-run-merge-recovery-soak.sh` cover these rules: slow, vanish, exits, stuck, persist, sigkill, breach, breach-inspect, and a restart after `target_advanced`. The unit test `owner_scan_reports_a_process_whose_environment_is_unreadable` covers the skip report.
+
+On 2026-10-26 the maintainer accepted this change, the changed stop guarantee, and its four limitations (PR #870, comment 6429833007) at revision `6dd029064`. The acceptance includes the fix `85b04c07e` for the inspect-before-kill regression that PR #863 merged. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-race-acceptance-20261026-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-race-20261026-01/report.json).
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.

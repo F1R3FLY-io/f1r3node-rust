@@ -42,6 +42,25 @@ The soak harness is the driver, profile adapters, collectors, and classifier tha
 
 **Preferred usage.** Use this term for the harness implementation and its evidence pipeline. The driver is `scripts/run-merge-recovery-soak.sh`. *Distinguish from* the node under test, which the harness observes and never proves. *Avoid*: soak driver for the whole harness, because the driver is one component.
 
+### Control checkout
+
+The control checkout contains the trusted workflow, soak driver, host controls, and their verification records.
+Its revision can differ from the soak candidate revision.
+
+**Preferred usage.** Use this term for the ci-control checkout that supplies soak execution code.
+
+### Cleanup admission
+
+Cleanup admission checks current cleanup evidence and signed maintainer acceptance before a scheduled soak or segment starts.
+
+**Preferred usage.** Use this term for the focused CLAIM-SOAK-CLEANUP-001 gate.
+The gate reports other claim gaps separately.
+
+### Runtime lockfile
+
+A runtime lockfile records the immutable revision and source hashes of the shared CbC tool dependency.
+The launcher uses those hashes to validate the external runtime before execution.
+
 ### Soak candidate
 
 A soak candidate is the pinned node build that a soak run observes. Its identity is the node revision, binary digest, image digest, and configuration digest in the run manifest.
