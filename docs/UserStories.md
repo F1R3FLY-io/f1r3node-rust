@@ -127,6 +127,7 @@ This document captures user stories that drive feature development. User stories
 - [ ] If DePIN provisioning fails, the run falls back to OCI runners automatically. The run summary records the fallback, the failed provider, and the reason.
 - [ ] The merge recovery soaks continue to run on OCI runners. The variable does not change the soak provider.
 - [ ] A change of the variable takes effect on the next run, with no workflow edit.
+- [ ] A `depin-run` label on a pull request selects DePIN runners for that pull request, whatever the variable says. When the label is removed, the next run uses the provider of the variable.
 - [ ] Runner cleanup and cost limits apply to DePIN runners in the same way as to OCI runners.
 - [ ] docs/ci.md describes the variable, its values, and the credentials that each provider needs.
 

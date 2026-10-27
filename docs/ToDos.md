@@ -4750,15 +4750,20 @@ blocked_by:
 decision: "2026-10-27: the user chose BountyMesh as the DePIN provider, DePIN as the primary provider with automatic OCI fallback, and OCI for the merge recovery soaks."
 tasks:
   - id: TASK-031-1
-    title: "Runner provider variable and one shared resolver"
+    title: "Runner provider variable, depin-run label, and one shared resolver"
     status: pending
     priority: p2
     claimed_by: null
     blocked_by: []
+    notes:
+      - "2026-10-27: the user asked for a per-pull-request label, so BountyMesh can be tested on one pull request at a time."
     acceptance:
       - "A repository variable selects bountymesh or oci. An unset variable selects bountymesh."
+      - "A depin-run label on a pull request of this repository selects bountymesh for that pull request, whatever the variable says"
+      - "The resolver reads the current labels of the pull request, as Resolve Target reads ci-heavy, so a rerun applies a label change"
+      - "Adding or removing depin-run reruns CI through the CI Heavy Label workflow, with no push"
       - "One resolver step gives the runner labels to every workflow that launches ephemeral runners, except merge-recovery-soak.yml"
-      - "A script test covers the unset, bountymesh, oci, and invalid values. An invalid value fails the run with an error annotation."
+      - "A script test covers the unset, bountymesh, oci, and invalid values, and a pull request with and without depin-run. An invalid value fails the run with an error annotation."
 
   - id: TASK-031-2
     title: "Architecture routing for BountyMesh runners"
