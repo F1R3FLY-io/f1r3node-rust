@@ -1,0 +1,30 @@
+{
+  "schema": "soak-cleanup-model/v1",
+  "results": [
+    {
+      "case": "clean",
+      "exit": 0,
+      "invariant": ""
+    },
+    {
+      "case": "SkipOwnerStop",
+      "exit": 12,
+      "invariant": "NoSuccessfulLeak"
+    },
+    {
+      "case": "SkipResidualStop",
+      "exit": 12,
+      "invariant": "NoSuccessfulLeak"
+    },
+    {
+      "case": "IgnoreStopFailure",
+      "exit": 12,
+      "invariant": "StopFailurePersists"
+    },
+    {
+      "case": "EraseReason",
+      "exit": 12,
+      "invariant": "ReasonPersists"
+    }
+  ]
+}
