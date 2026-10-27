@@ -10,8 +10,8 @@ for name in clean missing-owner-stop missing-residual-stop ignored-stop-failure 
     case "$name" in
         clean) assertion="" ;;
         missing-owner-stop)
-            old='if [ "$CASPER_RUNTIME" -eq 0 ] && ! stop_node_writers -q kill >/dev/null 2>&1; then'
-            new='if false; then'; assertion='FAIL: owned writer survived' ;;
+            old='stop_node_writers_within "$WRITER_STOP_BUDGET" -q kill >"$OUTPUT_DIR/.writer-stop.log" 2>&1 || WRITER_STOP_STATUS=$?'
+            new=':'; assertion='FAIL: owned writer survived' ;;
         missing-residual-stop)
             old='if [ "$CASPER_RUNTIME" -eq 0 ] && [ -d "$SUBPROCESS_DATA_DIR" ]; then'
             new='if false; then'; assertion='FAIL: residual writer survived' ;;
