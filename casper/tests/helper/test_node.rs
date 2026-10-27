@@ -56,6 +56,7 @@ use crate::util::rholang::resources;
 
 tokio::task_local! {
     static V6_ORDER_THEN_EXECUTE: bool;
+    static V6_DRIVEN_EXECUTORS: u64;
 }
 
 pub struct TestNode {
@@ -813,6 +814,19 @@ impl TestNode {
             .await
     }
 
+    pub async fn create_v6_network_driven(
+        genesis: GenesisContext,
+        network_size: usize,
+        lag_threshold: u64,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        V6_DRIVEN_EXECUTORS
+            .scope(
+                lag_threshold,
+                Self::create_v6_network(genesis, network_size),
+            )
+            .await
+    }
+
     pub async fn create_network(
         genesis: GenesisContext,
         network_size: usize,
@@ -1231,6 +1245,7 @@ impl TestNode {
             }
         }
 
+        let driven_lag_threshold = V6_DRIVEN_EXECUTORS.try_with(|t| *t).ok();
         let v6_engine = if v6_enabled {
             let engine = casper::rust::v6::V6Engine::new(
                 &genesis,
@@ -1242,9 +1257,12 @@ impl TestNode {
                 block_store.clone(),
                 block_dag_storage.clone(),
                 deploy_storage.clone(),
+                driven_lag_threshold.unwrap_or(casper::rust::v6::lag::DEFAULT_LAG_THRESHOLD),
             )
             .expect("the v6 engine opens its executor state");
-            engine.start();
+            if driven_lag_threshold.is_none() {
+                engine.start();
+            }
             Some(engine)
         } else {
             None

@@ -546,6 +546,7 @@ async fn a_restarted_engine_resumes_its_canonical_prefix_without_replaying_it() 
                 ..Limits::default()
             },
             params: Default::default(),
+            lag_threshold: casper::rust::v6::lag::DEFAULT_LAG_THRESHOLD,
         },
         node.block_store.clone(),
         node.block_dag_storage.clone(),

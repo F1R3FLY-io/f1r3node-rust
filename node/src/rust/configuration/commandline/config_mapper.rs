@@ -854,6 +854,7 @@ mod tests {
                 synchrony_finalized_baseline_enabled: true,
                 synchrony_finalized_baseline_max_distance: 2048,
                 max_user_deploys_per_block: 128,
+                v6_execution_lag_threshold: 32,
             },
             metrics: crate::rust::configuration::model::Metrics {
                 prometheus: false,

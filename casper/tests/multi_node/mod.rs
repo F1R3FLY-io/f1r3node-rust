@@ -9,4 +9,5 @@ mod bridge_contract_concurrent_merge;
 mod registry_key_merge;
 mod foreign_genesis_rejection;
 mod store_items_flood_resilience;
+mod v6_lag_gate;
 mod v6_order_then_execute;

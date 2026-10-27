@@ -6,6 +6,7 @@ pub mod engine;
 pub mod evidence;
 pub mod executor;
 pub mod gate;
+pub mod lag;
 pub mod linearizer;
 pub mod merge;
 pub mod propose;
