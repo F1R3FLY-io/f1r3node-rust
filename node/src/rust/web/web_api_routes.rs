@@ -1234,9 +1234,9 @@ mod router_tests {
             Ok(ValidatorsResponse {
                 validators: vec![ValidatorInfo {
                     public_key: "vk".to_string(),
-                    stake: 10,
+                    stake: 10.into(),
                 }],
-                total_stake: 10,
+                total_stake: 10.into(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1287,7 +1287,7 @@ mod router_tests {
             Ok(ValidatorStatusResponse {
                 public_key: pubkey,
                 is_bonded: true,
-                stake: Some(10),
+                stake: Some(10.into()),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })

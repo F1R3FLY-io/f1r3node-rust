@@ -9,6 +9,7 @@ use block_storage::rust::key_value_block_store::BlockDecodeLimits;
 use crypto::rust::hash::sha_256::Sha256Hasher;
 use models::rust::block_hash::BlockHash;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use shared::rust::dag::observation_work::{
     CheckedWork, WorkKind, WorkLimits, WorkMeter, WorkUsage,
@@ -406,13 +407,11 @@ fn prepare(snapshot: &DetachedDagSnapshot, meter: &mut CheckedWork) -> Result<()
                 .and_then(|n| n.checked_add(1024))
                 .ok_or("metadata_size_overflow")?,
         );
-        let mut total = 0i64;
         for weight in block.metadata.weight_map.values() {
             meter.step(WorkKind::Oracle).map_err(|e| e.to_string())?;
-            if *weight < 0 {
+            if *weight < BigInt::from(0) {
                 return Err("negative_stake".to_string());
             }
-            total = total.checked_add(*weight).ok_or("stake_overflow")?;
         }
     }
     let mut body_bytes = 0;
@@ -1087,11 +1086,11 @@ async fn bounded_fork_choice(
             .await
             .map_err(store_reason)?;
         let head = choice.tips.first().ok_or("no_head_selected")?;
-        let mut sorted_scores: std::collections::BTreeMap<String, i64> =
+        let mut sorted_scores: std::collections::BTreeMap<String, BigInt> =
             std::collections::BTreeMap::new();
         for (hash, score) in &choice.scores {
             meter.step(WorkKind::Traversal).map_err(store_reason)?;
-            sorted_scores.insert(hex::encode(hash), *score);
+            sorted_scores.insert(hex::encode(hash), score.clone());
         }
         let score_digest = digest(&sorted_scores, meter)?;
         let (_, paths, _) = meter.usage();
@@ -1115,7 +1114,7 @@ async fn bounded_fork_choice(
                 .tips
                 .iter()
                 .take(fork_choice::MAX_REPORTED_TIPS)
-                .map(|tip| choice.scores.get(tip).copied().unwrap_or(0))
+                .map(|tip| choice.scores.get(tip).cloned().unwrap_or_default())
                 .collect(),
             score_count: choice.scores.len(),
             score_digest,

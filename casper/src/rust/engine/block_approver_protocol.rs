@@ -11,6 +11,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlockCandidate, BlockApproval, ProcessedDeploy, ProcessedSystemDeploy, UnapprovedBlock,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use tracing::{info, warn};
@@ -30,9 +31,9 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     validator_id: ValidatorIdentity,
     pub deploy_timestamp: i64,
     pub vaults: Vec<Vault>,
-    pub bonds_bytes: HashMap<Bytes, i64>, // helper map keyed by raw bytes
-    pub minimum_bond: i64,
-    pub maximum_bond: i64,
+    pub bonds_bytes: HashMap<Bytes, BigInt>, // helper map keyed by raw bytes
+    pub minimum_bond: BigInt,
+    pub maximum_bond: BigInt,
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
@@ -76,9 +77,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         validator_id: ValidatorIdentity,
         deploy_timestamp: i64,
         vaults: Vec<Vault>,
-        bonds: HashMap<crypto::rust::public_key::PublicKey, i64>,
-        minimum_bond: i64,
-        maximum_bond: i64,
+        bonds: HashMap<crypto::rust::public_key::PublicKey, BigInt>,
+        minimum_bond: BigInt,
+        maximum_bond: BigInt,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
@@ -110,9 +111,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             )));
         }
 
-        let bonds_bytes: HashMap<Bytes, i64> = bonds
+        let bonds_bytes: HashMap<Bytes, BigInt> = bonds
             .iter()
-            .map(|(pk, stake)| (pk.bytes.clone(), *stake))
+            .map(|(pk, stake)| (pk.bytes.clone(), stake.clone()))
             .collect();
 
         Ok(Self {
@@ -180,9 +181,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         required_sigs: i32,
         _deploy_timestamp: i64,
         vaults: &Vec<Vault>,
-        bonds: &HashMap<Bytes, i64>,
-        minimum_bond: i64,
-        maximum_bond: i64,
+        bonds: &HashMap<Bytes, BigInt>,
+        minimum_bond: BigInt,
+        maximum_bond: BigInt,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
@@ -212,12 +213,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             return Err("Candidate must not contain system deploys.".to_string());
         }
 
-        let block_bonds: HashMap<Bytes, i64> = block
+        let block_bonds: HashMap<Bytes, BigInt> = block
             .body
             .state
             .bonds
             .iter()
-            .map(|b| (b.validator.clone(), b.stake))
+            .map(|b| (b.validator.clone(), b.stake.clone()))
             .collect();
 
         if &block_bonds != bonds {
@@ -229,7 +230,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .iter()
             .map(|(pk_bytes, stake)| Validator {
                 pk: crypto::rust::public_key::PublicKey::new(pk_bytes.clone()),
-                stake: *stake,
+                stake: stake.clone(),
             })
             .collect();
 
@@ -254,8 +255,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
 
         tracing::info!(
             shard_id = %shard_id,
-            pos_minimum_bond = pos_params.minimum_bond,
-            pos_maximum_bond = pos_params.maximum_bond,
+            pos_minimum_bond = %pos_params.minimum_bond,
+            pos_maximum_bond = %pos_params.maximum_bond,
             pos_epoch_length = pos_params.epoch_length,
             pos_quarantine_length = pos_params.quarantine_length,
             vault_count = vaults.len(),
@@ -285,7 +286,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             crate::rust::genesis::genesis::Genesis::default_blessed_terms(
                 &pos_params,
                 vaults,
-                i64::MAX,
+                i64::MAX.into(),
                 shard_id,
                 native_token_name,
                 native_token_symbol,
@@ -348,7 +349,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .await
             .map_err(|e| format!("{:?}", e))?;
 
-        let tuplespace_bonds_map: HashMap<Bytes, i64> = tuplespace_bonds
+        let tuplespace_bonds_map: HashMap<Bytes, BigInt> = tuplespace_bonds
             .into_iter()
             .map(|b| (b.validator, b.stake))
             .collect();
@@ -376,8 +377,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             self.deploy_timestamp,
             &self.vaults,
             &self.bonds_bytes,
-            self.minimum_bond,
-            self.maximum_bond,
+            self.minimum_bond.clone(),
+            self.maximum_bond.clone(),
             self.epoch_length,
             self.quarantine_length,
             self.number_of_active_validators,

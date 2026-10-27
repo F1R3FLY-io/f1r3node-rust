@@ -43,7 +43,7 @@ impl VaultParser {
                 source: Box::new(e),
             })?;
 
-        let line_regex = Regex::new(r"^([1-9a-zA-Z]+),([0-9]+)").unwrap();
+        let line_regex = Regex::new(r"^([1-9a-zA-Z]+),([0-9]+)$").unwrap();
         let mut vaults = Vec::new();
 
         for line in content.lines() {
@@ -83,8 +83,7 @@ impl VaultParser {
 
             // Parse balance
             let initial_balance =
-                balance_str
-                    .parse::<u128>()
+                shared::rust::asi_amount::parse(balance_str)
                     .map_err(|_| VaultParserError::InvalidBalance {
                         balance: balance_str.to_string(),
                     })?;
@@ -127,6 +126,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn genesis_balances_cover_uint256_and_reject_invalid_amounts() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("wallets.txt");
+        let address = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
+        for value in [num_bigint::BigInt::from(0), 1.into(), num_bigint::BigInt::from(1u8) << 128, shared::rust::asi_amount::maximum()] {
+            fs::write(&path, format!("{address},{value}\n")).unwrap();
+            assert_eq!(VaultParser::parse(&path).unwrap()[0].initial_balance, value);
+        }
+        for value in ["-1".to_string(), "01".into(), "1garbage".into(), (shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1)).to_string()] {
+            fs::write(&path, format!("{address},{value}\n")).unwrap();
+            assert!(VaultParser::parse(&path).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
     fn test_parse_valid_wallets_file() {
         let temp_dir = TempDir::new().unwrap();
         let wallets_file = temp_dir.path().join("wallets.txt");
@@ -141,7 +155,7 @@ mod tests {
         assert_eq!(vaults.len(), 2);
 
         for vault in vaults {
-            assert!(vault.initial_balance > 0);
+            assert!(vault.initial_balance > 0.into());
         }
     }
 
@@ -291,7 +305,7 @@ mod tests {
         assert_eq!(vaults.len(), 1);
 
         let vault = &vaults[0];
-        assert_eq!(vault.initial_balance, 50000000000000);
+        assert_eq!(vault.initial_balance, num_bigint::BigInt::from(50_000_000_000_000u64));
         assert_eq!(
             vault.vault_address.to_base58(),
             "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP"

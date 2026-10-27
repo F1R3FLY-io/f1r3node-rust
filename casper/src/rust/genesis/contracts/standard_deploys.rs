@@ -334,7 +334,7 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
 
 pub fn vaults_generator(
     vaults: Vec<Vault>,
-    supply: i64,
+    supply: num_bigint::BigInt,
     timestamp: i64,
     is_last_batch: bool,
     shard_id: &str,

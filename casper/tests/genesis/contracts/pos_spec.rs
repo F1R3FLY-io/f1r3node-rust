@@ -21,7 +21,7 @@ fn prepare_vault(vault_data: (&str, u64)) -> Vault {
     Vault {
         vault_address: VaultAddress::from_public_key(&pk)
             .expect("Failed to create VaultAddress from public key"),
-        initial_balance: balance as u128,
+        initial_balance: balance.into(),
     }
 }
 
@@ -78,8 +78,8 @@ fn run_pos_spec_once() -> Result<(), InterpreterError> {
                 // above the 20000 deposit-failure case so that gate ordering is preserved; all
                 // test/genesis bonds are even, so the minimum_bond factor in the reward formula
                 // (PoS.rhox) divides evenly and reward math is unchanged.
-                genesis_parameters.2.proof_of_stake.minimum_bond = 2;
-                genesis_parameters.2.proof_of_stake.maximum_bond = 100_000;
+                genesis_parameters.2.proof_of_stake.minimum_bond = 2.into();
+                genesis_parameters.2.proof_of_stake.maximum_bond = 100_000.into();
 
                 let spec = RhoSpec::new_with_genesis_parameters(
                     compiled,

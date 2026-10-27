@@ -11,6 +11,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use humantime::parse_duration;
+use num_bigint::BigInt;
 
 use super::cli_static_provisioning::{
     parse_cli_static_dir, parse_cli_static_file, CliStaticDirArg, CliStaticFileArg,
@@ -436,16 +437,16 @@ pub struct RunOptions {
     pub wallets_file: Option<String>,
 
     /// Minimum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-minimum")]
-    pub bond_minimum: Option<i64>,
+    #[arg(long = "bond-minimum", value_parser = shared::rust::asi_amount::parse)]
+    pub bond_minimum: Option<BigInt>,
 
     /// Configure genesis blockNumber for hard fork
     #[arg(long = "genesis-block-number")]
     pub genesis_block_number: Option<i64>,
 
     /// Maximum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-maximum")]
-    pub bond_maximum: Option<i64>,
+    #[arg(long = "bond-maximum", value_parser = shared::rust::asi_amount::parse)]
+    pub bond_maximum: Option<BigInt>,
 
     /// The length of the validation epoch in blocks
     #[arg(long = "epoch-length")]

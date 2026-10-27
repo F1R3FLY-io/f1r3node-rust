@@ -154,7 +154,7 @@ fn four_bonded() -> (Vec<Validator>, Vec<Bond>) {
         .iter()
         .map(|v| Bond {
             validator: v.clone(),
-            stake: 100,
+            stake: 100.into(),
         })
         .collect();
     (validators, bonds)

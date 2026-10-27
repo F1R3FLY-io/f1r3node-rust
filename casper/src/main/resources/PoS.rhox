@@ -159,7 +159,7 @@ in {
         for (@(true, (coopMultiVault, coopMultiVaultAddr, coopVaultHd)) <<- coopVaultCh) {
           // Creates PoS System vault with sum of initial bonds.
           new bondSumCh in {
-            @ListOps!("fold", $$initialBonds$$.toList(), 0, *sumFromPair, *bondSumCh) |
+            @ListOps!("fold", $$initialBonds$$.toList(), 0n, *sumFromPair, *bondSumCh) |
             for (@bondSum <- bondSumCh) {
               @SystemVault!("createWithBalance", posDeployerVaultAddress, bondSum, *posDeployerVaultCh)|
               for (@(true, posDeployerVault)  <- posDeployerVaultCh) {
@@ -210,7 +210,7 @@ in {
               contract calTotalActiveBonds(returnCh) = {
                 new computeSum in {
                   for (@state <<- stateCh){
-                    @ListOps!("fold", state.get("allBonds").toList(), 0, *computeSum, *returnCh) |
+                    @ListOps!("fold", state.get("allBonds").toList(), 0n, *computeSum, *returnCh) |
                     contract computeSum(@(pk, bondAmount), @acc, resultCh) = {
                       if (state.get("activeValidators").contains(pk)){
                         resultCh!(acc + bondAmount)
@@ -221,7 +221,6 @@ in {
                   }
                 }
               } |
-              // Money totals are BigInt: bonds are Int, rewards and the PoS vault balance are BigInt.
               contract accumulateSndNum(@(_, amount), @acc, resultCh) = {
                 resultCh!(acc + amount.toBigInt())
               } |
@@ -241,7 +240,7 @@ in {
                     contract computeReward(@(pk, bonds), @acc,  outCh) = {
                       // Rewards are BigInt, so this product cannot overflow. Each bond is divided by minimumBond first, which truncates the validator's share.
                       if (activeValidatorsSet.contains(pk)){
-                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$).toBigInt() / (activeBonds / $$minimumBond$$).toBigInt()))
+                        outCh!(acc.set(pk, (posBalance - totalBond - totalWithdraw - totalCommittedRewards) * (bonds / $$minimumBond$$n).toBigInt() / (activeBonds / $$minimumBond$$n).toBigInt()))
                       } else {
                         outCh!(acc.set(pk, 0n))
                       }
@@ -333,9 +332,9 @@ in {
                        @userPk          <- userCh) {
                     if (state.get("allBonds").contains(userPk)) {
                       resultCh!(state, (false, "Public key is already bonded."))
-                    } else if (not (amount matches Int)) {
-                      resultCh!(state, (false, "Bond amount must be an Int."))
-                    } else if (amount <= 0) {
+                    } else if (not amount.isBigInt()) {
+                      resultCh!(state, (false, "Bond amount must be a BigInt."))
+                    } else if (amount <= 0n) {
                       // Bug #5 fix: explicit positive-stake assertion. The
                       // Rocq invariant `active_implies_bonded` (T-9.5,
                       // BugFixStakeZero.v:36) requires every active
@@ -346,9 +345,9 @@ in {
                       // of genesis configuration. See
                       // design/09-bug-fixes-and-rationale.md §9.6 (option a).
                       resultCh!(state, (false, "Bond amount must be positive."))
-                    } else if (amount < $$minimumBond$$) {
+                    } else if (amount < $$minimumBond$$n) {
                       resultCh!(state, (false, "Bond is less than minimum!"))
-                    } else if (amount > $$maximumBond$$) {
+                    } else if (amount > $$maximumBond$$n) {
                       resultCh!(state, (false, "Bond is greater than maximum!"))
                     } else {
                       // Transfers user's bond amount to the PoS vault.
@@ -503,7 +502,7 @@ in {
                                         // T-9.3 catch-all dispatcher that
                                         // mints a record per slashable
                                         // variant.
-                                        if (valBond <= 0) {
+                                        if (valBond <= 0n) {
                                           stateUpdateCh!(state, (true, Nil))
                                         } else {
                                           new transferDoneCh in {
@@ -518,7 +517,7 @@ in {
                                               match transferResult {
                                                 (true, _) => {
                                                   stateUpdateCh!({
-                                                    "allBonds"        : state.get("allBonds").set(validator, 0),
+                                                    "allBonds"        : state.get("allBonds").set(validator, 0n),
                                                     "activeValidators": state.get("activeValidators").delete(validator),
                                                     "committedRewards" : state.get("committedRewards").delete(validator),
                                                     "withdrawers"     : state.get("withdrawers"),

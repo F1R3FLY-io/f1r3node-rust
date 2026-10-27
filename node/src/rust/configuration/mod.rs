@@ -784,6 +784,55 @@ mod embedded_defaults_tests {
         }
     }
 
+    #[test]
+    fn bigint_bond_limits_reject_values_outside_the_token_range() {
+        for field in ["bond-minimum", "bond-maximum"] {
+            for value in ["-1".to_string(), (shared::rust::asi_amount::maximum() + 1u8).to_string()] {
+                let override_config = format!("casper.genesis-block-data {{ {field} = \"{value}\" }}");
+                let result: Result<NodeConf, _> = hocon::HoconLoader::new()
+                    .load_str(EMBEDDED_DEFAULTS).unwrap()
+                    .load_str(&override_config).unwrap().resolve();
+                assert!(result.is_err(), "{field}={value}");
+            }
+        }
+    }
+
+    #[test]
+    fn bigint_bond_limits_preserve_defaults_and_explicit_overrides() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(base.casper.genesis_block_data.bond_minimum, 1.into());
+        assert_eq!(base.casper.genesis_block_data.bond_maximum, i64::MAX.into());
+        let configured: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .load_str(
+                "casper.genesis-block-data { bond-minimum = \"100000000000000000000\", bond-maximum = \"1000000000000000000000\" }",
+            )
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(
+            configured
+                .casper
+                .genesis_block_data
+                .bond_minimum
+                .to_string(),
+            "100000000000000000000"
+        );
+        assert_eq!(
+            configured
+                .casper
+                .genesis_block_data
+                .bond_maximum
+                .to_string(),
+            "1000000000000000000000"
+        );
+    }
+
     /// A negative fault-tolerance threshold weakens "finalized" from a BFT
     /// certificate to bare majority agreement per snapshot — a legitimate
     /// test/dev sentinel, but one an operator must choose with eyes open.

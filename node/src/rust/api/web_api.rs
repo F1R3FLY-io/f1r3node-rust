@@ -24,6 +24,7 @@ use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -925,14 +926,14 @@ impl WebApi for WebApiImpl {
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
 
         let mut validators = Vec::new();
-        let mut total_stake: i64 = 0;
+        let mut total_stake = BigInt::from(0);
 
         // getBonds returns a Rholang map: {pubkey: stake, ...}
         // ExprMap keys are already String (extracted by extract_key_from_expr)
         if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
             for (public_key, value) in data {
                 let stake = match value {
-                    RhoExpr::ExprInt { data } => *data,
+                    RhoExpr::ExprBigInt { data } => shared::rust::asi_amount::parse(data).map_err(|e| eyre!(e))?,
                     other => {
                         return Err(eyre!(
                             "Unexpected stake type for validator {}: {:?}",
@@ -941,7 +942,7 @@ impl WebApi for WebApiImpl {
                         ))
                     }
                 };
-                total_stake += stake;
+                total_stake += &stake;
                 validators.push(ValidatorInfo {
                     public_key: public_key.clone(),
                     stake,
@@ -1089,8 +1090,8 @@ impl WebApi for WebApiImpl {
         if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
             if let Some(value) = data.get(&pubkey) {
                 is_bonded = true;
-                if let RhoExpr::ExprInt { data } = value {
-                    stake = Some(*data);
+                if let RhoExpr::ExprBigInt { data } = value {
+                    stake = Some(shared::rust::asi_amount::parse(data).map_err(|e| eyre!(e))?);
                 }
             }
         }
@@ -1567,7 +1568,9 @@ pub struct RegistryResponse {
 pub struct ValidatorInfo {
     #[serde(rename = "publicKey")]
     pub public_key: String,
-    pub stake: i64,
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub stake: BigInt,
 }
 
 /// Active validator set response
@@ -1575,7 +1578,9 @@ pub struct ValidatorInfo {
 pub struct ValidatorsResponse {
     pub validators: Vec<ValidatorInfo>,
     #[serde(rename = "totalStake")]
-    pub total_stake: i64,
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub total_stake: BigInt,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1640,7 +1645,9 @@ pub struct ValidatorStatusResponse {
     pub public_key: String,
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
-    pub stake: Option<i64>,
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[schema(value_type = Option<String>)]
+    pub stake: Option<BigInt>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]

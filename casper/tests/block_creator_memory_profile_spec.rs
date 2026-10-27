@@ -111,12 +111,12 @@ fn create_snapshot_with_parent(
     shard_conf.deploy_lifespan = DEPLOY_LIFESPAN;
     shard_conf.max_number_of_parents = 10;
     shard_conf.casper_version = 1;
-    shard_conf.bond_minimum = 0;
-    shard_conf.bond_maximum = i64::MAX;
+    shard_conf.bond_minimum = 0.into();
+    shard_conf.bond_maximum = i64::MAX.into();
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
-    bonds_map.insert(validator.clone(), 100);
+    bonds_map.insert(validator.clone(), 100.into());
     snapshot.on_chain_state = OnChainCasperState {
         shard_conf,
         bonds_map,
@@ -198,11 +198,11 @@ async fn run_block_creator_create_memory_profile() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: i64::MAX.into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -219,7 +219,7 @@ async fn run_block_creator_create_memory_profile() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX,
+        supply: i64::MAX.into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
@@ -447,11 +447,11 @@ async fn run_block_creator_phase_split_memory_profile() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: i64::MAX.into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -468,7 +468,7 @@ async fn run_block_creator_phase_split_memory_profile() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX,
+        supply: i64::MAX.into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),

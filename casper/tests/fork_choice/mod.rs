@@ -15,9 +15,9 @@
 //   well-formed DAGs: converges, is a common ancestor of every input, and is the LOWEST
 //   such (max block number), cross-checked against `is_dag_ancestor` (Lca.v).
 //
-//   prop_bound — the `tips_with_latest_messages(max_parents, depth)` B2/B3/B4 seams: sentinel /
-//   usize-safe caps, head-preserving truncation, score-overflow typed Err, empty-tips
-//   typed Err (Bound.v).
+//   prop_bound — the `tips_with_latest_messages(max_parents, depth)` B2/B3/B4 seams:
+//   usize-safe caps, head-preserving truncation, exact BigInt score sums, and
+//   empty-tips typed Err. The B3 implementation now supports scores above i64::MAX.
 //
 //   prop_ghost_argmax — T-GHOST + T-MP: the real `Estimator` on RANDOM weighted fork
 //   DAGs returns the heaviest-subtree ranking (score DESC, hash ASC) led by the GHOST

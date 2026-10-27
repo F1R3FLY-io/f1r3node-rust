@@ -1740,12 +1740,16 @@ impl RuntimeOps {
                 }?;
 
                 let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
-                    ExprInstance::GInt(g_int) => Ok(*g_int),
+                    ExprInstance::GBigInt(bytes) => {
+                        Ok(num_bigint::BigInt::from_signed_bytes_be(bytes))
+                    }
                     _ => Err(CasperError::RuntimeError(
-                        "Expected GInt in stake data".to_string(),
+                        "Expected BigInt in stake data".to_string(),
                     )),
                 }?;
 
+                shared::rust::asi_amount::validate(&stake_amount)
+                    .map_err(CasperError::RuntimeError)?;
                 Ok(Bond {
                     validator: validator_name,
                     stake: stake_amount,

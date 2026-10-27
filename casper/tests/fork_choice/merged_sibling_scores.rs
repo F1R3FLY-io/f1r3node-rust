@@ -55,7 +55,7 @@ async fn merged_siblings_must_not_score_equal() {
             .iter()
             .map(|v| Bond {
                 validator: (*v).clone(),
-                stake: 100,
+                stake: 100.into(),
             })
             .collect();
 
@@ -179,14 +179,14 @@ async fn merged_siblings_must_not_score_equal() {
              descent stalled on (head={head:?})"
         );
 
-        let score = |hash: &BlockHash| fork_choice.scores.get(hash).copied().unwrap_or(0);
+        let score = |hash: &BlockHash| fork_choice.scores.get(hash).cloned().unwrap_or(0.into());
         let s1_score = score(&s1.block_hash);
         let s2_score = score(&s2.block_hash);
 
         // Staging integrity: both siblings must actually be scored, or the
         // assertion below would pass vacuously on two absent entries.
         assert!(
-            s1_score > 0 && s2_score > 0,
+            s1_score > 0.into() && s2_score > 0.into(),
             "staging: both siblings must be reachable from the latest messages \
              (S1={s1_score}, S2={s2_score})"
         );
@@ -201,11 +201,13 @@ async fn merged_siblings_must_not_score_equal() {
              flip between two sound certificates"
         );
         assert_eq!(
-            s1_score, 200,
+            s1_score,
+            200.into(),
             "S1 is the main parent of v1's and v3's latest messages"
         );
         assert_eq!(
-            s2_score, 100,
+            s2_score,
+            100.into(),
             "S2 is the main parent of v2's latest message only"
         );
     })

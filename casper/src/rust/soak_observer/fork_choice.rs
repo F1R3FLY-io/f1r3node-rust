@@ -4,6 +4,7 @@ use block_storage::rust::dag::soak_snapshot::DetachedDagSnapshot;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use serde::Serialize;
 use shared::rust::dag::observation_work::{CheckedWork, WorkKind, WorkMeter};
 
@@ -61,7 +62,8 @@ pub struct ForkChoiceResult {
     pub common_ancestor: String,
     pub head: String,
     pub tips: Vec<String>,
-    pub tip_scores: Vec<i64>,
+    #[serde(serialize_with = "models::rust::serde_helpers::serialize_decimal_bigint_vec")]
+    pub tip_scores: Vec<BigInt>,
     pub score_count: usize,
     pub score_digest: String,
     pub visited_blocks: u64,
@@ -172,7 +174,7 @@ pub struct ReferenceForkChoice<'a> {
 struct Ranked {
     ancestor: BlockHash,
     tips: Vec<BlockHash>,
-    scores: HashMap<BlockHash, i64>,
+    scores: HashMap<BlockHash, BigInt>,
 }
 
 impl<'a> ReferenceForkChoice<'a> {
@@ -201,12 +203,12 @@ impl<'a> ReferenceForkChoice<'a> {
 
     fn order(
         &self,
-        scores: &HashMap<BlockHash, i64>,
+        scores: &HashMap<BlockHash, BigInt>,
         a: &BlockHash,
         b: &BlockHash,
     ) -> std::cmp::Ordering {
-        let score_a = scores.get(a).copied().unwrap_or(0);
-        let score_b = scores.get(b).copied().unwrap_or(0);
+        let score_a = scores.get(a).cloned().unwrap_or_default();
+        let score_b = scores.get(b).cloned().unwrap_or_default();
         let tie = if self.control == ReferenceControl::ReverseTieOrder {
             b.cmp(a)
         } else {
@@ -334,7 +336,11 @@ impl<'a> ReferenceForkChoice<'a> {
         }
     }
 
-    fn weight_at(&mut self, block: &BlockMetadata, validator: &Validator) -> Result<i64, String> {
+    fn weight_at(
+        &mut self,
+        block: &BlockMetadata,
+        validator: &Validator,
+    ) -> Result<BigInt, String> {
         let source = match block.parents.first() {
             Some(main_parent) => {
                 self.edge()?;
@@ -342,15 +348,19 @@ impl<'a> ReferenceForkChoice<'a> {
             }
             None => block,
         };
-        Ok(source.weight_map.get(validator).copied().unwrap_or(0))
+        Ok(source
+            .weight_map
+            .get(validator)
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn scores(
         &mut self,
         messages: &BTreeMap<Validator, BlockHash>,
         ancestor_number: i64,
-    ) -> Result<HashMap<BlockHash, i64>, String> {
-        let mut scores: HashMap<BlockHash, i64> = HashMap::new();
+    ) -> Result<HashMap<BlockHash, BigInt>, String> {
+        let mut scores: HashMap<BlockHash, BigInt> = HashMap::new();
         for (validator, hash) in messages {
             let mut current = hash.clone();
             loop {
@@ -361,16 +371,16 @@ impl<'a> ReferenceForkChoice<'a> {
                 let weight = self.weight_at(block, validator)?;
                 if !scores.contains_key(&current) {
                     self.meter
-                        .allocate(1, std::mem::size_of::<(BlockHash, i64)>())
+                        .allocate(1, std::mem::size_of::<(BlockHash, BigInt)>())
                         .map_err(|e| e.to_string())?;
                 }
-                let entry = scores.entry(current.clone()).or_insert(0);
-                *entry = entry.checked_add(weight).ok_or("score_overflow")?;
+                let entry = scores.entry(current.clone()).or_default();
+                *entry += &weight;
                 if self.control == ReferenceControl::CreditAllParents {
                     for secondary in block.parents.iter().skip(1) {
                         self.edge()?;
-                        let entry = scores.entry(secondary.clone()).or_insert(0);
-                        *entry = entry.checked_add(weight).ok_or("score_overflow")?;
+                        let entry = scores.entry(secondary.clone()).or_default();
+                        *entry += &weight;
                     }
                 }
                 match block.parents.first() {
@@ -388,7 +398,7 @@ impl<'a> ReferenceForkChoice<'a> {
     fn scored_main_children(
         &mut self,
         block: &BlockHash,
-        scores: &HashMap<BlockHash, i64>,
+        scores: &HashMap<BlockHash, BigInt>,
     ) -> Result<Vec<BlockHash>, String> {
         let mut children = Vec::new();
         if let Some(candidates) = self.snapshot.child_map.get(block) {
@@ -489,12 +499,12 @@ impl<'a> ReferenceForkChoice<'a> {
             };
             let ranked = self.rank(&messages, &bound)?;
             let head = ranked.tips.first().ok_or("no_head_selected")?.clone();
-            let mut sorted_scores: BTreeMap<String, i64> = BTreeMap::new();
+            let mut sorted_scores: BTreeMap<String, BigInt> = BTreeMap::new();
             for (hash, score) in &ranked.scores {
                 self.meter
                     .step(WorkKind::Traversal)
                     .map_err(|e| e.to_string())?;
-                sorted_scores.insert(hex::encode(hash), *score);
+                sorted_scores.insert(hex::encode(hash), score.clone());
             }
             let score_digest = digest(&sorted_scores, self.meter)?;
             Ok(ForkChoiceResult {
@@ -516,7 +526,7 @@ impl<'a> ReferenceForkChoice<'a> {
                     .tips
                     .iter()
                     .take(MAX_REPORTED_TIPS)
-                    .map(|tip| ranked.scores.get(tip).copied().unwrap_or(0))
+                    .map(|tip| ranked.scores.get(tip).cloned().unwrap_or_default())
                     .collect(),
                 score_count: ranked.scores.len(),
                 score_digest,

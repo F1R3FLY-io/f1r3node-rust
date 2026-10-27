@@ -115,7 +115,8 @@ message ExploratoryDeployQuery{
 
 message BondInfo{
   string validator = 1;
-  int64  stake     = 2;
+  reserved 2;
+  string stake = 3;
 }
 
 message JustificationInfo{

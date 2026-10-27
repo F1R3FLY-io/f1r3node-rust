@@ -3,6 +3,7 @@
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::{Signed, ToMessage};
+use num_bigint::BigInt;
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::{Blake2b256Hash, LENGTH as HASH_LENGTH};
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -926,7 +927,7 @@ impl Body {
                 proto
                     .state
                     .ok_or_else(|| "Missing state field".to_string())?,
-            ),
+            )?,
             deploys: proto
                 .deploys
                 .into_iter()
@@ -1017,17 +1018,17 @@ pub struct F1r3flyState {
 }
 
 impl F1r3flyState {
-    pub fn from_proto(proto: RChainStateProto) -> Self {
-        Self {
+    pub fn from_proto(proto: RChainStateProto) -> Result<Self, String> {
+        Ok(Self {
             pre_state_hash: proto.pre_state_hash,
             post_state_hash: proto.post_state_hash,
             bonds: proto
                 .bonds
                 .into_iter()
                 .map(|b| Bond::from_proto(b))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             block_number: proto.block_number,
-        }
+        })
     }
 
     pub fn to_proto(&self) -> RChainStateProto {
@@ -1586,21 +1587,24 @@ impl CommEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bond {
     pub validator: ByteString,
-    pub stake: i64,
+    pub stake: BigInt,
 }
 
 impl Bond {
-    pub fn from_proto(proto: BondProto) -> Self {
-        Self {
+    pub fn from_proto(proto: BondProto) -> Result<Self, String> {
+        Ok(Self {
             validator: proto.validator,
-            stake: proto.stake,
-        }
+            stake: shared::rust::asi_amount::decode(&proto.stake)?,
+        })
     }
 
     pub fn to_proto(self) -> BondProto {
         BondProto {
             validator: self.validator,
-            stake: self.stake,
+            stake: shared::rust::asi_amount::encode(&self.stake)
+                .expect("validated bond amount")
+                .to_vec()
+                .into(),
         }
     }
 }
@@ -1976,6 +1980,27 @@ mod tests {
     }
 
     fn hash32(fill: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![fill; 32]) }
+
+    #[test]
+    fn bond_wire_encoding_covers_the_token_range() {
+        for stake in [BigInt::from(0), i64::MAX.into(), BigInt::from(1) << 63usize,
+            BigInt::from(1) << 128usize, shared::rust::asi_amount::maximum()] {
+            let bond = Bond { validator: Bytes::from_static(b"validator"), stake };
+            let wire = bond.clone().to_proto();
+            assert_eq!(wire.stake.len(), 32);
+            let decoded = BondProto::decode(wire.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(Bond::from_proto(decoded).unwrap(), bond);
+        }
+    }
+
+    #[test]
+    fn bond_wire_encoding_rejects_missing_or_wrong_width_amounts() {
+        for len in [0, 1, 31, 33] {
+            assert!(Bond::from_proto(BondProto {
+                validator: Bytes::new(), stake: vec![0; len].into(),
+            }).is_err());
+        }
+    }
 
     #[test]
     fn rejected_deploy_decodes_legacy_wire_format() {

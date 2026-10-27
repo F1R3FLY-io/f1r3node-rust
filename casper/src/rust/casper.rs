@@ -20,6 +20,7 @@ use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
@@ -171,7 +172,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     // this initial fault weight combined with our fault tolerance threshold t.
     fn normalized_initial_fault(
         &self,
-        weights: HashMap<Validator, u64>,
+        weights: HashMap<Validator, BigInt>,
     ) -> Result<f32, CasperError>;
 
     /// The persisted LFB. Reading it never advances finality.
@@ -450,7 +451,7 @@ impl CasperSnapshot {
         Ok(metadata
             .weight_map
             .get(validator)
-            .is_some_and(|stake| *stake > 0))
+            .is_some_and(|stake| *stake > BigInt::from(0)))
     }
 
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
@@ -472,7 +473,7 @@ impl CasperSnapshot {
 #[derive(Clone)]
 pub struct OnChainCasperState {
     pub shard_conf: CasperShardConf,
-    pub bonds_map: HashMap<Validator, i64>,
+    pub bonds_map: HashMap<Validator, BigInt>,
     pub active_validators: Vec<Validator>,
 }
 
@@ -488,7 +489,7 @@ impl OnChainCasperState {
 
 /// Protocol version stamped into proposed block headers and judged against
 /// peers' blocks. Changes only with a coordinated protocol upgrade.
-pub const CASPER_PROTOCOL_VERSION: i64 = 1;
+pub const CASPER_PROTOCOL_VERSION: i64 = 2;
 
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {
@@ -527,8 +528,8 @@ pub struct CasperShardConf {
     /// re-judgements.
     pub heartbeat_check_interval: std::time::Duration,
     pub casper_version: i64,
-    pub bond_minimum: i64,
-    pub bond_maximum: i64,
+    pub bond_minimum: BigInt,
+    pub bond_maximum: BigInt,
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub min_phlo_price: i64,
@@ -583,8 +584,8 @@ impl CasperShardConf {
             deploy_play_budget_is_derived: false,
             heartbeat_check_interval: Duration::ZERO,
             casper_version: 0,
-            bond_minimum: 0,
-            bond_maximum: 0,
+            bond_minimum: 0.into(),
+            bond_maximum: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
             min_phlo_price: 0,
@@ -729,7 +730,7 @@ pub mod test_helpers {
             {
                 parent.body.state.bonds.push(Bond {
                     validator,
-                    stake: 100,
+                    stake: 100.into(),
                 });
             }
         }
@@ -816,7 +817,7 @@ pub mod test_helpers {
 
         fn normalized_initial_fault(
             &self,
-            _weights: HashMap<Validator, u64>,
+            _weights: HashMap<Validator, num_bigint::BigInt>,
         ) -> Result<f32, CasperError> {
             Ok(0.0)
         }
