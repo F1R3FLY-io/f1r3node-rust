@@ -18,6 +18,7 @@ use crate::rspace::persistence::durable::{
     DurableTransactionPreparationError, GenerationCheckpointPublicationHookPointV1,
     JournalPublicationPhaseV1, arm_generation_checkpoint_publication_failpoint,
     arm_generation_checkpoint_publication_hook, recover_read_authority,
+    recover_read_authority_from_directory,
 };
 use crate::rspace::persistence::retention::v2_format::RetentionFormat;
 use crate::rspace::persistence::{
@@ -906,22 +907,26 @@ fn assert_journals_unchanged(hot: &Store, before: &crate::rspace::hot_store::Pen
     );
 }
 
-/// A journal owner over an admitted V2 checkpoint refuses its checkpoint when
-/// it binds the successor, before any durable mutation, and stays ready with
-/// its journals and operation gate intact.
+/// A journal owner over an admitted V2 checkpoint, in a directory opened with
+/// the V1 writer, refuses its checkpoint when it binds the successor, before
+/// any durable mutation, and stays ready with its journals and operation gate
+/// intact.
 pub(super) fn assert_v2_owner_checkpoint_refuses_before_durable_mutation() {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
     let scratch = trial_scratch("journal-owner-v2-");
     let source = migrate_checkpoint_source_to_v2(&fixture_for_profile(Profile::ID));
     install_checkpoint_image(scratch.path(), &checkpoint_image_for_profile::<Profile>(source));
-    let view = recover_read_authority::<Profile>(
-        scratch.path(),
+    let directory = DurableDirectoryV1::open(scratch.path())
+        .expect("open the journal owner's directory")
+        .with_retention_writer_for_test(RetentionFormat::V1);
+    let view = recover_read_authority_from_directory::<Profile>(
+        directory,
         limits(),
         LogPackDecodeLimits::UNBOUNDED,
         DurableAdmissionLimitsV1::UNBOUNDED,
     )
-    .expect("the dual reader adopts a V2 checkpoint");
+    .expect("the dual reader adopts a V2 checkpoint under the V1 writer");
     let hot: Store = Arc::new(
         HotStoreInstances::create_from_durable(&view, DurableHotStoreBootstrapLimits::default())
             .expect("a V2 checkpoint bootstraps the hot store"),

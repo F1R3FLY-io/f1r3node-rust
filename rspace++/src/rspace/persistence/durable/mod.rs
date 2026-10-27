@@ -508,6 +508,17 @@ pub(crate) fn recover_read_authority<P: SemanticProfile>(
     let directory = io::DurableDirectoryV1::open(path).map_err(|error| {
         DurableAdmissionErrorV1::Startup(startup::DurableStartupErrorV1::Io(error))
     })?;
+    recover_read_authority_from_directory(directory, recovery_limits, wal_limits, admission_limits)
+}
+
+/// Recover and admit the read authority of an opened directory, under the
+/// retention reader and writer that the directory carries.
+pub(crate) fn recover_read_authority_from_directory<P: SemanticProfile>(
+    directory: io::DurableDirectoryV1,
+    recovery_limits: DurableLimits,
+    wal_limits: LogPackDecodeLimits,
+    admission_limits: DurableAdmissionLimitsV1,
+) -> Result<DurableAuthorityViewV1<P>, DurableAdmissionErrorV1> {
     let writer =
         directory.recover_and_admit_v1::<P>(recovery_limits, wal_limits, admission_limits)?;
     let generation_lease = writer

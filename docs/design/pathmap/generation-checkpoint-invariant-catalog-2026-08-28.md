@@ -325,9 +325,9 @@ Extracted implementation obligations, before production correction:
 
 | ID | Formal/accounting obligation | Executable correspondence |
 |---|---|---|
-| SI-01 | Exact replacement removes predecessor-only objects and counts shared objects once. | `incremental_inventory_tracks_replacement_removal_sharing_and_reuse` compares every sealed target and cold successor to full traversal. |
-| SI-02 | Repeated transitions preserve the exact distinct-object partition, including empty states and reused digests. | `incremental_inventory_matches_cold_admission_at_every_history_step` generates count updates and removals with a fresh union ledger and physical reopen at every step. |
-| SI-03 | Current semantic closure and retained semantic union are separate from retention metadata. | Both history checks compare manifest/current/retained fields independently; the existing DATA-inventory laws continue to account for the separate retention-manifest object. |
+| SI-01 | Exact replacement removes predecessor-only objects and counts shared objects once. | `incremental_inventory_tracks_replacement_removal_sharing_and_reuse` compares every sealed target and cold successor to full traversal, under both retention writers. |
+| SI-02 | Repeated transitions preserve the exact distinct-object partition, including empty states and reused digests. | `incremental_inventory_matches_cold_admission_at_every_history_step` generates count updates and removals with a fresh union ledger and physical reopen at every step, under both retention writers. |
+| SI-03 | Current semantic closure and retained semantic union are separate from retention metadata. | Both history checks compare manifest/current/retained fields independently; under the V2 writer the anchor and radix nodes stay out of the semantic oracle and the retained union, the sealed anchor equals `RetentionOracle`'s and cold admission appoints its metadata closure; the existing DATA-inventory laws continue to account for the separate retention object. |
 | SI-04 | One predecessor/target-bound inventory supplies all publication fields. | A private durable-only sealed/prepared capability must reject foreign/stale catalog bindings before writes; generic staged diagnostics cannot serve as current-state inventory. |
 | SI-05 | Resource refusal leaves durable predecessor bytes unchanged. | Structural/union/read/history limits must be enforced during inventory construction; policy mismatch and failed preparation must not publish or release the borrowed writer. |
 
@@ -2428,7 +2428,7 @@ union verdicts, which run 512.
 | RV-25 | On ten sources, V1 reports are identical under both capabilities, and each V2 twin has the V1 report's disposition, structure, semantics, retained states, aggregates and union, with the reads and bytes of the accounting equations above. A read or byte limit one below the metadata demand is refused in the reader, and at exactly the demand the refusal moves to the first closure read. `max_retained_states` admits at its exact value and refuses one below, before any radix read, even with one read allowed. No refusal changes the directory. V1 and V2 twins refuse alike a historical state whose generation is not below the current one, a current mismatch, a length alias in the closure and a history that contains the current state. | `v2_cold_admission_matches_v1_admission_and_charges_metadata_reads_exactly` |
 | RV-26 | On a migrated V2 source, the exact limits admit the same report. The six constructible durable, four positive checkpoint-WAL and eighteen admission boundaries each refuse one below their exact demand, the three zero-demand WAL axes stay at zero, and no refusal changes the directory. The four per-state structural boundaries are also exercised on the fixture whose historical state needs more than its current one. | `every_v2_cold_admission_resource_boundary_refuses_one_below_and_accepts_exactly` |
 | RV-27 | Migrated V2 directories with three history lengths are refused by the V1-only reader at the descriptor and adopted by the dual reader; a product history of ten retained states reads each shared node once. A torn inactive successor slot leaves both readers on the old slot, and an appointed staged V2 successor is refused by the V1-only reader and adopted by the dual one. An anchor of version 2 is refused `UnsupportedVersion` in admission, and an unknown `RSpaceDAG.RetX` object `UnknownObjectDomain` in recovery. Of the 20 radix defects as directory images, exactly the two length shifts and the forged digest are refused in recovery (`ObjectReference`), a current entry in the history `RetentionCurrentMismatch`, an envelope of version 2 `UnsupportedVersion` in the body, and every other defect with the unit reader's refusal. Two restarts give identical reports and authority. With the derived index removed, the V1-only reader refuses and writes nothing, while the dual reader rebuilds and verifies the index, then verifies it as existing, with equal bytes. | `v2_restart_fixtures_are_refused_by_old_readers_and_adopted_by_dual_readers` |
-| RV-28 | For an admitted V2 source, the writer's publication, the writer's compaction and the publication authority refuse with `SourceRetentionFormatNotWritable(V2)`, `DefinitelyNotPublished` and an empty trace; `seal_transaction` and `bind_durable_transaction` refuse `RetentionFormatNotWritable(V2)`; `checkpoint_descriptor` refuses, and the reference visitor refuses after no visit; the owner's checkpoint refuses before durable mutation. Admission afterwards is identical, and the directory is unchanged. | `v2_admitted_sources_refuse_every_successor_before_durable_mutation` |
+| RV-28 | For an admitted V2 source under the V1 writer, which the test selects explicitly, the writer's publication, the writer's compaction and the publication authority refuse with `SourceRetentionFormatNotWritable(V2)`, `DefinitelyNotPublished` and an empty trace; `seal_transaction` and `bind_durable_transaction` refuse `RetentionFormatNotWritable(V2)`; `checkpoint_descriptor` refuses, and the reference visitor refuses after no visit; the owner's checkpoint, over a directory opened with the V1 writer, refuses before durable mutation. Admission afterwards is identical, and the directory is unchanged. | `v2_admitted_sources_refuse_every_successor_before_durable_mutation` |
 | RV-29 | On arbitrary bytes and on bit flips, truncations and extensions of valid objects, the dual classifier equals its model, the stream validator with arbitrary chunk widths equals the contiguous parser, `validate_object_for` equals its expected result, whatever the descriptor and anchor parsers accept re-encodes to the same bytes, and the radix node parser terminates without panicking. On arbitrary radix graphs, including a forged object that references itself, each object is read at most once and the reads never exceed the objects; admission succeeds only when the declared count is at most 4096 and the entries equal the reference decoder's, and `CountMismatch` reports the model's count. | `dual_retention_readers_are_total_on_arbitrary_bytes_and_graphs` |
 
 `model_property_manifest_is_unique_and_exhaustive` now checks 179 bindings,
@@ -2506,13 +2506,15 @@ metadata closure with one private ledger trial that expands only the objects
 whose reference count crosses zero. The successor's historical count comes from
 the compare-and-swap outcomes, never from the number of objects the editor
 stored. A V1 source migrates once, at its first successor under the V2 writer,
-by one sorted batch from the empty radix. The V1 writer is unchanged and remains
-the writer of every opened directory: only the test-build setter
-`with_retention_writer_for_test` (`durable/io.rs:865`) selects the V2 writer.
-Making V2 the default is a separate commit, because the first V2 successor of a
-directory is a one-way change for that directory. No block, state root or wire
-byte changes, and no running node uses the durable backend yet: the authority
-backends are `Memory` and `Lmdb` (`state/rspace_state_authority.rs:142-145`).
+by one sorted batch from the empty radix. The V1 writer is unchanged. This task
+kept it the writer of every opened directory, with only the test-build setter
+`with_retention_writer_for_test` (`durable/io.rs:865`) selecting the V2 writer,
+because the first V2 successor of a directory is a one-way change for that
+directory; the next commit made V2 the default
+([activation](#retention-v2-writer-activation-2026-10-26)). No block, state root
+or wire byte changes, and no running node uses the durable backend yet: the
+authority backends are `Memory` and `Lmdb`
+(`state/rspace_state_authority.rs:142-145`).
 
 This section discharges the three items that the format and cold-reader sections
 above left to this task: the production builder of the V2 checkpoint inventory,
@@ -2850,9 +2852,10 @@ that the writer's accounting disagrees with what a cold reader adopts. This bind
 the metadata of incremental terminals.
 
 **Writer and reader coherence.** `DurableDirectoryV1` now carries a writer beside
-its reader (`durable/io.rs:801-802`). `open` selects the V1 writer and the dual
-reader (`:839-840`), and `try_clone_reader` copies both (`:892-893`). A V2
-writer must read back what it writes, so it requires the dual reader:
+its reader (`durable/io.rs:801-802`). `open` selects the dual reader and, at this
+task, the V1 writer; since the activation commit it selects the V2 writer
+(`:839-840`). `try_clone_reader` copies both (`:892-893`). A V2 writer must read
+back what it writes, so it requires the dual reader:
 `admit_physical_source` refuses `RetentionWriterUnreadable{writer, reader}` for
 a V2 writer with the V1-only reader (`durable/admission.rs:1855-1863`), after the
 profile check and before the store is pinned, so the refusal writes nothing.
@@ -2867,6 +2870,10 @@ refused there, as before.
 | V2 | V2 | dual | admitted, with the metadata domain seeded | a path-local commit | V2: the retained union and $`M`$ |
 | V1 | V2 | V1-only | refused `RetentionWriterUnreadable` after physical recovery | not reached | not reached |
 | V2 | either | V1-only | refused in physical recovery, as before | not reached | not reached |
+
+Since the activation commit, an opened directory is row 2 or row 4, by its
+appointed format. Every other row needs a test-build setter, the V1 writer's or
+the V1-only reader's, and those setters stand in for older binaries.
 
 **Old readers after the first V2 successor.** The first V2 successor of a
 directory is a one-way change for it:
@@ -2948,7 +2955,7 @@ writer with itself. Each row gives its number of generated cases.
 
 **Directory tests.** Four tests in `durable_publication.rs` run the writer
 through real directories. They select the V2 writer with the test setter, and
-track the expected history with `RetentionOracle` (`durable_publication.rs:4878`),
+track the expected history with `RetentionOracle` (`durable_publication.rs:4944`),
 which keeps the entries without the editor and builds the expected anchor and
 closure with the test model:
 
@@ -2971,11 +2978,12 @@ closure with the test model:
   metadata closure. The pack that held the edited radix nodes is reclaimed, and
   each restart adopts the oracle's anchor and closure. A V1 source keeps its V1
   checkpoint under the V2 writer, and the V1-only reader adopts it.
-- `v2_writer_requires_the_dual_reader_and_is_not_the_default`. An opened
-  directory has the V1 writer. The V2 writer with the V1-only reader is refused
-  `RetentionWriterUnreadable` on a V1 directory and in recovery on a V2
-  directory, neither refusal changes the directory, and the V1 writer is admitted
-  under both readers.
+- `v2_writer_requires_the_dual_reader_and_is_the_default` (named
+  `v2_writer_requires_the_dual_reader_and_is_not_the_default` until the
+  activation commit). An opened directory has the V2 writer and the dual reader.
+  The V2 writer with the V1-only reader is refused `RetentionWriterUnreadable` on
+  a V1 directory and in recovery on a V2 directory, neither refusal changes the
+  directory, and the V1 writer is admitted under both readers.
 
 `model_property_manifest_is_unique_and_exhaustive` now checks 187 bindings,
 these eight among them. It requires each of the sixteen `Print Assumptions`
@@ -2985,10 +2993,11 @@ capstones.
 
 **Boundary.**
 
-- Activation. The V2 writer becomes the default in a separate commit after this
-  one, with a release note, because an older binary cannot read a directory after
-  its first V2 successor and nothing exports it back to V1. `RV-28` then
-  describes the V1 writer only.
+- Activation. The V2 writer became the default in the commit after this one,
+  with a release note, because after a directory's first V2 successor an older
+  binary either cannot read it or cannot extend it, and nothing exports it back
+  to V1; `RV-28` now describes the V1 writer only
+  ([activation](#retention-v2-writer-activation-2026-10-26)).
 - Eviction has no production caller; the retention policy that evicts is task
   7756.
 - The theory walks every edit of a batch from the root. `RadixEditor::apply`
@@ -3067,6 +3076,117 @@ The writer evidence in the verification record was taken at these sources:
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `e5aebfbb8bb7d655fd334a17abb3492e977d8e4eff891aba7fd0ace101100993` |
 | `rspace++/tests/persistence/property_support.rs` | `46573d3b4365f648d39bb1512dafb8e89bf2e9350e3b68662637cdf010946aa4` |
 | `rspace++/tests/persistence/mod.rs` | `ffda73dca27f38fbf177a8358635a9b10156313a347d97f47eb84dc17d8462c9` |
+
+### Retention V2 writer activation (2026-10-26)
+
+The writer section above kept the V1 writer for every opened directory, because
+the first V2 successor of a directory is a one-way change for that directory,
+and the user decided on 2026-10-26 to activate the V2 writer after that change's
+gates. Its full gate passed at `e6c784d90`, and the activation commit makes V2
+the default: `DurableDirectoryV1::open` selects the V2 writer beside the dual
+reader (`durable/io.rs:839-840`). That constant is the whole production change,
+apart from one extraction that changes no behavior: `recover_read_authority`
+(`durable/mod.rs:502-512`) opens its directory and calls the new
+`recover_read_authority_from_directory` (`durable/mod.rs:514-531`), with which a
+test admits a read authority under a writer it selected.
+
+![A durable directory under the default V2 retention writer. A directory starts as a V1 directory, in amber, which appoints a V1 retention manifest: every binary opens, admits and checkpoints it, and binaries built before the activation extend it with V1 successors, so it stays V1. Its first successor under the default V2 writer, in purple, migrates its history once, as one sorted batch from the empty radix, and appoints an anchor; this step is one-way. The V2 directory, in green, takes path-local commits and V2 checkpoints from this and later binaries. Opened by a binary that reads V2 but writes V1, built at 21912f662 or e6c784d90, in grey, it is adopted, but a successor is refused RetentionFormatNotWritable(V2) and a checkpoint SourceRetentionFormatNotWritable(V2). Opened by a binary built before the dual reader, in red, it is refused in physical recovery, with InvalidDomain at a V2 checkpoint descriptor or UnknownObjectDomain at the first anchor or radix node of a migration transaction. Both older binaries write nothing, so the directory stays V2, and no transition leads back to V1](figures/retention-v2-writer-activation.svg)
+
+**Coherence.** By its appointed format, an opened directory is row 2 or row 4
+of the writer and reader table above. Cold admission refuses only the V2 writer
+with the V1-only reader (`RetentionWriterUnreadable`,
+`durable/admission.rs:1855-1863`), and no production path selects the V1-only
+reader. Admission reads the writer only for that refusal and keeps it in the
+admitted source (`:2072`), so every admission report is the same under both
+writers. The V1 writer and the V1-only reader are now selected only by the
+test-build setters (`durable/io.rs:852-856`, `:864-868`), where they stand in
+for older binaries: the V1-only reader with the V1 writer for a binary built
+before the dual reader, and the dual reader with the V1 writer for one built
+with the reader or the writer of the two sections above. Nothing is removed:
+the V1 writer and the V1-only reader remain as those stand-ins.
+
+**Release note.** The first V2 successor of a directory, which migrates its V1
+history once, is one-way for that directory:
+
+- a binary built before the dual reader (before `21912f662`) refuses the
+  directory in physical recovery and writes nothing: `InvalidDomain` at a V2
+  checkpoint descriptor, or `UnknownObjectDomain` at the first anchor or radix
+  node of a migration transaction;
+- a binary that reads V2 but writes V1 (built at `21912f662` or `e6c784d90`)
+  adopts the directory but refuses to extend it
+  (`RetentionFormatNotWritable(V2)`) or to checkpoint it
+  (`SourceRetentionFormatNotWritable(V2)`), and leaves the directory unchanged;
+- nothing exports V2 back to V1.
+
+Opening, admitting and checkpointing a V1 directory before its first successor
+keep it V1, so installing the new binary is not itself the one-way point. These
+statements rest on the stand-ins, whose V1-only reader is the V1 classifier
+(`RV-20`, `RV-21`), and on the directory refusals of `RV-27`, `RV-28` and the
+directory tests of the writer section; no older build was run. The
+consensus-change register records the note as a continuation of CBR-053.
+
+**RV-28.** `RV-28` now describes the V1 writer only. Its test selects that
+writer explicitly, and the journal owner's checkpoint runs over a directory
+opened with it. The V2 writer's successors and checkpoints are `RV-33` to
+`RV-37` and the directory tests of the writer section.
+
+**Executable adaptations.** With only the default flipped, 8 of the 457 selected
+persistence tests failed (engineering journal J-250). None exposed a production
+defect; each encoded the old default:
+
+| Test | What the default changed | Adaptation |
+|---|---|---|
+| `incremental_inventory_tracks_replacement_removal_sharing_and_reuse` (`SI-01`, `SI-03`) and `incremental_inventory_matches_cold_admission_at_every_history_step` (`SI-02`) | the V2 writer seals anchors and radix nodes, which the semantic oracle store refuses with `UnknownObjectDomain` | both writers; the metadata objects are kept out of the oracle store, and under the V2 writer the sealed anchor and the appointed closure are checked against `RetentionOracle` |
+| `v2_admitted_sources_refuse_every_successor_before_durable_mutation` (`RV-28`) | the default writer extends and checkpoints a V2 source | selects the V1 writer, also for the journal owner's directory |
+| `v2_cold_admission_matches_v1_admission_and_charges_metadata_reads_exactly` (`RV-25`), `v2_restart_fixtures_are_refused_by_old_readers_and_adopted_by_dual_readers` (`RV-27`), `v2_writer_checkpoints_carry_the_retained_union_and_the_metadata_closure` | the V1-only reader met the default V2 writer: `RetentionWriterUnreadable` | cold admission with the V1-only reader, the stand-in for an older binary, also selects the V1 writer |
+| `v2_writer_migrates_a_v1_source_at_its_first_successor` | its V1 writer was the default | selects the V1 writer |
+| `v2_writer_requires_the_dual_reader_and_is_not_the_default` | asserted the V1 default | asserts the V2 writer and the dual reader; renamed `v2_writer_requires_the_dual_reader_and_is_the_default` |
+
+**SI under both writers.** `SI-01` to `SI-03` do not depend on the writer: they
+compare the sealed target, the catalog's incremental inventory and cold
+admission after a restart with an oracle store of the semantic objects. They
+now run under both writers, from both sources, on the fixed history and on
+every generated one. That store admits only semantic objects, so under the V2
+writer it receives every sealed object except the anchor and the radix nodes.
+The retained states are then the current state and the history of
+`RetentionOracle`: the sealed anchor must equal the oracle's, and after each
+restart cold admission must appoint the oracle's anchor and metadata closure
+(`assert_appoints`). The retained union stays the semantic union, so the
+comparison with the catalog's retained bytes is unchanged; keeping the metadata
+out of it is `SI-03` for V2 metadata. Under the V1 writer the checks are as
+before, and no metadata object may be sealed.
+
+**Boundary.**
+
+- The durable backend is still dormant: no running node opens a durable
+  directory, and the authority backends are `Memory` and `Lmdb`. The release
+  note binds the backend's activation, task 7931, which must re-enter the
+  consensus-change register.
+- The writer section's cost remarks now apply by default: the first successor of
+  every V1 directory migrates its whole history once, and below roughly two
+  hundred entries a V2 commit can write more bytes than the V1 manifest it
+  replaces (derived, not measured); task 7929 measures the scaling.
+- The TLA+ and Rocq sources are unchanged. `RSpaceRetentionV2Upgrade` lets a
+  publisher choose either format until the first V2 publication and only V2
+  after it (`AppointableFormats`, `RSpaceRetentionV2Upgrade.tla:81-93`). A
+  publisher that always chooses V2 therefore has a subset of the model's
+  behaviors, so every invariant the model checks holds for it; no theorem names
+  the default.
+- Earlier sections that say the V2 writer is not yet the default record those
+  changes as they landed and are not rewritten.
+
+The activation evidence in the verification record was taken at these sources:
+
+| Pinned source | SHA-256 |
+|---|---|
+| `rspace++/src/rspace/persistence/durable/io.rs` | `7811573c32e8cf8942eed3530c52b3f7a620f664880e517204ac258ffda05cf7` |
+| `rspace++/src/rspace/persistence/durable/mod.rs` | `b0a55402c7dae5369607a0de15a7771a6601d50a55a19ea3343074de60f5021d` |
+| `rspace++/src/rspace/persistence/durable/admission.rs` | `d0c10d21705bfe5889a7aa49e4f9d5ee5b97579d46bcb6c1f80300de55eb02c1` |
+| `rspace++/tests/persistence/durable_publication.rs` | `4a7e31cbfd7b3b2c5ce78369fc4c6e96383dc2a628b5a2cc0b3a8ba2998e190a` |
+| `rspace++/tests/persistence/durable_rspace_authority.rs` | `e8dd5af97091573848fd1b1e3fc37263a4bfc5f9b14874ba5093932775dcd01a` |
+| `rspace++/tests/persistence/retention_v2_format_properties.rs` | `fba70440c3b860db27ad705a09f41ad663805a44d10870b57069a9c232468d1c` |
+| `rspace++/tests/persistence/property_support.rs` | `46573d3b4365f648d39bb1512dafb8e89bf2e9350e3b68662637cdf010946aa4` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `e5aebfbb8bb7d655fd334a17abb3492e977d8e4eff891aba7fd0ace101100993` |
 
 ## Formal-to-executable derivation matrix
 
@@ -3154,7 +3274,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | RV-25 | `EXEC_ONLY` | `RetentionV2Format.v1_migration_preserves_entries_order_count_and_roots`, `RetentionV2Format.memoized_radix_count_agrees_with_radix_count` | P | Each V2 source is the migration of its V1 twin; equal reports, the read equations and the limit boundaries are executable. |
 | RV-26 | `EXEC_ONLY` | `EXEC_ONLY` | E | Resource boundaries are executable evidence; no limit was added. |
 | RV-27 | `AdoptionIsNewestPublished`, `NoReaderAdoptsUnsupportedContent`, `NeverOldReaderRefusesV2`, `NeverDualReaderAdoptsV2`, `NeverAdoptsBehindTornSuccessor` | `EXEC_ONLY` | P | Directory images realize the model's refusal and adoption witnesses; which layer refuses each corruption is executable. |
-| RV-28 | `EXEC_ONLY` | `EXEC_ONLY` | E | Successor refusal is the executable guard of the V1 writer, which every opened directory uses until the V2 writer is activated; RV-33 to RV-37 cover the V2 writer. |
+| RV-28 | `EXEC_ONLY` | `EXEC_ONLY` | E | Successor refusal is the executable guard of the V1 writer, which only the test-build setter selects since the V2 writer became the default, standing in for a binary that reads V2 but writes V1; the test selects it explicitly, and RV-33 to RV-37 cover the V2 writer. |
 | RV-29 | `EXEC_ONLY` | `EXEC_ONLY` | E | Totality is executable evidence over arbitrary bytes and arbitrary graphs. |
 | RV-30 | `EXEC_ONLY` | `RetentionV2Editor.canonical_radix_exists_and_is_unique`, `RetentionV2Editor.unary_inner_mutant_breaks_uniqueness` | P | The theory names nodes by an injective function; byte-identical images under every edit order, and the refusal of a unary node by the constructor and the reader, are executable. |
 | RV-31 | `EXEC_ONLY` | `RetentionV2Editor.radix_edit_batch_is_the_canonical_rebuild`, `RetentionV2Editor.unpruned_empty_child_mutant_is_not_the_rebuild` | P | The theory's editor follows `RadixEditor` step by step but walks every edit from the root, where `RadixEditor` resumes at a cursor step within the common prefix of adjacent keys (writer section, boundary); that resumption, the staged bytes, the typed CAS failure and the empty node are executable. |
@@ -3386,10 +3506,22 @@ reader, ledger, reachability, closure, semantic, admission and publication
 tests, and this registry test. Unlike the reader extension, these results cover
 production code that writes V2: the editor under the retention domain, the
 commit and the migration, the metadata trial, the successor binding, the V2
-checkpoint builder and the post-publication check. Only the test setter selects
-the V2 writer; opened directories keep writing V1 until the activation commit.
-See engineering journal J-249 for caps, evidence hashes and the remaining
-obligations.
+checkpoint builder and the post-publication check. At this extension only the
+test setter selected the V2 writer, and opened directories wrote V1 until the
+activation commit below. See engineering journal J-249 for caps, evidence hashes
+and the remaining obligations.
+
+The 2026-10-26 writer activation makes V2 the default writer of opened
+directories. It adds no ID, so the catalog/derivation/binding registry still
+contains **187**, and no Rocq or TLA+ source changed. On an isolated export of
+the candidate tree, all 457 selected rspace++ library tests under
+`rspace::persistence` passed single-threaded in debug (31.83 s) and
+release (13.57 s), with the three unwind-child helpers ignored by
+design. They include `RV-28` under the V1 writer, which its test now selects,
+`SI-01` to `SI-03` under both writers, the four directory tests, and every
+admission, publication and recovery test that opens a directory by default and
+therefore now runs the V2 writer. See engineering journal J-250 for the
+activation probe, caps, evidence hashes and the release note.
 
 ## Caller-authority contract (2026-09-06)
 

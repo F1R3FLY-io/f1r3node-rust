@@ -19858,6 +19858,142 @@ structures persistent", *Journal of Computer and System Sciences*
 38(1):86–124, 1989,
 [doi:10.1016/0022-0000(89)90034-2](<https://doi.org/10.1016/0022-0000(89)90034-2>).
 
+### J-250 — 2026-10-26: retention V2 writer activation (task 7926)
+
+**DECISION.** J-249 selected the path-local retention V2 writer only through a
+test-build setter, because the first V2 successor of a directory is a one-way
+change for that directory, and it recorded the user's decision of 2026-10-26 to
+activate after the gates. That change's full export gate passed at
+`e6c784d90`, so this change makes V2 the default writer of every opened
+`DurableDirectoryV1`. With it, property `RV-28` is rescoped to the V1 writer,
+and the one-way change is published as a release note in this entry, in the
+[consensus-change register](../../consensus/consensus-change-register.md#cbr-053)
+as a continuation of CBR-053, and in the commit message.
+
+**DERIVED.** The production change is one constant: `DurableDirectoryV1::open`
+sets `retention_writer: RetentionFormat::V2` beside the dual reader
+(`durable/io.rs:839-840`). One extraction changes no behavior:
+`recover_read_authority` opens its directory and calls the new
+`recover_read_authority_from_directory` (`durable/mod.rs:502-531`), which a test
+uses to admit a read authority under a writer it selected. The default pair is
+coherent. `RetentionWriterUnreadable` refuses only the V2 writer with the
+V1-only reader (`durable/admission.rs:1855-1863`), and no production path
+selects the V1-only reader. Admission reads the writer only for that refusal and
+keeps it in the admitted source (`:2072`), so admission reports do not depend on
+the writer. After activation the V1 writer and the V1-only reader are reachable
+only through the test-build setters (`durable/io.rs:852-856`, `:864-868`), where
+they stand in for older binaries: the V1-only reader with the V1 writer for a
+binary built before `21912f662`, and the dual reader with the V1 writer for one
+built at `21912f662` or `e6c784d90`. The V1 manifest re-encoding and the
+V2-under-V1 refusals stay as that stand-in; nothing is removed.
+`RSpaceRetentionV2Upgrade` lets a publisher choose either format until the first
+V2 publication and only V2 after it (`RSpaceRetentionV2Upgrade.tla:81-93`), so a
+publisher that always chooses V2 has a subset of the model's behaviors and
+keeps every invariant the model checks; neither formal model changes.
+
+**Release note (one-way).** The first V2 successor of a directory, which
+migrates its V1 history once, is one-way for that directory:
+
+- a binary built before the dual reader (before `21912f662`) refuses the
+  directory in physical recovery and writes nothing: `InvalidDomain` at a V2
+  checkpoint descriptor, or `UnknownObjectDomain` at the first anchor or radix
+  node of a migration transaction;
+- a binary that reads V2 but writes V1 (built at `21912f662` or `e6c784d90`)
+  adopts the directory but refuses to extend it
+  (`RetentionFormatNotWritable(V2)`) or to checkpoint it
+  (`SourceRetentionFormatNotWritable(V2)`), and leaves the directory unchanged;
+- nothing exports V2 back to V1.
+
+Opening, admitting and checkpointing a V1 directory before its first successor
+keep it V1, so installing the new binary is not itself the one-way point. These
+statements are derived from the current code's stand-ins for the older readers
+and writer (`RV-20`, `RV-21`, `RV-27`, `RV-28` and the directory tests of
+J-249); no older build was run. No running node uses the durable backend yet:
+the authority backends are `Memory` and `Lmdb`.
+
+**HYPOTHESIS.** Recorded before the probe ran: with only the default flipped,
+the persistence suite fails exactly where a test (a) admits with the V1-only
+reader, which now meets the V2 writer and is refused `RetentionWriterUnreadable`;
+(b) is `RV-28`, whose publishers would then succeed; (c) is the journal owner's
+refusal helper that `RV-28` calls; (d) asserts that V2 is not the default; or
+(e) commits successors through the default writer and asserts V1 formats or
+bytes. Each failure was to be classified before any test changed, either as a
+test that means the V1 writer or as a defect of the V2 writer path, which would
+be diagnosed first. Every other test was predicted to pass, because 7926 gated
+the same V2 code through the test setter.
+
+**MEASURED.** On an export of HEAD `e6c784d90` (tree `4a4caa44`) with only
+`durable/io.rs:840` flipped, the 457 selected `rspace::persistence` tests ran in
+debug, one test thread: 449 passed, 8 failed, 3 ignored, in 18.45 s
+(`target/perf/logs/phase4/activation-probe-persistence-debug-20261026T231834Z.log`,
+SHA-256 `f853d55da49ef583626dd6588ee124a86b86214d190334e42286684e3f0e8fd8`). The
+hypothesis held: every failure has class (a), (b), (d) or (e), class (c) was not
+reached because `RV-28` failed first, and no other test failed. Line numbers
+refer to `durable_publication.rs` at `e6c784d90`:
+
+| Test | Failed at | Observed | Class | Adaptation |
+|---|---|---|---|---|
+| `incremental_inventory_tracks_replacement_removal_sharing_and_reuse` (`SI-01`, `SI-03`) | `:1303` | the oracle store refused a sealed object, `UnknownObjectDomain` | (e) | both writers; metadata kept out of the oracle store; under V2 the sealed anchor and the appointed closure checked against `RetentionOracle` |
+| `incremental_inventory_matches_cold_admission_at_every_history_step` (`SI-02`) | `:1303`, minimal input `[(0, 1)]` | the same | (e) | the same |
+| `v2_admitted_sources_refuse_every_successor_before_durable_mutation` (`RV-28`) | `:1599` | "generation-checkpoint publication unexpectedly succeeded" | (b) | selects the V1 writer, also for the journal owner's directory, class (c) |
+| `v2_cold_admission_matches_v1_admission_and_charges_metadata_reads_exactly` (`RV-25`) | `:4153` | `WriterUnreadable { writer: V2, reader: V1Only }` | (a) | cold admission with the V1-only reader also selects the V1 writer |
+| `v2_restart_fixtures_are_refused_by_old_readers_and_adopted_by_dual_readers` (`RV-27`) | `:4529` | the same | (a) | the same |
+| `v2_writer_checkpoints_carry_the_retained_union_and_the_metadata_closure` | `:5172` | the same | (a) | the same |
+| `v2_writer_migrates_a_v1_source_at_its_first_successor` | `:5092` | the default writer sealed a successor of the migrated source | (e) | selects the V1 writer |
+| `v2_writer_requires_the_dual_reader_and_is_not_the_default` | `:5186` | the opened writer was V2, not V1 | (d) | asserts the V2 writer and the dual reader; renamed `v2_writer_requires_the_dual_reader_and_is_the_default` |
+
+No failure exposed a production defect: each test encoded the old default, or
+the pairing of the V1-only reader with the V1 writer that the old default
+supplied.
+
+**EXECUTABLE REFINEMENT.**
+
+- Cold admission with the V1-only reader (`admit_with`) also selects the V1
+  writer, because that reader stands in for a binary built before the dual
+  reader, which writes V1; the dual reader keeps the opened directory's writer.
+- `RV-28` selects the V1 writer through `admitted_writing`, and the journal
+  owner's checkpoint runs over a directory opened with it through
+  `recover_read_authority_from_directory`.
+- The migration test's V1 writer is explicit, and the coherence test asserts
+  that an opened directory pairs the V2 writer with the dual reader.
+- `SI-01` to `SI-03` run under both writers, from both sources, on the fixed
+  history and on every generated one. The semantic oracle store receives every
+  sealed object except the anchor and the radix nodes. Under the V2 writer the
+  retained states are `RetentionOracle`'s, whose anchor must be the sealed one
+  and whose metadata closure cold admission must appoint after each restart;
+  under the V1 writer the checks are as before, and no metadata object may be
+  sealed.
+
+The registry still holds 187 IDs; the renamed test is not bound. The full SI
+history property now runs every generated history under both writers. In the
+release nextest suite of the commit gate it took 21.704 s
+(`target/perf/logs/phase0/activation-gate-nextest-20261027T003140Z.log`),
+against 10.852 s in task 7926's gate
+(`target/perf/logs/phase0/7926-gate-nextest-20261026T224706Z.log`). Both ran
+beside the gate's other parallel tests, so the times include contention; the
+factor of two matches the doubled histories, which is an inference, not a
+profile.
+
+**VERIFICATION BOUNDARY.** The evidence ran on tree `b6510236` exported to
+`target/scratch/idx`, which is HEAD `e6c784d90` plus this change, with this
+entry and the catalog's verification-record paragraph and pinned-source table
+still holding placeholders. It ran one heavy job at a time, each in a headless
+user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| activation probe: only the default flipped, debug | 24 GiB, one test thread | 449 passed, 8 failed, 3 ignored, in 18.45 s | `target/perf/logs/phase4/activation-probe-persistence-debug-20261026T231834Z.log` | `f853d55da49ef583626dd6588ee124a86b86214d190334e42286684e3f0e8fd8` |
+| the 457 selected rspace++ library tests under `rspace::persistence`, debug | 24 GiB, one test thread | 457 passed, 0 failed, 3 ignored, in 31.83 s | `target/perf/logs/phase4/activation-persistence-debug-20261027T002749Z.log` | `66a08934a614a1d4bff47864c859b7b68d489eb6ff921e4f6f0777cac620be09` |
+| the same, release | as above | 457 passed, 0 failed, 3 ignored, in 13.57 s | `target/perf/logs/phase4/activation-persistence-release-20261027T002933Z.log` | `9beeebfc4ba5e24382dd56c219d16c288efc63bfb3077e16c8e2957631dd9ee7` |
+
+The TLA+ and Rocq sources did not change, so neither was rerun. The commit's
+full export gate (`cargo check`, clippy, the release nextest suites for
+`models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the doc tests)
+is recorded in the pgmcp progress note for task 7926. These results make V2 the
+default writer of the dormant durable store; they do not activate the backend,
+which is task 7931. These are agent-run results; independent review and the
+approved pgmcp verification recipe remain required.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -837,7 +837,7 @@ impl DurableDirectoryV1 {
             directory,
             generation_leases,
             retention_reader: RetentionReader::Dual,
-            retention_writer: RetentionFormat::V1,
+            retention_writer: RetentionFormat::V2,
         })
     }
 
@@ -847,8 +847,8 @@ impl DurableDirectoryV1 {
     /// directory. Opened directories read both formats.
     pub(crate) const fn retention_reader(&self) -> RetentionReader { self.retention_reader }
 
-    /// Downgrade this directory to a strict V1 reader, standing in for a node
-    /// built before the V2 retention reader existed.
+    /// Downgrade this directory to a strict V1 reader. With the V1 writer, it
+    /// stands in for a node built before the V2 retention reader existed.
     #[cfg(test)]
     pub(crate) fn with_retention_reader_for_test(mut self, reader: RetentionReader) -> Self {
         self.retention_reader = reader;
@@ -856,11 +856,11 @@ impl DurableDirectoryV1 {
     }
 
     /// The retention format in which this directory's writer seals successors
-    /// and generation checkpoints. Opened directories write V1.
+    /// and generation checkpoints. Opened directories write V2.
     pub(crate) const fn retention_writer(&self) -> RetentionFormat { self.retention_writer }
 
-    /// Select the retention writer, standing in for a node built with the
-    /// V2 retention writer active.
+    /// Select the retention writer. The V1 writer stands in for a node built
+    /// before the V2 retention writer was activated.
     #[cfg(test)]
     pub(crate) fn with_retention_writer_for_test(mut self, writer: RetentionFormat) -> Self {
         self.retention_writer = writer;

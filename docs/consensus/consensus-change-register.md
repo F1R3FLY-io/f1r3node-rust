@@ -7027,3 +7027,60 @@ not complete consensus equivalence of every possible caller history. The
 broader runtime/replay qualification remains required. See
 [J-161](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-161--2026-09-14-cancellation-must-preserve-selected-datum-liveness)
 for exact proof/property coverage and the pre-repair negative control.
+
+**CBR-053 living continuation (2026-10-26, retention V2 writer activation and
+one-way release note).** The dormant durable RSpace store now writes the shared
+retention V2 metadata by default. Tasks 7923, 7925 and 7926 froze the V2
+representation, added a dual-version cold reader, and added a path-local writer
+that only a test-build setter selected (`d5cb1ed83`, `21912f662`, `e6c784d90`).
+Owner decision, **2026-10-26**, choosing the option the agent recommended:
+*"Activate after gates (Recommended)"*, meaning that a separate commit after the
+writer's full gate makes V2 the default writer, rescopes RV-28 to the V1 writer
+and publishes this one-way release note. `DurableDirectoryV1::open` now selects
+the V2 writer beside the dual reader
+(`rspace++/src/rspace/persistence/durable/io.rs:839-840`). This settles the
+retention-format part of the explicit version/migration decision that the
+2026-08-28 continuation requires before production activation. The
+reset-identity and transfer-version decisions, bounded compaction, reader-safe
+garbage collection, Windows authority handling and the LMDB comparison remain
+required, and the backend itself stays dormant.
+
+Release note — one-way per directory. The first V2 successor of a directory,
+which migrates its V1 history once, cannot be undone for that directory:
+
+- a binary built before the dual reader (before `21912f662`) refuses the
+  directory in physical recovery and writes nothing: `InvalidDomain` at a V2
+  checkpoint descriptor, or `UnknownObjectDomain` at the first anchor or radix
+  node of a migration transaction;
+- a binary that reads V2 but writes V1 (built at `21912f662` or `e6c784d90`)
+  adopts the directory but refuses to extend it
+  (`RetentionFormatNotWritable(V2)`) or to checkpoint it
+  (`SourceRetentionFormatNotWritable(V2)`), and leaves the directory unchanged;
+- nothing exports V2 back to V1.
+
+Opening, admitting and checkpointing a V1 directory before its first successor
+keep it V1, so installing the new binary is not itself the one-way point. These
+statements are derived from the current code's stand-ins for the older readers
+and writer (invariant-catalog properties RV-20, RV-21, RV-27 and RV-28), not
+from running older builds.
+
+| Surface | Finding at this checkpoint |
+|---|---|
+| Production reachability | None: the persistence module is `expect(dead_code)` outside tests (`rspace++/src/rspace/mod.rs:11-18`), and the RSpace authority backends are `Memory` and `Lmdb` (`rspace++/src/rspace/state/rspace_state_authority.rs:142-145`); no node opens a durable directory |
+| Durable bytes | Successors of opened directories seal the `RSpaceDAG.RetA` anchor and `RSpaceDAG.RetR` radix nodes frozen by task 7923 instead of a re-encoded V1 manifest, and checkpoints of V2 sources use the V2 descriptor; the WAL, pack, index and catalog framings are unchanged |
+| State and cryptographic identities | No block, state root, legacy history root, semantic manifest or canonical semantic object byte changes |
+| Serialization | No RhoPath, protobuf, bincode or ACT change |
+| Language and metering | No syntax, matching, COMM order, accepted program, blessed contract, compute or storage charge change |
+| Classification | `NO_PRODUCTION_CHANGE_DERIVED`; activating the durable backend (task 7931) must re-enter this register with this release note |
+
+Evidence: on the candidate tree `b6510236` (HEAD `e6c784d90` plus this change,
+before its documents were filled), the 457 selected rspace++ persistence tests
+passed in debug and release, and the commit gate passed: `cargo check` of all
+targets, clippy, all 4,395 release nextest tests of `models`,
+`rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the release doc tests
+of `models` and `rholang` (summary SHA-256
+`e9dc8bad4d078023674d7493510079f51de2052415ea61d5da81c0af0f43c831`). See
+[J-250](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-250--2026-10-26-retention-v2-writer-activation-task-7926)
+for the activation probe and its classification, and
+[J-249](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-249--2026-10-26-path-local-retention-v2-metadata-writer-task-7926)
+for the writer.

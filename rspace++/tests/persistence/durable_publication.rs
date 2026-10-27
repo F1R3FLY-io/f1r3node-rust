@@ -24,7 +24,7 @@ use super::durable_rspace_authority::assert_v2_owner_checkpoint_refuses_before_d
 use super::property_support::independent_inventory_digest;
 use super::retention_v2_format_properties::{
     History, RadixDefect, build_radix, encoded, metadata_closure, migrate_checkpoint_source_to_v2,
-    model_anchor_bytes, model_key, radix_defect_sources, v1_manifest_entries,
+    model_anchor_bytes, model_decode_key, model_key, radix_defect_sources, v1_manifest_entries,
     v1_source_with_manifest, v2_source_from_objects, v2_source_with_history,
     v2_source_with_radix_child,
 };
@@ -1248,14 +1248,26 @@ fn borrowed_incremental_publication_trims_only_under_exact_store_authority() {
     }
 }
 
+/// SI-01 to SI-03 under each retention writer, from a V1 and a semantic
+/// source.
 fn check_incremental_inventory_history(operations: &[(u8, u8)]) {
-    for source in [checkpoint_source_fixture(), semantic_checkpoint_source_fixture()] {
-        check_incremental_inventory_history_from(source, operations);
+    for writer_format in [RetentionFormat::V1, RetentionFormat::V2] {
+        for source in [checkpoint_source_fixture(), semantic_checkpoint_source_fixture()] {
+            check_incremental_inventory_history_from(source, writer_format, operations);
+        }
     }
 }
 
+/// Publish `operations` as successors of `source` under `writer_format`. At
+/// every step the sealed target, the catalog's incremental inventory and cold
+/// admission after a restart must equal what an oracle store of the semantic
+/// objects computes. The V1 writer's retained states are those its sealed
+/// manifest lists. The V2 writer's are `RetentionOracle`'s: the sealed anchor
+/// must be the oracle's, cold admission must appoint the oracle's metadata
+/// closure, and no metadata object enters the semantic oracle store.
 fn check_incremental_inventory_history_from(
     source: SyntheticCheckpointSource,
+    writer_format: RetentionFormat,
     operations: &[(u8, u8)],
 ) {
     use crate::rspace::data_index::RSpaceDataIndex;
@@ -1273,9 +1285,10 @@ fn check_incremental_inventory_history_from(
             .put_if_absent_or_equal(*reference, bytes.clone().into())
             .unwrap();
     }
+    let mut retention_oracle = RetentionOracle::of(&source);
     let scratch = trial_scratch("incremental-inventory-");
     install_checkpoint_image(scratch.path(), &checkpoint_image_from_source(source));
-    let mut writer = admit(scratch.path());
+    let mut writer = admitted_writing(scratch.path(), writer_format);
     let mut counts = [0u64; 4];
     for (step, &(identity, after)) in operations.iter().enumerate() {
         let index = usize::from(identity);
@@ -1297,30 +1310,67 @@ fn check_incremental_inventory_history_from(
                 DurableAdmissionLimitsV1::UNBOUNDED,
             )
             .unwrap();
+        let mut metadata_objects = 0_usize;
         for object in sealed.objects() {
-            oracle
-                .put_if_absent_or_equal(object.reference(), object.canonical_bytes_arc())
-                .unwrap();
+            let bytes = object.canonical_bytes();
+            match bytes.starts_with(RETENTION_ANCHOR_DOMAIN) ||
+                bytes.starts_with(RETENTION_RADIX_DOMAIN)
+            {
+                true => metadata_objects += 1,
+                false => {
+                    oracle
+                        .put_if_absent_or_equal(object.reference(), object.canonical_bytes_arc())
+                        .expect("the oracle store admits every semantic sealed object");
+                }
+            }
         }
         let target = sealed.receipt().target();
         let current = verify_structural_closure(&oracle, target.manifest()).unwrap();
+        retention_oracle.commit(
+            RetainedStateV1::new(target, current.canonical_bytes)
+                .expect("the target's closure covers its manifest"),
+        );
         let retention_object = sealed
             .objects()
             .iter()
             .find(|object| Some(object.reference()) == sealed.retention_manifest())
             .unwrap();
-        let retention = RetentionManifestView::parse(retention_object.canonical_bytes()).unwrap();
-        assert_eq!(retention.current().state(), target);
-        assert_eq!(
-            retention.current().canonical_bytes(),
-            current.canonical_bytes,
-            "step {step}: identity {identity}, count {before} -> {after}"
-        );
+        let mut retained_manifests = Vec::with_capacity(retention_oracle.history.len() + 1);
+        match writer_format {
+            RetentionFormat::V1 => {
+                assert_eq!(metadata_objects, 0, "step {step}: the V1 writer seals no V2 metadata");
+                let retention =
+                    RetentionManifestView::parse(retention_object.canonical_bytes()).unwrap();
+                assert_eq!(retention.current().state(), target);
+                assert_eq!(
+                    retention.current().canonical_bytes(),
+                    current.canonical_bytes,
+                    "step {step}: identity {identity}, count {before} -> {after}"
+                );
+                for state in std::iter::once(Ok(retention.current())).chain(retention.historical())
+                {
+                    retained_manifests.push(state.unwrap().state().manifest());
+                }
+            }
+            RetentionFormat::V2 => {
+                let (anchor, _) = retention_oracle.metadata();
+                assert_eq!(
+                    RetentionAnchorV2::parse(retention_object.canonical_bytes()),
+                    Ok(anchor),
+                    "step {step}: identity {identity}, count {before} -> {after}"
+                );
+                retained_manifests.push(target.manifest());
+                for key in retention_oracle.history.keys() {
+                    let state = model_decode_key(key).expect("an oracle key decodes");
+                    retained_manifests.push(state.manifest());
+                }
+            }
+        }
         let mut retained = StructuralClosureLedgerV1::new();
-        for state in std::iter::once(Ok(retention.current())).chain(retention.historical()) {
+        for manifest in retained_manifests {
             verify_structural_closure_in_ledger_with_limits(
                 &oracle,
-                state.unwrap().state().manifest(),
+                manifest,
                 StructuralValidationLimits::unbounded(),
                 &mut retained,
                 RetainedUnionClosureLimitsV1::UNBOUNDED,
@@ -1348,10 +1398,13 @@ fn check_incremental_inventory_history_from(
             retained.retained_union_report().canonical_bytes
         );
         drop(writer);
-        writer = admit(scratch.path());
+        writer = admitted_writing(scratch.path(), writer_format);
         assert_eq!(writer.catalog().state(), target);
         assert_eq!(writer.report().current_structural, current);
         assert_eq!(writer.report().retained_union, retained.retained_union_report());
+        if let RetentionFormat::V2 = writer_format {
+            assert_appoints(&writer, &retention_oracle);
+        }
         counts[index] = after;
     }
 }
@@ -3606,6 +3659,9 @@ fn installed(
     (scratch, image)
 }
 
+/// Cold admission under `reader`. The V1-only reader stands in for a node
+/// built before the V2 retention reader, which writes V1 as well; the dual
+/// reader keeps the opened directory's writer.
 fn admit_with(
     root: &Path,
     reader: RetentionReader,
@@ -3613,9 +3669,14 @@ fn admit_with(
     wal: LogPackDecodeLimits,
     admission: DurableAdmissionLimitsV1,
 ) -> Result<AdmittedWriter, ColdRefusal> {
-    DurableDirectoryV1::open(root)
+    let directory = DurableDirectoryV1::open(root)
         .expect("open the durable trial directory")
-        .with_retention_reader_for_test(reader)
+        .with_retention_reader_for_test(reader);
+    let directory = match reader {
+        RetentionReader::V1Only => directory.with_retention_writer_for_test(RetentionFormat::V1),
+        RetentionReader::Dual => directory,
+    };
+    directory
         .recover_and_admit_v1::<TestSemanticProfile>(recovery, wal, admission)
         .map_err(cold_refusal)
 }
@@ -4727,8 +4788,8 @@ fn v2_restart_fixtures_are_refused_by_old_readers_and_adopted_by_dual_readers() 
 type CheckpointPublisher =
     fn(AdmittedWriter) -> Result<AdmittedWriter, GenerationCheckpointPublicationErrorV1>;
 
-/// Executable refinement of RV-28: until the V2 writer exists, every
-/// successor path of an admitted V2 source refuses before durable mutation.
+/// Executable refinement of RV-28: under the V1 writer, every successor path
+/// of an admitted V2 source refuses before durable mutation.
 #[test]
 fn v2_admitted_sources_refuse_every_successor_before_durable_mutation() {
     let v2 = migrate_checkpoint_source_to_v2(&checkpoint_source_fixture());
@@ -4750,7 +4811,7 @@ fn v2_admitted_sources_refuse_every_successor_before_durable_mutation() {
         &[0x64; 29],
     );
     let snapshot = directory_snapshot(scratch.path());
-    let baseline = admitted(scratch.path(), RetentionReader::Dual);
+    let baseline = admitted_writing(scratch.path(), RetentionFormat::V1);
     let (report, authority) = (baseline.report(), baseline.authority().clone());
     drop(baseline);
 
@@ -4782,7 +4843,7 @@ fn v2_admitted_sources_refuse_every_successor_before_durable_mutation() {
         }),
     ];
     for (name, publisher) in publishers {
-        let writer = admitted(scratch.path(), RetentionReader::Dual);
+        let writer = admitted_writing(scratch.path(), RetentionFormat::V1);
         start_generation_checkpoint_publication_trace();
         let error = publication_error(publisher(writer));
         let trace = take_generation_checkpoint_publication_trace();
@@ -4803,7 +4864,7 @@ fn v2_admitted_sources_refuse_every_successor_before_durable_mutation() {
         assert_eq!(directory_snapshot(scratch.path()), snapshot, "{name}");
     }
 
-    let writer = admitted(scratch.path(), RetentionReader::Dual);
+    let writer = admitted_writing(scratch.path(), RetentionFormat::V1);
     let mutation = data_batch(writer.authority().slot().state(), "v2-successor");
     assert!(matches!(
         writer.seal_transaction(
@@ -4841,7 +4902,7 @@ fn v2_admitted_sources_refuse_every_successor_before_durable_mutation() {
 
     assert_v2_owner_checkpoint_refuses_before_durable_mutation();
 
-    let readmitted = admitted(scratch.path(), RetentionReader::Dual);
+    let readmitted = admitted_writing(scratch.path(), RetentionFormat::V1);
     assert_eq!((readmitted.report(), readmitted.authority()), (report, &authority));
     drop(readmitted);
     assert_eq!(directory_snapshot(scratch.path()), snapshot);
@@ -4866,12 +4927,17 @@ fn admit_writing(
 }
 
 #[track_caller]
-fn admitted_v2_writer(root: &Path) -> AdmittedWriter {
-    match admit_writing(root, RetentionFormat::V2, RetentionReader::Dual) {
-        Ok(writer) => writer,
-        Err(refusal) => panic!("the V2 writer refused an admissible checkpoint: {refusal:?}"),
+fn admitted_writing(root: &Path, writer: RetentionFormat) -> AdmittedWriter {
+    match admit_writing(root, writer, RetentionReader::Dual) {
+        Ok(admitted) => admitted,
+        Err(refusal) => {
+            panic!("the {writer:?} writer refused an admissible checkpoint: {refusal:?}")
+        }
     }
 }
+
+#[track_caller]
+fn admitted_v2_writer(root: &Path) -> AdmittedWriter { admitted_writing(root, RetentionFormat::V2) }
 
 /// The retention entries a directory must appoint, kept without the editor:
 /// the current state and the key-ordered history.
@@ -5086,7 +5152,7 @@ fn v2_writer_migrates_a_v1_source_at_its_first_successor() {
     drop(writer);
 
     let snapshot = directory_snapshot(scratch.path());
-    let v1_writer = admitted(scratch.path(), RetentionReader::Dual);
+    let v1_writer = admitted_writing(scratch.path(), RetentionFormat::V1);
     assert_eq!((v1_writer.report(), v1_writer.authority()), (report, &authority));
     let mutation = data_batch(authority.slot().state(), "v1-writer-after-migration");
     assert!(matches!(
@@ -5177,18 +5243,19 @@ fn v2_writer_checkpoints_carry_the_retained_union_and_the_metadata_closure() {
 /// reader: with the V1-only reader, a V1 directory is refused after physical
 /// recovery and before the store is pinned, and a V2 directory is refused in
 /// recovery as before; neither refusal changes the directory. The V1 writer
-/// works under both readers, and opened directories write V1 until the V2
-/// writer is activated.
+/// works under both readers, and opened directories pair the V2 writer with
+/// the dual reader.
 #[test]
-fn v2_writer_requires_the_dual_reader_and_is_not_the_default() {
+fn v2_writer_requires_the_dual_reader_and_is_the_default() {
     let v1 = checkpoint_source_fixture();
     let (scratch, _) = installed("v2-writer-v1-only-", &v1);
+    let opened =
+        DurableDirectoryV1::open(scratch.path()).expect("open the durable trial directory");
     assert_eq!(
-        DurableDirectoryV1::open(scratch.path())
-            .expect("open the durable trial directory")
-            .retention_writer(),
-        RetentionFormat::V1
+        (opened.retention_writer(), opened.retention_reader()),
+        (RetentionFormat::V2, RetentionReader::Dual)
     );
+    drop(opened);
     let snapshot = directory_snapshot(scratch.path());
     assert_eq!(
         admit_writing(scratch.path(), RetentionFormat::V2, RetentionReader::V1Only).err(),

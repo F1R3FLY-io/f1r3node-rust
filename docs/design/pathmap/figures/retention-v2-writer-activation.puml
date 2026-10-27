@@ -1,0 +1,43 @@
+@startuml retention-v2-writer-activation
+' ============================================================================
+' A durable directory's retention format once the V2 writer is the default
+' (the activation commit after task 7926): what DurableDirectoryV1::open
+' (durable/io.rs:839-840), bind_durable_transaction and checkpoint_descriptor
+' (durable/admission.rs) do under the default writer, and what binaries built
+' before the activation do with the same directory, as the test stand-ins of
+' RV-20, RV-21, RV-27 and RV-28 show.
+'   AMBER  #EF6C00  V1 content, which every binary reads and extends
+'   PURPLE #6A1B9A  the one-time migration, the one-way step
+'   GREEN  #2E7D32  V2 content under the default writer
+'   GREY   #616161  a binary that reads V2 but writes V1: adopts, never extends
+'   RED    #C62828  a binary built before the dual reader: refuses in recovery
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam StateBorderColor #455A64
+skinparam StateFontSize 13
+skinparam NoteBorderColor #455A64
+
+title <b>A durable directory under the default V2 retention writer</b>\nthe first V2 successor is one-way: older binaries then refuse the directory or cannot extend it
+
+state "V1 directory" as V1 #FFE0B2 : appoints a V1 retention manifest\nevery binary opens, admits and checkpoints it,\nand it stays V1
+state "V2 directory" as V2 #C8E6C9 : appoints an anchor <latex>A = (c, n, r)</latex>\nover the history radix
+state "Adopted, not extended" as Adopted #E0E0E0 : a binary that reads V2 but writes V1\n(built at 21912f662 or e6c784d90)\nadopts the directory, then refuses a successor\nRetentionFormatNotWritable(V2) and a checkpoint\nSourceRetentionFormatNotWritable(V2)
+state "Refused in recovery" as Refused #FFCDD2 : a binary built before the dual reader\n(before 21912f662) refuses with InvalidDomain\nat a V2 checkpoint descriptor, or UnknownObjectDomain\nat the first anchor or radix node\nof a migration transaction
+
+[*] --> V1 : installed, or published\nby any binary
+V1 -[#EF6C00]-> V1 : open, admit, checkpoint;\na V1 successor from a binary\nbuilt before the activation
+V1 -[#6A1B9A,bold]-> V2 : first successor under the default writer:\nthe history migrates once, as one sorted\nbatch from the empty radix (one-way)
+V2 -[#2E7D32]-> V2 : a path-local commit, a V2 checkpoint\n(this and later binaries)
+V2 -[#616161,dashed]-> Adopted : opened by an older binary
+Adopted -[#616161,dashed]-> V2 : writes nothing
+V2 -[#C62828,dashed]-> Refused : opened by an older binary
+Refused -[#C62828,dashed]-> V2 : writes nothing
+
+note bottom of V2 #F1F8E9
+  No transition leads back to V1:
+  nothing exports V2 back to V1.
+end note
+@enduml
