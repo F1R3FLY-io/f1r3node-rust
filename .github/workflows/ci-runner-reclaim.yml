@@ -21,7 +21,7 @@ name: CI Runner Reclaim
 
 on:
   workflow_run:
-    workflows: ["CI", "CI (fork PRs)"]
+    workflows: ["CI", "CI (fork PRs)", "Heartbeat Timing Benchmark"]
     types: [completed]
   workflow_dispatch:
     inputs:

@@ -138,8 +138,19 @@ runs:
         ' >/dev/null 2>&1 &
         echo "signal poller watching soak-signal on $iid; signals after ${started} count"
 
+    - name: Require accepted segment cleanup
+      env:
+        CBC_CONTROL_REVISION: ${{ github.workflow_sha }}
+        CBC_CANDIDATE_REVISION: ${{ inputs.target_sha }}
+      shell: bash -euo pipefail {0}
+      run: >-
+        bash ci-control/scripts/ci/check-soak-cleanup.sh --root ci-control
+        --control-revision "$CBC_CONTROL_REVISION" --candidate-revision "$CBC_CANDIDATE_REVISION"
+        --output /tmp/merge-recovery-soak/cleanup-admission.json
+
     - name: Soak (${{ inputs.label }})
       env:
+        SOAK_HARNESS_BIN: ${{ github.workspace }}/ci-control/target/debug/casper-soak
         SOAK_SIGNAL_FILE: /tmp/merge-recovery-soak/signal
         F1R3FLY_NODE_IMAGE: ${{ inputs.node_image }}
         F1R3FLY_NODE_BINARY: /tmp/rnode
