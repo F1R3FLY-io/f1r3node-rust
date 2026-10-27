@@ -9,7 +9,7 @@ use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::costacc::genesis_resource_policy::shard_resource_schedule;
 use casper::rust::util::rholang::costacc::owner_offer::owner_direct_offer;
 use casper::rust::v6::block_record::BlockRecord;
-use casper::rust::v6::body::V6Body;
+use casper::rust::v6::body::V6Records;
 use casper::rust::v6::record::ExecutionRecord;
 use casper::rust::v6::settlement::EnvelopeOutcome;
 use casper::rust::v6::V6Engine;
@@ -193,8 +193,10 @@ async fn validators_agree_on_racing_blocks_without_merging_or_replaying_on_the_c
 
     let cited = blocks.iter().any(|hash| {
         let block = nodes[0].block_store.get(hash).unwrap().unwrap();
-        V6Body::decode(&block.body.extra_bytes)
-            .unwrap()
+        block
+            .body
+            .v6
+            .as_ref()
             .map(|b| {
                 b.decode_records::<BlockRecord>()
                     .unwrap()
@@ -209,8 +211,10 @@ async fn validators_agree_on_racing_blocks_without_merging_or_replaying_on_the_c
         .iter()
         .find_map(|hash| {
             let block = nodes[0].block_store.get(hash).unwrap().unwrap();
-            V6Body::decode(&block.body.extra_bytes)
-                .unwrap()
+            block
+                .body
+                .v6
+                .as_ref()
                 .and_then(|b| b.decode_records::<BlockRecord>().ok())
                 .and_then(|records| {
                     records

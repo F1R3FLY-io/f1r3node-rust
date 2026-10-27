@@ -2012,6 +2012,7 @@ mod merge_recovery_validation_tests {
                 extra_bytes: Bytes::new(),
                 applied_from_scope: Vec::new(),
                 merge_base: Bytes::new(),
+                v6: None,
             },
             justifications: vec![Justification {
                 validator: offender,

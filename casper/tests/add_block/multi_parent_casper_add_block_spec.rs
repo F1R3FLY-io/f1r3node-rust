@@ -1172,6 +1172,7 @@ async fn build_block_with_invalid_justification(
         extra_bytes: Bytes::new(),
         applied_from_scope: vec![],
         merge_base: Bytes::new(),
+        v6: None,
     };
 
     let serialized_justifications = vec![Justification {
@@ -1209,4 +1210,25 @@ async fn build_block_with_invalid_justification(
 
     let validator_id = nodes[1].validator_id_opt.as_ref().unwrap();
     validator_id.sign_block(&block_that_points_to_invalid_block)
+}
+
+#[tokio::test]
+async fn a_legacy_shard_refuses_a_block_that_carries_a_v6_body() {
+    let ctx = TestContext::new().await;
+    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let block = node.create_block_unsafe(&[deploy]).await.unwrap();
+    let validator = node.validator_id_opt.clone().expect("a validator identity");
+
+    let mut carrying = block.clone();
+    carrying.body.v6 = Some(models::rust::casper::protocol::casper_message::V6Body::default());
+    let carrying = validator.sign_block(&carrying);
+    assert_ne!(carrying.block_hash, block.block_hash);
+    assert_eq!(
+        node.process_block(carrying).await.unwrap(),
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidFormat))
+    );
+
+    let status = node.process_block(block).await.unwrap();
+    assert!(matches!(status, Either::Right(_)), "{status:?}");
 }

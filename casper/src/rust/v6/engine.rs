@@ -19,7 +19,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 
 use super::backend::ExecutionBackend;
 use super::block_record::BlockRecord;
-use super::body::{Attestation, StateHash, V6Body};
+use super::body::{Attestation, StateHash, V6Body, V6Records};
 use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore};
 use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink};
 use super::executor::BlockExecutor;
@@ -243,9 +243,10 @@ impl<R: ExecutionRecord> V6Engine<R> {
             Advance::Emitted(blocks) => {
                 for hash in blocks {
                     let block = self.load(&hash)?;
-                    let records = V6Body::decode(&block.body.extra_bytes)
-                        .ok()
-                        .flatten()
+                    let records = block
+                        .body
+                        .v6
+                        .as_ref()
                         .and_then(|b| b.decode_records::<R>().ok())
                         .unwrap_or_default();
                     self.core.lock().emit(EmittedBlock {
@@ -418,13 +419,14 @@ impl<R: ExecutionRecord> V6Engine<R> {
             deploys: envelopes,
             rejected_deploys: vec![],
             system_deploys: vec![],
-            extra_bytes: extension.encode(),
+            extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
             merge_base: snapshot
                 .parents
                 .first()
                 .map(|p| p.block_hash.clone())
                 .unwrap_or_default(),
+            v6: Some(extension),
         };
         let header = Header {
             parents_hash_list: snapshot

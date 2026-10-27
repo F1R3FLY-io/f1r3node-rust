@@ -3760,6 +3760,7 @@ fn package_block(
         // None = header-derivable (single-parent, genesis): recorded as
         // empty bytes per the field contract.
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
 
     let header = Header {

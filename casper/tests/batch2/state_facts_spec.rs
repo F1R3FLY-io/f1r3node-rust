@@ -111,6 +111,7 @@ async fn checkpoint_block_with(
         extra_bytes: Bytes::new(),
         applied_from_scope: checkpoint.applied_from_scope,
         merge_base: checkpoint.merge_base.unwrap_or_default(),
+        v6: None,
     };
     tamper(&mut body);
     let header = Header {

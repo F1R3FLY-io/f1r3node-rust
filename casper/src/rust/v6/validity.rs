@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 
-use super::body::V6Body;
+use super::body::{V6Body, V6Records};
 use super::record::ExecutionRecord;
 
 #[derive(Clone, Debug)]
@@ -34,7 +34,12 @@ pub fn check_structure<R: ExecutionRecord>(
 ) -> Result<(V6Body, Vec<R>), String> {
     let body = &block.body;
     let number = body.state.block_number;
-    let ext = V6Body::decode(&body.extra_bytes)?
+    if !body.extra_bytes.is_empty() {
+        return Err("a v6 block must not carry body extra bytes".to_string());
+    }
+    let ext = body
+        .v6
+        .clone()
         .ok_or_else(|| "a v6 block must carry a v6 body extension".to_string())?;
     let attestation = ext
         .attestation
@@ -122,6 +127,7 @@ pub fn check_structure<R: ExecutionRecord>(
 mod tests {
     use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
     use prost::bytes::Bytes;
+    use prost::Message;
 
     use super::*;
     use crate::rust::v6::block_record::BlockRecord;
@@ -148,9 +154,10 @@ mod tests {
                 deploys: vec![],
                 rejected_deploys: vec![],
                 system_deploys: vec![],
-                extra_bytes: ext.encode(),
+                extra_bytes: Bytes::new(),
                 applied_from_scope: vec![],
                 merge_base: Bytes::new(),
+                v6: Some(ext.clone()),
             },
             justifications: vec![],
             sender: Bytes::new(),
@@ -227,8 +234,26 @@ mod tests {
     #[test]
     fn legacy_blocks_are_not_v6_blocks() {
         let mut b = block(&ext(vec![]), "r", "r");
-        b.body.extra_bytes = Bytes::new();
+        b.body.v6 = None;
+        assert!(check(&b, &Limits::default())
+            .unwrap_err()
+            .contains("must carry a v6 body extension"));
+    }
+
+    #[test]
+    fn the_old_prefixed_form_is_refused() {
+        let e = ext(vec![record("t")]);
+        let mut prefixed = e.to_proto().encode_to_vec();
+        prefixed.splice(0..0, b"F1R3V6\x02".iter().copied());
+        let mut b = block(&e, "r", "r");
+        b.body.v6 = None;
+        b.body.extra_bytes = Bytes::from(prefixed);
         assert!(check(&b, &Limits::default()).is_err());
+        let mut both = block(&e, "r", "r");
+        both.body.extra_bytes = Bytes::from_static(b"anything");
+        assert!(check(&both, &Limits::default())
+            .unwrap_err()
+            .contains("must not carry body extra bytes"));
     }
 
     fn fresh_envelope() -> models::rust::casper::protocol::casper_message::ProcessedDeploy {

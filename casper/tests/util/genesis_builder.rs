@@ -128,6 +128,7 @@ impl GenesisBuilder {
             extra_bytes: bytes::Bytes::new(),
             applied_from_scope: vec![],
             merge_base: bytes::Bytes::new(),
+            v6: None,
         };
 
         let header = Header {
