@@ -3254,7 +3254,7 @@ async fn block_version_validation_should_work() {
         let result = Validate::version(&genesis, -1);
         assert!(!result);
 
-        let result = Validate::version(&genesis, 1);
+        let result = Validate::version(&genesis, casper::rust::casper::CASPER_PROTOCOL_VERSION);
         assert!(result);
     })
     .await

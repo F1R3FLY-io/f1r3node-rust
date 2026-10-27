@@ -116,7 +116,7 @@ async fn checkpoint_block_with(
             .map(|p| p.block_hash.clone())
             .collect(),
         timestamp: now_millis,
-        version: 1,
+        version: casper::rust::casper::CASPER_PROTOCOL_VERSION,
         extra_bytes: Bytes::new(),
     };
     let justifications: Vec<Justification> = snapshot.justifications.iter().cloned().collect();
