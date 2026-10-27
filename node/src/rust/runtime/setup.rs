@@ -112,19 +112,16 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         protocol_v6 = conf.casper.genesis_block_data.protocol_v6,
         "Shard protocol mode"
     );
-    models::rust::cost_protocol_limits::set_protocol_caps(conf.casper.protocol_caps).map_err(
-        |cap| {
+    conf.casper
+        .genesis_block_data
+        .protocol_caps
+        .check()
+        .map_err(|cap| {
             CasperError::RuntimeError(format!(
-                "casper.protocol-caps.{} must be positive",
+                "casper.genesis-block-data.protocol-caps.{} must be positive",
                 cap.name()
             ))
-        },
-    )?;
-    info!(
-        funding_search_scans = conf.casper.protocol_caps.funding_search_scans,
-        authority_search_nodes = conf.casper.protocol_caps.authority_search_nodes,
-        "Protocol caps"
-    );
+        })?;
 
     info!(data_dir = ?conf.storage.data_dir, "Initializing key-value store manager");
 

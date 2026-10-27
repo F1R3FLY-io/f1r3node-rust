@@ -60,6 +60,7 @@ mod tests {
                 native_token_symbol: "F1R3".to_string(),
                 native_token_decimals: 8,
                 protocol_v6: false,
+                protocol_caps: Default::default(),
             },
             genesis_ceremony: GenesisCeremony {
                 required_signatures: 0,
@@ -80,7 +81,6 @@ mod tests {
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
             mergeable_channels_gc_depth_buffer: 10,
-            protocol_caps: Default::default(),
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,

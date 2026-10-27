@@ -34,7 +34,7 @@ impl ProtocolCap {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default)]
 pub struct ProtocolCaps {
     pub funding_search_scans: usize,
@@ -65,14 +65,19 @@ impl ProtocolCaps {
 }
 
 pub const OFFERED_FUNDED_V6_CAPS: ProtocolCaps = ProtocolCaps {
+    funding_search_scans: 32_768,
+    authority_search_nodes: 65_536,
+};
+
+pub const UNADOPTED_PROTOCOL_CAPS: ProtocolCaps = ProtocolCaps {
     funding_search_scans: 268_435_456,
     authority_search_nodes: 268_435_456,
 };
 
 static FUNDING_SEARCH_SCANS: AtomicUsize =
-    AtomicUsize::new(OFFERED_FUNDED_V6_CAPS.funding_search_scans);
+    AtomicUsize::new(UNADOPTED_PROTOCOL_CAPS.funding_search_scans);
 static AUTHORITY_SEARCH_NODES: AtomicUsize =
-    AtomicUsize::new(OFFERED_FUNDED_V6_CAPS.authority_search_nodes);
+    AtomicUsize::new(UNADOPTED_PROTOCOL_CAPS.authority_search_nodes);
 
 pub fn set_protocol_caps(caps: ProtocolCaps) -> Result<(), ProtocolCap> {
     caps.check()?;
@@ -184,6 +189,14 @@ mod tests {
             limits.funding_case.cells
                 <= limits.funding_case.sources * limits.funding_case.obligations
         );
+    }
+
+    #[test]
+    fn the_v6_defaults_are_below_the_unadopted_process_caps() {
+        for cap in ProtocolCap::ALL {
+            assert!(OFFERED_FUNDED_V6_CAPS.value(cap) < UNADOPTED_PROTOCOL_CAPS.value(cap));
+            assert!(OFFERED_FUNDED_V6_CAPS.value(cap).is_power_of_two());
+        }
     }
 
     #[test]

@@ -141,6 +141,7 @@ impl ApproveBlockProtocolFactory {
         native_token_decimals: u32,
         fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         casper_version: i64,
+        protocol_caps: models::rust::cost_protocol_limits::ProtocolCaps,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -205,6 +206,7 @@ impl ApproveBlockProtocolFactory {
             native_token_decimals,
             fs_bundle,
             consensus_fs_snapshot_cadence: None,
+            protocol_caps,
         };
 
         let genesis_block = Genesis::create_genesis_block(runtime_manager, &genesis).await?;

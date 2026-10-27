@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use thiserror::Error;
 
+use super::cost_protocol_limits::ProtocolCaps;
 use super::phlo_wire::{PhloWireDecoder, PhloWireEncoder, PhloWireError, PhloWireLimits};
 
 pub const PHLO_SCHEDULE_V1_DOMAIN: &[u8] = b"f1r3node:phlo-schedule:v1";
@@ -13,7 +14,7 @@ pub const PHLO_GENESIS_POLICY_V2_DOMAIN: &[u8] = b"f1r3node:genesis-resource-pol
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PhloGenesisPolicy {
     schedule_bytes: Vec<u8>,
-    offered_funded_v6_active: bool,
+    offered_funded_v6: Option<ProtocolCaps>,
 }
 
 impl PhloGenesisPolicy {
@@ -31,7 +32,7 @@ impl PhloGenesisPolicy {
         policy.actual_price = 0;
         let record = Self {
             schedule_bytes: policy.encode(Self::LIMITS)?,
-            offered_funded_v6_active: false,
+            offered_funded_v6: None,
         };
         record.encode()?;
         Ok(record)
@@ -41,26 +42,35 @@ impl PhloGenesisPolicy {
         PhloScheduleV1::decode(&self.schedule_bytes, Self::LIMITS)
     }
 
-    pub fn with_offered_funded_v6_active(mut self) -> Self {
-        self.offered_funded_v6_active = true;
+    pub fn with_offered_funded_v6(mut self, caps: ProtocolCaps) -> Self {
+        self.offered_funded_v6 = Some(caps);
         self
     }
 
-    pub fn offered_funded_v6_active(&self) -> bool { self.offered_funded_v6_active }
+    pub fn offered_funded_v6_active(&self) -> bool { self.offered_funded_v6.is_some() }
+
+    pub fn protocol_caps(&self) -> Option<ProtocolCaps> { self.offered_funded_v6 }
 
     pub fn encode(&self) -> Result<Vec<u8>, PhloScheduleError> {
-        if self.offered_funded_v6_active && self.schedule()?.protocol_version != 6 {
+        if self.offered_funded_v6.is_some() && self.schedule()?.protocol_version != 6 {
             return Err(PhloScheduleError::GenesisPolicyActivation);
         }
         let mut wire = PhloWireEncoder::new(Self::LIMITS.wire);
-        wire.bytes(if self.offered_funded_v6_active {
+        wire.bytes(if self.offered_funded_v6.is_some() {
             PHLO_GENESIS_POLICY_V2_DOMAIN
         } else {
             PHLO_GENESIS_POLICY_V1_DOMAIN
         })?;
         wire.bytes(&self.schedule_bytes)?;
-        if self.offered_funded_v6_active {
+        if let Some(caps) = self.offered_funded_v6 {
+            caps.check()
+                .map_err(|_| PhloScheduleError::GenesisPolicyCaps)?;
             wire.bytes(&[1])?;
+            for value in [caps.funding_search_scans, caps.authority_search_nodes] {
+                let value =
+                    u64::try_from(value).map_err(|_| PhloScheduleError::GenesisPolicyCaps)?;
+                wire.bytes(&value.to_be_bytes())?;
+            }
         }
         Ok(wire.into_bytes())
     }
@@ -73,9 +83,28 @@ impl PhloGenesisPolicy {
             _ => return Err(PhloScheduleError::FormatDomain),
         };
         let bytes = wire.bytes()?;
-        if offered_funded_v6_active && wire.bytes()? != [1] {
-            return Err(PhloScheduleError::GenesisPolicyActivation);
-        }
+        let offered_funded_v6 = if offered_funded_v6_active {
+            if wire.bytes()? != [1] {
+                return Err(PhloScheduleError::GenesisPolicyActivation);
+            }
+            let mut cap = || -> Result<usize, PhloScheduleError> {
+                let field: [u8; 8] = wire
+                    .bytes()?
+                    .try_into()
+                    .map_err(|_| PhloScheduleError::FieldWidth)?;
+                usize::try_from(u64::from_be_bytes(field))
+                    .map_err(|_| PhloScheduleError::GenesisPolicyCaps)
+            };
+            let caps = ProtocolCaps {
+                funding_search_scans: cap()?,
+                authority_search_nodes: cap()?,
+            };
+            caps.check()
+                .map_err(|_| PhloScheduleError::GenesisPolicyCaps)?;
+            Some(caps)
+        } else {
+            None
+        };
         wire.finish()?;
         let schedule = PhloScheduleV1::decode(bytes, Self::LIMITS)?;
         if offered_funded_v6_active && schedule.protocol_version != 6 {
@@ -91,7 +120,7 @@ impl PhloGenesisPolicy {
         schedule_bytes.extend_from_slice(bytes);
         let record = Self {
             schedule_bytes,
-            offered_funded_v6_active,
+            offered_funded_v6,
         };
         if record.encode()? != input {
             return Err(PhloScheduleError::GenesisPolicyCanonical);
@@ -161,6 +190,8 @@ pub enum PhloScheduleError {
     GenesisPolicyContext,
     #[error("genesis resource policy has a noncanonical offered-funded activation")]
     GenesisPolicyActivation,
+    #[error("genesis resource policy has a missing or zero protocol cap")]
+    GenesisPolicyCaps,
     #[error("genesis resource policy wire encoding is noncanonical")]
     GenesisPolicyCanonical,
     #[error("unsupported phlo schedule format domain")]

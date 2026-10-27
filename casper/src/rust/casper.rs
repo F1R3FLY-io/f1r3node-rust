@@ -393,11 +393,22 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             &casper_shard_conf,
         )
         .await?;
-        if !adopted.offered_funded_v6_active() {
+        let Some(caps) = adopted.protocol_caps() else {
             return Err(CasperError::RuntimeError(
                 "protocol-6 shard: the genesis resource policy is not active".to_string(),
             ));
-        }
+        };
+        models::rust::cost_protocol_limits::set_protocol_caps(caps).map_err(|cap| {
+            CasperError::RuntimeError(format!(
+                "protocol-6 shard: the genesis protocol cap {} is zero",
+                cap.name()
+            ))
+        })?;
+        tracing::info!(
+            funding_search_scans = caps.funding_search_scans,
+            authority_search_nodes = caps.authority_search_nodes,
+            "Adopted the protocol caps of the genesis resource policy"
+        );
         casper_shard_conf.adopted_resource_policy = Some(Arc::new(adopted));
     }
 

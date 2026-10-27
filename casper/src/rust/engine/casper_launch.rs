@@ -652,6 +652,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
             self.casper_shard_conf.casper_version,
+            self.conf.genesis_block_data.protocol_caps,
             self.transport_layer.clone(),
             Arc::new(self.rp_conf_ask.clone()),
         )?;
@@ -756,6 +757,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_decimals,
             self.fs_bundle.clone(),
             self.casper_shard_conf.casper_version,
+            self.conf.genesis_block_data.protocol_caps,
             &self.runtime_manager,
             self.last_approved_block.clone(),
             Some(self.event_publisher.clone()),

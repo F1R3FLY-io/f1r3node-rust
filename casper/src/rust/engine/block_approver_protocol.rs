@@ -47,6 +47,7 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
     pub casper_version: i64,
+    pub protocol_caps: models::rust::cost_protocol_limits::ProtocolCaps,
 
     // Infrastructure
     transport: Arc<T>,
@@ -76,6 +77,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_symbol: String,
         native_token_decimals: u32,
         casper_version: i64,
+        protocol_caps: models::rust::cost_protocol_limits::ProtocolCaps,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
@@ -118,6 +120,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_symbol,
             native_token_decimals,
             casper_version,
+            protocol_caps,
             transport,
             conf,
         })
@@ -177,6 +180,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_symbol: &str,
         native_token_decimals: u32,
         casper_version: i64,
+        protocol_caps: models::rust::cost_protocol_limits::ProtocolCaps,
     ) -> Result<(), String> {
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
@@ -198,6 +202,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 casper_version,
                 shard_id,
                 native_token_decimals,
+                protocol_caps,
             )
             .map_err(|error| format!("{error:?}"))?;
         if !block.body.system_deploys.is_empty() {
@@ -378,6 +383,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             &self.native_token_symbol,
             self.native_token_decimals,
             self.casper_version,
+            self.protocol_caps,
         )
         .await
     }

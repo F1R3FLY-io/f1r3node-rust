@@ -59,7 +59,7 @@ fn offered_funded_activation_requires_canonical_fresh_genesis_v2_policy() {
     assert!(!PhloGenesisPolicy::decode(&historical_wire)
         .unwrap()
         .offered_funded_v6_active());
-    let offered = historical.clone().with_offered_funded_v6_active();
+    let offered = historical.clone().with_offered_funded_v6(caps());
     let offered_wire = offered.encode().unwrap();
     assert!(offered.offered_funded_v6_active());
     assert_eq!(PhloGenesisPolicy::decode(&offered_wire).unwrap(), offered);
@@ -79,7 +79,7 @@ fn offered_funded_activation_requires_canonical_fresh_genesis_v2_policy() {
     assert_eq!(
         wrong_version_policy
             .clone()
-            .with_offered_funded_v6_active()
+            .with_offered_funded_v6(caps())
             .encode(),
         Err(PhloScheduleError::GenesisPolicyActivation)
     );
@@ -87,6 +87,8 @@ fn offered_funded_activation_requires_canonical_fresh_genesis_v2_policy() {
         PHLO_GENESIS_POLICY_V2_DOMAIN.to_vec(),
         wrong_version_policy.schedule_bytes,
         vec![1],
+        32_768_u64.to_be_bytes().to_vec(),
+        65_536_u64.to_be_bytes().to_vec(),
     ]);
     assert_eq!(
         PhloGenesisPolicy::decode(&wrong_version_wire),
@@ -157,6 +159,67 @@ fn schedule() -> PhloScheduleV1<'static> {
         actual_price: 3,
         compatibility_rule: [5; 32],
     }
+}
+
+fn caps() -> ProtocolCaps {
+    ProtocolCaps {
+        funding_search_scans: 32_768,
+        authority_search_nodes: 65_536,
+    }
+}
+
+#[test]
+fn the_protocol_6_policy_carries_its_protocol_caps_canonically() {
+    let historical = PhloGenesisPolicy::from_schedule(&schedule()).unwrap();
+    assert_eq!(historical.protocol_caps(), None);
+    let offered = historical.clone().with_offered_funded_v6(caps());
+    let wire = offered.encode().unwrap();
+    let decoded = PhloGenesisPolicy::decode(&wire).unwrap();
+    assert_eq!(decoded.protocol_caps(), Some(caps()));
+    assert_eq!(decoded, offered);
+    let other = historical.clone().with_offered_funded_v6(ProtocolCaps {
+        funding_search_scans: 1,
+        ..caps()
+    });
+    assert_ne!(other.encode().unwrap(), wire);
+    let field = |value: u64| value.to_be_bytes().to_vec();
+    let with = |extra: Vec<Vec<u8>>| {
+        let mut fields = vec![
+            PHLO_GENESIS_POLICY_V2_DOMAIN.to_vec(),
+            historical.schedule_bytes.clone(),
+            vec![1],
+        ];
+        fields.extend(extra);
+        PhloGenesisPolicy::decode(&pack(&fields))
+    };
+    assert_eq!(
+        with(vec![field(32_768), field(65_536)]),
+        Ok(offered.clone())
+    );
+    assert_eq!(
+        with(vec![field(0), field(65_536)]),
+        Err(PhloScheduleError::GenesisPolicyCaps)
+    );
+    assert_eq!(
+        with(vec![field(32_768), field(0)]),
+        Err(PhloScheduleError::GenesisPolicyCaps)
+    );
+    assert_eq!(
+        with(vec![field(32_768), vec![1, 0]]),
+        Err(PhloScheduleError::FieldWidth)
+    );
+    assert!(with(vec![field(32_768)]).is_err());
+    assert!(with(vec![]).is_err());
+    assert!(with(vec![field(32_768), field(65_536), field(1)]).is_err());
+    assert_eq!(
+        historical
+            .with_offered_funded_v6(ProtocolCaps {
+                authority_search_nodes: 0,
+                ..caps()
+            })
+            .encode(),
+        Err(PhloScheduleError::GenesisPolicyCaps)
+    );
 }
 
 fn pack(fields: &[Vec<u8>]) -> Vec<u8> {

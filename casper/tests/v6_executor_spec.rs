@@ -97,6 +97,7 @@ fn genesis(validator: PublicKey, payers: usize) -> Genesis {
         native_token_decimals: 8,
         fs_bundle: Vec::new(),
         consensus_fs_snapshot_cadence: None,
+        protocol_caps: models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS,
     }
 }
 

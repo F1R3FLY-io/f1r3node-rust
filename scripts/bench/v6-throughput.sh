@@ -10,7 +10,7 @@ run() {
     shift
     echo "== $title" | tee -a "$out"
     (cd "$root" && cargo test --release "$@" -- --ignored --nocapture --test-threads 1 2>&1) |
-        grep -E '^(envelopes=|CAP )' | tee -a "$out"
+        grep -oE '(envelopes=|CAP ).*' | tee -a "$out"
 }
 
 {

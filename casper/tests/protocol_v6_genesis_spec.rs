@@ -65,6 +65,7 @@ fn genesis(version: i64, validator: crypto::rust::public_key::PublicKey) -> Gene
         native_token_decimals: 8,
         fs_bundle: Vec::new(),
         consensus_fs_snapshot_cadence: None,
+        protocol_caps: models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS,
     }
 }
 
@@ -132,7 +133,11 @@ fn shard_conf(version: i64) -> CasperShardConf {
     }
 }
 
-async fn validate(shard: &Shard, version: i64) -> Result<(), String> {
+async fn validate(
+    shard: &Shard,
+    version: i64,
+    caps: models::rust::cost_protocol_limits::ProtocolCaps,
+) -> Result<(), String> {
     let bonds: HashMap<Bytes, i64> = shard
         .block
         .body
@@ -168,6 +173,7 @@ async fn validate(shard: &Shard, version: i64) -> Result<(), String> {
         &shard.genesis.native_token_symbol,
         shard.genesis.native_token_decimals,
         version,
+        caps,
     )
     .await
 }
@@ -181,7 +187,12 @@ async fn a_protocol_6_launch_seals_and_adopts_the_shard_policy() {
         RuntimeManager::empty_state_hash_fixed()
     );
 
-    let expected = shard_resource_policy(SHARD, 8).unwrap();
+    let expected = shard_resource_policy(
+        SHARD,
+        8,
+        models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS,
+    )
+    .unwrap();
     let post = &shard.block.body.state.post_state_hash;
     assert_eq!(
         shard
@@ -213,19 +224,46 @@ async fn a_protocol_6_launch_seals_and_adopts_the_shard_policy() {
 #[tokio::test]
 async fn genesis_validators_accept_only_a_candidate_of_their_own_mode() {
     let shard = launch(PROTOCOL_V6_VERSION).await;
-    validate(&shard, PROTOCOL_V6_VERSION)
-        .await
-        .expect("a protocol-6 validator accepts the protocol-6 candidate");
-    let refusal = validate(&shard, CASPER_PROTOCOL_VERSION)
-        .await
-        .expect_err("a legacy validator refuses the protocol-6 candidate");
+    validate(
+        &shard,
+        PROTOCOL_V6_VERSION,
+        models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS,
+    )
+    .await
+    .expect("a protocol-6 validator accepts the protocol-6 candidate");
+    let refusal = validate(
+        &shard,
+        CASPER_PROTOCOL_VERSION,
+        models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS,
+    )
+    .await
+    .expect_err("a legacy validator refuses the protocol-6 candidate");
     assert!(refusal.contains("protocol version 6"), "{refusal}");
+
+    let refusal = validate(
+        &shard,
+        PROTOCOL_V6_VERSION,
+        models::rust::cost_protocol_limits::ProtocolCaps {
+            funding_search_scans: 1,
+            ..models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS
+        },
+    )
+    .await
+    .expect_err("a validator configured with other caps refuses the candidate");
+    assert!(
+        refusal.contains("do not match expected blessed contracts"),
+        "{refusal}"
+    );
 
     let mut relabelled = shard;
     relabelled.block.header.version = CASPER_PROTOCOL_VERSION;
-    let refusal = validate(&relabelled, CASPER_PROTOCOL_VERSION)
-        .await
-        .expect_err("a protocol-6 body under a legacy header is refused");
+    let refusal = validate(
+        &relabelled,
+        CASPER_PROTOCOL_VERSION,
+        models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS,
+    )
+    .await
+    .expect_err("a protocol-6 body under a legacy header is refused");
     assert!(
         refusal.contains("do not match expected blessed contracts"),
         "{refusal}"

@@ -135,9 +135,6 @@ pub struct CasperConf {
         default = "default_mergeable_channels_gc_depth_buffer"
     )]
     pub mergeable_channels_gc_depth_buffer: i32,
-
-    #[serde(rename = "protocol-caps", default)]
-    pub protocol_caps: models::rust::cost_protocol_limits::ProtocolCaps,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -232,6 +229,9 @@ pub struct GenesisBlockData {
 
     #[serde(rename = "protocol-v6", default)]
     pub protocol_v6: bool,
+
+    #[serde(rename = "protocol-caps", default)]
+    pub protocol_caps: models::rust::cost_protocol_limits::ProtocolCaps,
 }
 
 /// Maximum decimal places accepted for native token. Matches the de-facto
@@ -533,6 +533,7 @@ mod native_token_validation_tests {
             native_token_symbol: "F1R3".into(),
             native_token_decimals: 8,
             protocol_v6: false,
+            protocol_caps: Default::default(),
         }
     }
 

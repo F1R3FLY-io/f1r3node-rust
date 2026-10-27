@@ -68,7 +68,7 @@ pub fn default_resource_schedule(shard: &str) -> PhloScheduleV1<'_> {
 pub fn default_resource_policy(shard: &str) -> Result<PhloGenesisPolicy, PhloScheduleError> {
     Ok(
         PhloGenesisPolicy::from_schedule(&default_resource_schedule(shard))?
-            .with_offered_funded_v6_active(),
+            .with_offered_funded_v6(models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS),
     )
 }
 

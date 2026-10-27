@@ -44,6 +44,7 @@ pub fn shard_resource_schedule(shard: &str, decimal_scale: u8) -> PhloScheduleV1
 pub fn shard_resource_policy(
     shard: &str,
     decimal_scale: u32,
+    caps: models::rust::cost_protocol_limits::ProtocolCaps,
 ) -> Result<PhloGenesisPolicy, CasperError> {
     let scale = u8::try_from(decimal_scale).map_err(|_| {
         CasperError::RuntimeError(format!(
@@ -52,7 +53,7 @@ pub fn shard_resource_policy(
     })?;
     let policy = PhloGenesisPolicy::from_schedule(&shard_resource_schedule(shard, scale))
         .map_err(|error| CasperError::RuntimeError(error.to_string()))?
-        .with_offered_funded_v6_active();
+        .with_offered_funded_v6(caps);
     policy
         .validate_context(PROTOCOL_V6_VERSION, shard, decimal_scale)
         .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
@@ -63,9 +64,10 @@ pub fn protocol_resource_policy(
     version: i64,
     shard: &str,
     decimal_scale: u32,
+    caps: models::rust::cost_protocol_limits::ProtocolCaps,
 ) -> Result<Option<PhloGenesisPolicy>, CasperError> {
     match version {
-        PROTOCOL_V6_VERSION => shard_resource_policy(shard, decimal_scale).map(Some),
+        PROTOCOL_V6_VERSION => shard_resource_policy(shard, decimal_scale, caps).map(Some),
         CASPER_PROTOCOL_VERSION => Ok(None),
         other => Err(CasperError::RuntimeError(format!(
             "genesis protocol version {other} is neither the legacy version \
@@ -183,6 +185,10 @@ impl AdoptedResourcePolicy {
 
     pub fn offered_funded_v6_active(&self) -> bool {
         self.genesis.record.offered_funded_v6_active()
+    }
+
+    pub fn protocol_caps(&self) -> Option<models::rust::cost_protocol_limits::ProtocolCaps> {
+        self.genesis.record.protocol_caps()
     }
 
     pub fn native_rules(&self) -> &NativePhloRules { &self.native_rules }

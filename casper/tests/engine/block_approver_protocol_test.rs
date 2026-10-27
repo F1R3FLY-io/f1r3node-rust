@@ -82,6 +82,7 @@ impl TestContext {
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
             genesis_params.version,
+            genesis_params.protocol_caps,
             node.tle.clone(),
             Arc::new(node.rp_conf.clone()),
         )?;
@@ -214,6 +215,7 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
         ctx.protocol.casper_version,
+        ctx.protocol.protocol_caps,
     )
     .await;
 
@@ -253,6 +255,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
         ctx.protocol.casper_version,
+        ctx.protocol.protocol_caps,
     )
     .await;
 
@@ -292,6 +295,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
         ctx.protocol.casper_version,
+        ctx.protocol.protocol_caps,
     )
     .await;
 
@@ -335,6 +339,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
         ctx.protocol.casper_version,
+        ctx.protocol.protocol_caps,
     )
     .await;
 

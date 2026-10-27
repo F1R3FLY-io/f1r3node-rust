@@ -57,6 +57,7 @@ pub struct Genesis {
     /// deploy term, so a cadence drift between leader and validator
     /// surfaces as a genesis divergence at `validate_candidate`.
     pub consensus_fs_snapshot_cadence: Option<u64>,
+    pub protocol_caps: models::rust::cost_protocol_limits::ProtocolCaps,
 }
 
 impl Genesis {
@@ -257,7 +258,12 @@ impl Genesis {
     }
 
     pub fn resource_policy(&self) -> Result<Option<PhloGenesisPolicy>, CasperError> {
-        protocol_resource_policy(self.version, &self.shard_id, self.native_token_decimals)
+        protocol_resource_policy(
+            self.version,
+            &self.shard_id,
+            self.native_token_decimals,
+            self.protocol_caps,
+        )
     }
 
     pub async fn create_genesis_block(

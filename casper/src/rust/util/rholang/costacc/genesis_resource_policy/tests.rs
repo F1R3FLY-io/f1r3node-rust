@@ -47,7 +47,9 @@ fn adoption_requires_the_authenticated_genesis_context() {
     assert_eq!(adopted.genesis().genesis_root().as_ref(), &[9; 32]);
     assert!(!adopted.offered_funded_v6_active());
     let mut fresh = policy(10, 6, "root");
-    fresh.record = fresh.record.with_offered_funded_v6_active();
+    fresh.record = fresh
+        .record
+        .with_offered_funded_v6(models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS);
     assert!(fresh
         .adopt(&shard_conf(10, 6, "root"))
         .unwrap()
@@ -88,7 +90,9 @@ fn genesis_policy_commitment_binds_exact_v1_or_v2_record() {
         historical_commitment
     );
     let mut fresh = historical;
-    fresh.record = fresh.record.with_offered_funded_v6_active();
+    fresh.record = fresh
+        .record
+        .with_offered_funded_v6(models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS);
     assert_ne!(fresh.record().encode().unwrap(), historical_bytes);
     assert_ne!(fresh.commitment().unwrap(), historical_commitment);
 }
@@ -417,7 +421,12 @@ mod protocol_mode {
 
     #[test]
     fn the_shard_policy_is_the_active_protocol_6_policy_of_its_shard() {
-        let policy = shard_resource_policy("root", 8).unwrap();
+        let policy = shard_resource_policy(
+            "root",
+            8,
+            models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS,
+        )
+        .unwrap();
         assert!(policy.offered_funded_v6_active());
         policy
             .validate_context(PROTOCOL_V6_VERSION, "root", 8)
@@ -432,20 +441,49 @@ mod protocol_mode {
             PhloGenesisPolicy::decode(&policy.encode().unwrap()).unwrap(),
             policy
         );
-        assert!(shard_resource_policy("root", 256).is_err());
+        assert!(shard_resource_policy(
+            "root",
+            256,
+            models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS
+        )
+        .is_err());
     }
 
     #[test]
     fn only_protocol_6_has_a_resource_policy() {
-        assert!(protocol_resource_policy(CASPER_PROTOCOL_VERSION, "root", 8)
-            .unwrap()
-            .is_none());
+        assert!(protocol_resource_policy(
+            CASPER_PROTOCOL_VERSION,
+            "root",
+            8,
+            models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS
+        )
+        .unwrap()
+        .is_none());
         assert_eq!(
-            protocol_resource_policy(PROTOCOL_V6_VERSION, "root", 8).unwrap(),
-            Some(shard_resource_policy("root", 8).unwrap())
+            protocol_resource_policy(
+                PROTOCOL_V6_VERSION,
+                "root",
+                8,
+                models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS
+            )
+            .unwrap(),
+            Some(
+                shard_resource_policy(
+                    "root",
+                    8,
+                    models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS
+                )
+                .unwrap()
+            )
         );
         for version in [0, 2, 5, 7] {
-            assert!(protocol_resource_policy(version, "root", 8).is_err());
+            assert!(protocol_resource_policy(
+                version,
+                "root",
+                8,
+                models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS
+            )
+            .is_err());
         }
     }
 
@@ -472,7 +510,12 @@ mod protocol_mode {
 
     #[test]
     fn protocol_6_genesis_terms_differ_only_in_the_vault_and_the_policy() {
-        let policy = shard_resource_policy("root", 8).unwrap();
+        let policy = shard_resource_policy(
+            "root",
+            8,
+            models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS,
+        )
+        .unwrap();
         let legacy = terms(None);
         let v6 = terms(Some(&policy));
         assert_eq!(legacy.len(), v6.len());
@@ -522,7 +565,7 @@ mod protocol_mode {
         fn the_shard_policy_is_adopted_only_at_protocol_6(local in -8i64..72) {
             let genesis = GenesisResourcePolicy {
                 genesis_root: vec![9; 32].into(),
-                record: shard_resource_policy("root", 8).unwrap(),
+                record: shard_resource_policy("root", 8, models::rust::cost_protocol_limits::OFFERED_FUNDED_V6_CAPS).unwrap(),
                 minimum_price: 1,
             };
             proptest::prop_assert_eq!(
