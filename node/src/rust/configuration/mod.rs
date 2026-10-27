@@ -843,7 +843,10 @@ mod embedded_defaults_tests {
             .resolve()
             .unwrap();
         assert_eq!(base.casper.genesis_block_data.bond_minimum, 1.into());
-        assert_eq!(base.casper.genesis_block_data.bond_maximum, i64::MAX.into());
+        assert_eq!(
+            base.casper.genesis_block_data.bond_maximum,
+            shared::rust::asi_amount::maximum()
+        );
         let configured: NodeConf = hocon::HoconLoader::new()
             .load_str(EMBEDDED_DEFAULTS)
             .unwrap()
