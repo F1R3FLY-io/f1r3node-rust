@@ -291,9 +291,9 @@ Use this template when adding new user stories:
 
 **Acceptance Criteria:**
 
-- [ ] Genesis, transfers, bonds, fees, APIs, and persistence retain exact amounts.
-- [ ] Consensus and replay agree for amounts above the 64-bit range.
-- [ ] The default maximum bond is 2^256-1 and invalid amounts are rejected.
-- [ ] Focused tests, workspace checks, and independent review pass.
+- [x] Genesis, transfers, bonds, fees, APIs, and persistence retain exact amounts.
+- [x] Consensus and replay agree for amounts above the 64-bit range.
+- [x] The default maximum bond is 2^256-1 and invalid amounts are rejected.
+- [x] Focused tests, workspace checks, and independent review pass.
 
-**Completed:** Planned
+**Completed:** 2026-10-27

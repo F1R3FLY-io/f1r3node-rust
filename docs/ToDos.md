@@ -31,7 +31,10 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 ```yaml
 id: TASK-031-1
 epic_id: EPIC-031
-status: in_progress
+status: complete
+completed_at: 2026-10-27
+validation_result: passed
+review_result: "Opus review complete. Confirmed findings fixed and tested."
 claimed_by: codex-asi-u256
 claimed_at: 2026-10-27
 branch: feature/asi-u256-amounts
