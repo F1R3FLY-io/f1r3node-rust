@@ -175,6 +175,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn genesis_bond_comments_preserve_exact_amounts() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bonds.txt");
+        let public_key = "04f026cc75502aa420f589ba1437d52eb9055ba26701f112ff1b9a0b98cadec54bc3e77bdef9094b33f6afacd59eb1aed78bc1e1320ce714ec9debaabaf0f37ba3";
+        fs::write(
+            &path,
+            format!(
+                "# validator bonds\n  {public_key} {} # bootstrap node\n",
+                shared::rust::asi_amount::MAX_DECIMAL
+            ),
+        )
+        .unwrap();
+        let bonds = BondsParser::parse(&path).unwrap();
+        assert_eq!(bonds.len(), 1);
+        let key = PublicKey::from_bytes(&hex::decode(public_key).unwrap());
+        assert_eq!(bonds[&key], shared::rust::asi_amount::maximum());
+        fs::write(&path, format!("{public_key} 100abc # invalid stake\n")).unwrap();
+        assert!(BondsParser::parse(&path).is_err());
+    }
+
+    #[test]
     fn test_parse_valid_bonds_file() {
         let temp_dir = TempDir::new().unwrap();
         let bonds_file = temp_dir.path().join("bonds.txt");
