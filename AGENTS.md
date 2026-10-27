@@ -205,12 +205,13 @@ Apply these settings in your harness's personal configuration. Do not commit the
   - a pull request with the `ci-heavy` label
   - a push to `dev`, `master`, or a tag. A push to `dev` skips the OCI tests when the merged head or its merge group passed them on the same tree. It still builds and publishes the images.
   - every merge group, until the GitHub merge queue leaves `dev`
-- Mergify adds `ci-heavy` to every open, non-draft pull request into `dev`, `master`, `ca-canary` (`ca/` heads), and `ca-release`. It adds the label again when someone removes it. Open a new pull request with `--label ci-heavy`.
+- Mergify adds `ci-heavy` to every open, non-draft pull request into `dev`, `master`, `ca-canary` (`ca/` heads), and `ca-release`. It adds the label again when someone removes it without a valid waiver. Open a new pull request with `--label ci-heavy`.
 - Each push to a pull request runs the heavy pipeline again on OCI. Push in batches, because each heavy run uses the shared daily OCI instance quota. A push or a `gh pr edit` cancels a running heavy run.
 - A queue merges only after both Integration gates succeed, except with a waiver:
-  - Only a member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run, only on that member's own pull request, and only into `dev` or `ca-canary`.
-  - To waive, add the `ci-heavy-waived` label and remove `ci-heavy`. CI then reruns with the current labels and skips the heavy pipeline. To avoid any heavy run, open the pull request with `--label ci-heavy-waived` instead of `--label ci-heavy`.
-  - Promotions into `master` and `ca-release` and every hotfix always need `ci-heavy`.
+  - Only a member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run, only on that member's own pull request, and only into `dev`, `master`, or `ca-canary`.
+  - To waive, remove the `ci-heavy` label. The CI Heavy Label workflow then adds `ci-heavy-waived` and reruns CI without the heavy pipeline. To avoid any heavy run, open the pull request with `--label ci-heavy-waived` instead of `--label ci-heavy`.
+  - A waiver into `master` skips only the heavy run before the merge. The push to `master` runs the heavy pipeline, and the release gates require its results.
+  - Promotions into `ca-release` always need `ci-heavy`.
 - A pull request from a fork gets no heavy run. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with the body line `Imports fork pull request #<N>.`
 - `docs/ci.md` describes the jobs, the required checks, the Mergify queues, and the merge rulesets.
 

@@ -671,6 +671,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-rerun-ci-for-heavy-label.sh
 
+      - name: Verify the ci-heavy waiver record
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-record-ci-heavy-waiver.sh
+
       - name: Verify Promotion Source check
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-check-promotion-source.sh

@@ -9,22 +9,24 @@
 # Mergify adds ci-heavy to every open pull request of this repository into
 # dev, master, ca-canary (ca/ heads only), and ca-release, so the heavy
 # pipeline runs on its head. Protected heads get no label. A draft gets the
-# label when it is ready for review. If the label is removed, Mergify adds it
-# again. check-success does not accept a skipped check, so without a waiver a
-# queue merges only after the Integration gates succeed. Each queue checks one
-# pull request at a time on its own head, after Mergify merges the current
-# base into it.
+# label when it is ready for review. If the label is removed without a valid
+# waiver, Mergify adds it again. check-success does not accept a skipped check,
+# so without a waiver a queue merges only after the Integration gates succeed.
+# Each queue checks one pull request at a time on its own head, after Mergify
+# merges the current base into it.
 #
-# Waiver. Only the dev and ca-item queues accept the ci-heavy-waived label in
-# place of ci-heavy and the Integration gates, and only when the author is in
-# the ci-maintainers team. A waiver on another pull request does not count, so
-# that pull request cannot merge until ci-heavy is back. Mergify does not add
-# ci-heavy again to a waived pull request into dev or ca-canary. When a waiver
-# takes effect, ci-heavy-label.yml cancels the running CI run and reruns it
-# with the current labels, so the gates report skipped. devProtect requires
-# both gates, and GitHub counts a skipped gate job as passing, so a waived pull
-# request can merge into dev. The master and ca-release queues have no waiver:
-# every promotion and hotfix needs ci-heavy and both gates.
+# Waiver. The dev, master, and ca-item queues accept the ci-heavy-waived label
+# in place of ci-heavy and the Integration gates, only when the author is in
+# the ci-maintainers team. The author waives by removing ci-heavy:
+# ci-heavy-label.yml then adds ci-heavy-waived and reruns CI with the current
+# labels, so the gates report skipped. Mergify does not add ci-heavy again to a
+# waived pull request of a ci-maintainers author, except into ca-release. For
+# another author, Mergify adds ci-heavy again, so the heavy pipeline runs.
+# devProtect requires both gates, and GitHub counts a skipped gate job as
+# passing, so a waived pull request can merge into dev. masterProtect does not
+# require the gates. The ca-release queue has no waiver. A merge into master
+# still runs the heavy pipeline on the push, and the release gates require its
+# Integration Pipeline jobs before a release.
 #
 # The rulesets require a branch to be up to date before a merge. Mergify then
 # accepts only in-place checks: a serial queue with one check at a time, a
@@ -217,7 +219,14 @@ queue_rules:
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - head~=^(promote/[0-9]{8}-[0-9]{6}|hotfix/.+)$
       - -draft
-      - label=ci-heavy
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - author=@F1R3FLY-io/ci-maintainers
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
@@ -238,14 +247,19 @@ queue_rules:
       - check-success=Test (casper 2/2)
       - check-success=Test Gate (casper)
       - check-success=Test (rspace_plus_plus)
-      - check-success=Integration Gate (amd64)
-      - check-success=Integration Gate (arm64)
     merge_conditions:
       - base=master
       - head-repo-full-name=F1R3FLY-io/f1r3node-rust
       - head~=^(promote/[0-9]{8}-[0-9]{6}|hotfix/.+)$
       - -draft
-      - label=ci-heavy
+      - or:
+          - and:
+              - label=ci-heavy
+              - check-success=Integration Gate (amd64)
+              - check-success=Integration Gate (arm64)
+          - and:
+              - label=ci-heavy-waived
+              - author=@F1R3FLY-io/ci-maintainers
       - "#approved-reviews-by>=1"
       - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
@@ -266,8 +280,6 @@ queue_rules:
       - check-success=Test (casper 2/2)
       - check-success=Test Gate (casper)
       - check-success=Test (rspace_plus_plus)
-      - check-success=Integration Gate (amd64)
-      - check-success=Integration Gate (arm64)
 
   - name: ca-item
     batch_size: 1
@@ -448,7 +460,8 @@ pull_request_rules:
       - -label=ci-heavy
       - or:
           - -label=ci-heavy-waived
-          - base~=^(master|ca-release)$
+          - -author=@F1R3FLY-io/ci-maintainers
+          - base=ca-release
     actions:
       label:
         add:
