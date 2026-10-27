@@ -20,32 +20,45 @@ use shared::rust::store::key_value_store::KvStoreError;
 use super::backend::ExecutionBackend;
 use super::block_record::BlockRecord;
 use super::body::{Attestation, StateHash, V6Body};
-use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
+use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore};
+use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink};
 use super::executor::BlockExecutor;
 use super::gate::{screen, BlockGate, RhoBlockGate};
 use super::linearizer::{Advance, Linearizer};
 use super::propose::{select_envelopes, PoolEntry, SelectionContext};
 use super::record::ExecutionRecord;
+use super::store::{MemoryRecordStore, RecordStore, Retention};
+use super::validators::{AttestedRootValidators, ValidatorSetSource};
 use super::validity::{check_structure, Limits};
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::blocks::proposer::proposer::DeploySelection;
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::errors::CasperError;
-use crate::rust::finality::floor::floor_committee;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
+
+pub struct V6Parts<R: ExecutionRecord> {
+    pub backend: Arc<dyn ExecutionBackend<Record = R>>,
+    pub gate: Arc<dyn BlockGate>,
+    pub validators: Arc<dyn ValidatorSetSource>,
+    pub evidence: Arc<dyn EvidenceSink>,
+    pub store: Option<Box<dyn RecordStore<R>>>,
+    pub limits: Limits,
+    pub params: CoreParams,
+}
 
 pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
     core: parking_lot::Mutex<ExecutorCore<R>>,
     linearizer: parking_lot::Mutex<Linearizer>,
     backend: Arc<dyn ExecutionBackend<Record = R>>,
     gate: Arc<dyn BlockGate>,
+    validators: Arc<dyn ValidatorSetSource>,
+    evidence: Arc<dyn EvidenceSink>,
     block_store: KeyValueBlockStore,
     dag_storage: BlockDagKeyValueStorage,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-    runtime_manager: Arc<RuntimeManager>,
     limits: Limits,
     wake: tokio::sync::Notify,
     started: AtomicBool,
@@ -65,41 +78,51 @@ impl V6Engine<BlockRecord> {
             Arc::clone(&policy),
         ));
         let gate = Arc::new(RhoBlockGate::new(runtime_manager.clone(), policy));
-        Self::with_backend(
-            genesis,
+        let parts = V6Parts {
             backend,
             gate,
-            runtime_manager,
-            block_store,
-            dag_storage,
-            deploy_storage,
-            Limits {
+            validators: Arc::new(AttestedRootValidators::new(runtime_manager)),
+            evidence: Arc::new(MemoryEvidenceSink::new()),
+            store: None,
+            limits: Limits {
                 ordered_only: true,
                 ..Limits::default()
             },
-            CoreParams::default(),
-        )
+            params: CoreParams::default(),
+        };
+        Self::with_parts(genesis, parts, block_store, dag_storage, deploy_storage)
     }
 }
 
 impl<R: ExecutionRecord> V6Engine<R> {
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_backend(
+    pub fn with_parts(
         genesis: &BlockMessage,
-        backend: Arc<dyn ExecutionBackend<Record = R>>,
-        gate: Arc<dyn BlockGate>,
-        runtime_manager: Arc<RuntimeManager>,
+        parts: V6Parts<R>,
         block_store: KeyValueBlockStore,
         dag_storage: BlockDagKeyValueStorage,
         deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-        limits: Limits,
-        params: CoreParams,
     ) -> Arc<Self> {
-        Arc::new(V6Engine {
-            core: parking_lot::Mutex::new(ExecutorCore::new(
+        let V6Parts {
+            backend,
+            gate,
+            validators,
+            evidence,
+            store,
+            limits,
+            params,
+        } = parts;
+        let store = store.unwrap_or_else(|| {
+            Box::new(MemoryRecordStore::new(
                 genesis.block_hash.clone(),
                 genesis.body.state.post_state_hash.clone(),
+                Retention::default(),
+            ))
+        });
+        Arc::new(V6Engine {
+            core: parking_lot::Mutex::new(ExecutorCore::with_store(
+                genesis.block_hash.clone(),
                 params,
+                store,
             )),
             linearizer: parking_lot::Mutex::new(Linearizer::new(
                 genesis.block_hash.clone(),
@@ -107,10 +130,11 @@ impl<R: ExecutionRecord> V6Engine<R> {
             )),
             backend,
             gate,
+            validators,
+            evidence,
             block_store,
             dag_storage,
             deploy_storage,
-            runtime_manager,
             limits,
             wake: tokio::sync::Notify::new(),
             started: AtomicBool::new(false),
@@ -173,7 +197,17 @@ impl<R: ExecutionRecord> V6Engine<R> {
         Ok(())
     }
 
-    pub fn evidence(&self) -> Vec<Evidence> { self.core.lock().evidence().to_vec() }
+    pub fn evidence(&self) -> Vec<Evidence> {
+        self.report_evidence();
+        self.evidence.evidence()
+    }
+
+    fn report_evidence(&self) {
+        let found = self.core.lock().take_evidence();
+        for evidence in found {
+            self.evidence.report(evidence);
+        }
+    }
 
     pub fn canonical_len(&self) -> usize { self.core.lock().canonical_len() }
 
@@ -189,8 +223,9 @@ impl<R: ExecutionRecord> V6Engine<R> {
         if let Some(attestation) = &body.attestation {
             self.core
                 .lock()
-                .observe_attestation(&block.block_hash, attestation);
+                .observe_attestation(&block.block_hash, &block.sender, attestation);
         }
+        self.report_evidence();
     }
 
     fn load(&self, hash: &BlockHash) -> Result<BlockMessage, CasperError> {
@@ -279,6 +314,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 progressed = true;
             }
         }
+        self.report_evidence();
         Ok(progressed)
     }
 
@@ -354,7 +390,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             return Ok(BlockCreatorResult::NoNewDeploys);
         }
 
-        let bonds = match floor_committee(&self.runtime_manager, &attestation.root).await {
+        let bonds = match self.validators.bonds(&attestation, next_block_number).await {
             Ok(bonds) => bonds,
             Err(_) => {
                 let mut bonds: Vec<Bond> = snapshot

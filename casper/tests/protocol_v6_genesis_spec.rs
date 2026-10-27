@@ -296,3 +296,23 @@ async fn a_node_joining_from_a_recent_block_adopts_the_genesis_policy() {
     .unwrap();
     assert!(adopted.offered_funded_v6_active());
 }
+
+#[tokio::test]
+async fn the_attested_root_validator_source_reads_the_floor_committee() {
+    use casper::rust::finality::floor::floor_committee;
+    use casper::rust::v6::body::Attestation;
+    use casper::rust::v6::validators::{AttestedRootValidators, ValidatorSetSource};
+
+    let shard = launch(PROTOCOL_V6_VERSION).await;
+    let root = shard.block.body.state.post_state_hash.clone();
+    let expected = floor_committee(&shard.runtime_manager, &root)
+        .await
+        .unwrap();
+    assert!(!expected.is_empty());
+    let source = AttestedRootValidators::new(std::sync::Arc::new(shard.runtime_manager.clone()));
+    let attestation = Attestation {
+        block_hash: shard.block.block_hash.clone(),
+        root,
+    };
+    assert_eq!(source.bonds(&attestation, 1).await.unwrap(), expected);
+}

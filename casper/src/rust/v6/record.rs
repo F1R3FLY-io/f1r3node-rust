@@ -8,6 +8,11 @@ pub const RECORD_DIGEST_DOMAIN: &[u8] = b"f1r3node:v6-execution-record:v1";
 
 pub type RecordDigest = [u8; 32];
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Footprint {
+    pub channels: Vec<[u8; 32]>,
+}
+
 pub trait ExecutionRecord: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static {
     fn target(&self) -> &BlockHash;
 
@@ -22,6 +27,8 @@ pub trait ExecutionRecord: Clone + std::fmt::Debug + PartialEq + Send + Sync + '
     fn decode(bytes: &[u8]) -> Result<Self, String>;
 
     fn encoded_len(&self) -> usize { self.encode().len() }
+
+    fn footprint(&self) -> Option<Footprint> { None }
 
     fn digest(&self) -> RecordDigest {
         Blake2b256::hash_parts([RECORD_DIGEST_DOMAIN, self.encode().as_ref()])

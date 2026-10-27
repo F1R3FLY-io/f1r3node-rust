@@ -12,6 +12,7 @@ use super::merge::{merge_runs, RunEffect};
 use super::record::ExecutionRecord;
 use super::rho_settlement::{base_outcome, RhoSettlement};
 use super::settlement::{settled_difference, EnvelopeOutcome, EnvelopeRun, SettlementOutcome};
+use super::slash::{require_no_slashes, NoSlashing, SlashSource};
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -29,6 +30,7 @@ pub struct PhaseTimings {
 pub struct BlockExecutor {
     runtime_manager: Arc<RuntimeManager>,
     settlement: RhoSettlement,
+    slashes: Arc<dyn SlashSource>,
     workers: usize,
 }
 
@@ -40,8 +42,14 @@ impl BlockExecutor {
         BlockExecutor {
             settlement: RhoSettlement::new(Arc::clone(&runtime_manager), policy),
             runtime_manager,
+            slashes: Arc::new(NoSlashing),
             workers,
         }
+    }
+
+    pub fn with_slash_source(mut self, slashes: Arc<dyn SlashSource>) -> Self {
+        self.slashes = slashes;
+        self
     }
 
     pub fn with_workers(mut self, workers: usize) -> Self {
@@ -54,6 +62,7 @@ impl BlockExecutor {
         pre_root: &StateHash,
         block: &BlockMessage,
     ) -> Result<(BlockRecord, PhaseTimings), CasperError> {
+        require_no_slashes(&self.slashes.slashes(block)?)?;
         let started = Instant::now();
         let runs = self
             .settlement
@@ -284,6 +293,7 @@ impl ExecutionBackend for BlockExecutor {
         if record.target() != &block.block_hash {
             return Err(invalid("the record executes another block"));
         }
+        require_no_slashes(&self.slashes.slashes(block)?)?;
         let recorded: Vec<EnvelopeRun> = record
             .executed()
             .into_iter()

@@ -3,6 +3,7 @@ pub mod block_record;
 pub mod body;
 pub mod core;
 pub mod engine;
+pub mod evidence;
 pub mod executor;
 pub mod gate;
 pub mod linearizer;
@@ -12,6 +13,9 @@ pub mod receipt;
 pub mod record;
 pub mod rho_settlement;
 pub mod settlement;
+pub mod slash;
+pub mod store;
+pub mod validators;
 pub mod validity;
 
 pub use engine::V6Engine;
