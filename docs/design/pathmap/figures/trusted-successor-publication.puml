@@ -1,0 +1,118 @@
+@startuml trusted-successor-publication
+' ============================================================================
+' The trusted publication of a trusted-bound transaction (task 11946, the
+' fifth slice of task 7927): publish_trusted_incremental_v1 in
+' durable/publication.rs:909-970, with the core's index and successor
+' assembly in durable/admission.rs:1511-1577.
+' Model:  formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublication.tla
+' Theory: formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v
+'   GREY   #607D8B  steps shared with the cold-checked publication, unchanged
+'   PURPLE #6A1B9A  the trusted preflight of the sealed mode and policy
+'   BLUE   #1565C0  the trusted derivations: index, core, sidecar, re-read
+'   AMBER  #EF6C00  the catalog swap, where the publication boundary lies
+'   GREEN  #2E7D32  the adopted successor core
+'   RED    #C62828  refusals and failures, each with its outcome class
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+skinparam NoteBorderColor #455A64
+
+title <b>The trusted publication of a bound transaction</b>\npublish_trusted_incremental_v1(lease, core, prepared, policy, retain_terminal) returns the successor core that it assembled\nbefore the catalog swap: no physical recovery, no index rebuild and no cold admission
+
+start
+:writer preflight: the lease shares\nthe core's generation-lease registry; <<#CFD8DC>>
+if (shared?) then (no)
+  :Preparation(AuthorityMismatch)\n<b>definitely not published</b>; <<#FFCDD2>>
+  stop
+endif
+:preflight_trusted(authority, registry, policy); <<#E1BEE7>>
+if (the sealed predecessor authority\nand registry?) then (no)
+  :Preparation(AuthorityMismatch)\n<b>definitely not published</b>; <<#FFCDD2>>
+  stop
+elseif (a trusted binding?) then (no)
+  :Preparation(PublicationModeMismatch)\n<b>definitely not published</b>; <<#FFCDD2>>
+  stop
+elseif (the sealed policy?) then (no)
+  :Preparation(TrustedPolicyMismatch)\n<b>definitely not published</b>; <<#FFCDD2>>
+  stop
+else (yes)
+  :borrow the prepared trusted successor\nthat the bind sealed; <<#E1BEE7>>
+endif
+:require_incremental_base: the receipt's base is the\ncurrent state, its profile is P, it names a retention\nmanifest, and the catalog file holds the core's image; <<#CFD8DC>>
+if (all hold?) then (no)
+  :BaseStateMismatch, ProfileMismatch,\nMissingRetentionManifest or CatalogCompareAndSwap\n<b>definitely not published</b>; <<#FFCDD2>>
+  stop
+endif
+:plan the append: the PREPARE address, the index\ngeneration, the new objects' index records and\nthe new index tail (IncrementalAppendPlanV1); <<#CFD8DC>>
+:trusted_successor_index: clone the core's index,\ninsert each new record, and require the derived tail\n<latex>64 + 72n</latex> to equal the planned tail; <<#BBDEFB>>
+if (assembled?) then (no)
+  :TrustedSuccessorAssembly(Index(DuplicateData,\nDigestReferenceConflict, RecordCountOverflow\nor CanonicalStreamTail))\n<b>definitely not published</b>; nothing written; <<#FFCDD2>>
+  stop
+endif
+:truncate the active pack to its appointed tail;\nwrite and sync the PREPARE and index records\n[AfterPrepareWrite ... AfterIndexSync]; <<#CFD8DC>>
+:stage the successor slot and its image, retain\nthe terminal, write and sync the commit record,\nsync the artifact directory\n[AfterCommitWrite ... AfterArtifactDirectorySync]; <<#CFD8DC>>
+:assemble_trusted_successor: select the token from\nthe successor image, pin the store over the new\nindex, bind the validity token to the slot's state,\nand build the core from the prepared successor; <<#BBDEFB>>
+if (assembled?) then (no)
+  :TrustedSuccessorAssembly(AuthorityChanged,\nPackTail, ...)\n<b>definitely not published</b>:\nthe catalog still names the predecessor; <<#FFCDD2>>
+  stop
+endif
+:compare the catalog with the core's image\n[BeforeCatalogCompareAndSwap,\nAfterCatalogCasVerifiedBeforeSlotWrite]; <<#FFE0B2>>
+note right #ECEFF1
+  <b>Outcome classes</b>
+  A failure before the slot write is definitely not
+  published, one during the slot write or its sync is
+  indeterminate, and one after the catalog file is
+  durable is published with an error, which the
+  journal owner resolves by cold recovery.
+end note
+if (unchanged?) then (no)
+  :CatalogCompareAndSwap\n<b>definitely not published</b>; <<#FFCDD2>>
+  stop
+endif
+:write and sync the inactive slot\n[AfterCatalogSlotWrite,\nAfterCatalogFileSyncBeforeDirectorySync]; <<#FFE0B2>>
+if (written and synced?) then (no)
+  :CatalogCommitIndeterminate\n<b>indeterminate</b>; <<#FFCDD2>>
+  stop
+endif
+:sync the catalog directory\n[AfterCatalogDirectorySync,\nAfterCatalogSyncBeforeRecovery]; <<#FFE0B2>>
+if (synced?) then (no)
+  :PublishedCatalogDirectory\n<b>published</b> with an error; <<#FFCDD2>>
+  stop
+endif
+:resolve the reclamation sidecar against the\nsuccessor slot (resolve_reclamation_candidate_v1); <<#BBDEFB>>
+note right #ECEFF1
+  <b>The cold-checked publication</b>
+  publish_incremental_with_terminal_v1 runs every
+  grey and amber step with the same bytes and skips
+  the blue ones. After the directory sync it runs
+  physical recovery, which resolves the sidecar and
+  rebuilds the index, then cold admission under the
+  incoming limits and the metadata inventory check:
+  three more hooks, sixteen in all against the
+  trusted thirteen.
+end note
+if (resolved?) then (no)
+  :PublishedRecovery\n<b>published</b> with an error; <<#FFCDD2>>
+  stop
+endif
+:re-read the 672-byte catalog image; <<#BBDEFB>>
+note left #E1BEE7
+  <b>The re-read</b>
+  The model adopts a successor only after an exact
+  re-read of the catalog (AdoptTrusted;
+  AdoptedSuccessorIsExactCatalog), so a catalog
+  changed after the swap is reported, never adopted.
+  It costs one 672-byte read per publication.
+end note
+if (byte-equal to the core's image?) then (no)
+  :PublishedRecovery(Io(CatalogAuthorityChanged))\n<b>published</b> with an error; <<#FFCDD2>>
+  stop
+endif
+:return the successor core: its authority, store,\nvalidity, shape, ledger, retained states and maxima;\nit carries no cold evidence; <<#C8E6C9>>
+stop
+
+@enduml

@@ -40,8 +40,9 @@ pub(crate) use admission::{
 };
 #[cfg(test)]
 pub(crate) use admission::{
-    PreparedTrustedSuccessorV1, SealedDurableTransactionV1, SuccessorBindingV1,
-    TrustedCeilingAxisV1, TrustedStateCeilingsV1, TrustedSuccessorPolicyV1, TrustedTrialWorkV1,
+    DurableAuthorityCoreV1, PreparedTrustedSuccessorV1, SealedDurableTransactionV1,
+    SuccessorBindingV1, TrustedCeilingAxisV1, TrustedStateCeilingsV1, TrustedSuccessorPolicyV1,
+    TrustedTrialWorkV1,
 };
 #[cfg(test)]
 pub(crate) use admission::{
@@ -83,7 +84,7 @@ pub(crate) use publication::require_incremental_retention_manifest;
 pub(crate) use publication::{
     GenerationCheckpointPublicationErrorV1, GenerationCheckpointPublicationOutcomeV1,
     IncrementalPublicationErrorV1, publish_incremental_from_lease_v1,
-    publish_incremental_with_terminal_v1,
+    publish_incremental_with_terminal_v1, publish_trusted_incremental_v1,
 };
 #[cfg(test)]
 pub(crate) use publication::{

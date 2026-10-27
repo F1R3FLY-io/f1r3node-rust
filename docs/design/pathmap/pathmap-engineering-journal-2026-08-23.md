@@ -20317,6 +20317,270 @@ the base's, and staged bytes do not prove that it is the delta's.
 durable backend stays dormant, as J-250 records. Task 11943 resumes with its
 shape summary property, which this correction lets seal.
 
+### J-252 — 2026-10-27: trusted successor publication and the journal owner's switch (task 11946)
+
+**DERIVED.** This entry follows J-067, which separated trusted state authority
+from cold-execution evidence, and J-251. It completes task 7927, which builds
+J-067's trusted successor in the five slices of its reviewed plan (pgmcp
+artifact 1114, review decision 8):
+
+| Slice | Task | Commit |
+|---|---|---|
+| The TLA+ and Rocq models, and the test-only extraction of eighteen TS rows | 11942 | `c8331505a` |
+| The exact shape summary and TS-17, after the closure correction of J-251 (`ceebee31a`) | 11943 | `777744381` |
+| The split of the durable authority core from its cold-checked admission evidence | 11944 | `15d4917b0` |
+| The trusted bind under an explicit hot policy | 11945 | `fbb379bd5` |
+| The trusted publication and the journal owner's switch to it | 11946 | this entry's commit |
+
+The
+[trusted successor publication section](generation-checkpoint-invariant-catalog-2026-08-28.md#trusted-successor-publication-and-owner-2026-10-27)
+of the invariant catalog states the publication's nine steps with their
+sources, its outcome classes, the journal owner's branches and every
+production check, with two figures. This entry records the decisions, what
+follows from the code, and the evidence.
+
+`publish_trusted_incremental_v1` (`durable/publication.rs:909-970`) publishes
+a transaction that `bind_trusted_transaction` sealed and returns the
+successor's `DurableAuthorityCoreV1`. Before any write it derives the
+successor's object index by inserting the planned records into a clone of the
+predecessor's (`trusted_successor_index`, `durable/admission.rs:1511-1532`).
+Once the commit record is durable, and before the catalog swap, it assembles
+the core from the bind's prepared successor (`assemble_trusted_successor`,
+`:1534-1577`). After the swap it resolves the reclamation sidecar and re-reads
+the catalog image. It runs no physical recovery, no index rebuild and no cold
+admission. Three consequences follow from the code, and the tests below check
+each:
+
+1. Both incremental modes write through the same code: the base check, the
+   pack truncation, the append plan and the planned PREPARE and index append,
+   the commit and the catalog swap (`durable/publication.rs:972-1115`,
+   `:1167-1286`). The trusted mode differs only in what it derives and in
+   skipping the work after the swap, so the two modes write identical bytes
+   (TS-10).
+2. A trusted publication passes thirteen test hooks, 2 to 14 of
+   `FORMAL_PUBLICATION_PHASE_ORDER`, and a cold-checked one sixteen, 2 to 17.
+   The three that it skips surround physical recovery and semantic admission
+   (TS-09).
+3. Every trusted derivation that can fail precedes the swap. Its failure, the
+   new `TrustedSuccessorAssembly`, is therefore definitely not published
+   (`durable/publication.rs:285`, `:310`): the catalog still names the
+   predecessor (TS-11).
+
+The appointed index tail of a successor with $`n`$ index records is
+$`64 + 72n`$ bytes, a 64-byte header and one 72-byte record each, and the
+trusted index must imply the tail that the plan appoints. In production no
+duplicate record reaches this check: the planner marks an object that the
+store already holds as reused, and the index append skips reused objects
+(`wal/disposition.rs:93-152`, `durable/index.rs:734-750`). TS-02 reaches the
+duplicate, conflict and tail refusals by calling the derivation directly.
+`RecordCountOverflow` needs more than
+$`\lfloor (2^{64} - 1 - 64) / 72 \rfloor = 256\,204\,778\,801\,521\,549`$
+records, so it is derived from the checked arithmetic
+(`durable/admission.rs:1520-1524`) and never built.
+
+**THE JOURNAL OWNER.** `DurableRSpaceAuthorityV1`
+(`durable/rspace_authority.rs`) keeps only a `DurableAuthorityCoreV1`.
+`from_view` and the recovery branch of `reconcile` are production's only calls
+of `into_core` (`:155`, `:308`), and only tests call `acquire_cold_checked`. A
+non-empty checkpoint binds with `bind_trusted_transaction` and publishes with
+`publish_trusted_incremental_v1`, both under the trusted policy that the
+owner's limits now carry (`:30-37`), and refuses `UnexpectedTerminal` unless
+the returned core's slot is the retained terminal (`:277-283`). The empty-batch
+and awaiting-acknowledgement branches, the acknowledge-once rule and the write
+permit are unchanged. Only reconciliation from `RecoveryRequired` runs physical
+recovery and cold admission, under the recovery, wal and admission limits.
+The first row of J-067's observed caller contract therefore changes: a
+successful non-empty checkpoint no longer includes cold admission under the
+incoming admission limits. TS-14's owner witness publishes, under zero
+admission limits, a checkpoint whose directory cold admission refuses under
+those limits.
+
+**DEPARTURES FROM THE DESIGN.** Two choices differ from the reviewed plan.
+
+1. *The catalog re-read.* Review decision 3 rejected the plan's step 3.10, a
+   re-read of the catalog after the swap: J-067 does not require it, and it
+   accepts that damage after the swap is found at the next cold boundary. The
+   model of task 11942 requires the re-read. Its action `AdoptTrusted`
+   (`RSpaceTrustedIncrementalPublication.tla:183`) adopts the successor only
+   when the catalog holds the swapped image, the invariant
+   `AdoptedSuccessorIsExactCatalog` (`:316`) states the rule, and the
+   configuration `RSpaceTrustedIncrementalPublicationWrongCatalogAdoptionMutant.cfg`
+   must violate it. Production follows the checked model, so the model
+   supersedes decision 3. The re-read costs one 672-byte read per publication.
+   A catalog changed between the swap and the re-read is reported as
+   `PublishedRecovery(Io(CatalogAuthorityChanged))`, published with an error
+   (TS-07), and only a change after the publication returns waits for the next
+   cold boundary.
+2. *Shared write code.* The plan kept the cold-checked publication's code as
+   it was. The implementation moves its base check, truncation, commit and swap
+   into helpers that both modes call, so the byte identity of consequence 1
+   holds by construction, not by two copies kept in step. The cold-checked
+   mode's writes, hooks, errors and outcome classes are unchanged. The crash
+   harness `check_borrowed_incremental_crash` (`durable_publication.rs:727-1045`)
+   now takes the mode, and its cold-checked calls keep their assertions.
+
+**HYPOTHESIS.** Before its run, the negative-control script fixed the test and
+the failure message for each of fourteen single-site mutations of the
+production sources. The hypothesis: every mutation compiles, the one test that
+names it fails inside its production check with that message, and the
+unmutated tree passes all fourteen tests. Each mutation removes one property
+that a TS row claims of production, so a surviving mutation would expose a
+production check that does not observe its property.
+
+**MEASURED.** The controls ran on tree `b815c6e4`, which is HEAD `fbb379bd5`
+plus this change's sources, exported to `target/scratch/idx`, in debug with
+one test thread under a 32 GiB scope with zero swap (pgmcp artifact 1136). The
+clean export passed all fourteen tests in 35.20 s. Every control then
+compiled, and its test exited with status 101, failing inside its production
+check after 0.02 to 2.57 s, so the hypothesis held for all fourteen. The
+catalog's negative-control table gives each observed failure. Each log is
+`target/perf/logs/phase4/c30-negctl-<control>-20261027T194733Z.log`, and the
+run's summary is `c30-negctl-summary-20261027T194733Z.txt` (SHA-256
+`cbab615d0bf5aa13540e75a502876f1425360516294972538a737a66760d303e`):
+
+| Control | Mutation | Killed by | SHA-256 of the log |
+|---|---|---|---|
+| `clean` | none | all fourteen tests pass | `69894456d8a1f7630b3813f8ad54a232a3eb31f0fe19a47f607b7738406c8c8e` |
+| `ts02-tail-unchecked` | `trusted_successor_index` returns the index without comparing tails | TS-02 | `4164e9a0e3f41b679a57fffb6e71c826748c4c5e3fc8d0fb3647fa8e8bd91f75` |
+| `ts03-predecessor-ledger` | `assemble_trusted_successor` copies the predecessor core's ledger | TS-03 | `db118d98408177d158cd4698731b53e7189f0fa3ded580a2f77e303cbcc4b180` |
+| `ts04-publication-policy-tautology` | the guard of `preflight_trusted` compares the sealed policy with itself | TS-04 | `d019f0ef5c295440dde0ce867d6c193c0c836e83d97a4d608c09122ce414e7c4` |
+| `ts06-publication-policy-state-only` | `preflight_trusted` compares only the policies' state ceilings | TS-06 | `8bdba88488e9e3afa863445e56e56f938b8b61c54e91a4b3ebed6acd3189ad1a` |
+| `ts07-no-post-swap-catalog-read` | the publication returns the core without re-reading the catalog | TS-07 | `caeb3a4d60e84b36c8bda273cfbb09c17114511da29cb5a78bbf3479046473e0` |
+| `ts08-no-checkpoint-admission-preflight` | `publish_generation_checkpoint_v1` drops its measured-demand preflight | TS-08 | `01f532b7492b05e30b2295d567dfec4c9e6e6bc937afaffaffde46aa4e5b1494` |
+| `ts09-cold-readmission-after-swap` | the trusted publication runs physical recovery and cold admission after the swap | TS-09 | `60593f2c4bbed0610abbdda21221529f897ea83bc67a259fa78692d5aed23404` |
+| `ts10-reclamation-unresolved` | the publication skips `resolve_reclamation_candidate_v1` | TS-10 | `58e7ef345cee3f2a435ed796bcd1c9f502afc1d6cdc1e38c6df57c0b076b7ac2` |
+| `ts11-assemble-after-swap` | `assemble_trusted_successor` runs after `swap_incremental_catalog` | TS-11 | `a3405203363ea1d724f7f17857094f29d390f6b4551e15f2b636058e71e42eea` |
+| `ts12-empty-batch-cold-check` | the empty-batch branch calls `acquire_cold_checked` | TS-12 | `875bf2b789b3642fcb26550925df0209336701681f998c4c1dacf69e0a4f9a08` |
+| `ts13-awaiting-retry-reconciles-cold` | `reconcile` drops its awaiting-acknowledgement branch | TS-13 | `92f0b896db0f1a7bc08bd318c4f0e102fbafc16d0f2777b47acec330304cb185` |
+| `ts14-owner-cold-check-after-publish` | `publish_captured` calls `acquire_cold_checked` on the published core | TS-14 | `f4d77d006b3aa4ca742b71eff17774cc93ba7fc2e3080de6e9a5494280d84642` |
+| `ts15-owner-binds-unbounded` | `publish_captured` binds and publishes under the unbounded policy | TS-15 | `9ad15664638d08b49b3b5bf2a94aa06f28f6d5844a62c595f4d10c8767688ee4` |
+| `ts17-predecessor-shape` | `assemble_trusted_successor` copies the predecessor core's shape | TS-17 | `37e648addab563ce670bd0f2c89711b34e4852feed02d4cab322e9e5101784a5` |
+
+The ledger, shape and re-read controls each compile and publish. The
+comparisons with cold re-admission, not the types, keep a trusted successor
+honest.
+
+**EXECUTABLE REFINEMENT.** Each TS test function runs its model checks and
+then its production checks, so the property bindings are unchanged and the
+registry still holds 211 IDs. The production checks live in
+`trusted_successor_production.rs`, except the owner's
+(`durable_rspace_authority.rs`), the crash check (`durable_publication.rs`)
+and TS-17's (`shape_summary_properties.rs`). They run 64 cases (TS-02, TS-03,
+TS-04, TS-06 and TS-07), 32 (TS-08, TS-09 and TS-14) or 16 (TS-10 and TS-11),
+each over four scenarios on real directories; the owner checks of TS-12 to
+TS-15 and TS-17's corner chain run once. Two drivers publish the generated
+histories. `ProductionHistory::publish_trusted` re-admits each trusted
+successor cold and requires the re-admitted core to equal the published one.
+`TrustedChain` keeps the published core as the next predecessor, so its
+histories are chains of trusted successors. Two test-only counters, of cold
+admissions and of committed-index constructions, let every check require zero
+of each for a trusted publication. TS-11's test function also calls
+`production_trusted_crash_recovers_and_retries_every_phase`
+(`durable_publication.rs:1059-1074`), the crash check in trusted mode at hooks
+2 to 14 and at every proper prefix of the catalog slot write.
+
+**VERIFICATION BOUNDARY.** The final evidence ran on tree `78a3abc7`, exported
+to `target/scratch/idx`, which is HEAD `fbb379bd5` plus this change. It
+differs from this commit only in documentation written after the runs: this
+table with the paragraphs that follow it, one corrected line range in this
+entry's derivation, the citation of review decision 6 in its boundary, the
+catalog's verification-record paragraph and the register's evidence
+paragraph. Its sources equal those of tree `b815c6e4`, on which the negative
+controls ran. One heavy job ran at a time, each in a user scope with zero
+swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| obligation registries | in the export | all sixteen current, every self-test passed | `target/perf/logs/c30/registries-11946-20261027T204204Z.log` | `ded2fcda831d247957c86c7783dcb79b9be92912c4991d4532692c60e4ae6515` |
+| the 486 selected rspace++ library tests under `rspace::persistence`, debug | 24 GiB, one test thread | 486 passed, 0 failed, 3 ignored, in 86.17 s | `target/perf/logs/phase4/c30-11946-persistence-debug-20261027T204233Z.log` | `99e22830c18c5fc706650818a0cc7e0e82a85738d958db1418e20c8341cf3c73` |
+| the same, release | as above | 486 passed, 0 failed, 3 ignored, in 37.97 s | `target/perf/logs/phase4/c30-11946-persistence-release-20261027T204233Z.log` | `447d17642c088233c613e68c8243ca4343645d48e30bfb2c016ca8e0a3414d74` |
+| `cargo check --workspace --all-targets` | 48 GiB | exit 0 in 47 s; the warnings are those of the previous commit's gate | `target/perf/logs/phase0/c30-11946-gate-check-20261027T204751Z.log` | `905c865654ad2d0dcf2cfa6dbab63649799f8cfd8f657f83e3b3872d7d9e5c29` |
+| `cargo clippy --workspace` | 48 GiB | exit 0 in 48 s; one warning, also in the previous commit's gate | `target/perf/logs/phase0/c30-11946-gate-clippy-json-20261027T204751Z.log` | `bd577a63dcbdb9b1b4b10a477ee2c824f87e973a1fefefeef3d9ffd4a798093c` |
+| release nextest for `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang` | 48 GiB | 4,424 passed, 45 skipped, in 820.56 s | `target/perf/logs/phase0/c30-11946-gate-nextest-20261027T204751Z.log` | `1467bf60a41c5fe9235ba26d5ccd266c430d5a3ee8d13b0a71d8dc778b65fff6` |
+| release doc tests for `models` and `rholang` | 48 GiB | 4 passed, 3 ignored | `target/perf/logs/phase0/c30-11946-gate-doc-20261027T204751Z.log` | `b41227b9f3e63a26a5ef42670b01ce0ed36792175f82707f70fad3b8b0089892` |
+| `cargo fmt --all -- --check` | in the export | exit 0, no difference | `target/perf/logs/c30/fmt-11946-20261027T213202Z.log` | `72ffd753c4ae51aa0f890d561070563e707e5281dff1ba93cfff67cf8a29d7e7` |
+| `scripts/check-fmt.sh`, the pre-commit hook's check | in the export | clean, 0 differences | `target/perf/logs/c30/check-fmt-11946-20261027T213202Z.log` | `06172097f5230e90f9e04a2b49caf27aa823f4866f3f02117c2b98d082abb382` |
+| per-test times of the debug suite at HEAD `fbb379bd5` | 24 GiB, one test thread, `-Z unstable-options --report-time` | 486 passed in 70.16 s | `target/perf/logs/phase4/c29-11945-time-ts-debug-20261027T210734Z.log` | `5b83ce5927398ebbe021b2acaa65ed07519fc12b7bae1849a3add63606d8e239` |
+| the same on this change | as above | 486 passed in 83.44 s | `target/perf/logs/phase4/c30-11946-time-ts-debug-20261027T210602Z.log` | `5dc763828eeccffc723c2596be1e856e1cb6a03a3fb999d88218d8936f12d18e` |
+| the same at HEAD with a fixed proptest seed, run 1 | as above, with `PROPTEST_RNG_SEED=20261027` | 486 passed in 66.79 s | `target/perf/logs/phase4/c29-11945-time-seeded-run1-20261027T211103Z.log` | `eb436d868eced2e5dbeb63081b9c675c5d069c8540fc169dfa784ebbffcff2cd` |
+| the same, run 2 | as above | 486 passed in 66.93 s | `target/perf/logs/phase4/c29-11945-time-seeded-run2-20261027T211103Z.log` | `be23a75c207a95f569fc9c91fb247f1c36a39bace3263c5692f7216240da0431` |
+| the same on this change, run 1 | as above | 486 passed in 84.10 s | `target/perf/logs/phase4/c30-11946-time-seeded-run1-20261027T211325Z.log` | `fb59b37ab77dfb6bbd8978c669c48192fe3e4b7531b5214cc45fc0cc4994ae56` |
+| the same, run 2 | as above | 486 passed in 84.06 s | `target/perf/logs/phase4/c30-11946-time-seeded-run2-20261027T211325Z.log` | `2e52e90eb6aa307909f80d632b9d0348591b8a6e816a570784b1328a5b324263` |
+| attribution of the four seeded runs | the definitions below | six tests flagged, together +14.99 s | `target/perf/logs/c30/seeded-attribution-11946.txt` | `13e89659ffe69881a86158ed6bb48d153a86cb38775c8406bae0694119ba6fb1` |
+
+The debug suite took 86.17 s here against 68.07 s in the previous commit's
+gate, and the release suite 37.97 s against 28.87 s. The per-test debug times
+above locate the rise. The hypothesis was that the only tests whose time
+changes beyond run-to-run noise are test functions to which this change adds
+production checks, and that a test elsewhere moves between unseeded runs only
+because proptest draws new cases on every run. Unseeded, two history tests did
+move: the owner's
+(`owner_checkpoint_histories_preserve_multiplicities_across_retry_and_cold_restart`)
+from 2.23 s to 3.35 s, and the inventory's
+(`incremental_inventory_matches_cold_admission_at_every_history_step`) from
+15.62 s to 13.40 s. A fixed seed makes every property whose strategy is
+unchanged draw the same cases on both trees. With it, the summed per-test
+times, each the mean of two runs, rose from 66.78 s to 83.99 s, by 17.21 s. A
+test's change is the difference of its two means, and its spread is the sum of
+its run-to-run differences within each tree. Exactly six tests changed by more
+than both 0.1 s and twice their spread, and this change adds production checks
+to each of them; together they rose by 14.99 s:
+
+| Test function | Row | Change |
+|---|---|---|
+| `trusted_and_cold_checked_publication_write_identical_bytes` | TS-10 | +3.74 s |
+| `trusted_incremental_publication_recovers_and_retries_every_phase` | TS-11, with the trusted crash check | +3.31 s |
+| `trusted_successor_index_frontier_equals_cold_recovery` | TS-02 | +2.57 s |
+| `trusted_success_does_not_imply_cold_admission_under_incoming_limits` | TS-14's owner witness | +2.22 s |
+| `trusted_publication_performs_no_physical_recovery_or_cold_admission` | TS-09 | +1.71 s |
+| `fresh_checkpoint_from_a_trusted_core_measures_new_cold_demand` | TS-08 | +1.44 s |
+
+The other 2.22 s is spread over the remaining 480 tests, none of which meets
+that criterion; the largest change among them, +0.80 s, has a spread of
+0.59 s. With the seed fixed, the owner's history test took 2.42 s and 2.41 s at
+HEAD and 2.16 s and 2.33 s here, and the inventory's 13.88 s and 14.58 s at
+HEAD and 14.91 s and 14.65 s here, so their unseeded moves came from different
+generated cases. The hypothesis held. The release suite was not broken down
+per test. pgmcp artifact 1137 records the gate, and artifact 1138 the
+attribution with its script.
+
+The 486 tests include the manifest test, the fourteen TS test functions with
+their production checks, the owner checks and the trusted crash check. The one
+compiler warning in both suites, an unused import in
+`tests/persistence/object_store_collision.rs`, is also in the previous commit's
+runs; bug 11963 removes it. The manifest test ran again on the final export
+after the three documents were filled; the pgmcp progress note of task 11946
+records that run. These are agent-run results; independent review and the
+approved pgmcp verification recipe remain required.
+
+**PATHMAP LEARNING.** A PathMap clone shares every node: it copies only the
+root's reference (`trie_map.rs:38-44` in pathmap 0.3.4), and a later mutation
+copies a node only while that node is shared (`make_mut`,
+`trie_node.rs:2777-2783` and `:3250-3256`). The trusted index is therefore a
+path copy of the predecessor's (Driscoll, Sarnak, Sleator and Tarjan, 1989,
+[doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2)).
+Inserting a transaction's records copies only the nodes on their keys' paths,
+and a refused insert drops the copy, leaving the predecessor's index, which
+the predecessor core still holds, untouched. The resulting cost, proportional
+to the inserted records and their key lengths rather than to the size of the
+index, is derived from this code, not measured; task 7929 measures the
+successor's work against growing history.
+
+**BOUNDARY.**
+
+- Task 7927 is complete: every TS row checks production code, the trusted
+  publication returns a core, and the journal owner runs a cold check only
+  when it reconciles.
+- No persisted byte, identity, format or wire message changes.
+- The substrate stays out of RSpace until task 7931 wires it in
+  (`rspace/mod.rs:11-18`). The consensus-change register's CBR-053
+  continuation of 2026-10-27 records the owner's changed accepted outcomes,
+  which that activation carries.
+- Crossing generated histories with failpoints at every hook, eviction and
+  reset-target references, pinned readers and cancellation is task 7928
+  (review decision 6 of the same reviewed plan, pgmcp artifact 1114), and the
+  scaling claim against geometrically growing history is task 7929.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

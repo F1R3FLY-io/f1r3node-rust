@@ -7084,3 +7084,45 @@ of `models` and `rholang` (summary SHA-256
 for the activation probe and its classification, and
 [J-249](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-249--2026-10-26-path-local-retention-v2-metadata-writer-task-7926)
 for the writer.
+
+**CBR-053 living continuation (2026-10-27, trusted successor publication and
+the journal owner).** The dormant durable RSpace store now publishes ordinary
+successors without re-admitting them cold. Task 7927 implements the trusted
+successor that J-067 ruled on (2026-09-06) in five slices, tasks 11942 to 11946
+(`c8331505a`, `777744381`, `15d4917b0`, `fbb379bd5` and this continuation's
+commit), as its reviewed plan decided; that plan also decided this
+continuation (pgmcp artifact 1114). `publish_trusted_incremental_v1`
+(`rspace++/src/rspace/persistence/durable/publication.rs:909-970`) publishes a
+transaction that the trusted bind sealed under an explicit hot policy, and
+returns the successor's authority core, which it assembles before the catalog
+swap, with no physical recovery, no index rebuild and no cold admission. After
+the swap it resolves the reclamation sidecar and re-reads the 672-byte catalog
+image. The journal owner `DurableRSpaceAuthorityV1` publishes every non-empty
+checkpoint this way, and runs physical recovery and cold admission only when it
+reconciles an uncertain outcome. Fresh-generation checkpoints, compaction,
+startup and the cold-checked publication keep their cold checks.
+
+| Surface | Finding at this checkpoint |
+|---|---|
+| Production reachability | None: the persistence module is `expect(dead_code)` outside tests (`rspace++/src/rspace/mod.rs:11-18`), and the RSpace authority backends are `Memory` and `Lmdb` (`rspace++/src/rspace/state/rspace_state_authority.rs:142-145`); no node opens a durable directory |
+| Durable bytes | Unchanged: both publication modes write through the same code, and a trusted and a cold-checked publication of the same history write identical bytes under every reclamation-sidecar state (invariant-catalog property TS-10) |
+| Outcomes of the dormant owner | A successful non-empty checkpoint no longer includes cold admission under the incoming admission limits. It is bound and published under the trusted policy that the owner's limits carry (`rspace++/src/rspace/persistence/durable/rspace_authority.rs:30-37`) and that the sealed transaction fixes (TS-06, TS-14, TS-15). A failed trusted assembly is the new `TrustedSuccessorAssembly`, definitely not published, and a catalog changed before the post-swap re-read is `PublishedRecovery(Io(CatalogAuthorityChanged))`, published with an error |
+| State and cryptographic identities | No block, state root, legacy history root, semantic manifest or canonical semantic object byte changes |
+| Serialization | No RhoPath, protobuf, bincode, ACT, WAL, pack, index or catalog format change |
+| Language and metering | No syntax, matching, COMM order, accepted program, blessed contract, compute or storage charge change |
+| Classification | `NO_PRODUCTION_CHANGE_DERIVED`; activating the durable backend (task 7931) must re-enter this register with the release note of 2026-10-26 and this change of the owner's outcomes |
+
+Evidence: on the candidate tree `78a3abc7` (HEAD `fbb379bd5` plus this change,
+before its documents were filled), the 486 selected rspace++ persistence tests
+passed in debug and release, and the commit gate passed: `cargo check` of all
+targets, clippy, all 4,424 release nextest tests of `models`,
+`rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the release doc tests
+of `models` and `rholang` (summary SHA-256
+`c356fc7e15748034510501a9aa6f1cb72c93ecaef0e002c5f2cfec4c40fe8cd7`, pgmcp
+artifact 1137). Fourteen production negative controls, one for each
+TS row with a production check, were each killed by that row's check (pgmcp
+artifact 1136). See
+[J-252](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-252--2026-10-27-trusted-successor-publication-and-the-journal-owners-switch-task-11946)
+for the decisions and the evidence, and the invariant catalog's
+[trusted successor publication section](../design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#trusted-successor-publication-and-owner-2026-10-27)
+for the publication's steps and checks.

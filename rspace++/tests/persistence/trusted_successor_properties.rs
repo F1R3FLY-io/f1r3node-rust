@@ -3,6 +3,7 @@ use std::collections::{HashSet, VecDeque};
 
 use proptest::prelude::*;
 
+use super::durable_publication::production_trusted_crash_recovers_and_retries_every_phase;
 use super::incremental_reachability_properties::{
     BUDGET_AXES, BudgetAxis, ComposedCase, ComposedDelta, ComposedEnvironment, ComposedEvidence,
     ComposedLimits, ComposedOutcome, ComposedPredecessor, CompositionVariant, DOMAINS, Domain,
@@ -14,10 +15,16 @@ use super::incremental_reachability_properties::{
 use super::trusted_successor_production::{
     production_bind_refuses_foreign_stale_and_replayed_receipts,
     production_binding_fixes_publication_mode_and_policy,
+    production_fresh_checkpoint_measures_new_cold_demand,
     production_maxima_equal_cold_requirements,
     production_policy_accepts_exact_and_refuses_one_below,
     production_retention_migrates_once_and_matches_the_cold_seed,
-    production_trials_refuse_in_domain_order, production_trusted_successor_equals_cold_successor,
+    production_trials_refuse_in_domain_order,
+    production_trusted_and_cold_publication_write_identical_bytes,
+    production_trusted_index_equals_cold_recovery,
+    production_trusted_publication_faults_recover_and_retry,
+    production_trusted_publication_skips_cold_admission,
+    production_trusted_successor_equals_cold_successor,
     production_union_budget_admits_scratch_above_final_size,
     production_validity_binds_the_exact_predecessor_and_receipt,
 };
@@ -568,16 +575,16 @@ pub(super) enum SidecarState {
     Reclaimable,
 }
 
-const SIDECAR_STATES: [SidecarState; 3] =
+pub(super) const SIDECAR_STATES: [SidecarState; 3] =
     [SidecarState::Absent, SidecarState::Deferred, SidecarState::Reclaimable];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SidecarResolution {
-    intent_kept: bool,
-    superseded_files_removed: bool,
+    pub(super) intent_kept: bool,
+    pub(super) superseded_files_removed: bool,
 }
 
-fn resolve_sidecar(state: SidecarState) -> SidecarResolution {
+pub(super) fn resolve_sidecar(state: SidecarState) -> SidecarResolution {
     match state {
         SidecarState::Absent => SidecarResolution {
             intent_kept: false,
@@ -2849,6 +2856,7 @@ fn trusted_successor_index_frontier_equals_cold_recovery() {
             Ok(())
         })
         .expect("index assembly refuses exactly where the cold rebuild refuses, before mutation");
+    production_trusted_index_equals_cold_recovery(64);
 }
 
 #[test]
@@ -3696,6 +3704,7 @@ fn fresh_checkpoint_from_a_trusted_core_measures_new_cold_demand() {
     let seen = coverage.get();
     assert!(seen[0] > 0, "no generated history exposed the reused-demand mutant: {seen:?}");
     assert!(seen[1] > 0, "no generated history exposed the summary-demand mutant: {seen:?}");
+    production_fresh_checkpoint_measures_new_cold_demand(32);
 }
 
 #[test]
@@ -3739,6 +3748,7 @@ fn trusted_publication_performs_no_physical_recovery_or_cold_admission() {
             Ok(())
         })
         .expect("trusted publication runs exactly the thirteen trusted phases");
+    production_trusted_publication_skips_cold_admission(32);
 }
 
 #[test]
@@ -3795,6 +3805,7 @@ fn trusted_and_cold_checked_publication_write_identical_bytes() {
             Ok(())
         })
         .expect("trusted and cold-checked publications write the same bytes for every sidecar");
+    production_trusted_and_cold_publication_write_identical_bytes(16);
 }
 
 fn durable_writes(trace: &[PublicationEvent]) -> Vec<PublicationEvent> {
@@ -3925,6 +3936,8 @@ fn trusted_incremental_publication_recovers_and_retries_every_phase() {
             Ok(())
         })
         .expect("every trusted phase recovers to the appointed prefix and retries exactly");
+    production_trusted_publication_faults_recover_and_retry(16);
+    production_trusted_crash_recovers_and_retries_every_phase();
 }
 
 #[test]

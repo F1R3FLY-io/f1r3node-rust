@@ -1,0 +1,59 @@
+@startuml journal-owner-trusted-checkpoint
+' ============================================================================
+' The journal owner's checkpoint after its switch to trusted successors
+' (task 11946): DurableRSpaceAuthorityV1 in durable/rspace_authority.rs,
+' checkpoint at :202-233, publish_captured at :235-289, reconcile at
+' :291-333 and acknowledge_successor at :335-386.
+' Model: formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla
+'   GREEN  #2E7D32  Ready: no pending publication, the base validates
+'   BLUE   #1565C0  Captured: the journal captured under the write permit
+'   AMBER  #EF6C00  RecoveryRequired: durable writes may have begun
+'   PURPLE #6A1B9A  AwaitingAck: published, not yet acknowledged
+'   RED    #C62828  Invalidated: the hot journal names another authority
+'   GREY   #607D8B  notes
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam StateBorderColor #455A64
+skinparam NoteBorderColor #455A64
+hide empty description
+
+title <b>The journal owner's checkpoint over trusted successors</b>\nthe owner keeps only a DurableAuthorityCoreV1, and only recovery runs a cold check
+
+state "Ready" as Ready #C8E6C9
+state "Captured" as Captured #BBDEFB
+state "RecoveryRequired" as Recovery #FFE0B2
+state "AwaitingAck" as Awaiting #E1BEE7
+state "Invalidated" as Invalidated #FFCDD2
+
+[*] -down-> Ready : from_view: the hot journal names the view's\nauthority; keep only the core (into_core)
+Ready -down-> Captured : checkpoint: take the operation gate's write permit,\nvalidate the base, capture the pending journal
+Captured -up-> Ready : <color:#2E7D32>empty batch: validate the base, drop the capture</color>\n<color:#2E7D32><b>no limit consulted, no hook, no cold check</b></color>
+Captured -up-> Ready : <color:#C62828>refused before publication begins (mutation, transaction,</color>\n<color:#C62828>trusted bind or preparation): drop the capture; nothing is written</color>\n<color:#C62828><b>no hook, no cold check</b></color>
+Captured -down-> Recovery : prepared under the wal limits;\nthe journal revalidated
+Recovery -down-> Awaiting : <color:#1565C0>publish_trusted_incremental_v1 returns the successor</color>\n<color:#1565C0>core at the retained terminal</color>\n<color:#1565C0><b>trusted policy; 13 hooks; no cold check</b></color>
+Recovery -right-> Recovery : the publication failed:\nkeep the capture, the permit\nand the retained terminal
+Recovery -up-> Ready : <color:#EF6C00>reconcile: cold recovery selects the predecessor;</color>\n<color:#EF6C00>adopt its core, drop the capture</color>\n<color:#EF6C00><b>recovery, wal and admission limits; one cold check</b></color>
+Recovery -down-> Awaiting : <color:#EF6C00>reconcile: cold recovery selects</color>\n<color:#EF6C00>the retained terminal</color>\n<color:#EF6C00><b>one cold check</b></color>
+Awaiting -up-> Ready : <color:#6A1B9A>acknowledge_successor: pin the successor, acknowledge</color>\n<color:#6A1B9A>the journal, adopt the core, release the permit</color>\n<color:#6A1B9A><b>no limit consulted, no hook, no cold check</b></color>
+Awaiting -right-> Awaiting : the pin or the acknowledgement\nfailed; a retry acknowledges once,\nwith no hook and no cold check
+Ready -left-> Invalidated : the hot journal no longer\nnames the owner's authority
+Invalidated -right-> Ready : the hot journal is restored\nto the owner's authority
+
+note right of Recovery #ECEFF1
+  <b>Exact terminal</b>
+  The trusted publication retains its terminal
+  before the swap. A successor at another slot,
+  or a recovered slot that is neither the
+  predecessor nor that terminal, is refused
+  UnexpectedTerminal and stays here.
+end note
+
+note left of Invalidated #ECEFF1
+  <b>Refusal, not repair</b>
+  A checkpoint here is refused by the base
+  validation before it captures anything.
+end note
+@enduml

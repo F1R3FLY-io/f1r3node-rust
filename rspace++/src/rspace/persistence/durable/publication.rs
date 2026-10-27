@@ -12,9 +12,10 @@ use std::path::Path;
 
 use super::admission::{
     AdmittedCheckpointSourceV1, CheckpointPublicationAuthorityV1, DurableAdmissionErrorV1,
-    DurableAdmissionLimitsV1, DurableAdmissionPreflightErrorV1, DurableObjectReadErrorV1,
-    DurableTransactionPreparationError, PreparedDurableLogPackTransactionV1,
-    SemanticallyAdmittedDurableWriterV1, admit_physical_source, admit_physical_writer,
+    DurableAdmissionLimitsV1, DurableAdmissionPreflightErrorV1, DurableAuthorityCoreV1,
+    DurableObjectReadErrorV1, DurableSuccessorInventoryV1, DurableTransactionPreparationError,
+    PreparedDurableLogPackTransactionV1, SemanticallyAdmittedDurableWriterV1,
+    TrustedSuccessorPolicyV1, admit_physical_source, admit_physical_writer,
 };
 use super::catalog::{
     CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogPackStateV1, CatalogSlotV1,
@@ -34,6 +35,7 @@ use super::limits::{DurableLimitError, DurableLimitKind, DurableLimits};
 use super::pack::{PackFormatError, PackHeaderV1, PackTerminalIdentityV1};
 use super::startup::{
     DurableStartupErrorV1, recover_physical_from_lease_v1, recover_physical_with_lease_v1,
+    resolve_reclamation_candidate_v1,
 };
 use crate::rspace::persistence::canonical::CanonicalSink;
 use crate::rspace::persistence::closure::ClosureInventoryV1;
@@ -280,6 +282,7 @@ pub(crate) enum IncrementalPublicationErrorV1 {
     ProfileMismatch,
     MissingRetentionManifest,
     Preparation(DurableTransactionPreparationError),
+    TrustedSuccessorAssembly(Box<DurableAdmissionErrorV1>),
 }
 
 impl From<IncrementalAppendErrorV1> for IncrementalPublicationErrorV1 {
@@ -303,7 +306,8 @@ impl IncrementalPublicationErrorV1 {
             Self::BaseStateMismatch { .. } |
             Self::ProfileMismatch |
             Self::MissingRetentionManifest |
-            Self::Preparation(_) => Outcome::DefinitelyNotPublished,
+            Self::Preparation(_) |
+            Self::TrustedSuccessorAssembly(_) => Outcome::DefinitelyNotPublished,
         }
     }
 }
@@ -853,6 +857,123 @@ pub(crate) fn publish_incremental_with_terminal_v1<P: SemanticProfile>(
         .map_err(IncrementalPublicationErrorV1::Preparation)?;
     let inventory = prepared.inventory();
     let prepared = prepared.prepared();
+    let current = authority.slot();
+    let retention_manifest = require_incremental_base(lease, &authority, prepared)?;
+    truncate_incremental_pack(lease, current)?;
+    let appended = append_incremental_prepare_and_index(lease, current, prepared)?;
+    let (_, successor_image) = commit_incremental_successor(
+        lease,
+        &authority,
+        prepared,
+        inventory,
+        retention_manifest,
+        appended,
+        retain_terminal,
+    )?;
+    swap_incremental_catalog(lease, &authority, successor_image)?;
+    let physical = recover_physical_from_lease_v1(lease, recovery_limits, wal_limits)
+        .map_err(|error| IncrementalPublicationErrorV1::PublishedRecovery(Box::new(error)))?;
+    #[cfg(test)]
+    incremental_publication_test_point(
+        GenerationCheckpointPublicationHookPointV1::AfterPhysicalRecovery,
+        lease.directory().path(),
+    )?;
+    #[cfg(test)]
+    incremental_publication_test_point(
+        GenerationCheckpointPublicationHookPointV1::BeforeSemanticAdmission,
+        lease.directory().path(),
+    )?;
+    let successor = admit_physical_source::<P>(lease, physical, admission_limits)
+        .map_err(|error| IncrementalPublicationErrorV1::PublishedAdmission(Box::new(error)))?;
+    let admitted = ClosureInventoryV1 {
+        distinct_objects: successor.report().retention_metadata_objects,
+        canonical_bytes: successor.report().retention_metadata_canonical_bytes,
+    };
+    match inventory.metadata {
+        Some(trial) if trial != admitted => {
+            return Err(IncrementalPublicationErrorV1::PublishedMetadataInventory {
+                trial,
+                admitted,
+            });
+        }
+        Some(_) | None => {}
+    }
+    #[cfg(test)]
+    incremental_publication_test_point(
+        GenerationCheckpointPublicationHookPointV1::AfterSemanticAdmission,
+        lease.directory().path(),
+    )?;
+    Ok(successor)
+}
+
+pub(crate) fn publish_trusted_incremental_v1<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    source: &DurableAuthorityCoreV1<P>,
+    prepared: &PreparedDurableLogPackTransactionV1<'_, '_, P>,
+    policy: TrustedSuccessorPolicyV1,
+    retain_terminal: impl FnOnce(CatalogSlotV1),
+) -> Result<DurableAuthorityCoreV1<P>, IncrementalPublicationErrorV1> {
+    source
+        .preflight_writer(lease)
+        .map_err(IncrementalPublicationErrorV1::Preparation)?;
+    let authority = source.authority().clone();
+    let trusted = prepared
+        .preflight_trusted(&authority, &lease.generation_leases(), policy)
+        .map_err(IncrementalPublicationErrorV1::Preparation)?;
+    let inventory = prepared.inventory();
+    let prepared = prepared.prepared();
+    let current = authority.slot();
+    let retention_manifest = require_incremental_base(lease, &authority, prepared)?;
+    let plan = IncrementalAppendPlanV1::new(current, prepared)?;
+    let index = source
+        .trusted_successor_index(plan.index_append.records(), plan.index_append.new_tail())
+        .map_err(|error| {
+            IncrementalPublicationErrorV1::TrustedSuccessorAssembly(Box::new(
+                DurableAdmissionErrorV1::Startup(DurableStartupErrorV1::Index(error)),
+            ))
+        })?;
+    truncate_incremental_pack(lease, current)?;
+    let appended = append_planned_incremental_prepare_and_index(lease, plan)?;
+    let (successor, successor_image) = commit_incremental_successor(
+        lease,
+        &authority,
+        prepared,
+        inventory,
+        retention_manifest,
+        appended,
+        retain_terminal,
+    )?;
+    let core = source
+        .assemble_trusted_successor(lease, trusted, successor, successor_image, index)
+        .map_err(|error| {
+            IncrementalPublicationErrorV1::TrustedSuccessorAssembly(Box::new(error))
+        })?;
+    swap_incremental_catalog(lease, &authority, successor_image)?;
+    let published = |error| IncrementalPublicationErrorV1::PublishedRecovery(Box::new(error));
+    let candidate = lease
+        .read_reclamation_candidate()
+        .map_err(|error| published(DurableStartupErrorV1::Io(error)))?;
+    resolve_reclamation_candidate_v1(lease, candidate, successor).map_err(published)?;
+    let observed = lease
+        .directory()
+        .open_catalog()
+        .and_then(|catalog| catalog.read_catalog_image())
+        .map_err(|error| published(DurableStartupErrorV1::Io(error)))?;
+    if !core.authority().matches_exactly(&observed) {
+        return Err(published(DurableStartupErrorV1::Io(
+            DurableIoError::CatalogAuthorityChanged {
+                path: lease.directory().path().to_path_buf(),
+            },
+        )));
+    }
+    Ok(core)
+}
+
+fn require_incremental_base<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    authority: &CatalogAuthorityTokenV1,
+    prepared: &PreparedLogPackTransactionV1<'_, '_, P>,
+) -> Result<crate::rspace::persistence::ObjectRefV1, IncrementalPublicationErrorV1> {
     let receipt = prepared.receipt();
     let current = authority.slot();
     if receipt.base() != current.state() {
@@ -869,17 +990,34 @@ pub(crate) fn publish_incremental_with_terminal_v1<P: SemanticProfile>(
     if !authority.matches_exactly(&observed) {
         return Err(IncrementalPublicationErrorV1::CatalogCompareAndSwap);
     }
-    {
-        let mut pack = lease.open_pack(PackId::new(current.pack().active_pack())?)?;
-        let appointed = current.pack().durable_pack_tail();
-        let available = pack.require_length(FileLengthExpectation::AtLeast(appointed))?;
-        if available > appointed {
-            pack.set_len(appointed)?;
-            pack.sync_all()?;
-        }
+    Ok(retention_manifest)
+}
+
+fn truncate_incremental_pack(
+    lease: &mut DurableWriterLeaseV1,
+    current: CatalogSlotV1,
+) -> Result<(), IncrementalPublicationErrorV1> {
+    let mut pack = lease.open_pack(PackId::new(current.pack().active_pack())?)?;
+    let appointed = current.pack().durable_pack_tail();
+    let available = pack.require_length(FileLengthExpectation::AtLeast(appointed))?;
+    if available > appointed {
+        pack.set_len(appointed)?;
+        pack.sync_all()?;
     }
-    let (prepare_address, prepare_identity, index_tail) =
-        append_incremental_prepare_and_index(lease, current, prepared)?;
+    Ok(())
+}
+
+fn commit_incremental_successor<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    authority: &CatalogAuthorityTokenV1,
+    prepared: &PreparedLogPackTransactionV1<'_, '_, P>,
+    inventory: DurableSuccessorInventoryV1,
+    retention_manifest: crate::rspace::persistence::ObjectRefV1,
+    (prepare_address, prepare_identity, index_tail): (LogPackAddress, PrepareRecordIdentityV1, u64),
+    retain_terminal: impl FnOnce(CatalogSlotV1),
+) -> Result<(CatalogSlotV1, [u8; CATALOG_IMAGE_LEN]), IncrementalPublicationErrorV1> {
+    let receipt = prepared.receipt();
+    let current = authority.slot();
     let commit_address = LogPackAddress::from_pack(
         prepare_address.pack_id(),
         prepare_address.end(),
@@ -946,8 +1084,15 @@ pub(crate) fn publish_incremental_with_terminal_v1<P: SemanticProfile>(
         GenerationCheckpointPublicationHookPointV1::AfterArtifactDirectorySync,
         lease.directory().path(),
     )?;
+    Ok((successor, successor_image))
+}
 
-    publish_catalog_slot_compare_and_swap(lease, &authority, successor_image)?;
+fn swap_incremental_catalog(
+    lease: &mut DurableWriterLeaseV1,
+    authority: &CatalogAuthorityTokenV1,
+    successor_image: [u8; CATALOG_IMAGE_LEN],
+) -> Result<(), IncrementalPublicationErrorV1> {
+    publish_catalog_slot_compare_and_swap(lease, authority, successor_image)?;
     #[cfg(test)]
     incremental_publication_test_point(
         GenerationCheckpointPublicationHookPointV1::AfterCatalogFileSyncBeforeDirectorySync,
@@ -966,39 +1111,7 @@ pub(crate) fn publish_incremental_with_terminal_v1<P: SemanticProfile>(
         GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
         lease.directory().path(),
     )?;
-    let physical = recover_physical_from_lease_v1(lease, recovery_limits, wal_limits)
-        .map_err(|error| IncrementalPublicationErrorV1::PublishedRecovery(Box::new(error)))?;
-    #[cfg(test)]
-    incremental_publication_test_point(
-        GenerationCheckpointPublicationHookPointV1::AfterPhysicalRecovery,
-        lease.directory().path(),
-    )?;
-    #[cfg(test)]
-    incremental_publication_test_point(
-        GenerationCheckpointPublicationHookPointV1::BeforeSemanticAdmission,
-        lease.directory().path(),
-    )?;
-    let successor = admit_physical_source::<P>(lease, physical, admission_limits)
-        .map_err(|error| IncrementalPublicationErrorV1::PublishedAdmission(Box::new(error)))?;
-    let admitted = ClosureInventoryV1 {
-        distinct_objects: successor.report().retention_metadata_objects,
-        canonical_bytes: successor.report().retention_metadata_canonical_bytes,
-    };
-    match inventory.metadata {
-        Some(trial) if trial != admitted => {
-            return Err(IncrementalPublicationErrorV1::PublishedMetadataInventory {
-                trial,
-                admitted,
-            });
-        }
-        Some(_) | None => {}
-    }
-    #[cfg(test)]
-    incremental_publication_test_point(
-        GenerationCheckpointPublicationHookPointV1::AfterSemanticAdmission,
-        lease.directory().path(),
-    )?;
-    Ok(successor)
+    Ok(())
 }
 
 impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {

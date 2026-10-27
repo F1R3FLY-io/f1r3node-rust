@@ -6,44 +6,76 @@ use proptest::prelude::*;
 use tokio::sync::RwLock;
 
 use super::checkpoint_wal::fixture_for_profile;
-use super::durable_publication::install_checkpoint_image;
+use super::durable_publication::{FORMAL_PUBLICATION_PHASE_ORDER, install_checkpoint_image};
 use super::durable_recovery::{checkpoint_image_for_profile, limits};
 use super::retention_v2_format_properties::migrate_checkpoint_source_to_v2;
 use super::support::{PersistenceTrialDir, trial_scratch};
+use super::trusted_successor_production::{
+    BindOutcome, TrustedPolicyEvidence, bind_outcome,
+    production_trusted_success_does_not_imply_cold_admission, traced,
+};
 use super::trusted_successor_properties::{
     owner_awaiting_ack_retry_model_property, owner_empty_checkpoint_model_property,
     owner_trusted_policy_refusal_model_property,
     trusted_success_without_cold_admission_model_property,
 };
-use crate::rspace::hot_store::{DurableHotStoreBootstrapLimits, HotStore, HotStoreInstances};
+use crate::rspace::hot_store::{
+    DurableHotStoreBootstrapLimits, HotStore, HotStoreInstances, mutation_batch_from_observation,
+    stage_pending_continuation_sources,
+};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::persistence::durable::{
-    DurableAdmissionLimitsV1, DurableDirectoryV1, DurableRSpaceAuthorityV1,
-    DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError,
+    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableDirectoryV1,
+    DurableRSpaceAuthorityV1, DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError,
     DurableTransactionPreparationError, GenerationCheckpointPublicationHookPointV1,
-    JournalPublicationPhaseV1, arm_generation_checkpoint_publication_failpoint,
-    arm_generation_checkpoint_publication_hook, recover_read_authority,
-    recover_read_authority_from_directory,
+    JournalPublicationPhaseV1, TrustedStateCeilingsV1, TrustedSuccessorPolicyV1,
+    TrustedTrialWorkV1, arm_generation_checkpoint_publication_failpoint,
+    arm_generation_checkpoint_publication_hook, cold_admissions, recover_read_authority,
+    recover_read_authority_from_directory, reset_cold_admissions,
 };
 use crate::rspace::persistence::retention::v2_format::RetentionFormat;
 use crate::rspace::persistence::{
-    DagTransactionLimits, GenerationLeaseKeyV1, GenerationLeaseRegistryV1, LogPackDecodeLimits,
-    RSpaceSemanticProfile, SemanticProfile, StateVersionV1,
+    CanonicalEncode, DagRewriteLimits, DagTransactionLimits, DurableLimitConfig, DurableLimits,
+    GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseRegistryV1,
+    IncrementalClosureLimits, IncrementalSemanticLimits, LogPackDecodeLimits, MutationBatchViewV1,
+    OpenDagTransaction, RSpaceSemanticProfile, SemanticProfile, SemanticValidationLimits,
+    StagingStoreLimits, StateVersionV1, StructuralValidationLimits,
 };
 
 type Profile = RSpaceSemanticProfile<String, String, String, String>;
 type Store = Arc<Box<dyn HotStore<String, String, String, String>>>;
 
 fn poll_checkpoint(owner: &mut DurableRSpaceAuthorityV1<Profile>) {
+    drop(poll_checkpoint_with(owner, publication_limits()));
+}
+
+fn poll_checkpoint_with(
+    owner: &mut DurableRSpaceAuthorityV1<Profile>,
+    limits: DurableRSpacePublicationLimitsV1,
+) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
-    let mut checkpoint = std::pin::pin!(owner.checkpoint(publication_limits()));
-    assert!(matches!(
-        checkpoint
-            .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop())),
-        Poll::Ready(_)
-    ));
+    let mut checkpoint = std::pin::pin!(owner.checkpoint(limits));
+    match checkpoint
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(result) => result,
+        Poll::Pending => panic!("an uncontended owner checkpoint completes on its first poll"),
+    }
+}
+
+fn observed_checkpoint(
+    owner: &mut DurableRSpaceAuthorityV1<Profile>,
+    limits: DurableRSpacePublicationLimitsV1,
+) -> (
+    Result<StateVersionV1, DurableRSpaceTransactionError>,
+    Vec<GenerationCheckpointPublicationHookPointV1>,
+    u64,
+) {
+    reset_cold_admissions();
+    let (result, trace) = traced(|| poll_checkpoint_with(owner, limits));
+    (result, trace, cold_admissions())
 }
 
 fn assert_authority_unwind_child(case: &str, expected_diagnostic: &str) {
@@ -513,6 +545,120 @@ fn publication_limits() -> DurableRSpacePublicationLimitsV1 {
         recovery: limits(),
         wal: LogPackDecodeLimits::UNBOUNDED,
         admission: DurableAdmissionLimitsV1::UNBOUNDED,
+        trusted: TrustedSuccessorPolicyV1::UNBOUNDED,
+    }
+}
+
+const ZERO_STRUCTURAL: StructuralValidationLimits = StructuralValidationLimits {
+    max_distinct_objects: 0,
+    max_canonical_bytes: 0,
+    max_references: 0,
+    max_worklist: 0,
+};
+
+const ZERO_ADMISSION: DurableAdmissionLimitsV1 = DurableAdmissionLimitsV1 {
+    current_semantics: SemanticValidationLimits {
+        structural: ZERO_STRUCTURAL,
+        max_logical_nodes: 0,
+        max_endpoints: 0,
+        max_logical_path_bytes: 0,
+        max_payload_bytes: 0,
+        max_join_lookups: 0,
+        max_join_lookup_steps: 0,
+        max_worklist: 0,
+    },
+    per_state_structural: ZERO_STRUCTURAL,
+    max_retained_states: 0,
+    max_union_objects: 0,
+    max_union_canonical_bytes: 0,
+    max_aggregate_root_visits: 0,
+    max_aggregate_references: 0,
+    max_object_reads: 0,
+    max_object_read_bytes: 0,
+};
+
+fn minimal_publication_limits() -> DurableRSpacePublicationLimitsV1 {
+    DurableRSpacePublicationLimitsV1 {
+        transaction: DagTransactionLimits {
+            staging: StagingStoreLimits {
+                max_objects: 0,
+                max_canonical_bytes: 0,
+            },
+            rewrite: DagRewriteLimits {
+                max_mutations: 0,
+                max_loaded_nodes: 0,
+                max_loaded_bytes: 0,
+                max_edited_nodes: 0,
+                max_retained_prefix_bytes: 0,
+                max_emitted_nodes: 0,
+                max_emitted_bytes: 0,
+                max_cursor_nodes: 0,
+                max_finalize_worklist: 0,
+                max_exact_path_chunks: 0,
+                max_inherited_boundaries: 0,
+            },
+            closure: IncrementalClosureLimits {
+                structural: ZERO_STRUCTURAL,
+                max_logical_visits: 0,
+                max_exact_path_chunks: 0,
+            },
+            semantic: IncrementalSemanticLimits {
+                max_changed_endpoints: 0,
+                max_key_bytes: 0,
+                max_payload_bytes: 0,
+                max_join_lookups: 0,
+                max_join_lookup_steps: 0,
+                max_continuation_prefix_probes: 0,
+                max_continuation_prefix_steps: 0,
+            },
+        },
+        recovery: DurableLimits::new(DurableLimitConfig {
+            max_live_packs: 1,
+            max_pack_bytes: 1,
+            max_transactions: 1,
+            max_object_records: 1,
+            max_total_scan_bytes: 1,
+            max_total_physical_read_bytes: 1,
+            max_index_bytes: 1,
+            max_index_records: 1,
+            max_full_byte_comparison_bytes: 1,
+            max_aggregate_full_byte_comparison_bytes: 1,
+        })
+        .expect("every durable recovery limit accepts its least positive value"),
+        wal: LogPackDecodeLimits {
+            max_record_bytes: 0,
+            max_mutation_bytes: 0,
+            max_objects: 0,
+            max_object_bytes: 0,
+            max_single_object_bytes: 0,
+            max_mutation_entries: 0,
+            max_mutation_key_bytes: 0,
+        },
+        admission: ZERO_ADMISSION,
+        trusted: TrustedSuccessorPolicyV1 {
+            state: TrustedStateCeilingsV1 {
+                max_state_objects: 0,
+                max_state_canonical_bytes: 0,
+                max_retained_states: 0,
+                max_union_objects: 0,
+                max_union_canonical_bytes: 0,
+                max_metadata_objects: 0,
+                max_metadata_canonical_bytes: 0,
+                max_logical_nodes: 0,
+                max_endpoints: 0,
+                max_logical_path_bytes: 0,
+                max_payload_bytes: 0,
+            },
+            work: [TrustedTrialWorkV1 {
+                count: 0,
+                union_objects: 0,
+                union_bytes: 0,
+                scratch: 0,
+                references: 0,
+                expansions: 0,
+                quoted_bytes: 0,
+            }; 3],
+        },
     }
 }
 
@@ -1202,22 +1348,294 @@ async fn constructor_refuses_foreign_or_invalidated_hot_authority_without_losing
     }
 }
 
+fn production_empty_checkpoint_consults_no_limit() {
+    let (scratch, hot, gate, mut owner) = fixture();
+    let old = owner.state().expect("a fresh owner is ready");
+    let files = store_files(scratch.path());
+    for limits in [publication_limits(), minimal_publication_limits()] {
+        let (checkpointed, trace, cold) = observed_checkpoint(&mut owner, limits);
+        assert_eq!(checkpointed.expect("an empty checkpoint consults no limit"), old);
+        assert_eq!(
+            (trace, cold),
+            (Vec::new(), 0),
+            "an empty checkpoint ran publication phases or a cold check"
+        );
+        assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+        assert_eq!(store_files(scratch.path()), files);
+        assert_empty(&hot);
+        assert!(gate.try_read().is_ok());
+    }
+    populate(&hot);
+    let before = hot
+        .pending_deltas()
+        .expect("the populated journals are readable");
+    let (refused, trace, cold) = observed_checkpoint(&mut owner, minimal_publication_limits());
+    assert!(refused.is_err(), "the minimal limits admitted a populated checkpoint: {refused:?}");
+    assert_eq!(
+        (trace, cold),
+        (Vec::new(), 0),
+        "a refused populated checkpoint ran publication phases or a cold check"
+    );
+    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_eq!(
+        owner
+            .state()
+            .expect("a refused checkpoint leaves the owner ready"),
+        old
+    );
+    assert_eq!(store_files(scratch.path()), files);
+    assert_journals_unchanged(&hot, &before);
+    assert!(gate.try_read().is_ok());
+}
+
+fn production_awaiting_retry_acknowledges_once_without_cold_check() {
+    let mut acknowledged = Vec::with_capacity(2);
+    for retry in [publication_limits(), minimal_publication_limits()] {
+        let (scratch, hot, gate, mut owner) = fixture();
+        populate(&hot);
+        let registry = owner.generation_leases();
+        let old_key = owner.generation_key();
+        let counter = registry.replace_lease_counter_for_test(u64::MAX);
+        assert!(matches!(
+            poll_checkpoint_with(&mut owner, publication_limits()),
+            Err(DurableRSpaceTransactionError::Lease(GenerationLeaseError::CounterOverflow))
+        ));
+        assert_eq!(owner.phase(), JournalPublicationPhaseV1::AwaitingAck);
+        let terminal = owner
+            .pending_terminal()
+            .expect("an awaiting owner retains its published terminal");
+        let files = store_files(scratch.path());
+        registry.replace_lease_counter_for_test(counter);
+        let (retried, trace, cold) = observed_checkpoint(&mut owner, retry);
+        assert_eq!(
+            retried.expect("an awaiting retry acknowledges its published successor"),
+            terminal.state()
+        );
+        assert_eq!(
+            (trace, cold),
+            (Vec::new(), 0),
+            "an awaiting retry ran publication phases or a cold check"
+        );
+        assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+        assert_eq!(store_files(scratch.path()), files);
+        assert_empty(&hot);
+        assert!(gate.try_read().is_ok());
+        assert!(
+            !registry
+                .has_active(old_key)
+                .expect("read the predecessor pin")
+        );
+        assert!(
+            registry
+                .has_active(GenerationLeaseKeyV1::from_catalog(terminal))
+                .expect("read the successor pin")
+        );
+        let (repeated, trace, cold) = observed_checkpoint(&mut owner, retry);
+        assert_eq!(
+            repeated.expect("an acknowledged owner checkpoints its empty journal"),
+            terminal.state()
+        );
+        assert_eq!(
+            (trace, cold),
+            (Vec::new(), 0),
+            "an acknowledged retry ran publication phases or a cold check"
+        );
+        assert_eq!(store_files(scratch.path()), files);
+        acknowledged.push(terminal.state());
+    }
+    assert_eq!(acknowledged[0], acknowledged[1]);
+    let (scratch, hot, gate, mut owner) = fixture();
+    populate(&hot);
+    arm_generation_checkpoint_publication_failpoint(
+        GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
+    );
+    assert!(poll_checkpoint_with(&mut owner, publication_limits()).is_err());
+    assert_eq!(owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
+    let terminal = owner
+        .pending_terminal()
+        .expect("a published checkpoint retains its terminal");
+    let files = store_files(scratch.path());
+    reset_cold_admissions();
+    let refused = owner.reconcile(DurableRSpacePublicationLimitsV1 {
+        admission: ZERO_ADMISSION,
+        ..publication_limits()
+    });
+    assert!(
+        matches!(
+            &refused,
+            Err(DurableRSpaceTransactionError::Recovery(error))
+                if !matches!(error, DurableAdmissionErrorV1::Startup(_))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(cold_admissions(), 1);
+    assert_eq!(owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
+    assert_eq!(owner.pending_terminal(), Some(terminal));
+    assert!(gate.try_read().is_err());
+    assert_eq!(store_files(scratch.path()), files);
+    reset_cold_admissions();
+    assert_eq!(
+        owner
+            .reconcile(publication_limits())
+            .expect("recovery under unbounded limits admits the published successor"),
+        terminal.state()
+    );
+    assert_eq!(cold_admissions(), 1);
+    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_empty(&hot);
+    assert!(gate.try_read().is_ok());
+}
+
+fn production_trusted_owner_success_skips_incoming_admission_limits() {
+    let (scratch, hot, _gate, mut owner) = fixture();
+    populate(&hot);
+    let incoming = DurableRSpacePublicationLimitsV1 {
+        admission: ZERO_ADMISSION,
+        ..publication_limits()
+    };
+    let (published, trace, cold) = observed_checkpoint(&mut owner, incoming);
+    let next = published
+        .expect("the trusted owner checkpoint never consults the incoming admission limits");
+    assert_eq!((trace, cold), (FORMAL_PUBLICATION_PHASE_ORDER[2..=14].to_vec(), 0));
+    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_empty(&hot);
+    drop(owner);
+    match DurableDirectoryV1::open(scratch.path())
+        .expect("reopen the owner's directory")
+        .recover_and_admit_v1::<Profile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            incoming.admission,
+        ) {
+        Ok(_) => panic!("cold admission accepted the trusted successor under the incoming limits"),
+        Err(error) => assert!(!matches!(error, DurableAdmissionErrorV1::Startup(_)), "{error:?}"),
+    }
+    let admitted = DurableDirectoryV1::open(scratch.path())
+        .expect("reopen the owner's directory")
+        .recover_and_admit_v1::<Profile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .expect("cold admission under unbounded limits admits the trusted successor");
+    assert_eq!(admitted.catalog().state(), next);
+}
+
+fn twin_policy_evidence(base: StateVersionV1, hot: &Store) -> TrustedPolicyEvidence {
+    let twin = trial_scratch("journal-owner-twin-");
+    install_checkpoint_image(
+        twin.path(),
+        &checkpoint_image_for_profile::<Profile>(fixture_for_profile(Profile::ID)),
+    );
+    let (lease, source) = DurableDirectoryV1::open(twin.path())
+        .expect("open the twin directory")
+        .recover_and_admit_v1::<Profile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .expect("cold admission of the twin directory")
+        .into_parts();
+    let core = source.core();
+    assert_eq!(core.authority().slot().state(), base);
+    let observation = hot
+        .pending_mutation_observation()
+        .expect("observe the populated journal");
+    let bytes = mutation_batch_from_observation(base, &observation)
+        .expect("the populated journal names a mutation")
+        .plan()
+        .expect("plan the journal mutation")
+        .try_canonical_bytes()
+        .expect("encode the journal mutation");
+    let view = MutationBatchViewV1::parse(&bytes).expect("parse the journal mutation");
+    let mut transaction =
+        OpenDagTransaction::new(core.verified_state(), view, DagTransactionLimits::UNBOUNDED)
+            .expect("open the twin transaction");
+    stage_pending_continuation_sources(&mut transaction, &observation.pending)
+        .expect("stage the journal's continuation sources");
+    TrustedPolicyEvidence::measure(
+        &lease,
+        core,
+        transaction.seal().expect("seal the twin transaction"),
+    )
+}
+
+fn production_trusted_policy_refusal_changes_nothing() {
+    let (scratch, hot, gate, mut owner) = fixture();
+    let old = owner.state().expect("a fresh owner is ready");
+    populate(&hot);
+    let evidence = twin_policy_evidence(old, &hot);
+    let files = store_files(scratch.path());
+    let before = hot
+        .pending_deltas()
+        .expect("the populated journals are readable");
+    let mut refusals = [0usize; 2];
+    for (axis, policy, expected) in evidence.lowered() {
+        let (refused, trace, cold) =
+            observed_checkpoint(&mut owner, DurableRSpacePublicationLimitsV1 {
+                trusted: policy,
+                ..publication_limits()
+            });
+        match refused {
+            Err(DurableRSpaceTransactionError::Preparation(error)) => {
+                assert_eq!(bind_outcome::<()>(Err(error)), expected, "{axis:?}");
+            }
+            other => {
+                panic!("the lowered {axis:?} policy was not refused at the trusted bind: {other:?}")
+            }
+        }
+        assert_eq!((trace, cold), (Vec::new(), 0), "{axis:?}");
+        assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+        assert_eq!(
+            owner
+                .state()
+                .expect("a refused checkpoint leaves the owner ready"),
+            old
+        );
+        assert_eq!(store_files(scratch.path()), files);
+        assert_journals_unchanged(&hot, &before);
+        assert!(gate.try_read().is_ok());
+        match expected {
+            BindOutcome::Ceiling(..) => refusals[0] += 1,
+            BindOutcome::Trial(..) => refusals[1] += 1,
+            outcome => panic!("the lowered {axis:?} policy expected {outcome:?}"),
+        }
+    }
+    assert!(refusals.iter().all(|&count| count > 0), "{refusals:?}");
+    let (published, trace, cold) =
+        observed_checkpoint(&mut owner, DurableRSpacePublicationLimitsV1 {
+            trusted: evidence.exact(),
+            ..publication_limits()
+        });
+    assert_eq!(
+        published.expect("the exact policy publishes the measured successor"),
+        evidence.target()
+    );
+    assert_eq!((trace, cold), (FORMAL_PUBLICATION_PHASE_ORDER[2..=14].to_vec(), 0));
+    assert_empty(&hot);
+}
+
 #[test]
 fn owner_empty_checkpoint_under_tightened_cold_limits_performs_no_cold_check() {
     owner_empty_checkpoint_model_property();
+    production_empty_checkpoint_consults_no_limit();
 }
 
 #[test]
 fn owner_awaiting_ack_retry_under_tightened_cold_limits_acknowledges_once_without_cold_check() {
     owner_awaiting_ack_retry_model_property();
+    production_awaiting_retry_acknowledges_once_without_cold_check();
 }
 
 #[test]
 fn trusted_success_does_not_imply_cold_admission_under_incoming_limits() {
     trusted_success_without_cold_admission_model_property();
+    production_trusted_success_does_not_imply_cold_admission(32);
+    production_trusted_owner_success_skips_incoming_admission_limits();
 }
 
 #[test]
 fn owner_trusted_policy_refusal_leaves_files_journals_and_authority_unchanged() {
     owner_trusted_policy_refusal_model_property();
+    production_trusted_policy_refusal_changes_nothing();
 }

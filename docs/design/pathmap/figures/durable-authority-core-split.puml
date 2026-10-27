@@ -48,7 +48,7 @@ package "cold-checked source" as coldpkg {
     checkpoint_descriptor(): the cold current inventory
     checkpoint reference visit and object copy
     seal_transaction, bind_durable_transaction
-    (until the trusted bind of task 11945)
+    (the journal owner's bind until task 11946)
     verified_state(): E = ColdAdmittedV1
   }
 }
@@ -127,9 +127,15 @@ note bottom of open #ECEFF1
   from_completed_admission exist only for that evidence,
   so an inferred E resolves to it.
   ----
-  <b>No behavior change</b>
+  <b>No behavior change in task 11944</b>
   The cold source delegates to its core and every
-  production path is unchanged; only tests call core(),
-  into_core(), acquire_cold_checked and from_parts.
+  production path was unchanged; then only tests called
+  core(), into_core(), acquire_cold_checked and from_parts.
+  ----
+  <b>Since task 11946</b>
+  The journal owner keeps only the core: from_view and
+  reconcile call into_core(), and the trusted publication
+  returns a core. acquire_cold_checked and from_parts
+  remain test-only.
 end note
 @enduml

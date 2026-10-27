@@ -8,11 +8,11 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 pub(crate) mod hooks;
 
 use super::admission::{
-    AdmittedCheckpointSourceV1, DurableAdmissionErrorV1, DurableAdmissionLimitsV1,
-    DurableTransactionPreparationError, admit_physical_source,
+    DurableAdmissionErrorV1, DurableAdmissionLimitsV1, DurableAuthorityCoreV1,
+    DurableTransactionPreparationError, TrustedSuccessorPolicyV1, admit_physical_source,
 };
 use super::io::DurableWriterLeaseV1;
-use super::publication::{IncrementalPublicationErrorV1, publish_incremental_with_terminal_v1};
+use super::publication::{IncrementalPublicationErrorV1, publish_trusted_incremental_v1};
 use super::startup::recover_physical_from_lease_v1;
 use super::{CatalogSlotV1, DurableAuthorityViewV1, DurableObjectReadErrorV1};
 use crate::rspace::errors::RSpaceError;
@@ -24,7 +24,7 @@ use crate::rspace::persistence::mutation::{MutationBatchViewV1, MutationError};
 use crate::rspace::persistence::{
     CanonicalEncode, DagTransactionError, DagTransactionLimits, DurableLimits,
     GenerationLeaseError, GenerationLeaseKeyV1, GenerationLeaseRegistryV1, GenerationLeaseV1,
-    LogPackDecodeLimits, LogPackFormatError, SemanticProfile, StateVersionV1,
+    LogPackDecodeLimits, LogPackFormatError, OpenDagTransaction, SemanticProfile, StateVersionV1,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +33,7 @@ pub(crate) struct DurableRSpacePublicationLimitsV1 {
     pub recovery: DurableLimits,
     pub wal: LogPackDecodeLimits,
     pub admission: DurableAdmissionLimitsV1,
+    pub trusted: TrustedSuccessorPolicyV1,
 }
 
 #[derive(Debug)]
@@ -107,7 +108,7 @@ pub(crate) struct DurableRSpaceAuthorityV1<P: SemanticProfile>
 where P::Channel: Clone + Hash + Eq
 {
     lease: DurableWriterLeaseV1,
-    source: AdmittedCheckpointSourceV1<P>,
+    source: DurableAuthorityCoreV1<P>,
     generation_lease: GenerationLeaseV1,
     hot: Arc<Box<dyn HotStore<P::Channel, P::Pattern, P::Datum, P::Continuation>>>,
     operation_gate: Arc<RwLock<()>>,
@@ -126,7 +127,7 @@ enum PendingJournalPhaseV1<P: SemanticProfile> {
     Captured,
     RecoveryRequired,
     AwaitingAck {
-        successor: AdmittedCheckpointSourceV1<P>,
+        successor: DurableAuthorityCoreV1<P>,
         generation_lease: Option<GenerationLeaseV1>,
     },
 }
@@ -151,7 +152,7 @@ where P::Channel: Clone + Hash + Eq
         let (lease, source) = writer.into_parts();
         Ok(Self {
             lease,
-            source,
+            source: source.into_core(),
             generation_lease: _generation_lease,
             hot,
             operation_gate,
@@ -251,12 +252,13 @@ where P::Channel: Clone + Hash + Eq
         let plan = mutation.plan()?;
         let bytes = plan.try_canonical_bytes()?;
         let view = MutationBatchViewV1::parse(&bytes)?;
-        let mut transaction = self.source.open_transaction(view, limits.transaction)?;
+        let mut transaction =
+            OpenDagTransaction::new(self.source.verified_state(), view, limits.transaction)?;
         stage_pending_continuation_sources(&mut transaction, &observation.pending)?;
         let sealed = transaction.seal()?;
         let sealed = self
             .source
-            .bind_durable_transaction(&self.lease, sealed, limits.admission)?;
+            .bind_trusted_transaction(&self.lease, sealed, limits.trusted)?;
         let sequence = pending.predecessor.commit_sequence().successor()?;
         let prepared =
             self.source
@@ -265,13 +267,11 @@ where P::Channel: Clone + Hash + Eq
         hooks::run(hooks::JournalOwnerHookPoint::AfterPreparation);
         self.hot.validate_pending_journal(&pending.captured)?;
         pending.phase = PendingJournalPhaseV1::RecoveryRequired;
-        let successor = publish_incremental_with_terminal_v1(
+        let successor = publish_trusted_incremental_v1(
             &mut self.lease,
             &self.source,
             &prepared,
-            limits.recovery,
-            limits.wal,
-            limits.admission,
+            limits.trusted,
             |terminal| pending.expected = Some(terminal),
         )?;
         if pending.expected != Some(successor.authority().slot()) {
@@ -304,7 +304,8 @@ where P::Channel: Clone + Hash + Eq
                 DurableRSpaceTransactionError::Recovery(DurableAdmissionErrorV1::Startup(error))
             })?;
         let successor = admit_physical_source::<P>(&self.lease, physical, limits.admission)
-            .map_err(DurableRSpaceTransactionError::Recovery)?;
+            .map_err(DurableRSpaceTransactionError::Recovery)?
+            .into_core();
         let actual = successor.authority().slot();
         let pending = self
             .pending
@@ -367,7 +368,10 @@ where P::Channel: Clone + Hash + Eq
             successor.authority().slot(),
             &self.lease.generation_leases(),
         )?;
-        let PendingJournalPublicationV1 { permit, phase, .. } = *self.pending.take().unwrap();
+        let PendingJournalPublicationV1 { permit, phase, .. } = *self
+            .pending
+            .take()
+            .expect("acknowledgement holds its pending publication");
         let PendingJournalPhaseV1::AwaitingAck {
             successor,
             generation_lease,

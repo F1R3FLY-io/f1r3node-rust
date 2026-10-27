@@ -15,7 +15,8 @@ use crate::rspace::data_index::RSpaceDataIndex;
 use crate::rspace::internal::Datum;
 use crate::rspace::persistence::durable::{
     DurableAdmissionLimitsV1, DurableDirectoryV1, SemanticallyAdmittedDurableWriterV1,
-    publish_incremental_from_lease_v1,
+    TrustedSuccessorPolicyV1, acquire_cold_checked, publish_incremental_from_lease_v1,
+    publish_trusted_incremental_v1,
 };
 use crate::rspace::persistence::rewrite::DagRewriteReport;
 use crate::rspace::persistence::semantic::{
@@ -301,6 +302,93 @@ fn check_durable_chain(states: &[ModelState]) {
     );
 }
 
+fn check_trusted_durable_chain(states: &[ModelState]) {
+    assert_eq!(
+        states.first(),
+        Some(&ModelState::default()),
+        "the durable fixture starts from the empty state"
+    );
+    let trial = trial_scratch("shape-summary-trusted-");
+    install_checkpoint_image(
+        trial.path(),
+        &checkpoint_image_from_source(empty_checkpoint_source()),
+    );
+    let oracle = CanonicalObjectStore::new();
+    let (_, mut expected) = cold_shape(&oracle, install(&oracle, &states[0]));
+    let (mut lease, source) = admit_durable(trial.path()).into_parts();
+    let mut core = source.into_core();
+    for pair in states.windows(2) {
+        let (from, to) = (&pair[0], &pair[1]);
+        assert_eq!(
+            acquire_cold_checked(
+                &mut lease,
+                &core,
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+            )
+            .expect("the trusted core's state is cold-admitted")
+            .shape(),
+            &expected,
+            "cold admission of the trusted core disagrees with the trusted summary"
+        );
+        let Some(mutation) = transition_batch(core.authority().slot().state(), from, to) else {
+            continue;
+        };
+        let view = MutationBatchViewV1::parse(&mutation).expect("a model batch parses");
+        let mut transaction =
+            OpenDagTransaction::new(core.verified_state(), view, DagTransactionLimits::UNBOUNDED)
+                .expect("the batch opens over the trusted core");
+        for staged in staged_sources(from, to) {
+            transaction
+                .stage_continuation_source(staged)
+                .expect("a changed continuation source stages");
+        }
+        let sealed = transaction
+            .seal()
+            .expect("a coherent model transition seals over the trusted core");
+        let predicted = core
+            .shape()
+            .successor(view, sealed.diagnostics().rewrite)
+            .expect("the trusted summary derives the durable successor");
+        let bound = core
+            .bind_trusted_transaction(&lease, sealed, TrustedSuccessorPolicyV1::UNBOUNDED)
+            .expect("the sealed transaction binds to the trusted core");
+        let sequence = core
+            .authority()
+            .slot()
+            .commit_sequence()
+            .successor()
+            .expect("the commit sequence has a successor");
+        let prepared = core
+            .prepare_transaction(&lease, &bound, sequence, LogPackDecodeLimits::UNBOUNDED)
+            .expect("the bound transaction prepares");
+        let successor = publish_trusted_incremental_v1(
+            &mut lease,
+            &core,
+            &prepared,
+            TrustedSuccessorPolicyV1::UNBOUNDED,
+            |_| {},
+        )
+        .expect("the trusted successor publishes");
+        assert_eq!(
+            successor.shape(),
+            &predicted,
+            "the published trusted successor disagrees with the derived summary"
+        );
+        let (_, cold) = cold_shape(&oracle, install(&oracle, to));
+        assert_eq!(predicted, cold, "the trusted durable summary disagrees with the model state");
+        core = successor;
+        expected = predicted;
+    }
+    drop((lease, core));
+    assert_eq!(
+        admit_durable(trial.path()).shape(),
+        &expected,
+        "restart admission disagrees with the trusted chain's summary"
+    );
+}
+
 fn corner_chain() -> CornerChain {
     let unique_longest = datum_key("solo", "solo", &"s".repeat(240), false);
     let (solo_continuation, natural_source) = continuation(&["solo"], "solo-body", false);
@@ -452,6 +540,7 @@ fn trusted_shape_summary_matches_cold_semantic_walk() {
     );
 
     check_durable_chain(states);
+    check_trusted_durable_chain(states);
 
     runner(64)
         .run(&chain_strategy(), |chain| {

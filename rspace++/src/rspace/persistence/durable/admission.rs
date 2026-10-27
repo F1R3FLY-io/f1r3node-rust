@@ -13,13 +13,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 
-use super::CommittedObjectIndexV1;
 use super::io::{DurableDirectoryV1, DurableFileV1, DurableIoError, DurableWriterLeaseV1};
 use super::startup::{
     DurableStartupErrorV1, DurableStartupWorkV1, IndexBindingDispositionV1,
     IndexBoundPhysicalRecoveryV1, PhysicallyRecoveredDurableWriterV1, read_catalog_token,
     recover_physical_from_lease_v1,
 };
+use super::{CommittedObjectIndexV1, INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, IndexFormatError};
 use crate::rspace::persistence::canonical::{
     CanonicalFormatError, CanonicalSink, ObjectDigest, ObjectRefV1, checked_len,
 };
@@ -69,7 +69,7 @@ use crate::rspace::persistence::wal::{
     LogPackSequence, PreparedLogPackTransactionV1, TerminalCommitViewV1,
 };
 use crate::rspace::persistence::{
-    CatalogAuthorityTokenV1, CatalogSlotV1, DurableLimits, GenerationLeaseError,
+    CATALOG_IMAGE_LEN, CatalogAuthorityTokenV1, CatalogSlotV1, DurableLimits, GenerationLeaseError,
     GenerationLeaseRegistryV1, LogPackDecodeLimits, ObjectIndexRecordV1, PackId, SemanticProfileId,
     StateVersionV1, VerifiedDagState,
 };
@@ -1507,6 +1507,77 @@ impl<P: SemanticProfile> DurableAuthorityCoreV1<P> {
             },
         })
     }
+
+    pub(crate) fn trusted_successor_index(
+        &self,
+        records: impl Iterator<Item = Result<ObjectIndexRecordV1, IndexFormatError>>,
+        new_tail: u64,
+    ) -> Result<CommittedObjectIndexV1, IndexFormatError> {
+        let mut index = self.store.index.clone();
+        for record in records {
+            index.insert(record?)?;
+        }
+        let derived = index
+            .record_count()
+            .checked_mul(INDEX_RECORD_LEN_V1)
+            .and_then(|bytes| bytes.checked_add(INDEX_HEADER_LEN_V1))
+            .ok_or(IndexFormatError::RecordCountOverflow)?;
+        if derived != new_tail {
+            return Err(IndexFormatError::CanonicalStreamTail {
+                expected: derived,
+                appointed: new_tail,
+            });
+        }
+        Ok(index)
+    }
+
+    pub(crate) fn assemble_trusted_successor(
+        &self,
+        lease: &DurableWriterLeaseV1,
+        successor: &PreparedTrustedSuccessorV1,
+        slot: CatalogSlotV1,
+        image: [u8; CATALOG_IMAGE_LEN],
+        index: CommittedObjectIndexV1,
+    ) -> Result<Self, DurableAdmissionErrorV1> {
+        let authority = CatalogAuthorityTokenV1::select(image)
+            .map_err(DurableStartupErrorV1::Catalog)?
+            .ok_or(DurableStartupErrorV1::NoCatalogAuthority)?;
+        if authority.slot() != slot {
+            return Err(DurableAdmissionErrorV1::AuthorityChanged);
+        }
+        let store = DurableIndexedObjectStoreV1::pin(lease.directory(), &authority, index)?;
+        VerifiedDagState::<_, P, ValidityOnlyV1>::from_validity(
+            &store,
+            slot.state(),
+            successor.validity,
+        )?;
+        let source = &successor.retention_manifest_bytes;
+        let mut retention_manifest_bytes = Vec::new();
+        retention_manifest_bytes
+            .try_reserve_exact(source.len())
+            .map_err(|_| CanonicalFormatError::AllocationFailure {
+                requested: u64::try_from(source.len()).unwrap_or(u64::MAX),
+            })?;
+        retention_manifest_bytes.extend_from_slice(source);
+        Ok(Self {
+            store,
+            registry: lease.generation_leases(),
+            authority,
+            version: slot.state(),
+            retention_manifest_bytes: retention_manifest_bytes.into_boxed_slice(),
+            retention_format: self.retention_writer,
+            validity: successor.validity,
+            shape: successor.shape.clone(),
+            retained_closure: successor.retained_closure.clone(),
+            retained_states: successor.retained_states,
+            retained_state_maxima: successor.retained_state_maxima,
+            retention_writer: self.retention_writer,
+            profile: PhantomData,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn committed_index(&self) -> &CommittedObjectIndexV1 { &self.store.index }
 }
 
 /// Immutable checkpoint source pinned to one exact catalog authority.
@@ -1902,13 +1973,16 @@ impl<'transaction, 'mutation, P: SemanticProfile>
         authority: &CatalogAuthorityTokenV1,
         registry: &GenerationLeaseRegistryV1,
         policy: TrustedSuccessorPolicyV1,
-    ) -> Result<(), DurableTransactionPreparationError> {
+    ) -> Result<&'transaction PreparedTrustedSuccessorV1, DurableTransactionPreparationError> {
         self.preflight_authority(authority, registry)?;
         match &self.sealed.binding {
             SuccessorBindingV1::ColdChecked { .. } => {
                 Err(DurableTransactionPreparationError::PublicationModeMismatch)
             }
-            SuccessorBindingV1::Trusted { policy: sealed, .. } if *sealed == policy => Ok(()),
+            SuccessorBindingV1::Trusted {
+                policy: sealed,
+                successor,
+            } if *sealed == policy => Ok(successor),
             SuccessorBindingV1::Trusted { .. } => {
                 Err(DurableTransactionPreparationError::TrustedPolicyMismatch)
             }

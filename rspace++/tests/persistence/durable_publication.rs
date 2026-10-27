@@ -36,13 +36,14 @@ use crate::rspace::persistence::checkpoint::{
 };
 use crate::rspace::persistence::closure::RetainedUnionClosureReportV1;
 use crate::rspace::persistence::durable::{
-    DurableAdmissionErrorV1, DurableAdmissionLimitKindV1, DurableAdmissionLimitsV1,
-    DurableAdmissionReportV1, DurableDirectoryV1, DurableIoError, DurableIoFailpointV1,
-    DurableStartupErrorV1, DurableTransactionPreparationError,
-    GenerationCheckpointPublicationErrorV1, GenerationCheckpointPublicationHookPointV1,
-    GenerationCheckpointPublicationOutcomeV1, IndexBindingDispositionV1, InventoryMismatchKindV1,
-    PreparedGenerationCheckpointIndexV1, RecoveryError, SemanticallyAdmittedDurableWriterV1,
-    arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
+    AdmittedCheckpointSourceV1, DurableAdmissionErrorV1, DurableAdmissionLimitKindV1,
+    DurableAdmissionLimitsV1, DurableAdmissionReportV1, DurableDirectoryV1, DurableIoError,
+    DurableIoFailpointV1, DurableStartupErrorV1, DurableTransactionPreparationError,
+    DurableWriterLeaseV1, GenerationCheckpointPublicationErrorV1,
+    GenerationCheckpointPublicationHookPointV1, GenerationCheckpointPublicationOutcomeV1,
+    IndexBindingDispositionV1, InventoryMismatchKindV1, PreparedGenerationCheckpointIndexV1,
+    RecoveryError, SealedDurableTransactionV1, SemanticallyAdmittedDurableWriterV1,
+    TrustedSuccessorPolicyV1, arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
     arm_generation_checkpoint_publication_failpoint, arm_generation_checkpoint_publication_hook,
     index_file_name, pack_file_name, start_generation_checkpoint_publication_trace,
     take_generation_checkpoint_publication_trace,
@@ -71,7 +72,7 @@ use crate::rspace::persistence::{
     StateVersionV1, StructuralValidationLimits,
 };
 
-const FORMAL_PUBLICATION_PHASE_ORDER: [GenerationCheckpointPublicationHookPointV1; 18] = [
+pub(super) const FORMAL_PUBLICATION_PHASE_ORDER: [GenerationCheckpointPublicationHookPointV1; 18] = [
     GenerationCheckpointPublicationHookPointV1::AfterPreflightBeforeCleanup,
     GenerationCheckpointPublicationHookPointV1::AfterCleanup,
     GenerationCheckpointPublicationHookPointV1::AfterPrepareWrite,
@@ -325,7 +326,11 @@ fn incremental_unwind_child() {
                 GenerationCheckpointPublicationHookPointV1::BeforeSemanticAdmission,
             ][index];
             let expected = expected_incremental_successor();
-            check_borrowed_incremental_crash(IncrementalCrash::Unwind(point), &expected);
+            check_borrowed_incremental_crash(
+                IncrementalMode::ColdChecked,
+                IncrementalCrash::Unwind(point),
+                &expected,
+            );
         }
         _ => panic!("unknown incremental publication unwind case: {case}"),
     }
@@ -497,6 +502,40 @@ enum IncrementalCrash {
     Phase(GenerationCheckpointPublicationHookPointV1),
     Torn(usize),
     Unwind(GenerationCheckpointPublicationHookPointV1),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IncrementalMode {
+    ColdChecked,
+    Trusted,
+}
+
+fn bind_in_mode<'mutation>(
+    mode: IncrementalMode,
+    lease: &DurableWriterLeaseV1,
+    source: &AdmittedCheckpointSourceV1<TestSemanticProfile>,
+    view: MutationBatchViewV1<'mutation>,
+) -> SealedDurableTransactionV1<'mutation, TestSemanticProfile> {
+    match mode {
+        IncrementalMode::ColdChecked => source.seal_transaction(
+            lease,
+            view,
+            DagTransactionLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        ),
+        IncrementalMode::Trusted => source.core().bind_trusted_transaction(
+            lease,
+            OpenDagTransaction::new(
+                source.core().verified_state(),
+                view,
+                DagTransactionLimits::UNBOUNDED,
+            )
+            .and_then(OpenDagTransaction::seal)
+            .expect("seal the borrowed incremental mutation on the authority core"),
+            TrustedSuccessorPolicyV1::UNBOUNDED,
+        ),
+    }
+    .expect("bind the borrowed incremental successor")
 }
 
 #[test]
@@ -685,15 +724,19 @@ fn expected_incremental_successor() -> ExpectedSuccessor {
     }
 }
 
-fn check_borrowed_incremental_crash(crash: IncrementalCrash, expected: &ExpectedSuccessor) {
+fn check_borrowed_incremental_crash(
+    mode: IncrementalMode,
+    crash: IncrementalCrash,
+    expected: &ExpectedSuccessor,
+) {
     use GenerationCheckpointPublicationHookPointV1 as Point;
 
     use crate::rspace::persistence::GenerationLeaseKeyV1;
     use crate::rspace::persistence::durable::{
         DurableTransactionPreparationError, IncrementalPublicationErrorV1, admit_physical_source,
         admit_physical_writer, publish_incremental_from_lease_v1,
-        publish_incremental_with_terminal_v1, recover_physical_from_lease_v1,
-        recover_physical_with_lease_v1,
+        publish_incremental_with_terminal_v1, publish_trusted_incremental_v1,
+        recover_physical_from_lease_v1, recover_physical_with_lease_v1,
     };
 
     let scratch = trial_scratch("borrowed-incremental-");
@@ -706,22 +749,19 @@ fn check_borrowed_incremental_crash(crash: IncrementalCrash, expected: &Expected
     let old_bytes = incremental_store_bytes(scratch.path());
     let mutation = data_batch(old.state(), "borrowed-incremental");
     let view = crate::rspace::persistence::MutationBatchViewV1::parse(&mutation).unwrap();
-    let sealed = writer
-        .seal_transaction(
-            view,
-            crate::rspace::persistence::DagTransactionLimits::UNBOUNDED,
-            DurableAdmissionLimitsV1::UNBOUNDED,
-        )
-        .unwrap();
+    let (lease, source) = writer.into_parts();
+    let sealed = bind_in_mode(mode, &lease, &source, view);
     let target = sealed.receipt().target();
-    let prepared = writer
+    let prepared = source
         .prepare_transaction(
+            &lease,
             &sealed,
-            old.commit_sequence().successor().unwrap(),
+            old.commit_sequence()
+                .successor()
+                .expect("the admitted commit sequence has a successor"),
             LogPackDecodeLimits::UNBOUNDED,
         )
-        .unwrap();
-    let (lease, source) = writer.into_parts();
+        .expect("prepare the borrowed incremental successor");
     let registry = lease.generation_leases();
     let generation = GenerationLeaseKeyV1::from_catalog(old);
     let pin = registry.acquire(generation).unwrap();
@@ -802,16 +842,28 @@ fn check_borrowed_incremental_crash(crash: IncrementalCrash, expected: &Expected
 
         if observed == old && source.authority() != recovered.authority() {
             let before_retry = incremental_store_bytes(scratch.path());
+            let refused = match mode {
+                IncrementalMode::ColdChecked => publish_incremental_from_lease_v1(
+                    &mut lease,
+                    &recovered,
+                    &prepared,
+                    limits(),
+                    LogPackDecodeLimits::UNBOUNDED,
+                    DurableAdmissionLimitsV1::UNBOUNDED,
+                )
+                .map(|successor| successor.authority().slot()),
+                IncrementalMode::Trusted => publish_trusted_incremental_v1(
+                    &mut lease,
+                    recovered.core(),
+                    &prepared,
+                    TrustedSuccessorPolicyV1::UNBOUNDED,
+                    |_| {},
+                )
+                .map(|successor| successor.authority().slot()),
+            };
             assert!(
                 matches!(
-                    publish_incremental_from_lease_v1(
-                        &mut lease,
-                        &recovered,
-                        &prepared,
-                        limits(),
-                        LogPackDecodeLimits::UNBOUNDED,
-                        DurableAdmissionLimitsV1::UNBOUNDED,
-                    ),
+                    refused,
                     Err(IncrementalPublicationErrorV1::Preparation(
                         DurableTransactionPreparationError::AuthorityMismatch
                     ))
@@ -829,44 +881,63 @@ fn check_borrowed_incremental_crash(crash: IncrementalCrash, expected: &Expected
             .unwrap();
             assert!(registry.shares_registry(&retry_writer.generation_leases()));
             assert_eq!(retry_writer.authority().image(), &recovered_catalog);
-            let rebound = retry_writer
-                .seal_transaction(
-                    view,
-                    crate::rspace::persistence::DagTransactionLimits::UNBOUNDED,
-                    DurableAdmissionLimitsV1::UNBOUNDED,
-                )
-                .unwrap();
+            let (retry_lease, retry_source) = retry_writer.into_parts();
+            let rebound = bind_in_mode(mode, &retry_lease, &retry_source, view);
             assert_eq!(rebound.receipt(), sealed.receipt());
-            let retry_prepared = retry_writer
+            let retry_prepared = retry_source
                 .prepare_transaction(
+                    &retry_lease,
                     &rebound,
-                    old.commit_sequence().successor().unwrap(),
+                    old.commit_sequence()
+                        .successor()
+                        .expect("the admitted commit sequence has a successor"),
                     LogPackDecodeLimits::UNBOUNDED,
                 )
-                .unwrap();
-            let (retry_lease, retry_source) = retry_writer.into_parts();
+                .expect("prepare the rebound incremental successor");
             lease = retry_lease;
-            let retried = publish_incremental_from_lease_v1(
-                &mut lease,
-                &retry_source,
-                &retry_prepared,
-                limits(),
-                LogPackDecodeLimits::UNBOUNDED,
-                DurableAdmissionLimitsV1::UNBOUNDED,
-            )
-            .unwrap();
-            assert_eq!(retried.authority().slot(), expected.slot, "{crash:?}");
+            let retried = match mode {
+                IncrementalMode::ColdChecked => publish_incremental_from_lease_v1(
+                    &mut lease,
+                    &retry_source,
+                    &retry_prepared,
+                    limits(),
+                    LogPackDecodeLimits::UNBOUNDED,
+                    DurableAdmissionLimitsV1::UNBOUNDED,
+                )
+                .map(|successor| successor.authority().slot()),
+                IncrementalMode::Trusted => publish_trusted_incremental_v1(
+                    &mut lease,
+                    retry_source.core(),
+                    &retry_prepared,
+                    TrustedSuccessorPolicyV1::UNBOUNDED,
+                    |_| {},
+                )
+                .map(|successor| successor.authority().slot()),
+            }
+            .expect("retry the rebound incremental publication");
+            assert_eq!(retried, expected.slot, "{crash:?}");
         } else if observed == old {
-            let retried = publish_incremental_from_lease_v1(
-                &mut lease,
-                &recovered,
-                &prepared,
-                limits(),
-                LogPackDecodeLimits::UNBOUNDED,
-                DurableAdmissionLimitsV1::UNBOUNDED,
-            )
-            .unwrap();
-            assert_eq!(retried.authority().slot(), expected.slot, "{crash:?}");
+            let retried = match mode {
+                IncrementalMode::ColdChecked => publish_incremental_from_lease_v1(
+                    &mut lease,
+                    &recovered,
+                    &prepared,
+                    limits(),
+                    LogPackDecodeLimits::UNBOUNDED,
+                    DurableAdmissionLimitsV1::UNBOUNDED,
+                )
+                .map(|successor| successor.authority().slot()),
+                IncrementalMode::Trusted => publish_trusted_incremental_v1(
+                    &mut lease,
+                    recovered.core(),
+                    &prepared,
+                    TrustedSuccessorPolicyV1::UNBOUNDED,
+                    |_| {},
+                )
+                .map(|successor| successor.authority().slot()),
+            }
+            .expect("retry the recovered incremental publication");
+            assert_eq!(retried, expected.slot, "{crash:?}");
         }
 
         assert_eq!(fs::read(&pack_path).unwrap(), expected.pack, "{crash:?}");
@@ -910,17 +981,35 @@ fn check_borrowed_incremental_crash(crash: IncrementalCrash, expected: &Expected
     let run_publication = || {
         let mut lease_ref = lease_cell.borrow_mut();
         let source_ref = source_cell.borrow();
-        publish_incremental_with_terminal_v1(
-            lease_ref.as_mut().unwrap(),
-            source_ref.as_ref().unwrap(),
-            &prepared,
-            limits(),
-            LogPackDecodeLimits::UNBOUNDED,
-            DurableAdmissionLimitsV1::UNBOUNDED,
-            |value| {
-                assert!(terminal.replace(Some(value)).is_none());
-            },
-        )
+        let lease = lease_ref
+            .as_mut()
+            .expect("the publication owns the borrowed lease");
+        let source = source_ref
+            .as_ref()
+            .expect("the publication borrows the admitted source");
+        let capture = |value: CatalogSlotV1| {
+            assert!(terminal.replace(Some(value)).is_none());
+        };
+        match mode {
+            IncrementalMode::ColdChecked => publish_incremental_with_terminal_v1(
+                lease,
+                source,
+                &prepared,
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+                capture,
+            )
+            .map(|successor| successor.authority().slot()),
+            IncrementalMode::Trusted => publish_trusted_incremental_v1(
+                lease,
+                source.core(),
+                &prepared,
+                TrustedSuccessorPolicyV1::UNBOUNDED,
+                capture,
+            )
+            .map(|successor| successor.authority().slot()),
+        }
     };
     if matches!(crash, IncrementalCrash::Unwind(_)) {
         let marker = incremental_unwind_marker();
@@ -959,7 +1048,29 @@ fn check_borrowed_incremental_crash(crash: IncrementalCrash, expected: &Expected
 fn borrowed_incremental_publication_recovers_and_retries_every_phase() {
     let expected = expected_incremental_successor();
     for point in FORMAL_PUBLICATION_PHASE_ORDER.into_iter().skip(2) {
-        check_borrowed_incremental_crash(IncrementalCrash::Phase(point), &expected);
+        check_borrowed_incremental_crash(
+            IncrementalMode::ColdChecked,
+            IncrementalCrash::Phase(point),
+            &expected,
+        );
+    }
+}
+
+pub(super) fn production_trusted_crash_recovers_and_retries_every_phase() {
+    let expected = expected_incremental_successor();
+    for point in FORMAL_PUBLICATION_PHASE_ORDER[2..=14].iter().copied() {
+        check_borrowed_incremental_crash(
+            IncrementalMode::Trusted,
+            IncrementalCrash::Phase(point),
+            &expected,
+        );
+    }
+    for prefix in 0..CATALOG_SLOT_LEN {
+        check_borrowed_incremental_crash(
+            IncrementalMode::Trusted,
+            IncrementalCrash::Torn(prefix),
+            &expected,
+        );
     }
 }
 
@@ -1080,7 +1191,11 @@ fn run_terminal_capture_unwind_child(case: &str) {
 fn borrowed_incremental_publication_retains_authority_for_every_torn_slot_prefix() {
     let expected = expected_incremental_successor();
     for prefix in 0..crate::rspace::persistence::CATALOG_SLOT_LEN {
-        check_borrowed_incremental_crash(IncrementalCrash::Torn(prefix), &expected);
+        check_borrowed_incremental_crash(
+            IncrementalMode::ColdChecked,
+            IncrementalCrash::Torn(prefix),
+            &expected,
+        );
     }
 }
 
