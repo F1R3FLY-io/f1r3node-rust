@@ -822,34 +822,32 @@ impl Validate {
             "source" => CASPER_METRICS_SOURCE
         );
         let scan_start = Instant::now();
-        let scan_result = dag_ops::try_bf_traverse_find(
+        let scan_result = proto_util::walk_blocks_in_scope(
+            &s.dag,
             init_parents,
-            |block_metadata| {
-                ancestor_metadata_visits.increment(1);
-                proto_util::parent_metadatas_above_block_number(
-                    block_metadata,
-                    earliest_block_number,
-                    &s.dag,
-                    proto_util::UnheldParent::Surface,
-                )
-            },
-            |block_metadata| {
+            earliest_block_number,
+            proto_util::UnheldParent::Surface,
+            |block_hash| {
                 ancestor_body_reads.increment(1);
-                block_store
-                    .has_any_deploy_sig_strict(&block_metadata.block_hash, &deploy_key_set)
-                    .map_err(CasperError::from)
+                let found = block_store
+                    .has_any_deploy_sig_strict(block_hash, &deploy_key_set)
+                    .map_err(CasperError::from)?;
+                if !found {
+                    ancestor_metadata_visits.increment(1);
+                }
+                Ok(found)
             },
         );
         metrics::histogram!(REPEAT_DEPLOY_ANCESTOR_SCAN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(scan_start.elapsed().as_secs_f64());
-        let maybe_duplicated_block_metadata = match scan_result {
+        let maybe_duplicated_block_hash = match scan_result {
             Ok(found) => found,
             Err(e) => return Either::Left(BlockError::from_validation_error(e)),
         };
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-duplicate-block-log");
-        let maybe_error = maybe_duplicated_block_metadata.map(|duplicated_block_metadata| {
-      let duplicated_block = block_store.get_unsafe(&duplicated_block_metadata.block_hash);
+        let maybe_error = maybe_duplicated_block_hash.map(|duplicated_block_hash| {
+      let duplicated_block = block_store.get_unsafe(&duplicated_block_hash);
       let current_block_hash_string = PrettyPrinter::build_string_bytes(&block.block_hash);
       let block_hash_string = PrettyPrinter::build_string_bytes(&duplicated_block.block_hash);
 
