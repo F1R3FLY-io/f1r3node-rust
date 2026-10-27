@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use casper::rust::engine::lfs_horizon_requester::{self, HorizonRequesterOps, ST};
-use casper::rust::engine::lfs_tuple_space_requester::StatePartPath;
+use casper::rust::engine::lfs_horizon_requester::{self, HorizonRequesterOps};
+use casper::rust::engine::lfs_tuple_space_requester::{StatePartPath, ST};
 use casper::rust::errors::CasperError;
 use futures::StreamExt;
 use models::rust::casper::protocol::casper_message::StoreItemsMessage;
@@ -12,12 +12,11 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use tokio::sync::mpsc;
 
 use crate::engine::runtime_state_requester_spec::{
-    export_chunks, genesis_root, history_keys, importer_and_has_root, private_store, seed, wait_for,
+    a_redirect_to_malformed_bytes, export_chunks, genesis_root, history_keys,
+    importer_and_has_root, private_store, seed, wait_for, with_a_swapped_leaf_kind,
 };
 use crate::engine::setup::TestFixture;
 
-/// Records the chunk paths the requester asks for. It keeps the default
-/// `validate_horizon_chunk`, so chunks go through the real validation.
 #[derive(Clone, Default)]
 struct RecordingOps {
     requested: Arc<Mutex<Vec<StatePartPath>>>,
@@ -89,8 +88,6 @@ fn forged_chunk(absent_root: &Blake2b256Hash, held_root: &Blake2b256Hash) -> Sto
     }
 }
 
-/// The honest path the fix must keep: a joiner imports the chunks the
-/// bootstrap serves for a horizon root, and records the root.
 #[tokio::test]
 async fn honest_horizon_chunks_import_a_missing_root() {
     let fixture = TestFixture::new().await;
@@ -134,10 +131,6 @@ async fn honest_horizon_chunks_import_a_missing_root() {
     assert_eq!(history_keys(&imported), history_keys(&honest));
 }
 
-/// A forged chunk for a pending horizon root must not write anything. It names
-/// the root, carries one history item under the hash of a node the store
-/// already holds, and claims to be the last chunk. The joiner rejects it and
-/// asks for the path again.
 #[tokio::test]
 async fn a_forged_horizon_chunk_writes_nothing_and_is_asked_again() {
     let fixture = TestFixture::new().await;
@@ -205,9 +198,6 @@ async fn a_forged_horizon_chunk_writes_nothing_and_is_asked_again() {
     );
 }
 
-/// A peer that keeps sending chunks the joiner does not import, each one sooner
-/// than the request timeout, must not hold off the no-progress deadline. The
-/// chunks here answer a path that was never asked for.
 #[tokio::test]
 async fn chunks_that_are_not_imported_do_not_hold_off_the_deadline() {
     let store = private_store().await;
@@ -247,6 +237,147 @@ async fn chunks_that_are_not_imported_do_not_hold_off_the_deadline() {
     let (final_state, error) = outcome
         .expect("chunks that were not imported held off the no-progress deadline")
         .unwrap();
+    assert!(!final_state.expect("a final state").is_finished());
+    assert!(error.is_some());
+}
+
+#[tokio::test]
+async fn a_horizon_chunk_with_a_swapped_leaf_kind_does_not_overwrite_a_held_leaf() {
+    let fixture = TestFixture::new().await;
+    let root = genesis_root(&fixture);
+    let honest = export_chunks(
+        &fixture.rspace_store,
+        &root,
+        lfs_horizon_requester::PAGE_SIZE,
+    )
+    .expect("genesis state exports");
+    let (forged, key, original) = with_a_swapped_leaf_kind(&honest);
+
+    let store = private_store().await;
+    let (importer, has_root) = importer_and_has_root(&store);
+    importer.set_data_items(vec![(key.clone(), original.to_vec())]);
+    let ops = RecordingOps::default();
+    let (items_tx, items_rx) = mpsc::channel(64);
+    let run = drive(
+        vec![root.clone()],
+        &store,
+        ops.clone(),
+        items_rx,
+        Duration::from_millis(200),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let first: StatePartPath = vec![(root.clone(), None)];
+    wait_for("the root request", || ops.requests_for(&first) > 0).await;
+    for chunk in forged {
+        items_tx.send(chunk).await.unwrap();
+    }
+
+    let (_, error) = tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .expect("the horizon sync ends")
+        .unwrap();
+    assert_eq!(
+        store.cold.get_one(&key.bytes()).unwrap(),
+        Some(original.to_vec()),
+        "a data item with a changed leaf kind overwrote a leaf the store held"
+    );
+    assert!(!has_root(&root).unwrap());
+    assert!(error.is_some());
+}
+
+#[tokio::test]
+async fn a_horizon_last_path_redirected_to_malformed_bytes_is_rejected() {
+    let fixture = TestFixture::new().await;
+    let root = genesis_root(&fixture);
+    let honest = export_chunks(
+        &fixture.rspace_store,
+        &root,
+        lfs_horizon_requester::PAGE_SIZE,
+    )
+    .expect("genesis state exports");
+
+    let store = private_store().await;
+    let (_, has_root) = importer_and_has_root(&store);
+    let ops = RecordingOps::default();
+    let (items_tx, items_rx) = mpsc::channel(64);
+    let run = drive(
+        vec![root.clone()],
+        &store,
+        ops.clone(),
+        items_rx,
+        Duration::from_millis(200),
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let first: StatePartPath = vec![(root.clone(), None)];
+    wait_for("the root request", || ops.requests_for(&first) > 0).await;
+    let chunks = a_redirect_to_malformed_bytes(&honest[0])
+        .into_iter()
+        .chain(honest.iter().cloned());
+    for chunk in chunks {
+        items_tx.send(chunk).await.unwrap();
+    }
+
+    let (final_state, error) = tokio::time::timeout(Duration::from_secs(30), run)
+        .await
+        .expect("the horizon sync ends")
+        .expect("the horizon sync does not panic");
+    assert!(
+        error.is_none(),
+        "the honest chunks did not complete the sync: {:?}",
+        error
+    );
+    assert!(final_state.expect("a final state").is_finished());
+    assert!(has_root(&root).unwrap());
+}
+
+#[tokio::test]
+async fn two_empty_horizon_chunks_do_not_record_an_absent_root() {
+    let store = private_store().await;
+    let (_, has_root) = importer_and_has_root(&store);
+    let absent_root = Blake2b256Hash::new(b"a third horizon root this node does not hold");
+    let first: StatePartPath = vec![(absent_root.clone(), None)];
+    let continuation: StatePartPath =
+        vec![(Blake2b256Hash::new(b"a continuation nobody walked"), None)];
+    let ops = RecordingOps::default();
+    let (items_tx, items_rx) = mpsc::channel(64);
+    let run = drive(
+        vec![absent_root.clone()],
+        &store,
+        ops.clone(),
+        items_rx,
+        Duration::from_millis(200),
+        Duration::from_secs(2),
+    )
+    .await;
+    wait_for("the root request", || ops.requests_for(&first) > 0).await;
+
+    for (start_path, last_path) in [
+        (first.clone(), continuation.clone()),
+        (continuation.clone(), continuation),
+    ] {
+        items_tx
+            .send(StoreItemsMessage {
+                start_path,
+                last_path,
+                history_items: vec![],
+                data_items: vec![],
+            })
+            .await
+            .unwrap();
+    }
+
+    let (final_state, error) = tokio::time::timeout(Duration::from_secs(10), run)
+        .await
+        .expect("the horizon sync ends")
+        .unwrap();
+    assert!(
+        !has_root(&absent_root).unwrap(),
+        "two empty chunks recorded a root with no trie"
+    );
     assert!(!final_state.expect("a final state").is_finished());
     assert!(error.is_some());
 }

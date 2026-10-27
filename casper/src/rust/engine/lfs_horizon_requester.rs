@@ -18,13 +18,9 @@
 //! horizon root enters an `ST<StatePartPath>` state machine as
 //! `Init → Requested → Received → Done`. A request loop fans out all
 //! pending paths in parallel via `try_join_all`, while a response loop
-//! demultiplexes incoming `StoreItemsMessage`s by `start_path`, validates
-//! each chunk against its own hashes and the trie walk from its start path
-//! (a chunk that fails is not imported and its path is asked again), applies
-//! the items, paginates within each root, and on the terminal cursor calls
-//! `set_root`. The `runtime_manager.has_root` check after it reads the same
-//! roots store `set_root` wrote, so it does not prove the trie is there: the
-//! per-chunk validation is what keeps forged data out.
+//! demultiplexes incoming `StoreItemsMessage`s by `start_path`, applies
+//! items, paginates within each root, and on the terminal cursor calls
+//! `set_root`.
 //!
 //! Wire format (`StoreItemsMessageRequest` / `StoreItemsMessage`) is shared
 //! with `lfs_tuple_space_requester`. Pagination semantics: a response with
@@ -32,7 +28,6 @@
 //! enqueue `last_path` as the next chunk to request for that same root.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,135 +35,17 @@ use async_trait::async_trait;
 use futures::Stream;
 use models::rust::casper::protocol::casper_message::StoreItemsMessage;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
+use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
 
-use crate::rust::engine::lfs_tuple_space_requester::StatePartPath;
+use crate::rust::engine::lfs_tuple_space_requester::{
+    validate_store_items, StatePartPath, StoreItems, ValidChunk, ST,
+};
 use crate::rust::errors::CasperError;
 
 /// Per-request chunk size, carried in the request (the responder pages by
 /// it); independent of `lfs_tuple_space_requester::PAGE_SIZE`.
 pub const PAGE_SIZE: i32 = 1024;
-
-/// Per-chunk request status. Mirrors `lfs_tuple_space_requester::ReqStatus`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReqStatus {
-    Init,
-    Requested,
-    Received,
-    Done,
-}
-
-/// State to control processing of horizon-root requests. Keyed by chunk
-/// path so that pagination cursors and initial root requests live in the
-/// same data structure (matches `lfs_tuple_space_requester::ST`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ST<Key: Hash + Eq + Clone> {
-    d: HashMap<Key, ReqStatus>,
-}
-
-impl<Key: Hash + Eq + Clone> ST<Key> {
-    pub fn new(initial: Vec<Key>) -> Self {
-        let d = initial
-            .into_iter()
-            .map(|key| (key, ReqStatus::Init))
-            .collect();
-        Self { d }
-    }
-
-    pub fn add(&self, keys: HashSet<Key>) -> Self {
-        let mut new_d = self.d.clone();
-        for key in keys {
-            if !self.d.contains_key(&key) {
-                new_d.insert(key, ReqStatus::Init);
-            }
-        }
-        Self { d: new_d }
-    }
-
-    /// Arm a pagination cursor for request.
-    ///
-    /// Unlike [`ST::add`], a key that is already `Done` is returned to `Init`.
-    /// Cursors converge — adjacent block states share nearly all of their trie —
-    /// and a root arriving at a path another root has already finished still
-    /// needs that path's chain walked with it in the root set. Leaving it `Done`
-    /// strands the root: its `set_root` never fires, yet every entry reads Done,
-    /// so the run reports success without it.
-    ///
-    /// Keys still in flight (`Init`/`Requested`/`Received`) are left alone —
-    /// they will complete for the merged root set on their own.
-    pub fn re_arm(&self, key: Key) -> Self {
-        let mut new_d = self.d.clone();
-        match self.d.get(&key) {
-            None | Some(ReqStatus::Done) => {
-                new_d.insert(key, ReqStatus::Init);
-            }
-            Some(_) => {}
-        }
-        Self { d: new_d }
-    }
-
-    /// Returns the next batch of keys to request. Init keys always; if
-    /// `resend` is true, also Requested keys (for timeout-driven retries).
-    pub fn get_next(&self, resend: bool) -> (Self, Vec<Key>) {
-        let mut new_d = self.d.clone();
-        let mut requested_keys = Vec::new();
-        for (key, status) in &self.d {
-            let should_request = match status {
-                ReqStatus::Init => true,
-                ReqStatus::Requested if resend => true,
-                _ => false,
-            };
-            if should_request {
-                new_d.insert(key.clone(), ReqStatus::Requested);
-                requested_keys.push(key.clone());
-            }
-        }
-        (Self { d: new_d }, requested_keys)
-    }
-
-    pub fn received(&self, k: Key) -> (Self, bool) {
-        let current_status = self.d.get(&k);
-        let is_valid = current_status == Some(&ReqStatus::Requested)
-            || current_status == Some(&ReqStatus::Init);
-        let new_d = if is_valid {
-            let mut updated_d = self.d.clone();
-            updated_d.insert(k, ReqStatus::Received);
-            updated_d
-        } else {
-            self.d.clone()
-        };
-        (Self { d: new_d }, is_valid)
-    }
-
-    /// Return a Received key to Init so it is requested again.
-    pub fn rejected(&self, k: Key) -> Self {
-        let mut new_d = self.d.clone();
-        if self.d.get(&k) == Some(&ReqStatus::Received) {
-            new_d.insert(k, ReqStatus::Init);
-        }
-        Self { d: new_d }
-    }
-
-    pub fn done(&self, k: Key) -> Self {
-        let is_received = self.d.get(&k) == Some(&ReqStatus::Received);
-        if is_received {
-            let mut new_d = self.d.clone();
-            new_d.insert(k, ReqStatus::Done);
-            Self { d: new_d }
-        } else {
-            self.clone()
-        }
-    }
-
-    pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
-
-    pub fn len(&self) -> usize { self.d.len() }
-
-    pub fn is_empty(&self) -> bool { self.d.is_empty() }
-
-    pub fn done_count(&self) -> usize { self.d.values().filter(|s| **s == ReqStatus::Done).count() }
-}
 
 /// Network operations needed by the horizon requester. Decoupled from
 /// `TransportLayer` so unit tests can stub it without spinning up a
@@ -184,26 +61,23 @@ pub trait HorizonRequesterOps: Send + Sync {
         page_size: i32,
     ) -> Result<(), CasperError>;
 
-    /// Check a chunk before it is imported: its items must hash to their keys
-    /// and must be exactly the nodes a walk of the trie from `start_path`
-    /// yields. The declared sender of a streamed chunk is not authenticated,
-    /// so nothing is written until this passes.
-    fn validate_horizon_chunk(
+    async fn validate_horizon_chunk(
         &self,
-        history_items: &[(Blake2b256Hash, Vec<u8>)],
-        data_items: &[(Blake2b256Hash, Vec<u8>)],
-        start_path: &StatePartPath,
+        history_items: StoreItems,
+        data_items: StoreItems,
+        start_path: StatePartPath,
+        last_path: StatePartPath,
         get_from_history: Arc<dyn RSpaceImporter>,
-    ) -> Result<(), CasperError> {
-        RSpaceImporterInstance::validate_state_items(
+    ) -> Result<ValidChunk, CasperError> {
+        validate_store_items(
             history_items,
             data_items,
-            start_path.clone(),
+            start_path,
+            last_path,
             PAGE_SIZE,
-            0,
             get_from_history,
         )
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))
+        .await
     }
 }
 
@@ -294,31 +168,57 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             return Ok(false);
         }
 
-        // Nothing is written until the chunk is validated. An empty chunk
-        // writes nothing, and the empty-terminal check below must still see it.
-        let is_empty = history_items.is_empty() && data_items.is_empty();
-        if !is_empty {
-            if let Err(err) = self.request_ops.validate_horizon_chunk(
-                &history_items,
-                &data_items,
-                &start_path,
+        if last_path == start_path && history_items.is_empty() && data_items.is_empty() {
+            // Byzantine signal: terminal cursor on first chunk + no data
+            // means the peer doesn't have this root. Fail loud if ANY root
+            // sharing this terminal saw only an empty first chunk — that's
+            // still an unrecoverable signal even if other roots happened to
+            // have legitimate data on a prior path.
+            let progress_map = self.root_progress.lock().expect("root_progress lock");
+            for root in &roots {
+                let progress = progress_map.get(root).cloned().unwrap_or_default();
+                if progress.chunk_count == 0 {
+                    return Err(CasperError::RuntimeError(format!(
+                        "LFS forward-horizon: bootstrap signalled empty/missing root {} \
+                         (terminal cursor on first chunk)",
+                        root
+                    )));
+                }
+            }
+        }
+
+        let valid = match self
+            .request_ops
+            .validate_horizon_chunk(
+                history_items,
+                data_items,
+                start_path.clone(),
+                last_path.clone(),
                 self.state_importer.clone(),
-            ) {
+            )
+            .await
+        {
+            Ok(valid) => valid,
+            Err(err) => {
                 tracing::warn!(
                     error = %err,
                     "LFS forward-horizon: rejected invalid chunk for path (length: {}); it will be requested again",
                     start_path.len()
                 );
-                let mut state = self.st.lock().expect("ST lock");
-                *state = state.rejected(start_path);
+                {
+                    let mut state = self.st.lock().expect("ST lock");
+                    *state = state.rejected(start_path);
+                }
+                let _ = self.request_tx.try_send(false);
                 return Ok(false);
             }
-        }
+        };
 
-        let history_count = history_items.len();
-        let data_count = data_items.len();
-        self.state_importer.set_history_items(history_items);
-        self.state_importer.set_data_items(data_items);
+        let history_count = valid.history_items.len();
+        let data_count = valid.data_items.len();
+        let complete = valid.complete;
+        self.state_importer.set_history_items(valid.history_items);
+        self.state_importer.set_data_items(valid.data_items);
 
         // Update per-root progress for every root sharing this chunk.
         {
@@ -331,31 +231,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             }
         }
 
-        let is_terminal = last_path == start_path;
-
-        if is_terminal {
-            // Byzantine signal: terminal cursor on first chunk + no data
-            // means the peer doesn't have this root. Fail loud if ANY root
-            // sharing this terminal saw only an empty first chunk — that's
-            // still an unrecoverable signal even if other roots happened to
-            // have legitimate data on a prior path.
-            {
-                let progress_map = self.root_progress.lock().expect("root_progress lock");
-                for root in &roots {
-                    let progress = progress_map.get(root).cloned().unwrap_or_default();
-                    if progress.chunk_count == 1
-                        && progress.total_history == 0
-                        && progress.total_data == 0
-                    {
-                        return Err(CasperError::RuntimeError(format!(
-                            "LFS forward-horizon: bootstrap signalled empty/missing root {} \
-                             (terminal cursor on first chunk)",
-                            root
-                        )));
-                    }
-                }
-            }
-
+        if last_path == start_path || complete {
             // Record the root tag in roots_store and verify the import
             // reconstructed each expected root.
             for root in &roots {
@@ -621,7 +497,6 @@ pub async fn stream<T: HorizonRequesterOps>(
         let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
         let mut no_progress_deadline = Box::pin(tokio::time::sleep(overall_deadline));
         let mut last_progress = std::time::Instant::now();
-        let mut last_done: usize = 0;
         let outstanding_roots =
             || roots_pending_for_stream.lock().expect("roots_pending lock").len();
 
@@ -631,8 +506,6 @@ pub async fn stream<T: HorizonRequesterOps>(
                 // we don't starve the demux while issuing more sends.
                 biased;
 
-                // Polled before the responses: a peer that keeps the response queue
-                // non-empty must not hold off the no-progress deadline.
                 _ = &mut no_progress_deadline => {
                     tracing::error!(
                         "LFS forward-horizon: no progress for {:?} (deadline {:?}); giving up",
@@ -661,9 +534,7 @@ pub async fn stream<T: HorizonRequesterOps>(
                         .lock()
                         .expect("ST lock")
                         .clone();
-                    let done = current_state.done_count();
-                    if done > last_done {
-                        last_done = done;
+                    if imported {
                         last_progress = std::time::Instant::now();
                         no_progress_deadline
                             .as_mut()
@@ -704,9 +575,6 @@ pub async fn stream<T: HorizonRequesterOps>(
                         break;
                     }
 
-                    // Reset the backoff only for an imported chunk: a peer that
-                    // sends nothing but rejected or stale chunks must still run
-                    // into the no-progress deadline.
                     if imported {
                         current_timeout = request_timeout;
                         idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
@@ -1004,15 +872,19 @@ mod tests {
             Ok(())
         }
 
-        /// The canned responses carry placeholder items, not real trie nodes.
-        fn validate_horizon_chunk(
+        async fn validate_horizon_chunk(
             &self,
-            _history_items: &[(Blake2b256Hash, Vec<u8>)],
-            _data_items: &[(Blake2b256Hash, Vec<u8>)],
-            _start_path: &StatePartPath,
+            history_items: StoreItems,
+            data_items: StoreItems,
+            _start_path: StatePartPath,
+            _last_path: StatePartPath,
             _get_from_history: Arc<dyn RSpaceImporter>,
-        ) -> Result<(), CasperError> {
-            Ok(())
+        ) -> Result<ValidChunk, CasperError> {
+            Ok(ValidChunk {
+                history_items,
+                data_items,
+                complete: false,
+            })
         }
     }
 
@@ -1167,6 +1039,67 @@ mod tests {
              finish. Roots synced: {:?}",
             synced.len()
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_walk_over_finished_cursors_holds_off_the_deadline() {
+        let first = hash_for(1);
+        let second = hash_for(2);
+        let cursors: Vec<StatePartPath> =
+            (3..6).map(|seed| vec![(hash_for(seed), Some(0))]).collect();
+        let chain = |start: StatePartPath| {
+            let mut paths = vec![start];
+            paths.extend(cursors.iter().cloned());
+            let last = paths.last().unwrap().clone();
+            let mut chunks: Vec<StoreItemsMessage> = paths
+                .windows(2)
+                .map(|pair| make_response(pair[0].clone(), pair[1].clone(), Some(hash_for(9))))
+                .collect();
+            chunks.push(make_response(last.clone(), last, Some(hash_for(9))));
+            chunks
+        };
+        let first_chain = chain(vec![(first.clone(), None)]);
+        let second_chain = chain(vec![(second.clone(), None)]);
+
+        let (recording, recorded) = RecordingImporter::new();
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(recording);
+        let has_root: HasRootFn = {
+            let recorded = recorded.clone();
+            Arc::new(move |query| Ok(recorded.lock().unwrap().contains(query)))
+        };
+        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(16);
+        let feeder = tokio::spawn(async move {
+            for chunk in first_chain {
+                let _ = tx.send(chunk).await;
+            }
+            for chunk in second_chain {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                let _ = tx.send(chunk).await;
+            }
+            tx
+        });
+
+        let (stream, last_error) = stream(
+            vec![first.clone(), second.clone()],
+            has_root,
+            importer,
+            MockOps::new(),
+            rx,
+            Duration::from_secs(5),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let final_state = drain(stream).await;
+        let _tx = feeder.await.unwrap();
+
+        assert!(
+            last_error.lock().unwrap().is_none(),
+            "the deadline fired while chunks were imported: {:?}",
+            last_error.lock().unwrap()
+        );
+        assert!(final_state.expect("a final state").is_finished());
+        assert!(recorded.lock().unwrap().contains(&second));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

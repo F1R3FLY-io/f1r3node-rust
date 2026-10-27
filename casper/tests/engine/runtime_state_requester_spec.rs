@@ -17,6 +17,9 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::cold_store::{
+    ContinuationsLeaf, DataLeaf, JoinsLeaf, PersistedData,
+};
 use rspace_plus_plus::rspace::history::roots_store::{RootsStore, RootsStoreInstances};
 use rspace_plus_plus::rspace::rspace::RSpaceStore;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
@@ -49,8 +52,6 @@ fn stranger() -> PeerNode {
     }
 }
 
-/// The chunks a bootstrap serves for `root`, exactly as
-/// `Running::handle_state_items_message_request` builds them.
 pub(crate) fn export_chunks(
     store: &RSpaceStore,
     root: &Blake2b256Hash,
@@ -86,7 +87,7 @@ pub(crate) fn export_chunks(
                 .map(|(k, v)| (k, Bytes::from(v)))
                 .collect(),
         });
-        if last_path.is_empty() || last_path == start_path {
+        if last_path.len() <= 1 || last_path == start_path {
             return Ok(chunks);
         }
         start_path = last_path;
@@ -96,7 +97,6 @@ pub(crate) fn export_chunks(
     }
 }
 
-/// The exporter lists a chunk's history nodes in no fixed order.
 pub(crate) fn history_keys(chunks: &[StoreItemsMessage]) -> std::collections::BTreeSet<Vec<u8>> {
     chunks
         .iter()
@@ -104,15 +104,11 @@ pub(crate) fn history_keys(chunks: &[StoreItemsMessage]) -> std::collections::BT
         .collect()
 }
 
-/// An rspace store of its own: the genesis store is shared by every test in
-/// the binary, and these tests must be free to corrupt what they hold.
 pub(crate) async fn private_store() -> RSpaceStore {
     let mut kvm = mk_test_rnode_store_manager_shared(generate_scope_id());
     (*kvm).r_space_stores().await.expect("private rspace store")
 }
 
-/// The importer and root check the node wires into the requester:
-/// `RSpaceImporterImpl` over the live stores, and a roots-store lookup.
 pub(crate) fn importer_and_has_root(store: &RSpaceStore) -> (Arc<dyn RSpaceImporter>, HasRootFn) {
     let importer: Arc<dyn RSpaceImporter> = Arc::new(RSpaceImporterImpl {
         history_store: store.history.clone(),
@@ -152,6 +148,46 @@ pub(crate) fn seed(
     importer.set_root(root);
 }
 
+pub(crate) fn with_a_swapped_leaf_kind(
+    chunks: &[StoreItemsMessage],
+) -> (Vec<StoreItemsMessage>, Blake2b256Hash, Bytes) {
+    let mut forged = chunks.to_vec();
+    let chunk = forged
+        .iter_mut()
+        .find(|chunk| !chunk.data_items.is_empty())
+        .expect("the state has data items");
+    let (key, original) = chunk.data_items[0].clone();
+    let swapped = match bincode::deserialize::<PersistedData>(&original).unwrap() {
+        PersistedData::Data(DataLeaf { bytes }) => {
+            PersistedData::Continuations(ContinuationsLeaf { bytes })
+        }
+        PersistedData::Continuations(ContinuationsLeaf { bytes }) => {
+            PersistedData::Joins(JoinsLeaf { bytes })
+        }
+        PersistedData::Joins(JoinsLeaf { bytes }) => PersistedData::Data(DataLeaf { bytes }),
+    };
+    chunk.data_items[0].1 = Bytes::from(bincode::serialize(&swapped).unwrap());
+    (forged, key, original)
+}
+
+pub(crate) fn a_redirect_to_malformed_bytes(first: &StoreItemsMessage) -> [StoreItemsMessage; 2] {
+    let malformed = Bytes::from_static(&[0x00, 0x05, 0xAA]);
+    let malformed_hash = Blake2b256Hash::new(&malformed);
+    let zero = Blake2b256Hash::from_bytes(vec![0; 32]);
+    let mut target: StatePartPath = vec![(malformed_hash.clone(), None)];
+    target.extend(std::iter::repeat_n((zero, None), 5));
+    target.push((malformed_hash.clone(), None));
+    let mut redirected = first.clone();
+    redirected.last_path = target.clone();
+    let malformed_chunk = StoreItemsMessage {
+        start_path: target.clone(),
+        last_path: target.clone(),
+        history_items: vec![(malformed_hash, malformed)],
+        data_items: vec![],
+    };
+    [redirected, malformed_chunk]
+}
+
 fn running(
     fixture: &TestFixture,
     items_tx: mpsc::Sender<StoreItemsMessage>,
@@ -188,8 +224,6 @@ pub(crate) async fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// The requester handles its inputs one at a time, chunks before fetches. A
-/// fetch sent after a chunk is requested only once that chunk is handled.
 async fn wait_until_handled(
     fixture: &TestFixture,
     handles: &runtime_state_requester::StateRequesterHandles,
@@ -207,8 +241,6 @@ async fn wait_until_handled(
     .await;
 }
 
-/// The honest path the fix must keep: chunks the bootstrap serves for a missing
-/// root are imported, the root is recorded, and its state reads back whole.
 #[tokio::test]
 async fn honest_chunks_for_a_missing_root_are_imported_and_recorded() {
     let fixture = TestFixture::new().await;
@@ -255,11 +287,6 @@ async fn honest_chunks_for_a_missing_root_are_imported_and_recorded() {
     }
 }
 
-/// A chunk that answers a pending fetch must not write anything it does not
-/// prove. The forged chunk below names an absent root, carries one history item
-/// under the hash of a node the store already holds, and claims to be the last
-/// chunk. It is sent as from the bootstrap: the declared sender of a streamed
-/// message is not bound to the TLS identity (#663).
 #[tokio::test]
 async fn a_forged_chunk_does_not_overwrite_held_state_or_record_its_root() {
     let fixture = TestFixture::new().await;
@@ -323,8 +350,86 @@ async fn a_forged_chunk_does_not_overwrite_held_state_or_record_its_root() {
     );
 }
 
-/// Chunks are asked only of the bootstrap, so Running passes on only the
-/// bootstrap's chunks.
+#[tokio::test]
+async fn a_chunk_with_a_swapped_leaf_kind_does_not_overwrite_a_held_leaf() {
+    let fixture = TestFixture::new().await;
+    fixture.transport_layer.reset();
+    let root = genesis_root(&fixture);
+    let honest =
+        export_chunks(&fixture.rspace_store, &root, PAGE_SIZE).expect("genesis state exports");
+    let (forged, key, original) = with_a_swapped_leaf_kind(&honest);
+
+    let store = private_store().await;
+    let (importer, has_root) = importer_and_has_root(&store);
+    importer.set_data_items(vec![(key.clone(), original.to_vec())]);
+    let handles = runtime_state_requester::spawn(
+        fixture.transport_layer.clone(),
+        fixture.rp_conf_ask.clone(),
+        importer,
+        has_root.clone(),
+    );
+    let engine = running(&fixture, handles.items_tx.clone());
+
+    handles.fetch_tx.send(root.clone()).await.unwrap();
+    wait_for("the root request", || {
+        fixture.transport_layer.request_count() > 0
+    })
+    .await;
+    for chunk in forged {
+        engine
+            .handle(bootstrap(&fixture), CasperMessage::StoreItemsMessage(chunk))
+            .await
+            .unwrap();
+    }
+    wait_until_handled(&fixture, &handles, b"sentinel").await;
+
+    assert_eq!(
+        store.cold.get_one(&key.bytes()).unwrap(),
+        Some(original.to_vec()),
+        "a data item with a changed leaf kind overwrote a leaf the store held"
+    );
+    assert!(!has_root(&root).unwrap());
+}
+
+#[tokio::test]
+async fn a_last_path_redirected_to_malformed_bytes_does_not_stop_the_requester() {
+    let fixture = TestFixture::new().await;
+    fixture.transport_layer.reset();
+    let root = genesis_root(&fixture);
+    let honest =
+        export_chunks(&fixture.rspace_store, &root, PAGE_SIZE).expect("genesis state exports");
+
+    let store = private_store().await;
+    let (importer, has_root) = importer_and_has_root(&store);
+    let handles = runtime_state_requester::spawn(
+        fixture.transport_layer.clone(),
+        fixture.rp_conf_ask.clone(),
+        importer,
+        has_root.clone(),
+    );
+    let engine = running(&fixture, handles.items_tx.clone());
+
+    handles.fetch_tx.send(root.clone()).await.unwrap();
+    wait_for("the root request", || {
+        fixture.transport_layer.request_count() > 0
+    })
+    .await;
+    let chunks = a_redirect_to_malformed_bytes(&honest[0])
+        .into_iter()
+        .chain(honest.iter().cloned());
+    for chunk in chunks {
+        engine
+            .handle(bootstrap(&fixture), CasperMessage::StoreItemsMessage(chunk))
+            .await
+            .unwrap();
+    }
+
+    wait_for("the root to be recorded from the honest chunks", || {
+        has_root(&root).unwrap()
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn store_items_from_a_peer_that_was_not_asked_are_dropped() {
     let fixture = TestFixture::new().await;

@@ -477,8 +477,7 @@ async fn a_page_with_a_swapped_leaf_kind_is_rejected() {
     let root = space1.create_checkpoint().await.unwrap().root;
     let start_path = vec![(root, None)];
     let (history, data) =
-        RSpaceExporterItems::get_history_and_data(exporter1, start_path.clone(), 0, 1000)
-            .unwrap();
+        RSpaceExporterItems::get_history_and_data(exporter1, start_path.clone(), 0, 1000).unwrap();
     let validate = |data_items: &[(Blake2b256Hash, ByteVector)]| {
         RSpaceImporterInstance::validate_state_items(
             &history.items,
@@ -495,9 +494,9 @@ async fn a_page_with_a_swapped_leaf_kind_is_rejected() {
     let swaps = |persisted: PersistedData| -> Vec<PersistedData> {
         let original = std::mem::discriminant(&persisted);
         let bytes = match persisted {
-            PersistedData::Data(DataLeaf { bytes })
-            | PersistedData::Continuations(ContinuationsLeaf { bytes })
-            | PersistedData::Joins(JoinsLeaf { bytes }) => bytes,
+            PersistedData::Data(DataLeaf { bytes }) |
+            PersistedData::Continuations(ContinuationsLeaf { bytes }) |
+            PersistedData::Joins(JoinsLeaf { bytes }) => bytes,
         };
         let all = [
             PersistedData::Data(DataLeaf {
@@ -579,10 +578,7 @@ async fn malformed_radix_bytes_at_the_start_path_are_an_error_not_a_panic() {
         importer2,
     );
     assert!(
-        matches!(
-            result,
-            Err(StateItemsError::Traversal(RadixTreeError::SerializationError(_)))
-        ),
+        matches!(result, Err(StateItemsError::Traversal(RadixTreeError::SerializationError(_)))),
         "got {result:?}"
     );
 }

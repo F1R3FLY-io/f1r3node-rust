@@ -162,7 +162,10 @@ impl RSpaceImporterInstance {
 
         let mut leaf_kinds: HashMap<Blake2b256Hash, HashSet<Option<u8>>> = HashMap::new();
         for (hash, key) in leaf_keys {
-            leaf_kinds.entry(hash).or_default().insert(key.first().copied());
+            leaf_kinds
+                .entry(hash)
+                .or_default()
+                .insert(key.first().copied());
         }
 
         // Validate data hashes

@@ -226,7 +226,9 @@ pub fn try_decode(bv: &[u8]) -> Result<Node, RadixTreeError> {
             return Err(malformed("wrong index of item"));
         }
         let pos1 = pos0 + 1;
-        let second_byte = *bv.get(pos1).ok_or_else(|| malformed("truncated item header"))?; // Take second byte
+        let second_byte = *bv
+            .get(pos1)
+            .ok_or_else(|| malformed("truncated item header"))?; // Take second byte
 
         // Decoding prefix
         let prefix_size = (second_byte & 0x7F) as usize; // Lower 7 bits - it's size of prefix (0..127).
