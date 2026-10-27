@@ -55,7 +55,7 @@ use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
-use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
@@ -66,6 +66,8 @@ use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
 use super::equivocation_tracker_store::EquivocationTrackerStore;
+
+pub const V6_EXECUTOR_STATE_DB: &str = "v6-executor-state";
 
 pub type DeployId = shared::rust::ByteString;
 
@@ -896,6 +898,7 @@ pub struct BlockDagKeyValueStorage {
     /// LEARN it — hash only, never the block — during restore. Consumers
     /// that need a network-uniform genesis sentinel read this register.
     pub(crate) genesis_hash_index: KeyValueTypedStoreImpl<String, BlockHashSerde>,
+    pub(crate) v6_executor_state: Arc<dyn KeyValueStore>,
 }
 
 impl BlockDagKeyValueStorage {
@@ -1007,6 +1010,7 @@ impl BlockDagKeyValueStorage {
         let lifecycle_tables =
             DeployLifecycleTables::new(lifecycle_events_kv_store, lifecycle_terminal_kv_store);
 
+        let v6_executor_state = kvm.store(V6_EXECUTOR_STATE_DB.to_string()).await?;
         let genesis_hash_kv_store = kvm.store("genesis-hash".to_string()).await?;
         let genesis_hash_db: KeyValueTypedStoreImpl<String, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(genesis_hash_kv_store);
@@ -1024,7 +1028,12 @@ impl BlockDagKeyValueStorage {
             dag_generation: Arc::new(AtomicU64::new(0)),
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             genesis_hash_index: genesis_hash_db,
+            v6_executor_state,
         })
+    }
+
+    pub fn v6_executor_state(&self) -> Arc<dyn KeyValueStore> {
+        Arc::clone(&self.v6_executor_state)
     }
 
     const GENESIS_HASH_KEY: &'static str = "genesis";
@@ -1124,6 +1133,9 @@ impl BlockDagKeyValueStorage {
             genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),
+            v6_executor_state: Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            ),
         }
     }
 

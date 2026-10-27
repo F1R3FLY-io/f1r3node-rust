@@ -481,7 +481,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             block_store.clone(),
             block_dag_storage.clone(),
             deploy_storage.clone(),
-        );
+        )?;
         engine.start();
         Some(engine)
     } else {

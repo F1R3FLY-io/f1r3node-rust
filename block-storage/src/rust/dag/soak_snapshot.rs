@@ -1111,6 +1111,7 @@ mod tests {
             "carrier-index",
             "carrier-index-meta",
             "genesis-hash",
+            "v6-executor-state",
             "blocks",
             "blocks-approved",
         ];

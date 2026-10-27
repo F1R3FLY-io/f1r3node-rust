@@ -64,6 +64,8 @@ pub struct ExecutorCore<R: ExecutionRecord> {
     cited: HashSet<(BlockHash, StateHash)>,
     pending_attestations: HashMap<BlockHash, Vec<(BlockHash, Bytes, StateHash)>>,
     evidence: Vec<Evidence>,
+    diverged: bool,
+    store_error: Option<String>,
 }
 
 impl<R: ExecutionRecord> ExecutorCore<R> {
@@ -90,8 +92,31 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             cited: HashSet::new(),
             pending_attestations: HashMap::new(),
             evidence: Vec::new(),
+            diverged: false,
+            store_error: None,
         }
     }
+
+    pub fn reset(&mut self) -> Result<(), String> {
+        self.store.reset().map_err(|error| error.to_string())?;
+        let anchor = self.order[0].clone();
+        self.order = vec![anchor.clone()];
+        self.index = HashMap::from([(anchor, 0)]);
+        self.senders.clear();
+        self.envelopes.clear();
+        self.spec.clear();
+        self.citations.clear();
+        self.dismissed.clear();
+        self.cited.clear();
+        self.pending_attestations.clear();
+        self.diverged = false;
+        self.store_error = None;
+        Ok(())
+    }
+
+    pub fn diverged(&self) -> bool { self.diverged }
+
+    pub fn take_store_error(&mut self) -> Option<String> { self.store_error.take() }
 
     fn sender_of(&self, block: &BlockHash) -> Bytes {
         self.senders.get(block).cloned().unwrap_or_default()
@@ -99,19 +124,26 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 
     fn canon_pos(&self) -> usize { self.store.canonical_len() }
 
-    fn canon_root(&self) -> StateHash { self.store.canonical_root().clone() }
+    fn canon_root(&self) -> StateHash { self.store.canonical_root() }
 
     pub fn emit(&mut self, block: EmittedBlock<R>) {
         if self.index.contains_key(&block.hash) {
             return;
         }
         let citer_index = self.order.len();
+        let fixed = citer_index < self.canon_pos();
+        if fixed && self.store.canonical_at(citer_index).as_ref() != Some(&block.hash) {
+            self.diverged = true;
+        }
         self.index.insert(block.hash.clone(), citer_index);
         self.order.push(block.hash.clone());
         self.senders.insert(block.hash.clone(), block.sender);
         self.envelopes
             .insert(block.hash.clone(), block.envelope_ids);
         for record in block.records {
+            if self.store.executed(record.target()).is_some() {
+                continue;
+            }
             self.citations
                 .entry(record.target().clone())
                 .or_default()
@@ -125,14 +157,17 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 
     pub fn attestation(&self) -> Attestation {
         Attestation {
-            block_hash: self.order[self.canon_pos() - 1].clone(),
+            block_hash: self
+                .store
+                .canonical_at(self.canon_pos() - 1)
+                .expect("the store holds every canonical position"),
             root: self.canon_root(),
         }
     }
 
-    pub fn executed(&self, block: &BlockHash) -> Option<&StateHash> { self.store.executed(block) }
+    pub fn executed(&self, block: &BlockHash) -> Option<StateHash> { self.store.executed(block) }
 
-    pub fn record(&self, block: &BlockHash) -> Option<&R> { self.store.record(block) }
+    pub fn record(&self, block: &BlockHash) -> Option<R> { self.store.record(block) }
 
     pub fn canonical_len(&self) -> usize { self.canon_pos() }
 
@@ -146,6 +181,9 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 
     pub fn next_action(&mut self) -> Action<R> {
         loop {
+            if self.store_error.is_some() || self.diverged {
+                return Action::Idle;
+            }
             if self.canon_pos() >= self.order.len() {
                 break;
             }
@@ -291,13 +329,13 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         sender: &Bytes,
         attestation: &Attestation,
     ) {
-        match self.store.executed(&attestation.block_hash).cloned() {
+        match self.store.executed(&attestation.block_hash) {
             Some(executed) => {
                 if executed != attestation.root {
                     let canonical_record = self
                         .store
                         .record(&attestation.block_hash)
-                        .map(ExecutionRecord::encode);
+                        .map(|record| record.encode());
                     self.evidence.push(Evidence {
                         offender: sender.clone(),
                         citer: citer.clone(),
@@ -321,6 +359,15 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     fn fix(&mut self, target: BlockHash, record: R) {
         let root = record.post_root().clone();
         let digest = record.digest();
+        let misattested = self
+            .pending_attestations
+            .get(&target)
+            .is_some_and(|pending| pending.iter().any(|(_, _, attested)| *attested != root));
+        let encoded = misattested.then(|| record.encode());
+        if let Err(error) = self.store.fix(target.clone(), record) {
+            self.store_error = Some(error.to_string());
+            return;
+        }
         match self.spec.front() {
             Some(own)
                 if own.target() == &target
@@ -331,17 +378,15 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             }
             _ => self.spec.clear(),
         }
-        let misattested: Vec<_> = self
+        self.citations.remove(&target);
+        for (citer, sender, attested) in self
             .pending_attestations
             .remove(&target)
             .unwrap_or_default()
-            .into_iter()
-            .filter(|(_, _, attested)| *attested != root)
-            .collect();
-        let encoded = (!misattested.is_empty()).then(|| record.encode());
-        self.store.fix(target.clone(), record);
-        self.citations.remove(&target);
-        for (citer, sender, attested) in misattested {
+        {
+            if attested == root {
+                continue;
+            }
             self.evidence.push(Evidence {
                 offender: sender,
                 citer,
@@ -411,8 +456,101 @@ mod tests {
             c.apply_replay(&target, &citer, &record, Ok(root));
         }
         assert_eq!(c.record(&h("b1")), None);
-        assert_eq!(c.record(&h("b2")), Some(&rec("b2", "r1", "r2")));
-        assert_eq!(c.record(&h("b3")), Some(&rec("b3", "r2", "r3")));
+        assert_eq!(c.record(&h("b2")), Some(rec("b2", "r1", "r2")));
+        assert_eq!(c.record(&h("b3")), Some(rec("b3", "r2", "r3")));
+    }
+
+    fn store_with_b1_fixed() -> Box<dyn RecordStore<BlockRecord>> {
+        let mut store = MemoryRecordStore::new(h("g"), h("r0"), Retention::default());
+        store.fix(h("b1"), rec("b1", "r0", "r1")).unwrap();
+        Box::new(store)
+    }
+
+    struct FailingStore(MemoryRecordStore<BlockRecord>);
+
+    impl RecordStore<BlockRecord> for FailingStore {
+        fn canonical_len(&self) -> usize { self.0.canonical_len() }
+
+        fn canonical_root(&self) -> StateHash { self.0.canonical_root() }
+
+        fn canonical_at(&self, index: usize) -> Option<BlockHash> { self.0.canonical_at(index) }
+
+        fn executed(&self, block: &BlockHash) -> Option<StateHash> { self.0.executed(block) }
+
+        fn record(&self, block: &BlockHash) -> Option<BlockRecord> { self.0.record(block) }
+
+        fn fix(
+            &mut self,
+            _target: BlockHash,
+            _record: BlockRecord,
+        ) -> Result<(), shared::rust::store::key_value_store::KvStoreError> {
+            Err(shared::rust::store::key_value_store::KvStoreError::IoError(
+                "disk full".to_string(),
+            ))
+        }
+
+        fn reset(&mut self) -> Result<(), shared::rust::store::key_value_store::KvStoreError> {
+            self.0.reset()
+        }
+    }
+
+    #[test]
+    fn a_resumed_prefix_is_not_replayed() {
+        let mut c = ExecutorCore::with_store(h("g"), CoreParams::default(), store_with_b1_fixed());
+        c.emit(block("b1", "v1", vec![]));
+        c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
+        assert_eq!(c.canonical_len(), 2);
+        assert_eq!(c.attestation(), Attestation {
+            block_hash: h("b1"),
+            root: h("r1")
+        });
+        assert_eq!(c.next_action(), Action::Execute {
+            target: h("b2"),
+            pre_root: h("r1")
+        });
+        assert!(!c.diverged());
+    }
+
+    #[test]
+    fn a_different_order_below_the_stored_prefix_is_divergence() {
+        let mut c = ExecutorCore::with_store(h("g"), CoreParams::default(), store_with_b1_fixed());
+        c.emit(block("x1", "v1", vec![]));
+        assert!(c.diverged());
+        assert_eq!(c.next_action(), Action::Idle);
+        c.reset().unwrap();
+        assert!(!c.diverged());
+        assert_eq!(c.canonical_len(), 1);
+        assert_eq!(c.executed(&h("b1")), None);
+        c.emit(block("x1", "v1", vec![]));
+        assert_eq!(c.next_action(), Action::Execute {
+            target: h("x1"),
+            pre_root: h("r0")
+        });
+    }
+
+    #[test]
+    fn a_failed_write_stops_the_core_and_is_reported_once() {
+        let store = FailingStore(MemoryRecordStore::new(
+            h("g"),
+            h("r0"),
+            Retention::default(),
+        ));
+        let mut c = ExecutorCore::with_store(h("g"), CoreParams::default(), Box::new(store));
+        c.emit(block("b1", "v1", vec![]));
+        c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
+        let Action::Replay {
+            target,
+            citer,
+            record,
+        } = c.next_action()
+        else {
+            panic!("expected a replay")
+        };
+        c.apply_replay(&target, &citer, &record, Ok(h("r1")));
+        assert_eq!(c.canonical_len(), 1);
+        assert_eq!(c.next_action(), Action::Idle);
+        assert!(c.take_store_error().is_some());
+        assert!(c.take_store_error().is_none());
     }
 
     #[test]
@@ -440,7 +578,7 @@ mod tests {
         c.apply_execute(rec("b1", "r0", "r1"));
         c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
         let _ = c.next_action();
-        assert_eq!(c.executed(&h("b1")), Some(&h("r1")));
+        assert_eq!(c.executed(&h("b1")), Some(h("r1")));
         assert_eq!(c.canonical_len(), 2);
     }
 
@@ -460,7 +598,7 @@ mod tests {
             panic!("{:?}", action)
         };
         c.apply_replay(&target, &citer, &record, Ok(h("theirs")));
-        assert_eq!(c.executed(&h("b1")), Some(&h("theirs")));
+        assert_eq!(c.executed(&h("b1")), Some(h("theirs")));
         assert_eq!(c.speculation_len(), 0);
         assert_eq!(c.next_action(), Action::Execute {
             target: h("b2"),
@@ -501,7 +639,7 @@ mod tests {
         };
         assert_eq!(citer, h("b3"));
         c.apply_replay(&target, &citer, &record, Ok(h("good")));
-        assert_eq!(c.executed(&h("b1")), Some(&h("good")));
+        assert_eq!(c.executed(&h("b1")), Some(h("good")));
     }
 
     #[test]
@@ -640,7 +778,7 @@ mod tests {
         };
         assert_eq!(record, cited);
         c.apply_replay(&target, &citer, &record, Ok(h("r1")));
-        assert_eq!(c.executed(&h("b1")), Some(&h("r1")));
+        assert_eq!(c.executed(&h("b1")), Some(h("r1")));
         assert_eq!(c.speculation_len(), 0);
         assert!(c.records_to_cite(&h("v1"), 10).is_empty());
     }

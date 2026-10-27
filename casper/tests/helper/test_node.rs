@@ -1242,7 +1242,8 @@ impl TestNode {
                 block_store.clone(),
                 block_dag_storage.clone(),
                 deploy_storage.clone(),
-            );
+            )
+            .expect("the v6 engine opens its executor state");
             engine.start();
             Some(engine)
         } else {

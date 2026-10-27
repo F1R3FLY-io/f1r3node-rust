@@ -27,7 +27,7 @@ use super::gate::{screen, BlockGate, RhoBlockGate};
 use super::linearizer::{Advance, Linearizer};
 use super::propose::{select_envelopes, PoolEntry, SelectionContext};
 use super::record::ExecutionRecord;
-use super::store::{MemoryRecordStore, RecordStore, Retention};
+use super::store::{LmdbRecordStore, MemoryRecordStore, Opened, RecordStore, Retention};
 use super::validators::{AttestedRootValidators, ValidatorSetSource};
 use super::validity::{check_structure, Limits};
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -60,6 +60,7 @@ pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
     dag_storage: BlockDagKeyValueStorage,
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     limits: Limits,
+    anchor: (BlockHash, i64),
     wake: tokio::sync::Notify,
     started: AtomicBool,
 }
@@ -72,7 +73,25 @@ impl V6Engine<BlockRecord> {
         block_store: KeyValueBlockStore,
         dag_storage: BlockDagKeyValueStorage,
         deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>, CasperError> {
+        let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
+            dag_storage.v6_executor_state(),
+            genesis.block_hash.clone(),
+            genesis.body.state.post_state_hash.clone(),
+        )?;
+        match opened {
+            Opened::Resumed => tracing::info!(
+                target: "f1r3fly.v6",
+                canonical = store.canonical_len(),
+                "v6 executor resumes its stored canonical prefix"
+            ),
+            Opened::Fresh => {}
+            Opened::ReplacedOtherAnchor => tracing::warn!(
+                target: "f1r3fly.v6",
+                anchor = %hex::encode(&genesis.block_hash),
+                "v6 executor state belonged to another anchor; starting from this one"
+            ),
+        }
         let backend = Arc::new(BlockExecutor::new(
             runtime_manager.clone(),
             Arc::clone(&policy),
@@ -83,14 +102,20 @@ impl V6Engine<BlockRecord> {
             gate,
             validators: Arc::new(AttestedRootValidators::new(runtime_manager)),
             evidence: Arc::new(MemoryEvidenceSink::new()),
-            store: None,
+            store: Some(Box::new(store)),
             limits: Limits {
                 ordered_only: true,
                 ..Limits::default()
             },
             params: CoreParams::default(),
         };
-        Self::with_parts(genesis, parts, block_store, dag_storage, deploy_storage)
+        Ok(Self::with_parts(
+            genesis,
+            parts,
+            block_store,
+            dag_storage,
+            deploy_storage,
+        ))
     }
 }
 
@@ -136,6 +161,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             dag_storage,
             deploy_storage,
             limits,
+            anchor: (genesis.block_hash.clone(), genesis.body.state.block_number),
             wake: tokio::sync::Notify::new(),
             started: AtomicBool::new(false),
         })
@@ -167,11 +193,9 @@ impl<R: ExecutionRecord> V6Engine<R> {
 
     pub fn attestation(&self) -> Attestation { self.core.lock().attestation() }
 
-    pub fn executed(&self, block: &BlockHash) -> Option<Bytes> {
-        self.core.lock().executed(block).cloned()
-    }
+    pub fn executed(&self, block: &BlockHash) -> Option<Bytes> { self.core.lock().executed(block) }
 
-    pub fn record(&self, block: &BlockHash) -> Option<R> { self.core.lock().record(block).cloned() }
+    pub fn record(&self, block: &BlockHash) -> Option<R> { self.core.lock().record(block) }
 
     fn quarantine(
         &self,
@@ -273,6 +297,18 @@ impl<R: ExecutionRecord> V6Engine<R> {
             }
             Advance::Unchanged => {}
         }
+        if self.core.lock().diverged() {
+            tracing::warn!(
+                target: "f1r3fly.v6",
+                "the re-emitted order disagrees with the stored canonical prefix; rebuilding from the anchor"
+            );
+            self.core
+                .lock()
+                .reset()
+                .map_err(CasperError::RuntimeError)?;
+            *self.linearizer.lock() = Linearizer::new(self.anchor.0.clone(), self.anchor.1);
+            return Ok(true);
+        }
         let (action, fixed_before) = {
             let mut core = self.core.lock();
             let before = core.canonical_len();
@@ -316,6 +352,11 @@ impl<R: ExecutionRecord> V6Engine<R> {
             }
         }
         self.report_evidence();
+        if let Some(error) = self.core.lock().take_store_error() {
+            return Err(CasperError::RuntimeError(format!(
+                "the v6 executor could not persist a fixed record: {error}"
+            )));
+        }
         Ok(progressed)
     }
 

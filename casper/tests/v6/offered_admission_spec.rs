@@ -444,3 +444,129 @@ async fn an_unfunded_offer_is_removed_at_proposal_and_reports_why() {
     submit(&node, proto, &shard_id).await.unwrap();
     assert_eq!(status(&node, &id).await, OfferedStatus::Pending);
 }
+
+struct CountingBackend {
+    inner: casper::rust::v6::executor::BlockExecutor,
+    targets: parking_lot::Mutex<Vec<models::rust::block_hash::BlockHash>>,
+}
+
+#[async_trait::async_trait]
+impl casper::rust::v6::backend::ExecutionBackend for CountingBackend {
+    type Record = BlockRecord;
+
+    async fn execute(
+        &self,
+        pre_root: &casper::rust::v6::body::StateHash,
+        block: &BlockMessage,
+    ) -> Result<BlockRecord, casper::rust::errors::CasperError> {
+        self.targets.lock().push(block.block_hash.clone());
+        self.inner.execute(pre_root, block).await
+    }
+
+    async fn replay(
+        &self,
+        record: &BlockRecord,
+        block: &BlockMessage,
+    ) -> Result<casper::rust::v6::body::StateHash, casper::rust::errors::CasperError> {
+        self.targets.lock().push(block.block_hash.clone());
+        self.inner.replay(record, block).await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_engine_resumes_its_canonical_prefix_without_replaying_it() {
+    use casper::rust::v6::engine::V6Parts;
+    use casper::rust::v6::evidence::MemoryEvidenceSink;
+    use casper::rust::v6::gate::RhoBlockGate;
+    use casper::rust::v6::store::{LmdbRecordStore, Opened};
+    use casper::rust::v6::validators::AttestedRootValidators;
+
+    let genesis = v6_genesis().await;
+    let mut nodes = TestNode::create_v6_network(genesis, 3).await.unwrap();
+    let mut blocks = vec![nodes[0].genesis.block_hash.clone()];
+    for round in 0..240 {
+        if engine(&nodes[0]).canonical_len() >= 3 {
+            break;
+        }
+        let block = propose(&nodes[round % nodes.len()]).await;
+        blocks.push(block.block_hash.clone());
+        for node in nodes.iter_mut() {
+            let status = node.process_block(block.clone()).await.unwrap();
+            assert!(
+                matches!(status, Either::Right(_)),
+                "block rejected: {:?}",
+                status
+            );
+        }
+        for node in &nodes {
+            engine(node).wake();
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let first = engine(&nodes[0]);
+    let canonical = first.canonical_len();
+    assert!(canonical >= 3, "the chain fixed only {canonical} positions");
+    let attestation = first.attestation();
+    let prefix: Vec<_> = blocks
+        .iter()
+        .filter_map(|hash| first.executed(hash).map(|root| (hash.clone(), root)))
+        .collect();
+    assert!(prefix.len() >= canonical);
+
+    let node = &nodes[0];
+    let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
+        node.block_dag_storage.v6_executor_state(),
+        node.genesis.block_hash.clone(),
+        node.genesis.body.state.post_state_hash.clone(),
+    )
+    .unwrap();
+    assert_eq!(opened, Opened::Resumed);
+    let runtime_manager = Arc::new(node.runtime_manager.clone());
+    let policy = node
+        .casper
+        .adopted_resource_policy()
+        .expect("a v6 node adopts its policy");
+    let backend = Arc::new(CountingBackend {
+        inner: casper::rust::v6::executor::BlockExecutor::new(
+            runtime_manager.clone(),
+            policy.clone(),
+        ),
+        targets: parking_lot::Mutex::new(Vec::new()),
+    });
+    let restarted = V6Engine::with_parts(
+        &node.genesis,
+        V6Parts {
+            backend: backend.clone(),
+            gate: Arc::new(RhoBlockGate::new(runtime_manager.clone(), policy)),
+            validators: Arc::new(AttestedRootValidators::new(runtime_manager)),
+            evidence: Arc::new(MemoryEvidenceSink::new()),
+            store: Some(Box::new(store)),
+            limits: Limits {
+                ordered_only: true,
+                ..Limits::default()
+            },
+            params: Default::default(),
+        },
+        node.block_store.clone(),
+        node.block_dag_storage.clone(),
+        node.deploy_storage.clone(),
+    );
+    assert!(restarted.canonical_len() >= canonical);
+    for _ in 0..400 {
+        if !restarted.tick().await.unwrap() {
+            break;
+        }
+    }
+    assert!(restarted.canonical_len() >= canonical);
+    if restarted.canonical_len() == canonical {
+        assert_eq!(restarted.attestation(), attestation);
+    }
+    for (hash, root) in &prefix {
+        assert_eq!(restarted.executed(hash).as_ref(), Some(root));
+    }
+    let touched = backend.targets.lock().clone();
+    for (hash, _) in prefix.iter().take(canonical) {
+        assert!(!touched.contains(hash), "a resumed block was run again");
+    }
+    assert!(restarted.evidence().is_empty());
+}
