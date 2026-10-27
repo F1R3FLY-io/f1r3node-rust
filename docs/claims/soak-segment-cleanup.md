@@ -55,7 +55,12 @@ The verification binds the dependency closure of the harness, not the workspace 
 `scripts/ci/soak-cleanup-lock-closure.sh` computes this closure from `Cargo.lock`.
 Its roots are the non-optional dependencies of `scripts/casper-soak/Cargo.toml`.
 A dependency change outside the closure therefore does not stop a soak.
-The workspace `Cargo.toml` profiles are not bound.
+
+The closure digest also binds the workspace `Cargo.toml` parts that reach the harness build.
+These parts are the inherited `[workspace.dependencies]` entries of the harness, and the `[patch.*]` and `[profile.*]` tables.
+Other workspace members and their dependencies stay unbound.
+The walk follows every edge that `Cargo.lock` records, also optional edges that the harness features do not activate.
+A change to such a package therefore stops a soak until a new verification and acceptance exist.
 
 Each segment can end after a deadline, a checkpoint, finalization, or a protection breach.
 The Linux fixture uses pidfds and runs as an unprivileged user in an isolated container.
@@ -81,8 +86,8 @@ The reusable artifacts are the bounded model, two-segment fixture, negative cont
 
 ## Current verification package
 
-The [verification report](../casper/cbc-evidence/runs/soak-cleanup-20261027-01/report.json) records the checked source bytes and outcomes.
-The [status report](../casper/cbc-evidence/runs/soak-cleanup-20261027-01/status.json) records verification-time acceptance and independent claim gaps.
-The earlier packages `soak-cleanup-20261025-01` and `soak-cleanup-20261026-01` stay as history.
-The package `soak-cleanup-20261026-01` bound the workspace `Cargo.lock` and predates the review fixes of 2026-10-27.
+The [verification report](../casper/cbc-evidence/runs/soak-cleanup-20261027-02/report.json) records the checked source bytes and outcomes.
+The [status report](../casper/cbc-evidence/runs/soak-cleanup-20261027-02/status.json) records verification-time acceptance and independent claim gaps.
+The earlier packages `soak-cleanup-20261025-01`, `soak-cleanup-20261026-01`, and `soak-cleanup-20261027-01` stay as history.
+The packages `soak-cleanup-20261026-01` and `soak-cleanup-20261027-01` did not bind the workspace `Cargo.toml` parts of the harness build.
 Unsigned payloads in that package require independent maintainer review and signatures.

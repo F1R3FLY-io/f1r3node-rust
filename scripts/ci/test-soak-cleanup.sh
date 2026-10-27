@@ -15,7 +15,7 @@ while IFS= read -r path; do
     mkdir -p "$base/$(dirname "$path")"
     cp "$ROOT/$path" "$base/$path"
 done < <(jq -r '[.artifacts|keys[]]+[.claims[]]+.build_inputs|unique[]' "$ROOT/$manifest")
-for path in .github/.gitattributes docs/.gitattributes formal/.gitattributes scripts/.gitattributes Cargo.lock; do
+for path in .github/.gitattributes docs/.gitattributes formal/.gitattributes scripts/.gitattributes Cargo.lock Cargo.toml; do
     mkdir -p "$base/$(dirname "$path")"
     cp "$ROOT/$path" "$base/$path"
 done
@@ -55,7 +55,7 @@ bump_lock_version() {
     mv "$1.new" "$1"
 }
 checks=0
-for name in current unrelated-lock changed-closure stale-control changed-claim changed-build changed-report missing-signature invalid-signature missing-policy missing-record wrong-control missing-runtime corrupt-runtime changed-runtime-pin; do
+for name in current unrelated-lock changed-closure unrelated-workspace-dependency changed-workspace-feature changed-profile stale-control changed-claim changed-build changed-report missing-signature invalid-signature missing-policy missing-record wrong-control missing-runtime corrupt-runtime changed-runtime-pin; do
     directory="$TMP/$name"
     cp -R "$base" "$directory"
     expected=4
@@ -72,6 +72,15 @@ for name in current unrelated-lock changed-closure stale-control changed-claim c
             [ -n "$outside" ]
             bump_lock_version "$directory/Cargo.lock" "$outside" ;;
         changed-closure) bump_lock_version "$directory/Cargo.lock" regex ;;
+        unrelated-workspace-dependency)
+            expected=0
+            awk '/^reqwest = /{sub(/"$/, "\" # changed")} {print}' "$directory/Cargo.toml" >"$directory/Cargo.toml.new"
+            mv "$directory/Cargo.toml.new" "$directory/Cargo.toml" ;;
+        changed-workspace-feature)
+            awk '/^serde_json = /{print "serde_json = { version = \"1.0\", features = [\"preserve_order\"] }"; next} {print}' \
+                "$directory/Cargo.toml" >"$directory/Cargo.toml.new"
+            mv "$directory/Cargo.toml.new" "$directory/Cargo.toml" ;;
+        changed-profile) printf '\n[profile.release]\npanic = "abort"\n' >>"$directory/Cargo.toml" ;;
         changed-build) printf '\nchanged toolchain\n' >>"$directory/rust-toolchain.toml" ;;
         changed-report) printf '{}\n' >"$directory/report.json" ;;
         missing-signature)
