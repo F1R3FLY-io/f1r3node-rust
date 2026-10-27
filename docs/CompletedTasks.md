@@ -1,7 +1,7 @@
 ---
 doc_type: completed_tasks
 version: "1.0"
-last_updated: 2026-10-23
+last_updated: 2026-10-27
 ---
 
 # Completed Tasks
@@ -19,6 +19,65 @@ This document archives completed epics and tasks for historical reference and pr
 ## Completed Epics
 
 <!-- Epics are listed in reverse chronological order (newest first) -->
+
+---
+
+### EPIC-030: Integrate Dev Optimizations into Cost Accounting
+
+```yaml
+epic_id: EPIC-030
+title: "Integrate Dev Optimizations into Cost Accounting"
+status: complete
+completed_date: 2026-10-27
+priority: p1
+user_story: null
+branch: feature/cost-accounted-rho
+pgmcp_epic: cost-dev-merge-20261026
+merge_commit: 5e74b75c2f7f19c67beefd89914c4a8a86a46c2e
+merged_dev: 9bdef3226a86d594707f83c8b1ef365108cd8e4c
+evidence_directory: target/scratch/dev-merge-20261026
+tasks:
+  - id: TASK-030-1
+    title: "Merge dev and verify node and ASI:Chain compatibility"
+    status: complete
+    claimed_by: codex-cost-dev-merge-20261026
+    claimed_at: 2026-10-26T18:35:00Z
+    completed_at: 2026-10-27
+    progress: "Final node tests: 2680 passed. Doctests, strict Clippy, formatting, sorter proofs, and the ASI migration matrix passed."
+    acceptance:
+      - "The merge includes dev commit 9bdef3226a86d594707f83c8b1ef365108cd8e4c."
+      - "The semantic review covers all incoming production changes and preserves cost accounting."
+      - "The complete default-feature node workspace tests and doctests pass in their supported environments."
+      - "The ASI:Chain migration test matrix passes against the merged node, with the approved lsASI exception below."
+      - "The sorter proof gate, Clippy, and formatting checks pass."
+      - "Only confirmed merge regressions require compatibility repairs."
+    exceptions:
+      - "On 2026-10-27, the user approved merge completion with lsASI support tracked separately in pgmcp task asi-lsasi-migration (11949)."
+      - "lsASI requires delegation methods from unmerged Rust PR #54. Both merge parents lack these methods."
+    verification:
+      - "The initial complete workspace run executed 9230 tests. Supported-environment follow-ups and compatibility repairs resolved its 20 failures."
+      - "The final Casper/node run passed 2680 tests, with 14 existing skips. The affected-crate run passed 4057 tests."
+      - "Native, wrapped-token, and custom-token bridge checks passed. All six custom-token routes preserved aggregate supply and confirmed relay proofs."
+      - "The local custom-token fixture counts primary workers separately from receipt-recovery workers and requires all worker records to be healthy."
+      - "The existing Cardano ledger integration test remains outside the Rholang migration scope."
+  - id: TASK-030-2
+    title: "Update ASI remotes and merge their main branches"
+    status: complete
+    claimed_by: codex-cost-dev-merge-20261026
+    claimed_at: 2026-10-27T06:32:00Z
+    completed_at: 2026-10-27
+    depends_on: [TASK-030-1]
+    acceptance:
+      - "All ASI repository origin URLs use SSH."
+      - "Each active migration branch includes the latest upstream main branch."
+      - "Each merge preserves cost-accounting compatibility."
+      - "The ASI:Chain migration test matrix passes after the application merges, with the same approved lsASI exception."
+    verification:
+      - "All 12 repository origins and both nested client origins use SSH."
+      - "All default-branch pulls succeeded. All 13 branch pairs already included upstream, including both client branches."
+      - "Every final application revision equals its tested revision. No application source changed, so the completed test results remain applicable."
+      - "All ASI working trees are clean. Original remote URLs, branch tips, and validation records remain in the evidence directory."
+```
 
 ---
 
