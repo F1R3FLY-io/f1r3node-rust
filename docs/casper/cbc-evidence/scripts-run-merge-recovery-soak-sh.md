@@ -5,11 +5,11 @@
   "artifact": {
     "path": "scripts/run-merge-recovery-soak.sh",
     "id": "scripts-run-merge-recovery-soak-sh",
-    "commit": "85b04c07e512a09d5fc87239294ff111f4e88563",
+    "commit": "9cf831185a913d6afc8c3ba82e40be13c8824e27",
     "commit_is_base": false,
-    "sha256": "b0c9cefec97db5889c49bd37281f6952802f054dc4c4f44b4687b99eaa172028",
+    "sha256": "90fe5bc24632ea6abdfa93b1077f7c8df0c8f3076d2555cc52a8002bcf28fd43",
     "working_tree": true,
-    "sha256_before_change": "431094a0d64c5d2923474948e22112ef27292889b4c91d08bb7343d2be9fd12e"
+    "sha256_before_change": "b0c9cefec97db5889c49bd37281f6952802f054dc4c4f44b4687b99eaa172028"
   },
   "claim": "docs/claims/casper-soak-harness.md",
   "claim_ids": [
@@ -23,8 +23,8 @@
   "scope": "bounded-harness-only",
   "evidence": {
     "kind": "accepted-change",
-    "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-race-acceptance-20261026-01/report.json",
-    "sha256": "a0d27b8e73a7e9b798639203ad84e00739daa94d9e6e8b5f1374a2e3e1f82c8f"
+    "ref": "docs/casper/cbc-evidence/runs/casper-soak-residual-record-append-acceptance-20261027-01/report.json",
+    "sha256": "22b78373210e11a7d7fea7527c46ec4522491b9e287e4153a39841f986f6653a"
   },
   "tiers": {
     "refutation": "bounded-safety-pass",
@@ -37,7 +37,7 @@
   },
   "soak": "pending",
   "waiver": null,
-  "verified_at": "2026-10-26T23:32:01Z",
+  "verified_at": "2026-10-27T05:42:39Z",
   "previous_ledger": {
     "path": "docs/casper/cbc-evidence/runs/casper-formal-gate-renewal-20260919-01/previous-metadata.tar.gz",
     "sha256": "855516a6685384190c8a4f427ff547fc2c8a0f2b6d894849d26dea9fde91b6d9",
@@ -47,14 +47,14 @@
   "review_candidate": "docs/casper/cbc-evidence/runs/casper-driver-rebind-20260918-01/candidate-ledgers/scripts-run-merge-recovery-soak-sh.md",
   "evidence_before_change": {
     "kind": "accepted-change",
-    "ref": "docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json",
-    "sha256": "c24f610020098e953c6a6ca9194b062fb87c9ccf97b8eb1604dab9c872cde76a"
+    "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-race-acceptance-20261026-01/report.json",
+    "sha256": "a0d27b8e73a7e9b798639203ad84e00739daa94d9e6e8b5f1374a2e3e1f82c8f"
   },
   "acceptance": {
     "accepted_by": "jltatbeach",
-    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/870#issuecomment-6429833007",
-    "revision": "6dd0290647f420567b958c7eb783ca9806383bb5",
-    "reviewed_at": "2026-10-26T23:32:01Z"
+    "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/859#issuecomment-6434728509",
+    "revision": "9cf831185a913d6afc8c3ba82e40be13c8824e27",
+    "reviewed_at": "2026-10-27T05:42:39Z"
   },
   "schema": "cbc-claim/v1",
   "claim_id": "CLAIM-CASPER-SOAK-001"
