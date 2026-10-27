@@ -141,7 +141,7 @@ mod stream_handler_spec {
                     content: Bytes::from(content.clone()),
                 },
             };
-            let chunks = Chunker::chunk_it(NETWORK_ID, &blob, 4096);
+            let chunks = Chunker::chunk_it(NETWORK_ID, Bytes::new(), &blob, 4096);
             assert!(chunks.len() > 2);
 
             let cache = Arc::new(dashmap::DashMap::new());

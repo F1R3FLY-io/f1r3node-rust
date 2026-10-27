@@ -59,6 +59,10 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
 use crate::rust::validator_identity::ValidatorIdentity;
 
+/// Shared by `Initializing::new` and `reinstall_sync_channels`, so a retry gets
+/// the same channel as the first attempt.
+const FLOOR_CACHE_CHANNEL_CAPACITY: usize = 4;
+
 fn install_slot<V>(slot: &Arc<Mutex<Option<V>>>, value: V, name: &str) -> Result<(), CasperError> {
     let mut guard = slot
         .lock()
@@ -300,7 +304,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
     ) -> Self {
-        let (floor_cache_tx, floor_cache_rx) = mpsc::channel::<FloorCacheResponse>(4);
+        let (floor_cache_tx, floor_cache_rx) =
+            mpsc::channel::<FloorCacheResponse>(FLOOR_CACHE_CHANNEL_CAPACITY);
         let state = Self {
             transport_layer,
             rp_conf_ask,
@@ -744,6 +749,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// to a requester, so a second attempt finds the slots empty and fails
     /// before it starts. The pending counters go with them: they describe queues
     /// that no longer exist.
+    ///
+    /// The floor-cache receiver is taken the same way by `request_floor_cache`
+    /// and dropped when it returns. Its sender is replaced too: the old one
+    /// feeds a dropped receiver, so the response to the retry would be lost.
     fn reinstall_sync_channels(&self) -> Result<(), CasperError> {
         // The sizing the engine is constructed with (see `engine::transition_to_initializing`).
         const SYNC_CHANNEL_CAPACITY: usize = 50;
@@ -752,6 +761,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(SYNC_CHANNEL_CAPACITY);
         let (mergeable_tx, mergeable_rx) =
             mpsc::channel::<MergeableEntryResponse>(SYNC_CHANNEL_CAPACITY);
+        let (floor_cache_tx, floor_cache_rx) =
+            mpsc::channel::<FloorCacheResponse>(FLOOR_CACHE_CHANNEL_CAPACITY);
 
         install_slot(&self.block_message_tx, block_tx, "block_message_tx")?;
         install_slot(&self.block_message_rx, block_rx, "block_message_rx")?;
@@ -767,6 +778,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             mergeable_rx,
             "mergeable_message_rx",
         )?;
+        install_slot(&self.floor_cache_tx, floor_cache_tx, "floor_cache_tx")?;
+        install_slot(&self.floor_cache_rx, floor_cache_rx, "floor_cache_rx")?;
 
         self.block_message_queue_pending.store(0, Ordering::Relaxed);
         self.tuple_space_queue_pending.store(0, Ordering::Relaxed);
@@ -1132,7 +1145,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// it, because it is this node's chain identity. So the request waits for
     /// a slow or briefly unreachable bootstrap for up to five minutes, which is
     /// far cheaper than the full restore that a failure starts again.
-    async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
+    pub async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
         const ATTEMPTS: u32 = 30;
         const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 

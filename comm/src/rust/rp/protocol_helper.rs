@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn protocol_handshake_advertises_current_format_version() {
         let src = peer("id", "host");
-        let proto = protocol_handshake(&src, "net");
+        let proto = protocol_handshake(&src, "net", Bytes::new());
         match proto.message {
             Some(models::routing::protocol::Message::ProtocolHandshake(hs)) => {
                 assert_eq!(hs.format_version, PROTOCOL_FORMAT_VERSION);
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn protocol_handshake_response_advertises_current_format_version() {
         let src = peer("id", "host");
-        let proto = protocol_handshake_response(&src, "net");
+        let proto = protocol_handshake_response(&src, "net", Bytes::new());
         match proto.message {
             Some(models::routing::protocol::Message::ProtocolHandshakeResponse(hs)) => {
                 assert_eq!(hs.format_version, PROTOCOL_FORMAT_VERSION);
