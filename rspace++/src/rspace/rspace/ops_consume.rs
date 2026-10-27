@@ -28,9 +28,9 @@ use crate::rspace::trace::event::{COMM, Consume, Produce};
 impl<C, P, A, K> RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
 {
     pub(super) fn locked_consume(
         &self,
@@ -220,14 +220,11 @@ where
      * Put another way, this allows us to speculatively remove matching data
      * without affecting the actual store contents.
      */
-    pub(super) fn fetch_channel_to_index_data(
-        &self,
-        channels: &[C],
-    ) -> HashMap<C, Vec<(Datum<A>, i32)>> {
+    pub(super) fn fetch_channel_to_index_data(&self, channels: &[C]) -> HashMap<C, IndexedData<A>> {
         let store = self.get_store();
         let mut map = HashMap::with_capacity(channels.len());
         for c in channels {
-            let data = store.get_data(c);
+            let data = store.get_data_arc(c);
             let shuffled_data = self.shuffle_with_index(data);
             map.insert(c.clone(), shuffled_data);
         }

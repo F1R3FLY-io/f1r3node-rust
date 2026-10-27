@@ -33,6 +33,7 @@ pub(crate) enum LineageNext {
 
 pub(crate) struct BlockFacts {
     pub(crate) block_number: i64,
+    pub(crate) timestamp: i64,
     pub(crate) sender: Bytes,
     pub(crate) parents: Vec<BlockHash>,
     pub(crate) lineage_next: LineageNext,
@@ -133,6 +134,7 @@ fn lookup(block_store: &KeyValueBlockStore, block_hash: &BlockHash) -> Result<Lo
     applied_sigs.extend(block.body.applied_from_scope.iter().cloned());
     let facts = Arc::new(BlockFacts {
         block_number: block.body.state.block_number,
+        timestamp: block.header.timestamp,
         sender: block.sender.clone(),
         deploy_sigs: block
             .body

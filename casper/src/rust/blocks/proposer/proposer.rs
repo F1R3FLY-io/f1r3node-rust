@@ -658,7 +658,7 @@ pub fn new_proposer<T: TransportLayer + Send + Sync + 'static>(
     dummy_deploy_opt: Option<(PrivateKey, String)>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     block_retriever: BlockRetriever<T>,
     transport: Arc<T>,
@@ -755,7 +755,7 @@ impl HeightChecker for ProductionHeightChecker {
 }
 
 pub struct ProductionBlockCreator {
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
     runtime_manager: RuntimeManager,
     block_store: KeyValueBlockStore,
@@ -764,7 +764,7 @@ pub struct ProductionBlockCreator {
 
 impl ProductionBlockCreator {
     pub fn new(
-        deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+        deploy_storage: Arc<KeyValueDeployStorage>,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
         runtime_manager: RuntimeManager,
         block_store: KeyValueBlockStore,

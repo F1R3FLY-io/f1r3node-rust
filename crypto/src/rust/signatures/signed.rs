@@ -1,5 +1,5 @@
 use k256::ecdsa::Signature as Secp256k1Signature;
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use k256::elliptic_curve::sec1::ToSec1Point;
 use k256::PublicKey as Secp256k1PublicKey;
 use prost::Message;
 
@@ -97,7 +97,7 @@ fn envelope_scheme_id(algorithm: &str) -> Result<u16, CosignedError> {
 
 fn canonical_envelope_public_key(public_key: &[u8]) -> Option<Vec<u8>> {
     let parsed = Secp256k1PublicKey::from_sec1_bytes(public_key).ok()?;
-    let canonical = parsed.to_encoded_point(false).as_bytes().to_vec();
+    let canonical = parsed.to_sec1_point(false).as_bytes().to_vec();
     (canonical.as_slice() == public_key).then_some(canonical)
 }
 
@@ -106,11 +106,11 @@ fn canonical_envelope_signature(scheme_id: u16, signature: &[u8]) -> bool {
         1 => Secp256k1Signature::from_der(signature)
             .ok()
             .filter(|value| {
-                value.to_der().as_bytes() == signature && value.normalize_s().is_none()
+                value.to_der().as_bytes() == signature && value.normalize_s() == *value
             }),
         2 => Secp256k1Signature::from_slice(signature)
             .ok()
-            .filter(|value| value.normalize_s().is_none()),
+            .filter(|value| value.normalize_s() == *value),
         _ => None,
     };
     parsed.is_some()

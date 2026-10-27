@@ -48,6 +48,23 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
 
+    /// Operator-declared fs cap bundle (projected from the local
+    /// HOCON's `storage.{oracle,consensus}-static-*` entries by
+    /// `node::rust::configuration::provisioning_merge::project_bundle`).
+    /// The validator feeds this to `default_blessed_terms` so its
+    /// locally-reconstructed deploy list matches the ceremony master's.
+    /// Mismatch → `BlockApproverProtocol::validate_candidate` returns
+    /// a deploy-count-or-shape error at the length check in the
+    /// blessed-contracts comparison, which is the correct behavior
+    /// when leader and follower disagree on `fs_bundle`.
+    pub fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
+
+    /// Operator-declared snapshot cadence for consensus-fs state.
+    /// Hardcoded `None` on the ceremony-master side today
+    /// (`approve_block_protocol.rs:206`); threaded here so the two
+    /// sides stay in sync when either lifts cadence from `None`.
+    pub consensus_fs_snapshot_cadence: Option<u64>,
+
     // Infrastructure
     transport: Arc<T>,
     conf: Arc<RPConf>,
@@ -55,6 +72,7 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
     /// Corresponds to Scala `BlockApproverProtocol.of` – constructor with basic validation.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         validator_id: ValidatorIdentity,
         deploy_timestamp: i64,
@@ -75,6 +93,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
+        consensus_fs_snapshot_cadence: Option<u64>,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
@@ -117,6 +137,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            fs_bundle,
+            consensus_fs_snapshot_cadence,
             transport,
             conf,
         })
@@ -153,6 +175,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
     ///
     /// Corresponds to Scala `BlockApproverProtocol.validateCandidate` –
     /// performs full validation of the candidate genesis block.
+    #[allow(clippy::too_many_arguments)]
     pub async fn validate_candidate(
         runtime_manager: &RuntimeManager,
         candidate: &ApprovedBlockCandidate,
@@ -175,6 +198,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
+        consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Result<(), String> {
         Self::validate_candidate_with_policy(
             runtime_manager,
@@ -198,6 +223,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            fs_bundle,
+            consensus_fs_snapshot_cadence,
             None,
         )
         .await
@@ -225,6 +252,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
+        consensus_fs_snapshot_cadence: Option<u64>,
         resource_policy: Option<&models::rust::phlo_schedule::PhloGenesisPolicy>,
     ) -> Result<(), String> {
         if let Some(policy) = resource_policy {
@@ -299,18 +328,25 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             "genesis parameters resolved",
         );
 
-        // Expected blessed contracts
+        // Expected blessed contracts.
         //
-        // TODO(fs-bundle-threading): slice 5.67 threads
-        // `fs_bundle` + `consensus_fs_snapshot_cadence` through
-        // `default_blessed_terms`.  This caller passes empty + None
-        // for both, which matches the MVP posture.  A future slice
-        // should accept these as function args so a validator can
-        // verify a candidate with a non-empty bundle; without that
-        // thread-through, validators cannot approve genesis blocks
-        // whose leader included a non-empty bundle.  Blocking only
-        // when ceremony operators configure non-empty bundles —
-        // the MVP (empty bundle) path is fine today.
+        // `fs_bundle` + `consensus_fs_snapshot_cadence` are threaded
+        // in from the caller's local operator config so the validator's
+        // locally-reconstructed deploy list matches the ceremony
+        // master's byte-for-byte.  A mismatch here (e.g., leader's
+        // bundle has entries the validator's config does not) surfaces
+        // at the length check below as the specific
+        // "Mismatch between number of candidate deploys and expected
+        // number of deploys" error — the correct outcome when
+        // leader and follower disagree on the fs bundle.
+        //
+        // Shape invariant: both sides project their `fs_bundle` from
+        // the SAME HOCON block via
+        // `node::rust::configuration::provisioning_merge::project_bundle`,
+        // which is deterministic over its input.  Operators who want
+        // their validators to approve a non-empty bundle must ship
+        // the same `storage.{oracle,consensus}-static-*` entries to
+        // every participant.
         let genesis_blessed_contracts =
             crate::rust::genesis::genesis::Genesis::default_blessed_terms_with_policy(
                 &pos_params,
@@ -320,8 +356,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
                 native_token_name,
                 native_token_symbol,
                 native_token_decimals,
-                &[],
-                None,
+                fs_bundle,
+                consensus_fs_snapshot_cadence,
                 resource_policy,
             );
 
@@ -428,6 +464,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,
+            &self.fs_bundle,
+            self.consensus_fs_snapshot_cadence,
             self.resource_policy.as_ref(),
         )
         .await

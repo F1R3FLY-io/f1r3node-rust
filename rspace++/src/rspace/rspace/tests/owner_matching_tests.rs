@@ -317,11 +317,11 @@ fn search(
                     .iter()
                     .map(|(value, index)| {
                         (
-                            Datum {
+                            Arc::new(Datum {
                                 a: value.clone(),
                                 persist: false,
                                 source: Produce::create(channel, value, false),
-                            },
+                            }),
                             *index,
                         )
                     })

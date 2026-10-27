@@ -58,8 +58,7 @@ fn ground_int_passes_through() {
 
 #[test]
 fn evar_resolves_from_env() {
-    let mut env = Env::<Par>::new();
-    let env = env.put(gint(7));
+    let env = Env::<Par>::new().put(gint(7));
     let result = eval(&evar(0), &env).unwrap();
     assert_int(&result, 7);
 }
@@ -73,9 +72,37 @@ fn owned_environment_push_matches_put() {
     for value in 0..16 {
         owned.push(gint(value)).expect("a level below i32::MAX");
         copied = copied.put(gint(value));
-        assert_eq!(owned.env_map, copied.env_map);
-        assert_eq!(owned.level, copied.level);
+        assert_eq!(owned.level(), copied.level());
+        for position in 0..owned.level() {
+            assert_eq!(owned.get_at(position), copied.get_at(position));
+        }
     }
+}
+
+#[test]
+fn sparse_environment_preserves_absolute_bindings_across_forks_and_shifts() {
+    let parent = Env::from_sparse(1_000_000, [(0, 7), (999_999, 9)]);
+    let mut child = parent.clone();
+    assert_eq!(child.get(&0), Some(9));
+    assert_eq!(child.get(&1), None);
+    assert_eq!(child.get(&999_999), Some(7));
+    child.push(11).unwrap();
+    assert_eq!(child.get(&0), Some(11));
+    assert_eq!(child.shift(1).get(&1), Some(11));
+    assert_eq!(child.pop(), Some(11));
+    assert_eq!(child.get(&0), Some(9));
+    assert_eq!(parent.level(), 1_000_000);
+    assert_eq!(parent.get_at(1_000_000), None);
+}
+
+#[test]
+fn sparse_environment_refuses_overflow_without_changing_bindings() {
+    let mut env = Env::from_sparse(i32::MAX, [(i32::MAX - 1, 7)]);
+    assert_eq!(env.push(9), None);
+    assert_eq!(env.level(), i32::MAX);
+    assert_eq!(env.get(&0), Some(7));
+    assert_eq!(env.get_at(i32::MAX), None);
+    assert_eq!(env.shift(1).get(&0), None);
 }
 
 /// Changed by DR-131: the metered evaluation went with host work. The test
@@ -313,8 +340,7 @@ fn nested_expressions_resolve() {
 #[test]
 fn evar_in_arithmetic() {
     // x + 1 where x = 41 → 42
-    let mut env = Env::<Par>::new();
-    let env = env.put(gint(41));
+    let env = Env::<Par>::new().put(gint(41));
     let expr = par_of(ExprInstance::EPlusBody(EPlus {
         p1: Some(evar(0)),
         p2: Some(gint(1)),

@@ -690,6 +690,11 @@ impl NativeOfferedAttempt<'_, '_> {
             },
             Err(error) => Err(error),
         };
+        self.runtime.finish_native_fs_scope(
+            result
+                .as_ref()
+                .is_ok_and(|candidate| !candidate.processed.is_failed()),
+        );
         if result.is_err() {
             let baseline = Blake2b256Hash::from_bytes(self.preflight.execution_root.to_vec());
             self.runtime.runtime.reset(&baseline).await?;

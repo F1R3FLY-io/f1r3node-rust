@@ -9,7 +9,8 @@ pub(super) struct PreparedConsumeCandidate<C, A: Clone> {
     pub(super) comm: COMM,
 }
 
-pub(super) struct PreparedProduceCandidate<C, P: Clone, A: Clone, K: Clone> {
+pub(super) struct PreparedProduceCandidate<C, P: Clone + PartialEq, A: Clone, K: Clone + PartialEq>
+{
     pub(super) candidate: ProduceCandidate<C, P, A, K>,
     pub(super) comm: COMM,
 }
@@ -17,9 +18,9 @@ pub(super) struct PreparedProduceCandidate<C, P: Clone, A: Clone, K: Clone> {
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
 {
     fn candidate_matches(
         &self,
@@ -63,7 +64,7 @@ where
         let mut candidates: HashMap<_, _> = channels
             .iter()
             .map(|channel| {
-                (channel.clone(), canonical_candidates(self.get_store().get_data(channel)))
+                (channel.clone(), canonical_candidates(self.get_store().get_data_arc(channel)))
             })
             .collect();
         if let Some(expected) = expected {
@@ -119,7 +120,7 @@ where
             )
         };
         let candidate = self.run_matcher_for_channels(
-            grouped_channels,
+            &grouped_channels,
             |channels| {
                 canonical_candidates(self.get_store().get_continuations_arc(&channels))
                     .into_iter()
@@ -136,16 +137,16 @@ where
                     .collect()
             },
             |c| {
-                let mut entries = canonical_candidates(self.get_store().get_data(&c));
+                let mut entries = canonical_candidates(self.get_store().get_data_arc(&c));
                 if &c == channel {
                     entries.insert(
                         0,
                         (
-                            Datum {
+                            std::sync::Arc::new(Datum {
                                 a: data.clone(),
                                 persist,
                                 source: produce_ref.clone(),
-                            },
+                            }),
                             -1,
                         ),
                     );

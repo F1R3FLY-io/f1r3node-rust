@@ -330,6 +330,17 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     };
     tracing::debug!(target: "f1r3fly.casper", "Validation timing breakdown: {}", timing_breakdown);
 
+    if let (Either::Right(ValidBlock::Valid), Some(ctx)) = (&equivocation_result, &floor_ctx) {
+        if let Err(error) = ctx.cache_for_block(&snapshot.dag, &block.block_hash) {
+            tracing::warn!(
+                target: "f1r3fly.casper",
+                block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                %error,
+                "validated floor not cached; floor_of_block derives it on demand"
+            );
+        }
+    }
+
     Ok(equivocation_result)
 }
 

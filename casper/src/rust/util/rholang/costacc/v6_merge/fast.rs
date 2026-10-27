@@ -79,7 +79,8 @@ impl FastPathOutcome {
 /// Copy of the branch glue of dag_merger.rs:1739-1753: chains that depend on
 /// each other, directly or through other chains, form one branch.
 pub(crate) fn compute_branches(chains: &[DeployChainIndex]) -> Vec<Branch<DeployChainIndex>> {
-    let event_logs: Vec<&EventLogIndex> = chains.iter().map(|c| &c.event_log_index).collect();
+    let event_logs: Vec<&EventLogIndex> =
+        chains.iter().map(|c| c.event_log_index.as_ref()).collect();
     let depends_map = merging_logic::compute_depends_map_event_indexed(chains, &event_logs);
     let mut branches: Vec<Branch<DeployChainIndex>> =
         merging_logic::gather_related_sets(&depends_map)
@@ -122,7 +123,8 @@ pub(crate) fn base_lineage_event_log(
 /// checks repeated deploy ids.
 pub(crate) fn has_chain_level_conflict(chains: &[DeployChainIndex]) -> bool {
     let units: Vec<usize> = (0..chains.len()).collect();
-    let event_logs: Vec<&EventLogIndex> = chains.iter().map(|c| &c.event_log_index).collect();
+    let event_logs: Vec<&EventLogIndex> =
+        chains.iter().map(|c| c.event_log_index.as_ref()).collect();
     merging_logic::compute_conflict_map_event_indexed(&units, &event_logs)
         .values()
         .any(|others| !others.0.is_empty())

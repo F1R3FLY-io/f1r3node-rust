@@ -403,7 +403,7 @@ async fn propose_or_rejection(
     match nodes[0].create_block_unsafe(&[]).await {
         Ok(block) => Ok(block),
         Err(error) => {
-            let storage = nodes[0].deploy_storage.lock();
+            let storage = &nodes[0].deploy_storage;
             Err(format!(
                 "{error:?}; recorded rejection: {:?}",
                 storage

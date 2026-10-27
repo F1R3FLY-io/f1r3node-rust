@@ -122,7 +122,7 @@ pub(crate) fn compose(
     };
     conflict_set_merger::compute_merged_state(
         resolved,
-        &|chain: &DeployChainIndex| Ok(chain.state_changes.clone()),
+        &|chain: &DeployChainIndex| Ok(chain.state_changes.as_ref().clone()),
         &|chain: &DeployChainIndex| chain.event_log_index.number_channels_data.clone(),
         &compute_trie_actions_fn,
         &apply_trie_actions_fn,
@@ -148,7 +148,7 @@ pub(crate) fn first_overfill(
         let mut items: Vec<&DeployChainIndex> = branch.0.iter().collect();
         items.sort();
         for item in items {
-            combined = combined.combine(item.state_changes.clone());
+            combined = combined.combine(item.state_changes.as_ref().clone());
             folded.extend(item.event_log_index.number_channels_data.keys());
         }
     }

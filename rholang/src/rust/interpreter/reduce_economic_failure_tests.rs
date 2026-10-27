@@ -436,7 +436,6 @@ async fn unknown_method_names_are_user_failures_at_both_sites() {
     let (_, reducer) =
         create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
             .await;
-    let table = reducer.method_table();
     let strategy = proptest::string::string_regex("unknown[A-Z][a-zA-Z0-9]{0,8}")
         .expect("the name pattern compiles");
     let mut runner = TestRunner::new_with_rng(
@@ -449,7 +448,7 @@ async fn unknown_method_names_are_user_failures_at_both_sites() {
             .new_tree(&mut runner)
             .expect("the strategy produces a name")
             .current();
-        assert!(!table.contains_key(&name), "the table lacks {name}");
+        assert!(reducer.method(&name).is_none(), "the table lacks {name}");
         names.push(name);
     }
     with_runtime("unknown-method-names-", |mut runtime| async move {

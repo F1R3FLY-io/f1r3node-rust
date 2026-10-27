@@ -62,6 +62,14 @@ impl CheckpointStore {
 }
 
 impl KeyValueStore for CheckpointStore {
+    fn delete_if_value(
+        &self,
+        key: &ByteBuffer,
+        expected: &ByteBuffer,
+    ) -> Result<bool, KvStoreError> {
+        self.inner.delete_if_value(key, expected)
+    }
+
     fn as_any(&self) -> &dyn Any { self }
 
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {

@@ -6,7 +6,6 @@
 //! plan's "Layout C" entry for the wider context.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
@@ -19,14 +18,6 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use models::rust::validator::Validator;
-// Phase 9 (A-3): the deploy-storage handle migrates to
-// `parking_lot::Mutex` (no poison propagation, faster acquire).
-// C16 (this commit) followed through on the same migration for
-// `deploys_in_scope_cache`, which was previously the lone
-// `std::sync::Mutex` holdout. The two `parking_lot::Mutex`s are
-// reachable via the `PlMutex` alias used in the field
-// declarations below.
-//
 // Merge of dev (EPOCH-004) into feature/slashing: the rspace++
 // concurrency rewrite made `RuntimeManager` interior-mutable (every
 // method on `&self`), so the historical justification for wrapping
@@ -58,7 +49,7 @@ use crate::rust::validator_identity::ValidatorIdentity;
 // reads `this.casper_shard_conf.deploy_heartbeat_wake_enabled`.
 
 pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
-    pub observer: std::sync::OnceLock<crate::rust::soak_observer::ObserverBinding>,
+    pub observer: Arc<std::sync::OnceLock<crate::rust::soak_observer::ObserverBinding>>,
     pub block_retriever: BlockRetriever<T>,
     pub event_publisher: F1r3flyEvents,
     /// P4-4 (slashing audit) originally required
@@ -77,16 +68,12 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub estimator: Estimator,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: Arc<PlMutex<KeyValueDeployStorage>>,
+    pub deploy_storage: Arc<KeyValueDeployStorage>,
     /// Persistence buffer for in-scope-but-rejected deploys, surfaced from
     /// dev (EPOCH-004). Held under `std::sync::Mutex` because all accesses
     /// happen synchronously inside the proposer (block_creator) and
     /// validator (validate.rs::repeat_deploy) — never across `.await`.
     pub rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-    /// The deploy-lifecycle register's volatile half (threshold schedule +
-    /// clocks); persisted state lives in the DAG storage's lifecycle
-    /// tables. Driven from block admission.
-    pub deploy_lifecycle: Arc<crate::rust::finality::deploy_lifecycle::DeployLifecycle>,
     pub casper_buffer_storage: CasperBufferKeyValueStorage,
     pub validator_id: Option<ValidatorIdentity>,
     pub finalized_bond_cache: FinalizedBondCache,
@@ -97,31 +84,17 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     /// DR-99: the genesis resource policy adopted at start (`hash_set_casper`).
     pub adopted_resource_policy:
         Option<crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy>,
-    /// Flag to track finalization status - block proposals fail fast if finalization is running.
-    /// This prevents validators from creating blocks with stale snapshots during finalization.
-    pub finalization_in_progress: Arc<AtomicBool>,
     /// Escalates a persistent containment hold (the shard finalizing floors
     /// this node's LFB is not contained in) to a finality-divergence ERROR
     /// and metric. See `finalization_runner::DivergenceMonitor`.
     pub divergence_monitor:
         Arc<crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor>,
-    /// Single-flight guard for background finalizer scheduling from propose path.
-    pub finalizer_task_in_progress: Arc<AtomicBool>,
-    /// Indicates a finalizer run was requested while another run was still in progress.
-    /// The next queued run will execute immediately after the current one finishes.
-    pub finalizer_task_queued: Arc<AtomicBool>,
+    /// The instance's one finalizer task; its cycles are the only LFB writer.
+    pub finalizer: crate::rust::engine::multi_parent_casper::Finalizer,
     /// Shared reference to heartbeat signal for triggering immediate wake on deploy
     pub heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     /// Cache for deploys_in_scope BFS result keyed by DAG generation, snapshot LFB, and selected parents.
     /// Including LFB and parents in the key avoids stale scope reuse across finalization and parent selection changes.
-    /// C16: migrated from `Arc<std::sync::Mutex<...>>` to
-    /// `Arc<parking_lot::Mutex<...>>` so all three non-async mutex
-    /// types on this struct are uniform (`deploy_storage` already
-    /// uses parking_lot). Eliminates the poison-handling
-    /// `.map_err(|_| CasperError::RuntimeError(...))` boilerplate
-    /// at the call sites in `snapshot.rs`. The lock is held purely
-    /// synchronously across read-modify-write of the cache cell.
-    ///
     /// Merge of dev: tuple carries both scope sets — the trailing
     /// `Arc<DashSet<Bytes>>` is the `rejected_in_scope` companion set
     /// to `deploys_in_scope`, used by `validate.rs::repeat_deploy` and

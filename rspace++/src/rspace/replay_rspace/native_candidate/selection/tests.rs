@@ -107,7 +107,7 @@ fn state(space: &Space) -> (Vec<u8>, String, String, String, i64) {
 
 /// D-D5 (DR-107) fixtures: the matched candidate of a produce selection and
 /// its join group, or `None` when the selection gave the datum back.
-fn matched<C, P: Clone, A: Clone, K: Clone>(
+fn matched<C, P: Clone + PartialEq, A: Clone, K: Clone + PartialEq>(
     selection: ProduceSelection<C, P, A, K>,
 ) -> Option<(PreparedProduceCandidate<C, P, A, K>, usize)> {
     match selection {
@@ -802,9 +802,9 @@ fn legacy_channel_data<'v, C, P, A, K>(
 ) -> (Vec<ChannelData<'v, C, A>>, Vec<usize>)
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
 {
     let mut result = Vec::with_capacity(channels.len());
     let mut positions = Vec::with_capacity(channels.len());
@@ -943,9 +943,9 @@ fn legacy_prepare_produce<C, P, A, K>(
 ) -> Result<Option<(PreparedProduceCandidate<C, P, A, K>, usize)>>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
 {
     if keys.groups.len() != grouped_channels.len() {
         return Err(RSpaceError::BugFoundError(

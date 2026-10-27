@@ -21,9 +21,9 @@ type EpochCheckpoint<E> = <<E as NativeReplayEpoch>::Boundary as NativeReplayBou
 pub struct NativeSessionCheckpoint<C, P, A, K, E>
 where
     C: Eq + Hash,
-    P: Clone,
+    P: Clone + PartialEq,
     A: Clone,
-    K: Clone,
+    K: Clone + PartialEq,
     E: NativeReplayEpoch,
 {
     identity: Arc<()>,
@@ -37,7 +37,7 @@ where
     waiting: i64,
 }
 
-pub struct NativeReplaySession<C, P: Clone, A: Clone, K: Clone, E> {
+pub struct NativeReplaySession<C, P: Clone + PartialEq, A: Clone, K: Clone + PartialEq, E> {
     space: ReplayRSpace<C, P, A, K>,
     /// D-C2c (D-S1, DR-96): the session's digest-keyed store.
     store: Arc<NativeHotStore<C, P, A, K>>,
@@ -90,6 +90,7 @@ where
         + Sync
         + Send,
     P: Clone
+        + PartialEq
         + Debug
         + Default
         + Serialize
@@ -108,6 +109,7 @@ where
         + Sync
         + Send,
     K: Clone
+        + PartialEq
         + Debug
         + Default
         + Serialize

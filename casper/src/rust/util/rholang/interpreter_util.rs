@@ -2334,7 +2334,7 @@ pub async fn compute_parents_post_state(
                             );
                         }
                         match buffer.lock() {
-                            Ok(mut guard) => {
+                            Ok(guard) => {
                                 if let Err(err) = guard.add(deploys_to_buffer) {
                                     tracing::warn!("RejectedDeployBuffer add failed: {}", err);
                                 }
@@ -2379,7 +2379,7 @@ pub async fn compute_parents_post_state(
                         // One lock section: a proposer never reads an entry whose
                         // custody this merge ends.
                         match buffer.lock() {
-                            Ok(mut guard) => {
+                            Ok(guard) => {
                                 if !envelopes_to_buffer.is_empty() {
                                     if let Err(err) = guard.add_envelopes(&envelopes_to_buffer) {
                                         tracing::warn!(

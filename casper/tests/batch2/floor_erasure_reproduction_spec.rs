@@ -233,7 +233,6 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
     let c_b = {
         nodes[2]
             .deploy_storage
-            .lock()
             .remove_by_sig(&contender_a.sig)
             .expect("purge contender a from the pool");
         let mut snapshot = nodes[2].casper.get_snapshot().await.expect("snapshot");
@@ -241,7 +240,6 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         snapshot.parents = vec![s_block.clone()];
         nodes[2]
             .deploy_storage
-            .lock()
             // Changed by DR-116 (gap G6): the pending store holds offered envelopes.
             // .add(vec![contender_b.clone()])
             .add_envelope_if_absent(&contender_b.envelope)

@@ -128,7 +128,7 @@ impl EvaluationProgress for NativeOperationReplay {
 // Changed by D-C2c (D-S1, DR-96): the native session's digest-keyed store
 // holds data, continuations and patterns, which need Clone.
 // pub struct NativeRuntimeReplaySession<C, P, A, K> {
-pub struct NativeRuntimeReplaySession<C, P: Clone, A: Clone, K: Clone> {
+pub struct NativeRuntimeReplaySession<C, P: Clone + PartialEq, A: Clone, K: Clone + PartialEq> {
     inner: NativeReplaySession<C, P, A, K, SessionEpoch>,
     /// Added by DR-132 (D2-B): the progress of each evaluation on this
     /// session.
@@ -138,7 +138,12 @@ pub struct NativeRuntimeReplaySession<C, P: Clone, A: Clone, K: Clone> {
     replay: NativeOperationReplay,
 }
 
-pub struct NativeRuntimeReplayCheckpoint<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
+pub struct NativeRuntimeReplayCheckpoint<
+    C: Eq + Hash,
+    P: Clone + PartialEq,
+    A: Clone,
+    K: Clone + PartialEq,
+> {
     inner: NativeSessionCheckpoint<C, P, A, K, SessionEpoch>,
 }
 
@@ -162,6 +167,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
         P: Clone
+            + PartialEq
             + Debug
             + Default
             + Serialize
@@ -180,6 +186,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
         K: Clone
+            + PartialEq
             + Debug
             + Default
             + Serialize
@@ -212,6 +219,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
         P: Clone
+            + PartialEq
             + Debug
             + Default
             + Serialize
@@ -230,6 +238,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
         K: Clone
+            + PartialEq
             + Debug
             + Default
             + Serialize
@@ -267,7 +276,7 @@ impl CheckedNativeOperationTrace {
     //             + 'static
     //             + Sync
     //             + Send,
-    //         P: Clone
+    //         P: Clone + PartialEq
     //             + Debug
     //             + Default
     //             + Serialize
@@ -285,7 +294,7 @@ impl CheckedNativeOperationTrace {
     //             + 'static
     //             + Sync
     //             + Send,
-    //         K: Clone
+    //         K: Clone + PartialEq
     //             + Debug
     //             + Default
     //             + Serialize
@@ -325,6 +334,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
         P: Clone
+            + PartialEq
             + Debug
             + Default
             + Serialize
@@ -343,6 +353,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
         K: Clone
+            + PartialEq
             + Debug
             + Default
             + Serialize
@@ -378,6 +389,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
         P: Clone
+            + PartialEq
             + Debug
             + Default
             + Serialize
@@ -396,6 +408,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
         K: Clone
+            + PartialEq
             + Debug
             + Default
             + Serialize
@@ -454,6 +467,7 @@ where
         + Sync
         + Send,
     P: Clone
+        + PartialEq
         + Debug
         + Default
         + Serialize
@@ -472,6 +486,7 @@ where
         + Sync
         + Send,
     K: Clone
+        + PartialEq
         + Debug
         + Default
         + Serialize

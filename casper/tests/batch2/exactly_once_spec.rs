@@ -497,15 +497,13 @@ async fn reinstated_effect_must_not_be_executed_again() {
     // retry, client resubmission; the seam models their common endpoint).
     nodes[2]
         .deploy_storage
-        .lock()
         // Changed by DR-116 (gap G6): the pending store holds offered envelopes.
         // .add(vec![loser_deploy.clone()])
         .add_envelope_if_absent(&loser_deploy.envelope)
         .expect("inject loser into deploy storage");
     nodes[2]
         .rejected_deploy_buffer
-        .lock()
-        .expect("buffer lock")
+        .lock().expect("buffer lock")
         // Changed by DR-116 (gap G6): the buffer holds offered envelopes.
         // .add(vec![loser_deploy])
         .add_envelopes(std::slice::from_ref(&loser_deploy.envelope))

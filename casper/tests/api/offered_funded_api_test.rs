@@ -291,7 +291,7 @@ async fn unfundable_offer_at_queue_head_is_quarantined_and_next_offer_is_include
         block.body.deploys[0].identity_bytes(),
         fundable.deploy_id.as_ref()
     );
-    let storage = nodes[0].deploy_storage.lock();
+    let storage = &nodes[0].deploy_storage;
     assert!(!storage
         .contains_envelope_id(&unfundable_id)
         .expect("pending envelope lookup succeeds"));
@@ -720,7 +720,7 @@ async fn a_node_restored_from_a_post_genesis_anchor_adopts_the_genesis_resource_
     .await
     .is_err());
 
-    let deploy_storage = nodes[0].deploy_storage.lock().clone();
+    let deploy_storage = nodes[0].deploy_storage.as_ref().clone();
     let joined = hash_set_casper(
         nodes[0].casper.block_retriever.clone(),
         nodes[0].casper.event_publisher.clone(),
@@ -981,7 +981,7 @@ async fn propose_offer_rows(
     let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
         .expect("an offered deploy id has 32 bytes");
     let Ok(block) = nodes[0].create_block_unsafe(&[]).await else {
-        let storage = nodes[0].deploy_storage.lock();
+        let storage = &nodes[0].deploy_storage;
         return Err(storage
             .envelope_rejection(&id)
             .map(|rejection| rejection.reason)
@@ -1586,7 +1586,7 @@ async fn offered_block(
     let block = match nodes[creator].create_block_unsafe(&[]).await {
         Ok(block) => block,
         Err(error) => {
-            let storage = nodes[creator].deploy_storage.lock();
+            let storage = &nodes[creator].deploy_storage;
             panic!(
                 "the offer's block is not created ({error:?}); recorded rejection: {:?}",
                 storage
@@ -1652,7 +1652,7 @@ fn merge_chain_index(
         mergeable[0].clone(),
     );
     (
-        chain.user_event_log_index.clone(),
+        chain.user_event_log_index.as_ref().clone(),
         EventLogIndex::combine(&EventLogIndex::empty(), &expected)
             .expect("an index combines with the empty index"),
     )
@@ -2450,7 +2450,7 @@ async fn offered_block_or_rejection(
     match nodes[0].create_block_unsafe(&[]).await {
         Ok(block) => Ok((block, offer.deploy_id.to_vec())),
         Err(error) => {
-            let storage = nodes[0].deploy_storage.lock();
+            let storage = &nodes[0].deploy_storage;
             Err(format!(
                 "{error:?}; recorded rejection: {:?}",
                 storage
@@ -2745,7 +2745,6 @@ async fn a_term_that_does_not_parse_is_rejected_at_submission_without_charge() {
     assert!(
         !nodes[0]
             .deploy_storage
-            .lock()
             .contains_envelope_id(&id)
             .expect("the deploy storage answers"),
         "the node does not store the refused offer"

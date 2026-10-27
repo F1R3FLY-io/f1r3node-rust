@@ -1761,7 +1761,7 @@ impl HeldMap {
 /// A failed or negative result is no position (review item 2).
 pub(crate) fn env_position(k: i32, env: &Env<Par>) -> Option<u32> {
     let position = env
-        .level
+        .level()
         .checked_add(env.shift)?
         .checked_sub(k)?
         .checked_sub(1)?;
@@ -1771,7 +1771,7 @@ pub(crate) fn env_position(k: i32, env: &Env<Par>) -> Option<u32> {
 /// Added by G3 (DR-135, S3b): the env value of `BoundVar(k)`, without a copy.
 fn env_value(k: i32, env: &Env<Par>) -> Option<&Par> {
     let position = i32::try_from(env_position(k, env)?).ok()?;
-    env.env_map.get(&position)
+    env.get_at(position)
 }
 
 /// Added by G3 (DR-135, S3b): the one expr of `par` when `par` holds exactly
@@ -2219,7 +2219,7 @@ impl ReducerCore {
                 continue;
             }
             let evaluated = self.eval_expr(argument, env)?;
-            let value = self.substitute.substitute_and_charge(&evaluated, 0, env)?;
+            let value = self.substitute.substitute_and_charge(evaluated, 0, env)?;
             if !code_free(&value) {
                 return Ok(None);
             }
@@ -2240,7 +2240,7 @@ impl ReducerCore {
             return None;
         }
         let holder = self.held.var_holder(single_bound_var(target?)?, env)?;
-        let start = u32::try_from(env.level).ok()?;
+        let start = u32::try_from(env.level()).ok()?;
         let count = u32::try_from(free_count).ok().filter(|count| *count > 0)?;
         Some(ReducerCore {
             held: self.held.with_span(start, count, holder.clone()),
@@ -2302,7 +2302,7 @@ impl ReducerCore {
         let context = self.context_signature()?;
         let mut evaluate = |par: &Par| -> Result<Par, InterpreterError> {
             let evaluated = self.eval_expr(par, env)?;
-            self.substitute.substitute_and_charge(&evaluated, 0, env)
+            self.substitute.substitute_and_charge(evaluated, 0, env)
         };
         let class = classify_data(&self.held, data, markers, env, &context, &mut evaluate)?;
         Ok(send_record(

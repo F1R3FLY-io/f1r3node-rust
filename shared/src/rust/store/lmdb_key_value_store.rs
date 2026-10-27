@@ -127,6 +127,22 @@ impl KeyValueStore for LmdbKeyValueStore {
         })
     }
 
+    fn delete_if_value(
+        &self,
+        key: &ByteBuffer,
+        expected: &ByteBuffer,
+    ) -> Result<bool, KvStoreError> {
+        in_blocking(|| {
+            let mut writer = self.env.write_txn()?;
+            if self.db.get(&writer, key)?.as_ref() != Some(expected) {
+                return Ok(false);
+            }
+            let removed = self.db.delete(&mut writer, key)?;
+            writer.commit()?;
+            Ok(removed)
+        })
+    }
+
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
         in_blocking(|| {
             let mut writer = self.env.write_txn()?;
@@ -499,6 +515,18 @@ mod batched_put_tests {
                     Ok(true)
                 }
             }
+        }
+
+        fn delete_if_value(
+            &self,
+            key: &ByteBuffer,
+            expected: &ByteBuffer,
+        ) -> Result<bool, KvStoreError> {
+            let mut map = self.map.lock().unwrap();
+            if map.get(key) != Some(expected) {
+                return Ok(false);
+            }
+            Ok(map.remove(key).is_some())
         }
 
         fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
@@ -1050,6 +1078,53 @@ mod store_tests {
         assert_eq!(
             store.get_one(&b"k2".to_vec()).unwrap(),
             Some(b"v2".to_vec())
+        );
+    }
+
+    #[test]
+    fn conditional_delete_preserves_different_and_absent_values() {
+        let (_env, store) = seeded_store();
+        let key = b"k1".to_vec();
+        assert!(!store.delete_if_value(&key, &b"other".to_vec()).unwrap());
+        assert_eq!(store.get_one(&key).unwrap(), Some(b"v1".to_vec()));
+        assert!(store.delete_if_value(&key, &b"v1".to_vec()).unwrap());
+        assert!(!store.delete_if_value(&key, &b"v1".to_vec()).unwrap());
+        assert_eq!(
+            store.get_one(&b"k2".to_vec()).unwrap(),
+            Some(b"v2".to_vec())
+        );
+    }
+
+    #[test]
+    fn concurrent_conditional_deletes_remove_one_lmdb_record() {
+        let env = open_env();
+        let stores = [open_store(&env, "shared"), open_store(&env, "shared")];
+        stores[0]
+            .put_one(b"key".to_vec(), b"value".to_vec())
+            .unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = stores
+            .into_iter()
+            .map(|store| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .delete_if_value(&b"key".to_vec(), &b"value".to_vec())
+                        .unwrap()
+                })
+            })
+            .collect();
+        let removed = handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(removed, 1);
+        assert_eq!(
+            open_store(&env, "shared")
+                .get_one(&b"key".to_vec())
+                .unwrap(),
+            None
         );
     }
 

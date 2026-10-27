@@ -1,22 +1,20 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
+use super::ordering::Ordering;
 use super::score_tree::{Score, ScoreAtom, ScoredTerm, Tree};
 use crate::rhoapi::connective::ConnectiveInstance;
 use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::var::VarInstance;
 use crate::rhoapi::{
     Bundle, Connective, CostSignature, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
-    EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
-    EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GBigRational,
-    GFixedPoint, GUnforgeable, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
+    EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot,
+    EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr,
+    GBigRational, GFixedPoint, GUnforgeable, If, KeyValuePair, Match, MatchCase, New, Par, Receive,
+    ReceiveBind, Send, Var,
 };
-use crate::rust::par_map::ParMap;
-use crate::rust::par_map_type_mapper::ParMapTypeMapper;
-use crate::rust::par_set::ParSet;
-use crate::rust::par_set_type_mapper::ParSetTypeMapper;
 use crate::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use crate::rust::rholang::sorter::sortable::Sortable;
-use crate::rust::sorted_par_hash_set::SortedParHashSet;
 
 pub fn split_scored_terms<T>(scored_terms: Vec<ScoredTerm<T>>) -> (Vec<T>, Vec<Tree<ScoreAtom>>) {
     let mut terms = Vec::with_capacity(scored_terms.len());
@@ -1158,36 +1156,48 @@ pub fn combine_expr(e: &Expr, kids: Vec<ScoredTerm<Par>>) -> ScoredTerm<Expr> {
 
 #[inline(never)]
 fn combine_emap(emap: &crate::rhoapi::EMap) -> ScoredTerm<Expr> {
-    let par_map = ParMapTypeMapper::emap_to_par_map(emap.clone());
-
-    fn sort_key_value_pair(key: &Par, value: &Par) -> ScoredTerm<(Par, Par)> {
-        let sorted_key = ParSortMatcher::sort_match(key);
-        let sorted_value = ParSortMatcher::sort_match(value);
-
-        ScoredTerm {
-            term: (sorted_key.term, sorted_value.term),
-            score: sorted_key.score,
+    let mut position: HashMap<Par, usize> = HashMap::with_capacity(emap.kvs.len());
+    let mut sorted_pars: Vec<ScoredTerm<(Par, Par)>> = Vec::with_capacity(emap.kvs.len());
+    for kv in &emap.kvs {
+        let scored = Ordering::sort_key_value_pair(
+            kv.key.as_ref().expect("key field on KeyValuePair was None"),
+            kv.value
+                .as_ref()
+                .expect("value field on KeyValuePair was None"),
+        );
+        match position.get(&scored.term.0) {
+            Some(&at) => sorted_pars[at] = scored,
+            None => {
+                position.insert(scored.term.0.clone(), sorted_pars.len());
+                sorted_pars.push(scored);
+            }
         }
     }
+    ScoredTerm::sort_vec(&mut sorted_pars);
 
-    let sorted_pars: Vec<ScoredTerm<(Par, Par)>> = par_map
-        .ps
-        .sorted_list
-        .iter()
-        .map(|kv| sort_key_value_pair(&kv.0, &kv.1))
-        .collect();
-
-    let remainder_score = remainder_score(&par_map.remainder);
-    let connective_used_score: i64 = flag_score(par_map.connective_used);
-    let (pair_terms, pair_scores) = split_scored_terms(sorted_pars);
+    let remainder_score = remainder_score(&emap.remainder);
+    let connective_used_score: i64 = if emap.connective_used { 1 } else { 0 };
+    let (kvs, pair_scores): (Vec<KeyValuePair>, Vec<Tree<ScoreAtom>>) = sorted_pars
+        .into_iter()
+        .map(|p| {
+            let (key, value) = p.term;
+            (
+                KeyValuePair {
+                    key: Some(key),
+                    value: Some(value),
+                },
+                p.score,
+            )
+        })
+        .unzip();
 
     construct_expr(
-        ExprInstance::EMapBody(ParMapTypeMapper::par_map_to_emap(ParMap::new(
-            pair_terms,
-            par_map.connective_used,
-            par_map.locally_free,
-            par_map.remainder,
-        ))),
+        ExprInstance::EMapBody(EMap {
+            kvs,
+            locally_free: emap.locally_free.clone(),
+            connective_used: emap.connective_used,
+            remainder: emap.remainder.clone(),
+        }),
         Tree::Node(
             vec![
                 Tree::<ScoreAtom>::create_leaf_from_i64(Score::EMAP as i64),
@@ -1195,9 +1205,9 @@ fn combine_emap(emap: &crate::rhoapi::EMap) -> ScoredTerm<Expr> {
             ]
             .into_iter()
             .chain(pair_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
+            .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
                 connective_used_score,
-            )))
+            )])
             .collect(),
         ),
     )
@@ -1205,25 +1215,28 @@ fn combine_emap(emap: &crate::rhoapi::EMap) -> ScoredTerm<Expr> {
 
 #[inline(never)]
 fn combine_eset(eset: &crate::rhoapi::ESet) -> ScoredTerm<Expr> {
-    let par_set = ParSetTypeMapper::eset_to_par_set(eset.clone());
-    let sorted_pars: Vec<ScoredTerm<Par>> = par_set
-        .ps
-        .sorted_pars
-        .iter()
-        .map(ParSortMatcher::sort_match)
-        .collect();
+    let mut seen: HashSet<Par> = HashSet::with_capacity(eset.ps.len());
+    let mut sorted_pars: Vec<ScoredTerm<Par>> = Vec::with_capacity(eset.ps.len());
+    for p in &eset.ps {
+        let scored = ParSortMatcher::sort_match(p);
+        if seen.insert(scored.term.clone()) {
+            sorted_pars.push(scored);
+        }
+    }
+    ScoredTerm::sort_vec(&mut sorted_pars);
 
-    let remainder_score = remainder_score(&par_set.remainder);
-    let connective_used_score: i64 = flag_score(par_set.connective_used);
-    let (element_terms, element_scores) = split_scored_terms(sorted_pars);
+    let remainder_score = remainder_score(&eset.remainder);
+    let connective_used_score: i64 = if eset.connective_used { 1 } else { 0 };
+    let (ps, element_scores): (Vec<Par>, Vec<Tree<ScoreAtom>>) =
+        sorted_pars.into_iter().map(|p| (p.term, p.score)).unzip();
 
     construct_expr(
-        ExprInstance::ESetBody(ParSetTypeMapper::par_set_to_eset(ParSet {
-            ps: SortedParHashSet::create_from_vec(element_terms),
-            connective_used: par_set.connective_used,
-            locally_free: par_set.locally_free,
-            remainder: par_set.remainder,
-        })),
+        ExprInstance::ESetBody(ESet {
+            ps,
+            locally_free: eset.locally_free.clone(),
+            connective_used: eset.connective_used,
+            remainder: eset.remainder.clone(),
+        }),
         Tree::Node(
             vec![
                 Tree::<ScoreAtom>::create_leaf_from_i64(Score::ESET as i64),
@@ -1231,9 +1244,9 @@ fn combine_eset(eset: &crate::rhoapi::ESet) -> ScoredTerm<Expr> {
             ]
             .into_iter()
             .chain(element_scores)
-            .chain(std::iter::once(Tree::<ScoreAtom>::create_leaf_from_i64(
+            .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
                 connective_used_score,
-            )))
+            )])
             .collect(),
         ),
     )

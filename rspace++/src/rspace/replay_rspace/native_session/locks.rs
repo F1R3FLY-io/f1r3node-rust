@@ -16,6 +16,7 @@ where
         + Sync
         + Send,
     P: Clone
+        + PartialEq
         + Debug
         + Default
         + Serialize
@@ -34,6 +35,7 @@ where
         + Sync
         + Send,
     K: Clone
+        + PartialEq
         + Debug
         + Default
         + Serialize

@@ -1,7 +1,7 @@
 ---
 doc_type: todos
 version: "1.1"
-last_updated: 2026-10-13
+last_updated: 2026-10-19
 mr_status:
   ready: false
   target_branch: master
@@ -70,6 +70,47 @@ mr_status:
 ## Active Epics
 
 <!-- Epics are ordered by priority. Work on the highest priority epic first. -->
+
+---
+
+### EPIC-030: Integrate Dev Optimizations into Cost Accounting
+
+```yaml
+epic_id: EPIC-030
+title: "Integrate Dev Optimizations into Cost Accounting"
+status: in_progress
+priority: p1
+user_story: null
+branch: feature/cost-accounted-rho
+pgmcp_epic: cost-dev-merge-20261026
+tasks:
+  - id: TASK-030-1
+    title: "Merge dev and verify node and ASI:Chain compatibility"
+    status: complete
+    claimed_by: codex-cost-dev-merge-20261026
+    claimed_at: 2026-10-26T18:35:00Z
+    completed_at: 2026-10-27
+    progress: "Final node tests: 2680 passed. Doctests, strict Clippy, formatting, sorter proofs, and the ASI migration matrix passed."
+    acceptance:
+      - "The merge includes dev commit 9bdef3226a86d594707f83c8b1ef365108cd8e4c."
+      - "The semantic review covers all incoming production changes and preserves cost accounting."
+      - "The complete default-feature node workspace tests and doctests pass in their supported environments."
+      - "The ASI:Chain migration test matrix passes against the merged node, with the approved lsASI exception below."
+      - "The sorter proof gate, Clippy, and formatting checks pass."
+      - "Only confirmed merge regressions require compatibility repairs."
+    exceptions:
+      - "On 2026-10-27, the user approved merge completion with lsASI support tracked separately in pgmcp task asi-lsasi-migration (11949)."
+      - "lsASI requires delegation methods from unmerged Rust PR #54. Both merge parents lack these methods."
+  - id: TASK-030-2
+    title: "Update ASI remotes and merge their main branches"
+    status: pending
+    depends_on: [TASK-030-1]
+    acceptance:
+      - "All ASI repository origin URLs use SSH."
+      - "Each active migration branch includes the latest upstream main branch."
+      - "Each merge preserves cost-accounting compatibility."
+      - "The ASI:Chain migration test matrix passes after the application merges, with the same approved lsASI exception."
+```
 
 ---
 
@@ -3772,6 +3813,46 @@ tasks:
       - "Each ephemeral runner registers with a label that names the run that launched it, and every ephemeral job in _integration-pipeline.yml requires that label"
       - "Two Heavy Pipelines started within one minute of each other both complete without a job waiting on a runner that another run consumed"
       - "An idle ephemeral VM that its run no longer needs still self-terminates on the idle timeout"
+
+  - id: TASK-012-31
+    title: "Plan deploy pool read reuse for issue #711"
+    status: complete
+    issues: [711]
+    pr_base_branch: dev
+    branch: perf/711-deploy-pool-snapshot
+    claimed_by: null
+    claimed_at: null
+    completed_at: 2026-10-19
+    blocked_by: []
+    notes:
+      - "The user requested investigation and a plan before implementation."
+      - "The plan belongs in docs/plans/issue-711-deploy-pool-snapshot.md."
+      - "The plan records snapshot behavior, S1 through S8, stage metrics, regression tests, and the independent PR #730."
+    acceptance:
+      - "The plan identifies the four reads, the shared snapshot boundary, and the relevant claim requirements."
+      - "The plan defines regression tests, measurement criteria, and the pull request target dev."
+      - "The investigation changes no Rust code and creates no commit or pull request."
+
+  - id: TASK-012-32
+    title: "Reuse the deploy pool snapshot during block creation"
+    status: review
+    issues: [711]
+    pr: "https://github.com/F1R3FLY-io/f1r3node-rust/pull/771"
+    pr_base_branch: dev
+    branch: perf/711-deploy-pool-snapshot
+    claimed_by: null
+    claimed_at: null
+    blocked_by: []
+    notes:
+      - "Implement docs/plans/issue-711-deploy-pool-snapshot.md."
+      - "Preserve admission statements S1 through S8 and the existing stage metric definitions."
+    progress: "All 72 focused unit tests and 15 focused integration tests pass. Formatting and workspace clippy pass. The full release suite remains in progress."
+    acceptance:
+      - "Normal proposal preparation performs one full deploy pool read, and RecoveryEmpty performs none."
+      - "Both statistics functions and selection use the same captured deploy set."
+      - "Scope checks stop at the first matching deploy through any."
+      - "Snapshot, admission, quarantine, retry, and metric regression tests pass."
+      - "The pull request targets dev and records the test results and claim evidence."
 ---
 ```
 

@@ -378,9 +378,6 @@ fn is_closed(locally_free: &[u8]) -> bool { locally_free.iter().all(|free| *free
 /// The metrics of one subterm: its message height, an upper bound of its
 /// prost length, the number of variables that a substitution can replace, and
 /// the number of environment copies that the reducer's substitution makes.
-/// `Env::shift` copies the whole environment for each receive body and
-/// condition, each `new` body, and each match case source and guard
-/// (`substitute.rs:686`, `:690`, `:728`, `:769`, `:782`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Metrics {
     pub(crate) height: u32,
@@ -1248,26 +1245,17 @@ impl<'e> Estimator<'e> {
     /// from the peak binder count.
     pub(crate) fn measure(&mut self, root: &Par) -> Result<WorkCounts, InterpreterError> {
         measure_subterm(Subterm::Par(root), &mut self.measures)?;
-        // Changed by the second G1-4a fix (re-review HIGH-1): the pre-pass also
-        // sizes the environment map from the peak binder count.
         let counts = count_plan_work(root);
         self.size_environment(counts.peak_binders)?;
         Ok(counts)
     }
 
-    /// Added by the second G1-4a fix (re-review HIGH-1): sizes the empty
-    /// environment map once for the whole walk, with room for twice the peak
-    /// binder count. A table that runs out of room then rehashes in place,
-    /// because it holds at most half of its capacity, so its bucket count
-    /// never changes.
     pub(crate) fn size_environment(&mut self, peak: usize) -> Result<(), InterpreterError> {
-        if !self.binders.is_empty() || self.env.level != 0 {
+        if !self.binders.is_empty() || self.env.level() != 0 {
             return Err(InterpreterError::BugFoundError(
                 "the estimate sized an environment that holds binders".to_string(),
             ));
         }
-        let capacity = peak.saturating_mul(2).saturating_add(2);
-        self.env.env_map = HashMap::with_capacity(capacity);
         self.peak_binders = peak;
         Ok(())
     }
@@ -1293,9 +1281,6 @@ impl<'e> Estimator<'e> {
             }
             _ => 0,
         };
-        // Added by the second G1-4a fix (re-review HIGH-1): the walk stays
-        // within the peak that sized the environment map, so the map never
-        // grows.
         if self.binders.len() >= self.peak_binders {
             return Err(InterpreterError::BugFoundError(
                 "the estimate holds more binders than its pre-pass counted".to_string(),
@@ -1382,8 +1367,7 @@ impl<'e> Estimator<'e> {
         self.env_bytes = self.env_bytes.saturating_sub(popped);
         self.binders.truncate(keep);
         for _ in 0..count {
-            self.env.level -= 1;
-            self.env.env_map.remove(&self.env.level);
+            self.env.pop();
         }
         Ok(())
     }
@@ -1700,10 +1684,10 @@ impl<'e> Estimator<'e> {
             if !self.fits(metrics) {
                 return Ok(Err(IncompleteReason::UnsizedValue));
             }
-            let Ok(substituted) = self
-                .core
-                .substitute
-                .substitute_and_charge(pattern, 1, &self.env)
+            let Ok(substituted) =
+                self.core
+                    .substitute
+                    .substitute_and_charge(pattern.clone(), 1, &self.env)
             else {
                 return Ok(Err(IncompleteReason::UnsizedValue));
             };

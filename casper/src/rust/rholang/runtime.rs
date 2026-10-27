@@ -129,11 +129,39 @@ pub(crate) fn offered_candidate_rejection(
 }
 
 pub struct RuntimeOps {
+    native_fs_scope: Option<super::wal_deploy_scope::WalDeployScope>,
     pub runtime: RhoRuntimeImpl,
 }
 
 impl RuntimeOps {
-    pub fn new(runtime: RhoRuntimeImpl) -> Self { Self { runtime } }
+    pub fn new(runtime: RhoRuntimeImpl) -> Self {
+        Self {
+            native_fs_scope: None,
+            runtime,
+        }
+    }
+
+    pub(crate) fn begin_native_fs_scope(&mut self, identity: &[u8; 32]) {
+        self.finish_native_fs_scope(false);
+        let handles = self.runtime.fs_handles.clone();
+        self.native_fs_scope = Some(
+            super::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                handles.wal.clone(),
+                handles.lock_registry.clone(),
+                identity,
+                identity.to_vec(),
+                handles,
+            ),
+        );
+    }
+
+    pub(crate) fn finish_native_fs_scope(&mut self, committed: bool) {
+        if let Some(mut scope) = self.native_fs_scope.take() {
+            if committed {
+                scope.commit();
+            }
+        }
+    }
 
     pub(crate) async fn evaluate_native_envelope(
         &mut self,
@@ -156,6 +184,7 @@ impl RuntimeOps {
             .cost
             .set_deploy_id_funded(identity, accounting::funding_sig(signed))
             .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
+        self.begin_native_fs_scope(&identity);
         self.runtime
             .evaluate_with_native_phlo(
                 &envelope.body().term,
@@ -594,11 +623,15 @@ impl RuntimeOps {
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
-        // Changed by DR-134 (DR-66): only genesis deploys reach this function, and
-        // they run in the trusted install scope. A failed deploy rolls back to the
-        // soft checkpoint.
-        // // Keep a soft checkpoint before user deploy execution so failed deploy rollback
-        // // preserves pre-charge side effects required by refundDeploy.
+        let mut wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                &deploy.sig,
+                deploy.sig.to_vec(),
+                self.runtime.fs_handles.clone(),
+            );
+
         let fallback = self.runtime.create_soft_checkpoint().await;
 
         // Evaluate deploy
@@ -622,9 +655,16 @@ impl RuntimeOps {
             system_deploy_error: None,
         };
 
-        if !eval_succeeded {
+        if eval_succeeded {
+            // Preserve this deploy's WAL contributions for the block
+            // snapshot.  Lock + handle sweeps still fire on Drop.
+            wal_scope.commit();
+        } else {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
             interpreter_util::print_deploy_errors(&deploy_sig, &eval_result.errors);
+            // Guard stays uncommitted — Drop at function return
+            // truncates WAL, cancels + releases locks under this
+            // scope, and spawns the fd/dir-stream sweep.
         }
 
         Ok((deploy_result, eval_result.mergeable))
@@ -922,6 +962,30 @@ impl RuntimeOps {
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
             .await?;
+
+        // Per-system-deploy filesystem RAII guard.  System deploys
+        // (slash, closeBlock) have no primary-signer sig, so the
+        // scope seed combines a system-deploy marker + the input
+        // `state_hash`.  The constructor mixes in a 128-bit nonce so
+        // concurrent executions still derive distinct scopes.
+        // Guard is bound and never committed: system deploys don't
+        // contribute to the block-level WAL (handlers are expected
+        // not to touch fs-native URNs today), so Drop truncates any
+        // leaked entries, cancels + releases any locks taken, and
+        // spawns the fd/dir-stream sweep.
+        let scope_seed = [b"system-deploy:" as &[u8], state_hash].concat();
+        let _wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                &scope_seed,
+                // System deploys have no signer sig; empty vector
+                // signals journal_write to skip its payload-source
+                // record step while still letting payload_hash land
+                // in the WAL.
+                Vec::new(),
+                self.runtime.fs_handles.clone(),
+            );
 
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;
@@ -1789,6 +1853,141 @@ impl RuntimeOps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn native_execution_fixture() -> (RuntimeOps, DeployEnvelope, NativeRuntimeConfig) {
+        use std::sync::Arc;
+
+        use models::rust::cost_protocol_limits::offered_funded_v6_limits;
+        use models::rust::phlo_schedule::PhloGenesisPolicy;
+        use rholang::rust::interpreter::accounting::native_phlo_rules::{
+            NativeBoundSource, NativePhloExecutionContract,
+        };
+        use rholang::rust::interpreter::accounting::phlo_controls::{
+            check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
+        };
+        use rholang::rust::interpreter::external_services::ExternalServices;
+        use rholang::rust::interpreter::matcher::r#match::Matcher;
+        use rholang::rust::interpreter::rho_runtime::create_runtime_from_kv_store;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+        use crate::rust::util::rholang::costacc::owner_offer::{
+            default_resource_schedule, owner_direct_offer,
+        };
+        use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_trace_limits;
+
+        let limit = 100_000;
+        let mut descriptor = default_resource_schedule("root");
+        descriptor.actual_price = 1;
+        let proto = owner_direct_offer(
+            &PrivateKey::from_bytes(&[2; 32]),
+            rejection_envelope().body().clone(),
+            limit,
+            1,
+            &descriptor,
+        )
+        .unwrap();
+        let envelope =
+            DeployEnvelope::from_proto(proto, offered_funded_v6_limits().envelope).unwrap();
+        let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS).unwrap();
+        let selected = binding.schedule();
+        let schedules = [selected];
+        let controls = check_phlo_controls(
+            selected.environment,
+            1,
+            u64::MAX,
+            SignedPhloControls {
+                limit,
+                price_ceiling: 1,
+                required_owner_ceilings: &[1],
+                permitted_schedules: &schedules,
+            },
+            selected,
+            limit,
+        )
+        .unwrap();
+        let contract =
+            NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::SignedLimit)
+                .unwrap();
+        let config = NativeRuntimeConfig::new(contract, offered_funded_v6_trace_limits());
+        let stores = InMemoryStoreManager::new().r_space_stores().await.unwrap();
+        let runtime = RuntimeOps::new(
+            create_runtime_from_kv_store(
+                stores,
+                Arc::new(HashMap::new()),
+                false,
+                &mut Vec::new(),
+                Arc::new(Box::new(Matcher)),
+                ExternalServices::noop(),
+            )
+            .await
+            .unwrap(),
+        );
+        (runtime, envelope, config)
+    }
+
+    #[tokio::test]
+    async fn native_execution_enters_fs_scope_until_settlement() {
+        let (mut runtime, envelope, config) = native_execution_fixture().await;
+        let handles = runtime.runtime.fs_handles.clone();
+        let result = runtime
+            .evaluate_native_envelope(&envelope, config)
+            .await
+            .unwrap();
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_ne!(handles.current_deploy_scope(), [0; 32]);
+        assert_eq!(handles.current_deploy_sig(), envelope.identity().as_bytes(),);
+        drop(runtime);
+        assert_eq!(handles.current_deploy_scope(), [0; 32]);
+        assert!(handles.current_deploy_sig().is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_fs_scope_retains_only_committed_attempt_entries() {
+        use rholang::rust::interpreter::io::wal::{WalEntry, WalOp, WalOutcome};
+
+        let entry = WalEntry {
+            op: WalOp::Exists,
+            path: "/tmp/native-scope".into(),
+            extra_path: None,
+            offset: None,
+            length: None,
+            payload_ref: None,
+            mode_bits: None,
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        };
+        for outcome in 0..4 {
+            let (mut runtime, envelope, config) = native_execution_fixture().await;
+            let handles = runtime.runtime.fs_handles.clone();
+            handles.wal.append(entry.clone()).unwrap();
+            let result = runtime
+                .evaluate_native_envelope(&envelope, config)
+                .await
+                .unwrap();
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+            let scope = handles.current_deploy_scope();
+            handles.wal.append(entry.clone()).unwrap();
+            assert_eq!(handles.wal.len(), 2);
+            match outcome {
+                0 => runtime.finish_native_fs_scope(true),
+                1 => runtime.finish_native_fs_scope(false),
+                2 => {
+                    runtime
+                        .begin_native_fs_scope(&envelope.identity().as_bytes().try_into().unwrap());
+                    assert_ne!(handles.current_deploy_scope(), scope);
+                    assert_eq!(handles.wal.len(), 1);
+                    handles.wal.append(entry.clone()).unwrap();
+                }
+                _ => {}
+            }
+            drop(runtime);
+            assert_eq!(handles.wal.len(), if outcome == 0 { 2 } else { 1 });
+            assert_eq!(handles.current_deploy_scope(), [0; 32]);
+            assert!(handles.current_deploy_sig().is_empty());
+        }
+    }
 
     #[test]
     fn fold_bitmask_or_empty_returns_none() {

@@ -116,6 +116,14 @@ impl KeyValueStore for MemoryStore {
         Ok(true)
     }
 
+    fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+        let mut map = self.map.lock().unwrap();
+        if map.get(key) != Some(expected) {
+            return Ok(false);
+        }
+        Ok(map.remove(key).is_some())
+    }
+
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
         let mut map = self.map.lock().unwrap();
         Ok(keys.iter().filter(|k| map.remove(*k).is_some()).count())

@@ -254,10 +254,11 @@ impl ChainSpec {
             block_hash(self.block),
             self.height,
         );
-        chain.system_event_log_index.number_channels_data = self.system_numbers;
-        chain.event_log_index =
+        Arc::make_mut(&mut chain.system_event_log_index).number_channels_data = self.system_numbers;
+        chain.event_log_index = Arc::new(
             EventLogIndex::combine(&chain.user_event_log_index, &chain.system_event_log_index)
-                .ok()?;
+                .ok()?,
+        );
         chain.deploy_windows = match self.valid_after {
             Some(valid_after) => HashMap::from([(deploy_id(self.deploy), valid_after)]),
             None => HashMap::new(),

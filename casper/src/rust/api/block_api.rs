@@ -764,7 +764,7 @@ impl BlockAPI {
         casper.get_validator().ok_or_else(|| {
             offered_validation_error("Deploy was rejected because node has no validator key.")
         })?;
-        if !casper.is_local_validator_bonded(&dag)? {
+        if !casper.is_local_validator_bonded() {
             return Err(offered_validation_error(
                 "Deploy was rejected because node's validator is not bonded.",
             ));

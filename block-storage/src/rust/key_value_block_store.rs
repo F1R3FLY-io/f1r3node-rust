@@ -684,6 +684,13 @@ mod tests {
             Ok(true)
         }
 
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            let _ = (key, expected);
+            Err(KvStoreError::InvalidArgument(
+                "conditional deletion is not supported by this test store".to_string(),
+            ))
+        }
+
         fn delete(&self, _keys: Vec<shared::rust::ByteBuffer>) -> Result<usize, KvStoreError> {
             todo!()
         }
@@ -757,6 +764,13 @@ mod tests {
             _value: ByteBuffer,
         ) -> Result<bool, KvStoreError> {
             todo!()
+        }
+
+        fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+            let _ = (key, expected);
+            Err(KvStoreError::InvalidArgument(
+                "conditional deletion is not supported by this test store".to_string(),
+            ))
         }
 
         fn delete(&self, _keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> { todo!() }

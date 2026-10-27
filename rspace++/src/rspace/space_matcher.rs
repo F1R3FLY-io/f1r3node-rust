@@ -6,7 +6,9 @@ use super::r#match::Match;
 // Added by G3 (DR-135, S5): the owner checks of a match.
 use super::operation_context::{ItemAdmission, MatchAdmission};
 use super::rspace_interface::ISpace;
-use crate::rspace::internal::{ConsumeCandidate, Datum, ProduceCandidate, WaitingContinuation};
+use crate::rspace::internal::{
+    ConsumeCandidate, Datum, IndexedData, ProduceCandidate, WaitingContinuation,
+};
 use crate::rspace::metrics_constants::{
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC,
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC,
@@ -14,7 +16,7 @@ use crate::rspace::metrics_constants::{
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_SUCCESS_METRIC, RSPACE_METRICS_SOURCE,
 };
 
-type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>);
+type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, IndexedData<A>);
 
 /// Added by DR-129 (E1): a join can name one channel more than once at run
 /// time. The COMM records only the set of produces, not which datum went to
@@ -27,13 +29,14 @@ type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>
 /// restores it.
 fn order_repeated_channels<C, P, A>(
     channel_pattern_pairs: &[(C, P)],
-    channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
-    rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
+    channel_to_indexed_data: &mut HashMap<C, IndexedData<A>>,
+    rollback: &mut Vec<(C, IndexedData<A>)>,
 ) where
     C: Clone + std::hash::Hash + Eq,
     A: Clone,
 {
-    let compare = |(left, left_index): &(Datum<A>, i32), (right, right_index): &(Datum<A>, i32)| {
+    let compare = |(left, left_index): &(std::sync::Arc<Datum<A>>, i32),
+                   (right, right_index): &(std::sync::Arc<Datum<A>>, i32)| {
         (*left_index != -1)
             .cmp(&(*right_index != -1))
             .then_with(|| left.source.hash.cmp(&right.source.hash))
@@ -80,7 +83,7 @@ where
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel: C,
-        data: &[(Datum<A>, i32)],
+        data: &[(std::sync::Arc<Datum<A>>, i32)],
         pattern: &P,
         item: Option<ItemAdmission<'_, C, P, A, K>>,
     ) -> Option<MatchingDataCandidate<C, A>> {
@@ -133,15 +136,15 @@ where
     //     &self,
     //     matcher: &Box<dyn Match<P, A, K>>,
     //     channel_pattern_pairs: &[(C, P)],
-    //     channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
-    //     rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
+    //     channel_to_indexed_data: &mut HashMap<C, IndexedData<A>>,
+    //     rollback: &mut Vec<(C, IndexedData<A>)>,
     // ) -> Vec<Option<ConsumeCandidate<C, A>>> {
     fn extract_data_candidates_rollback(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(C, P)],
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
-        rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
+        channel_to_indexed_data: &mut HashMap<C, IndexedData<A>>,
+        rollback: &mut Vec<(C, IndexedData<A>)>,
         item: Option<ItemAdmission<'_, C, P, A, K>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
         // Added by DR-129 (E1): a stable order for a channel that the join
@@ -175,11 +178,9 @@ where
             match maybe_tuple {
                 Some((cand, rem)) => {
                     acc.push(Some(cand));
-                    // Save the original before mutating
-                    if let Some(original) = channel_to_indexed_data.get(channel) {
-                        rollback.push((channel.clone(), original.clone()));
+                    if let Some(original) = channel_to_indexed_data.insert(channel.clone(), rem) {
+                        rollback.push((channel.clone(), original));
                     }
-                    channel_to_indexed_data.insert(channel.clone(), rem);
                 }
                 None => {
                     acc.push(None);
@@ -195,7 +196,7 @@ where
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(C, P)],
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+        channel_to_indexed_data: &mut HashMap<C, IndexedData<A>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
         let mut rollback = Vec::new();
         // Changed by G3 (DR-135, S5): no item test.
@@ -222,14 +223,14 @@ where
     //     matcher: &Box<dyn Match<P, A, K>>,
     //     channels: Vec<C>,
     //     match_candidates: Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
-    //     mut channel_to_index_data: HashMap<C, Vec<(Datum<A>, i32)>>,
+    //     mut channel_to_index_data: HashMap<C, IndexedData<A>>,
     // ) -> Option<ProduceCandidate<C, P, A, K>> {
     fn extract_first_match(
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channels: Vec<C>,
         match_candidates: Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
-        mut channel_to_index_data: HashMap<C, Vec<(Datum<A>, i32)>>,
+        mut channel_to_index_data: HashMap<C, IndexedData<A>>,
         admission: Option<&dyn MatchAdmission<C, P, A, K>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
         metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)

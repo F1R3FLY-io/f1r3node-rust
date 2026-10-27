@@ -146,6 +146,7 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
     }
 
     pub async fn abort(mut self) -> Result<(), CasperError> {
+        self.runtime.finish_native_fs_scope(false);
         let root = Blake2b256Hash::from_bytes(self.preflight.execution_root.to_vec());
         self.runtime.runtime.reset(&root).await?;
         check_execution_root(
@@ -160,6 +161,7 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
     /// their log and its mergeable map go with it. The settlement then binds
     /// to the execution root and charges the run as a user failure.
     pub(super) async fn roll_back_for_guard(&mut self) -> Result<(), CasperError> {
+        self.runtime.finish_native_fs_scope(false);
         let root = Blake2b256Hash::from_bytes(self.preflight.execution_root.to_vec());
         self.runtime.runtime.reset(&root).await?;
         check_execution_root(
@@ -745,6 +747,7 @@ impl RuntimeManager {
                     return Err(error);
                 }
             };
+            runtime.finish_native_fs_scope(false);
             runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
             runtime.runtime.take_event_log().await;
             table = listed;
@@ -793,6 +796,7 @@ impl RuntimeManager {
         };
         let replay_log = execution_log.into();
         if !evaluation.errors.is_empty() {
+            runtime.finish_native_fs_scope(false);
             runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
         }
         Ok(NativeOfferedAttempt {
@@ -963,6 +967,7 @@ impl RuntimeManager {
         }
         let replay_log = runtime.runtime.take_event_log().await.into();
         if !evaluation.errors.is_empty() {
+            runtime.finish_native_fs_scope(false);
             runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
         }
         Ok(NativeFundedAttempt {

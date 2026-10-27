@@ -228,7 +228,7 @@ async fn an_over_supply_group_is_rejected_entirely_with_no_charge() {
         result.is_err(),
         "the rejected group leaves no deploy to propose"
     );
-    let storage = nodes[0].deploy_storage.lock();
+    let storage = &nodes[0].deploy_storage;
     for offer in [&first, &second] {
         let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
             .expect("an offered deploy id has 32 bytes");

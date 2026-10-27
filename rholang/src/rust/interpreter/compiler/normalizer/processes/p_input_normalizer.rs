@@ -353,9 +353,9 @@ pub fn normalize_p_input<'ast>(
                 current_known_free = updated_known_free;
                 locally_free = union(
                     locally_free,
-                    par.locally_free(par.clone(), input.bound_map_chain.depth() as i32),
+                    par.locally_free(input.bound_map_chain.depth() as i32),
                 );
-                connective_used = connective_used || par.clone().connective_used(par.clone());
+                connective_used = connective_used || par.connective_used();
                 let signature = match signature {
                     Some(signature) => {
                         let (signature, updated_known_free) = signature_to_wire(
@@ -437,7 +437,7 @@ pub fn normalize_p_input<'ast>(
                         current_known_free = updated_known_free;
                         locally_free = union(
                             locally_free,
-                            par.locally_free(par.clone(), input.bound_map_chain.depth() as i32 + 1),
+                            par.locally_free(input.bound_map_chain.depth() as i32 + 1),
                         );
                     }
 

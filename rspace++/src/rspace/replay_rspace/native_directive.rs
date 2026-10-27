@@ -80,9 +80,9 @@ fn require_denial<T>(result: Result<(), RSpaceError>) -> Result<T, RSpaceError> 
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
 {
     fn directive_comm(directive: ReplayOperationDirective) -> (Arc<COMM>, bool) {
         match directive {
@@ -224,10 +224,10 @@ where
             persist,
             &waiting.peeks,
         );
-        self.log_comm(&data, &channels, waiting.clone(), actual.clone(), "comm.consume");
+        self.log_comm(&data, &channels, &waiting, &actual, "comm.consume");
         self.store_persistent_data(&data);
         self.remove_bindings_for(actual);
-        Ok(self.wrap_result(channels, waiting, consume_ref, data))
+        Ok(self.wrap_result(channels, waiting, data))
     }
 
     pub(super) fn replay_native_produce(
@@ -307,8 +307,8 @@ where
         self.log_comm(
             &candidate.data_candidates,
             &candidate.channels,
-            candidate.continuation.clone(),
-            actual.clone(),
+            &candidate.continuation,
+            &actual,
             "comm.produce",
         );
         if !candidate.continuation.persist {
@@ -319,12 +319,7 @@ where
         self.remove_matched_datum_and_join(&candidate.channels, &candidate.data_candidates);
         self.remove_bindings_for(actual);
         Ok(self
-            .wrap_result(
-                candidate.channels,
-                candidate.continuation.clone(),
-                candidate.continuation.source,
-                candidate.data_candidates,
-            )
+            .wrap_result(candidate.channels, candidate.continuation, candidate.data_candidates)
             .map(|(continuation, data)| (continuation, data, returned_produce)))
     }
 }

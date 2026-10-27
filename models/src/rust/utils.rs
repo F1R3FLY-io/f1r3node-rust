@@ -24,74 +24,89 @@ pub struct OptionResult<A, K> {
 
 // Adding helper functions 'with_*' to protobuf message 'Par'
 impl Par {
-    pub fn with_sends(&self, new_sends: Vec<Send>) -> Par {
-        Par {
-            sends: new_sends,
-            ..self.clone()
-        }
+    pub fn with_sends(mut self, new_sends: Vec<Send>) -> Par {
+        self.sends = new_sends;
+        self
     }
 
-    pub fn with_receives(&self, new_receives: Vec<Receive>) -> Par {
-        Par {
-            receives: new_receives,
-            ..self.clone()
-        }
+    pub fn with_receives(mut self, new_receives: Vec<Receive>) -> Par {
+        self.receives = new_receives;
+        self
     }
 
-    pub fn with_news(&self, new_news: Vec<New>) -> Par {
-        Par {
-            news: new_news,
-            ..self.clone()
-        }
+    pub fn with_news(mut self, new_news: Vec<New>) -> Par {
+        self.news = new_news;
+        self
     }
 
-    pub fn with_exprs(&self, new_exprs: Vec<Expr>) -> Par {
+    pub fn with_exprs(mut self, new_exprs: Vec<Expr>) -> Par {
+        self.exprs = new_exprs;
+        self
+    }
+
+    /// A copy of this Par with `new_exprs` in place of its exprs, which are
+    /// not copied.
+    pub fn clone_with_exprs(&self, new_exprs: Vec<Expr>) -> Par {
+        let Par {
+            sends,
+            receives,
+            news,
+            exprs: _,
+            matches,
+            unforgeables,
+            bundles,
+            connectives,
+            conditionals,
+            cost_signed_terms,
+            cost_stacks,
+            locally_free,
+            connective_used,
+        } = self;
         Par {
+            sends: sends.clone(),
+            receives: receives.clone(),
+            news: news.clone(),
             exprs: new_exprs,
-            ..self.clone()
+            matches: matches.clone(),
+            unforgeables: unforgeables.clone(),
+            bundles: bundles.clone(),
+            connectives: connectives.clone(),
+            conditionals: conditionals.clone(),
+            cost_signed_terms: cost_signed_terms.clone(),
+            cost_stacks: cost_stacks.clone(),
+            locally_free: locally_free.clone(),
+            connective_used: *connective_used,
         }
     }
 
-    pub fn with_matches(&self, new_matches: Vec<Match>) -> Par {
-        Par {
-            matches: new_matches,
-            ..self.clone()
-        }
+    pub fn with_matches(mut self, new_matches: Vec<Match>) -> Par {
+        self.matches = new_matches;
+        self
     }
 
-    pub fn with_bundles(&self, new_bundles: Vec<Bundle>) -> Par {
-        Par {
-            bundles: new_bundles,
-            ..self.clone()
-        }
+    pub fn with_bundles(mut self, new_bundles: Vec<Bundle>) -> Par {
+        self.bundles = new_bundles;
+        self
     }
 
-    pub fn with_unforgeables(&self, new_unforgeables: Vec<GUnforgeable>) -> Par {
-        Par {
-            unforgeables: new_unforgeables,
-            ..self.clone()
-        }
+    pub fn with_unforgeables(mut self, new_unforgeables: Vec<GUnforgeable>) -> Par {
+        self.unforgeables = new_unforgeables;
+        self
     }
 
-    pub fn with_connectives(&self, new_connectives: Vec<Connective>) -> Par {
-        Par {
-            connectives: new_connectives,
-            ..self.clone()
-        }
+    pub fn with_connectives(mut self, new_connectives: Vec<Connective>) -> Par {
+        self.connectives = new_connectives;
+        self
     }
 
-    pub fn with_locally_free(&self, new_locally_free: Vec<u8>) -> Par {
-        Par {
-            locally_free: new_locally_free,
-            ..self.clone()
-        }
+    pub fn with_locally_free(mut self, new_locally_free: Vec<u8>) -> Par {
+        self.locally_free = new_locally_free;
+        self
     }
 
-    pub fn with_connective_used(&self, new_connective_used: bool) -> Par {
-        Par {
-            connective_used: new_connective_used,
-            ..self.clone()
-        }
+    pub fn with_connective_used(mut self, new_connective_used: bool) -> Par {
+        self.connective_used = new_connective_used;
+        self
     }
 
     // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - prepend
@@ -251,7 +266,7 @@ pub fn union(bitset1: Vec<u8>, bitset2: Vec<u8>) -> Vec<u8> {
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Par]
-pub fn no_frees(par: &Par) -> Par { par.with_exprs(no_frees_exprs(&par.exprs)) }
+pub fn no_frees(par: &Par) -> Par { par.clone_with_exprs(no_frees_exprs(&par.exprs)) }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/ParSpatialMatcherUtils.scala - noFrees[Seq[Expr]]
 pub fn no_frees_exprs(exprs: &[Expr]) -> Vec<Expr> {
@@ -1060,29 +1075,46 @@ mod tests {
         assert_eq!(base.locally_free, vec![9]);
         assert!(base.connective_used);
 
-        let cleared = base.with_exprs(vec![]);
+        let cleared = base.clone().with_exprs(vec![]);
         assert!(cleared.exprs.is_empty());
         assert_eq!(cleared.locally_free, vec![9]);
 
-        let with_send = base.with_sends(vec![Send::default()]);
+        let with_send = base.clone().with_sends(vec![Send::default()]);
         assert_eq!(with_send.sends.len(), 1);
         assert_eq!(with_send.exprs.len(), 1);
 
         assert_eq!(
-            base.with_receives(vec![Receive::default()]).receives.len(),
+            base.clone()
+                .with_receives(vec![Receive::default()])
+                .receives
+                .len(),
             1
         );
-        assert_eq!(base.with_news(vec![New::default()]).news.len(), 1);
-        assert_eq!(base.with_matches(vec![Match::default()]).matches.len(), 1);
-        assert_eq!(base.with_bundles(vec![Bundle::default()]).bundles.len(), 1);
+        assert_eq!(base.clone().with_news(vec![New::default()]).news.len(), 1);
         assert_eq!(
-            base.with_unforgeables(vec![GUnforgeable::default()])
+            base.clone()
+                .with_matches(vec![Match::default()])
+                .matches
+                .len(),
+            1
+        );
+        assert_eq!(
+            base.clone()
+                .with_bundles(vec![Bundle::default()])
+                .bundles
+                .len(),
+            1
+        );
+        assert_eq!(
+            base.clone()
+                .with_unforgeables(vec![GUnforgeable::default()])
                 .unforgeables
                 .len(),
             1
         );
         assert_eq!(
-            base.with_connectives(vec![Connective::default()])
+            base.clone()
+                .with_connectives(vec![Connective::default()])
                 .connectives
                 .len(),
             1

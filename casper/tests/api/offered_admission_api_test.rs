@@ -186,7 +186,6 @@ fn recorded_rejection(node: &TestNode, offer: &models::casper::DeployDataProto) 
     let id = models::rust::deploy_id::DeployIdV6::try_from(offer.deploy_id.to_vec())
         .expect("an offered deploy id has 32 bytes");
     node.deploy_storage
-        .lock()
         .envelope_rejection(&id)
         .map(|rejection| rejection.reason)
         .expect("the rejected offer has a status entry")

@@ -435,6 +435,11 @@ impl TestFixture {
             genesis_params.native_token_name.clone(),
             genesis_params.native_token_symbol.clone(),
             genesis_params.native_token_decimals,
+            // Default-no-provisioning posture: matches
+            // GenesisBuilder's default genesis params, which build
+            // their own genesis block with an empty bundle.
+            Vec::new(),
+            None,
             transport_layer.clone(),
             Arc::new(rp_conf.clone()),
         )

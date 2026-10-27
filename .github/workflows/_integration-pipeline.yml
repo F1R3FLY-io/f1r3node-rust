@@ -50,7 +50,7 @@ env:
   # MUST be kept identical to .github/oci-validation.env (the Full OCI
   # Validation workflow sources that file) — bump both in the same commit,
   # via `just repin-system-integration <sha>`.
-  SYSTEM_INTEGRATION_REF: 20873986abe42d896efbf780bca2b1da188d06a1
+  SYSTEM_INTEGRATION_REF: e1e00ee503ea3071c03abb84245cc0d48e441e82
   # Pinned OCI CLI installer (release tag + sha256) and CLI version. The
   # install.sh checksum fails closed if the tag is ever moved; OCI_CLI_VERSION
   # pins what the installer pulls from PyPI (without it the installer floats to
@@ -974,7 +974,11 @@ jobs:
 
       - name: Start standalone node
         shell: bash -ex {0}
-        run: docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml up -d
+        # docker/.env is not tracked (#745). Compose reads the node keys from
+        # it, so the job copies the development template first.
+        run: |
+          cp docker/.env.example docker/.env
+          docker compose -f docker/standalone.yml -f docker/ci-ports.standalone.yml up -d
 
       - name: Wait for Running state
         shell: bash -ex {0}
@@ -1082,7 +1086,11 @@ jobs:
 
       - name: Start shard
         shell: bash -ex {0}
-        run: docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml up -d
+        # docker/.env is not tracked (#745). Compose reads the node keys from
+        # it, so the job copies the development template first.
+        run: |
+          cp docker/.env.example docker/.env
+          docker compose -f docker/shard.yml -f docker/ci-ports.shard.yml up -d
 
       - name: Wait for bootstrap Running state
         shell: bash -ex {0}
@@ -1214,9 +1222,13 @@ jobs:
           # inside the ephemeral range the Actions agent draws from. This job
           # binds on the host directly, so the ports move via CLI flags rather
           # than a compose mapping.
+          # The key is the development standalone key from docker/.env.example
+          # (#745), so no key value is written into this workflow.
+          validator_key="$(sed -n 's/^STANDALONE_PRIVATE_KEY=//p' docker/.env.example)"
+          test -n "$validator_key"
           ./target/release/node run -s \
             --config-file=run-local/conf/standalone.conf \
-            --validator-private-key=5f668a7ee96d944a4494cc947e4005e172d7ab3461ee5538f1f2a45a835e9657 \
+            --validator-private-key="$validator_key" \
             --host=localhost \
             --protocol-port=14400 \
             --api-port-grpc-external=14401 \

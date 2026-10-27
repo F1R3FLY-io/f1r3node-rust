@@ -84,6 +84,18 @@ impl KeyValueStore for InMemoryKeyValueStore {
         Ok(())
     }
 
+    fn delete_if_value(
+        &self,
+        key: &ByteBuffer,
+        expected: &ByteBuffer,
+    ) -> Result<bool, KvStoreError> {
+        let _guard = self.write_guard();
+        Ok(self
+            .state
+            .remove_if(key, |_, value| value == expected)
+            .is_some())
+    }
+
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
         let _guard = self.write_guard();
         Ok(keys
@@ -787,5 +799,47 @@ mod tests {
         assert_eq!(observed, expected);
         assert_eq!(store.to_map().unwrap().len(), 9);
         assert_eq!(store.get_one(&vec![0]).unwrap(), Some(vec![9]));
+    }
+}
+
+#[cfg(test)]
+mod conditional_delete_tests {
+    use super::*;
+
+    #[test]
+    fn conditional_delete_preserves_different_and_absent_values() {
+        let store = InMemoryKeyValueStore::new();
+        let key = b"key".to_vec();
+        let value = b"value".to_vec();
+        store.put_one(key.clone(), value.clone()).unwrap();
+        assert!(!store.delete_if_value(&key, &b"other".to_vec()).unwrap());
+        assert_eq!(store.get_one(&key).unwrap(), Some(value.clone()));
+        assert!(store.delete_if_value(&key, &value).unwrap());
+        assert!(!store.delete_if_value(&key, &value).unwrap());
+    }
+
+    #[test]
+    fn concurrent_conditional_deletes_remove_one_memory_record() {
+        let store = InMemoryKeyValueStore::new();
+        store.put_one(b"key".to_vec(), b"value".to_vec()).unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let store = store.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .delete_if_value(&b"key".to_vec(), &b"value".to_vec())
+                        .unwrap()
+                })
+            })
+            .collect();
+        let removed = handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(removed, 1);
+        assert_eq!(store.get_one(&b"key".to_vec()).unwrap(), None);
     }
 }

@@ -70,7 +70,6 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
             // .iter()
             // .any(|d| d.sig == plain_sig),
             .deploy_storage
-            .lock()
             .contains_sig(&plain_sig)
             .expect("storage read"),
         "staging precondition: the owner's pool holds the deploy after \
@@ -156,7 +155,6 @@ async fn floor_settled_plain_send_is_released_from_deploy_storage() {
             // .iter()
             // .any(|d| d.sig == plain_sig),
             .deploy_storage
-            .lock()
             .contains_sig(&plain_sig)
             .expect("storage read"),
         "the deploy's effect is settled in the floor state: the register's \

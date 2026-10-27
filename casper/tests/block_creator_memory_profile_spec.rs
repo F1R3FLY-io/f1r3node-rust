@@ -221,11 +221,11 @@ async fn run_block_creator_create_memory_profile() {
     let shard_name = offered_deploy::TEST_SHARD.to_string();
 
     let mut kvm = InMemoryStoreManager::new();
-    let deploy_storage = Arc::new(parking_lot::Mutex::new(
+    let deploy_storage = Arc::new(
         KeyValueDeployStorage::new(&mut kvm)
             .await
             .expect("Failed to create deploy storage"),
-    ));
+    );
     let rejected_deploy_buffer = Arc::new(Mutex::new(
         block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
             &mut kvm,
@@ -359,7 +359,7 @@ async fn run_block_creator_create_memory_profile() {
     for i in 1..=iterations {
         let deploy = create_deploy(i, &validator_sk, &shard_name);
         {
-            let mut ds = deploy_storage.lock();
+            let ds = &deploy_storage;
             // Changed by DR-134 (DR-66 item 1): the pool stores the offered
             // envelope.
             // ds.add(vec![deploy]).expect("Failed to add deploy");
@@ -413,7 +413,7 @@ async fn run_block_creator_create_memory_profile() {
         // Changed by DR-134 (DR-66 item 1): the pool listing holds offered
         // envelopes, which the pool removes by their deploy ids.
         // {
-        //     let mut ds = deploy_storage.lock();
+        //     let ds = &deploy_storage;
         //     let all = ds.read_all().expect("Failed to read deploy pool");
         //     if !all.is_empty() {
         //         ds.remove(all.into_iter().collect())
@@ -421,7 +421,7 @@ async fn run_block_creator_create_memory_profile() {
         //     }
         // }
         {
-            let mut ds = deploy_storage.lock();
+            let ds = &deploy_storage;
             let all = ds
                 .read_all_envelopes(offered_funded_v6_limits().envelope)
                 .expect("Failed to read deploy pool");

@@ -453,7 +453,7 @@ async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
         "no block may carry an underpriced offer, got: {:?}",
         result
     );
-    let storage = nodes[0].deploy_storage.lock();
+    let storage = &nodes[0].deploy_storage;
     assert!(
         !storage
             .contains_envelope_id(&underpriced_id)

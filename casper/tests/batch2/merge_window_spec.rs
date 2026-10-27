@@ -30,7 +30,7 @@ use prost::bytes::Bytes;
 use serial_test::serial;
 
 use crate::helper::offered_deploy as construct_deploy;
-use crate::helper::test_node::TestNode;
+use crate::helper::test_node::{ShardOverrides, TestNode};
 use crate::util::genesis_builder::GenesisBuilder;
 
 const DEPLOY_LIFESPAN: i64 = 5;
@@ -56,17 +56,13 @@ async fn late_carrier_past_window_is_rejected_with_record_and_without_effect() {
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
 
-    let mut nodes = TestNode::create_network_with_deploy_lifespan(
-        genesis,
-        n_validators,
-        None,
-        None,
-        None,
-        None,
-        Some(DEPLOY_LIFESPAN),
-    )
-    .await
-    .expect("create_network");
+    let mut nodes =
+        TestNode::create_network_with_overrides(genesis, n_validators, ShardOverrides {
+            deploy_lifespan: Some(DEPLOY_LIFESPAN),
+            ..Default::default()
+        })
+        .await
+        .expect("create_network");
     for node in nodes.iter_mut() {
         node.allow_empty_blocks = true;
     }

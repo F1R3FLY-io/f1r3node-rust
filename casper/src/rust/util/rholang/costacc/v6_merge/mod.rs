@@ -125,7 +125,6 @@ pub(crate) fn walk_branch(
     dag_merger::split_unavailable_branch_consumes(
         branch,
         &depends,
-        &|chain: &DeployChainIndex| Ok(chain.state_changes.clone()),
         &|chain: &DeployChainIndex| chain.event_log_index.number_channels_data.clone(),
         &|channel: &Blake2b256Hash| history_reader.get_data_proj_binary(channel),
         &|consume_channels: &Vec<Blake2b256Hash>| {

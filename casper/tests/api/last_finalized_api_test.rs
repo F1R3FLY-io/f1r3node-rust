@@ -4,10 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use casper::rust::api::block_api::BlockAPI;
-use casper::rust::casper::MultiParentCasper;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::engine_with_casper::EngineWithCasper;
-use casper::rust::engine::multi_parent_casper::MultiParentCasperImpl;
 // Changed by DR-134 (DR-66 item 1): offered deploys.
 // use casper::rust::util::{construct_deploy, proto_util};
 use casper::rust::util::proto_util;
@@ -51,35 +49,7 @@ impl TestContext {
 /// Equivalent to Scala: val engine = new EngineWithCasper[Task](n1.casperEff)
 ///                       engineCell <- Cell.mvarCell[Task, Engine[Task]](engine)
 async fn create_engine_cell(node: &TestNode) -> EngineCell {
-    let casper_for_engine = Arc::new(MultiParentCasperImpl {
-        observer: std::sync::OnceLock::new(),
-        divergence_monitor: node.casper.divergence_monitor.clone(),
-        block_retriever: node.casper.block_retriever.clone(),
-        event_publisher: node.casper.event_publisher.clone(),
-        runtime_manager: node.casper.runtime_manager.clone(),
-        estimator: node.casper.estimator.clone(),
-        block_store: node.casper.block_store.clone(),
-        block_dag_storage: node.casper.block_dag_storage.clone(),
-        deploy_storage: node.casper.deploy_storage.clone(),
-        rejected_deploy_buffer: node.casper.rejected_deploy_buffer.clone(),
-        deploy_lifecycle: node.casper.deploy_lifecycle.clone(),
-        casper_buffer_storage: node.casper.casper_buffer_storage.clone(),
-        validator_id: node.casper.validator_id.clone(),
-        finalized_bond_cache: node.casper.finalized_bond_cache.clone(),
-        casper_shard_conf: node.casper.casper_shard_conf.clone(),
-        approved_block: node.casper.approved_block.clone(),
-        offered_funded_active: node.casper.offered_funded_active,
-        adopted_resource_policy: node.casper.adopted_resource_policy.clone(),
-        finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
-        deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
-        active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        )),
-    });
-    let engine = EngineWithCasper::new(casper_for_engine);
+    let engine = EngineWithCasper::new(node.casper.clone());
     let engine_cell = EngineCell::init();
     engine_cell.set(Arc::new(engine)).await;
     engine_cell
@@ -143,7 +113,7 @@ async fn is_finalized_should_return_true_for_ancestors_of_last_finalized_block()
         blocks.push(block);
     }
 
-    let last_finalized_block = nodes[0].casper.last_finalized_block().await.unwrap();
+    let last_finalized_block = nodes[0].casper.finalize().await.unwrap();
     let lfb_number = last_finalized_block.body.state.block_number;
     let engine_cell = create_engine_cell(&nodes[0]).await;
 
@@ -256,7 +226,7 @@ async fn should_return_false_for_children_uncles_and_cousins_of_last_finalized_b
         .await
         .unwrap();
 
-    let last_finalized_block = nodes[0].casper.last_finalized_block().await.unwrap();
+    let last_finalized_block = nodes[0].casper.finalize().await.unwrap();
 
     let b4_block_hash = proto_util::hash_string(&b4);
     assert_eq!(

@@ -59,10 +59,9 @@ pub fn normalize_p_contr<'ast>(
         init_acc.1 = result.free_map.clone();
         init_acc.2 = union(
             init_acc.clone().2,
-            result.par.locally_free(
-                result.par.clone(),
-                (input.bound_map_chain.depth() + 1) as i32,
-            ),
+            result
+                .par
+                .locally_free((input.bound_map_chain.depth() + 1) as i32),
         );
     }
 
@@ -95,19 +94,16 @@ pub fn normalize_p_contr<'ast>(
         peek: false,
         bind_count: bound_count as i32,
         locally_free: union(
-            name_match_result.par.locally_free(
-                name_match_result.par.clone(),
-                input.bound_map_chain.depth() as i32,
-            ),
+            name_match_result
+                .par
+                .locally_free(input.bound_map_chain.depth() as i32),
             union(
                 init_acc.2,
                 filter_and_adjust_bitset(body_result.par.clone().locally_free, bound_count),
             ),
         ),
-        connective_used: name_match_result
-            .par
-            .connective_used(name_match_result.par.clone())
-            || body_result.par.connective_used(body_result.par.clone()),
+        connective_used: name_match_result.par.connective_used()
+            || body_result.par.connective_used(),
         condition: None,
     };
     //TODO: I should create new Expr for prepend_expr and provide it instead of receive.clone().into

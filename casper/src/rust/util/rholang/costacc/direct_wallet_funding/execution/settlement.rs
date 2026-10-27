@@ -335,7 +335,8 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
                 "wallet settlement belongs to another funding snapshot",
             ));
         }
-        self.runtime
+        let result = self
+            .runtime
             .settle_checked_wallet_and_capture_balances(
                 manager,
                 checked,
@@ -350,7 +351,10 @@ impl<'a> NativeFundedAttempt<'_, 'a> {
                 // funding.
                 None,
             )
-            .await
+            .await;
+        self.runtime
+            .finish_native_fs_scope(result.is_ok() && self.evaluation.errors.is_empty());
+        result
     }
 }
 

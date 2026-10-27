@@ -610,6 +610,44 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::OLLAMA_MODELS,
         BodyRefs::GRPC_TELL,
         BodyRefs::CHROMA_QUERY,
+        // File I/O: every fs_* syscall reply must be replay-cached so a
+        // follower's Oracular-echo path (dispatch_via_trait step 4) sees
+        // byte-identical `previous_output` and produces a matching
+        // ack-channel Produce hash.  Without this, the leader's recorded
+        // Produce events carry output_value=[] (mark_as_non_deterministic
+        // never runs), the follower echoes empty data on ack, the hash
+        // diverges from the recorded one, the downstream Rholang
+        // for-binding never fires, and check_replay_data trips with
+        // UnusedCommEvent.  See fileio_replay_spec.rs for the
+        // regression harness.
+        BodyRefs::FS_OPEN,
+        BodyRefs::FS_CLOSE,
+        BodyRefs::FS_READ,
+        BodyRefs::FS_READ_AT,
+        BodyRefs::FS_WRITE,
+        BodyRefs::FS_WRITE_AT,
+        BodyRefs::FS_SEEK,
+        BodyRefs::FS_TELL,
+        BodyRefs::FS_SIZE,
+        BodyRefs::FS_TRUNCATE,
+        BodyRefs::FS_FLUSH,
+        BodyRefs::FS_STAT,
+        BodyRefs::FS_EXISTS,
+        BodyRefs::FS_ENTRIES,
+        BodyRefs::FS_RENAME,
+        BodyRefs::FS_COPY_FILE,
+        BodyRefs::FS_REMOVE_FILE,
+        BodyRefs::FS_REMOVE_DIR,
+        BodyRefs::FS_CHMOD,
+        BodyRefs::FS_CHOWN,
+        BodyRefs::FS_QUARANTINE,
+        BodyRefs::FS_LOCK_RANGE,
+        BodyRefs::FS_LOCK_SEQUENTIAL,
+        BodyRefs::FS_RELEASE_LOCK,
+        BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
+        BodyRefs::FS_ENTRIES_STREAM_OPEN,
+        BodyRefs::FS_ENTRIES_STREAM_NEXT,
+        BodyRefs::FS_ENTRIES_STREAM_CLOSE,
     ])
 }
 
@@ -618,6 +656,12 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
 /// processes that dev also runs in replay (U5, oracle mode). The legacy path
 /// keeps calling `non_deterministic_ops`.
 pub fn is_native_recorded_op(body_ref: BodyRef) -> bool {
+    static DEV_RECORDED_OPS: std::sync::LazyLock<HashSet<i64>> =
+        std::sync::LazyLock::new(non_deterministic_ops);
+    is_native_service_op(body_ref) || DEV_RECORDED_OPS.contains(&body_ref)
+}
+
+fn is_native_service_op(body_ref: BodyRef) -> bool {
     matches!(
         body_ref,
         BodyRefs::GPT4
@@ -638,7 +682,7 @@ pub fn is_native_recorded_op(body_ref: BodyRef) -> bool {
 /// Added by DR-114: the processes that take the native path: the recorded
 /// set and the four print processes.
 fn is_native_external_process(body_ref: BodyRef) -> bool {
-    is_native_recorded_op(body_ref)
+    is_native_service_op(body_ref)
         || matches!(
             body_ref,
             BodyRefs::STDOUT | BodyRefs::STDOUT_ACK | BodyRefs::STDERR | BodyRefs::STDERR_ACK
@@ -3190,6 +3234,14 @@ mod body_refs_fs_tests {
 
         let mut by_value = std::collections::HashMap::new();
         for (name, value) in ENUMERATED_FS_BODY_REFS {
+            assert!(
+                super::is_native_recorded_op(*value),
+                "{name} must record its reply"
+            );
+            assert!(
+                !super::is_native_external_process(*value),
+                "{name} must use its filesystem handler"
+            );
             if let Some(prior) = by_value.insert(*value, *name) {
                 panic!(
                     "BodyRefs::FS_* body_ref collision: `{name}` \

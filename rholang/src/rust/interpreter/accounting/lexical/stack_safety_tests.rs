@@ -707,8 +707,8 @@ fn new_binding_values_match_allocate_new_bindings() {
             let reducer = allocate_new_bindings(&new, &Env::new(), &mut reducer_rand, &urn_map);
             match (machine, reducer) {
                 (Ok(values), Ok(env)) => {
-                    let expected = (0..env.level)
-                        .map(|position| env.env_map.get(&position).cloned())
+                    let expected = (0..env.level())
+                        .map(|position| env.get_at(position).cloned())
                         .collect::<Vec<_>>();
                     assert_eq!(values.into_iter().map(Some).collect::<Vec<_>>(), expected);
                     assert_eq!(machine_rand, reducer_rand, "the same randomness remains");

@@ -23,9 +23,9 @@ use crate::rspace::trace::event::{COMM, Consume, Produce};
 impl<C, P, A, K> RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
 {
     // Changed by DR-132: the start returns the observer and the name of the
     // recorded operation. The locked operation runs its rest under that name.
@@ -135,9 +135,9 @@ where
 pub(super) struct ProduceAdmission<'a, C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
 {
     space: &'a RSpace<C, P, A, K>,
     observer: &'a dyn RSpaceAccountingObserver<C, P, A, K>,
@@ -150,9 +150,9 @@ where
 impl<'a, C, P, A, K> ProduceAdmission<'a, C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
 {
     pub(super) fn new(
         space: &'a RSpace<C, P, A, K>,
@@ -182,9 +182,9 @@ where
 impl<C, P, A, K> MatchAdmission<C, P, A, K> for ProduceAdmission<'_, C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
 {
     fn admit_item(
         &self,
@@ -254,7 +254,7 @@ pub(super) struct ConsumeAdmission<'a, C, P, A, K> {
     pub(super) error: RefCell<Option<RSpaceError>>,
 }
 
-impl<C, P: Clone, A: Clone, K: Clone> MatchAdmission<C, P, A, K>
+impl<C, P: Clone + PartialEq, A: Clone, K: Clone + PartialEq> MatchAdmission<C, P, A, K>
     for ConsumeAdmission<'_, C, P, A, K>
 {
     fn admit_item(

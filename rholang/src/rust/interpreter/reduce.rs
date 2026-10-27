@@ -18,7 +18,7 @@ use models::rhoapi::{
     BindPattern, Bundle, CostAuthority, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
     EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
     EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GUnforgeable, If, KeyValuePair,
-    ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
+    ListParWithRandom, Match, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
     TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
@@ -108,10 +108,10 @@ use super::metrics_constants::{
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint};
 use super::substitute::Substitute;
-use super::unwrap_option_safe;
 use super::util::{
     allocate_new_bindings, evaluation_random, owned_evaluation_terms, GeneratedMessage,
 };
+use super::{unwrap_option_ref, unwrap_option_safe};
 use crate::rust::interpreter::accounting::costs::{
     add_cost, bytes_to_hex_cost, concat_bytes_cost, decode_utf8_cost, diff_cost, hex_to_bytes_cost,
     interpolate_cost, keys_method_cost, length_method_cost, lookup_cost, match_eval_cost,
@@ -786,7 +786,7 @@ impl ReducerCore {
                 let rand_split = evaluation_random(&rand, index, term_count)
                     .expect("term count and index were validated");
                 if let Err(error) = reducer
-                    .generated_message_eval(&term, env, rand_split, &authority)
+                    .generated_message_eval(term, env, rand_split, &authority)
                     .await
                 {
                     declaration_errors.push(error);
@@ -798,20 +798,25 @@ impl ReducerCore {
             metrics::counter!("reducer.eval_par.term_count", "source" => "rholang")
                 .increment(term_count as u64);
 
-            if let [(index, term)] = reduction_terms.as_slice() {
-                let evaluation = self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
-                if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
-                    self.yielded_single_term_evaluations
-                        .fetch_add(1, Ordering::Relaxed);
-                    tokio::task::yield_now().await;
+            let reduction_terms = match <[(usize, GeneratedMessage); 1]>::try_from(reduction_terms)
+            {
+                Ok([(index, term)]) => {
+                    let evaluation =
+                        self.single_term_evaluations.fetch_add(1, Ordering::Relaxed) + 1;
+                    if evaluation.is_multiple_of(SINGLE_TERM_YIELD_INTERVAL) {
+                        self.yielded_single_term_evaluations
+                            .fetch_add(1, Ordering::Relaxed);
+                        tokio::task::yield_now().await;
+                    }
+                    let reducer = self.with_metering_child(index);
+                    let rand_split = evaluation_random(&rand, index, term_count)
+                        .expect("term count and index were validated");
+                    return reducer
+                        .generated_message_eval(term, env, rand_split, &authority)
+                        .await;
                 }
-                let reducer = self.with_metering_child(*index);
-                let rand_split = evaluation_random(&rand, *index, term_count)
-                    .expect("term count and index were validated");
-                return reducer
-                    .generated_message_eval(term, env, rand_split, &authority)
-                    .await;
-            }
+                Err(terms) => terms,
+            };
 
             // Collect errors from all parallel execution paths (pars)
             // parTraverseSafe
@@ -833,7 +838,7 @@ impl ReducerCore {
                         .expect("term count and index were validated");
                     Box::pin(async move {
                         self_clone
-                            .generated_message_eval(&term, &env_clone, rand_split, &authority_clone)
+                            .generated_message_eval(term, &env_clone, rand_split, &authority_clone)
                             .await
                     })
                         as Pin<
@@ -1073,10 +1078,8 @@ impl ReducerCore {
             &introduction_authority,
             measurement,
         )?;
-        let produce_result = self
-            .space
-            .produce(chan.clone(), data.clone(), persistent)
-            .await?;
+        let retry = persistent.then(|| (chan.clone(), data.clone()));
+        let produce_result = self.space.produce(chan, data, persistent).await?;
         let is_replay = self.space.is_replay().await;
 
         match produce_result {
@@ -1084,9 +1087,7 @@ impl ReducerCore {
                 let dispatch_type = self
                     .continue_produce_process(
                         unpack_option_with_peek(Some((c, s))),
-                        chan,
-                        data,
-                        persistent,
+                        retry,
                         is_replay,
                         produce_event.clone().output_value,
                         produce_event.failed,
@@ -1189,16 +1190,22 @@ impl ReducerCore {
         introduction_authority: CostAuthority,
         measurement: Option<IntroductionMeasurement>,
     ) -> Result<DispatchType, InterpreterError> {
-        let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.clone().into_iter().unzip();
+        let retry = persistent.then(|| (binds.clone(), body.clone(), guard.clone()));
+        let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.into_iter().unzip();
 
         // Update mergeable channels
         for source in &sources {
             self.update_mergeable_channels(source).await;
         }
 
+        let peeks = if peek {
+            BTreeSet::from_iter(0..sources.len() as i32)
+        } else {
+            BTreeSet::new()
+        };
         let continuation = TaggedContinuation {
-            tagged_cont: Some(TaggedCont::ParBody(body.clone())),
-            guard: guard.clone(),
+            tagged_cont: Some(TaggedCont::ParBody(body)),
+            guard,
             cost_authority: (!authority.regions.is_empty()).then_some(authority.clone()),
         };
         let source = Consume::create(&sources, &patterns, &continuation, persistent);
@@ -1217,29 +1224,16 @@ impl ReducerCore {
         )?;
         let consume_result = self
             .space
-            .consume(
-                sources.clone(),
-                patterns.clone(),
-                continuation,
-                persistent,
-                if peek {
-                    BTreeSet::from_iter((0..sources.len() as i32).collect::<Vec<i32>>())
-                } else {
-                    BTreeSet::new()
-                },
-            )
+            .consume(sources, patterns, continuation, persistent, peeks)
             .await?;
         let is_replay = self.space.is_replay().await;
 
         self.continue_consume_process(
             unpack_option_with_peek(consume_result),
-            binds,
-            body,
-            persistent,
+            retry,
             peek,
             is_replay,
             Vec::new(),
-            guard,
             authority,
             introduction_authority,
             measurement,
@@ -1247,12 +1241,12 @@ impl ReducerCore {
         .await
     }
 
+    /// `retry` holds the channel and data of a persistent produce, which is
+    /// issued again after its COMM fires; it is `None` for a linear produce.
     async fn continue_produce_process(
         &self,
         res: Application,
-        chan: Par,
-        data: ListParWithRandom,
-        persistent: bool,
+        retry: Option<(Par, ListParWithRandom)>,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
         trace_failed: bool,
@@ -1275,7 +1269,7 @@ impl ReducerCore {
         match res {
             Some((continuation, data_list, peek)) => {
                 self.register_bitmask_channels(&data_list).await;
-                if persistent {
+                if let Some((chan, data)) = retry {
                     // Added by DR-114 (P2): a recorded external-service call is
                     // one linear request with one reply. A persistent send to
                     // one would call the service again on every iteration, and
@@ -1295,14 +1289,7 @@ impl ReducerCore {
                     // dispatchAndRun
                     let self_clone1 = self.with_metering_child(0);
                     let self_clone2 = self.with_metering_child(1);
-                    let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
-                    let chan_clone = chan.clone();
-                    let data_clone = data.clone();
-                    let persistent_flag = persistent;
-                    let is_replay_flag = is_replay;
-                    let introduction_authority_clone = introduction_authority.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -1314,22 +1301,22 @@ impl ReducerCore {
                         >,
                     > = vec![];
 
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                    if let Some(scope) = deferral_scope(&continuation) {
                         self.spawn_deferred_dispatch(
                             scope,
-                            continuation_clone,
+                            continuation,
                             data_list_clone,
-                            is_replay_flag,
-                            previous_output_clone,
+                            is_replay,
+                            previous_output_as_par,
                         );
                     } else {
                         futures.push(Box::pin(async move {
                             self_clone1
                                 .dispatch(
-                                    continuation_clone,
+                                    continuation,
                                     data_list_clone,
-                                    is_replay_flag,
-                                    previous_output_clone,
+                                    is_replay,
+                                    previous_output_as_par,
                                 )
                                 .await
                         }));
@@ -1337,13 +1324,7 @@ impl ReducerCore {
 
                     futures.push(Box::pin(async move {
                         self_clone2
-                            .produce(
-                                chan_clone,
-                                data_clone,
-                                persistent_flag,
-                                introduction_authority_clone,
-                                measurement,
-                            )
+                            .produce(chan, data, true, introduction_authority, measurement)
                             .await
                     })
                         as Pin<
@@ -1365,9 +1346,7 @@ impl ReducerCore {
                 } else if peek {
                     // dispatchAndRun
                     let self_clone = self.with_metering_child(0);
-                    let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -1378,22 +1357,22 @@ impl ReducerCore {
                             >,
                         >,
                     > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                    if let Some(scope) = deferral_scope(&continuation) {
                         self.spawn_deferred_dispatch(
                             scope,
-                            continuation_clone,
+                            continuation,
                             data_list_clone,
                             is_replay,
-                            previous_output_clone,
+                            previous_output_as_par,
                         );
                     } else {
                         futures.push(Box::pin(async move {
                             self_clone
                                 .dispatch(
-                                    continuation_clone,
+                                    continuation,
                                     data_list_clone,
                                     is_replay,
-                                    previous_output_clone,
+                                    previous_output_as_par,
                                 )
                                 .await
                         }));
@@ -1415,16 +1394,15 @@ impl ReducerCore {
         }
     }
 
+    /// `retry` holds the binds, body and guard of a persistent consume, which
+    /// is issued again after its COMM fires; it is `None` for a linear consume.
     async fn continue_consume_process(
         &self,
         res: Application,
-        binds: Vec<(BindPattern, Par)>,
-        body: ParWithRandom,
-        persistent: bool,
+        retry: Option<(Vec<(BindPattern, Par)>, ParWithRandom, Option<Par>)>,
         peek: bool,
         is_replay: bool,
         previous_output: Vec<Vec<u8>>,
-        guard: Option<Par>,
         authority: CostAuthority,
         introduction_authority: CostAuthority,
         measurement: Option<IntroductionMeasurement>,
@@ -1438,21 +1416,10 @@ impl ReducerCore {
 
         match res {
             Some((continuation, data_list, _peek)) => {
-                if persistent {
+                if let Some((binds, body, guard)) = retry {
                     // dispatchAndRun
                     let self_clone1 = self.with_metering_child(0);
                     let self_clone2 = self.with_metering_child(1);
-                    let continuation_clone = continuation.clone();
-                    let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
-                    let binds_clone = binds.clone();
-                    let body_clone = body.clone();
-                    let persistent_flag = persistent;
-                    let peek_flag = peek;
-                    let is_replay_flag = is_replay;
-                    let guard_clone = guard.clone();
-                    let authority_clone = authority.clone();
-                    let introduction_authority_clone = introduction_authority.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -1464,22 +1431,22 @@ impl ReducerCore {
                         >,
                     > = vec![];
 
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                    if let Some(scope) = deferral_scope(&continuation) {
                         self.spawn_deferred_dispatch(
                             scope,
-                            continuation_clone,
-                            data_list_clone,
-                            is_replay_flag,
-                            previous_output_clone,
+                            continuation,
+                            data_list,
+                            is_replay,
+                            previous_output_as_par,
                         );
                     } else {
                         futures.push(Box::pin(async move {
                             self_clone1
                                 .dispatch(
-                                    continuation_clone,
-                                    data_list_clone,
-                                    is_replay_flag,
-                                    previous_output_clone,
+                                    continuation,
+                                    data_list,
+                                    is_replay,
+                                    previous_output_as_par,
                                 )
                                 .await
                         }));
@@ -1488,13 +1455,13 @@ impl ReducerCore {
                     futures.push(Box::pin(async move {
                         self_clone2
                             .consume(
-                                binds_clone,
-                                body_clone,
-                                persistent_flag,
-                                peek_flag,
-                                guard_clone,
-                                authority_clone,
-                                introduction_authority_clone,
+                                binds,
+                                body,
+                                true,
+                                peek,
+                                guard,
+                                authority,
+                                introduction_authority,
                                 measurement,
                             )
                             .await
@@ -1511,9 +1478,7 @@ impl ReducerCore {
                 } else if _peek {
                     // dispatchAndRun
                     let self_clone = self.with_metering_child(0);
-                    let continuation_clone = continuation.clone();
                     let data_list_clone = data_list.clone();
-                    let previous_output_clone = previous_output_as_par.clone();
 
                     let mut futures: Vec<
                         Pin<
@@ -1524,22 +1489,22 @@ impl ReducerCore {
                             >,
                         >,
                     > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                    if let Some(scope) = deferral_scope(&continuation) {
                         self.spawn_deferred_dispatch(
                             scope,
-                            continuation_clone,
+                            continuation,
                             data_list_clone,
                             is_replay,
-                            previous_output_clone,
+                            previous_output_as_par,
                         );
                     } else {
                         futures.push(Box::pin(async move {
                             self_clone
                                 .dispatch(
-                                    continuation_clone,
+                                    continuation,
                                     data_list_clone,
                                     is_replay,
-                                    previous_output_clone,
+                                    previous_output_as_par,
                                 )
                                 .await
                         }));
@@ -1847,7 +1812,7 @@ impl ReducerCore {
 
     async fn generated_message_eval(
         &self,
-        term: &GeneratedMessage,
+        term: GeneratedMessage,
         env: &Env<Par>,
         rand: Blake2b512Random,
         authority: &CostAuthority,
@@ -1892,10 +1857,11 @@ impl ReducerCore {
             GeneratedMessage::If(term) => self.eval_if(term, env, rand, authority).await,
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand, authority).await,
             GeneratedMessage::CostSignedTerm(term) => {
-                self.eval_cost_signed_term(term, env, rand, authority).await
+                self.eval_cost_signed_term(&term, env, rand, authority)
+                    .await
             }
             GeneratedMessage::CostStack(term) => {
-                self.eval_cost_stack(term, env, rand, authority).await
+                self.eval_cost_stack(&term, env, rand, authority).await
             }
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
@@ -1904,7 +1870,10 @@ impl ReducerCore {
                     // Changed by G3 (DR-135): both exits take the held-process
                     // context of `held_process_reducer` (A1).
                     ExprInstance::EVarBody(e) => {
-                        let res = self.eval_var(&e.clone().v.unwrap(), env)?;
+                        let res = self.eval_var(
+                            e.v.as_ref().expect("an EVar always holds a variable"),
+                            env,
+                        )?;
                         // self.without_residue_seal()
                         // Changed by G3 (DR-135, S3b H1): a value whose holder
                         // differs from the context signature runs for its
@@ -1975,7 +1944,7 @@ impl ReducerCore {
      */
     async fn eval_send(
         &self,
-        send: &Send,
+        send: Send,
         env: &Env<Par>,
         rand: Blake2b512Random,
         authority: &CostAuthority,
@@ -2016,8 +1985,8 @@ impl ReducerCore {
         } else {
             authority.clone()
         };
-        let eval_chan = self.eval_expr(&unwrap_option_safe(send.chan.clone())?, env)?;
-        let sub_chan = self.substitute.substitute_and_charge(&eval_chan, 0, env)?;
+        let eval_chan = self.eval_expr(unwrap_option_ref(&send.chan)?, env)?;
+        let sub_chan = self.substitute.substitute_and_charge(eval_chan, 0, env)?;
         let unbundled = match single_bundle(&sub_chan) {
             Some(value) => {
                 if !value.write_flag {
@@ -2108,7 +2077,7 @@ impl ReducerCore {
 
     async fn eval_receive(
         &self,
-        receive: &Receive,
+        receive: Receive,
         env: &Env<Par>,
         rand: Blake2b512Random,
         authority: &CostAuthority,
@@ -2208,14 +2177,13 @@ impl ReducerCore {
 
         let binds = receive
             .binds
-            .clone()
             .into_iter()
             .map(|rb| {
                 let q = self.unbundle_receive(&rb, env)?;
                 let subst_patterns = rb
                     .patterns
                     .into_iter()
-                    .map(|pattern| self.substitute.substitute_and_charge(&pattern, 1, env))
+                    .map(|pattern| self.substitute.substitute_and_charge(pattern, 1, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
                 Ok((
@@ -2312,7 +2280,7 @@ impl ReducerCore {
                 Some(p) => Ok(p),
                 None => Err(InterpreterError::ReduceError(format!(
                     "Unbound variable: {} in {:?}",
-                    level, env.env_map
+                    level, env
                 ))),
             },
             Some(VarInstance::Wildcard(_)) => Err(InterpreterError::ReduceError(
@@ -2330,105 +2298,18 @@ impl ReducerCore {
     // TODO: review 'loop' matches 'tailRecM'
     async fn eval_match(
         &self,
-        mat: &Match,
+        mat: Match,
         env: &Env<Par>,
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         fn add_to_env(env: &Env<Par>, free_map: BTreeMap<i32, Par>, free_count: i32) -> Env<Par> {
-            (0..free_count).fold(env.clone(), |mut acc, e| {
+            (0..free_count).fold(env.clone(), |acc, e| {
                 let value = free_map.get(&e).unwrap_or(&Par::default()).clone();
                 acc.put(value)
             })
         }
 
-        let first_match = Box::new(
-            |target: Par, cases: Vec<MatchCase>, rand: Blake2b512Random| async {
-                let mut state = (target, cases);
-
-                loop {
-                    let (_target, _cases) = state;
-
-                    match _cases.as_slice() {
-                        [] => return Ok(()),
-
-                        [single_case, case_rem @ ..] => {
-                            let pattern = self.substitute.substitute_and_charge(
-                                &unwrap_option_safe(single_case.pattern.clone())?,
-                                1,
-                                env,
-                            )?;
-
-                            let mut spatial_matcher = SpatialMatcherContext::new();
-                            let match_result =
-                                spatial_matcher.spatial_match_result(_target.clone(), pattern);
-
-                            match match_result {
-                                None => {
-                                    state = (_target, case_rem.to_vec());
-                                }
-
-                                Some(free_map) => {
-                                    let case_env =
-                                        add_to_env(env, free_map.clone(), single_case.free_count);
-
-                                    // Optional `where` guard. Fire the case
-                                    // body iff the guard evaluates to
-                                    // GBool(true). Anything else (false,
-                                    // non-bool, eval-error) falls through to
-                                    // the next case — matching the plan §3.4
-                                    // fall-through rule. `Some(empty Par)` is
-                                    // treated as "no guard" so we agree with
-                                    // eval_receive and Matcher::check_commit.
-                                    let guard_passes = match &single_case.guard {
-                                        Some(g) if g != &Par::default() => {
-                                            match rho_pure_eval::eval(g, &case_env) {
-                                                Ok(result) => extract_bool(&result) == Some(true),
-                                                Err(_) => false,
-                                            }
-                                        }
-                                        _ => true,
-                                    };
-
-                                    if !guard_passes {
-                                        state = (_target, case_rem.to_vec());
-                                        continue;
-                                    }
-
-                                    // Changed by G3 (DR-135, S3b H3): a match on
-                                    // one held variable binds the values of the
-                                    // case for the variable's holder.
-                                    // self.eval_with_authority(
-                                    let case_reducer = self.match_case_reducer(
-                                        mat.target.as_ref(),
-                                        env,
-                                        single_case.free_count,
-                                    );
-                                    case_reducer
-                                        .as_ref()
-                                        .unwrap_or(self)
-                                        .eval_with_authority(
-                                            single_case.source.clone().expect(
-                                                "MatchCase.source: protobuf no_box invariant",
-                                            ),
-                                            &case_env,
-                                            rand,
-                                            authority.clone(),
-                                        )
-                                        .await?;
-
-                                    return Ok(());
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-        );
-
-        // D3 (DR-9, OD-3): `match` is a non-COMM structural reduction —
-        // DIAGNOSTIC only (it is metered for fidelity but contributes 0 to the
-        // consensus consumed cost).
         self.metering.reserve_reduction(match_eval_cost())?;
         let evaled_target = self.eval_expr(
             mat.target
@@ -2436,16 +2317,55 @@ impl ReducerCore {
                 .expect("Match.target: normalizer post-condition"),
             env,
         )?;
-        let subst_target = self
+        let target = self
             .substitute
-            .substitute_and_charge(&evaled_target, 0, env)?;
+            .substitute_and_charge(evaled_target, 0, env)?;
 
-        first_match(subst_target, mat.cases.clone(), rand).await
+        for case in mat.cases {
+            let pattern =
+                self.substitute
+                    .substitute_and_charge(unwrap_option_safe(case.pattern)?, 1, env)?;
+            let Some(free_map) =
+                SpatialMatcherContext::new().into_match_result(target.clone(), pattern)
+            else {
+                continue;
+            };
+            let case_env = add_to_env(env, free_map, case.free_count);
+
+            // Optional `where` guard: the case fires only when the guard
+            // evaluates to GBool(true); anything else falls through to the
+            // next case. `Some(empty Par)` means no guard, as in eval_receive
+            // and Matcher::check_commit.
+            let guard_passes = match &case.guard {
+                Some(g) if g != &Par::default() => match rho_pure_eval::eval(g, &case_env) {
+                    Ok(result) => extract_bool(&result) == Some(true),
+                    Err(_) => false,
+                },
+                _ => true,
+            };
+            if !guard_passes {
+                continue;
+            }
+
+            let case_reducer = self.match_case_reducer(mat.target.as_ref(), env, case.free_count);
+            return case_reducer
+                .as_ref()
+                .unwrap_or(self)
+                .eval_with_authority(
+                    case.source
+                        .expect("MatchCase.source: protobuf no_box invariant"),
+                    &case_env,
+                    rand,
+                    authority.clone(),
+                )
+                .await;
+        }
+        Ok(())
     }
 
     async fn eval_if(
         &self,
-        conditional: &If,
+        conditional: If,
         env: &Env<Par>,
         rand: Blake2b512Random,
         authority: &CostAuthority,
@@ -2460,16 +2380,13 @@ impl ReducerCore {
                 .expect("If.condition: normalizer post-condition"),
             env,
         )?;
-        let subst_cond = self
-            .substitute
-            .substitute_and_charge(&evaled_cond, 0, env)?;
+        let subst_cond = self.substitute.substitute_and_charge(evaled_cond, 0, env)?;
 
         match extract_bool(&subst_cond) {
             Some(true) => {
                 self.eval_with_authority(
                     conditional
                         .if_true
-                        .clone()
                         .expect("If.if_true: normalizer post-condition"),
                     env,
                     rand,
@@ -2481,7 +2398,6 @@ impl ReducerCore {
                 self.eval_with_authority(
                     conditional
                         .if_false
-                        .clone()
                         .expect("If.if_false: normalizer post-condition"),
                     env,
                     rand,
@@ -2502,7 +2418,7 @@ impl ReducerCore {
     // TODO: Eliminate variable shadowing - OLD
     async fn eval_new(
         &self,
-        new: &New,
+        new: New,
         env: Env<Par>,
         mut rand: Blake2b512Random,
         authority: &CostAuthority,
@@ -2536,23 +2452,18 @@ impl ReducerCore {
         // `new` no longer counts toward the per-COMM consensus cost.
         self.metering
             .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;
-        match allocate_new_bindings(new, &env, &mut rand, &self.urn_map) {
+        match allocate_new_bindings(&new, &env, &mut rand, &self.urn_map) {
             Ok(env) => {
-                self.eval_with_authority(
-                    unwrap_option_safe(new.p.clone())?,
-                    &env,
-                    rand,
-                    authority.clone(),
-                )
-                .await
+                self.eval_with_authority(unwrap_option_safe(new.p)?, &env, rand, authority.clone())
+                    .await
             }
             Err(e) => Err(e),
         }
     }
 
     fn unbundle_receive(&self, rb: &ReceiveBind, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        let eval_src = self.eval_expr(&unwrap_option_safe(rb.source.clone())?, env)?;
-        let subst = self.substitute.substitute_and_charge(&eval_src, 0, env)?;
+        let eval_src = self.eval_expr(unwrap_option_ref(&rb.source)?, env)?;
+        let subst = self.substitute.substitute_and_charge(eval_src, 0, env)?;
         // Check if we try to read from bundled channel
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
@@ -2574,13 +2485,13 @@ impl ReducerCore {
 
     async fn eval_bundle(
         &self,
-        bundle: &Bundle,
+        bundle: Bundle,
         env: &Env<Par>,
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         self.eval_with_authority(
-            unwrap_option_safe(bundle.body.clone())?,
+            unwrap_option_safe(bundle.body)?,
             env,
             rand,
             authority.clone(),
@@ -2705,22 +2616,21 @@ impl ReducerCore {
 
     // Public here for testing purposes
     pub fn eval_expr_to_par(&self, expr: &Expr, env: &Env<Par>) -> Result<Par, InterpreterError> {
-        match unwrap_option_safe(expr.expr_instance.clone())? {
+        match unwrap_option_ref(&expr.expr_instance)? {
             ExprInstance::EVarBody(evar) => {
-                let p = self.eval_var(&unwrap_option_safe(evar.v)?, env)?;
-                let evaled_p = self.eval_expr(&p, env)?;
-                Ok(evaled_p)
+                let p = self.eval_var(unwrap_option_ref(&evar.v)?, env)?;
+                self.eval_expr(&p, env)
             }
             ExprInstance::EMethodBody(emethod) => {
                 self.metering.reserve_primitive(method_call_cost())?;
-                let evaled_target = self.eval_expr(&unwrap_option_safe(emethod.target)?, env)?;
+                let evaled_target = self.eval_expr(unwrap_option_ref(&emethod.target)?, env)?;
                 let evaled_args: Vec<Par> = emethod
                     .arguments
                     .iter()
                     .map(|arg| self.eval_expr(arg, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                let result_par = match self.method_table().get(&emethod.method_name) {
+                let result_par = match self.method(&emethod.method_name) {
                     Some(_method) => _method.apply(evaled_target, evaled_args, env)?,
                     None => {
                         // Changed by DR-125 (bug 11008): a method that the
@@ -3044,8 +2954,8 @@ impl ReducerCore {
                 }
 
                 ExprInstance::EMultBody(EMult { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -3138,8 +3048,8 @@ impl ReducerCore {
                 }
 
                 ExprInstance::EDivBody(EDiv { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -3254,8 +3164,8 @@ impl ReducerCore {
                 }
 
                 ExprInstance::EModBody(EMod { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -3374,8 +3284,8 @@ impl ReducerCore {
                 }
 
                 ExprInstance::EPlusBody(EPlus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -3489,8 +3399,8 @@ impl ReducerCore {
                 }
 
                 ExprInstance::EMinusBody(EMinus { p1, p2 }) => {
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     if let (Some(lhs), Some(rhs)) = (&v1.expr_instance, &v2.expr_instance) {
                         if is_sized_int_pair(lhs, rhs) {
@@ -3623,52 +3533,45 @@ impl ReducerCore {
                 }
 
                 ExprInstance::ELtBody(ELt { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| !b1 & b2,
                     |i1: i64, i2: i64| i1 < i2,
                     |s1: String, s2: String| s1 < s2,
                 ),
 
                 ExprInstance::ELteBody(ELte { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 <= b2,
                     |i1: i64, i2: i64| i1 <= i2,
                     |s1: String, s2: String| s1 <= s2,
                 ),
 
                 ExprInstance::EGtBody(EGt { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 & !b2,
                     |i1: i64, i2: i64| i1 > i2,
                     |s1: String, s2: String| s1 > s2,
                 ),
 
                 ExprInstance::EGteBody(EGte { p1, p2 }) => relop(
-                    &p1.clone().unwrap(),
-                    &p2.clone().unwrap(),
+                    p1.as_ref().unwrap(),
+                    p2.as_ref().unwrap(),
                     |b1: bool, b2: bool| b1 >= b2,
                     |i1: i64, i2: i64| i1 >= i2,
                     |s1: String, s2: String| s1 >= s2,
                 ),
 
                 ExprInstance::EEqBody(EEq { p1, p2 }) => {
-                    let v1 = self.eval_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
                     // TODO: build an equality operator that takes in an environment. - OLD
-                    let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-                    let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    // Changed by DR-134 (DR-66 item 3): the legacy equality cost is
-                    // deleted with the legacy meter.
-                    // let cost = if self.metering.budget().is_legacy() {
-                    //     equality_check_cost_legacy(&sv1, &sv2)
-                    // } else {
-                    //     equality_check_cost(&sv1, &sv2)
-                    // };
-                    let cost = equality_check_cost(&sv1, &sv2);
-                    self.metering.reserve_primitive(cost)?;
+                    let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
+                    let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
+                    self.metering
+                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         false
@@ -3681,19 +3584,12 @@ impl ReducerCore {
                 }
 
                 ExprInstance::ENeqBody(ENeq { p1, p2 }) => {
-                    let v1 = self.eval_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
-                    let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
-                    let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    // Changed by DR-134 (DR-66 item 3): the legacy equality cost is
-                    // deleted with the legacy meter.
-                    // let cost = if self.metering.budget().is_legacy() {
-                    //     equality_check_cost_legacy(&sv1, &sv2)
-                    // } else {
-                    //     equality_check_cost(&sv1, &sv2)
-                    // };
-                    let cost = equality_check_cost(&sv1, &sv2);
-                    self.metering.reserve_primitive(cost)?;
+                    let v1 = self.eval_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_expr(p2.as_ref().unwrap(), env)?;
+                    let sv1 = self.substitute.substitute_and_charge(v1, 0, env)?;
+                    let sv2 = self.substitute.substitute_and_charge(v2, 0, env)?;
+                    self.metering
+                        .reserve_primitive(equality_check_cost(&sv1, &sv2))?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
                         true
@@ -3706,8 +3602,8 @@ impl ReducerCore {
                 }
 
                 ExprInstance::EAndBody(EAnd { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
+                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
                     self.metering.reserve_primitive(boolean_and_cost())?;
 
                     Ok(Expr {
@@ -3716,8 +3612,8 @@ impl ReducerCore {
                 }
 
                 ExprInstance::EOrBody(EOr { p1, p2 }) => {
-                    let b1 = self.eval_to_bool(&p1.clone().unwrap(), env)?;
-                    let b2 = self.eval_to_bool(&p2.clone().unwrap(), env)?;
+                    let b1 = self.eval_to_bool(p1.as_ref().unwrap(), env)?;
+                    let b2 = self.eval_to_bool(p2.as_ref().unwrap(), env)?;
                     self.metering.reserve_primitive(boolean_or_cost())?;
 
                     Ok(Expr {
@@ -3726,20 +3622,20 @@ impl ReducerCore {
                 }
 
                 ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
-                    let evaled_target = self.eval_expr(&target.clone().unwrap(), env)?;
+                    let evaled_target = self.eval_expr(target.as_ref().unwrap(), env)?;
                     let subst_target =
                         self.substitute
-                            .substitute_and_charge(&evaled_target, 0, env)?;
+                            .substitute_and_charge(evaled_target, 0, env)?;
                     let subst_pattern =
                         self.substitute
-                            .substitute_and_charge(&pattern.clone().unwrap(), 1, env)?;
+                            .substitute_and_charge(pattern.clone().unwrap(), 1, env)?;
 
-                    let mut spatial_matcher = SpatialMatcherContext::new();
-                    let match_result =
-                        spatial_matcher.spatial_match_result(subst_target, subst_pattern);
+                    let matched = SpatialMatcherContext::new()
+                        .into_match_result(subst_target, subst_pattern)
+                        .is_some();
 
                     Ok(Expr {
-                        expr_instance: Some(ExprInstance::GBool(match_result.is_some())),
+                        expr_instance: Some(ExprInstance::GBool(matched)),
                     })
                 }
 
@@ -3817,8 +3713,8 @@ impl ReducerCore {
                     }
 
                     self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::EMapBody(emap)) => {
@@ -3871,8 +3767,8 @@ impl ReducerCore {
 
                 ExprInstance::EPlusPlusBody(EPlusPlus { p1, p2 }) => {
                     self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::GString(lhs), ExprInstance::GString(rhs)) => {
@@ -3980,8 +3876,8 @@ impl ReducerCore {
 
                 ExprInstance::EMinusMinusBody(EMinusMinus { p1, p2 }) => {
                     self.metering.reserve_primitive(op_call_cost())?;
-                    let v1 = self.eval_single_expr(&p1.clone().unwrap(), env)?;
-                    let v2 = self.eval_single_expr(&p2.clone().unwrap(), env)?;
+                    let v1 = self.eval_single_expr(p1.as_ref().unwrap(), env)?;
+                    let v2 = self.eval_single_expr(p2.as_ref().unwrap(), env)?;
 
                     match (v1.expr_instance.unwrap(), v2.expr_instance.unwrap()) {
                         (ExprInstance::ESetBody(lhs), ExprInstance::ESetBody(rhs)) => {
@@ -4014,7 +3910,7 @@ impl ReducerCore {
                 }
 
                 ExprInstance::EVarBody(EVar { v }) => {
-                    let p = self.eval_var(&v.clone().unwrap(), env)?;
+                    let p = self.eval_var(v.as_ref().unwrap(), env)?;
                     let expr_val = self.eval_single_expr(&p, env)?;
                     Ok(expr_val)
                 }
@@ -4154,7 +4050,7 @@ impl ReducerCore {
                         .map(|arg| self.eval_expr(arg, env))
                         .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-                    let result_par = match self.method_table().get(method_name) {
+                    let result_par = match self.method(method_name) {
                         Some(method_function) => {
                             method_function.apply(evaled_target, evaled_args, env)?
                         }
@@ -4288,7 +4184,7 @@ impl ReducerCore {
                 let expr_subst =
                     self.outer
                         .substitute
-                        .substitute_and_charge(&expr_evaled, 0, env)?;
+                        .substitute_and_charge(expr_evaled, 0, env)?;
 
                 self.outer
                     .metering
@@ -8664,72 +8560,66 @@ impl ReducerCore {
         Box::new(ToStringMethod { outer: self })
     }
 
-    fn method_table<'a>(&'a self) -> HashMap<String, Box<dyn Method + 'a>> {
-        let mut table = HashMap::new();
-        table.insert("nth".to_string(), self.nth_method());
-        table.insert("toByteArray".to_string(), self.to_byte_array_method());
-        table.insert("hexToBytes".to_string(), self.hex_to_bytes_method());
-        table.insert("bytesToHex".to_string(), self.bytes_to_hex_method());
-        table.insert("concatBytes".to_string(), self.concat_bytes_method());
-        table.insert(
-            "validUtf8PrefixLen".to_string(),
-            self.valid_utf8_prefix_len_method(),
-        );
-        table.insert("decodeUtf8".to_string(), self.decode_utf8_method());
-        table.insert("toUtf8Bytes".to_string(), self.to_utf8_bytes_method());
-        table.insert("union".to_string(), self.union_method());
-        table.insert("diff".to_string(), self.diff_method());
-        table.insert("intersection".to_string(), self.intersection_method());
-        table.insert("restriction".to_string(), self.restriction_method());
-        table.insert("dropHead".to_string(), self.drop_head_method());
-        table.insert("run".to_string(), self.run_method());
-        // Zipper methods
-        table.insert("readZipper".to_string(), self.read_zipper_method());
-        table.insert("readZipperAt".to_string(), self.read_zipper_at_method());
-        table.insert("writeZipper".to_string(), self.write_zipper_method());
-        table.insert("writeZipperAt".to_string(), self.write_zipper_at_method());
-        table.insert("descendTo".to_string(), self.descend_to_method());
-        table.insert("getLeaf".to_string(), self.get_leaf_method());
-        table.insert("getSubtrie".to_string(), self.get_subtrie_method());
-        table.insert("setLeaf".to_string(), self.set_leaf_method());
-        table.insert("setSubtrie".to_string(), self.set_subtrie_method());
-        table.insert("removeLeaf".to_string(), self.remove_leaf_method());
-        table.insert("removeBranches".to_string(), self.remove_branches_method());
-        table.insert("graft".to_string(), self.graft_method());
-        table.insert("joinInto".to_string(), self.join_into_method());
-        table.insert("atPath".to_string(), self.at_path_method());
-        table.insert("pathExists".to_string(), self.path_exists_method());
-        table.insert("createPath".to_string(), self.create_path_method());
-        table.insert("prunePath".to_string(), self.prune_path_method());
-        table.insert("reset".to_string(), self.reset_method());
-        // Advanced navigation methods
-        table.insert("ascendOne".to_string(), self.ascend_one_method());
-        table.insert("ascend".to_string(), self.ascend_method());
-        table.insert("toNextSibling".to_string(), self.to_next_sibling_method());
-        table.insert("toPrevSibling".to_string(), self.to_prev_sibling_method());
-        table.insert("descendFirst".to_string(), self.descend_first_method());
-        table.insert(
-            "descendIndexedBranch".to_string(),
-            self.descend_indexed_branch_method(),
-        );
-        table.insert("childCount".to_string(), self.child_count_method());
-        table.insert("add".to_string(), self.add_method());
-        table.insert("delete".to_string(), self.delete_method());
-        table.insert("contains".to_string(), self.contains_method());
-        table.insert("get".to_string(), self.get_method());
-        table.insert("getOrElse".to_string(), self.get_or_else_method());
-        table.insert("set".to_string(), self.set_method());
-        table.insert("keys".to_string(), self.keys_method());
-        table.insert("size".to_string(), self.size_method());
-        table.insert("length".to_string(), self.length_method());
-        table.insert("slice".to_string(), self.slice_method());
-        table.insert("take".to_string(), self.take_method());
-        table.insert("toList".to_string(), self.to_list_method());
-        table.insert("toSet".to_string(), self.to_set_method());
-        table.insert("toMap".to_string(), self.to_map_method());
-        table.insert("toString".to_string(), self.to_string_method());
-        table.insert("toBigInt".to_string(), self.to_bigint_method());
-        table
+    fn method<'a>(&'a self, name: &str) -> Option<Box<dyn Method + 'a>> {
+        let method = match name {
+            "nth" => self.nth_method(),
+            "toByteArray" => self.to_byte_array_method(),
+            "hexToBytes" => self.hex_to_bytes_method(),
+            "bytesToHex" => self.bytes_to_hex_method(),
+            "concatBytes" => self.concat_bytes_method(),
+            "validUtf8PrefixLen" => self.valid_utf8_prefix_len_method(),
+            "decodeUtf8" => self.decode_utf8_method(),
+            "toUtf8Bytes" => self.to_utf8_bytes_method(),
+            "union" => self.union_method(),
+            "diff" => self.diff_method(),
+            "intersection" => self.intersection_method(),
+            "restriction" => self.restriction_method(),
+            "dropHead" => self.drop_head_method(),
+            "run" => self.run_method(),
+            "readZipper" => self.read_zipper_method(),
+            "readZipperAt" => self.read_zipper_at_method(),
+            "writeZipper" => self.write_zipper_method(),
+            "writeZipperAt" => self.write_zipper_at_method(),
+            "descendTo" => self.descend_to_method(),
+            "getLeaf" => self.get_leaf_method(),
+            "getSubtrie" => self.get_subtrie_method(),
+            "setLeaf" => self.set_leaf_method(),
+            "setSubtrie" => self.set_subtrie_method(),
+            "removeLeaf" => self.remove_leaf_method(),
+            "removeBranches" => self.remove_branches_method(),
+            "graft" => self.graft_method(),
+            "joinInto" => self.join_into_method(),
+            "atPath" => self.at_path_method(),
+            "pathExists" => self.path_exists_method(),
+            "createPath" => self.create_path_method(),
+            "prunePath" => self.prune_path_method(),
+            "reset" => self.reset_method(),
+            "ascendOne" => self.ascend_one_method(),
+            "ascend" => self.ascend_method(),
+            "toNextSibling" => self.to_next_sibling_method(),
+            "toPrevSibling" => self.to_prev_sibling_method(),
+            "descendFirst" => self.descend_first_method(),
+            "descendIndexedBranch" => self.descend_indexed_branch_method(),
+            "childCount" => self.child_count_method(),
+            "add" => self.add_method(),
+            "delete" => self.delete_method(),
+            "contains" => self.contains_method(),
+            "get" => self.get_method(),
+            "getOrElse" => self.get_or_else_method(),
+            "set" => self.set_method(),
+            "keys" => self.keys_method(),
+            "size" => self.size_method(),
+            "length" => self.length_method(),
+            "slice" => self.slice_method(),
+            "take" => self.take_method(),
+            "toList" => self.to_list_method(),
+            "toSet" => self.to_set_method(),
+            "toMap" => self.to_map_method(),
+            "toString" => self.to_string_method(),
+            "toBigInt" => self.to_bigint_method(),
+            _ => return None,
+        };
+        Some(method)
     }
 
     fn eval_single_expr(&self, p: &Par, env: &Env<Par>) -> Result<Expr, InterpreterError> {
@@ -8928,7 +8818,7 @@ impl ReducerCore {
             locally_free,
             par.exprs
                 .iter()
-                .flat_map(|expr| expr.locally_free(expr.clone(), 0))
+                .flat_map(|expr| expr.locally_free(0))
                 .collect(),
         );
 
@@ -8984,18 +8874,11 @@ impl ReducerCore {
             .map(|expr| self.eval_expr_to_par(expr, env))
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-        // Note: the locallyFree cache in par could now be invalid, but given
-        // that locallyFree is for use in the matcher, and the matcher uses
-        // substitution, it will resolve in that case. AlwaysEqual makes sure
-        // that this isn't an issue in the rest of cases.
-        let result = evaled_exprs
+        // The locally_free cache carried over from `par` may now be stale;
+        // the matcher substitutes before it relies on it.
+        Ok(evaled_exprs
             .into_iter()
-            .fold(par.with_exprs(Vec::new()), |acc, expr| {
-                // acc.exprs.iter().chain(expr.exprs.iter()).cloned().collect()
-                concatenate_pars(acc, expr)
-            });
-
-        Ok(result)
+            .fold(par.clone_with_exprs(Vec::new()), concatenate_pars))
     }
 }
 

@@ -724,12 +724,7 @@ impl<'u> FundingResolver<'u> {
                 "funding resolver scope depth does not fit in i32".to_string(),
             )
         })?;
-        let mut env = Env {
-            env_map: HashMap::new(),
-            level,
-            shift: 0,
-        };
-        env.env_map.reserve(referenced.len());
+        let mut values = HashMap::with_capacity(referenced.len());
         for level in referenced {
             let Some(binder) = depth.checked_sub(level + 1) else {
                 continue;
@@ -740,10 +735,10 @@ impl<'u> FundingResolver<'u> {
                         "funding resolver binder position does not fit in i32".to_string(),
                     )
                 })?;
-                env.env_map.insert(position, value.clone());
+                values.insert(position, value.clone());
             }
         }
-        Ok(env)
+        Ok(Env::from_sparse(level, values))
     }
 
     /// Rebuilds a node: a copy of the fields that the resolver does not walk,

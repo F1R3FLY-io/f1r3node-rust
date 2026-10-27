@@ -22,7 +22,13 @@ type DataReader<'a, C, A> = &'a dyn Fn(&C, StoreKey) -> Result<NativeDataView<C,
 type ContinuationReader<'a, C, P, K> =
     &'a dyn Fn(&[C], &GroupKeys) -> Result<Vec<Arc<WaitingContinuation<P, K>>>>;
 
-pub(in crate::rspace::replay_rspace) struct CandidateReader<'a, C, P: Clone, A: Clone, K: Clone> {
+pub(in crate::rspace::replay_rspace) struct CandidateReader<
+    'a,
+    C,
+    P: Clone + PartialEq,
+    A: Clone,
+    K: Clone + PartialEq,
+> {
     pub(in crate::rspace::replay_rspace) data: DataReader<'a, C, A>,
     pub(in crate::rspace::replay_rspace) continuations: ContinuationReader<'a, C, P, K>,
 }
@@ -35,7 +41,12 @@ const INCOMING_INDEX: i32 = -1;
 /// D-D5 (DR-107): the selection of a produce owns the incoming datum. A
 /// produce that matches nothing gets its datum back to store it, and a
 /// matched produce gets its source back for the counter and the trace.
-pub(in crate::rspace::replay_rspace) enum ProduceSelection<C, P: Clone, A: Clone, K: Clone> {
+pub(in crate::rspace::replay_rspace) enum ProduceSelection<
+    C,
+    P: Clone + PartialEq,
+    A: Clone,
+    K: Clone + PartialEq,
+> {
     Unmatched(Datum<A>),
     Matched {
         prepared: PreparedProduceCandidate<C, P, A, K>,
@@ -151,9 +162,9 @@ fn channel_position<C: Eq, A: Clone>(
 impl<C, P, A, K> ReplayRSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + PartialEq + Debug + Default + Serialize + 'static + Sync + Send,
 {
     pub(in crate::rspace::replay_rspace) fn prepare_produce_counter(
         &'_ self,
@@ -940,7 +951,12 @@ where
 
 /// Added by G3 (DR-135, S6): the tuple of a refused COMM of a produce (R7):
 /// its waiting continuation, its data and the COMM.
-pub(in crate::rspace::replay_rspace) struct RefusedProduceTuple<C, P: Clone, A: Clone, K: Clone> {
+pub(in crate::rspace::replay_rspace) struct RefusedProduceTuple<
+    C,
+    P: Clone + PartialEq,
+    A: Clone,
+    K: Clone + PartialEq,
+> {
     pub(in crate::rspace::replay_rspace) continuation: WaitingContinuation<P, K>,
     pub(in crate::rspace::replay_rspace) data: Vec<ConsumeCandidate<C, A>>,
     pub(in crate::rspace::replay_rspace) comm: COMM,

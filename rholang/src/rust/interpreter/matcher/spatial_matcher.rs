@@ -320,6 +320,10 @@ impl SpatialMatcherContext {
             None => None,
         }
     }
+
+    pub fn into_match_result(mut self, target: Par, pattern: Par) -> Option<FreeMap> {
+        self.spatial_match(target, pattern).map(|_| self.free_map)
+    }
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - forTuple

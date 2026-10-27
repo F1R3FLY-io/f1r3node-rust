@@ -390,6 +390,18 @@ pub struct RuntimeManager {
     /// `safe_descend` falls through to the identity branch
     /// (matches pre-Shape-A behavior).
     pub root_registry: rholang::rust::interpreter::io::path::identity::RootIdentityRegistry,
+
+    /// Shared range-lock registry — broadcast to every spawned
+    /// runtime via `FileHandleTable::share_lock_registry` in
+    /// `broadcast_fs_slots`.  Cross-cap lock coordination on the
+    /// same `(dev, inode)` has to live above the per-fd table
+    /// because each `File` cap mints its own fd (slice 27's
+    /// fresh-mint posture), so same-file concurrent operations
+    /// via different caps need a shared coordinator.  Mirrors
+    /// [`root_registry`](Self::root_registry) in shape — a
+    /// single manager-owned registry fans out to every
+    /// runtime's handle-table at spawn time.
+    pub shared_lock_registry: rholang::rust::interpreter::io::lock::SharedLockRegistry,
 }
 
 // Moved by G2-1 to
@@ -1065,6 +1077,19 @@ impl RuntimeManager {
         runtime
             .fs_handles
             .share_root_registry(self.root_registry.clone());
+        // Share the manager's `SharedLockRegistry` backing with the
+        // spawned runtime via the same two-layer-indirection
+        // discipline (see `SharedLockRegistry::share_from`).  Cross-
+        // cap lock coordination on the same `(dev, inode)` is now
+        // visible across every runtime spawned from this manager —
+        // without this call, each runtime would carry its own
+        // disjoint `LockRegistry` and a `File` cap holding a
+        // range-lock in one runtime would not block a sibling cap's
+        // acquire attempt in another runtime, defeating the
+        // whole-shard coordination guarantee.
+        runtime
+            .fs_handles
+            .share_lock_registry(self.shared_lock_registry.clone());
     }
 
     pub async fn compute_state(
@@ -2539,6 +2564,7 @@ impl RuntimeManager {
             consensus_static_roots: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             root_registry:
                 rholang::rust::interpreter::io::path::identity::RootIdentityRegistry::new(),
+            shared_lock_registry: rholang::rust::interpreter::io::lock::SharedLockRegistry::new(),
         }
     }
 

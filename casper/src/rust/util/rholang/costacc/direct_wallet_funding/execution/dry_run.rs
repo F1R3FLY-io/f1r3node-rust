@@ -152,6 +152,7 @@ impl RuntimeOps {
                 accounting::funding_sig_single(&accounting::principal_ground_v61(&signer.bytes)),
             )
             .map_err(runtime_error)?;
+        self.begin_native_fs_scope(&identity);
         self.runtime
             .evaluate_with_native_phlo(
                 term,
@@ -210,6 +211,7 @@ impl RuntimeManager {
             },
             Err(error) => Err(error),
         };
+        runtime.finish_native_fs_scope(false);
         runtime.runtime.revert_to_soft_checkpoint(checkpoint).await;
         outcome
     }

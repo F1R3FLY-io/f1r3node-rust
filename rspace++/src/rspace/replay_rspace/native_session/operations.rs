@@ -45,6 +45,7 @@ where
         + Sync
         + Send,
     P: Clone
+        + PartialEq
         + Debug
         + Default
         + Serialize
@@ -63,6 +64,7 @@ where
         + Sync
         + Send,
     K: Clone
+        + PartialEq
         + Debug
         + Default
         + Serialize
@@ -346,7 +348,7 @@ where
                 &waiting.peeks,
             );
             self.space
-                .log_comm(&data_candidates, &channels, waiting, comm, "comm.consume");
+                .log_comm(&data_candidates, &channels, &waiting, &comm, "comm.consume");
         }
         Ok(Some((continuation, result.data)))
     }
@@ -670,7 +672,7 @@ where
             self.space
                 .log_produce(source.clone(), &channel, &data, persist);
             self.space
-                .log_comm(&data_candidates, &channels, waiting, comm, "comm.produce");
+                .log_comm(&data_candidates, &channels, &waiting, &comm, "comm.produce");
         }
         Ok(Some((continuation, result.data, returned)))
     }

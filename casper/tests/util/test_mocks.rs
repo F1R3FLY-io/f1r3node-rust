@@ -79,6 +79,14 @@ impl KeyValueStore for MockKeyValueStore {
         Ok(true)
     }
 
+    fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+        let mut map = self.data.lock().unwrap();
+        if map.get(key) != Some(expected) {
+            return Ok(false);
+        }
+        Ok(map.remove(key).is_some())
+    }
+
     fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {
         let mut data = self.data.lock().unwrap();
         let mut count = 0;
@@ -178,6 +186,11 @@ impl KeyValueStore for EmptyKeyValueStore {
 
     fn put_one_if_absent(&self, _key: Vec<u8>, _value: Vec<u8>) -> Result<bool, KvStoreError> {
         Ok(true)
+    }
+
+    fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+        let _ = (key, expected);
+        Ok(false)
     }
 
     fn delete(&self, _keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> {

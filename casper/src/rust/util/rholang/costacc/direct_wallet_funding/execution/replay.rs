@@ -52,7 +52,7 @@ use rholang::rust::interpreter::accounting::{
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::interpreter::InterpreterImpl;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::rho_runtime::{create_native_replay_env, RhoRuntime};
+use rholang::rust::interpreter::rho_runtime::{create_native_replay_env_with_logger, RhoRuntime};
 use rholang::rust::interpreter::system_processes::DeployData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
@@ -904,6 +904,7 @@ impl<'preflight, 'a> NativeOfferedAttempt<'preflight, 'a> {
                 return Err(error);
             }
         };
+        self.runtime.finish_native_fs_scope(!rolled_back);
         Ok(NativeReplayedSettlementResult {
             final_root,
             mergeable,
@@ -1585,6 +1586,9 @@ impl<'processed, 'policy, 'a> PendingReplayedNativeSettlement<'processed, 'polic
             }
             return Err(error);
         }
+        self.attempt
+            .runtime
+            .finish_native_fs_scope(self.attempt.evaluation.errors.is_empty());
         Ok((self.attempt, self.wallet))
     }
 }
@@ -2101,6 +2105,7 @@ impl RuntimeManager {
         let mut offered_definitions =
             vec![grant_issue_definition(offered_grant_issue_call_limits())];
         // Changed by DR-134 (DR-70): the replay takes the optional logger.
+        runtime.begin_native_fs_scope(&identity);
         let mut replay =
             rholang::rust::interpreter::rho_runtime::create_native_replay_env_with_logger(
                 trace,
@@ -2174,6 +2179,9 @@ impl RuntimeManager {
             (true, user, committed) => user || committed,
         };
         let guard_claimed = rolled_back && !user_failure;
+        if rolled_back {
+            runtime.finish_native_fs_scope(false);
+        }
         let exported = replay.export().await?;
         let post_run_root: [u8; 32] = exported
             .root()
@@ -2320,7 +2328,12 @@ impl RuntimeManager {
         )?;
         let mut offered_definitions =
             vec![grant_issue_definition(offered_grant_issue_call_limits())];
-        let mut replay = create_native_replay_env(
+        let mut runtime = RuntimeOps::new(
+            self.spawn_offered_runtime(offered_grant_issue_call_limits())
+                .await?,
+        );
+        runtime.begin_native_fs_scope(&identity);
+        let mut replay = create_native_replay_env_with_logger(
             trace,
             history.clone(),
             Arc::new(Box::new(Matcher)),
@@ -2329,6 +2342,8 @@ impl RuntimeManager {
             &mut offered_definitions,
             cost,
             ExternalServices::noop(),
+            None,
+            runtime.runtime.fs_handles.clone(),
         )
         .await?;
         *replay.block_data.write().await = context.block_data.clone();
@@ -2346,10 +2361,9 @@ impl RuntimeManager {
             exported.root().clone(),
             !evaluation.errors.is_empty(),
         );
-        let mut runtime = RuntimeOps::new(
-            self.spawn_offered_runtime(offered_grant_issue_call_limits())
-                .await?,
-        );
+        if !evaluation.errors.is_empty() {
+            runtime.finish_native_fs_scope(false);
+        }
         runtime.runtime.set_block_data(context.block_data).await;
         runtime
             .runtime
