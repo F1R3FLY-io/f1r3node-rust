@@ -115,11 +115,11 @@ This document captures user stories that drive feature development. User stories
 
 > As a **CI maintainer**, I want **the ephemeral CI runners to use DePIN infrastructure first and OCI as the fallback, selected through a GitHub repository variable** so that **CI capacity does not depend on one cloud provider and its daily instance quota**.
 
-**Implemented in:** Planned
+**Implemented in:** EPIC-031
 
 **Value Stream:** Release Assurance
 
-**Status:** Planned
+**Status:** In Progress
 
 **Acceptance Criteria:**
 - [ ] A repository variable selects the primary runner provider for the CI workflows that launch ephemeral runners. DePIN is the primary provider when the variable is not set. The value for OCI makes these workflows use OCI only.
