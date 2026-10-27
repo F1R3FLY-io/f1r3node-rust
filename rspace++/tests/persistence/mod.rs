@@ -7,6 +7,7 @@ mod checkpoint_wal;
 mod closure_validation;
 mod closure_union_inventory;
 mod cow_reachability_ledger_properties;
+mod durable_authority_core;
 mod durable_catalog;
 mod durable_object_stream;
 mod durable_index_recovery;

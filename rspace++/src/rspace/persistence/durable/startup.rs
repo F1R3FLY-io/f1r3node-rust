@@ -10,7 +10,7 @@ use std::fmt::{Display, Formatter};
 
 use super::index::{CanonicalIndexStreamV1, ObjectIndexPrefixVerifierV1};
 use super::io::{DurableDirectoryV1, DurableFileV1, DurableIoError, DurableWriterLeaseV1};
-use super::reclaim::ReclamationCatalogRelationV1;
+use super::reclaim::{ReclamationCandidateV1, ReclamationCatalogRelationV1};
 use super::recovery::{
     CatalogPackProviderV1, CatalogVerifiedRecoveryV1, RecoveryError, ScannedPackChainV1,
     scan_catalog_authorized_pack_chain, stage_catalog_verified_data_in_source_order,
@@ -23,8 +23,8 @@ use super::{
 use crate::rspace::persistence::retention::v2_format::RetentionReader;
 use crate::rspace::persistence::wal::TerminalCommitViewV1;
 use crate::rspace::persistence::{
-    CatalogAuthorityTokenV1, LogPackAddress, LogPackDecodeLimits, PackId, PackTerminalIdentityV1,
-    SemanticProfileId, StateVersionV1, StoreId,
+    CatalogAuthorityTokenV1, CatalogSlotV1, LogPackAddress, LogPackDecodeLimits, PackId,
+    PackTerminalIdentityV1, SemanticProfileId, StateVersionV1, StoreId,
 };
 
 #[cfg(test)]
@@ -296,8 +296,16 @@ pub(crate) fn recover_physical_from_lease_v1(
     let candidate = lease.read_reclamation_candidate()?;
     let reader = lease.directory().try_clone_reader()?;
     let recovered = recover_index_bound_v1(&reader, lease, limits, wal_limits)?;
+    resolve_reclamation_candidate_v1(lease, candidate, recovered.catalog_authority().slot())?;
+    Ok(recovered)
+}
+
+pub(super) fn resolve_reclamation_candidate_v1(
+    lease: &mut DurableWriterLeaseV1,
+    candidate: Option<ReclamationCandidateV1>,
+    selected: CatalogSlotV1,
+) -> Result<(), DurableStartupErrorV1> {
     if let Some(candidate) = candidate {
-        let selected = recovered.catalog_authority().slot();
         match candidate.relation_to_catalog(selected) {
             ReclamationCatalogRelationV1::PreCas => {
                 lease.remove_reclamation_candidate()?;
@@ -312,7 +320,7 @@ pub(crate) fn recover_physical_from_lease_v1(
             }
         }
     }
-    Ok(recovered)
+    Ok(())
 }
 
 struct DirectoryPackProviderV1<'directory>(&'directory DurableDirectoryV1);

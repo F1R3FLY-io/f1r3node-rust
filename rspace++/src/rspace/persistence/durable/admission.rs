@@ -18,6 +18,7 @@ use super::io::{DurableDirectoryV1, DurableFileV1, DurableIoError, DurableWriter
 use super::startup::{
     DurableStartupErrorV1, DurableStartupWorkV1, IndexBindingDispositionV1,
     IndexBoundPhysicalRecoveryV1, PhysicallyRecoveredDurableWriterV1, read_catalog_token,
+    recover_physical_from_lease_v1,
 };
 use crate::rspace::persistence::canonical::{
     CanonicalFormatError, CanonicalSink, ObjectDigest, ObjectRefV1, checked_len,
@@ -60,7 +61,7 @@ use crate::rspace::persistence::store::{
 use crate::rspace::persistence::transaction::SealedObject;
 use crate::rspace::persistence::transaction::{
     DagTransactionError, DagTransactionLimits, OpenDagTransaction, SealedDagTransaction,
-    SealedTransitionV1,
+    SealedTransitionV1, SemanticValidityV1, ValidityOnlyV1,
 };
 use crate::rspace::persistence::wal::{
     CommittedObjectComparison, CommittedObjectLookup, LogPackObjectPlanError, LogPackObjectPlanV1,
@@ -1079,31 +1080,25 @@ pub(crate) struct DurableAdmissionReportV1 {
     pub(crate) object_read_bytes: u64,
 }
 
-/// Immutable checkpoint source pinned to one exact catalog authority.
-///
-/// Keeping this authority separate from the mutable writer lease lets a
-/// generation publisher borrow the complete admitted source while mutating
-/// new pack/index files, without reopening the store, cloning the closure, or
-/// introducing aliasing escape hatches.
-pub(crate) struct AdmittedCheckpointSourceV1<P: SemanticProfile> {
+pub(crate) struct DurableAuthorityCoreV1<P: SemanticProfile> {
     store: DurableIndexedObjectStoreV1,
     registry: GenerationLeaseRegistryV1,
     authority: CatalogAuthorityTokenV1,
     version: StateVersionV1,
     retention_manifest_bytes: Box<[u8]>,
-    retention: AdmittedRetention,
-    semantic: SemanticallyAdmittedStateV1,
+    retention_format: RetentionFormat,
+    validity: SemanticValidityV1,
     shape: CurrentShapeSummaryV1,
     retained_closure: StructuralClosureLedgerV1,
-    report: DurableAdmissionReportV1,
-    admission_requirements: DurableAdmissionRequirementsV1,
+    retained_states: u64,
+    retained_state_maxima: ClosureInventoryV1,
     /// The retention format in which this writer seals successors and
     /// checkpoints, fixed by its directory at admission.
     retention_writer: RetentionFormat,
     profile: PhantomData<fn() -> P>,
 }
 
-impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
+impl<P: SemanticProfile> DurableAuthorityCoreV1<P> {
     pub(super) fn preflight_writer(
         &self,
         lease: &DurableWriterLeaseV1,
@@ -1114,14 +1109,150 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         Ok(())
     }
 
+    pub(crate) fn verified_state(
+        &self,
+    ) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P, ValidityOnlyV1> {
+        VerifiedDagState::from_validity(&self.store, self.version, self.validity)
+            .expect("durable validity token is bound to its exact catalog state")
+    }
+
+    pub(crate) const fn validity(&self) -> SemanticValidityV1 { self.validity }
+
+    pub(crate) const fn shape(&self) -> &CurrentShapeSummaryV1 { &self.shape }
+
+    pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { &self.authority }
+
+    pub(crate) const fn retention_manifest_bytes(&self) -> &[u8] { &self.retention_manifest_bytes }
+
+    pub(crate) const fn retention_format(&self) -> RetentionFormat { self.retention_format }
+
+    pub(crate) const fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
+        &self.retained_closure
+    }
+
+    pub(crate) const fn retained_states(&self) -> u64 { self.retained_states }
+
+    pub(crate) const fn retained_state_maxima(&self) -> ClosureInventoryV1 {
+        self.retained_state_maxima
+    }
+
+    /// Refuse a successor of a V2 source under the V1 writer, which would
+    /// replace the V2 metadata with a stale V1 manifest.
+    fn require_writable_retention(&self) -> Result<(), DurableTransactionPreparationError> {
+        match (self.retention_format(), self.retention_writer) {
+            (format @ RetentionFormat::V2, RetentionFormat::V1) => {
+                Err(DurableTransactionPreparationError::RetentionFormatNotWritable(format))
+            }
+            (RetentionFormat::V1, _) | (RetentionFormat::V2, RetentionFormat::V2) => Ok(()),
+        }
+    }
+
+    /// The private overlay a retention V2 write stages into: it reads the
+    /// pinned store and admits the retention metadata domains.
+    fn retention_staging(&self) -> StagingObjectStore<'_, DurableIndexedObjectStoreV1> {
+        StagingObjectStore::new(&self.store).with_retention_reader(RetentionReader::Dual)
+    }
+
+    pub(crate) fn get_object_bounded(
+        &self,
+        digest: &ObjectDigest,
+        max_encoded_len: u64,
+    ) -> Result<Option<Box<[u8]>>, DurableObjectReadErrorV1> {
+        self.store.get_bounded(digest, max_encoded_len)
+    }
+
+    /// Classify sealed canonical objects against the authenticated pinned
+    /// index. Complete bytes are compared after every digest hit, so the plan
+    /// is safe for direct WAL writing without a digest-only shortcut or a
+    /// second semantic projection.
+    pub(crate) fn classify_transaction_objects(
+        &self,
+        transaction: &crate::rspace::persistence::SealedDagTransaction<'_, P>,
+    ) -> Result<LogPackObjectPlanV1, LogPackObjectPlanError<DurableObjectReadErrorV1>> {
+        LogPackObjectPlanV1::classify(transaction, &self.store)
+    }
+
+    /// Build the checked, zero-copy WAL prepare plan for one sealed
+    /// transaction. Object dispositions are classified exactly once against
+    /// the admitted index, then bound to its authenticated receipt and limits.
+    pub(crate) fn prepare_transaction<'transaction, 'mutation>(
+        &self,
+        lease: &DurableWriterLeaseV1,
+        transaction: &'transaction SealedDurableTransactionV1<'mutation, P>,
+        sequence: LogPackSequence,
+        limits: crate::rspace::persistence::LogPackDecodeLimits,
+    ) -> Result<
+        PreparedDurableLogPackTransactionV1<'transaction, 'mutation, P>,
+        DurableTransactionPreparationError,
+    > {
+        self.preflight_writer(lease)?;
+        if transaction.predecessor != *self.authority() ||
+            !transaction.registry.shares_registry(&self.registry) ||
+            sequence !=
+                self.authority()
+                    .slot()
+                    .commit_sequence()
+                    .successor()
+                    .map_err(DurableTransactionPreparationError::Format)?
+        {
+            return Err(DurableTransactionPreparationError::AuthorityMismatch);
+        }
+        let plan = self
+            .classify_transaction_objects(&transaction.sealed)
+            .map_err(DurableTransactionPreparationError::ObjectPlan)?;
+        let prepared = PreparedLogPackTransactionV1::new(
+            &transaction.sealed,
+            plan,
+            self.authority().slot().store_id(),
+            sequence,
+            limits,
+        )
+        .map_err(DurableTransactionPreparationError::Format)?;
+        Ok(PreparedDurableLogPackTransactionV1 {
+            prepared,
+            sealed: transaction,
+        })
+    }
+}
+
+/// Immutable checkpoint source pinned to one exact catalog authority.
+///
+/// Keeping this authority separate from the mutable writer lease lets a
+/// generation publisher borrow the complete admitted source while mutating
+/// new pack/index files, without reopening the store, cloning the closure, or
+/// introducing aliasing escape hatches.
+pub(crate) struct AdmittedCheckpointSourceV1<P: SemanticProfile> {
+    core: DurableAuthorityCoreV1<P>,
+    retention: AdmittedRetention,
+    semantic: SemanticallyAdmittedStateV1,
+    report: DurableAdmissionReportV1,
+    admission_requirements: DurableAdmissionRequirementsV1,
+}
+
+impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
+    pub(crate) const fn core(&self) -> &DurableAuthorityCoreV1<P> { &self.core }
+
+    pub(crate) fn into_core(self) -> DurableAuthorityCoreV1<P> { self.core }
+
+    pub(super) fn preflight_writer(
+        &self,
+        lease: &DurableWriterLeaseV1,
+    ) -> Result<(), DurableTransactionPreparationError> {
+        self.core.preflight_writer(lease)
+    }
+
     pub(crate) fn verified_state(&self) -> VerifiedDagState<'_, DurableIndexedObjectStoreV1, P> {
-        VerifiedDagState::from_completed_admission(&self.store, self.version, self.semantic)
-            .expect("durable admission token is bound to its exact catalog state")
+        VerifiedDagState::from_completed_admission(
+            &self.core.store,
+            self.core.version,
+            self.semantic,
+        )
+        .expect("durable admission token is bound to its exact catalog state")
     }
 
     pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.report }
 
-    pub(crate) const fn shape(&self) -> &CurrentShapeSummaryV1 { &self.shape }
+    pub(crate) const fn shape(&self) -> &CurrentShapeSummaryV1 { self.core.shape() }
 
     pub(crate) fn preflight_checkpoint_admission(
         &self,
@@ -1130,18 +1261,20 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         self.admission_requirements.preflight(limits)
     }
 
-    pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { &self.authority }
+    pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { self.core.authority() }
 
-    pub(crate) const fn retention_manifest_bytes(&self) -> &[u8] { &self.retention_manifest_bytes }
+    pub(crate) const fn retention_manifest_bytes(&self) -> &[u8] {
+        self.core.retention_manifest_bytes()
+    }
 
-    pub(crate) const fn retention_format(&self) -> RetentionFormat { self.retention.format() }
+    pub(crate) const fn retention_format(&self) -> RetentionFormat { self.core.retention_format() }
 
     pub(crate) const fn retention_metadata_v2(&self) -> Option<&AdmittedRetentionMetadataV2> {
         self.retention.metadata_v2()
     }
 
     pub(crate) const fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
-        &self.retained_closure
+        self.core.retained_closure()
     }
 
     /// Derive fresh-generation checkpoint authority from the exact closure
@@ -1153,24 +1286,24 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
     pub(crate) fn checkpoint_descriptor(
         &self,
     ) -> Result<GenerationCheckpointDescriptorV1, GenerationCheckpointErrorV1> {
-        let pack = self.authority.slot().pack();
-        match (self.retention_format(), self.retention_writer) {
+        let pack = self.core.authority.slot().pack();
+        match (self.retention_format(), self.core.retention_writer) {
             (RetentionFormat::V1, _) => GenerationCheckpointDescriptorV1::from_retained_union(
                 P::ID,
-                self.version,
+                self.core.version,
                 pack.retention_manifest(),
                 self.report.current_structural.distinct_objects,
                 pack.current_state_canonical_bytes(),
-                &self.retained_closure,
+                &self.core.retained_closure,
             ),
             (RetentionFormat::V2, RetentionFormat::V2) => {
                 GenerationCheckpointDescriptorV1::from_retained_union_and_metadata(
                     P::ID,
-                    self.version,
+                    self.core.version,
                     pack.retention_manifest(),
                     self.report.current_structural.distinct_objects,
                     pack.current_state_canonical_bytes(),
-                    &self.retained_closure,
+                    &self.core.retained_closure,
                 )
             }
             (format @ RetentionFormat::V2, RetentionFormat::V1) => {
@@ -1183,14 +1316,14 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         &self,
         visitor: impl FnMut(ObjectRefV1) -> Result<(), E>,
     ) -> Result<(), CheckpointReferenceVisitErrorV1<E>> {
-        match (self.retention_format(), self.retention_writer) {
+        match (self.retention_format(), self.core.retention_writer) {
             (RetentionFormat::V1, _) => try_visit_checkpoint_references(
-                &self.retained_closure,
-                self.authority.slot().pack().retention_manifest(),
+                &self.core.retained_closure,
+                self.core.authority.slot().pack().retention_manifest(),
                 visitor,
             ),
             (RetentionFormat::V2, RetentionFormat::V2) => {
-                try_visit_checkpoint_references_v2(&self.retained_closure, visitor)
+                try_visit_checkpoint_references_v2(&self.core.retained_closure, visitor)
             }
             (format @ RetentionFormat::V2, RetentionFormat::V1) => {
                 Err(CheckpointReferenceVisitErrorV1::Checkpoint(
@@ -1206,7 +1339,8 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         sink: &mut S,
         scratch: &mut Vec<u8>,
     ) -> Result<(), DurableObjectCopyErrorV1<S::Error>> {
-        self.store
+        self.core
+            .store
             .copy_verified_canonical_with_scratch(reference, sink, scratch)
     }
 }
@@ -1320,7 +1454,7 @@ impl Display for RetentionWriteErrorV2 {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DurableSuccessorInventoryV1 {
-    pub(super) current: StructuralClosureReport,
+    pub(super) current: ClosureInventoryV1,
     pub(super) retained_union: RetainedUnionClosureReportV1,
     /// The successor's retention V2 metadata closure, as the private ledger
     /// trial derived it; none under the V1 writer.
@@ -1410,6 +1544,14 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
 
     pub(crate) fn into_parts(self) -> (DurableWriterLeaseV1, AdmittedCheckpointSourceV1<P>) {
         (self.lease, self.source)
+    }
+
+    pub(crate) fn from_parts(
+        lease: DurableWriterLeaseV1,
+        source: AdmittedCheckpointSourceV1<P>,
+    ) -> Result<Self, DurableTransactionPreparationError> {
+        source.preflight_writer(&lease)?;
+        Ok(Self { lease, source })
     }
 
     /// Return the immutable catalog image governing this admitted writer.
@@ -1562,23 +1704,12 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         admission_limits: DurableAdmissionLimitsV1,
     ) -> Result<SealedDurableTransactionV1<'mutation, P>, DurableTransactionPreparationError> {
         self.preflight_writer(lease)?;
-        self.require_writable_retention()?;
+        self.core.require_writable_retention()?;
         let sealed = self
             .open_transaction(mutation, limits)
             .and_then(OpenDagTransaction::seal)
             .map_err(|error| DurableTransactionPreparationError::Transaction(Box::new(error)))?;
         self.bind_durable_transaction(lease, sealed, admission_limits)
-    }
-
-    /// Refuse a successor of a V2 source under the V1 writer, which would
-    /// replace the V2 metadata with a stale V1 manifest.
-    fn require_writable_retention(&self) -> Result<(), DurableTransactionPreparationError> {
-        match (self.retention_format(), self.retention_writer) {
-            (format @ RetentionFormat::V2, RetentionFormat::V1) => {
-                Err(DurableTransactionPreparationError::RetentionFormatNotWritable(format))
-            }
-            (RetentionFormat::V1, _) | (RetentionFormat::V2, RetentionFormat::V2) => Ok(()),
-        }
     }
 
     /// Attach the target retention metadata to a sealed transaction. The
@@ -1600,7 +1731,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         {
             return Err(DurableTransactionPreparationError::AuthorityMismatch);
         }
-        self.require_writable_retention()?;
+        self.core.require_writable_retention()?;
         let appointed =
             AppointedRetention::parse(self.retention_manifest_bytes(), RetentionReader::Dual)?;
         let retained_states = appointed
@@ -1618,7 +1749,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
             .map_err(|error| DurableTransactionPreparationError::Inventory(Box::new(error)))?;
         let target = sealed.receipt().target();
         let target_state = RetainedStateV1::new(target, inventory.current.canonical_bytes)?;
-        let (sealed, metadata) = match (appointed, self.retention_writer) {
+        let (sealed, metadata) = match (appointed, self.core.retention_writer) {
             (AppointedRetention::V1(current), RetentionFormat::V1) => {
                 let mut historical = current.historical().collect::<Result<Vec<_>, _>>()?;
                 historical.push(current.current());
@@ -1627,7 +1758,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
                 (sealed.with_retention_manifest(manifest)?, None)
             }
             (AppointedRetention::V1(current), RetentionFormat::V2) => {
-                let staging = self.retention_staging();
+                let staging = self.core.retention_staging();
                 let step = migrate_retention_v1(
                     &staging,
                     current,
@@ -1635,12 +1766,18 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
                     DagRewriteLimits::UNBOUNDED,
                 )
                 .map_err(RetentionWriteErrorV2::Edit)?;
-                let (sealed, metadata) =
-                    self.attach_retention_v2(sealed, staging, step.anchor(), &[], limits)?;
-                (sealed, Some(metadata))
+                let (sealed, successor) = attach_retention_v2(
+                    sealed,
+                    staging,
+                    &self.core.retained_closure,
+                    step.anchor(),
+                    &[],
+                    metadata_trial_limits(limits),
+                )?;
+                (sealed, Some(successor.metadata_inventory()))
             }
             (AppointedRetention::V2(predecessor), RetentionFormat::V2) => {
-                let staging = self.retention_staging();
+                let staging = self.core.retention_staging();
                 let step = commit_retention_v2(
                     &staging,
                     predecessor,
@@ -1648,14 +1785,15 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
                     DagRewriteLimits::UNBOUNDED,
                 )
                 .map_err(RetentionWriteErrorV2::Edit)?;
-                let (sealed, metadata) = self.attach_retention_v2(
+                let (sealed, successor) = attach_retention_v2(
                     sealed,
                     staging,
+                    &self.core.retained_closure,
                     step.anchor(),
                     &[predecessor.object_ref()],
-                    limits,
+                    metadata_trial_limits(limits),
                 )?;
-                (sealed, Some(metadata))
+                (sealed, Some(successor.metadata_inventory()))
             }
             (AppointedRetention::V2(_), RetentionFormat::V1) => {
                 return Err(DurableTransactionPreparationError::RetentionFormatNotWritable(
@@ -1666,7 +1804,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         Ok(SealedDurableTransactionV1 {
             sealed,
             predecessor: self.authority().clone(),
-            registry: self.registry.clone(),
+            registry: self.core.registry.clone(),
             inventory: DurableSuccessorInventoryV1 {
                 metadata,
                 ..inventory
@@ -1675,63 +1813,21 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         })
     }
 
-    /// The private overlay a retention V2 write stages into: it reads the
-    /// pinned store and admits the retention metadata domains.
-    fn retention_staging(&self) -> StagingObjectStore<'_, DurableIndexedObjectStoreV1> {
-        StagingObjectStore::new(&self.store).with_retention_reader(RetentionReader::Dual)
-    }
-
-    /// Account a staged retention V2 successor in the metadata closure with
-    /// one private ledger trial, which activates the successor anchor before
-    /// it deactivates the predecessor's, then attach the staged metadata.
-    /// The trial visits only the objects whose metadata count crosses zero.
-    fn attach_retention_v2<'mutation>(
-        &self,
-        sealed: SealedDagTransaction<'mutation, P>,
-        staging: StagingObjectStore<'_, DurableIndexedObjectStoreV1>,
-        anchor: RetentionAnchorV2,
-        predecessor: &[ObjectRefV1],
-        limits: DurableAdmissionLimitsV1,
-    ) -> Result<(SealedDagTransaction<'mutation, P>, ClosureInventoryV1), RetentionWriteErrorV2>
-    {
-        let trial = run_ledger_trial(
-            &staging,
-            &self.retained_closure,
-            ClosureDomainV1::Metadata,
-            &[anchor.object_ref()],
-            predecessor,
-            metadata_trial_limits(limits),
-        )
-        .map_err(RetentionWriteErrorV2::Trial)?;
-        let metadata = trial.successor.metadata_inventory();
-        let sealed = sealed
-            .with_retention_metadata(anchor, staging)
-            .map_err(RetentionWriteErrorV2::Staging)?;
-        Ok((sealed, metadata))
-    }
-
     pub(crate) fn get_object_bounded(
         &self,
         digest: &ObjectDigest,
         max_encoded_len: u64,
     ) -> Result<Option<Box<[u8]>>, DurableObjectReadErrorV1> {
-        self.store.get_bounded(digest, max_encoded_len)
+        self.core.get_object_bounded(digest, max_encoded_len)
     }
 
-    /// Classify sealed canonical objects against the authenticated pinned
-    /// index. Complete bytes are compared after every digest hit, so the plan
-    /// is safe for direct WAL writing without a digest-only shortcut or a
-    /// second semantic projection.
     pub(crate) fn classify_transaction_objects(
         &self,
         transaction: &crate::rspace::persistence::SealedDagTransaction<'_, P>,
     ) -> Result<LogPackObjectPlanV1, LogPackObjectPlanError<DurableObjectReadErrorV1>> {
-        LogPackObjectPlanV1::classify(transaction, &self.store)
+        self.core.classify_transaction_objects(transaction)
     }
 
-    /// Build the checked, zero-copy WAL prepare plan for one sealed
-    /// transaction. Object dispositions are classified exactly once against
-    /// the admitted index, then bound to its authenticated receipt and limits.
     pub(crate) fn prepare_transaction<'transaction, 'mutation>(
         &self,
         lease: &DurableWriterLeaseV1,
@@ -1742,33 +1838,8 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         PreparedDurableLogPackTransactionV1<'transaction, 'mutation, P>,
         DurableTransactionPreparationError,
     > {
-        self.preflight_writer(lease)?;
-        if transaction.predecessor != *self.authority() ||
-            !transaction.registry.shares_registry(&self.registry) ||
-            sequence !=
-                self.authority()
-                    .slot()
-                    .commit_sequence()
-                    .successor()
-                    .map_err(DurableTransactionPreparationError::Format)?
-        {
-            return Err(DurableTransactionPreparationError::AuthorityMismatch);
-        }
-        let plan = self
-            .classify_transaction_objects(&transaction.sealed)
-            .map_err(DurableTransactionPreparationError::ObjectPlan)?;
-        let prepared = PreparedLogPackTransactionV1::new(
-            &transaction.sealed,
-            plan,
-            self.authority().slot().store_id(),
-            sequence,
-            limits,
-        )
-        .map_err(DurableTransactionPreparationError::Format)?;
-        Ok(PreparedDurableLogPackTransactionV1 {
-            prepared,
-            sealed: transaction,
-        })
+        self.core
+            .prepare_transaction(lease, transaction, sequence, limits)
     }
 
     /// Derive exact current and retained-union reports from one staged
@@ -1778,7 +1849,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         sealed: &SealedDagTransaction<'_, P>,
         limits: DurableAdmissionLimitsV1,
     ) -> Result<DurableSuccessorInventoryV1, SuccessorInventoryError> {
-        let staging = StagingObjectStore::new(&self.store);
+        let staging = StagingObjectStore::new(&self.core.store);
         for object in sealed.objects() {
             staging
                 .stage(object.canonical_bytes_arc())
@@ -1791,7 +1862,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
                 limits.max_object_read_bytes,
             ),
         };
-        let mut ledger = self.retained_closure.clone();
+        let mut ledger = self.core.retained_closure.clone();
         let current = verify_structural_closure_in_ledger_with_limits(
             &store,
             sealed.receipt().target().manifest(),
@@ -1814,7 +1885,10 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
             });
         }
         Ok(DurableSuccessorInventoryV1 {
-            current,
+            current: ClosureInventoryV1 {
+                distinct_objects: current.distinct_objects,
+                canonical_bytes: current.canonical_bytes,
+            },
             retained_union,
             metadata: None,
         })
@@ -1842,11 +1916,39 @@ pub(crate) fn admit_physical_writer<P: SemanticProfile>(
     Ok(SemanticallyAdmittedDurableWriterV1 { lease, source })
 }
 
+pub(crate) fn acquire_cold_checked<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    core: &DurableAuthorityCoreV1<P>,
+    recovery_limits: DurableLimits,
+    wal_limits: LogPackDecodeLimits,
+    admission_limits: DurableAdmissionLimitsV1,
+) -> Result<AdmittedCheckpointSourceV1<P>, DurableAdmissionErrorV1> {
+    let physical = recover_physical_from_lease_v1(lease, recovery_limits, wal_limits)?;
+    let source = admit_physical_source::<P>(lease, physical, admission_limits)?;
+    if !core.authority().matches_exactly(source.authority().image()) {
+        return Err(DurableAdmissionErrorV1::AuthorityChanged);
+    }
+    Ok(source)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static COLD_ADMISSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_cold_admissions() { COLD_ADMISSIONS.set(0); }
+
+#[cfg(test)]
+pub(crate) fn cold_admissions() -> u64 { COLD_ADMISSIONS.get() }
+
 pub(crate) fn admit_physical_source<P: SemanticProfile>(
     lease: &DurableWriterLeaseV1,
     recovered: IndexBoundPhysicalRecoveryV1,
     limits: DurableAdmissionLimitsV1,
 ) -> Result<AdmittedCheckpointSourceV1<P>, DurableAdmissionErrorV1> {
+    #[cfg(test)]
+    COLD_ADMISSIONS.set(COLD_ADMISSIONS.get().saturating_add(1));
     let (authority, index, terminal_commit, startup_disposition, startup_work) =
         recovered.into_admission_parts();
     let catalog = authority.slot();
@@ -2064,20 +2166,57 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
         object_read_bytes: report.object_read_bytes,
     };
     Ok(AdmittedCheckpointSourceV1 {
-        store,
-        registry: lease.generation_leases(),
-        authority,
-        version: catalog.state(),
-        retention_manifest_bytes,
+        core: DurableAuthorityCoreV1 {
+            store,
+            registry: lease.generation_leases(),
+            authority,
+            version: catalog.state(),
+            retention_manifest_bytes,
+            retention_format: admitted_retention.format(),
+            validity: SemanticValidityV1::from_admission(semantic),
+            shape,
+            retained_closure: ledger,
+            retained_states,
+            retained_state_maxima: ClosureInventoryV1 {
+                distinct_objects: maximum_per_state_structural.distinct_objects,
+                canonical_bytes: maximum_per_state_structural.canonical_bytes,
+            },
+            retention_writer,
+            profile: PhantomData,
+        },
         retention: admitted_retention,
         semantic,
-        shape,
-        retained_closure: ledger,
         report,
         admission_requirements,
-        retention_writer,
-        profile: PhantomData,
     })
+}
+
+/// Account a staged retention V2 successor in the metadata closure with
+/// one private ledger trial, which activates the successor anchor before
+/// it deactivates the predecessor's, then attach the staged metadata.
+/// The trial visits only the objects whose metadata count crosses zero.
+fn attach_retention_v2<'mutation, P: SemanticProfile>(
+    sealed: SealedDagTransaction<'mutation, P>,
+    staging: StagingObjectStore<'_, DurableIndexedObjectStoreV1>,
+    ledger: &StructuralClosureLedgerV1,
+    anchor: RetentionAnchorV2,
+    predecessor: &[ObjectRefV1],
+    limits: LedgerTrialLimitsV1,
+) -> Result<(SealedDagTransaction<'mutation, P>, StructuralClosureLedgerV1), RetentionWriteErrorV2>
+{
+    let trial = run_ledger_trial(
+        &staging,
+        ledger,
+        ClosureDomainV1::Metadata,
+        &[anchor.object_ref()],
+        predecessor,
+        limits,
+    )
+    .map_err(RetentionWriteErrorV2::Trial)?;
+    let sealed = sealed
+        .with_retention_metadata(anchor, staging)
+        .map_err(RetentionWriteErrorV2::Staging)?;
+    Ok((sealed, trial.successor))
 }
 
 /// The metadata trial's budgets, drawn from the admission limits that bound

@@ -630,6 +630,17 @@ where
     )
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static COLD_CLOSURE_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_cold_closure_walks() { COLD_CLOSURE_WALKS.set(0); }
+
+#[cfg(test)]
+pub(crate) fn cold_closure_walks() -> u64 { COLD_CLOSURE_WALKS.get() }
+
 pub(crate) fn verify_structural_closure_in_ledger_with_credit<S>(
     store: &S,
     manifest: ObjectRefV1,
@@ -641,6 +652,8 @@ pub(crate) fn verify_structural_closure_in_ledger_with_credit<S>(
 where
     S: ImmutableObjectStore,
 {
+    #[cfg(test)]
+    COLD_CLOSURE_WALKS.set(COLD_CLOSURE_WALKS.get().saturating_add(1));
     let epoch = ledger.begin_epoch()?;
     ledger.credit_root(manifest.digest(), credit)?;
     let mut report = StructuralClosureReport::default();

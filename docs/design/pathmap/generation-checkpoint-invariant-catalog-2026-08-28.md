@@ -3666,6 +3666,255 @@ sources.
 | `rspace++/tests/persistence/property_support.rs` | `1f1cbfec63a29976479af2070c67763e3a351f3e0fb513b4f1bc0e15d2165f6e` |
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `b52a6ec4c3416b0c7a684bbde17fef1f6f7873c19b32da01924984367c4cb70e` |
 
+### Durable authority core and cold-checked evidence (2026-10-27)
+
+Task 11944, the third slice of task 7927, separates by type what a trusted
+successor may carry from what only cold admission can measure. Engineering
+journal J-067 writes $`A_s`$ for the authority of a state $`s`$, its semantic
+validity and exact inventory, and $`C_{s,L}`$ for a successful cold admission
+of $`s`$ under the cold limits $`L`$, together with the demand that the
+admission measured. It rules that one *authority core* carries $`A_s`$, that a
+*cold-checked wrapper* adds the cold observations, and that nothing converts
+the first into the second (the capability contract of J-067 in the engineering
+journal). Until this slice one type, `AdmittedCheckpointSourceV1`, held both,
+so no code could hold an authority without also holding cold evidence, which a
+trusted successor never has. The slice splits that type, gives the core a
+semantic validity token in place of the cold semantic report, and adds a
+cold-checked acquisition that turns a core back into a cold source. It changes
+no persisted byte, identity, report, refusal or publication outcome. Every
+incremental publication still runs physical recovery and cold admission, and
+only the tests below call the new conversions until tasks 11945 and 11946 bind
+and publish trusted successors.
+
+**The split.** `AdmittedCheckpointSourceV1` (`durable/admission.rs:1224-1230`)
+now owns a `DurableAuthorityCoreV1` (`durable/admission.rs:1083-1099`) and the
+cold evidence beside it.
+
+| Field | Part | What it holds |
+|---|---|---|
+| `store` | core | the pinned, indexed object store of the admitted generation |
+| `registry` | core | the generation-lease registry that a writer's lease must share |
+| `authority` | core | the catalog token: the exact catalog image of two 336-byte slots, 672 bytes in all, and the slot that it selects |
+| `version` | core | the version of the current state |
+| `retention_manifest_bytes`, `retention_format` | core | the appointed retention manifest and its format |
+| `validity` | core | the semantic validity token, described below |
+| `shape` | core | the exact current-state shape summary of task 11943 |
+| `retained_closure` | core | the shared closure ledger, with its current, retained and metadata domains |
+| `retained_states` | core | the number of retained states: the historical states and the current one |
+| `retained_state_maxima` | core | the componentwise maxima of the per-state structural inventories, in distinct objects and canonical bytes |
+| `retention_writer` | core | the retention format in which this writer seals, fixed by its directory |
+| `report` | evidence | the cold admission report |
+| `admission_requirements` | evidence | the demand that cold admission measured, which a fresh checkpoint preflights |
+| `retention` | evidence | the admitted retention, with its admitted V2 metadata |
+| `semantic` | evidence | the cold semantic admission token, which carries the semantic report |
+
+Cold admission builds both parts at once (`durable/admission.rs:2168-2191`).
+The core is the production image of the theory's `authority_core` record
+(`TrustedSuccessorCapability.v:655-666`):
+
+- `core_state` and `core_metadata_roots` are the retention entries and the
+  metadata anchor that the version and the appointed manifest name;
+- `core_ledger` is `retained_closure`, into which admission also seeds the
+  metadata domain (`durable/admission.rs:2118-2120`);
+- `core_retained_states`, `core_maxima`, `core_shape` and `core_validity` are
+  `retained_states`, `retained_state_maxima`, `shape` and `validity`;
+- `core_profile` is the type parameter `P`;
+- `core_index_records` and `core_index` are the store's pinned object index.
+
+The cold evidence has no counterpart in the record: the theory keeps cold
+demand in a separate record (`cold_demand`, `TrustedSuccessorCapability.v:782`).
+The shape summary that task 11943 kept on the admitted source now lives on the
+core; the previous section's citations refer to its pinned sources.
+
+**The validity token.** `SemanticValidityV1` (`transaction.rs:109-145`) holds
+the manifest of a state whose semantics are valid. Cold admission mints it from
+the semantic admission token (`from_admission`, `durable/admission.rs:2176`).
+`successor` advances it along a sealed transaction in three steps.
+
+1. ⟨Check the profile⟩. Refuse `SemanticProfileMismatch` unless the receipt's
+   profile is that of `P`. Sealing already refuses any other profile
+   (`transaction.rs:568-574`), so the check keeps the rule total rather than
+   deciding anything today.
+2. ⟨Check the base⟩. Refuse `SemanticCoherence` unless the receipt's base names
+   the token's manifest.
+3. ⟨Advance⟩. Return the token of the receipt's target manifest.
+
+The two checks are the guards of the theory's `trusted_bind`
+(`TrustedSuccessorCapability.v:724-725`), and the result is the conclusion
+`core_validity successor = receipt_target receipt` of `trusted_successor_rule`
+(`TrustedSuccessorCapability.v:1636-1650`), which TS-18 checks on the test
+model. Like the semantic admission token, a validity token names no store and
+no profile; only the core pairs it with its own store, through `from_validity`.
+
+**The evidence parameter.** `VerifiedDagState` gains a type parameter `E` for
+the evidence that it carries, whose default is the cold evidence
+(`transaction.rs:146-162`). The parameter follows the typestate idea (Strom
+and Yemini, 1986): the type records what has been established about a value,
+and the operations that the value admits depend on it.
+
+- `ColdAdmittedV1` carries the cold semantic report. Only `admit` and
+  `from_completed_admission` build it, both from a completed semantic
+  admission, and `admission_report` exists only for it (`transaction.rs:224`).
+  The report therefore stays cold-checked, never optional and never
+  fabricated, as J-067 requires of `admission_report`.
+- `ValidityOnlyV1` is zero-sized and carries no report. `from_validity` builds
+  it from a store, a version and a validity token, and refuses
+  `SemanticCoherence` unless the token's manifest is the version's manifest
+  (`transaction.rs:230-247`).
+- Every other method is generic over `E`. A signature that names
+  `VerifiedDagState` without `E` names the cold evidence, and `admit` and
+  `from_completed_admission` exist only for it, so every existing caller and
+  test compiles and behaves unchanged.
+- `OpenDagTransaction::new` accepts either evidence and keeps a validity-only
+  witness of its store and version (`transaction.rs:383-402`); no transaction
+  phase reads a report. The private `validity_only` (`transaction.rs:255-262`)
+  drops the evidence of a state that one of the three checked constructors
+  built, and it is the only other constructor of `ValidityOnlyV1`.
+
+**No coercion.** Two conversions exist, both in the direction that J-067
+allows: `core()` borrows the core of a cold source, and `into_core()` keeps the
+core and drops the evidence (`durable/admission.rs:1233-1235`). No function
+takes a core and returns cold evidence. The core holds no report, no measured
+demand, no admitted retention and no cold semantic token, and its
+`verified_state` returns validity-only evidence
+(`durable/admission.rs:1112-1117`). This is the type-level form of the
+trusted successor section's non-implication
+
+```math
+A_t \;\not\Longrightarrow\; C_{t,L}.
+```
+
+The theory witnesses it with
+`cold_demand_is_not_a_function_of_the_inventory_summary`
+(`TrustedSuccessorCapability.v:2011`), and the TLA+ model requires that a
+trusted successor carry no cold evidence (`TrustedSuccessorHasNoColdEvidence`,
+`RSpaceTrustedIncrementalPublication.tla:295-296`), which the control that
+adopts with fabricated evidence violates (`AdoptWithFabricatedEvidence`,
+`RSpaceTrustedIncrementalPublication.tla:381-386`). A fresh checkpoint needs
+the cold current inventory (`checkpoint_descriptor`,
+`durable/admission.rs:1286-1313`) and the measured demand, so a core must
+acquire a cold source before it publishes one (TS-08).
+
+**Cold-checked acquisition.** `acquire_cold_checked(lease, core, recovery,
+wal, admission)` (`durable/admission.rs:1919-1932`) turns a core back into a
+cold source of the same catalog image in three steps.
+
+1. ⟨Recover⟩. Recover the directory under the borrowed lease
+   (`recover_physical_from_lease_v1`), which also resolves a pending
+   reclamation sidecar.
+2. ⟨Admit⟩. Admit the recovered state cold under the admission limits
+   (`admit_physical_source`). It is the only constructor of a cold source, so
+   the result carries freshly measured evidence.
+3. ⟨Compare⟩. Require the core's catalog image to equal the admitted one in
+   all 672 bytes (`matches_exactly`, `catalog.rs:500-502`), and refuse
+   `AuthorityChanged` otherwise, reusing the existing variant. The comparison
+   covers the whole image, not only the selected slot: an image whose other
+   slot changed is refused although it selects the same slot.
+
+The lease is only borrowed, so after every refusal the caller still holds it
+and its writer lock. The first two steps are those of the journal owner's
+`reconcile` (`durable/rspace_authority.rs:302-306`).
+
+`SemanticallyAdmittedDurableWriterV1::from_parts(lease, source)`
+(`durable/admission.rs:1549-1555`) binds a lease to a cold source. It runs the
+writer preflight first, which refuses `AuthorityMismatch` unless the source
+shares the generation-lease registry of the lease's opened directory, so a
+source admitted through one opened directory is never bound to the lease of
+another. A fresh checkpoint from a core therefore
+acquires a cold source, binds it, and calls
+`publish_generation_checkpoint_v1`, whose admission preflight
+(`durable/publication.rs:770-772`) still precedes the cleanup of unpublished
+artifacts (`durable/publication.rs:784`).
+
+![The durable authority core and its cold-checked admission evidence. In grey, admit_physical_source, which walks the current and every retained closure and then the current semantics under the admission limits, is the only constructor of the amber cold source, AdmittedCheckpointSourceV1. The cold source owns the core and the cold evidence: the admission report, the measured demand, the admitted retention and the cold semantic token. Only the cold source reports, preflights a fresh checkpoint against the measured demand, describes a checkpoint from the cold current inventory, visits and copies checkpoint objects, seals and binds durable transactions until the trusted bind of task 11945, and returns a verified state with the cold evidence. In green, the core DurableAuthorityCoreV1 holds the store, the registry, the exact 672-byte catalog image, the version, the retention bytes and format, the validity token, the shape summary, the retained closure ledger, the retained-state count and maxima, and the retention writer; it preflights writers, prepares transactions and returns a verified state with validity-only evidence. The green validity token holds the current manifest and advances only along a sealed receipt whose base is that manifest. In blue, the evidence parameter of VerifiedDagState: the default, ColdAdmittedV1, carries the cold report and alone has admission_report; ValidityOnlyV1 carries none, and from_validity requires the token's manifest to be the version's; OpenDagTransaction::new accepts either and keeps a validity-only witness. In purple, core() borrows the core and into_core() drops the evidence, the only conversion; acquire_cold_checked recovers, admits and compares all 672 bytes of the catalog image, refusing a mismatch as AuthorityChanged while the caller keeps the lease; and a fresh checkpoint needs the cold source, which from_parts binds to its own lease. In red and dashed, the coercion from the core to cold evidence, which does not exist. A grey note states that the default evidence keeps every caller unchanged and that no behavior changes](figures/durable-authority-core-split.svg)
+
+**Supporting refactors.** Four further changes prepare tasks 11945 and 11946,
+and each preserves behavior.
+
+- The current part of the successor inventory narrows to the two counts that
+  its readers use, `ClosureInventoryV1`: distinct objects and canonical bytes
+  (`durable/admission.rs:1456-1462`, `durable/admission.rs:1887-1891`). The
+  full report still decides `CurrentOutsideRetainedUnion` first, and the two
+  readers take only the canonical bytes (`durable/admission.rs:1751`,
+  `durable/publication.rs:889`).
+- The retention V2 attachment becomes a free function of the sealed
+  transaction, the staging store, the shared ledger, the anchor, the
+  predecessor anchors and the trial limits (`attach_retention_v2`,
+  `durable/admission.rs:2194-2220`), so that a bind can run it without a cold
+  source. Its ledger trial, attachment and errors are those of the former
+  method.
+- Startup's resolution of the reclamation sidecar becomes
+  `resolve_reclamation_candidate_v1` (`durable/startup.rs:303-324`), which
+  `recover_physical_from_lease_v1` calls with the same candidate and the
+  selected slot (`durable/startup.rs:299`). Its three outcomes run in the same
+  order with the same errors, and task 11946's trusted publication will reuse
+  it.
+- The incremental append takes a prebuilt plan, `IncrementalAppendPlanV1`
+  (`durable/publication.rs:1042-1080`). `append_incremental_prepare_and_index`
+  keeps its signature, builds the plan with the same derivations, and hands it
+  to `append_planned_incremental_prepare_and_index`
+  (`durable/publication.rs:1097-1173`), which makes the same writes. The plan
+  carries the index append together with the addresses derived beside it, so
+  the two cannot be mismatched.
+
+**Tests.** `rspace++/tests/persistence/durable_authority_core.rs` adds four
+tests. They are not property rows: they add no ID, and the
+catalog/derivation/binding registry stays at 211. Two thread-local counters,
+compiled only into test builds, make cold work observable. `cold_admissions`
+counts the entries into `admit_physical_source`
+(`durable/admission.rs:1934-1951`), and `cold_closure_walks` counts the entries
+into `verify_structural_closure_in_ledger_with_credit`
+(`closure.rs:633-656`), through which every structural closure walk passes.
+libtest runs each test on its own thread and nextest in its own process, and
+no admission or walk spawns a thread, so each test sees only its own counts.
+
+| Test | What it shows |
+|---|---|
+| `authority_core_projects_the_cold_source_without_cold_work` | One cold admission walks one closure per retained state. The core and the cold source then agree: one version, one catalog token, one object store (the same reference), the same shape, retention bytes and format, the validity token of the current manifest, and the retained-state count of the cold report. A checkpoint preflight accepts at the core's maxima and refuses one below on each component, naming that component, the lowered limit and the maxima, so the maxima are those of the cold requirements. Sealing one batch through the cold source and through the core's validity-only state gives equal receipts and objects. Neither the projections, nor the sealing, nor `into_core` admits or walks again. |
+| `semantic_validity_advances_only_along_its_own_sealed_receipt` | The core's token advances along a receipt of its own state to the target's manifest, and the advanced token refuses the same receipt again. `from_validity` binds the token to its own version, refuses it for the target, and refuses the advanced token for the base. |
+| `cold_checked_acquisition_is_bound_to_the_exact_catalog_image` | Acquisition from a core admits cold once and walks one closure per retained state, and its source equals the core in authority, retention bytes, shape and version. Publishing a batch incrementally through that source admits cold once more, as every incremental publication still does, and yields the catalog image that a freshly admitted writer publishes for the same batch in another directory. Acquisition from the stale core then refuses with `AuthorityChanged`, and acquisition from the successor's core succeeds. A catalog image rewritten so that its other slot changes while it selects the same slot is refused with `AuthorityChanged` as well. After each refusal the lease still holds the writer lock. |
+| `rebound_cold_checked_writer_publishes_the_same_fresh_generation` | Two directories installed from the same checkpoint hold equal catalog images. A source acquired under one lease is refused with `AuthorityMismatch` when bound to the other lease. A source acquired again and bound to its own lease publishes a fresh generation of the same state, whose catalog image equals the one that a freshly admitted writer publishes. |
+
+**Boundary.**
+
+- This slice refines no TS row in production. The trusted bind of task 11945
+  takes the core and its validity token, and the trusted publication of task
+  11946 returns a successor core and switches the journal owner to it.
+- Cold-checked behavior is unchanged. Every incremental publication recovers
+  and admits cold, startup admits cold, and a fresh checkpoint preflights its
+  measured demand before cleanup.
+- An acquisition may write before it refuses: its recovery may resolve the
+  reclamation sidecar and rebuild the object index (`durable/startup.rs:581-620`),
+  as every startup may. Both are idempotent and keyed to the selected catalog,
+  exactly as in the owner's `reconcile`.
+- A catalog image names a store, not a directory: two directories installed
+  from one checkpoint hold byte-identical images. The comparison therefore
+  accepts the lease of any directory whose image equals the core's, and the
+  result is a complete cold admission of the leased directory. `from_parts`
+  refuses to bind that source to the lease of any other opened directory,
+  which the fourth test checks with two such directories.
+- No persisted byte, identity, cold report or refusal changes.
+
+Cited work: R. E. Strom and S. Yemini, "Typestate: A programming language
+concept for enhancing software reliability", *IEEE Transactions on Software
+Engineering* SE-12(1):157–171, 1986,
+[doi:10.1109/TSE.1986.6312929](https://doi.org/10.1109/TSE.1986.6312929).
+
+The authority core evidence in the verification record was taken at these
+sources.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `rspace++/src/rspace/persistence/transaction.rs` | `85147658e02a85537bd31fbd08770f76f883aaea90f402fb9a15a20b7767788d` |
+| `rspace++/src/rspace/persistence/closure.rs` | `1a3ecb59031c71d880d9b30eb625fa775516c7ef2be263578bb9bbec9f86aa70` |
+| `rspace++/src/rspace/persistence/durable/admission.rs` | `5513991d1a2a6562e7ed360c4044c4b796433c802d297b54c5f703fb679a6d1d` |
+| `rspace++/src/rspace/persistence/durable/mod.rs` | `0229bda8a53f969e2574c7611b13e3abef1d2e4be77e0b1421618acf99d6e468` |
+| `rspace++/src/rspace/persistence/durable/startup.rs` | `3a1da653d1206d0dcc9563c0cd14b6197cd49081cc605d78aed3c6cc4db863d6` |
+| `rspace++/src/rspace/persistence/durable/publication.rs` | `51a9916b467a5c6cfda135c9e140c169a8d213cff2bbe4ae79e3d11d0a9b9062` |
+| `rspace++/tests/persistence/mod.rs` | `11a4a73ec62d6f09868b0bb3aaeb44af2ba65c9bcf057d2f1e99ce42ebf016f3` |
+| `rspace++/tests/persistence/durable_authority_core.rs` | `bd3d405f249f3440386399d6cf8aef314cd97f744062b655b6b7cabe502e6f32` |
+| `docs/design/pathmap/figures/durable-authority-core-split.puml` | `d13c7192bcc2e0d90bd16cd16bfd4e9df62896b433fb02e0a6beb88771f3f4a1` |
+
 ### Path-exact incremental closure (2026-10-27)
 
 Task 11957 corrects the incremental closure verifier,
@@ -4374,6 +4623,20 @@ production change: the rewrite counts the nodes it places, and durable cold
 admission records the key-length multiset in its existing walk. No persisted
 byte, identity or cold report changes. See pgmcp artifact 1130 for caps and
 evidence hashes.
+
+The 2026-10-27 authority core split adds no ID, so the catalog/derivation/binding
+registry still contains **211** IDs, and it changes no Rocq or TLA+ source, so
+no model was re-run. On an export of the candidate tree, all 486 selected
+rspace++ library tests under `rspace::persistence` passed single-threaded in
+debug (35.36 s) and release (16.82 s), with the three unwind-child helpers
+ignored by design. They include the four authority-core tests, every existing
+test unchanged, and this registry test. The candidate's export gate also
+passed: `cargo check` of all targets, clippy, all 4,424 release nextest tests
+of `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the release
+doc tests. These results cover a production change that changes no behavior:
+the durable authority is split by type into its core and its cold evidence,
+and no persisted byte, identity, cold report or refusal changes. See pgmcp
+artifact 1132 for caps and evidence hashes.
 
 ## Caller-authority contract (2026-09-06)
 

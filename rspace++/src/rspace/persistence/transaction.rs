@@ -106,22 +106,75 @@ impl<E> From<CanonicalFormatError> for DagTransactionError<E> {
     fn from(error: CanonicalFormatError) -> Self { Self::Format(Box::new(error)) }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SemanticValidityV1 {
+    manifest: ObjectRefV1,
+}
+
+impl SemanticValidityV1 {
+    pub(crate) const fn from_admission(admission: SemanticallyAdmittedStateV1) -> Self {
+        Self {
+            manifest: admission.manifest(),
+        }
+    }
+
+    pub(crate) fn successor<P: SemanticProfile>(
+        self,
+        sealed: &SealedDagTransaction<'_, P>,
+    ) -> Result<Self, CanonicalFormatError> {
+        let receipt = sealed.receipt();
+        if receipt.profile_id() != P::ID {
+            return Err(CanonicalFormatError::SemanticProfileMismatch {
+                expected: *P::ID.as_bytes(),
+                actual: *receipt.profile_id().as_bytes(),
+            });
+        }
+        if receipt.base().manifest() != self.manifest {
+            return Err(CanonicalFormatError::SemanticCoherence {
+                detail: "sealed transition base does not name the validated state manifest"
+                    .to_owned(),
+            });
+        }
+        Ok(Self {
+            manifest: receipt.target().manifest(),
+        })
+    }
+
+    pub(crate) const fn manifest(self) -> ObjectRefV1 { self.manifest }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ColdAdmittedV1 {
+    report: SemanticValidationReport,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ValidityOnlyV1(());
+
 /// A non-forgeable binding between one immutable store, one exact catalog
 /// version, and one authenticated semantic profile.
-pub struct VerifiedDagState<'store, S: ImmutableObjectStore, P: SemanticProfile> {
+pub struct VerifiedDagState<'store, S: ImmutableObjectStore, P: SemanticProfile, E = ColdAdmittedV1>
+{
     store: &'store S,
     version: StateVersionV1,
-    admission: SemanticValidationReport,
+    evidence: E,
     profile: PhantomData<fn() -> P>,
 }
 
-impl<'store, S: ImmutableObjectStore, P: SemanticProfile> Copy for VerifiedDagState<'store, S, P> {}
+impl<'store, S: ImmutableObjectStore, P: SemanticProfile, E: Copy> Copy
+    for VerifiedDagState<'store, S, P, E>
+{
+}
 
-impl<'store, S: ImmutableObjectStore, P: SemanticProfile> Clone for VerifiedDagState<'store, S, P> {
+impl<'store, S: ImmutableObjectStore, P: SemanticProfile, E: Copy> Clone
+    for VerifiedDagState<'store, S, P, E>
+{
     fn clone(&self) -> Self { *self }
 }
 
-impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'store, S, P> {
+impl<'store, S: ImmutableObjectStore, P: SemanticProfile>
+    VerifiedDagState<'store, S, P, ColdAdmittedV1>
+{
     /// Fully admit an untrusted or previously unknown graph. Local successor
     /// transactions use the resulting token and never repeat this whole-state
     /// traversal on their hot path.
@@ -134,7 +187,7 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
         Ok(Self {
             store,
             version,
-            admission,
+            evidence: ColdAdmittedV1 { report: admission },
             profile: PhantomData,
         })
     }
@@ -157,18 +210,56 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
         Ok(Self {
             store,
             version,
-            admission: admission.report(),
+            evidence: ColdAdmittedV1 {
+                report: admission.report(),
+            },
             profile: PhantomData,
         })
     }
-
-    pub const fn version(self) -> StateVersionV1 { self.version }
 
     #[expect(
         dead_code,
         reason = "no code in the crate, unit tests included, calls this accessor yet"
     )]
-    pub const fn admission_report(self) -> SemanticValidationReport { self.admission }
+    pub const fn admission_report(self) -> SemanticValidationReport { self.evidence.report }
+}
+
+impl<'store, S: ImmutableObjectStore, P: SemanticProfile>
+    VerifiedDagState<'store, S, P, ValidityOnlyV1>
+{
+    pub(crate) fn from_validity(
+        store: &'store S,
+        version: StateVersionV1,
+        validity: SemanticValidityV1,
+    ) -> Result<Self, CanonicalFormatError> {
+        if validity.manifest() != version.manifest() {
+            return Err(CanonicalFormatError::SemanticCoherence {
+                detail: "semantic validity token does not name the requested state manifest"
+                    .to_owned(),
+            });
+        }
+        Ok(Self {
+            store,
+            version,
+            evidence: ValidityOnlyV1(()),
+            profile: PhantomData,
+        })
+    }
+}
+
+impl<'store, S: ImmutableObjectStore, P: SemanticProfile, E: Copy>
+    VerifiedDagState<'store, S, P, E>
+{
+    pub const fn version(self) -> StateVersionV1 { self.version }
+
+    const fn validity_only(self) -> VerifiedDagState<'store, S, P, ValidityOnlyV1> {
+        VerifiedDagState {
+            store: self.store,
+            version: self.version,
+            evidence: ValidityOnlyV1(()),
+            profile: PhantomData,
+        }
+    }
 
     /// Borrow the exact object store sealed by this admission token.  The
     /// returned reference cannot outlive the token, so callers cannot detach
@@ -279,7 +370,7 @@ impl<'store, S: ImmutableObjectStore, P: SemanticProfile> VerifiedDagState<'stor
 /// Caller-content phase. Only exact continuation-source blobs may enter;
 /// nodes and manifests are constructed by later private phases.
 pub struct OpenDagTransaction<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile> {
-    _verified: VerifiedDagState<'store, S, P>,
+    _verified: VerifiedDagState<'store, S, P, ValidityOnlyV1>,
     mutation: MutationBatchViewV1<'mutation>,
     limits: DagTransactionLimits,
     staging: StagingObjectStore<'store, S>,
@@ -289,8 +380,8 @@ pub struct OpenDagTransaction<'store, 'mutation, S: ImmutableObjectStore, P: Sem
 impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
     OpenDagTransaction<'store, 'mutation, S, P>
 {
-    pub fn new(
-        verified: VerifiedDagState<'store, S, P>,
+    pub fn new<E: Copy>(
+        verified: VerifiedDagState<'store, S, P, E>,
         mutation: MutationBatchViewV1<'mutation>,
         limits: DagTransactionLimits,
     ) -> Result<Self, DagTransactionError<S::Error>> {
@@ -303,7 +394,7 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
         let limits = limits.with_aggregate_exact_path_limit();
         Ok(Self {
             staging: StagingObjectStore::with_limits(verified.store, limits.staging),
-            _verified: verified,
+            _verified: verified.validity_only(),
             mutation,
             limits,
             staged_sources: HashSet::new(),
@@ -430,7 +521,7 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
 }
 
 struct ContentReadyDagTransaction<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile> {
-    _verified: VerifiedDagState<'store, S, P>,
+    _verified: VerifiedDagState<'store, S, P, ValidityOnlyV1>,
     mutation: MutationBatchViewV1<'mutation>,
     limits: DagTransactionLimits,
     staging: StagingObjectStore<'store, S>,
@@ -459,7 +550,7 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
 }
 
 struct RewrittenDagTransaction<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile> {
-    _verified: VerifiedDagState<'store, S, P>,
+    _verified: VerifiedDagState<'store, S, P, ValidityOnlyV1>,
     mutation: MutationBatchViewV1<'mutation>,
     limits: DagTransactionLimits,
     staging: StagingObjectStore<'store, S>,
@@ -505,7 +596,7 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
 }
 
 struct ManifestedDagTransaction<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile> {
-    _verified: VerifiedDagState<'store, S, P>,
+    _verified: VerifiedDagState<'store, S, P, ValidityOnlyV1>,
     mutation: MutationBatchViewV1<'mutation>,
     limits: DagTransactionLimits,
     staging: StagingObjectStore<'store, S>,
@@ -548,7 +639,7 @@ impl<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile>
 }
 
 struct ValidatedDagTransaction<'store, 'mutation, S: ImmutableObjectStore, P: SemanticProfile> {
-    _verified: VerifiedDagState<'store, S, P>,
+    _verified: VerifiedDagState<'store, S, P, ValidityOnlyV1>,
     mutation: MutationBatchViewV1<'mutation>,
     staging: StagingObjectStore<'store, S>,
     rewritten: DagRewriteProduct,

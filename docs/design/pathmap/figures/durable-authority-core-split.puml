@@ -1,0 +1,135 @@
+@startuml durable-authority-core-split
+' ============================================================================
+' The durable authority core and its cold-checked admission evidence
+' (task 11944, the third slice of task 7927). A type split that changes no
+' behavior and no byte: DurableAuthorityCoreV1, AdmittedCheckpointSourceV1
+' and acquire_cold_checked in durable/admission.rs; SemanticValidityV1 and
+' the evidence parameter E of VerifiedDagState in transaction.rs.
+' Theory: formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v
+'   GREEN  #2E7D32  the authority core and its validity token, A_s
+'   AMBER  #EF6C00  the cold admission evidence, C_{s,L}
+'   BLUE   #1565C0  the evidence parameter E of VerifiedDagState
+'   PURPLE #6A1B9A  the only passages between the core and cold evidence
+'   RED    #C62828  the forbidden coercion
+'   GREY   #607D8B  the only constructor of cold evidence
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ObjectBorderColor #455A64
+skinparam NoteBorderColor #455A64
+skinparam PackageBorderColor #455A64
+
+title <b>The durable authority core and its cold-checked admission evidence</b>\nan admitted source is a core plus evidence that only cold admission measures
+
+object "admit_physical_source" as admit #CFD8DC {
+  a recovered catalog image and admission limits <latex>L</latex>
+  walks the current and every retained closure,
+  then the current semantics, under <latex>L</latex>
+  <color:#607D8B>the only constructor of a cold source</color>
+}
+
+package "cold-checked source" as coldpkg {
+  object "AdmittedCheckpointSourceV1" as wrapper #FFE0B2 {
+    core: DurableAuthorityCoreV1
+    and the cold evidence
+    <color:#EF6C00>source = core + cold evidence</color>
+  }
+  object "cold evidence <latex>C_{s,L}</latex>" as evidence #FFE0B2 {
+    report: DurableAdmissionReportV1
+    admission_requirements: the measured demand
+    retention: AdmittedRetention
+    semantic: SemanticallyAdmittedStateV1
+  }
+  object "only on the cold source" as colduse #FFF3E0 {
+    report(), preflight_checkpoint_admission(<latex>L</latex>)
+    retention_metadata_v2()
+    checkpoint_descriptor(): the cold current inventory
+    checkpoint reference visit and object copy
+    seal_transaction, bind_durable_transaction
+    (until the trusted bind of task 11945)
+    verified_state(): E = ColdAdmittedV1
+  }
+}
+
+package "authority core" as corepkg {
+  object "DurableAuthorityCoreV1, <latex>A_s</latex>" as core #C8E6C9 {
+    store, registry
+    authority: the exact 672-byte catalog image
+    version, retention bytes and format
+    validity, shape, retained closure ledger
+    retained_states, retained_state_maxima
+    retention writer
+    <color:#2E7D32>what a trusted successor carries</color>
+  }
+  object "uses of the core" as coreuse #E8F5E9 {
+    preflight_writer, authority, shape
+    retained_closure, retained_states, maxima
+    retention bytes and format
+    get_object_bounded, classify, prepare_transaction
+    verified_state(): E = ValidityOnlyV1
+  }
+  object "SemanticValidityV1" as validity #C8E6C9 {
+    the current state's manifest
+    from_admission: minted from the cold token
+    successor(sealed): the receipt's base must be
+    this manifest; it yields the target's manifest
+  }
+}
+
+package "VerifiedDagState(S, P, E)" as vds {
+  object "E = ColdAdmittedV1, the default" as coldE #BBDEFB {
+    carries the cold semantic report
+    admit, from_completed_admission
+    admission_report exists only here
+  }
+  object "E = ValidityOnlyV1" as validE #BBDEFB {
+    zero-sized: carries no report
+    from_validity requires the token's
+    manifest to be the version's manifest
+  }
+}
+
+object "OpenDagTransaction::new" as open #BBDEFB {
+  accepts either evidence
+  keeps the store and the version
+  as a ValidityOnlyV1 witness
+}
+
+object "SemanticallyAdmittedDurableWriterV1" as writer #E1BEE7 {
+  from_parts(lease, source) runs the writer
+  preflight first: a foreign lease is refused
+  (AuthorityMismatch) and nothing is bound
+  publish_generation_checkpoint_v1 then
+  preflights the measured demand before cleanup
+}
+
+admit -[#607D8B]-> wrapper : <color:#607D8B>the only constructor</color>
+wrapper --> evidence : owns
+evidence --> colduse
+colduse -[#1565C0]-> coldE
+core --> coreuse
+core --> validity : validity()
+validity -[#1565C0]-> validE : <color:#1565C0>binds the exact manifest</color>
+coreuse -[#1565C0]-> validE
+coldE -[#1565C0]-> open
+validE -[#1565C0]-> open
+wrapper -[#6A1B9A,bold]-> core : <color:#6A1B9A>core() borrows; into_core() drops the</color>\n<color:#6A1B9A>evidence: the only conversion</color>
+core -[#6A1B9A,bold]-> admit : <color:#6A1B9A>acquire_cold_checked(&mut lease, &core, limits):</color>\n<color:#6A1B9A>recover, admit, compare all 672 bytes;</color>\n<color:#6A1B9A>a mismatch is AuthorityChanged; the lease is kept</color>
+wrapper -[#6A1B9A]-> writer : <color:#6A1B9A>a fresh checkpoint</color>\n<color:#6A1B9A>needs the cold source</color>
+core -[#C62828,dashed]-> evidence : <color:#C62828>no coercion:</color>\n<color:#C62828><latex>A_t \not\Rightarrow C_{t,L}</latex></color>
+
+note bottom of open #ECEFF1
+  <b>The default keeps every caller unchanged</b>
+  A type written without E names ColdAdmittedV1, so
+  existing signatures keep the cold report; admit and
+  from_completed_admission exist only for that evidence,
+  so an inferred E resolves to it.
+  ----
+  <b>No behavior change</b>
+  The cold source delegates to its core and every
+  production path is unchanged; only tests call core(),
+  into_core(), acquire_cold_checked and from_parts.
+end note
+@enduml

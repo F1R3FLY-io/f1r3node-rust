@@ -1039,6 +1039,46 @@ fn preflight_recovery_limits(
     Ok(())
 }
 
+struct IncrementalAppendPlanV1<'prepared, 'transaction, 'mutation, P: SemanticProfile> {
+    prepared: &'prepared PreparedLogPackTransactionV1<'transaction, 'mutation, P>,
+    pack_id: PackId,
+    prepare_offset: u64,
+    prepare_address: LogPackAddress,
+    index_generation: IndexGenerationV1,
+    index_append: PreparedIndexAppendV1<'prepared, 'transaction, 'mutation, P>,
+}
+
+impl<'prepared, 'transaction, 'mutation, P: SemanticProfile>
+    IncrementalAppendPlanV1<'prepared, 'transaction, 'mutation, P>
+{
+    fn new(
+        current: CatalogSlotV1,
+        prepared: &'prepared PreparedLogPackTransactionV1<'transaction, 'mutation, P>,
+    ) -> Result<Self, IncrementalAppendErrorV1> {
+        let pack_id = PackId::new(current.pack().active_pack())?;
+        let prepare_offset = current.pack().durable_pack_tail();
+        let prepare_address =
+            LogPackAddress::from_pack(pack_id, prepare_offset, prepared.record_len())?;
+        let index_generation = IndexGenerationV1::new(current.pack().index_generation())?;
+        let index_header = super::ObjectIndexHeaderV1::new(current.store_id(), index_generation);
+        let index_append = PreparedIndexAppendV1::new(
+            index_header,
+            current.pack().durable_index_tail(),
+            pack_id,
+            prepare_offset,
+            prepared,
+        )?;
+        Ok(Self {
+            prepared,
+            pack_id,
+            prepare_offset,
+            prepare_address,
+            index_generation,
+            index_append,
+        })
+    }
+}
+
 /// Append one preflighted transaction and its DATA index records to the
 /// currently active generation. This function performs no catalog write: the
 /// caller must sync the commit and then publish the successor slot only after
@@ -1048,19 +1088,24 @@ pub(crate) fn append_incremental_prepare_and_index<P: SemanticProfile>(
     current: CatalogSlotV1,
     prepared: &PreparedLogPackTransactionV1<'_, '_, P>,
 ) -> Result<(LogPackAddress, PrepareRecordIdentityV1, u64), IncrementalAppendErrorV1> {
-    let pack_id = PackId::new(current.pack().active_pack())?;
-    let prepare_offset = current.pack().durable_pack_tail();
-    let prepare_address =
-        LogPackAddress::from_pack(pack_id, prepare_offset, prepared.record_len())?;
-    let index_generation = IndexGenerationV1::new(current.pack().index_generation())?;
-    let index_header = super::ObjectIndexHeaderV1::new(current.store_id(), index_generation);
-    let index_append = PreparedIndexAppendV1::new(
-        index_header,
-        current.pack().durable_index_tail(),
+    append_planned_incremental_prepare_and_index(
+        lease,
+        IncrementalAppendPlanV1::new(current, prepared)?,
+    )
+}
+
+fn append_planned_incremental_prepare_and_index<P: SemanticProfile>(
+    lease: &mut DurableWriterLeaseV1,
+    plan: IncrementalAppendPlanV1<'_, '_, '_, P>,
+) -> Result<(LogPackAddress, PrepareRecordIdentityV1, u64), IncrementalAppendErrorV1> {
+    let IncrementalAppendPlanV1 {
+        prepared,
         pack_id,
         prepare_offset,
-        prepared,
-    )?;
+        prepare_address,
+        index_generation,
+        index_append,
+    } = plan;
 
     let prepare_identity = {
         let mut pack = lease.open_pack(pack_id)?;

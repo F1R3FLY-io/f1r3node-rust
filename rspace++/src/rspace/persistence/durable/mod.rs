@@ -40,7 +40,8 @@ pub(crate) use admission::{
 };
 #[cfg(test)]
 pub(crate) use admission::{
-    admit_physical_source, admit_physical_writer, copy_verified_canonical_with_scratch,
+    acquire_cold_checked, admit_physical_source, admit_physical_writer, cold_admissions,
+    copy_verified_canonical_with_scratch, reset_cold_admissions,
 };
 pub use catalog::{CATALOG_IMAGE_LEN, CATALOG_SLOT_LEN, CatalogAuthorityTokenV1, CatalogSlotV1};
 #[cfg(test)]
