@@ -13,7 +13,9 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::soak_snapshot::SnapshotError;
 
-use crate::rust::pending_blocks::{PendingBlockLimits, PendingBlocks, PendingInsert};
+use crate::rust::pending_blocks::{
+    PendingBlockLimits, PendingBlocks, PendingInsert, PendingOutcome,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockDecodeLimits {
@@ -294,34 +296,39 @@ impl KeyValueBlockStore {
         &self,
         block: &BlockMessage,
         solicited: bool,
-    ) -> Result<PendingInsert, KvStoreError> {
+    ) -> Result<PendingOutcome, KvStoreError> {
         if self.disk_contains(&block.block_hash)? {
-            return Ok(PendingInsert::Accepted);
+            return Ok(PendingOutcome {
+                status: PendingInsert::Accepted,
+                evicted: Vec::new(),
+            });
         }
         Ok(self.pending.insert(block.clone(), solicited))
     }
 
-    /// Write a pending block to disk. Returns `false` when the block is not
-    /// pending (already on disk, discarded or evicted).
-    pub fn persist_pending(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
-        match self.pending.get(block_hash) {
-            Some(block) => {
-                self.put(block_hash.clone(), &block)?;
-                Ok(true)
-            }
-            None => Ok(false),
+    /// Make sure a block that enters the DAG has its body on disk. The caller
+    /// supplies the body it holds, because the pending area can evict the
+    /// entry while the block is processed.
+    pub fn persist_block(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
+        if self.disk_contains(&block.block_hash)? {
+            self.pending.remove(&block.block_hash);
+            return Ok(());
         }
+        self.put(block.block_hash.clone(), block)
     }
 
     pub fn discard_pending(&self, block_hash: &BlockHash) -> bool {
-        self.pending.remove(block_hash).is_some()
+        self.pending.remove(block_hash)
     }
 
     pub fn is_pending(&self, block_hash: &BlockHash) -> bool { self.pending.contains(block_hash) }
 
     pub fn pending_blocks(&self) -> &PendingBlocks { &self.pending }
 
-    pub fn set_pending_limits(&self, limits: PendingBlockLimits) { self.pending.set_limits(limits) }
+    /// Replace the pending-area bounds. Returns the evicted hashes.
+    pub fn set_pending_limits(&self, limits: PendingBlockLimits) -> Vec<BlockHash> {
+        self.pending.set_limits(limits)
+    }
 
     fn disk_contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
         Ok(self
@@ -1283,7 +1290,7 @@ mod tests {
         let hash = block.block_hash.clone();
 
         assert_eq!(
-            bs.put_pending(&block, false).unwrap(),
+            bs.put_pending(&block, false).unwrap().status,
             PendingInsert::Accepted
         );
 
@@ -1296,18 +1303,44 @@ mod tests {
     }
 
     #[test]
-    fn persist_pending_moves_the_block_to_disk() {
+    fn persist_block_moves_a_pending_block_to_disk() {
         let (bs, disk) = in_mem_store();
         let block = models::rust::block_implicits::get_random_block_default();
         let hash = block.block_hash.clone();
         bs.put_pending(&block, true).unwrap();
 
-        assert!(bs.persist_pending(&hash).unwrap());
+        bs.persist_block(&block).unwrap();
 
         assert!(disk.get_one(&hash.to_vec()).unwrap().is_some());
         assert!(!bs.is_pending(&hash));
+        assert_eq!(bs.get(&hash).unwrap(), Some(block.clone()));
+        bs.persist_block(&block).unwrap();
         assert_eq!(bs.get(&hash).unwrap(), Some(block));
-        assert!(!bs.persist_pending(&hash).unwrap());
+    }
+
+    #[test]
+    fn persist_block_writes_a_block_that_the_pending_area_evicted() {
+        let (bs, disk) = in_mem_store();
+        bs.set_pending_limits(PendingBlockLimits {
+            max_blocks: 1,
+            max_bytes: usize::MAX,
+            max_per_sender: 10,
+        });
+        let evicted = models::rust::block_implicits::get_random_block_default();
+        let mut newer = evicted.clone();
+        newer.block_hash = prost::bytes::Bytes::from(vec![9u8; 32]);
+        bs.put_pending(&evicted, false).unwrap();
+        let outcome = bs.put_pending(&newer, false).unwrap();
+        assert_eq!(outcome.evicted, vec![evicted.block_hash.clone()]);
+        assert!(bs.get(&evicted.block_hash).unwrap().is_none());
+
+        bs.persist_block(&evicted).unwrap();
+
+        assert!(disk
+            .get_one(&evicted.block_hash.to_vec())
+            .unwrap()
+            .is_some());
+        assert_eq!(bs.get(&evicted.block_hash).unwrap(), Some(evicted));
     }
 
     #[test]
@@ -1332,7 +1365,7 @@ mod tests {
         let block = models::rust::block_implicits::get_random_block_default();
         bs.put_block_message(&block).unwrap();
         assert_eq!(
-            bs.put_pending(&block, false).unwrap(),
+            bs.put_pending(&block, false).unwrap().status,
             PendingInsert::Accepted
         );
         assert!(!bs.is_pending(&block.block_hash));

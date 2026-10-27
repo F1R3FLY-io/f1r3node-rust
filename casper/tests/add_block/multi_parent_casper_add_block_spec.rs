@@ -520,6 +520,93 @@ async fn multi_parent_casper_should_recover_a_pending_chain_longer_than_the_area
     assert!(nodes[1].block_store.pending_blocks().is_empty());
 }
 
+/// An evicted pending block that another buffered block waits on leaves the
+/// casper buffer and is requested again, so its child is not stranded.
+#[tokio::test]
+async fn multi_parent_casper_should_request_an_evicted_parent_that_a_child_waits_on() {
+    let ctx = TestContext::new().await;
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+
+    let mut chain = Vec::new();
+    for i in 0..4 {
+        let deploy =
+            construct_deploy::basic_deploy_data(i, None, Some(ctx.shard_id.clone())).unwrap();
+        chain.push(nodes[0].add_block_from_deploys(&[deploy]).await.unwrap());
+    }
+
+    nodes[1].block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 2,
+        max_bytes: usize::MAX,
+        max_per_sender: 2_048,
+    });
+
+    for block in &chain[1..] {
+        let status = nodes[1].process_block(block.clone()).await.unwrap();
+        assert_eq!(status, Either::Left(BlockError::MissingBlocks));
+    }
+    let evicted = &chain[1];
+    assert!(!nodes[1].block_store.is_pending(&evicted.block_hash));
+    assert!(!nodes[1].casper.buffer_contains(&evicted.block_hash));
+    assert!(nodes[1]
+        .requested_blocks
+        .lock()
+        .unwrap()
+        .contains_key(&evicted.block_hash));
+
+    for block in [&chain[0], evicted] {
+        let status = nodes[1].process_block(block.clone()).await.unwrap();
+        assert_eq!(status, Either::Right(Valid));
+    }
+    loop {
+        let ready = nodes[1].casper.get_dependency_free_from_buffer().unwrap();
+        if ready.is_empty() {
+            break;
+        }
+        for block in ready {
+            let status = nodes[1].process_block(block).await.unwrap();
+            assert_eq!(status, Either::Right(Valid));
+        }
+    }
+    for block in &chain {
+        assert!(nodes[1].casper.dag_contains(&block.block_hash));
+    }
+}
+
+/// The pending area can evict a block while the block is processed. When
+/// the block then enters the DAG, its body still reaches disk.
+#[tokio::test]
+async fn multi_parent_casper_should_persist_a_block_evicted_during_processing() {
+    let ctx = TestContext::new().await;
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let block = nodes[0].add_block_from_deploys(&[deploy]).await.unwrap();
+
+    nodes[1].block_store.put_pending(&block, false).unwrap();
+    let evicted = nodes[1].block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 0,
+        max_bytes: usize::MAX,
+        max_per_sender: 2_048,
+    });
+    assert_eq!(evicted, vec![block.block_hash.clone()]);
+    assert!(nodes[1]
+        .block_store
+        .get(&block.block_hash)
+        .unwrap()
+        .is_none());
+
+    nodes[1].casper.handle_valid_block(&block).await.unwrap();
+
+    assert!(nodes[1].casper.dag_contains(&block.block_hash));
+    assert_eq!(
+        nodes[1].block_store.get(&block.block_hash).unwrap(),
+        Some(block)
+    );
+}
+
 #[tokio::test]
 async fn multi_parent_casper_should_propose_blocks_it_adds_to_peers() {
     let ctx = TestContext::new().await;

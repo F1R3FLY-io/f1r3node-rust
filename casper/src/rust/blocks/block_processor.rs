@@ -473,7 +473,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 true
             }
             SenderAuthorization::Unknown => {
-                let held = self.dependencies.hold_pending(block)?;
+                let held = self.dependencies.hold_pending(block).await?;
                 if held != PendingInsert::Accepted {
                     tracing::warn!(
                         "Dropping block {} from {}: pending area refused it ({:?}).",
@@ -1132,9 +1132,40 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         Ok(())
     }
 
-    pub fn hold_pending(&self, block: &BlockMessage) -> Result<PendingInsert, CasperError> {
+    pub async fn hold_pending(&self, block: &BlockMessage) -> Result<PendingInsert, CasperError> {
         let solicited = self.was_requested_as_dependency(&block.block_hash)?;
-        Ok(self.block_store.put_pending(block, solicited)?)
+        let outcome = self.block_store.put_pending(block, solicited)?;
+        self.release_evicted_pending(&outcome.evicted).await?;
+        Ok(outcome.status)
+    }
+
+    /// An evicted pending block has no body here any more. Drop it from the
+    /// casper buffer, so a block that waits on it does not count it as held,
+    /// and fetch it again when such a block exists.
+    pub async fn release_evicted_pending(&self, evicted: &[BlockHash]) -> Result<(), CasperError> {
+        for hash in evicted {
+            let buffered = BlockHashSerde(hash.clone());
+            let has_dependents = self
+                .casper_buffer
+                .get_children(&buffered)
+                .is_some_and(|children| !children.is_empty());
+            self.casper_buffer.remove(buffered)?;
+            if has_dependents {
+                self.block_retriever
+                    .admit_hash(
+                        hash.clone(),
+                        None,
+                        AdmitHashReason::MissingDependencyRequested,
+                    )
+                    .await?;
+            }
+            tracing::debug!(
+                "Pending block {} evicted; dependents waiting: {}.",
+                PrettyPrinter::build_string_bytes(hash),
+                has_dependents
+            );
+        }
+        Ok(())
     }
 
     pub fn discard_pending(&self, block: &BlockMessage) -> bool {
@@ -1705,7 +1736,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             return Ok(false);
         };
 
-        if let Err(persist_err) = self.block_store.persist_pending(&block.block_hash) {
+        if let Err(persist_err) = self.block_store.persist_block(block) {
             self.settled_admissions.fetch_sub(1, Ordering::Relaxed);
             return Err(persist_err.into());
         }
