@@ -110,6 +110,11 @@ The workflow enables `HEARTBEAT_TIMING=1` for this benchmark only.
 No repository variable is required.
 The workflow must reach the default branch before GitHub exposes its manual entry point.
 
+The `target_ref` input must resolve to a commit that a branch or a tag of this repository contains.
+The commits API also resolves a commit that exists only in a fork or in a pull request ref.
+The workflow rejects such a commit after the launch approval and before the runner launch.
+`.github/scripts/require-repository-commit.sh` makes this check from the commit graph of the branches and tags.
+
 ## Jobs of the integration pipeline
 
 `_integration-pipeline.yml` runs as the Integration Pipeline job of `ci.yml` and of `ci-fork-pr.yml`. Its check names start with `Integration Pipeline /`.
