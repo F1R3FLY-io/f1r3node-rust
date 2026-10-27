@@ -45,9 +45,14 @@ tonic = { workspace = true }
 eyre = { workspace = true }
 metrics = { workspace = true }
 parking_lot = "0.12"
+# Data-parallel iterators for parallel Merkle leaf hashing in
+# proto_util::deploys_root_leaves. See the PARALLEL_LEAF_THRESHOLD
+# constant in that module for the trip point.
+rayon = { workspace = true }
 
 [dev-dependencies]
 casper = { path = ".", features = ["test-utils"] }
+comm = { path = "../comm", features = ["test-utils"] }
 # P2-16: enable block-storage's test-only RMW bypass helpers for
 # detector-totality / record-lifecycle integration tests. Production
 # builds of casper do NOT enable this feature.

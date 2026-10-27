@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
     mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark,
-    ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
+    SenderAuthorization, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
 };
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -172,6 +172,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         // Already logged at INFO by the pipeline; a routine
                         // drop is not a failure.
                         Ok(BlockProcessOutcome::NotOfInterest)
+                        | Ok(BlockProcessOutcome::UnauthorizedSender)
                         | Ok(BlockProcessOutcome::Malformed) => {}
                         Err(e) => {
                             tracing::error!(block = %block_str, error = %e, "block processing failed");
@@ -358,6 +359,7 @@ mod tests;
 enum BlockProcessOutcome {
     Processed(BlockMessage, ValidBlockProcessing),
     NotOfInterest,
+    UnauthorizedSender,
     Malformed,
     MissingDependencies,
 }
@@ -366,6 +368,8 @@ enum BlockProcessOutcome {
 ///
 /// This implements the Scala pipeline:
 /// 1. checkIfOfInterest
+///    then checkSenderAuthorization (drops a sender unbonded in a validated
+///    main parent before any store write or dependency request)
 /// 2. checkIfWellFormedAndStore
 /// 3. checkDependenciesWithEffects
 /// 4. validateWithEffects
@@ -406,6 +410,35 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
                 ))
             })?;
         return Ok(BlockProcessOutcome::NotOfInterest);
+    }
+
+    let authorization = match block_processor.check_sender_authorization(&block) {
+        Ok(authorization) => authorization,
+        Err(err) => {
+            block_processor
+                .ack_processed(&block)
+                .await
+                .map_err(|ack_err| {
+                    CasperError::RuntimeError(format!(
+                        "check_sender_authorization failed for {}, and cleanup failed: {}",
+                        block_str, ack_err
+                    ))
+                })?;
+            return Err(err);
+        }
+    };
+
+    if authorization == SenderAuthorization::Unauthorized {
+        block_processor
+            .purge_from_buffer_and_ack(&block)
+            .await
+            .map_err(|err| {
+                CasperError::RuntimeError(format!(
+                    "Unauthorized block {} purge+cleanup failed: {}",
+                    block_str, err
+                ))
+            })?;
+        return Ok(BlockProcessOutcome::UnauthorizedSender);
     }
 
     // Step 2: Check if well-formed and store

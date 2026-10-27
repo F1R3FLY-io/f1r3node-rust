@@ -449,7 +449,10 @@ impl CasperSnapshot {
             return Ok(false);
         };
         let metadata = self.dag.lookup_unsafe(&parent.block_hash)?;
-        Ok(metadata.weight_map.contains_key(validator))
+        Ok(metadata
+            .weight_map
+            .get(validator)
+            .is_some_and(|stake| *stake > 0))
     }
 
     pub fn new(dag: KeyValueDagRepresentation) -> Self {

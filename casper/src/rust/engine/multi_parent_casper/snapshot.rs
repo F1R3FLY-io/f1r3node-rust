@@ -17,7 +17,6 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Justification};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
-use shared::rust::dag::dag_ops;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::types::MultiParentCasperImpl;
@@ -447,36 +446,34 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             let earliest_block_number =
                 current_block_number - on_chain_state.shard_conf.deploy_lifespan;
 
-            // Propagate storage errors out of the BFS neighbor
-            // expansion. Silent `.unwrap_or_default()` here is a
-            // correctness bug: a transient storage failure on a
-            // single parent would shrink `deploys_in_scope`, which
-            // could then admit a duplicate-signature deploy past
-            // `InvalidRepeatDeploy` detection.
-            let neighbor_fn =
-                |block_metadata: &BlockMetadata| -> Result<Vec<BlockMetadata>, CasperError> {
-                    proto_util::parent_metadatas_above_block_number(
-                        block_metadata,
-                        earliest_block_number,
-                        &dag,
-                        proto_util::UnheldParent::SkipSettled,
-                    )
-                };
-
-            let traversal_result = dag_ops::try_bf_traverse(parent_metas, neighbor_fn)?;
+            // Propagate storage errors out of the walk. Silent
+            // `.unwrap_or_default()` here is a correctness bug: a
+            // transient storage failure on a single parent would shrink
+            // `deploys_in_scope`, which could then admit a
+            // duplicate-signature deploy past `InvalidRepeatDeploy`
+            // detection.
+            let mut traversal_result: Vec<BlockHash> = Vec::new();
+            proto_util::walk_blocks_in_scope(
+                &dag,
+                parent_metas,
+                earliest_block_number,
+                proto_util::UnheldParent::SkipSettled,
+                |hash| {
+                    traversal_result.push(hash.clone());
+                    Ok(false)
+                },
+            )?;
 
             let all_deploys = Arc::new(dashmap::DashSet::new());
             let all_rejected = Arc::new(dashmap::DashSet::new());
-            for block_metadata in traversal_result {
-                let block_deploy_sigs = this
-                    .block_store
-                    .deploy_sigs(&block_metadata.block_hash)?
-                    .ok_or_else(|| {
-                    CasperError::RuntimeError(format!(
-                        "Missing block {} during deploys_in_scope traversal",
-                        PrettyPrinter::build_string_bytes(&block_metadata.block_hash)
-                    ))
-                })?;
+            for block_hash in traversal_result {
+                let block_deploy_sigs =
+                    this.block_store.deploy_sigs(&block_hash)?.ok_or_else(|| {
+                        CasperError::RuntimeError(format!(
+                            "Missing block {} during deploys_in_scope traversal",
+                            PrettyPrinter::build_string_bytes(&block_hash)
+                        ))
+                    })?;
                 for deploy_sig in block_deploy_sigs {
                     all_deploys.insert(deploy_sig.into());
                 }
@@ -485,10 +482,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
                 // rejected_in_scope set. The block creator and validator
                 // intersect this with deploys_in_scope to decide
                 // re-inclusion eligibility for merge-rejected deploys.
-                if let Some(rejected_sigs) = this
-                    .block_store
-                    .rejected_deploy_sigs(&block_metadata.block_hash)?
-                {
+                if let Some(rejected_sigs) = this.block_store.rejected_deploy_sigs(&block_hash)? {
                     for sig in rejected_sigs {
                         all_rejected.insert(sig.into());
                     }
