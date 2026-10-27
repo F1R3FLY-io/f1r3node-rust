@@ -47,7 +47,7 @@ impl BondsParser {
         let mut bonds = HashMap::new();
 
         for line in content.lines() {
-            let trimmed_line = line.trim();
+            let trimmed_line = line.split_once('#').map_or(line, |(data, _)| data).trim();
             if trimmed_line.is_empty() {
                 continue;
             }

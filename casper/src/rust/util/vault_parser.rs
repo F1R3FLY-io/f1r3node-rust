@@ -47,7 +47,7 @@ impl VaultParser {
         let mut vaults = Vec::new();
 
         for line in content.lines() {
-            let trimmed_line = line.trim();
+            let trimmed_line = line.split_once('#').map_or(line, |(data, _)| data).trim();
             if trimmed_line.is_empty() {
                 continue;
             }
@@ -148,6 +148,28 @@ mod tests {
             fs::write(&path, format!("{address},{value}\n")).unwrap();
             assert!(VaultParser::parse(&path).is_err(), "accepted {value}");
         }
+    }
+
+    #[test]
+    fn genesis_wallet_comments_preserve_exact_amounts() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("wallets.txt");
+        let address = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
+        fs::write(
+            &path,
+            format!(
+                "# allocation\n  {address},{} # bootstrap node\n",
+                shared::rust::asi_amount::MAX_DECIMAL
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            VaultParser::parse(&path).unwrap()[0].initial_balance,
+            shared::rust::asi_amount::maximum()
+        );
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../docker/helm/f1r3fly/configs/common/wallets.txt");
+        assert!(!VaultParser::parse(&shipped).unwrap().is_empty());
     }
 
     #[test]
