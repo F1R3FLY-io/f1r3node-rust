@@ -113,8 +113,13 @@ if resolve_case 21; then
 	printf 'The workflow accepted invalid repetitions.\n' >&2
 	exit 1
 fi
+rm -f "$TMP/guard-args"
 if resolve_case 20 invalid-revision; then
 	printf 'The workflow accepted an invalid node revision.\n' >&2
+	exit 1
+fi
+if [ -e "$TMP/guard-args" ]; then
+	printf 'The workflow checked an unvalidated node revision.\n' >&2
 	exit 1
 fi
 bash "$ROOT/.github/scripts/test-ephemeral-run-tagging.sh" "$ROOT/.github/workflows/heartbeat-timing.yml"

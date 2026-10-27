@@ -23,6 +23,7 @@ commit() {
 
 git init --quiet -b main "$TMP/origin"
 g config uploadpack.allowFilter true
+g config uploadpack.allowAnySHA1InWant true
 base="$(commit base)"
 head="$(commit head)"
 g switch --quiet -c feature
@@ -60,7 +61,9 @@ expect_accept "$base" "an ancestor of a branch"
 expect_accept "$feature" "a second branch"
 expect_accept "$tagged" "a commit that only an annotated tag holds"
 expect_reject "$pull" "a commit that only a pull request ref holds"
+[[ "$out" == *"holds $pull"* ]] || fail "a pull request commit was fetched on demand: $out"
 expect_reject "$dangling" "a commit that no ref holds"
+[[ "$out" == *"holds $dangling"* ]] || fail "a dangling commit was fetched on demand: $out"
 expect_reject "0000000000000000000000000000000000000000" "an unknown commit"
 expect_reject "${head:0:12}" "an abbreviated SHA"
 expect_reject "main" "a branch name"
