@@ -676,12 +676,15 @@ mark_owned_oom_preferred() {
 
 # A container can exit between docker ps and docker inspect or the command, so
 # an error there does not prove a failed stop. A container that docker ps still
-# lists afterwards does. Each failure names its step on stderr.
+# lists afterwards does. Each failure names its step on stderr. Each confirmed
+# container stops before the next inspect: the docker CLI inspects one container
+# for each request, so a slow daemon must not use the emergency budget on
+# inspects before the first stop.
 stop_node_writer_commands() {
 	local selection="$1"
 	shift
 	local cid owner ids remaining status=0
-	local -a owned=() unconfirmed=()
+	local -a unconfirmed=()
 	stop_owned_host_writers || {
 		printf 'host-control stop-owned failed\n' >&2
 		status=1
@@ -699,7 +702,7 @@ stop_node_writer_commands() {
 		fi
 		if owner="$(docker inspect --format '{{index .Config.Labels "io.f1r3fly.soak.owner"}}' "$cid")"; then
 			if [ "$owner" = "$SOAK_WRITER_OWNER" ]; then
-				owned+=("$cid")
+				docker "$@" "$cid" >/dev/null || unconfirmed+=("$cid")
 			else
 				printf 'container %s has the owner %s\n' "${cid:0:12}" "$owner" >&2
 				status=1
@@ -708,9 +711,6 @@ stop_node_writer_commands() {
 			unconfirmed+=("$cid")
 		fi
 	done <<<"$ids"
-	if [ "${#owned[@]}" -gt 0 ] && ! docker "$@" "${owned[@]}" >/dev/null; then
-		unconfirmed+=("${owned[@]}")
-	fi
 	[ "${#unconfirmed[@]}" -gt 0 ] || return "$status"
 	remaining="$(docker ps "$selection" --no-trunc --filter "label=io.f1r3fly.soak.owner=$SOAK_WRITER_OWNER")" || {
 		printf 'docker ps failed after docker %s\n' "$*" >&2

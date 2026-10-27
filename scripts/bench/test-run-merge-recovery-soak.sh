@@ -544,9 +544,11 @@ grep -q '^segments=2$' "$TMP/output-breach-stop-fail/summary.txt"
 grep -q '^early_exit_reason=host_protection_breach$' "$TMP/output-breach-stop-fail/summary.txt"
 
 # Four owned node containers remain at the end of a segment. FAKE_STOP_MODE
-# selects the docker behavior: slow (each inspect and kill takes 1 s), vanish
-# (each container exits before its inspect), exits (each container exits
-# before its kill), or stuck (kill fails and the containers keep running).
+# selects the docker behavior: slow (each inspect and kill takes
+# FAKE_STOP_DELAY seconds, default 1), slow-inspect (only each inspect takes
+# that time), vanish (each container exits before its inspect), exits (each
+# container exits before its kill), or stuck (kill fails and the containers
+# keep running).
 mkdir -p "$TMP/bin-stop"
 cat >"$TMP/bin-stop/docker" <<'SH'
 #!/usr/bin/env bash
@@ -563,7 +565,7 @@ if [ "$1" = ps ] && printf '%s\n' "$*" | grep -q 'label=io.f1r3fly.soak.owner=';
 	exit 0
 fi
 if [ "$1" = inspect ] && [ -e "$FAKE_CONTAINER_DIR/${!#}" ]; then
-	[ "$FAKE_STOP_MODE" != slow ] || sleep 1
+	case "$FAKE_STOP_MODE" in slow | slow-inspect) sleep "${FAKE_STOP_DELAY:-1}" ;; esac
 	if [ "$FAKE_STOP_MODE" = vanish ]; then
 		rm -f "$FAKE_CONTAINER_DIR/${!#}"
 		printf 'Error: No such container: %s\n' "${!#}" >&2
@@ -574,7 +576,7 @@ if [ "$1" = inspect ] && [ -e "$FAKE_CONTAINER_DIR/${!#}" ]; then
 fi
 if [ "$1" = kill ]; then
 	shift
-	[ "$FAKE_STOP_MODE" != slow ] || sleep 1
+	[ "$FAKE_STOP_MODE" != slow ] || sleep "${FAKE_STOP_DELAY:-1}"
 	status=0
 	for cid in "$@"; do
 		case "$FAKE_STOP_MODE" in
@@ -717,14 +719,28 @@ fi
 grep -q 'fake pytest passed' "$TMP/driver-stop-sigkill.log" "$TMP/output-stop-sigkill"/iteration-*/pytest.log 2>/dev/null
 
 # After a host protection breach, the writer stop keeps the emergency budget,
-# so a slow docker daemon cannot delay the breach records.
-writer_stop_case breach "" FAKE_STOP_MODE=slow FAKE_ALWAYS_LIST=1 \
+# so a slow docker daemon cannot delay the breach records. One inspect takes
+# longer than that budget, so no stop can complete.
+writer_stop_case breach "" FAKE_STOP_MODE=slow FAKE_STOP_DELAY=3 FAKE_ALWAYS_LIST=1 \
 	SOAK_DURATION_SECONDS=120 SOAK_DISK_FREE_FLOOR_MB=4096
 [ "$status" -ne 0 ] || { cat "$TMP/driver-stop-breach.log" >&2; echo 'the breach scenario passed the soak' >&2; exit 1; }
 grep -q '^host_protection_breach: disk floor' "$TMP/output-stop-breach/early-exit.txt"
 grep -q '^The stop did not complete within 2 s\.$' "$TMP/output-stop-breach/writer-stop-failure.txt" || {
 	cat "$TMP/output-stop-breach/writer-stop-failure.txt" "$TMP/driver-stop-breach.log" >&2 2>/dev/null || true
 	echo 'the stop after a breach did not keep the emergency budget' >&2
+	exit 1
+}
+
+# Each inspect takes 1 s and the emergency budget is 2 s. The first confirmed
+# container must stop before the next inspect, so four inspects cannot use the
+# whole budget before the first kill.
+writer_stop_case breach-inspect "" FAKE_STOP_MODE=slow-inspect FAKE_ALWAYS_LIST=1 \
+	SOAK_DURATION_SECONDS=120 SOAK_DISK_FREE_FLOOR_MB=4096
+[ "$status" -ne 0 ] || { cat "$TMP/driver-stop-breach-inspect.log" >&2; echo 'the breach-inspect scenario passed the soak' >&2; exit 1; }
+grep -q '^host_protection_breach: disk floor' "$TMP/output-stop-breach-inspect/early-exit.txt"
+grep -qx exited "$TMP/containers-breach-inspect/$(printf 'c0ffee00000%s%052d' 1 0)" || {
+	cat "$TMP/driver-stop-breach-inspect.log" >&2
+	echo 'no container stopped within the emergency budget' >&2
 	exit 1
 }
 
