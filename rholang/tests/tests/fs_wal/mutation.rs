@@ -4580,3 +4580,200 @@ async fn pb_m_14_file_state_identity_sequential_write() {
     apply_wal_translated(&wal, &sidecar, leader_dir.path(), follower_dir.path());
     assert_dir_trees_byte_identical(leader_dir.path(), follower_dir.path(), &[]);
 }
+
+// ---------------------------------------------------------------
+// fs_mkdir — directory create handler
+// ---------------------------------------------------------------
+
+/// Consensus-cap mkdir(parents=false) appends a `Mkdir` WAL entry
+/// with `mode_bits = Some(mode)` and `length = None` (encoding
+/// `parents = false`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mkdir_strict_on_consensus_cap_appends_wal_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = create_runtime().await;
+    assert!(runtime.fs_handles.wal.is_empty());
+
+    let term = format!(
+        r#"
+            new mkdir(`rho:io:fs:native:1.0.0/mkdir`), ret in {{
+              mkdir!("{root}", "new_dir", 493, false, "consensus", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#,
+        root = dir.path().display(),
+    );
+    runtime
+        .evaluate(
+            &term,
+            Cost::unsafe_max(),
+            std::collections::HashMap::new(),
+            rand(),
+        )
+        .await
+        .expect("evaluate must succeed");
+
+    assert!(dir.path().join("new_dir").is_dir(), "leader created dir");
+    let entries = runtime.fs_handles.wal.snapshot();
+    assert_eq!(entries.len(), 1, "expected 1 WAL entry, got {entries:?}");
+    let e = &entries[0];
+    assert_eq!(e.op, WalOp::Mkdir);
+    assert_eq!(e.mode_bits, Some(0o755));
+    assert_eq!(e.length, None, "parents=false ↔ length=None");
+    assert_eq!(e.outcome, WalOutcome::Success);
+    assert!(e.path.ends_with("new_dir"));
+}
+
+/// Consensus-cap mkdir(parents=true) encodes the `parents` flag
+/// as `length = Some(1)`.  The handler uses `create_dir_all` so
+/// intermediates are also created (filesystem invariant).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mkdir_parents_on_consensus_cap_sets_length_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = create_runtime().await;
+
+    let term = format!(
+        r#"
+            new mkdir(`rho:io:fs:native:1.0.0/mkdir`), ret in {{
+              mkdir!("{root}", "a/b/c", 493, true, "consensus", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#,
+        root = dir.path().display(),
+    );
+    runtime
+        .evaluate(
+            &term,
+            Cost::unsafe_max(),
+            std::collections::HashMap::new(),
+            rand(),
+        )
+        .await
+        .expect("evaluate must succeed");
+
+    assert!(dir.path().join("a/b/c").is_dir(), "recursive create landed");
+    let entries = runtime.fs_handles.wal.snapshot();
+    assert_eq!(entries.len(), 1, "expected 1 WAL entry, got {entries:?}");
+    assert_eq!(entries[0].op, WalOp::Mkdir);
+    assert_eq!(entries[0].mode_bits, Some(0o755));
+    assert_eq!(entries[0].length, Some(1), "parents=true ↔ length=Some(1)");
+}
+
+/// Oracular-cap mkdir produces NO WAL entry (same no-journal
+/// invariant as every other Oracular mutation).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mkdir_on_oracular_cap_does_not_append_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = create_runtime().await;
+
+    let term = format!(
+        r#"
+            new mkdir(`rho:io:fs:native:1.0.0/mkdir`), ret in {{
+              mkdir!("{root}", "oracular_dir", 493, false, "oracular", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#,
+        root = dir.path().display(),
+    );
+    runtime
+        .evaluate(
+            &term,
+            Cost::unsafe_max(),
+            std::collections::HashMap::new(),
+            rand(),
+        )
+        .await
+        .expect("evaluate must succeed");
+
+    assert!(dir.path().join("oracular_dir").is_dir(), "dir created");
+    assert!(
+        runtime.fs_handles.wal.is_empty(),
+        "Oracular mkdir must not journal; got {:?}",
+        runtime.fs_handles.wal.snapshot(),
+    );
+}
+
+/// `parents = true` is idempotent on an already-existing directory
+/// (Node.js `fs.mkdir({recursive: true})` semantics).  The WAL
+/// still records a success entry — replay via `create_dir_all`
+/// handles EEXIST silently.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mkdir_parents_true_is_idempotent_on_existing_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("already")).unwrap();
+    let runtime = create_runtime().await;
+
+    let term = format!(
+        r#"
+            new mkdir(`rho:io:fs:native:1.0.0/mkdir`), ret in {{
+              mkdir!("{root}", "already", 493, true, "consensus", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#,
+        root = dir.path().display(),
+    );
+    runtime
+        .evaluate(
+            &term,
+            Cost::unsafe_max(),
+            std::collections::HashMap::new(),
+            rand(),
+        )
+        .await
+        .expect("evaluate must succeed");
+
+    // Success + WAL success entry.
+    let entries = runtime.fs_handles.wal.snapshot();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].op, WalOp::Mkdir);
+    assert_eq!(entries[0].outcome, WalOutcome::Success);
+}
+
+/// Apply-boot round trip: a leader-recorded `Mkdir` WAL entry is
+/// re-applied on a fresh follower tree via `apply_wal_translated`
+/// (both `parents = false` and `parents = true` branches).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mkdir_wal_applier_reconstructs_directory_on_follower() {
+    let leader_dir = tempfile::tempdir().unwrap();
+    let follower_dir = tempfile::tempdir().unwrap();
+
+    // Leader-side state the applier should reproduce on the
+    // follower: `strict_dir` (parents=false) directly under root,
+    // and `tree/a/b` (parents=true, recursive).
+    std::fs::create_dir(leader_dir.path().join("strict_dir")).unwrap();
+    std::fs::create_dir_all(leader_dir.path().join("tree/a/b")).unwrap();
+
+    let wal = vec![
+        WalEntry {
+            op: WalOp::Mkdir,
+            path: leader_dir.path().join("strict_dir"),
+            extra_path: None,
+            offset: None,
+            length: None, // parents=false
+            payload_ref: None,
+            mode_bits: Some(0o755),
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        },
+        WalEntry {
+            op: WalOp::Mkdir,
+            path: leader_dir.path().join("tree/a/b"),
+            extra_path: None,
+            offset: None,
+            length: Some(1), // parents=true
+            payload_ref: None,
+            mode_bits: Some(0o700),
+            owner: None,
+            group: None,
+            outcome: WalOutcome::Success,
+        },
+    ];
+
+    let sidecar: std::collections::HashMap<[u8; 32], Vec<u8>> = std::collections::HashMap::new();
+    apply_wal_translated(&wal, &sidecar, leader_dir.path(), follower_dir.path());
+
+    assert!(follower_dir.path().join("strict_dir").is_dir());
+    assert!(follower_dir.path().join("tree/a/b").is_dir());
+    assert_dir_trees_byte_identical(leader_dir.path(), follower_dir.path(), &[]);
+}
