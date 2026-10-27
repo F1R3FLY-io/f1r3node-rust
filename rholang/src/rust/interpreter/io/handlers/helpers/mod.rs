@@ -49,7 +49,7 @@ pub mod write_impl;
 
 pub use ack_hash::{ack_channel_hash, per_entry_ack_seed, MAX_RECURSION_DEPTH};
 pub use journal::{
-    finalize_failure_journal_via_table, finalize_write_journal_via_table,
+    finalize_failure_journal_via_table, finalize_write_journal_via_table, journal_mkdir_via_table,
     journal_path_mutation_single_via_table, journal_path_mutation_two_via_table,
     journal_read_divergence_via_table, journal_read_via_table, journal_state_read_via_table,
     journal_truncate_via_table, journal_write_via_table,
