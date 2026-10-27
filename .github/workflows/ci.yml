@@ -228,11 +228,13 @@ jobs:
           # An API error falls back to the labels of the event.
           pull_request_has_heavy_label() {
             local current
-            [ "$PR_HAS_HEAVY_LABEL" = true ] && return 0
-            [[ "${PR_NUMBER:-}" =~ ^[1-9][0-9]*$ ]] || return 1
-            current="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
-              --jq 'any(.labels[]; .name == "ci-heavy")')" || return 1
-            [ "$current" = true ]
+            if [[ "${PR_NUMBER:-}" =~ ^[1-9][0-9]*$ ]] &&
+              current="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+                --jq 'any(.labels[]; .name == "ci-heavy")')"; then
+              [ "$current" = true ]
+              return
+            fi
+            [ "$PR_HAS_HEAVY_LABEL" = true ]
           }
 
           # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch

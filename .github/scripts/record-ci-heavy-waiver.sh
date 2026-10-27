@@ -24,21 +24,42 @@ poll_seconds="${WAIVER_POLL_SECONDS:-5}"
 poll_attempts="${WAIVER_POLL_ATTEMPTS:-6}"
 labels_path="repos/${REPOSITORY}/issues/${PR_NUMBER}/labels"
 
-has_label() {
-	gh api "$labels_path" --jq '.[].name' | grep -qx "$1"
+labels=""
+read_labels() {
+	labels="$(gh api "$labels_path" --jq '.[].name')" || {
+		echo "::error::The labels of pull request #${PR_NUMBER} could not be read." >&2
+		exit 1
+	}
 }
 
+has_label() {
+	grep -qx "$1" <<<"$labels"
+}
+
+read_labels
 if ! has_label ci-heavy-waived; then
 	gh api --method POST "$labels_path" -f 'labels[]=ci-heavy-waived' >/dev/null
 fi
 
+removed=false
 for _ in $(seq "$poll_attempts"); do
+	read_labels
 	if has_label ci-heavy; then
 		gh api --method DELETE "${labels_path}/ci-heavy" >/dev/null
 		echo "Removed ci-heavy again after Mergify added it."
+		removed=true
 		break
 	fi
 	sleep "$poll_seconds"
 done
+
+if [ "$removed" = true ]; then
+	sleep "$poll_seconds"
+fi
+read_labels
+if has_label ci-heavy; then
+	echo "::warning::Pull request #${PR_NUMBER} has ci-heavy again. The waiver does not apply, and the heavy pipeline runs. Remove ci-heavy again to waive it."
+	exit 0
+fi
 
 echo "Pull request #${PR_NUMBER} has ci-heavy-waived."

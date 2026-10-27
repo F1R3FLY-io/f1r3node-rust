@@ -46,13 +46,13 @@ jobs:
             (github.event.action == 'unlabeled' && github.event.label.name == 'ci-heavy'))) ||
         (github.event.action == 'unlabeled' && github.event.label.name == 'ci-heavy' &&
           github.event.sender.login == github.event.pull_request.user.login &&
+          contains(fromJSON('["OWNER", "MEMBER"]'), github.event.pull_request.author_association) &&
           github.event.pull_request.base.ref != 'ca-release'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       actions: write
       contents: read
-      issues: write
       pull-requests: write
     steps:
       # No ref: under pull_request_target, checkout fetches the base branch.
@@ -66,6 +66,7 @@ jobs:
         if: >-
           github.event.action == 'unlabeled' && github.event.label.name == 'ci-heavy' &&
           github.event.sender.login == github.event.pull_request.user.login &&
+          contains(fromJSON('["OWNER", "MEMBER"]'), github.event.pull_request.author_association) &&
           github.event.pull_request.base.ref != 'ca-release' &&
           !contains(github.event.pull_request.labels.*.name, 'ci-heavy-waived')
         shell: bash -euo pipefail {0}

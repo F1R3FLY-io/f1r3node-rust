@@ -219,7 +219,8 @@ Both settings take effect at the next session start.
 - A queue merges only after both Integration gates succeed, except with a waiver:
   - Only a member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run, only on that member's own pull request, and only into `dev`, `master`, or `ca-canary`.
   - To waive, remove the `ci-heavy` label. The CI Heavy Label workflow then adds `ci-heavy-waived` and reruns CI without the heavy pipeline. To avoid any heavy run, open the pull request with `--label ci-heavy-waived` instead of `--label ci-heavy`.
-  - A waiver into `master` skips only the heavy run before the merge. The push to `master` runs the heavy pipeline, and the release gates require its results.
+  - On `master`, the waiver covers a hotfix that a ci-maintainer authored. The promotion app is the author of every promotion, so a promotion always needs `ci-heavy`.
+  - A waiver into `master` skips only the heavy run before the merge. The push to `master` runs the heavy pipeline. A release needs a CI run of its source that has all Integration Pipeline jobs.
   - Promotions into `ca-release` always need `ci-heavy`.
 - A pull request from a fork gets no heavy run. A maintainer pushes the fork head unchanged to a branch of this repository. The maintainer then opens a pull request from that branch with the body line `Imports fork pull request #<N>.`
 - The Mergify priority rules order the queued pull requests across all queues. The branch name or a label sets the tier:

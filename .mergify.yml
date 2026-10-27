@@ -24,9 +24,10 @@
 # another author, Mergify adds ci-heavy again, so the heavy pipeline runs.
 # devProtect requires both gates, and GitHub counts a skipped gate job as
 # passing, so a waived pull request can merge into dev. masterProtect does not
-# require the gates. The ca-release queue has no waiver. A merge into master
-# still runs the heavy pipeline on the push, and the release gates require its
-# Integration Pipeline jobs before a release.
+# require the gates. The promotion app is the author of every promotion, so
+# only a hotfix can carry the waiver into master. The ca-release queue has no
+# waiver. A merge into master still runs the heavy pipeline on the push, and a
+# release needs a CI run of its source that has all Integration Pipeline jobs.
 #
 # The rulesets require a branch to be up to date before a merge. Mergify then
 # accepts only in-place checks: a serial queue with one check at a time, a

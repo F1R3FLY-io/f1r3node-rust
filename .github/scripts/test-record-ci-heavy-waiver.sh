@@ -18,8 +18,13 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
 calls=$(($(cat "$CALLS") + 1))
 printf '%s\n' "$calls" >"$CALLS"
-if [ "${READD_AT:-0}" -gt 0 ] && [ "$calls" -eq "$READD_AT" ]; then
-	grep -qx ci-heavy "$LABELS" || printf 'ci-heavy\n' >>"$LABELS"
+for at in ${READD_AT:-0} ${READD_AGAIN_AT:-0}; do
+	if [ "$at" -gt 0 ] && [ "$calls" -eq "$at" ]; then
+		grep -qx ci-heavy "$LABELS" || printf 'ci-heavy\n' >>"$LABELS"
+	fi
+done
+if [ "${FAIL_READ_AT:-0}" -eq "$calls" ]; then
+	exit 1
 fi
 case "$*" in
 	"api --method POST "*"/labels -f labels[]=ci-heavy-waived")
@@ -46,7 +51,8 @@ run() {
 	: >"$TMP/gh.log"
 	set +e
 	out="$(PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" LABELS="$TMP/labels" CALLS="$TMP/calls" \
-		READD_AT="$2" REPOSITORY=example/repo PR_NUMBER=42 WAIVER_POLL_SECONDS=0 WAIVER_POLL_ATTEMPTS=4 \
+		READD_AT="$2" READD_AGAIN_AT="${READD_AGAIN_AT:-0}" FAIL_READ_AT="${FAIL_READ_AT:-0}" \
+		REPOSITORY=example/repo PR_NUMBER=42 WAIVER_POLL_SECONDS=0 WAIVER_POLL_ATTEMPTS=4 \
 		bash "$TOOL" 2>&1)"
 	status=$?
 	set -e
@@ -66,6 +72,15 @@ run "ci-heavy-waived" 0
 [ "$status" -eq 0 ] || fail "an existing waiver failed: $out"
 if grep -q 'POST' "$TMP/gh.log"; then fail "an existing waiver was added again"; fi
 
+READD_AGAIN_AT=5 run "" 3
+[ "$status" -eq 0 ] || fail "a second re-add failed the step: $out"
+[[ "$out" == *"::warning::"*"has ci-heavy again"* ]] || fail "a second re-add gave no warning: $out"
+[ "$final" = ci-heavy,ci-heavy-waived ] || fail "a second re-add was hidden: $final"
+
+FAIL_READ_AT=3 run "" 0
+[ "$status" -eq 1 ] || fail "a failed label read did not fail the step: $out"
+[[ "$out" == *"::error::"*"could not be read"* ]] || fail "a failed label read gave no error annotation: $out"
+
 printf '0\n' >"$TMP/calls"
 set +e
 out="$(PATH="$TMP/bin:$PATH" GH_LOG="$TMP/gh.log" LABELS="$TMP/labels" CALLS="$TMP/calls" REPOSITORY=example/repo PR_NUMBER=abc bash "$TOOL" 2>&1)"
@@ -73,4 +88,4 @@ status=$?
 set -e
 [ "$status" -eq 2 ] || fail "an invalid pull request number was accepted: $out"
 
-echo "CI heavy waiver record: 4 cases passed"
+echo "CI heavy waiver record: 6 cases passed"
