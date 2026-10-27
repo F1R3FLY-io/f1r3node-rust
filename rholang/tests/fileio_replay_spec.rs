@@ -426,4 +426,130 @@ mod tests {
         );
         follower.check_replay_data().await.unwrap();
     }
+
+    /// `fs_mkdir` leader/follower parity under Consensus with
+    /// `parents = true`.  Both deploys hit the same tempdir — the
+    /// leader creates the dirs, the follower re-executes with
+    /// `create_dir_all` (idempotent on EEXIST per Node.js
+    /// semantics), both produce byte-identical replies, and the
+    /// WAL mirrors byte-for-byte.
+    ///
+    /// Note on fixture shape: a `parents = false` leader/follower
+    /// parity test cannot share a tempdir because the follower's
+    /// re-executed `mkdirat` would trip EEXIST and finalize to
+    /// `Failure{code: FSERR_CONSENSUS_DIVERGENCE}`.  The byte-
+    /// identity invariant is specific to idempotent syscalls
+    /// (write/truncate/mkdir-recursive); strict mkdir replays
+    /// through the apply-boot path to a fresh follower tree, not
+    /// through verify-replay against the leader's live tree.  See
+    /// `mkdir_wal_applier_reconstructs_directory_on_follower` in
+    /// `fs_wal_spec` for the strict-mkdir applier coverage.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn mkdir_consensus_workload_replays_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+        let root = dir.path().display().to_string();
+
+        let term = format!(
+            r#"
+            new mkdir(`rho:io:fs:native:1.0.0/mkdir`),
+                r1, r2 in {{
+              mkdir!("{root}", "flat", 493, true, "consensus", *r1) |
+              for (@_ <- r1) {{
+                mkdir!("{root}", "deep/a/b", 448, true, "consensus", *r2) |
+                for (@_ <- r2) {{ Nil }}
+              }}
+            }}
+            "#
+        );
+
+        let r = Blake2b512Random::create_from_bytes(&[131u8; 32]);
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .unwrap();
+        let l_wal = leader.fs_handles.wal.snapshot();
+        assert_eq!(
+            l_wal.len(),
+            2,
+            "expected 2 Mkdir entries; got {} entries: {l_wal:?}",
+            l_wal.len(),
+        );
+        assert!(l_wal
+            .iter()
+            .all(|e| matches!(e.op, rholang::rust::interpreter::io::wal::WalOp::Mkdir)));
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.unwrap();
+        follower.rig(checkpoint.log).await.unwrap();
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .unwrap();
+        let f_wal = follower.fs_handles.wal.snapshot();
+        assert_eq!(l_wal, f_wal, "mkdir leader/follower WAL byte-identity");
+        follower.check_replay_data().await.unwrap();
+    }
+
+    /// `fs_mkdir` under Oracular on a leader + rig-based follower.
+    /// WAL stays empty on both sides (Oracular no-journal
+    /// invariant); `check_replay_data` succeeds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn mkdir_oracular_workload_replays_without_journaling() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, mut follower) = create_leader_and_follower().await;
+        let root = dir.path().display().to_string();
+
+        let term = format!(
+            r#"
+            new mkdir(`rho:io:fs:native:1.0.0/mkdir`), ret in {{
+              mkdir!("{root}", "oracular_dir", 493, true, "oracular", *ret) |
+              for (@_ <- ret) {{ Nil }}
+            }}
+            "#
+        );
+
+        let r = Blake2b512Random::create_from_bytes(&[137u8; 32]);
+        leader
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            leader.fs_handles.wal.is_empty(),
+            "Oracular mkdir no journal"
+        );
+
+        let checkpoint = leader.create_checkpoint().await;
+        follower.reset(&checkpoint.root).await.unwrap();
+        follower.rig(checkpoint.log).await.unwrap();
+        follower
+            .evaluate(
+                &term,
+                Cost::unsafe_max(),
+                std::collections::HashMap::new(),
+                r,
+            )
+            .await
+            .unwrap();
+        assert!(
+            follower.fs_handles.wal.is_empty(),
+            "follower Oracular mkdir no journal",
+        );
+        follower.check_replay_data().await.unwrap();
+    }
 }
