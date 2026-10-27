@@ -86,8 +86,9 @@ The reusable artifacts are the bounded model, two-segment fixture, negative cont
 
 ## Current verification package
 
-The [verification report](../casper/cbc-evidence/runs/soak-cleanup-20261027-02/report.json) records the checked source bytes and outcomes.
-The [status report](../casper/cbc-evidence/runs/soak-cleanup-20261027-02/status.json) records verification-time acceptance and independent claim gaps.
-The earlier packages `soak-cleanup-20261025-01`, `soak-cleanup-20261026-01`, and `soak-cleanup-20261027-01` stay as history.
+The [verification report](../casper/cbc-evidence/runs/soak-cleanup-20261027-03/report.json) records the checked source bytes and outcomes.
+The [status report](../casper/cbc-evidence/runs/soak-cleanup-20261027-03/status.json) records verification-time acceptance and independent claim gaps.
+The earlier packages `soak-cleanup-20261025-01`, `soak-cleanup-20261026-01`, `soak-cleanup-20261027-01`, and `soak-cleanup-20261027-02` stay as history.
 The packages `soak-cleanup-20261026-01` and `soak-cleanup-20261027-01` did not bind the workspace `Cargo.toml` parts of the harness build.
+The gate tests of `soak-cleanup-20261027-02` failed on Linux because `comm` received SIGPIPE from `head`.
 Unsigned payloads in that package require independent maintainer review and signatures.

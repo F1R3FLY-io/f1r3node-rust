@@ -68,7 +68,7 @@ for name in current unrelated-lock changed-closure unrelated-workspace-dependenc
         unrelated-lock)
             expected=0
             outside="$(comm -23 <(awk -F'"' '/^name = /{print $2}' "$directory/Cargo.lock" | sort -u) \
-                <(bash "$directory/scripts/ci/soak-cleanup-lock-closure.sh" --root "$directory" | awk '{print $1}' | sort -u) | head -1)"
+                <(bash "$directory/scripts/ci/soak-cleanup-lock-closure.sh" --root "$directory" | awk '{print $1}' | sort -u) | awk 'NR == 1')"
             [ -n "$outside" ]
             bump_lock_version "$directory/Cargo.lock" "$outside" ;;
         changed-closure) bump_lock_version "$directory/Cargo.lock" regex ;;
