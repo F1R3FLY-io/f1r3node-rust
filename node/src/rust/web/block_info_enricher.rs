@@ -210,7 +210,7 @@ pub fn extract_transfers_from_report(
                     find_transfers_in_report(first, transfer_unforgeable, deployer_addr.as_deref());
                 let precharge_consistent = found.len() == 1
                     && deployer_addr.as_deref() == Some(found[0].from_addr.as_str())
-                    && found[0].amount == precharge_amount;
+                    && found[0].amount == precharge_amount.to_string();
 
                 if precharge_consistent {
                     &deploy.report[1..]
@@ -366,7 +366,7 @@ fn find_transfers_in_report(
 struct RawTransfer {
     from_addr: String,
     to_addr: String,
-    amount: i64,
+    amount: String,
     ret_unforgeable: Par,
 }
 
@@ -384,6 +384,54 @@ mod tests {
     use models::rhoapi::{Expr, GPrivate, GUnforgeable, ListParWithRandom};
 
     use super::*;
+
+    #[test]
+    fn bigint_transfers_preserve_amounts_across_reports_and_apis() {
+        use prost::Message;
+        let channel = make_transfer_unforgeable();
+        let (_, sender) = make_deployer();
+        for (amount, success) in [
+            (num_bigint::BigInt::from(1u8) << 63, true),
+            (shared::rust::asi_amount::maximum(), true),
+            (num_bigint::BigInt::from(-1), false),
+            (shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1), false),
+        ] {
+            let mut comm = make_comm_event(&channel, &sender, "recipient", 0);
+            let produce = &mut comm.produces[0];
+            produce.data.as_mut().unwrap().pars[3] = Par {
+                exprs: vec![models::rust::utils::new_gbigint_expr(amount.to_signed_bytes_be())],
+                ..Default::default()
+            };
+            let ret = produce.data.as_ref().unwrap().pars[5].clone();
+            let failure = Par {
+                exprs: vec![Expr { expr_instance: Some(ExprInstance::ETupleBody(models::rhoapi::ETuple {
+                    ps: vec![Par { exprs: vec![models::rust::utils::new_gbool_expr(success)], ..Default::default() }, make_par_string("rejected amount")],
+                    ..Default::default()
+                })) }],
+                ..Default::default()
+            };
+            let report = SingleReport {
+                events: vec![
+                    ReportProto { report: Some(report_proto::Report::Comm(comm)) },
+                    ReportProto { report: Some(report_proto::Report::Produce(ReportProduceProto {
+                        channel: Some(ret), data: Some(ListParWithRandom { pars: vec![failure], random_state: vec![] })
+                    })) },
+                ], phase: ReportPhase::User as i32,
+            };
+            let transfers = find_transfers_in_report(&report, &channel, Some(&sender));
+            assert_eq!(transfers.len(), 1);
+            let transfer = &transfers[0];
+            assert_eq!(transfer.amount, amount.to_string());
+            assert_eq!(transfer.success, success);
+            assert_eq!(TransferInfo::decode(transfer.encode_to_vec().as_slice()).unwrap(), *transfer);
+            let http = crate::rust::api::serde_types::deploy_info::TransferInfoSerde::from(transfer.clone());
+            assert_eq!(serde_json::to_value(http).unwrap()["amount"], amount.to_string());
+            let event = shared::rust::shared::f1r3fly_event::TransferEvent {
+                from_addr: sender.clone(), to_addr: "recipient".into(), amount: transfer.amount.clone(), success,
+            };
+            assert_eq!(serde_json::to_value(event).unwrap()["amount"], amount.to_string());
+        }
+    }
 
     fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
@@ -553,7 +601,7 @@ mod tests {
         let transfers = result.get("deploy_abc").expect("should have deploy entry");
         assert_eq!(transfers.len(), 1, "precharge excluded, user transfer kept");
         assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 1000);
+        assert_eq!(transfers[0].amount, "1000");
         assert_eq!(transfers[0].from_addr, deployer_addr);
     }
 
@@ -588,7 +636,7 @@ mod tests {
             .expect("should have deploy entry");
         assert_eq!(transfers.len(), 1, "only the user transfer should remain");
         assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 700);
+        assert_eq!(transfers[0].amount, "700");
     }
 
     // 3. precharge_amount > 0, report[0] empty → nothing skipped, user
@@ -624,7 +672,7 @@ mod tests {
             1,
             "report[0] not skipped; user transfer returned"
         );
-        assert_eq!(transfers[0].amount, 300);
+        assert_eq!(transfers[0].amount, "300");
     }
 
     // 4. precharge_amount > 0, report[0] holds a transfer with the wrong
@@ -664,8 +712,8 @@ mod tests {
             2,
             "report[0] not skipped; both the wrong-amount transfer and the user transfer returned"
         );
-        assert_eq!(transfers[0].amount, 999);
-        assert_eq!(transfers[1].amount, 500);
+        assert_eq!(transfers[0].amount, "999");
+        assert_eq!(transfers[1].amount, "500");
     }
 
     // 5. Genesis shape: phlo_price == 0, several batches, no precharge → all
@@ -702,9 +750,9 @@ mod tests {
             "genesis user transfers must not be dropped when multiple batches are present"
         );
         assert_eq!(transfers[0].to_addr, "receiver_a");
-        assert_eq!(transfers[0].amount, 111);
+        assert_eq!(transfers[0].amount, "111");
         assert_eq!(transfers[1].to_addr, "receiver_b");
-        assert_eq!(transfers[1].amount, 222);
+        assert_eq!(transfers[1].amount, "222");
     }
 
     // 6. Non-empty report, no transfers → entry present, vector empty.
@@ -815,11 +863,11 @@ mod tests {
             .expect("should have deploy entry");
         assert_eq!(transfers.len(), 3, "all user transfers returned in order");
         assert_eq!(transfers[0].to_addr, "receiver_a");
-        assert_eq!(transfers[0].amount, 10);
+        assert_eq!(transfers[0].amount, "10");
         assert_eq!(transfers[1].to_addr, "receiver_b");
-        assert_eq!(transfers[1].amount, 20);
+        assert_eq!(transfers[1].amount, "20");
         assert_eq!(transfers[2].to_addr, "receiver_c");
-        assert_eq!(transfers[2].amount, 30);
+        assert_eq!(transfers[2].amount, "30");
     }
 
     // The deployer is derived from `DeployInfo.deployer` only. A malformed
@@ -935,10 +983,10 @@ mod tests {
         );
         // The genuine user transfer must survive — never a silent drop.
         assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 777);
+        assert_eq!(transfers[0].amount, "777");
         assert_eq!(transfers[0].from_addr, deployer_addr);
         assert_eq!(transfers[1].to_addr, "pos_vault_addr");
-        assert_eq!(transfers[1].amount, 100);
+        assert_eq!(transfers[1].amount, "100");
     }
 
     // 11. Precharge absent entirely but precharge_amount > 0: report contains
@@ -975,7 +1023,7 @@ mod tests {
             "report[0] not skipped; the single user transfer is returned"
         );
         assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 456);
+        assert_eq!(transfers[0].amount, "456");
         assert_eq!(transfers[0].from_addr, deployer_addr);
     }
 
@@ -1036,7 +1084,7 @@ mod tests {
             "marked path: only the USER transfer is kept"
         );
         assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 1000);
+        assert_eq!(transfers[0].amount, "1000");
         assert_eq!(transfers[0].from_addr, deployer_addr);
     }
 
@@ -1099,7 +1147,7 @@ mod tests {
              even when it is not report[0]"
         );
         assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 700);
+        assert_eq!(transfers[0].amount, "700");
         assert_eq!(transfers[0].from_addr, deployer_addr);
     }
 
@@ -1140,7 +1188,7 @@ mod tests {
             "marked path: the single USER transfer is returned"
         );
         assert_eq!(transfers[0].to_addr, "receiver_addr");
-        assert_eq!(transfers[0].amount, 456);
+        assert_eq!(transfers[0].amount, "456");
     }
 
     // 5. Mixed marked/unmarked report -> marked path used. UNSPECIFIED
@@ -1190,9 +1238,9 @@ mod tests {
             "mixed report: USER and UNSPECIFIED (as USER) kept, PRECHARGE dropped"
         );
         assert_eq!(transfers[0].to_addr, "receiver_a");
-        assert_eq!(transfers[0].amount, 100);
+        assert_eq!(transfers[0].amount, "100");
         assert_eq!(transfers[1].to_addr, "receiver_b");
-        assert_eq!(transfers[1].amount, 200);
+        assert_eq!(transfers[1].amount, "200");
     }
 
     // Marked report with only a PRECHARGE segment -> entry present,
@@ -1325,6 +1373,6 @@ mod tests {
             1,
             "unknown-only report uses the fallback path; the transfer is returned, not dropped"
         );
-        assert_eq!(transfers[0].amount, 500);
+        assert_eq!(transfers[0].amount, "500");
     }
 }

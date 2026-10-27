@@ -1433,7 +1433,7 @@ fn build_deploy_transfers(
                 .map(|t| TransferEvent {
                     from_addr: t.from_addr,
                     to_addr: t.to_addr,
-                    amount: t.amount,
+                    amount: t.amount.clone(),
                     success: t.success,
                 })
                 .collect(),
@@ -1459,7 +1459,7 @@ mod tests {
         TransferInfo {
             from_addr: from.to_string(),
             to_addr: to.to_string(),
-            amount,
+            amount: amount.to_string(),
             success: true,
             fail_reason: String::new(),
         }
@@ -1477,7 +1477,7 @@ mod tests {
         let entry = &out[0];
         assert_eq!(entry.deploy_id, "deploy_with");
         assert_eq!(entry.transfers.len(), 1);
-        assert_eq!(entry.transfers[0].amount, 10);
+        assert_eq!(entry.transfers[0].amount, "10");
     }
 
     #[test]
@@ -1506,8 +1506,8 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].transfers.len(), 2);
-        assert_eq!(out[0].transfers[0].amount, 1);
-        assert_eq!(out[0].transfers[1].amount, 2);
+        assert_eq!(out[0].transfers[0].amount, "1");
+        assert_eq!(out[0].transfers[1].amount, "2");
     }
 
     // ---------- register_consensus_bundle_roots_core ----------

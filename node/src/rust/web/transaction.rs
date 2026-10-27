@@ -7,7 +7,7 @@ use utoipa::ToSchema;
 pub struct Transaction {
     pub from_addr: String,
     pub to_addr: String,
-    pub amount: i64,
+    pub amount: String,
     #[serde(skip, default)]
     pub ret_unforgeable: Par,
     pub fail_reason: Option<String>,
@@ -92,7 +92,11 @@ pub mod helpers {
         if pars.len() >= 6 {
             let from_addr = pars[0].get_g_string()?;
             let to_addr = pars[2].get_g_string()?;
-            let amount = pars[3].get_g_int()?;
+            let amount = match pars[3].exprs.as_slice() {
+                [models::rhoapi::Expr { expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(value)) }] => value.to_string(),
+                [models::rhoapi::Expr { expr_instance: Some(models::rhoapi::expr::ExprInstance::GBigInt(bytes)) }] => num_bigint::BigInt::from_signed_bytes_be(bytes).to_string(),
+                _ => return None,
+            };
             let ret_unforgeable = pars[5].clone();
 
             Some(Transaction {

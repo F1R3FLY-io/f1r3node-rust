@@ -18,7 +18,7 @@ pub struct TransferInfoSerde {
     pub from_addr: String,
     #[serde(rename = "toAddr")]
     pub to_addr: String,
-    pub amount: i64,
+    pub amount: String,
     pub success: bool,
     #[serde(rename = "failReason")]
     pub fail_reason: String,
