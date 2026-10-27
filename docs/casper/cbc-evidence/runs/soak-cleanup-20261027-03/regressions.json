@@ -1,0 +1,40 @@
+{
+  "schema": "soak-cleanup-regressions/v1",
+  "results": [
+    {
+      "case": "clean",
+      "exit": 0,
+      "assertion": ""
+    },
+    {
+      "case": "missing-owner-stop",
+      "exit": 1,
+      "assertion": "FAIL: owned writer survived"
+    },
+    {
+      "case": "missing-residual-stop",
+      "exit": 1,
+      "assertion": "FAIL: residual writer survived"
+    },
+    {
+      "case": "ignored-stop-failure",
+      "exit": 1,
+      "assertion": "FAIL: unconfirmed stop passed"
+    },
+    {
+      "case": "ignored-residual-failure",
+      "exit": 1,
+      "assertion": "FAIL: unconfirmed residual stop passed"
+    },
+    {
+      "case": "overwritten-record",
+      "exit": 1,
+      "assertion": "FAIL: owner stop record overwritten"
+    },
+    {
+      "case": "overwritten-reason",
+      "exit": 1,
+      "assertion": "FAIL: earlier reason overwritten"
+    }
+  ]
+}
