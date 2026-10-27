@@ -5909,6 +5909,7 @@ dependencies = [
  "indexmap 2.14.0",
  "lz4_flex",
  "metrics 0.23.1",
+ "num-bigint",
  "proptest",
  "prost 0.14.4",
  "rand 0.9.5",
