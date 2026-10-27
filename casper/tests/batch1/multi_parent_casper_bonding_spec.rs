@@ -31,9 +31,7 @@ async fn bonded_status(public_key: &PublicKey, node: &TestNode) -> bool {
 }
 
 #[tokio::test]
-async fn multi_parent_casper_should_allow_bonding() {
-    // First 3 validators are bonded at genesis; the 4th (n4) uses the DEFAULT keypair — which
-    // owns genesisVaults[0] (9,000,000 REV) so it can pay for its own bond — and is UNBONDED.
+async fn multi_parent_casper_should_allow_uint256_bonding() {
     let validator_key_pairs = vec![
         DEFAULT_VALIDATOR_KEY_PAIRS[0].clone(),
         DEFAULT_VALIDATOR_KEY_PAIRS[1].clone(),
@@ -49,10 +47,13 @@ async fn multi_parent_casper_should_allow_bonding() {
         .take(3)
         .enumerate()
         .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
-        .map(|(key, stake)| (key, stake.into()))
+        .map(|(key, stake)| (key, num_bigint::BigInt::from(stake) << 128))
         .collect();
 
-    let parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
+    let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
+    parameters.2.proof_of_stake.maximum_bond = shared::rust::asi_amount::maximum();
+    parameters.2.vaults[0].initial_balance <<= 128usize;
+    let amount = num_bigint::BigInt::from(1000) << 128usize;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
         .await
@@ -70,11 +71,25 @@ async fn multi_parent_casper_should_allow_bonding() {
     );
 
     // n4 signs a bond deploy; a bonded validator (node 0) carries it into a block.
-    let bond_deploy = bonding_util::bonding_deploy(1000, &DEFAULT_SEC, Some(shard_id.clone()))
-        .expect("bond deploy");
-    let _b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[bond_deploy])
+    let bond_deploy =
+        bonding_util::bonding_deploy(amount.clone(), &DEFAULT_SEC, Some(shard_id.clone()))
+            .expect("bond deploy");
+    let b1 = TestNode::propagate_block_at_index(&mut nodes, 0, &[bond_deploy])
         .await
         .expect("propagate the bond block");
+
+    for node in &nodes {
+        let bonds = node
+            .runtime_manager
+            .compute_bonds(&b1.body.state.post_state_hash)
+            .await
+            .unwrap();
+        let bonded = bonds
+            .iter()
+            .find(|bond| bond.validator == DEFAULT_PUB.bytes)
+            .unwrap();
+        assert_eq!(bonded.stake, amount);
+    }
 
     // Advance the DAG with the bonded genesis validators until b1 (the bond) finalizes.
     for round in 0..4 {
