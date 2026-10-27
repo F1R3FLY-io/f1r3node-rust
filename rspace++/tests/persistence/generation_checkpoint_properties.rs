@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR", "CR", "LT", "DC", "CL", "RV", "TS",
+        "IR", "CR", "LT", "DC", "CL", "RV", "TS", "PX",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -483,6 +483,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!(
             "../../../formal/rocq/stack_safe_pda/theories/GenerationCheckpointPublication.v"
         ),
+        include_str!("../../../formal/rocq/stack_safe_pda/theories/PathExactIncrementalClosure.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/IncrementalLedgerTrial.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/IncrementalDomainComposition.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/CreditedClosureLedger.v"),
@@ -568,6 +569,11 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     let formal_gate =
         std::fs::read_to_string(repository_root.join("scripts/check-stack-safe-pda-proofs.sh"))
             .unwrap();
+    assert!(
+        formal_gate.contains("theories/PathExactIncrementalClosure.v"),
+        "the integrated formal gate does not compile the path-exact closure theory cited by PX \
+         rows",
+    );
     assert!(
         formal_gate.contains("theories/IncrementalLedgerTrial.v"),
         "the integrated formal gate does not compile the ledger-trial theory cited by LT rows",
@@ -663,6 +669,8 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("durable_rspace_authority.rs"),
         include_str!("generation_checkpoint_properties.rs"),
         include_str!("incremental_reachability_properties.rs"),
+        include_str!("path_exact_closure_properties.rs"),
+        include_str!("path_provenance.rs"),
         include_str!("retention_v2_editor_properties.rs"),
         include_str!("retention_v2_format_properties.rs"),
         include_str!("trusted_successor_properties.rs"),

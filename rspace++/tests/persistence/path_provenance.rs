@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use super::support::{TEST_SEMANTIC_PROFILE_ID, admit, encode, nonzero, synthetic_ref};
 use crate::rspace::persistence::{
-    CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore, ClosureError, DagChild,
-    EndpointValue, ExactPath, ExactPathArena, IncrementalClosureLimits, InheritedBoundaryKind,
-    InheritedObjectRef, RewriteProvenance, SemanticNamespace, SemanticRoots,
+    CanonicalBlob, CanonicalBlobKind, CanonicalDagNode, CanonicalFormatError, CanonicalObjectStore,
+    ClosureError, DagChild, EndpointValue, ExactPath, ExactPathArena, IncrementalClosureLimits,
+    InheritedBoundaryKind, InheritedObjectRef, RewriteProvenance, SemanticNamespace, SemanticRoots,
     SemanticStateManifestV1, StagingObjectStore, verify_incremental_closure,
 };
 
@@ -296,6 +296,329 @@ fn staged_shared_nodes_are_revalidated_at_each_logical_path() {
         error,
         ClosureError::Format(CanonicalFormatError::MissingObject(digest))
             if digest == inherited_leaf.digest()
+    ));
+}
+
+fn continuation_source(payload: &[u8]) -> CanonicalBlob {
+    CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, payload)
+        .expect("the continuation source is canonical")
+}
+
+fn continuation_leaf(source: crate::rspace::persistence::ObjectRefV1) -> CanonicalDagNode {
+    CanonicalDagNode::new(
+        Box::<[u8]>::default(),
+        EndpointValue::Content(source),
+        Box::<[DagChild]>::default(),
+    )
+    .expect("the continuation leaf is canonical")
+}
+
+fn branch(children: Vec<DagChild>) -> CanonicalDagNode {
+    CanonicalDagNode::new(Box::<[u8]>::default(), EndpointValue::Absent, children)
+        .expect("the branch is canonical")
+}
+
+fn stage_manifest(
+    staging: &StagingObjectStore<'_, CanonicalObjectStore>,
+    roots: impl FnOnce(crate::rspace::persistence::ObjectRefV1) -> SemanticRoots,
+) -> crate::rspace::persistence::ObjectRefV1 {
+    let empty = stage(staging, &CanonicalDagNode::empty());
+    stage(
+        staging,
+        &SemanticStateManifestV1::new(1, TEST_SEMANTIC_PROFILE_ID, roots(empty), None)
+            .expect("the target manifest is canonical"),
+    )
+}
+
+fn certify(
+    provenance: &mut RewriteProvenance,
+    namespace: SemanticNamespace,
+    kind: InheritedBoundaryKind,
+    path_bytes: &[u8],
+    reference: crate::rspace::persistence::ObjectRefV1,
+) {
+    let mut path = ExactPath::empty();
+    extend(&mut provenance.paths, &mut path, path_bytes);
+    provenance
+        .admit_inherited(InheritedObjectRef {
+            namespace,
+            kind,
+            path,
+            reference,
+        })
+        .expect("the exact base boundary is admitted");
+}
+
+struct CoincidenceFixture<'base> {
+    staging: StagingObjectStore<'base, CanonicalObjectStore>,
+    manifest: crate::rspace::persistence::ObjectRefV1,
+    inherited_source: crate::rspace::persistence::ObjectRefV1,
+    inherited_leaf: crate::rspace::persistence::ObjectRefV1,
+    sibling_leaf: crate::rspace::persistence::ObjectRefV1,
+}
+
+fn coincidence_fixture(base: &CanonicalObjectStore) -> CoincidenceFixture<'_> {
+    let inherited_source = admit(base, &continuation_source(b"inherited source"));
+    let shared_leaf = continuation_leaf(inherited_source);
+    let inherited_leaf = admit(base, &shared_leaf);
+
+    let staging = StagingObjectStore::new(base);
+    let emitted_leaf = stage(&staging, &shared_leaf);
+    assert_eq!(emitted_leaf, inherited_leaf);
+    let emitted_source = stage(&staging, &continuation_source(b"emitted source"));
+    let sibling_leaf = stage(&staging, &continuation_leaf(emitted_source));
+    let emitted_parent = stage(
+        &staging,
+        &branch(vec![
+            DagChild {
+                edge: 3,
+                target: emitted_leaf,
+            },
+            DagChild {
+                edge: 4,
+                target: sibling_leaf,
+            },
+        ]),
+    );
+    let root = stage(
+        &staging,
+        &branch(vec![
+            DagChild {
+                edge: 1,
+                target: inherited_leaf,
+            },
+            DagChild {
+                edge: 2,
+                target: emitted_parent,
+            },
+        ]),
+    );
+    let manifest = stage_manifest(&staging, |empty| SemanticRoots {
+        data_bag: empty,
+        continuation_map: root,
+        join_bag: empty,
+    });
+    assert!(
+        staging
+            .get_staged_bounded(&inherited_leaf.digest(), inherited_leaf.encoded_len())
+            .expect("the staging overlay is readable")
+            .is_some()
+    );
+    assert!(
+        staging
+            .get_staged_bounded(&inherited_source.digest(), inherited_source.encoded_len())
+            .expect("the staging overlay is readable")
+            .is_none()
+    );
+    CoincidenceFixture {
+        staging,
+        manifest,
+        inherited_source,
+        inherited_leaf,
+        sibling_leaf,
+    }
+}
+
+fn coincidence_provenance(
+    fixture: &CoincidenceFixture<'_>,
+    leaf_boundary: Option<(
+        SemanticNamespace,
+        InheritedBoundaryKind,
+        &[u8],
+        crate::rspace::persistence::ObjectRefV1,
+    )>,
+) -> RewriteProvenance {
+    let mut provenance = RewriteProvenance::new(u64::MAX);
+    if let Some((namespace, kind, path_bytes, reference)) = leaf_boundary {
+        certify(&mut provenance, namespace, kind, path_bytes, reference);
+    }
+    certify(
+        &mut provenance,
+        SemanticNamespace::ContinuationMap,
+        InheritedBoundaryKind::ContentAtEndpoint,
+        &[2, 3],
+        fixture.inherited_source,
+    );
+    provenance
+}
+
+#[test]
+fn a_staged_node_equal_to_an_inherited_subtree_stops_at_its_exact_certificate() {
+    let base = CanonicalObjectStore::new();
+    let fixture = coincidence_fixture(&base);
+    let exact = || {
+        coincidence_provenance(
+            &fixture,
+            Some((
+                SemanticNamespace::ContinuationMap,
+                InheritedBoundaryKind::NodeEntry,
+                &[1],
+                fixture.inherited_leaf,
+            )),
+        )
+    };
+
+    let report = verify_incremental_closure(
+        &fixture.staging,
+        fixture.manifest,
+        &mut exact(),
+        IncrementalClosureLimits::UNBOUNDED,
+    )
+    .expect("the inherited occurrence stops at its certificate and the emitted one is verified");
+    assert_eq!(report.distinct_objects, 7);
+    assert_eq!(report.node_objects, 5);
+    assert_eq!(report.payload_objects, 1);
+    assert_eq!(report.references, 9);
+
+    verify_incremental_closure(
+        &fixture.staging,
+        fixture.manifest,
+        &mut exact(),
+        IncrementalClosureLimits {
+            max_logical_visits: 10,
+            ..IncrementalClosureLimits::UNBOUNDED
+        },
+    )
+    .expect("the model's eight visits and the two empty roots fit ten logical visits");
+    let error = verify_incremental_closure(
+        &fixture.staging,
+        fixture.manifest,
+        &mut exact(),
+        IncrementalClosureLimits {
+            max_logical_visits: 9,
+            ..IncrementalClosureLimits::UNBOUNDED
+        },
+    )
+    .expect_err("the tenth logical visit exceeds a nine-visit budget");
+    assert!(matches!(
+        error,
+        ClosureError::Format(CanonicalFormatError::ResourceLimit {
+            resource: "incremental logical visits",
+            limit: 9,
+            attempted: 10,
+        })
+    ));
+}
+
+#[test]
+fn an_inexact_boundary_does_not_stop_a_coincident_staged_node() {
+    let base = CanonicalObjectStore::new();
+    let fixture = coincidence_fixture(&base);
+    let rows: [(
+        &str,
+        Option<(
+            SemanticNamespace,
+            InheritedBoundaryKind,
+            &[u8],
+            crate::rspace::persistence::ObjectRefV1,
+        )>,
+    ); 5] = [
+        ("absent", None),
+        (
+            "path",
+            Some((
+                SemanticNamespace::ContinuationMap,
+                InheritedBoundaryKind::NodeEntry,
+                &[1, 0],
+                fixture.inherited_leaf,
+            )),
+        ),
+        (
+            "namespace",
+            Some((
+                SemanticNamespace::DataBag,
+                InheritedBoundaryKind::NodeEntry,
+                &[1],
+                fixture.inherited_leaf,
+            )),
+        ),
+        (
+            "kind",
+            Some((
+                SemanticNamespace::ContinuationMap,
+                InheritedBoundaryKind::ContentAtEndpoint,
+                &[1],
+                fixture.inherited_leaf,
+            )),
+        ),
+        (
+            "reference",
+            Some((
+                SemanticNamespace::ContinuationMap,
+                InheritedBoundaryKind::NodeEntry,
+                &[1],
+                fixture.sibling_leaf,
+            )),
+        ),
+    ];
+    for (row, leaf_boundary) in rows {
+        let error = verify_incremental_closure(
+            &fixture.staging,
+            fixture.manifest,
+            &mut coincidence_provenance(&fixture, leaf_boundary),
+            IncrementalClosureLimits::UNBOUNDED,
+        )
+        .expect_err("only the exact boundary stops the walk at the coincident node");
+        assert!(
+            matches!(
+                &error,
+                ClosureError::Format(CanonicalFormatError::MissingObject(digest))
+                    if *digest == fixture.inherited_source.digest()
+            ),
+            "{row}: {error}"
+        );
+    }
+}
+
+#[test]
+fn an_object_staged_only_where_it_is_inherited_is_outside_the_delta() {
+    let base = CanonicalObjectStore::new();
+    let leaf = CanonicalDagNode::new(
+        Box::<[u8]>::default(),
+        EndpointValue::Multiplicity(nonzero(9)),
+        Box::<[DagChild]>::default(),
+    )
+    .expect("the inherited leaf is canonical");
+    let inherited_leaf = admit(&base, &leaf);
+
+    let staging = StagingObjectStore::new(&base);
+    assert_eq!(stage(&staging, &leaf), inherited_leaf);
+    let root = stage(
+        &staging,
+        &CanonicalDagNode::new(b"root".as_slice(), EndpointValue::Multiplicity(nonzero(1)), vec![
+            DagChild {
+                edge: b'a',
+                target: inherited_leaf,
+            },
+        ])
+        .expect("the target root is canonical"),
+    );
+    let manifest = stage_manifest(&staging, |empty| SemanticRoots {
+        data_bag: root,
+        continuation_map: empty,
+        join_bag: empty,
+    });
+
+    let mut provenance = RewriteProvenance::new(u64::MAX);
+    certify(
+        &mut provenance,
+        SemanticNamespace::DataBag,
+        InheritedBoundaryKind::NodeEntry,
+        b"roota",
+        inherited_leaf,
+    );
+
+    let error = verify_incremental_closure(
+        &staging,
+        manifest,
+        &mut provenance,
+        IncrementalClosureLimits::UNBOUNDED,
+    )
+    .expect_err("an object reached only through its certificate is not part of the delta");
+    assert!(matches!(
+        error,
+        ClosureError::Format(CanonicalFormatError::SemanticCoherence { ref detail })
+            if detail == "transaction staged an object outside the target delta closure"
     ));
 }
 

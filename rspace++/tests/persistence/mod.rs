@@ -25,6 +25,7 @@ mod mutation_streaming_properties;
 mod object_codec;
 mod object_store_collision;
 mod pack_codec;
+mod path_exact_closure_properties;
 mod path_provenance;
 mod property_support;
 mod generation_checkpoint_properties;

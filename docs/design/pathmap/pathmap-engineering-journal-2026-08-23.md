@@ -19994,6 +19994,329 @@ default writer of the dormant durable store; they do not activate the backend,
 which is task 7931. These are agent-run results; independent review and the
 approved pgmcp verification recipe remain required.
 
+### J-251 — 2026-10-27: an exact inherited boundary outranks equal staged bytes (task 11957; corrects Algorithm 3 of J-037)
+
+**PROBLEM.** The shape summary property of task 11943,
+`trusted_shape_summary_matches_cold_semantic_walk`, seals generated coherent
+transitions of a model state. The seal refused one of them with
+`MissingObject`. The refusal came from the incremental closure verifier
+`verify_incremental_closure` (`closure.rs:927-1210`), the seal's check that a
+delta is portable, which implemented Algorithm 3 of J-037: it looked an
+occurrence up in the staging overlay first, and consulted an inherited-boundary
+certificate only for a reference that was not staged. This entry records the
+measurement, the hypothesis, the model, the corrected algorithm and its tests.
+The
+[invariant catalog](generation-checkpoint-invariant-catalog-2026-08-28.md#path-exact-incremental-closure-2026-10-27)
+defines the terms used here (occurrence, expectation, staging overlay,
+certificate and coincident occurrence) and states the properties `PX-01` to
+`PX-05`. In brief: an occurrence is a reference at one exact absolute path,
+with what the walk expects to find there; a certificate is an inherited
+boundary (namespace, boundary kind, exact path, reference) that the rewrite
+copied from the verified base; and an occurrence is coincident when it is
+certified and its reference is also staged.
+
+**MEASURED.** The refusal was observed on an export of HEAD `c8331505` plus task
+11943's uncommitted candidate (tree `45d485b6`), running rspace++ library tests
+in the debug profile (pgmcp artifact 1123):
+
+- The property failed with `Validation(Format(MissingObject(…)))`, naming the
+  digest that begins `e644a93d`, and proptest shrank the failure to one
+  transition
+  (`target/perf/logs/phase4/ts17-b5-compile2-persistence-debug-20261027T084227Z.log`,
+  SHA-256 `601e265b63e43fcacf8ce7dde80405d35863161d62eeefa7522dd2de5db967b7`).
+- A temporary test, which existed only in the export and was never committed,
+  rebuilt the shrunk transition and printed its sources and the shapes of both
+  images
+  (`target/perf/logs/phase4/ts17-diag-missing-persistence-debug-20261027T084824Z.log`,
+  SHA-256 `a87f74c4993dfd9abcabd53d8598127dab4be9099c6701a9694ca8750c65bf71`).
+  The missing digest is the independent source $`S_0`$ of `body-0`, which the
+  continuations of the groups (alpha, beta) and (gamma, alpha) both reference.
+  The base image holds 13 logical nodes in 13 node objects, 2 payload objects
+  and 7 endpoints. The target image holds 15 logical nodes in 14 node objects,
+  3 payload objects and 8 endpoints, so two logical nodes of the target are one
+  object.
+
+The shrunk transition starts from three continuations: $`A`$ and $`B`$ on alpha
+and beta, and $`C`$ on gamma and alpha, where $`A`$ and $`C`$ both hold `body-0`
+over $`S_0`$. The batch replaces $`B`$'s source, inserts $`D`$ on gamma and
+alpha, and raises both joins of gamma and alpha from 1 to 2. Bug 11957 lists the
+exact steps.
+
+**HYPOTHESIS.** This cause was recorded in bug 11957 at triage
+(2026-10-27T08:54Z), before any model or code was written:
+
+- Inserting $`D`$ splits $`C`$'s leaf. The split leaf has the same remaining key
+  bytes and the same content $`S_0`$ as $`A`$'s untouched leaf, so the two are
+  one object.
+- That object is staged, because the overlay holds every emitted object even
+  when equal bytes are committed (`store.rs:230-270`).
+- Replacing $`B`$'s source rebuilds $`A`$'s parent, so the rewrite certifies
+  $`A`$'s leaf at $`A`$'s position.
+- Algorithm 3 reaches the leaf at that position, finds it staged and descends.
+  The rewrite never loaded $`A`$'s leaf, so $`S_0`$ at $`A`$'s endpoint is
+  neither staged nor certified there, and the walk refuses.
+
+The hypothesis made four predictions:
+
+1. A model of Algorithm 3 refuses a valid delta of this shape for every fuel.
+2. Consulting the exact certificate first accepts that delta, and accepts
+   exactly the valid deltas.
+3. After the same reorder in Rust, the shrunk transition seals to the
+   independent rebuild of its target.
+4. The ten existing path-provenance tests stay green and unchanged.
+
+All four held: predictions 1 and 2 under FORMAL, and 3 and 4 under EXECUTABLE
+REFINEMENT.
+
+![The coincidence counterexample in one namespace, with references as numbers and paths as lists of edge bytes. The staged root 2 holds the leaf 3 at path 1, where a NodeEntry certificate names it, and the staged node 4 at path 2, which holds the same leaf 3 at path 2, 3, where it is not certified, and a new staged leaf 5. The leaf 3's content 6 is a base blob, certified only at path 2, 3. The staged-first walk descends into the leaf 3 at path 1 and refuses MissingObject 6; the certificate-first walk stops at the certificate at path 1 and accepts](figures/path-exact-closure-coincidence.svg)
+
+**FORMAL (model first).** The new theory
+`formal/rocq/stack_safe_pda/theories/PathExactIncrementalClosure.v` models the
+walk as a recursive descent with fuel over parsed objects, with one classifier
+for each order: `staged_first` transcribes Algorithm 3, and `certificate_first`
+the correction. The catalog states its definitions of coverage, the delta
+closure and validity as inference rules. Rocq 9.1.1 compiled the theory with all
+nine `Print Assumptions` capstones closed under the global context
+(`target/perf/logs/c26/rocq-path-exact-20261027T094924Z.log`, SHA-256
+`308b14375eb599e10c9320eefc5e0fef85a89b5ebeee30d98ec395be842e7d86`). `coqchk`
+then checked the module through 40,987 constants and reported "Modules were
+successfully checked"
+(`target/perf/logs/c26/coqchk-path-exact-20261027T094950Z.log`, SHA-256
+`73ce397d329c3c1e0d031d7a97c73d1271280fab652285c9cb20d4f3c118a00b`; pgmcp
+artifact 1124). The capstones answer the predictions and fix the controls:
+
+| Claim | Capstone |
+|---|---|
+| Prediction 1: Algorithm 3 refuses a valid delta at a coincident certificate | `staged_first_refuses_a_valid_delta_at_a_coincident_certificate`: the figure's delta is valid; the certificate-first verifier accepts it with 8 visits, reaching 1, 2, 4, 5, 7 and 3; the staged-first verifier refuses it with `MissingObject 6`, and no fuel makes it accept |
+| Prediction 2: the correction accepts exactly the valid deltas | `certificate_first_verifier_sound`, `certificate_first_verifier_complete` (once the fuel reaches the depth of the delta), and `certificate_first_reached_is_delta_closure` |
+| Algorithm 3 never accepted an uncovered occurrence | `staged_first_verifier_sound` |
+| The two orders differ only at coincident occurrences | `verifiers_agree_without_coincidence` |
+| The second outcome change | `staged_first_accepts_a_staged_object_owned_only_at_inherited_positions` |
+| Negative control: path-blind certificates are unsound | `digest_only_certificate_mutant_admits_an_uncovered_occurrence` |
+| Negative control: the final check is necessary | `skipped_reachability_mutant_admits_an_unreached_staged_object` |
+
+An earlier pass had eight capstones, before the second outcome change was
+added; it compiled with eight closed
+(`target/perf/logs/c26/rocq-path-exact-20261027T092705Z.log`, SHA-256
+`7c97b18da34e49eb514d1cad5901f51c328894ece2ffd401a7bec2d34c3040ac`) and passed
+`coqchk` (`target/perf/logs/c26/coqchk-path-exact-20261027T092711Z.log`, SHA-256
+`54fbb9d936e7801fd37a9e46384d1c8a36722503fffbb72ff12a75b2702b7fd6`).
+
+Two failed proof attempts are recorded so the strategy is not retried (pgmcp
+artifacts 1124 and 1125). They are the compiles at line 527
+(`target/perf/logs/c26/rocq-path-exact-20261027T092628Z.log`, SHA-256
+`71dcd0b7d20d295678fe8f10fa43422a7bd36813eccca8f3b264f6c7f7137042`) and at line
+603 (`target/perf/logs/c26/rocq-path-exact-20261027T092639Z.log`, SHA-256
+`8864b14d44daf5bbe8a121a80f97b95461abfae045f534b1045f3a8c81b5311a`), and they
+had one cause. In Rocq 9.1, `destruct (walk_pending …) eqn:walked` also
+rewrites every hypothesis that mentions the destructed term, the induction
+hypothesis included. After it, the equation no longer fits the induction
+hypothesis's premise, and a second `rewrite walked` finds nothing to rewrite.
+The working proofs either destruct the induction hypothesis applied to the
+equation, or use the already rewritten hypotheses as they stand; they never
+rewrite with the equation a second time. Artifact 1125 corrects artifact 1124,
+which had misattributed the second failure to the shape of the goal.
+
+**DECISION.** The verifier consults the exact certificate first. An occurrence
+that an inherited boundary names exactly, by its namespace, kind, path and
+reference, belongs to the base whether or not equal bytes are staged. Only an
+uncertified occurrence must be staged, and only such an occurrence is
+authenticated, parsed and expanded. Exact-path provenance is not weakened: a
+certificate must still match the whole tuple, so an inexact boundary never
+stops the walk (`PX-02`), and the path-blind negative control stays refuted.
+The rule also follows J-037's definition of a portable delta, which "owns every
+canonical object that is required beyond its declared base". An object staged
+only where the base owns it is not required beyond the base, so the final check
+now refuses it (`PX-03`), where Algorithm 3 accepted it.
+
+Two repairs that keep Algorithm 3's order fail:
+
+- Accepting a reference wherever the base holds it, at any path, is the
+  digest-only shortcut that J-037 rejected, and that task 7755 restates:
+  "Reachability alone does not prove semantic reuse at a different path". The
+  negative control shows it accepting an uncovered occurrence.
+- Withholding the coincident object from the overlay leaves its emitted
+  occurrence, the split leaf at $`C`$'s position, neither staged nor certified,
+  so the walk would refuse there instead.
+
+**CORRECTION.** Algorithm 3 (path-exact incremental closure) of J-037 is
+replaced by:
+
+```pseudocode
+push (target manifest, manifest expectation, exact empty path)
+while work remains:
+    pop one logical occurrence (reference, expectation, exact path)
+    skip it if this exact occurrence is already completed
+    count one logical visit against the visit limit
+    if the expectation names a namespace and a boundary kind
+            and an inherited-boundary certificate names
+            (namespace, boundary kind, exact path, reference):
+        mark the occurrence completed     -- the base owns it and everything below it
+        continue
+    require the reference to be staged, else refuse MissingObject
+    verify its digest and declared-length identity once per distinct digest
+    parse canonical framing at this exact path and schedule children with extended paths
+reject every staged object not reached from the target manifest
+```
+
+J-037's version consulted the certificate only in the branch for an unstaged
+reference. It also began by pushing each target semantic root. The code pushes
+the target manifest instead, whose parse schedules the roots, and the first
+line above follows the code (`closure.rs:938-947`). J-037's bound of
+$`O(f+b+e+s)`$ expected time is unchanged; this is derived, not measured. Each
+popped occurrence costs at most one more expected constant-time hash probe. The
+corrected walk descends only at uncertified staged occurrences, so its
+occurrences are a subset of those into which Algorithm 3 would descend.
+
+![One occurrence of the corrected walk. After the target manifest is pushed at the empty path, the walk pops an occurrence while work remains. If a certificate names the occurrence exactly, the walk stops at an inherited boundary, drawn in green. Otherwise it looks the reference up in the staging overlay, drawn in amber; an absent reference is refused as MissingObject, in red, and a staged one is authenticated, parsed and validated, in grey, then recorded as reached with its content and children pushed at their exact paths, in blue. When no work remains, the walk accepts the delta, in green, if every staged object was reached, and otherwise refuses it, in red](figures/path-exact-closure-occurrence.svg)
+
+**DERIVED.** These consequences are derived from the code and the theory, not
+measured. Write $`O`$ for the staging overlay, and $`R_{\mathrm{cf}}`$ and
+$`R_{\mathrm{sf}}`$ for the references that the certificate-first and the
+staged-first walk reach. When both walks accept a transaction,
+
+```math
+R_{\mathrm{cf}} \subseteq R_{\mathrm{sf}} \subseteq \operatorname{dom} O \subseteq R_{\mathrm{cf}} .
+```
+
+Each inclusion has its own reason:
+
+1. The staged-first walk descends wherever the certificate-first walk does, and
+   also at coincident occurrences.
+2. Both walks descend only into staged objects.
+3. The certificate-first walk passed its final check.
+
+The three sets are therefore equal. The consequences:
+
+- The report fields that count first visits per digest are equal: distinct
+  objects, node objects, payload objects and canonical bytes.
+- The fields that count occurrences (references, maximum worklist and logical
+  visits) can only fall, and only when a coincident occurrence is met. Without
+  one, both walks return identical outcomes and reports
+  (`verifiers_agree_without_coincidence`).
+- The verifier writes nothing. The sealed objects, the receipt and the target
+  manifest come from the rewrite and the overlay.
+- The WAL reads only the report's canonical bytes, through an accessor that
+  nothing calls yet (`wal/codec.rs:421-427`).
+- A transaction that becomes sealable writes its coincident object as `Reuse`,
+  because an equal body is already committed (`wal/disposition.rs:12-20`).
+
+The second outcome change cannot refuse a rewrite's own delta. The rewrite
+stages only the nodes that it builds and the changed continuation sources, and
+neither is owned by the base at its own position:
+
+- A built node is never the base occurrence at its own path. Either the base
+  has no node entered there, as for the remainder of a split, or the keys below
+  it changed, and a PATRICIA trie is determined by its keys and values
+  (Morrison, 1968, [doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481)).
+- A changed source sits at an endpoint whose value changed.
+
+**EXECUTABLE REFINEMENT.** The code change is one reorder inside
+`verify_incremental_closure`: the certificate check (`closure.rs:971-981`) now
+precedes the overlay read (`:982-989`). The visit count (`:963-968`), the memo,
+authentication, the cycle check, the parse, node-context and endpoint-policy
+validation, and the final check (`:1199-1208`) are unchanged.
+
+The tests bind the predictions in two layers:
+
+- **Verifier level** (`path_provenance.rs`, over hand-built canonical bytes):
+  - `PX-01` is the counterexample, and binds the logical-visit limit to the
+    model's count.
+  - `PX-02` shows that an absent certificate, or one that differs from the
+    exact one only in its path, namespace, kind or reference, does not stop the
+    walk.
+  - `PX-03` is the refused staged object owned only at inherited positions.
+- **Transaction level** (the new `path_exact_closure_properties.rs`, over a
+  model state compared with an independent rebuild, never with the production
+  rewrite):
+  - `PX-04` is the shrunk transition: it seals, and the staged-first model walk
+    reproduces the measured refusal.
+  - `PX-05` covers 256 generated transitions biased toward coincidence. Its
+    model walk derives certificates independently of the rewrite, as the
+    maximal shared occurrences of the target, and runs both orders.
+
+The five rows are registered in `PROPERTY_BINDINGS`, which the manifest test
+checks; that test also reads the theory and requires every capstone to be cited
+by a `PX` row. The integrated runner rejects placeholders in the theory,
+compiles it with nine closed capstones and kernel-checks it
+(`check-stack-safe-pda-proofs.sh:844-848`).
+
+The focused runs went through three iterations (pgmcp artifact 1126, whose
+count of the existing tests artifact 1127 corrects to ten). Each was on an
+export of HEAD plus this change, in debug, single-threaded, under a 24 GiB
+scope:
+
+1. **Compile error.** proptest's `prop_assert!` turns its condition into a
+   format string, so a `matches!` pattern containing `{ .. }` is an invalid
+   format string. Both calls were given explicit messages.
+2. **Coverage failure.** 14 tests passed and 1 failed. `PX-01` to `PX-04` and
+   the ten existing path-provenance tests passed, which is prediction 4.
+   `PX-05` failed its own coverage requirement:
+   `ClosureCoverage { transitions: 248, coincident: 105, staged_first_missing_node: 0, staged_first_missing_content: 85 }`.
+   This refuted hypothesis H1, that a channel-copy edit aliases a node of a
+   data subtree.
+3. **H3 confirmed.** Both transaction-level tests passed (prediction 3), and
+   `PX-05` observed both node-level and content-level misses of the staged-first
+   walk.
+
+The diagnosis of H1 came from the key layout, not from trial. A datum's path is
+its channel's datum prefix followed by its relative key
+(`data_index.rs:1499-1507`). The prefix frames the channel's bytes and its
+stable hash (`rho_path.rs:896-912`, `:1031-1040`), so every channel subtree's
+root is specific to its channel. Below the prefix, the original datum texts
+diverged at their first byte, so only childless leaves could coincide.
+
+Hypothesis H3 was that two texts sharing their first eleven bytes,
+`datum-pair-a` and `datum-pair-b`, give each channel an inner node over its two
+pair datums whose bytes do not depend on the channel. A generator that rebuilds
+one channel's pair node, while another channel keeps an equal untouched one,
+would then produce node-level coincidences. Run 3 confirmed it. The logs:
+
+| Run | Log | SHA-256 |
+|---|---|---|
+| 1 | `target/perf/logs/c26/px-focused-debug-20261027T100211Z.log` | `064851eb7d5d291866086cacc981c917cad86f5552cee8a167826a78d960ee49` |
+| 2 | `target/perf/logs/c26/px-focused-debug-20261027T100249Z.log` | `834fd8c8732485f9c19c71386f8c67de8f9e900622eb25c0c0c77626ec7cf55b` |
+| 3 | `target/perf/logs/c26/px-focused-debug-20261027T100651Z.log` | `6905f9ebc11a9f675481dc7676fcf992877285abc1ca429a78797457497a5681` |
+
+**VERIFICATION BOUNDARY.** The final evidence ran on tree `63b417a5`, exported
+to `target/scratch/idx`, which is HEAD `c8331505` plus this change. It differs
+from this commit only in documentation: this table, the corrected test count
+and the catalog's verification-record paragraph were written after the runs.
+One heavy job ran at a time, each in a user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| obligation registries | in the export | `workspace_regression` and the aggregate `pathmap` registry regenerated, the other fourteen current, every self-test passed | `target/perf/logs/c26/registries-11957-20261027T105300Z.log` | `a3f38a3759d4a993e4b109fea7364c7357cd5cdff31280a78955da8caae1ad2a` |
+| the 480 selected rspace++ library tests under `rspace::persistence`, debug | 24 GiB, one test thread | 480 passed, 0 failed, 3 ignored, in 35.28 s | `target/perf/logs/phase4/c26-11957-persistence-debug-20261027T105332Z.log` | `3f0314951754f686745bd17ecf3fc7a746ec7b0f0cfb917f46ea12de9903623c` |
+| the same, release | as above | 480 passed, 0 failed, 3 ignored, in 14.89 s | `target/perf/logs/phase4/c26-11957-persistence-release-20261027T105332Z.log` | `1c8021095b6e90067a84b68680b8343bd08ee3fe92c85482f5890be84667eb5b` |
+| `cargo check --workspace --all-targets` | 48 GiB | exit 0 in 44 s; the warnings are those of the previous commit's gate | `target/perf/logs/phase0/c26-11957-gate-check-20261027T105645Z.log` | `e56af6068bf851e0df0d07b0c25487dabf2d921852c62adeb753531b4c5e6e45` |
+| `cargo clippy --workspace` | 48 GiB | exit 0 in 47 s; one warning, also in the previous commit's gate | `target/perf/logs/phase0/c26-11957-gate-clippy-json-20261027T105645Z.log` | `bef082009c4a7eed0f84648a190fc2c8c831c66cb8137c59d135dba604211533` |
+| release nextest for `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang` | 48 GiB | 4,418 passed, 45 skipped, in 765.97 s | `target/perf/logs/phase0/c26-11957-gate-nextest-20261027T105645Z.log` | `16df347cdf62f0db4d123e448616122abd7de3ac51c9e003c92599404bd98cab` |
+| release doc tests for `models` and `rholang` | 48 GiB | 4 passed, 3 ignored | `target/perf/logs/phase0/c26-11957-gate-doc-20261027T105645Z.log` | `3d4dbbb78dc03ea12b60f46e5e8c7ba692c6140677280a3e61716134a8153612` |
+| the integrated runner's block for the theory, run by its own helper functions | the runner's limits: 1 GiB, one CPU | no placeholder; 9 of 9 capstones closed; the kernel check passed through 40,987 constants | `target/perf/logs/c26/runner-block-11957-20261027T111410Z.log` | `80670796097377ab5e3a768da068876e40c356e07cecc04c7678d32987a0d613` |
+| `cargo fmt --all -- --check` | in the export | exit 0, no difference | `target/perf/logs/c26/fmt-11957-20261027T111432Z.log` | `59d1ecd0ad2b861e8983c91f8e5000c867360780533806ed3f29e304d6b35702` |
+| `scripts/check-fmt.sh`, the pre-commit hook's check | in the export | clean, 0 differences | `target/perf/logs/c26/check-fmt-11957-20261027T111432Z.log` | `a6ba863d6d396c0b2835c624f1af04eae5244fe485c106a003205cdb8489b79c` |
+
+The 480 tests include the manifest test, the five `PX` rows and the ten
+existing path-provenance tests. The manifest test ran again on the final export
+after the catalog's verification-record paragraph was written; the pgmcp
+progress note of bug 11957 records that run. These are agent-run results;
+independent review and the approved pgmcp verification recipe remain required.
+
+**PATHMAP LEARNING.** Being in the overlay is not ownership; ownership is
+positional. In a content-addressed store, equal subtrees are one object (Merkle,
+1988, [doi:10.1007/3-540-48184-2_32](https://doi.org/10.1007/3-540-48184-2_32)),
+so one reference can belong to the base at one path and to the delta at another.
+Membership in a staging overlay is a property of bytes; ownership is a property
+of an occurrence. A path-exact verifier must decide ownership for each
+occurrence, from its exact certificate, before it consults byte membership. This
+is the converse of J-037's learning: digests do not prove that an occurrence is
+the base's, and staged bytes do not prove that it is the delta's.
+
+**BOUNDARY.** No persisted byte, identity, format or wire message changes. The
+durable backend stays dormant, as J-250 records. Task 11943 resumes with its
+shape summary property, which this correction lets seal.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

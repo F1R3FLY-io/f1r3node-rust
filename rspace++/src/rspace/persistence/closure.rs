@@ -968,27 +968,24 @@ where
                 )?;
                 let reference = key.reference;
                 let expectation = key.expectation;
-                let staged = store
-                    .get_staged_bounded(&reference.digest(), reference.encoded_len())
-                    .map_err(ClosureError::Store)?;
-                let Some(bytes) = staged else {
-                    let Some((namespace, kind)) = expectation_boundary(expectation) else {
-                        return Err(format_error(CanonicalFormatError::MissingObject(
-                            reference.digest(),
-                        )));
-                    };
-                    if !provenance.contains(&InheritedObjectRef {
+                if let Some((namespace, kind)) = expectation_boundary(expectation) {
+                    if provenance.contains(&InheritedObjectRef {
                         namespace,
                         kind,
                         path: key.path,
                         reference,
                     }) {
-                        return Err(format_error(CanonicalFormatError::MissingObject(
-                            reference.digest(),
-                        )));
+                        insert_incremental_visit(&mut completed, key).map_err(format_error)?;
+                        continue;
                     }
-                    insert_incremental_visit(&mut completed, key).map_err(format_error)?;
-                    continue;
+                }
+                let staged = store
+                    .get_staged_bounded(&reference.digest(), reference.encoded_len())
+                    .map_err(ClosureError::Store)?;
+                let Some(bytes) = staged else {
+                    return Err(format_error(CanonicalFormatError::MissingObject(
+                        reference.digest(),
+                    )));
                 };
 
                 let first_visit = !declared_lengths.contains_key(&reference.digest());

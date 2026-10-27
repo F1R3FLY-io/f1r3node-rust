@@ -1,0 +1,61 @@
+@startuml path-exact-closure-occurrence
+' ============================================================================
+' The decision that verify_incremental_closure makes for one logical
+' occurrence (task 11957; closure.rs:927-1210), and the final reachability
+' check. Theory: formal/rocq/stack_safe_pda/theories/PathExactIncrementalClosure.v
+'   BLUE   #1565C0  the walk: pop, authenticate, parse, push
+'   AMBER  #EF6C00  the overlay lookup, which the correction moves after the
+'                   exact-certificate decision, and the note that explains it
+'   GREEN  #2E7D32  acceptance: an inherited boundary, or the whole delta
+'   RED    #C62828  refusals
+'   GREY   #607D8B  checks that the correction leaves unchanged
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+skinparam NoteBorderColor #455A64
+
+title <b>One occurrence of the path-exact incremental closure walk</b>\nan occurrence is (reference r, expectation e, exact absolute path p)
+
+start
+:push the target manifest at the empty path; <<#BBDEFB>>
+while (work remains?) is (yes)
+  :pop (r, e, p); <<#BBDEFB>>
+  if (e is a node or a content blob\nand a certificate names exactly\n(namespace(e), kind(e), p, r)?) then (yes)
+    :stop at an inherited boundary:\nthe base owns this occurrence; <<#C8E6C9>>
+  else (no)
+    :look r up in the staging overlay; <<#FFE0B2>>
+    if (r staged?) then (no)
+      :refuse MissingObject(r); <<#FFCDD2>>
+      stop
+    else (yes)
+      :authenticate r once per digest\n(declared length, digest),\ncheck for a cycle; <<#CFD8DC>>
+      :parse r as e expects at p,\nvalidate the node context\nand the endpoint policy; <<#CFD8DC>>
+      :record r as reached,\npush its content at p + prefix\nand each child at p + prefix + edge; <<#BBDEFB>>
+    endif
+  endif
+endwhile (no)
+if (every staged object reached?) then (yes)
+  :accept the delta; <<#C8E6C9>>
+else (no)
+  :refuse: the transaction staged an\nobject outside the target delta closure; <<#FFCDD2>>
+endif
+stop
+
+note right #FFF3E0
+  <b>The defect</b> (J-037, Algorithm 3): the overlay was
+  consulted first, and a certificate only for an object
+  that was not staged. A node emitted at one path can be
+  byte-identical to an untouched subtree certified at
+  another; the old walk descended into that subtree there
+  and refused a valid delta with MissingObject.
+  ----
+  <b>The correction</b> (J-251): the exact certificate is
+  checked first. Outcomes differ only at a <i>coincident</i>
+  occurrence, one that is certified and whose reference is
+  also staged (verifiers_agree_without_coincidence).
+end note
+@enduml

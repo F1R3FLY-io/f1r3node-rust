@@ -1155,10 +1155,12 @@ in the union, but it cannot be decremented: when one of two entries that share
 an object is removed, the bit alone cannot tell whether another entry still
 reaches the object, which is exactly the alias mutant's failure. Task 7924
 replaces the bit with per-domain checked counts, which must refine this model.
-Path and namespace rewrite provenance, which admits an inherited object only
-when the provenance set names its namespace, kind, path and reference
-(`closure.rs:676-693`), and full-byte collision checks belong to object
-admission: the model's vertices are already authenticated digests. The model's
+Path and namespace rewrite provenance, which ends the closure walk at an
+occurrence exactly when the provenance set names its namespace, kind, path and
+reference, checked before the staging overlay (`closure.rs:971-989`; the
+path-exact incremental closure section, PX-01 to PX-05), and full-byte
+collision checks belong to object admission: the model's vertices are already
+authenticated digests. The model's
 pin protects the pinned object itself; which closure a production pin protects,
 and how leases and the WAL frontier interact with it, is the garbage
 collector's contract (tasks 7943 to 7945). Reset to an older root alias is task
@@ -3421,6 +3423,295 @@ slice does not change.
 | `rspace++/tests/persistence/property_support.rs` | `df451a1dc45ce9b6d7c0d395b2b9d0de25fa8aafdf7da43e957233201222eb61` |
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `489d9344c520a6fa4c7577e57609fcbb7498aa775b0e74daf48c5494809a14cc` |
 
+### Path-exact incremental closure (2026-10-27)
+
+Task 11957 corrects the incremental closure verifier,
+`verify_incremental_closure` (`closure.rs:927-1210`), whose only production
+caller is the transaction seal (`transaction.rs:524`). The verifier proves both
+directions of a portable delta without walking an untouched base subtree: every
+occurrence in the target is either inherited from the verified base at its
+exact path or staged by the transaction, and every staged object belongs to the
+delta. The shape summary property of task 11943 found that it refused a valid
+transition with `MissingObject`. This section defines the walk, the defect and
+its correction, the model, and the properties PX-01 to PX-05. It corrects
+Algorithm 3 of J-037 in the engineering journal, where J-251 records the
+discovery and the measurements.
+
+**Terms.**
+
+- An *occurrence* is a reference $`r`$ together with its *expectation* $`e`$
+  and its exact absolute logical path $`p`$. The expectation says what the walk
+  expects to find: the manifest, a node of one namespace, or a content blob at
+  an endpoint of one namespace. A node entered at path $`p`$ with prefix $`q`$
+  enters its child on edge byte $`b`$ at $`p \cdot q \cdot [b]`$ and its content
+  at $`p \cdot q`$, where $`\cdot`$ concatenates byte strings. Equal subtrees
+  are one object, so one object can have many occurrences.
+- The *staging overlay* $`O`$ holds every object that the transaction emitted,
+  even when the committed store already holds equal bytes: insertion consults
+  only the overlay (`store.rs:230-270`), and so does the verifier's lookup
+  (`store.rs:274-296`).
+- A *certificate* is an inherited boundary $`(n, k, p, r)`$: a namespace, a
+  boundary kind (`NodeEntry` for a node, `ContentAtEndpoint` for content), an
+  exact path and a reference. The private rewrite records certificates in two
+  steps. Each base node that it loads makes its content reference, at the
+  node's path, and each child reference, at the child's path, *eligible*
+  (`rewrite.rs:1411-1445`, called at `rewrite.rs:1561-1563`). Each node that it
+  builds promotes an eligible boundary to *inherited* when it holds the same
+  reference at the same path (`rewrite.rs:1447-1479`, called at
+  `rewrite.rs:1360-1368`). A namespace that the batch leaves unmutated
+  certifies its root at the empty path (`rewrite.rs:650-663`). The verifier
+  consults only inherited boundaries (`rewrite.rs:386-388`). The manifest has
+  no boundary kind, so it is never certified (`closure.rs:1212-1222`).
+- An occurrence is *coincident* when it is certified and its reference is also
+  staged.
+
+**The defect.** Algorithm 3 of J-037 looked a reference up in the overlay
+first, and consulted a certificate only for a reference that was not staged. A
+node that the rewrite emits at one path can be byte-identical to an untouched
+base subtree that the rewrite certified at another path. Content addressing
+makes the two one object, so the untouched subtree's reference is staged. The
+old walk reached the untouched subtree at its certified position, found its
+reference staged and descended. The rewrite never loaded that subtree, so its
+descendants are neither staged nor certified at their own paths, and the walk
+refused a valid delta with `MissingObject`.
+
+That property shrank its failure to one transition. The base holds three
+continuations: $`A`$, on the channels alpha and beta with the body `body-0` and
+an independent source $`S_0`$; $`B`$, on alpha and beta with `body-the-second`
+and a natural source; and $`C`$, on gamma and alpha with `body-0` and the same
+independent source $`S_0`$; together with the joins that their groups require.
+The batch replaces $`B`$'s source with its independent source, inserts $`D`$,
+on gamma and alpha with `body-the-second` and a natural source, and raises both
+joins of gamma and alpha from 1 to 2. Inserting $`D`$ splits $`C`$'s leaf, and
+the split leaf keeps the same remaining key bytes and the same content $`S_0`$
+as $`A`$'s untouched leaf, so it is the same object. Replacing $`B`$'s source
+rebuilds $`A`$'s parent, which certifies $`A`$'s leaf at $`A`$'s position. The
+walk reached $`A`$'s leaf there, found it staged and descended, and found
+$`S_0`$ at $`A`$'s key neither staged nor certified. The seal refused with
+`MissingObject` naming exactly $`S_0`$'s digest; the target holds 15 logical
+nodes in 14 node objects, against the base's 13 in 13 (pgmcp artifact 1123).
+
+![The coincidence counterexample of the theory, in one namespace; numbers are references and paths are lists of edge bytes. The staged manifest 1 enters the staged root 2 at the empty path. The root has edge 1 to the leaf 3, drawn in amber, whose occurrence at path 1 is certified as a NodeEntry, and edge 2 to the staged node 4, which split the base node C. Node 4 has edge 3 to the same leaf 3, at path 2, 3, where it is not certified, and edge 4 to the staged leaf 5, whose content is the staged blob 7. The leaf 3 has an empty prefix and the content 6, drawn in grey: a base blob that is not staged, certified as ContentAtEndpoint at path 2, 3 and neither staged nor certified at path 1. A note compares the walks: the staged-first walk descends into the leaf 3 at path 1 and refuses MissingObject 6 for every fuel; the certificate-first walk stops at the certificate at path 1, descends into the leaf 3 at path 2, 3, stops at the content's certificate, and accepts with 8 visits, reaching 1, 2, 4, 5, 7 and 3](figures/path-exact-closure-coincidence.svg)
+
+**The correction.** The corrected walk consults the exact certificate first. It
+starts by pushing the target manifest at the empty path, and every occurrence
+$`(r, e, p)`$ that it pops takes these steps:
+
+1. ⟨Count the visit⟩. Count one logical visit, refusing `ResourceLimit` above
+   `max_logical_visits` (`closure.rs:963-968`).
+2. ⟨Stop at the exact certificate⟩. If $`e`$ has a namespace $`n`$ and a
+   boundary kind $`k`$, and $`(n, k, p, r)`$ is an inherited boundary, mark the
+   occurrence completed and go on to the next one: the base owns this
+   occurrence and everything below it (`closure.rs:971-981`).
+3. ⟨Read the staged object⟩. Otherwise read $`r`$ from the overlay, refusing
+   `MissingObject` if it is absent (`closure.rs:982-989`).
+4. ⟨Check and expand⟩. Unchanged: authenticate $`r`$ once per digest against
+   its declared length and digest, check for a cycle, parse $`r`$ as $`e`$
+   expects at $`p`$, validate the node context and the endpoint policy, record
+   $`r`$ as reached, and push its content at $`p \cdot q`$ and each child at
+   $`p \cdot q \cdot [b]`$.
+
+When the worklist is empty, one step remains:
+
+5. ⟨Check the delta⟩. Refuse `SemanticCoherence` ("transaction staged an
+   object outside the target delta closure") if the walk did not reach some
+   staged reference (`closure.rs:1199-1208`).
+
+Algorithm 3 ran step 3 before step 2, and step 2 only for a reference that step
+3 did not find.
+
+![One occurrence of the corrected walk. After the target manifest is pushed at the empty path, the walk pops an occurrence of reference r, expectation e and exact path p while work remains. If e is a node or a content blob and a certificate names exactly its namespace, its kind, p and r, the walk stops at an inherited boundary, drawn in green: the base owns the occurrence. Otherwise it looks r up in the staging overlay, drawn in amber. An absent r is refused as MissingObject, in red. A staged r is authenticated once per digest against its declared length and digest and checked for a cycle, parsed as e expects at p with the node context and the endpoint policy validated, both in grey, and recorded as reached, with its content and children pushed at their exact paths, in blue. When no work remains, the walk accepts the delta, in green, if every staged object was reached, and otherwise refuses it, in red, as staged outside the target delta closure. A note states the defect of Algorithm 3 of J-037, which consulted the overlay first, and the correction recorded in J-251](figures/path-exact-closure-occurrence.svg)
+
+The two orders decide alike at every occurrence that is not coincident, so the
+correction changes two outcomes, both at coincident occurrences:
+
+- a valid delta that has a coincident occurrence is accepted, where Algorithm 3
+  refused it with `MissingObject`;
+- a staged object that the walk reaches only at certified occurrences is
+  refused in step 5, where Algorithm 3 descended into it there and accepted.
+  Such an object is not part of the delta: the base owns each of its
+  occurrences in the target.
+
+**What stays equal.** Write $`R_{\mathrm{cf}}`$ and $`R_{\mathrm{sf}}`$ for the
+references that the certificate-first and the staged-first walk reach. When
+both accept a transaction,
+
+```math
+R_{\mathrm{cf}} \subseteq R_{\mathrm{sf}} \subseteq \operatorname{dom} O \subseteq R_{\mathrm{cf}} .
+```
+
+The first inclusion holds because the staged-first walk descends wherever the
+certificate-first walk does, and also at coincident occurrences; the second
+because both walks descend only into staged objects; the third because the
+certificate-first walk passed step 5. The three sets are therefore equal, and
+so are the report fields that count first visits per digest: distinct objects,
+node objects, payload objects and canonical bytes. The counts that follow
+occurrences (the references, the maximum worklist and the logical visits) can
+only fall, and only when a coincident occurrence is met; without one, both walks
+make the same decision everywhere and return identical outcomes and reports. The
+verifier writes nothing: the sealed objects, the receipt and the target
+manifest come from the rewrite and the overlay. The WAL reads only the closure
+report's canonical bytes, through an accessor that nothing calls yet
+(`wal/codec.rs:421-427`). A transaction that becomes sealable writes its
+coincident object as `Reuse`, because an equal body is already committed
+(`wal/disposition.rs:12-20`).
+
+**The theory.** `formal/rocq/stack_safe_pda/theories/PathExactIncrementalClosure.v`
+(module `PathExactIncrementalClosure`) models the walk as a recursive descent
+with fuel over parsed objects, with one classifier for each order. `_CoqProject`
+lists it, and the integrated runner rejects placeholders in it, compiles it,
+requires all nine capstones to be closed under the global context, and checks
+it with the kernel checker. Write $`\mathrm{cert}(o)`$ when the certificate set
+$`C`$ holds the exact boundary of an occurrence $`o`$, $`r_o`$ for the
+reference of $`o`$, $`O(r) = x`$ when the overlay stages the object $`x`$ under
+$`r`$, and $`\mathrm{ch}(o, x)`$ for the child occurrences of $`x`$ at $`o`$;
+every rule below that reads $`x`$ also requires $`x`$ to have the kind that
+$`o`$ expects. *Coverage*, the contract of exact-path provenance, is the least
+predicate closed under
+
+```math
+\frac{\mathrm{cert}(o)}{\mathrm{covered}(o)}
+\qquad\qquad
+\frac{O(r_o) = x \qquad \forall o' \in \mathrm{ch}(o, x).\ \mathrm{covered}(o')}{\mathrm{covered}(o)}
+```
+
+and the *delta closure* $`o \leadsto t`$, the references reached through
+uncertified staged objects, is the least relation closed under
+
+```math
+\frac{\neg\,\mathrm{cert}(o) \qquad O(r_o) = x}{o \leadsto r_o}
+\qquad\qquad
+\frac{\neg\,\mathrm{cert}(o) \qquad O(r_o) = x \qquad o' \in \mathrm{ch}(o, x) \qquad o' \leadsto t}{o \leadsto t} .
+```
+
+With $`o_m`$ the manifest $`m`$ at the empty path, a delta is valid when the
+manifest is covered and the delta closure reaches every staged object:
+
+```math
+\mathrm{valid}(O, C, m) \iff \mathrm{covered}(o_m) \wedge \forall s \in \operatorname{dom} O.\ o_m \leadsto s .
+```
+
+| Capstone | Statement |
+|---|---|
+| `certificate_first_reached_is_delta_closure` | When the certificate-first walk accepts an occurrence $`o`$, the references that it reaches are exactly those $`t`$ with $`o \leadsto t`$. |
+| `certificate_first_verifier_sound` | An accepted certificate-first verification is a valid delta. |
+| `certificate_first_verifier_complete` | The certificate-first verifier accepts every valid delta once its fuel reaches the depth of the delta. |
+| `staged_first_verifier_sound` | An accepted staged-first verification covers the manifest: Algorithm 3 never accepts an uncovered occurrence. |
+| `verifiers_agree_without_coincidence` | When no certificate names a staged reference, the two verifiers return identical outcomes for every fuel and manifest, including the visit count, the reached references and the refusal. |
+| `staged_first_refuses_a_valid_delta_at_a_coincident_certificate` | The delta of the coincidence fixture (the first figure of this section) is valid; the certificate-first verifier accepts it with 8 visits, reaching 1, 2, 4, 5, 7 and 3; the staged-first verifier refuses it with `MissingObject 6`, and no fuel makes it accept. |
+| `digest_only_certificate_mutant_admits_an_uncovered_occurrence` | Negative control. A staged node occurs at two paths, and its unstaged child is certified below only one of them. A certificate lookup that ignores the path accepts; the exact verifier refuses with `MissingObject`, and the manifest is not covered. |
+| `skipped_reachability_mutant_admits_an_unreached_staged_object` | Negative control. Without step 5 the walk accepts a delta that stages a blob that no occurrence references; the verifier refuses it with `StagedOutsideClosure`, and the delta is not valid. |
+| `staged_first_accepts_a_staged_object_owned_only_at_inherited_positions` | The second outcome change. A staged node whose two occurrences, and the content below each, are certified is accepted by the staged-first verifier and refused by the certificate-first verifier in its final check; the delta is not valid. |
+
+Object authentication, the completed-key memo, the cycle check, node-context
+and endpoint-policy validation, the payload kind of content and the resource
+limits are outside the model. A staged object is modelled by its parsed form;
+the canonical decoder makes child edges strictly increasing, so distinct
+occurrences have distinct keys and the memo never skips one. Fuel bounds the
+descent depth where the Rust walk relies on the finite, acyclic overlay. Exact
+paths are byte lists: the path arena gives two paths the same identity exactly
+when their bytes are equal.
+
+**The properties.**
+
+| ID | Property | Test |
+|---|---|---|
+| PX-01 | The coincidence fixture in canonical bytes. The base holds a continuation leaf with an empty prefix over a source; the staged root holds that leaf at edge 1 and a staged branch at edge 2, whose children are the same leaf at edge 3 and a new leaf over a new source at edge 4; the certificates name the leaf as a `NodeEntry` at 1 and the base source as `ContentAtEndpoint` at 2, 3. The verifier stops at the exact certificate and verifies the emitted leaf at 2, 3: it accepts with 7 distinct objects, 5 node objects, 1 payload object and 9 references, accepts within 10 logical visits (the model's 8 and the two empty namespace roots), and with 9 refuses `ResourceLimit` for logical visits, 10 attempted. | `a_staged_node_equal_to_an_inherited_subtree_stops_at_its_exact_certificate` |
+| PX-02 | On the same fixture, a leaf certificate that is absent, or that differs from the exact one only in its path (1, 0), its namespace (the data bag), its kind (`ContentAtEndpoint`) or its reference (the sibling leaf), does not stop the walk at 1: all five are refused with `MissingObject` naming exactly the base source. | `an_inexact_boundary_does_not_stop_a_coincident_staged_node` |
+| PX-03 | A data-bag leaf staged with the bytes of a base leaf, whose only target occurrence is certified as a `NodeEntry` at `roota`, is refused in the final check with `SemanticCoherence`: "transaction staged an object outside the target delta closure". | `an_object_staged_only_where_it_is_inherited_is_outside_the_delta` |
+| PX-04 | The shrunk transition of the defect seals. Its target manifest equals the independent rebuild of the target state; the certificate-first model walk accepts and reaches exactly the staged objects; at least one occurrence is coincident; and the staged-first model walk reproduces the measured refusal, a missing content naming the shared source. | `shrunk_coincident_leaf_transition_seals_and_the_staged_first_control_refuses` |
+| PX-05 | On 256 generated transitions, every coherent transition seals, its target manifest equals the independent rebuild, and its sealed objects are published and the target is cold-admitted. The certificate-first model walk accepts and reaches exactly the staged objects; the staged-first walk accepts or misses a node or a content; and the two walks are identical whenever no occurrence is coincident. Some generated transition makes the staged-first walk miss a node, and another a content. | `generated_transitions_with_shared_subtrees_seal_to_the_independent_rebuild` |
+
+**The test model of PX-04 and PX-05.** A model state holds datums of three
+texts on three channels, and continuations of three bodies in four channel
+groups (alpha; beta; alpha and beta; gamma and alpha), each with a natural or
+an independent source, together with the joins that each group requires. A
+transition installs the base state, records the difference of two states as a
+mutation batch, stages the changed continuation sources and seals. Its target
+is compared with an independent rebuild of the target state, never with the
+production rewrite. Three generators bias the transitions toward coincidence:
+
+- *uniform*: a random state and one to four edits, each of which sets one slot
+  or copies one channel's or one group's slots onto another;
+- *node alias*: the texts `datum-pair-a` and `datum-pair-b` share their first
+  eleven bytes, so each channel holds a node over its two pair datums whose
+  bytes depend only on their multiplicities. The batch makes the second
+  channel's pair node equal to the first's and changes the first channel's
+  remaining datum, so the first channel's untouched pair node is certified
+  under its rebuilt root while an equal node is emitted. The channel's identity
+  hash sits in each channel subtree's root prefix, so only such shared inner
+  structure, not a copied channel, can alias a node;
+- *content alias*: the groups of alpha and beta and of gamma and alpha both
+  hold `body-0` with the same independent source; the batch edits the first
+  group and inserts a body into the second, which reproduces the shrunk
+  transition and its variants.
+
+The two alias generators add up to two random edits. The model walk derives its
+certificates independently of the rewrite: it collects every occurrence of the
+base image, and a target occurrence is certified exactly when it is a base
+occurrence whose parent occurrence is not, which makes the certificates the
+maximal shared occurrences of the target. A namespace root counts as having an
+uncertified parent, because the manifest has no boundary kind.
+
+`model_property_manifest_is_unique_and_exhaustive` checks these five bindings.
+It reads `PathExactIncrementalClosure.v` among its Rocq sources and requires
+each of the theory's nine `Print Assumptions` capstones to be cited by a PX row
+of the derivation matrix, and the integrated runner to compile the theory. The
+PX rows cite no TLA+ symbol: the walk is a sequential function of one sealed
+transaction.
+
+**Boundary.**
+
+- The certificates are an input of the theory: how the rewrite records them is
+  not modelled, and neither is the claim that every rewrite output is a valid
+  delta. PX-05 checks both through outcomes only: the production seal accepts
+  every generated transition, and the model walk over independently derived
+  certificates accepts it and reaches exactly the staged objects.
+- The second outcome change cannot refuse a rewrite's own delta (derived, not
+  mechanized). The rewrite stages only the nodes that it builds and the changed
+  continuation sources. A built node is never the base occurrence at its own
+  path: either the base has no node entered there, as for the remainder of a
+  split, or the keys below it changed, and a PATRICIA trie (Morrison, 1968) is
+  determined by its keys and values. A changed source sits at an endpoint whose
+  value changed. Every generated transition and every persistence test seals.
+- Digests are taken as injective on the objects in play: the overlay compares
+  full bytes and refuses `ContentCollision` (`store.rs:230-270`).
+- Authentication, the memo, the cycle check, node-context and endpoint-policy
+  validation and the limits stay with the existing structural tests and the
+  path-provenance tests; PX-01 binds the logical-visit limit to the model's
+  count.
+- No persisted byte, identity, format or wire message changes.
+
+Cited works:
+
+- K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing
+  of Haskell programs", *Proceedings of the Fifth ACM SIGPLAN International
+  Conference on Functional Programming (ICFP '00)*, 268–279, 2000,
+  [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266), for the
+  generated properties.
+- R. C. Merkle, "A Digital Signature Based on a Conventional Encryption
+  Function", *Advances in Cryptology — CRYPTO '87*, Lecture Notes in Computer
+  Science, 369–378, Springer, 1988,
+  [doi:10.1007/3-540-48184-2_32](https://doi.org/10.1007/3-540-48184-2_32), for
+  hash trees, in which equal subtrees are one object.
+- D. R. Morrison, "PATRICIA—Practical Algorithm To Retrieve Information Coded
+  in Alphanumeric", *Journal of the ACM* 15(4):514–534, 1968,
+  [doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481).
+
+The path-exact closure evidence in the verification record was taken at these
+sources.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `rspace++/src/rspace/persistence/closure.rs` | `5a792b11ab3fa440b9b252fb05829a63c2b4afd810f52b191ae4a93b7af3ce47` |
+| `formal/rocq/stack_safe_pda/theories/PathExactIncrementalClosure.v` | `8731049247321418344bf2e9594e9c8e3b835a13b9b9f191d1ebe8563fe8f42d` |
+| `formal/rocq/stack_safe_pda/_CoqProject` | `920645613396146c9992f71957ab9ff1cdca895aee840a702a3730008683366f` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `69935d0491c349218ecd08bb4869b12c8699bd7d3ca274e43cfeff4e4d279263` |
+| `rspace++/tests/persistence/path_provenance.rs` | `fb6cb724340b6d73b8cdda9442f7180adabc8e8343e3c7a344793ab940d208f6` |
+| `rspace++/tests/persistence/path_exact_closure_properties.rs` | `29cb16b87b66901af416d39257f884d470072d978281af3f9a618dac8a1956ad` |
+| `rspace++/tests/persistence/property_support.rs` | `c45b844dfbe4fa550a799c8be47501a277ff9d0fdeccc1b8433645f7fadb91e5` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `d7c993b31f1289d04376975d869651a1a6d2d7a24b297454ba4936ce261876f6` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -3535,6 +3826,11 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | TS-16 | `EXEC_ONLY` | `TrustedSuccessorCapability.retained_state_maxima_is_cold_componentwise_max`, `TrustedSuccessorCapability.eviction_requires_recomputation_counterexample` | P | Test-only model extraction; production refinement remains open (task 11945). The maxima are checked while retention appends; the eviction counterexample is reproduced on its fixture, and eviction is task 7756. |
 | TS-18 | `EXEC_ONLY` | `TrustedSuccessorCapability.trusted_successor_rule` | P | Test-only model extraction; production refinement remains open (task 11945). The rule's token and profile premises are checked as refusals at the receipt check. |
 | TS-19 | `EXEC_ONLY` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger` | P | Test-only model extraction; production refinement remains open (task 11945). The first successor's migration and the seeded metadata ledger are compared with the cold traversal; the double-migration control keeps the old anchor counted. |
+| PX-01 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_refuses_a_valid_delta_at_a_coincident_certificate`, `PathExactIncrementalClosure.certificate_first_verifier_complete` | P | Production refinement on the theory's coincidence fixture in canonical bytes, with the two certificates admitted directly; the report's counts and the logical-visit limit bind the model's eight visits. |
+| PX-02 | `EXEC_ONLY` | `PathExactIncrementalClosure.digest_only_certificate_mutant_admits_an_uncovered_occurrence`, `PathExactIncrementalClosure.certificate_first_verifier_sound` | P | Production refinement of exactness: a certificate that differs from the exact one in its path, namespace, kind or reference does not stop the walk, the executable side of the digest-only mutant. |
+| PX-03 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_accepts_a_staged_object_owned_only_at_inherited_positions`, `PathExactIncrementalClosure.skipped_reachability_mutant_admits_an_unreached_staged_object` | P | Production refinement of the second outcome change: the final reachability check refuses a staged object that the walk reaches only at a certified occurrence. |
+| PX-04 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_refuses_a_valid_delta_at_a_coincident_certificate` | P | Production refinement on the measured shrunk transition: the production seal accepts it, and the staged-first model walk reproduces the measured refusal. The rewrite's recording of certificates is checked only through this outcome. |
+| PX-05 | `EXEC_ONLY` | `PathExactIncrementalClosure.certificate_first_reached_is_delta_closure`, `PathExactIncrementalClosure.certificate_first_verifier_complete`, `PathExactIncrementalClosure.verifiers_agree_without_coincidence`, `PathExactIncrementalClosure.staged_first_verifier_sound` | P | Production refinement on generated transitions with shared subtrees: the production seal accepts every coherent transition, the model walk over independently derived certificates reaches exactly the staged objects, and the two orders agree without coincidence. The rewrite's recording rule remains an executable premise. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -3795,6 +4091,23 @@ eighteen trusted rows, whose transliteration reaches exactly TLC's 588 states,
 and this registry test. These results cover the models and the test model only:
 no production code changed, and every TS row remains a test-only extraction
 until tasks 11943 to 11946 refine it.
+
+The 2026-10-27 path-exact closure correction adds `PX-01` through `PX-05`. The
+catalog/derivation/binding registry now contains **210** IDs: the 205 above and
+the five closure rows. `PathExactIncrementalClosure.v` compiled with all **9**
+capstones closed under the global context, and the module passed independent
+kernel checking (pgmcp artifact 1124); the integrated runner's block for the
+theory passed again on the export of the candidate tree. On that export, all 480
+selected rspace++ library tests under `rspace::persistence` passed
+single-threaded in debug (35.28 s) and release (14.89 s), with the three
+unwind-child helpers ignored by design. They include the five closure rows, the
+ten existing path-provenance tests, unchanged, and this registry test. The
+candidate's export gate also passed: `cargo check` of all targets, clippy, all
+4,418 release nextest tests of `models`, `rspace_plus_plus`, `rho-pure-eval` and
+`rholang`, and the release doc tests. Unlike the trusted successor models, these
+results cover a production change: the verifier consults the exact certificate
+before the staging overlay. See engineering journal J-251 for the discovery, the
+failed proof strategies, caps and evidence hashes.
 
 ## Caller-authority contract (2026-09-06)
 

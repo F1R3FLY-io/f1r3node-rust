@@ -841,6 +841,11 @@ if [[ "$generation_checkpoint_closed_capstones" != "112" ]]; then
   echo "stack-safe-pda: expected all 112 publication/journal/inventory/cursor/work/checked-arithmetic Rocq capstones to be closed; got $generation_checkpoint_closed_capstones" >&2
   exit 1
 fi
+rocq_reject_placeholders theories/PathExactIncrementalClosure.v
+rocq_compile_with_closed_count theories/PathExactIncrementalClosure.v 9 \
+  "path-exact incremental closure"
+rocq_check_modules "path-exact incremental closure" \
+  StackSafePDA.PathExactIncrementalClosure
 rocq_reject_placeholders theories/IncrementalLedgerTrial.v
 rocq_compile_with_closed_count theories/IncrementalLedgerTrial.v 20 \
   "failure-atomic bounded private ledger trials"

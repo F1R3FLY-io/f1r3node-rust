@@ -11,6 +11,7 @@ theories/RSpaceCallerAuthorityMutants.v
 theories/RSpaceConsensusIdentity.v
 theories/RSpaceConsensusIdentityMutants.v
 theories/GenerationCheckpointPublication.v
+theories/PathExactIncrementalClosure.v
 theories/IncrementalLedgerTrial.v
 theories/IncrementalDomainComposition.v
 theories/CreditedClosureLedger.v
