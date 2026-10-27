@@ -25,6 +25,15 @@ ignore = [
   { id = "RUSTSEC-2026-0369", reason = "zip extract applies permissions through symbolic links (GHSA-4684-h2q9-2vcp). The utoipa-swagger-ui 9 build script reads its own vendored archive, casper-soak reads one member without extract, and the optional rust-bert feature uses zip 0.6.6 through tch. No path extracts an untrusted archive. Bump to zip 9." },
   { crate = "zip@3.0.0", reason = "zip yanked 99 of 100 versions after GHSA-4v9h-p7m9-rh26, GHSA-vv5m-jxxh-4627 and GHSA-4684-h2q9-2vcp (extract). The utoipa-swagger-ui 9 build script reads its own vendored archive, and casper-soak reads one member without extract. Bump to zip 9." },
   { crate = "zip@0.6.6", reason = "zip yanked 99 of 100 versions after the October 2026 extract advisories. The optional rust-bert feature uses zip 0.6.6 through tch, torch-sys and cached-path. Replace when rust-bert moves to zip 9." },
+  { id = "RUSTSEC-2026-0395", reason = "The optional chromadb feature uses zstd-safe 5.0.2 through rust-bert, cached-path, zip 0.6.6 and zstd 0.11. No build enables chromadb, so no shipped binary contains zstd-safe. The fix is zstd-safe 8.2. Replace when rust-bert moves to zip 9." },
+  { id = "RUSTSEC-2026-0397", reason = "The optional chromadb feature uses zstd-safe 5.0.2 through rust-bert, cached-path, zip 0.6.6 and zstd 0.11. No build enables chromadb, so no shipped binary contains zstd-safe. The fix is zstd-safe 8.2. Replace when rust-bert moves to zip 9." },
+  { id = "RUSTSEC-2026-0399", reason = "The optional chromadb feature uses zstd-safe 5.0.2 through rust-bert, cached-path, zip 0.6.6 and zstd 0.11. No build enables chromadb, so no shipped binary contains zstd-safe. The fix is zstd-safe 8.2. Replace when rust-bert moves to zip 9." },
+  { id = "RUSTSEC-2026-0400", reason = "The optional chromadb feature uses zstd-safe 5.0.2 through rust-bert, cached-path, zip 0.6.6 and zstd 0.11. No build enables chromadb, so no shipped binary contains zstd-safe. The fix is zstd-safe 8.2. Replace when rust-bert moves to zip 9." },
+  { id = "RUSTSEC-2026-0401", reason = "The optional chromadb feature uses zstd-safe 5.0.2 through rust-bert, cached-path, zip 0.6.6 and zstd 0.11. No build enables chromadb, so no shipped binary contains zstd-safe. The fix is zstd-safe 8.2. Replace when rust-bert moves to zip 9." },
+  { id = "RUSTSEC-2026-0402", reason = "The optional chromadb feature uses zstd-safe 5.0.2 through rust-bert, cached-path, zip 0.6.6 and zstd 0.11. No build enables chromadb, so no shipped binary contains zstd-safe. The fix is zstd-safe 8.2. Replace when rust-bert moves to zip 9." },
+  { id = "RUSTSEC-2026-0403", reason = "The optional chromadb feature uses zstd-safe 5.0.2 through rust-bert, cached-path, zip 0.6.6 and zstd 0.11. No build enables chromadb, so no shipped binary contains zstd-safe. The fix is zstd-safe 8.2. Replace when rust-bert moves to zip 9." },
+  { id = "RUSTSEC-2026-0404", reason = "The optional chromadb feature uses zstd-safe 5.0.2 through rust-bert, cached-path, zip 0.6.6 and zstd 0.11. No build enables chromadb, so no shipped binary contains zstd-safe. The fix is zstd-safe 8.2. Replace when rust-bert moves to zip 9." },
+  { id = "RUSTSEC-2026-0406", reason = "The optional chromadb feature uses zstd-safe 5.0.2 through rust-bert, cached-path, zip 0.6.6 and zstd 0.11. No build enables chromadb, so no shipped binary contains zstd-safe. The fix is zstd-safe 8.2. Replace when rust-bert moves to zip 9." },
 ]
 
 [licenses]
@@ -61,7 +70,7 @@ wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 deny = [
-  { crate = "rustls-webpki:<0.103.13", reason = "The legacy certificate verifier has been removed. Require the patched version." },
+  { crate = "rustls-webpki:<0.103.16", reason = "Require the version that rejects the distrusted emSign intermediates (RUSTSEC-2026-0382). It also has no legacy certificate verifier." },
   { crate = "h2:<0.3.27", reason = "Only h2 0.3.27 has a legacy HTTP exception." },
   { crate = "h2:>0.3.27,<0.4.16", reason = "The maintained HTTP stack must include the empty DATA frame fix." },
 ]
@@ -113,7 +122,7 @@ allow-build-scripts = [
   "windows_x86_64_gnullvm@0.48.5", "windows_x86_64_gnullvm@0.52.6",
   "windows_x86_64_msvc@0.48.5", "windows_x86_64_msvc@0.52.6",
   "wit-bindgen@0.57.1", "zerocopy@0.8.55", "zerocopy@0.8.56", "zerocopy@0.8.59", "zmij@1.0.23",
-  "zstd-safe@5.0.2+zstd.1.5.2", "zstd-sys@2.0.16+zstd.1.5.7",
+  "zstd-safe@5.0.2+zstd.1.5.2", "zstd-sys@2.1.2+zstd.1.5.7",
 ]
 executables = "deny"
 interpreted = "warn"

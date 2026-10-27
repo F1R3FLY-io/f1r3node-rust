@@ -263,6 +263,7 @@ impl MultiParentCasper for AttachedCasper {
     fn get_validator(&self) -> Option<ValidatorIdentity> {
         panic!("observer read validator identity")
     }
+    fn is_local_validator_bonded(&self) -> bool { panic!("observer read validator bonds") }
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
         panic!("observer read runtime state")
     }

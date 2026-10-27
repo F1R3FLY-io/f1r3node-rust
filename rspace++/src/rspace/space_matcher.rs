@@ -4,7 +4,9 @@ use std::collections::HashMap;
 
 use super::r#match::Match;
 use super::rspace_interface::ISpace;
-use crate::rspace::internal::{ConsumeCandidate, Datum, ProduceCandidate, WaitingContinuation};
+use crate::rspace::internal::{
+    ConsumeCandidate, Datum, IndexedData, ProduceCandidate, WaitingContinuation,
+};
 use crate::rspace::metrics_constants::{
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC,
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC,
@@ -12,7 +14,7 @@ use crate::rspace::metrics_constants::{
     RSPACE_MATCHER_EXTRACT_FIRST_MATCH_SUCCESS_METRIC, RSPACE_METRICS_SOURCE,
 };
 
-type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, Vec<(Datum<A>, i32)>);
+type MatchingDataCandidate<C, A> = (ConsumeCandidate<C, A>, IndexedData<A>);
 
 pub trait SpaceMatcher<C, P, A, K>: ISpace<C, P, A, K>
 where
@@ -25,7 +27,7 @@ where
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel: C,
-        data: &[(Datum<A>, i32)],
+        data: &[(std::sync::Arc<Datum<A>>, i32)],
         pattern: &P,
     ) -> Option<MatchingDataCandidate<C, A>> {
         for (idx, (datum, data_index)) in data.iter().enumerate() {
@@ -69,8 +71,8 @@ where
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(C, P)],
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
-        rollback: &mut Vec<(C, Vec<(Datum<A>, i32)>)>,
+        channel_to_indexed_data: &mut HashMap<C, IndexedData<A>>,
+        rollback: &mut Vec<(C, IndexedData<A>)>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
         let mut acc = Vec::with_capacity(channel_pattern_pairs.len());
 
@@ -89,11 +91,9 @@ where
             match maybe_tuple {
                 Some((cand, rem)) => {
                     acc.push(Some(cand));
-                    // Save the original before mutating
-                    if let Some(original) = channel_to_indexed_data.get(channel) {
-                        rollback.push((channel.clone(), original.clone()));
+                    if let Some(original) = channel_to_indexed_data.insert(channel.clone(), rem) {
+                        rollback.push((channel.clone(), original));
                     }
-                    channel_to_indexed_data.insert(channel.clone(), rem);
                 }
                 None => {
                     acc.push(None);
@@ -109,7 +109,7 @@ where
         &self,
         matcher: &Box<dyn Match<P, A, K>>,
         channel_pattern_pairs: &[(C, P)],
-        channel_to_indexed_data: &mut HashMap<C, Vec<(Datum<A>, i32)>>,
+        channel_to_indexed_data: &mut HashMap<C, IndexedData<A>>,
     ) -> Vec<Option<ConsumeCandidate<C, A>>> {
         let mut rollback = Vec::new();
         self.extract_data_candidates_rollback(
@@ -125,7 +125,7 @@ where
         matcher: &Box<dyn Match<P, A, K>>,
         channels: Vec<C>,
         match_candidates: Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
-        mut channel_to_index_data: HashMap<C, Vec<(Datum<A>, i32)>>,
+        mut channel_to_index_data: HashMap<C, IndexedData<A>>,
     ) -> Option<ProduceCandidate<C, P, A, K>> {
         metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CALLS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(1);

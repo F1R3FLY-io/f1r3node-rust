@@ -31,7 +31,9 @@ pub fn to_casper_event(event: RspaceEvent) -> Event {
                     channels_hash: p.channel_hash.to_bytes_prost(),
                     hash: p.hash.to_bytes_prost(),
                     persistent: p.persistent,
-                    times_repeated: *times_repeated.get(&p).unwrap_or(&0),
+                    times_repeated: *times_repeated
+                        .get(&p)
+                        .expect("a COMM counts every produce it lists"),
                     is_deterministic: p.is_deterministic,
                     output_value: p.output_value.clone().into_iter().map(Into::into).collect(),
                     failed: p.failed,

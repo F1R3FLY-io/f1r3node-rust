@@ -18,8 +18,8 @@
 //!   `get_approved_block`, `deploy`, `handle_valid_block`, `add_deploy`.
 //! * [`buffer_resolver`] — `get_dependency_free_from_buffer`,
 //!   `get_all_from_buffer`.
-//! * [`finalization_runner`] — `compute_last_finalized_block`,
-//!   `run_queued_finalizer`, `update_last_finalized_block`.
+//! * [`finalization_runner`] — `Finalizer`, `compute_last_finalized_block`,
+//!   `update_last_finalized_block`.
 //! * [`events`] — `block_event`, `created_event`, `added_event`,
 //!   `finalised_event`, `pending_deploy_is_future_for_next_block`.
 //!
@@ -35,10 +35,11 @@
 // the crate, defeating the encapsulation intent of the
 // nine-module decomposition.
 pub(crate) mod block_admission;
+pub(crate) mod bond_cache;
 pub(crate) mod buffer_resolver;
 pub(crate) mod events;
 pub(crate) mod finalization_runner;
-pub use finalization_runner::DivergenceMonitor;
+pub use finalization_runner::{DivergenceMonitor, FinalizationContext, Finalizer};
 pub(crate) mod snapshot;
 pub(crate) mod dispatch;
 pub(crate) mod types;
@@ -47,5 +48,6 @@ pub(crate) mod validation_dispatcher;
 // Phase 7 (C-1): explicit re-exports replace the previously transitional
 // glob `pub use crate::rust::engine::multi_parent_casper::*;` which formed a
 // circular alias path (engine → shim → engine).
+pub use bond_cache::FinalizedBondCache;
 pub use events::{added_event, created_event, finalised_event};
 pub use types::MultiParentCasperImpl;

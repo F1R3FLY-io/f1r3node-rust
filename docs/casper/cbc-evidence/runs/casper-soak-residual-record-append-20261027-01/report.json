@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "scope": "bounded-harness-residual-record-append",
+  "phase": "pre_pr216_merge",
+  "status": "change-verified-pending-acceptance",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "change": {
+    "task": "Review finding 7 of PR #859: keep the owner-stop failure record when the residual stop also fails",
+    "branch": "fix/soak-driver-shard-stop",
+    "pull_request": 859,
+    "commit": "9cf831185a913d6afc8c3ba82e40be13c8824e27",
+    "driver": "At the end of a segment, the residual-stop failure path appends its line to writer-stop-failure.txt. Before, it replaced the file and lost the owner-stop failure record that the driver wrote a few lines earlier. This is the only change to the driver since the accepted bytes of PR #870.",
+    "diff": "printf 'Residual writer termination under .subprocess-data is unconfirmed at the end of the segment.\\n' >\"$OUTPUT_DIR/writer-stop-failure.txt\" becomes the same line with >>"
+  },
+  "guarantee_change": {
+    "before": "When the owner stop and the residual stop both fail in one segment, writer-stop-failure.txt keeps only the residual-stop line.",
+    "after": "When both stops fail, writer-stop-failure.txt keeps the owner-stop record, its timeout line, and its docker output, followed by the residual-stop line.",
+    "limitation": [],
+    "unchanged": "The stop decisions, the failure count, the early-exit reason, and the four limitations of the PR #870 acceptance do not change."
+  },
+  "claim_record_note": "docs/claims/casper-soak-harness.md is a bound input of the soak cleanup gate (docs/casper/soak-cleanup.json). A new section there would invalidate the signed acceptance of soak-cleanup-20261027-01. This report therefore records the change, and the claim document stays unchanged.",
+  "source_digests_before_change": {
+    "scripts/run-merge-recovery-soak.sh": "b0c9cefec97db5889c49bd37281f6952802f054dc4c4f44b4687b99eaa172028"
+  },
+  "source_digests_before_change_note": "This digest equals the accepted digest of docs/casper/cbc-evidence/runs/casper-soak-writer-stop-race-acceptance-20261026-01/report.json.",
+  "source_digests": {
+    "scripts/run-merge-recovery-soak.sh": "90fe5bc24632ea6abdfa93b1077f7c8df0c8f3076d2555cc52a8002bcf28fd43"
+  },
+  "unchanged_digests": {
+    "scripts/bench/test-run-merge-recovery-soak.sh": "710adb582faa54c638d8ac6a01e25bbb27aca2c6d0362d92fb021978cb30d632",
+    "scripts/casper-soak/src/host_control.rs": "427e0a7a550156cfc821e37df4fe452a03aae3b9ed8807bd897be0c80b76e6be"
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "92c82d3eb42331aa2fda2e6c53dd4b74dd3a1cd166855dd0c2db4b38cdbbda2c"
+  },
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verification": {
+    "evidence_run": {
+      "ref": "docs/casper/cbc-evidence/runs/soak-cleanup-20261027-01/report.json",
+      "sha256": "f92566d4703be59f358dd4ea9713ec31288247fcb976ec1219590500a570b661",
+      "driver_sha256": "90fe5bc24632ea6abdfa93b1077f7c8df0c8f3076d2555cc52a8002bcf28fd43",
+      "verified_at": "2026-10-27T05:23:35Z",
+      "note": "The cleanup verification ran on the exact driver bytes of this change, as UID 1000 in a Linux container."
+    },
+    "driver_fixture": {
+      "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+      "result": "passed (check 3 of the evidence run, log sha256 6968851019df...)"
+    },
+    "segment_fixture": {
+      "command": "bash scripts/bench/test-soak-segment-cleanup.sh",
+      "result": "passed. The case with a failed owner stop and a failed residual stop requires both lines in writer-stop-failure.txt."
+    },
+    "fixture_before_fix": {
+      "method": "Mutation control overwritten-record of scripts/ci/test-soak-cleanup-regressions.sh changes >> back to > in a scratch copy of the driver.",
+      "result": "failed: FAIL: owner stop record overwritten (exit 1)"
+    },
+    "static": {
+      "bash_syntax": "bash -n passes",
+      "shellcheck": "no new findings in the driver (19 before and after)"
+    }
+  },
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "9cf831185a913d6afc8c3ba82e40be13c8824e27",
+    "status": "pending: the CI run of PR #859 on this head"
+  },
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "PR #859",
+    "scope": "One acceptance covers the driver change. The fixture and host_control.rs keep their accepted digests."
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The driver ledger record keeps its PR #870 digest until a maintainer accepts this package.",
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "soak": "pending",
+  "waiver": null,
+  "verified_at": "2026-10-27"
+}

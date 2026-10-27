@@ -34,14 +34,17 @@
 // `path.is_divergence()` branch only affects WAL journal shape —
 // position still advances.
 //
-// # Dependencies — read_impl_via_table + journal stubs
+// # Dependencies — read_impl_via_table + WAL journal helpers
 //
 // Dispatch delegates to [`read_impl_via_table`] (slice 4.20
 // companion in `io/handlers/helpers/read_impl.rs`) for the libc
-// read + reply construction.  The journal method's WAL calls
-// (`journal_read_via_table`, `journal_read_divergence_via_table`)
-// are stubbed with Wave 6 target comments — same deferral as
-// fs_size / fs_stat / fs_exists.  Position advance IS wired.
+// read + reply construction.  The journal method calls
+// `journal_read_via_table` on success paths and
+// `journal_read_divergence_via_table` on `VerifyDivergence`
+// (both ported in slice E1, wired here in E2).  WAL append fires
+// BEFORE the shadow position advance so the WAL offset carries
+// the pre-advance position — critical for follower / leader
+// byte-identity on sequential reads.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -56,7 +59,9 @@ use crate::rust::interpreter::io::handler_trait::{
     dispatch_via_trait_owned, FsHandler, FsHandlerEntry, HandlerFamily, HandlerReply, JournalPath,
     SyscallCtx, FS_HANDLERS,
 };
-use crate::rust::interpreter::io::handlers::helpers::read_impl_via_table;
+use crate::rust::interpreter::io::handlers::helpers::{
+    journal_read_divergence_via_table, journal_read_via_table, read_impl_via_table,
+};
 use crate::rust::interpreter::io::response::extract_ok_bytes;
 use crate::rust::interpreter::io::ConsensusMode;
 use crate::rust::interpreter::rho_type::RhoNumber;
@@ -159,10 +164,24 @@ impl FsHandler for FsReadHandler {
         })
     }
 
-    /// Dual-purpose hook: shadow-position advance (LIVE at Wave 4)
-    /// + WAL journaling (STUB — Wave 6).
+    /// Dual-purpose hook: WAL journaling + shadow-position advance
+    /// (both LIVE).  Journal fires BEFORE the shadow advance so the
+    /// WAL offset carries the pre-advance position.
     ///
-    /// # Shadow position advance
+    /// # WAL journaling (LIVE at E2)
+    ///
+    ///   - `journal_read_divergence_via_table(ctx.handles, fd,
+    ///     offset=None, ctx.ack)` on `is_divergence()` paths —
+    ///     records a `FSERR_CONSENSUS_DIVERGENCE` outcome at the
+    ///     fd's current shadow position.
+    ///   - `journal_read_via_table(ctx.handles, fd, bytes,
+    ///     offset=None, ctx.ack)` on Leader / VerifySuccess /
+    ///     OracularEcho — records the bytes-hash + fd's pre-
+    ///     advance shadow position.
+    ///
+    /// Both helpers self-guard on Oracular + unknown fd.
+    ///
+    /// # Shadow position advance (LIVE at Wave 4)
     ///
     /// POSIX `libc::read` advances the OS-fd position by the
     /// bytes actually returned — on all paths including
@@ -176,22 +195,6 @@ impl FsHandler for FsReadHandler {
     /// `previous` cached reply on OracularEcho — both carry the
     /// `ok_bytes(bytes)` payload, so `extract_ok_bytes` + length
     /// gives the correct advance count on every path.
-    ///
-    /// # WAL journaling (Wave 6)
-    ///
-    /// Fileio additionally calls:
-    ///
-    ///   - `journal_read_divergence_via_table(ctx.handles, fd,
-    ///     offset=None, ctx.ack)` on `is_divergence()` paths.
-    ///   - `journal_read_via_table(ctx.handles, fd, bytes,
-    ///     offset=None, ctx.ack)` on success / oracular-echo
-    ///     paths.
-    ///
-    /// Both helpers live in `handlers_helpers.rs` on fileio and
-    /// have NOT been ported to dev.  Under Wave 4 + 5 these are
-    /// no-ops; verifying path still works via
-    /// `verify_reply_hash_matches_cached` (dispatcher step 7).
-    /// Wave 6 lands the helpers.
     fn journal<'a>(
         ctx: SyscallCtx<'a>,
         raw_args: &'a [Par],
@@ -207,32 +210,26 @@ impl FsHandler for FsReadHandler {
             let fd_u = fd_i64 as u64;
 
             // Extract bytes from the state-source reply.  Order
-            // matters relative to the WAL journal (Wave 6): the
-            // journal reads the PRE-advance shadow position from
-            // FileHandle, so WAL append happens BEFORE the
-            // advance below.  Currently a no-op; the ordering is
-            // preserved so the Wave 6 slice can land its journal
-            // calls between the extract and the advance without
-            // touching this ordering structure.
+            // matters relative to the WAL journal: the journal
+            // reads the PRE-advance shadow position from
+            // FileHandle, so WAL append MUST happen BEFORE the
+            // shadow advance below.  A regression that reordered
+            // these would cause follower WAL offsets to drift from
+            // leader WAL offsets on sequential reads.
             let bytes_slot = extract_ok_bytes(std::slice::from_ref(path.state_source_reply()));
             let advance_n = bytes_slot.as_ref().map(|b| b.len() as u64).unwrap_or(0);
 
-            // Wave 6 WAL journaling target (stubbed):
-            //
-            //   if path.is_divergence() {
-            //       let _ = journal_read_divergence_via_table(
-            //           ctx.handles, fd_u, None, ctx.ack
-            //       ).await;
-            //   } else if let Some(bytes) = &bytes_slot {
-            //       let _ = journal_read_via_table(
-            //           ctx.handles, fd_u, bytes, None, ctx.ack
-            //       ).await;
-            //   }
-            //
-            // Dead reference to keep `path.is_divergence` surfaced
-            // in the dispatch body — Wave 6 slice drops this when
-            // the WAL calls light up above.
-            let _was_divergence = path.is_divergence();
+            // WAL journaling (LIVE at E2 — ports fileio's
+            // handlers_helpers.rs:830 + :871 wiring).  Divergence
+            // path records a `FSERR_CONSENSUS_DIVERGENCE` failure
+            // outcome; success paths record the bytes-hash +
+            // pre-advance offset.  Both helpers self-guard on
+            // Oracular + unknown fd.
+            if path.is_divergence() {
+                let _ = journal_read_divergence_via_table(ctx.handles, fd_u, None, ctx.ack).await;
+            } else if let Some(bytes) = &bytes_slot {
+                let _ = journal_read_via_table(ctx.handles, fd_u, bytes, None, ctx.ack).await;
+            }
 
             // Shadow position advance (LIVE at Wave 4).  Matches
             // pre-trait fs_read: `h.position = h.position +

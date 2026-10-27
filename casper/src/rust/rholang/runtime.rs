@@ -36,6 +36,7 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
+use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
@@ -43,10 +44,12 @@ use rholang::rust::interpreter::rho_type::RhoNumber;
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
+use rspace_plus_plus::rspace::checkpoint::SoftCheckpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
+use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
 
 use crate::rust::errors::CasperError;
@@ -602,12 +605,32 @@ impl RuntimeOps {
         &mut self,
         deploy: Signed<DeployData>,
     ) -> Result<(ProcessedDeploy, HashMap<Par, MergeType>), CasperError> {
+        // Per-deploy filesystem RAII guard.  Brackets WAL + lock-
+        // registry + handle-table state for this deploy; Drop sweeps
+        // on either the happy path (after `commit()`) or any error-
+        // return path (uncommitted → WAL truncates + locks/fds swept).
+        // The constructor derives a per-execution unique scope from
+        // the deploy sig + an internal 128-bit nonce, so concurrent
+        // play+replay of the same signature against a manager-shared
+        // `SharedLockRegistry` never share scopes.  Caller holds the
+        // guard for the full `process_deploy` body.
+        let mut wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                &deploy.sig,
+                deploy.sig.to_vec(),
+                self.runtime.fs_handles.clone(),
+            );
+
         // Keep a soft checkpoint before user deploy execution so failed deploy rollback
         // preserves pre-charge side effects required by refundDeploy.
         let fallback = self.runtime.create_soft_checkpoint().await;
 
         // Evaluate deploy
-        let eval_result = self.evaluate(&deploy).await?;
+        let mut eval_result = self.evaluate(&deploy).await?;
+        self.reject_bitmask_clears(&fallback, &mut eval_result)
+            .await;
 
         let deploy_log = self.runtime.take_event_log().await;
 
@@ -625,9 +648,16 @@ impl RuntimeOps {
             system_deploy_error: None,
         };
 
-        if !eval_succeeded {
+        if eval_succeeded {
+            // Preserve this deploy's WAL contributions for the block
+            // snapshot.  Lock + handle sweeps still fire on Drop.
+            wal_scope.commit();
+        } else {
             self.runtime.revert_to_soft_checkpoint(fallback).await;
             interpreter_util::print_deploy_errors(&deploy_sig, &eval_result.errors);
+            // Guard stays uncommitted — Drop at function return
+            // truncates WAL, cancels + releases locks under this
+            // scope, and spawns the fd/dir-stream sweep.
         }
 
         Ok((deploy_result, eval_result.mergeable))
@@ -658,6 +688,67 @@ impl RuntimeOps {
             }
         }
         Ok(result)
+    }
+
+    /// Fails a user deploy that leaves any `BitmaskOr` channel without a bit it
+    /// held when the deploy started (#534). The merge folds these channels as
+    /// `base | (end & !prev)`, so a cleared bit would be silently restored.
+    ///
+    /// - The baseline is the soft checkpoint taken before the deploy, never a
+    ///   read during evaluation, so play and replay reach the same verdict.
+    /// - A channel with no numeric value at the end (consumed and not put back,
+    ///   or replaced by non-numeric data) counts as `0`: it clears every bit.
+    /// - Channels are checked in channel-hash order so the error is identical
+    ///   in play and replay.
+    /// - A deploy that already failed is rolled back anyway, so it is skipped.
+    /// - On rejection `mergeable` is cleared: the rolled-back deploy must not
+    ///   contribute number-channel data to the merge.
+    pub(crate) async fn reject_bitmask_clears(
+        &self,
+        start: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+        eval_result: &mut EvaluateResult,
+    ) {
+        if !eval_result.errors.is_empty() {
+            return;
+        }
+        let mut channels: Vec<(Blake2b256Hash, &Par)> = eval_result
+            .mergeable
+            .iter()
+            .filter(|(_, merge_type)| **merge_type == MergeType::BitmaskOr)
+            .map(|(channel, _)| (stable_hash_provider::hash(channel), channel))
+            .collect();
+        channels.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut cleared_channels = Vec::new();
+        for (hash, channel) in channels {
+            let Some(before) = Self::bitmask_value(&self.runtime.get_data_at(start, channel).await)
+            else {
+                continue;
+            };
+            let after = Self::bitmask_value(&self.runtime.get_data(channel).await).unwrap_or(0);
+            let cleared = (before as u64) & !(after as u64);
+            if cleared != 0 {
+                cleared_channels.push((hex::encode(hash.bytes()), cleared));
+            }
+        }
+
+        if !cleared_channels.is_empty() {
+            eval_result
+                .errors
+                .push(InterpreterError::BitmaskBitsCleared {
+                    cleared: cleared_channels,
+                });
+            eval_result.mergeable.clear();
+        }
+    }
+
+    fn bitmask_value(data: &[Datum<ListParWithRandom>]) -> Option<i64> {
+        let nums: Vec<i64> = data
+            .iter()
+            .filter(|datum| datum.a.pars.len() == 1)
+            .filter_map(|datum| RhoNumber::unapply(&datum.a.pars[0]))
+            .collect();
+        Self::fold_bitmask_or(&nums)
     }
 
     pub fn fold_bitmask_or(values: &[i64]) -> Option<i64> {
@@ -747,6 +838,30 @@ impl RuntimeOps {
         self.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(state_hash))
             .await?;
+
+        // Per-system-deploy filesystem RAII guard.  System deploys
+        // (slash, closeBlock) have no primary-signer sig, so the
+        // scope seed combines a system-deploy marker + the input
+        // `state_hash`.  The constructor mixes in a 128-bit nonce so
+        // concurrent executions still derive distinct scopes.
+        // Guard is bound and never committed: system deploys don't
+        // contribute to the block-level WAL (handlers are expected
+        // not to touch fs-native URNs today), so Drop truncates any
+        // leaked entries, cancels + releases any locks taken, and
+        // spawns the fd/dir-stream sweep.
+        let scope_seed = [b"system-deploy:" as &[u8], state_hash].concat();
+        let _wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime.fs_handles.wal.clone(),
+                self.runtime.fs_handles.lock_registry.clone(),
+                &scope_seed,
+                // System deploys have no signer sig; empty vector
+                // signals journal_write to skip its payload-source
+                // record step while still letting payload_hash land
+                // in the WAL.
+                Vec::new(),
+                self.runtime.fs_handles.clone(),
+            );
 
         let (event_log, result, mergeable_channels) =
             self.play_system_deploy_internal(system_deploy).await?;

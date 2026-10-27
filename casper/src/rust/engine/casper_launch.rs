@@ -526,9 +526,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             // subscriber via `.clone()` — the two-layer indirection
             // means Clone shares the outer slot, so any post-spawn
             // `register(logical, root)` on the manager is visible
-            // through this handle.  Empty today pending node::setup
-            // wiring that populates the registry from the operator's
-            // fs bundle; empty falls through to pre-Shape-A behavior.
+            // through this handle.  Registry and `allowed_roots`
+            // are populated at boot by
+            // `node::rust::runtime::setup::register_consensus_bundle_roots`
+            // from the operator's merged static-provisioning entries.
             let registry = self.runtime_manager.root_registry.clone();
             let allowed_roots = self.runtime_manager.consensus_static_roots().await;
             let _subscriber_handle =
@@ -650,6 +651,20 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            // Threaded from `CasperLaunchImpl::fs_bundle` (populated
+            // by `node::rust::runtime::setup::setup_node_program`
+            // via `provisioning_merge::project_bundle(&merged)`),
+            // so the validator reconstructs the ceremony master's
+            // deploy list byte-for-byte.  See
+            // `BlockApproverProtocol::validate_candidate` for the
+            // shape invariant.
+            self.fs_bundle.clone(),
+            // Hardcoded `None` matches the ceremony-master's
+            // `approve_block_protocol.rs:206`.  When either side
+            // lifts cadence from None, update both call sites in
+            // lockstep — a divergence trips the deploy-list length
+            // check at validate_candidate.
+            None,
             self.transport_layer.clone(),
             Arc::new(self.rp_conf_ask.clone()),
         )?;

@@ -21,6 +21,52 @@ This document captures user stories that drive feature development. User stories
 
 ---
 
+## Active Stories
+
+#### US-014: Verified soak segment cleanup
+
+> As a **release engineer**, I want **verified segment cleanup and source-bound launch checks** so that **a scheduled soak cannot use an unverified cleanup implementation**.
+
+**Implemented in:** EPIC-030
+
+**Value Stream:** Release Assurance
+
+**Status:** In progress
+
+**Acceptance Criteria:**
+
+- [x] Two consecutive segments stop detached writers and preserve failure information.
+- [x] Negative controls demonstrate that missing cleanup and ignored failures fail verification.
+- [x] Launch checks bind the actual control checkout to current evidence and signed maintainer acceptance.
+- [x] Git attributes route mandatory artifacts to their claim and verification records.
+- [x] A pinned external CbC runtime supplies shared verification commands without copied runtime source.
+- [x] Missing or modified runtime files prevent verification and launch.
+
+- [ ] A maintainer independently accepts the verified cleanup sources before launch.
+
+**Design:** [Soak cleanup verification](designs/soak-cleanup-verification.md).
+
+---
+
+#### US-013: Trusted daily back-merges
+
+> As a **release engineer**, I want **verified daily back-merges** so that **the release train accepts only release code and verified base merges**.
+
+**Implemented in:** EPIC-029
+
+**Value Stream:** Release Assurance
+
+**Status:** In progress
+
+**Acceptance Criteria:**
+- [ ] The validator accepts clean base merges without a new release source.
+- [ ] Pull request code cannot change the trusted validator.
+- [ ] The daily queue requires a successful status on the current head commit.
+
+**Design:** [Daily back-merge provenance](plans/ca-daily-provenance.md).
+
+---
+
 ## Completed Stories
 
 ---

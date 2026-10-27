@@ -3431,6 +3431,15 @@ async fn consensus_fs_remove_dir_recursive_symmetric_syscall_error_finalizes_to_
     // No directory at "missing-tree".
 
     let (mut leader, mut follower) = create_leader_and_follower().await;
+    // This pin tests the recursive-removeDir refusal path under
+    // M-04 upfront gating (unregistered Consensus logical root →
+    // FSERR_UNSUPPORTED).  Both sides must see the same upfront
+    // refusal before any safe_descend walk; empty WALs on both
+    // sides is the pin.  Opt out of the shared helper's
+    // test-permissive bypass so the gated resolver fires its
+    // production-shape refusal here.
+    leader.fs_handles.root_registry.set_test_permissive(false);
+    follower.fs_handles.root_registry.set_test_permissive(false);
 
     let term = format!(
         r#"
