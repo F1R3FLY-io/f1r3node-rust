@@ -886,6 +886,14 @@ rocq_check_modules "trusted successor capability" \
   StackSafePDA.IncrementalLedgerTrial StackSafePDA.IncrementalDomainComposition \
   StackSafePDA.CreditedClosureLedger StackSafePDA.RetentionV2Format \
   StackSafePDA.RetentionV2Editor StackSafePDA.TrustedSuccessorCapability
+rocq_reject_placeholders theories/ExactStateShapeSummary.v
+rocq_compile_with_closed_count theories/ExactStateShapeSummary.v 16 \
+  "exact state shape summary"
+rocq_check_modules "exact state shape summary" \
+  StackSafePDA.ChannelImage StackSafePDA.GenerationCheckpointPublication \
+  StackSafePDA.IncrementalLedgerTrial StackSafePDA.IncrementalDomainComposition \
+  StackSafePDA.CreditedClosureLedger StackSafePDA.RetentionV2Format \
+  StackSafePDA.RetentionV2Editor StackSafePDA.ExactStateShapeSummary
 streaming_codec_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/StreamingCodecPDA.v 2>&1

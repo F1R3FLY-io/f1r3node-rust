@@ -1,0 +1,74 @@
+@startuml shape-summary-derivation
+' ============================================================================
+' CurrentShapeSummaryV1::successor (semantic.rs:318-423, task 11943): the
+' successor's shape summary from the predecessor's summary, the mutation batch
+' and the rewrite report, without walking the successor state.
+' Theory: formal/rocq/stack_safe_pda/theories/ExactStateShapeSummary.v
+'   BLUE   #1565C0  the summary's totals and the inputs
+'   AMBER  #EF6C00  the key-length multiset (a copy-on-write PathMap<u64>)
+'   GREEN  #2E7D32  the derived successor summary
+'   RED    #C62828  refusals
+'   GREY   #607D8B  the cold walk that TS-17 compares against
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+skinparam NoteBorderColor #455A64
+
+title <b>Deriving a successor's shape summary</b>\nfrom the predecessor's summary, the mutation batch and the rewrite report
+
+start
+:predecessor summary <latex>(N, E, E_d, E_c, E_j, P, K)</latex>,\nthe mutation batch, and the rewrite report\nwith its mutation count, loaded <latex>\ell</latex> and placed <latex>p</latex>; <<#BBDEFB>>
+if (the report's mutation count equals\nthe batch's entries in the three namespaces?) then (no)
+  :refuse SemanticCoherence:\nthe report does not describe the batch; <<#FFCDD2>>
+  stop
+else (yes)
+endif
+:clone <latex>K</latex>, which shares its structure; <<#FFE0B2>>
+while (an entry of namespace <latex>x</latex> remains,\ndata first, then continuations, then joins?) is (yes)
+  if (its before-value exists?) then (yes)
+    if (<latex>K</latex> holds the key's length?) then (no)
+      :refuse SemanticCoherence:\na removed key length is absent; <<#FFCDD2>>
+      stop
+    else (yes)
+      :release the length from <latex>K</latex>,\ncount one removal in <latex>R_x</latex>; <<#FFE0B2>>
+    endif
+  else (no)
+  endif
+  if (its after-value exists?) then (yes)
+    :record the length in <latex>K</latex>,\ncount one addition in <latex>A_x</latex>; <<#FFE0B2>>
+  else (no)
+  endif
+  if (<latex>x</latex> is the continuation map?) then (yes)
+    :add <latex>\lVert r \rVert - 64</latex> for a present before-reference <latex>r</latex>\nto the removed payload, and for a present\nafter-reference to the added payload;\nrefuse ObjectLengthTooSmall below 64 bytes; <<#BBDEFB>>
+  else (no)
+  endif
+endwhile (no)
+:every total <latex>v</latex> becomes <latex>(v + \mathit{added}) - \mathit{removed}</latex>:\n<latex>N</latex> with <latex>p</latex> and <latex>\ell</latex>, <latex>E</latex> with the sums of <latex>A_x</latex> and <latex>R_x</latex>,\neach <latex>E_x</latex> with its own <latex>A_x</latex> and <latex>R_x</latex>, and <latex>P</latex> with the payloads; <<#BBDEFB>>
+if (an addition overflows or a removal underflows?) then (yes)
+  :refuse CounterOverflow or SemanticCoherence; <<#FFCDD2>>
+  stop
+else (no)
+endif
+:the successor summary <latex>(N', E', E'_d, E'_c, E'_j, P', K')</latex>;\nits maximum logical path <latex>M' = \max\left(K' \cup \{0\}\right)</latex>\nis the last length in big-endian order; <<#C8E6C9>>
+stop
+
+note right #ECEFF1
+  <b>The check</b> (TS-17)
+  The recording cold walk of the successor state
+  counts the same totals and records each endpoint's
+  key length once it validates. from_cold seeds a
+  summary from that walk, refusing a multiset whose
+  size or maximum differs from the walk's report.
+  The derived summary must equal it field by field.
+  ----
+  <b>Why it is exact</b> (ExactStateShapeSummary.v)
+  <latex>N(t) + \ell = N(s) + p</latex>, because every load removes
+  one predecessor position and every placement creates
+  one successor position; an admitted trie has no
+  empty leaf, so <latex>M = \max\left(K \cup \{0\}\right)</latex>.
+end note
+@enduml

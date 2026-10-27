@@ -50,8 +50,8 @@ use crate::rspace::persistence::retention::{
 };
 use crate::rspace::persistence::rewrite::{DagRewriteLimits, RewriteError};
 use crate::rspace::persistence::semantic::{
-    SemanticProfile, SemanticValidationLimits, SemanticValidationReport,
-    SemanticallyAdmittedStateV1, verify_rspace_semantics_after_structural,
+    CurrentShapeSummaryV1, SemanticProfile, SemanticValidationLimits, SemanticValidationReport,
+    SemanticallyAdmittedStateV1, verify_rspace_semantics_after_structural_with_shape,
 };
 use crate::rspace::persistence::store::{
     ImmutableObjectStore, StagingObjectStore, StagingStoreError,
@@ -1093,6 +1093,7 @@ pub(crate) struct AdmittedCheckpointSourceV1<P: SemanticProfile> {
     retention_manifest_bytes: Box<[u8]>,
     retention: AdmittedRetention,
     semantic: SemanticallyAdmittedStateV1,
+    shape: CurrentShapeSummaryV1,
     retained_closure: StructuralClosureLedgerV1,
     report: DurableAdmissionReportV1,
     admission_requirements: DurableAdmissionRequirementsV1,
@@ -1119,6 +1120,8 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
     }
 
     pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.report }
+
+    pub(crate) const fn shape(&self) -> &CurrentShapeSummaryV1 { &self.shape }
 
     pub(crate) fn preflight_checkpoint_admission(
         &self,
@@ -1443,6 +1446,8 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     }
 
     pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.source.report() }
+
+    pub(crate) const fn shape(&self) -> &CurrentShapeSummaryV1 { self.source.shape() }
 
     pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { self.source.authority() }
 
@@ -2025,7 +2030,7 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
         catalog.pack().retained_canonical_bytes(),
         retained_union.canonical_bytes,
     )?;
-    let semantic = verify_rspace_semantics_after_structural::<P, _>(
+    let (semantic, shape) = verify_rspace_semantics_after_structural_with_shape::<P, _>(
         &bounded,
         current_structural,
         limits.current_semantics,
@@ -2066,6 +2071,7 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
         retention_manifest_bytes,
         retention: admitted_retention,
         semantic,
+        shape,
         retained_closure: ledger,
         report,
         admission_requirements,

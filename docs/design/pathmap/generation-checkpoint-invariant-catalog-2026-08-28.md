@@ -3346,26 +3346,29 @@ axes are the 21 work axes (seven per domain) and the 11 state ceilings.
 | TS-14 | On 128 generated histories, for every positive axis of the successor's measured cold demand, the cold-checked publication under limits one below on that axis runs cold admission and is refused after publication with the measured demand, while the trusted publication of the same receipt returns the successor; such axes occur. The transliteration satisfies `ColdModeSuccessIncludesColdAdmission`, reaches cold success (`NeverColdReady`) and trusted success under tight limits, and the skipped-admission control violates the invariant. | `trusted_success_does_not_imply_cold_admission_under_incoming_limits` |
 | TS-15 | On 64 generated histories, for every positive axis of the exact policy lowered by one, the owner's checkpoint of a captured journal is refused and stays ready, emits no event, makes no cold check, and makes exactly one publication attempt, which writes nothing. The transliteration reaches a trusted policy refusal. | `owner_trusted_policy_refusal_leaves_files_journals_and_authority_unchanged` |
 | TS-16 | On a four-object fixture, two retention histories whose maxima are both 1 object and 3 bytes have maxima of 1 object and 3 bytes, and of 1 object and 2 bytes, after evicting the same entry, so the maxima cannot follow an eviction without a recomputation. On 256 generated histories, every successor's maxima equal the componentwise maxima of the cold per-state inventories, and the componentwise maximum of the predecessor's maxima and the target's inventory; per-state preflight accepts at the maxima and refuses one below on each positive component. | `trusted_retained_state_maxima_equal_cold_requirements` |
+| TS-17 | On a corner chain of seven states and on 64 generated chains of two to five states, every successor's shape summary, derived from its predecessor's summary, the mutation batch and the rewrite report, equals field by field the summary that the recording cold walk measures on the target: logical nodes, endpoints, the entries of each namespace, source payload bytes and the key-length multiset, hence the maximum logical path. Each target is also checked against the independent rebuild of the model state, and the recording walk returns exactly the report of the plain walk. Generated states hold datums of four lengths on three channels that share one source channel, so their subtrees repeat, and continuations of three bodies in four channel groups, one of them with two channels, each with a natural or an independent source and the joins that its group requires; one batch can insert, delete and update entries of all three namespaces. The corner chain shares subtrees, so the walk counts more logical nodes than node objects; removes a hub join and updates its sibling, so the rewrite absorbs an edited child into its parent and emits more nodes than it places, the case that counting emitted minus loaded nodes gets wrong; deletes the unique longest key, which lowers the maximum; deletes one of two tied longest keys, which keeps it, and then the other, which lowers it; replaces a continuation's source; and empties the state. Through durable publication, every published successor's cold admission and every restart admission equal the derived summary. The companion test `shape_summary_successor_refuses_inconsistent_batches_and_reports` refuses a report whose mutation count differs from the batch, a logical-node underflow, the release of a key length that the multiset does not hold, and a source reference shorter than the 64-byte blob envelope. | `trusted_shape_summary_matches_cold_semantic_walk` |
 | TS-18 | On 256 generated histories, every successor's validity token is the receipt's target and its profile is the predecessor's; the bind refuses two foreign bases (`ForeignBase`) and two foreign profiles (`ProfileMismatch`), and refuses the next step's receipt against the predecessor whenever their tokens differ, which occurs. | `trusted_validity_is_bound_to_the_exact_predecessor_and_receipt` |
 | TS-19 | On 256 generated histories started from a V1 source, which has no metadata root, only the first successor migrates: its receipt removes no root, and every later receipt removes the previous anchor. Every successor's metadata roots are its anchor alone, its metadata ledger is the cold traversal of that anchor, and it is an exact authority. Migrating a migrated source a second time keeps the old anchor counted and diverges from the cold seed; later extensions occur. | `trusted_successor_migrates_a_v1_source_once_and_matches_the_cold_seed` |
 
-`model_property_manifest_is_unique_and_exhaustive` checks these eighteen
-bindings. It reads the TLA+ model with its base configuration and the Rocq
-theory as part of its sources. It requires each of the nine base invariants and
-each of the sixteen `Print Assumptions` capstones to be cited by a TS row of the
-derivation matrix, every witness that a TS row cites to have its configuration
-and to be checked by the integrated runner, and the runner to compile the
-theory. The journal owner's model stays outside the manifest, as the
-journal-owner rows do: the qualifications of TS-12 and TS-13 name its two
-witnesses, which its own checker runs. The shape-summary property joins the
-family with task 11943.
+`model_property_manifest_is_unique_and_exhaustive` checks these nineteen
+bindings. It reads the TLA+ model with its base configuration and the two Rocq
+theories, `TrustedSuccessorCapability.v` and `ExactStateShapeSummary.v`, as part
+of its sources. It requires each of the nine base invariants and each of the
+thirty-two `Print Assumptions` capstones of the two theories to be cited by a TS
+row of the derivation matrix, every witness that a TS row cites to have its
+configuration and to be checked by the integrated runner, and the runner to
+compile both theories. The journal owner's model stays outside the manifest, as
+the journal-owner rows do: the qualifications of TS-12 and TS-13 name its two
+witnesses, which its own checker runs. TS-17, the shape summary of task 11943,
+is described in the next section.
 
 **Boundary.**
 
-- These results hold for the models and the test model. No production code
-  binds, publishes or adopts a trusted successor yet. Tasks 11943 to 11946
-  refine every row in production, and the same test functions then gain the
-  production checks, so the bindings stay stable.
+- These results hold for the models and the test model, except TS-17, which
+  checks production code (next section). No production code binds, publishes
+  or adopts a trusted successor yet. Tasks 11944 to 11946 refine the other rows
+  in production, and the same test functions then gain the production checks,
+  so the bindings stay stable.
 - The maxima are exact only while retention appends
   (`retained_state_maxima_is_cold_componentwise_max`); an eviction needs a
   recomputation (`eviction_requires_recomputation_counterexample`), which is the
@@ -3423,6 +3426,246 @@ slice does not change.
 | `rspace++/tests/persistence/property_support.rs` | `df451a1dc45ce9b6d7c0d395b2b9d0de25fa8aafdf7da43e957233201222eb61` |
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `489d9344c520a6fa4c7577e57609fcbb7498aa775b0e74daf48c5494809a14cc` |
 
+### Exact current-state shape summary (2026-10-27)
+
+Task 11943, the second slice of task 7927, gives a trusted successor the exact
+shape of its current state without walking that state. J-067 requires the hot
+policy to keep explicit ceilings on the current state's logical nodes,
+endpoints, logical path bytes and payload bytes, and it warns that an exact
+local summary needs a proof, because shared logical occurrences are not unique
+objects (the per-field policy mapping of J-067 in the engineering journal). The
+trusted bind of task 11945 checks those ceilings, so the summary it checks must
+equal what cold admission would measure. This slice proves the derivation,
+implements it, and checks it against the cold walk (TS-17). It does not change
+what a publication returns.
+
+**What the cold walk measures.** Semantic admission walks each of the three
+namespace tries, the data bag, the continuation map and the join bag, with an
+explicit worklist (`walk_trie`, `semantic.rs:804-912`). A node that is
+reachable along two paths, for example a subtree that two channels share, is
+visited once per path. For a state $`S`$ write
+
+- $`N(S)`$ for the *logical nodes*: the number of visits, counting the root of
+  each namespace even when it is empty;
+- $`E(S)`$ for the *endpoints*: the visits that end at a present claim, a
+  nonzero count or a content reference; and $`E_x(S)`$ for those of namespace
+  $`x`$, where $`x`$ is $`d`$, $`c`$ or $`j`$ for the data bag, the
+  continuation map and the join bag;
+- $`P(S)`$ for the *source payload bytes*: the sum, over the continuation
+  endpoints, of the payload length of the source blob that each endpoint
+  references, with no deduplication;
+- $`K(S)`$ for the multiset of the endpoints' key lengths, so that $`E(S)`$ is
+  its size;
+- $`M(S)`$ for the *maximum logical path*: the greatest path length that the
+  walk observes.
+
+`CurrentShapeSummaryV1` holds $`N`$, $`E`$, $`E_d`$, $`E_c`$, $`E_j`$, $`P`$
+and $`K`$, and reads $`M`$ from $`K`$. The successor state is $`t`$ and its
+predecessor $`s`$.
+
+**Logical positions.** The rewrite edits each namespace trie along the paths of
+its batch. It *loads* a node when it opens the root of a namespace whose batch
+is nonempty, when it expands a child reference, and when it merges the only
+child of a node that kept neither an endpoint nor a second child. It *emits* a
+node when it builds a final node, and it *places* a node when it stages a final
+node into the store. A merged child that was itself edited is emitted and then
+absorbed into its parent, so it is never placed. Every load removes one logical
+position of the predecessor, and every placement creates one position of the
+successor. With $`\ell`$, $`p`$, $`e`$ and $`a`$ the loaded, placed, emitted
+and absorbed counts,
+
+```math
+N(t) + \ell = N(s) + p,
+\qquad
+e = p + a .
+```
+
+The task required this to be decided from the code rather than by trial. The
+existing load counter `loaded_nodes` counts per position: the root load
+(`rewrite.rs:672`), an expansion (`rewrite.rs:1031`) and a merge load
+(`rewrite.rs:1248`). The emit counter does not, because an absorbed child
+(`rewrite.rs:1246`) is emitted but not placed. The report therefore gains
+`placed_nodes`, counted by `stage_final` (`rewrite.rs:1400`), which places every
+kept child (`rewrite.rs:1340`) and the root (`rewrite.rs:1187`). The counter
+lives in the in-memory diagnostics, and no persisted byte depends on it.
+
+![The compression merge of the theory's negative control, in one namespace; paths are lists of edge bytes. The predecessor, in amber, has four logical nodes, and the rewrite loads all four: the root R, which has no endpoint, when it opens the namespace; the leaf A at the key [1], which it expands and deletes; the node B at the key [2], which it expands; and B's child C at the key [2, 3], which it expands. The batch deletes the key [1] and updates the key [2, 3] from 1 to 2. The rewrite emits C' with the endpoint 2, and B' with the endpoint 1 and the one child C'. The root is then left with no endpoint and the one child B', so it merges with that child: B', in purple, is emitted and absorbed, never placed, and the merged root R'' takes its prefix [2], its endpoint and its child. The successor, in green, has two logical nodes, R'' and C', both emitted and placed. A note gives the counts, 4 loaded, 3 emitted, 2 placed and 1 absorbed; the identity that the final logical nodes plus the loaded nodes equal the initial logical nodes plus the placed nodes, here 2 plus 4 and 4 plus 2; the identity that the emitted nodes are the placed plus the absorbed ones, here 3 and 2 plus 1; and, in red, the negative control's miscount: the initial nodes plus the emitted minus the loaded nodes give 3, not 2](figures/shape-summary-absorbed-merge.svg)
+
+**Endpoints, entries and payload.** A batch entry carries a before-value and an
+after-value that differ. The entry removes an endpoint when its before-value
+exists and adds one when its after-value exists, so an update does both. With
+$`A_x`$ and $`R_x`$ the endpoints that the batch adds to and removes from
+namespace $`x`$,
+
+```math
+E_x(t) = E_x(s) + A_x - R_x,
+\qquad
+E(t) = E(s) + \sum_{x} A_x - \sum_{x} R_x .
+```
+
+The payload of a continuation source is the encoded length
+$`\lVert r \rVert`$ of its reference $`r`$ minus the 64-byte blob envelope: a
+32-byte object header, the 16-byte kind domain, the blob version and the
+payload length. With $`\mathcal{A}`$ and $`\mathcal{B}`$ the present after- and
+before-references of the batch's continuation entries,
+
+```math
+P(t) = P(s) + \sum_{r \in \mathcal{A}} \bigl(\lVert r \rVert - 64\bigr)
+            - \sum_{r \in \mathcal{B}} \bigl(\lVert r \rVert - 64\bigr).
+```
+
+Each total $`v`$ is updated as $`(v + \mathit{added}) - \mathit{removed}`$
+with checked arithmetic, so a batch or a report that removes more than the
+summary holds is refused instead of wrapping.
+
+**The maximum and the multiset.** Structural admission refuses an empty
+non-root node (`closure.rs:1294-1299`) and a node without an endpoint that has
+exactly one child (`object.rs:318-319`), the path compression of a PATRICIA
+trie (Morrison, 1968). An admitted trie therefore has no empty leaf, and every
+visit lies on the path to some endpoint. The greatest path that the walk
+observes is the longest key, or zero for an empty state:
+
+```math
+M(S) = \max\bigl(K(S) \cup \{0\}\bigr).
+```
+
+A running maximum cannot follow the deletion of the longest key, so the summary
+keeps the whole multiset. Each removed endpoint releases its key length, and a
+length that the multiset does not hold is refused; each added endpoint records
+its length. The maximum is the largest length with a nonzero count.
+`KeyLengthHistogramV1` stores the multiset as a copy-on-write `PathMap<u64>`
+keyed by the big-endian length, so that byte order is numeric order. It holds
+only nonzero counts, a clone shares its structure, and the maximum is the last
+path in that order.
+
+**The derivation.** `CurrentShapeSummaryV1::successor`
+(`semantic.rs:318-423`) derives the successor's summary from the
+predecessor's summary, the mutation batch and the rewrite report in five steps.
+
+1. ⟨Bind the report to the batch⟩. Refuse `SemanticCoherence` unless the
+   report's mutation count equals the number of the batch's entries in the
+   three namespaces (`semantic.rs:323-332`).
+2. ⟨Clone the multiset⟩. Clone $`K`$. The clone shares the predecessor's
+   structure, and the predecessor's summary is unchanged whatever the outcome
+   (`semantic.rs:334`).
+3. ⟨Track the endpoints⟩. For each entry of namespace $`x`$, in the data,
+   continuation and join batches in turn: when its before-value exists,
+   release the key's length from $`K`$, refusing `SemanticCoherence` for a
+   length that $`K`$ does not hold, and count one removal in $`R_x`$; when its
+   after-value exists, record the length and count one addition in $`A_x`$
+   (`semantic.rs:335-374`, with `track` at `semantic.rs:433-456`).
+4. ⟨Track the payload⟩. For each continuation entry, add
+   $`\lVert r \rVert - 64`$ of a present before-reference $`r`$ to the removed
+   payload, and the same of a present after-reference to the added payload,
+   refusing `ObjectLengthTooSmall` for a reference shorter than the envelope
+   (`semantic.rs:351-364`, with `blob_payload_len` at `semantic.rs:459-464`).
+5. ⟨Apply the deltas⟩. Replace each total $`v`$ by
+   $`(v + \mathit{added}) - \mathit{removed}`$: $`N`$ with $`p`$ and
+   $`\ell`$, $`E`$ with the sums of $`A_x`$ and $`R_x`$, each $`E_x`$ with its
+   own, and $`P`$ with the payloads. An overflow refuses `CounterOverflow` and
+   an underflow `SemanticCoherence` (`semantic.rs:376-422`, with
+   `checked_delta` at `semantic.rs:466-479`).
+
+The maximum is not stored: `maximum` reads the last path of $`K`$ and decodes
+it, or returns zero for an empty multiset (`semantic.rs:224-234`). A refusal
+returns before any field of the successor exists, so no partial summary
+escapes.
+
+![The derivation of a successor's shape summary. The inputs, in blue, are the predecessor's summary, the mutation batch, and the rewrite report with its mutation count and its loaded and placed nodes. A report whose mutation count is not the batch's number of entries is refused, in red. The key-length multiset is cloned, in amber, and the clone shares its structure. For each entry of the data, continuation and join batches in turn, a present before-value releases its key length from the multiset, refusing a length that the multiset does not hold, and counts one removal in its namespace; a present after-value records the length and counts one addition. For a continuation entry, in blue, the payload of each present reference, its encoded length less the 64-byte envelope, joins the removed or the added payload, and a reference shorter than the envelope is refused. Every total then becomes the total plus its additions minus its removals: the logical nodes with the placed and the loaded nodes, the endpoints with the sums over the namespaces, each namespace's entries with its own counts, and the payload; an overflow or an underflow is refused. The result, in green, is the successor summary, whose maximum logical path is the last length of the multiset, or zero. A grey note states the check of TS-17 against the recording cold walk, and why the derivation is exact](figures/shape-summary-derivation.svg)
+
+The cold summary comes from the walk that admission already performs. The
+recording walk (`verify_rspace_semantics_after_structural_with_shape`,
+`semantic.rs:695-714`) runs the plain walk's three trie walks and records each
+endpoint's key length after the endpoint validates (`semantic.rs:754-777`, with
+`record_key_length` at `semantic.rs:785-795`). `from_cold`
+(`semantic.rs:280-300`) builds the summary from its report and multiset, and
+refuses a multiset whose size is not the walk's endpoint count or whose maximum
+is not the walk's maximum logical path.
+
+**The theory.** `formal/rocq/stack_safe_pda/theories/ExactStateShapeSummary.v`
+(module `ExactStateShapeSummary`) proves the derivation. `_CoqProject` lists
+it, and the integrated runner compiles it, requires all sixteen capstones to be
+closed under the global context, and checks it with the kernel checker.
+
+| Capstone | Statement |
+|---|---|
+| `admitted_tries_have_no_empty_leaf` | An admitted trie has no empty leaf. |
+| `maximum_logical_path_is_the_longest_key` | On an admitted root, the walk's path maximum is the length of the longest key. |
+| `combined_maximum_is_the_walk_maximum` | Over three admitted namespace roots, the largest of the three path maxima is the largest key length. |
+| `batch_weight_delta_is_exact` | A successful batch moves any additive weight of the entries by the weights of its after-images minus those of its before-images. |
+| `endpoint_existence_delta_is_exact` | The endpoint count moves by the added minus the removed entries, both as a checked delta and as a compare-and-swap count. |
+| `payload_delta_is_exact` | The payload bytes move by the after-images' encoded lengths less 64 each, minus the same for the before-images. |
+| `key_length_multiset_tracks_the_batch` | Applying the batch to a multiset that is the predecessor's key lengths together with some other lengths succeeds, and gives the successor's key lengths together with the same other lengths. |
+| `largest_nonempty_bucket_is_the_longest_key` | In such a multiset, every length with a nonzero count is at most the largest length, the largest length has a nonzero count when the multiset is not empty, and the largest length is the greater of the longest key and the largest other length. |
+| `rewrite_moves_logical_positions_exactly` | For one namespace, the final positions plus the loaded nodes equal the initial positions plus the placed nodes, and the emitted nodes are the placed nodes plus the absorbed ones. |
+| `absorbed_reports_move_positions_exactly` | The same identity holds for the sum of the three namespace reports. |
+| `counted_rewrite_is_the_radix_edit` | On an admitted root, the counted rewrite computes the radix editor's result and refuses exactly when the editor refuses. |
+| `trusted_shape_summary_equals_the_cold_walk` | For an admitted namespace root and a counted rewrite whose admitted result lists the batch applied to the root's entries, the cold walk's logical nodes, endpoints and payload bytes, updated by the batch and the rewrite's loaded and placed counts, are those of the cold walk of the result; the updated multiset is the result's key lengths together with the other lengths, and its largest length is the greater of the result's path maximum and the largest other length. |
+
+Four negative controls are closed counterexample theorems.
+`emitted_minus_loaded_mutant_miscounts_a_compression_merge` counts
+$`e - \ell`$ and miscounts a merge that absorbs an edited child.
+`digest_dedup_counter_mutant_undercounts_equal_leaves` counts distinct objects
+and misses equal leaves, which are distinct positions.
+`running_maximum_mutant_keeps_a_deleted_longest_key` keeps a running maximum
+without the multiset. `empty_leaf_mutant_breaks_the_path_maximum` shows that a
+trie with an empty leaf has a path maximum above its longest key. The composed
+theorem takes as an explicit argument that the rewrite's result lists the batch
+applied to the predecessor's entries; TS-17 checks that premise against an
+independent rebuild.
+
+**Production code.**
+
+- `DagRewriteReport::placed_nodes` (`rewrite.rs:115`), counted by
+  `stage_final` (`rewrite.rs:1401-1410`) and summed across the three
+  namespaces with the other counters (`rewrite.rs:149`).
+- `KeyLengthHistogramV1` (`semantic.rs:167-266`) and `CurrentShapeSummaryV1`
+  (`semantic.rs:268-479`), with `successor` and `from_cold` as described
+  above.
+- The recording walk, as described above.
+  `verify_rspace_semantics_after_structural` (`semantic.rs:720-730`) runs the
+  same walk and records nothing, so its report is unchanged.
+- Durable cold admission records the histogram in the walk that it already
+  performs (`durable/admission.rs:2033-2037`) and keeps the summary on the
+  admitted source (`durable/admission.rs:2074`), read through `shape()` on the
+  source and on the writer (`durable/admission.rs:1124`,
+  `durable/admission.rs:1450`).
+
+The histogram is neither persisted nor used for preflight. It is not the
+cold-summary index of task 7955: nothing reads it before admission completes,
+and it adds no object read and no walk.
+
+**Boundary.**
+
+- No publication carries the derived summary yet. Every incremental publication
+  still re-admits cold, and TS-17 checks that cold result against the
+  derivation. Task 11945 checks the hot policy's shape ceilings against the
+  derived summary at the bind, and task 11946 makes the trusted publication
+  return it.
+- The summary describes the current state. Retained states keep their
+  per-state maxima (TS-16).
+- No persisted byte, identity or format changes.
+
+Cited work: D. R. Morrison, "PATRICIA—Practical Algorithm To Retrieve
+Information Coded in Alphanumeric", *Journal of the ACM* 15(4):514–534, 1968,
+[doi:10.1145/321479.321481](https://doi.org/10.1145/321479.321481).
+
+The shape summary evidence in the verification record was taken at these
+sources.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `rspace++/src/rspace/persistence/rewrite.rs` | `24447a36c1909f9b3691bbbf72272dad4f46682165ceaa5b48911232b077bb79` |
+| `rspace++/src/rspace/persistence/semantic.rs` | `863810a22e07988258b8e9f7493ae277764b2a9ed53eb6af7e0ef96b2fc90fe1` |
+| `rspace++/src/rspace/persistence/durable/admission.rs` | `f9eb0bdc6a2959234bd48b5dddcd6803b060d9859cc786f9b1affce9d14a5707` |
+| `formal/rocq/stack_safe_pda/theories/ExactStateShapeSummary.v` | `2cb514702837fae8cd5c5952e2d9e732010e183d55705d79bb6fefe4fc905e11` |
+| `formal/rocq/stack_safe_pda/_CoqProject` | `51fe4fccca6c555b7f5b25577565b1e91fb5ab80d2c23738e7b583c7c33e4478` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `66b3c6408769a0a61db122c60e29e853611c7dad98d39da3633d74cc0f5dbbc6` |
+| `rspace++/tests/persistence/shape_summary_properties.rs` | `58017465f4214612305a75111baa5cb42cbde8f142a98472e35f041dc74319fb` |
+| `rspace++/tests/persistence/path_exact_closure_properties.rs` | `d01821542887567fb7d11170cce24f9c76feb8bd05d1e3f57c1339b160f54d6c` |
+| `rspace++/tests/persistence/property_support.rs` | `1f1cbfec63a29976479af2070c67763e3a351f3e0fb513b4f1bc0e15d2165f6e` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `b52a6ec4c3416b0c7a684bbde17fef1f6f7873c19b32da01924984367c4cb70e` |
+
 ### Path-exact incremental closure (2026-10-27)
 
 Task 11957 corrects the incremental closure verifier,
@@ -3455,12 +3698,12 @@ discovery and the measurements.
   exact path and a reference. The private rewrite records certificates in two
   steps. Each base node that it loads makes its content reference, at the
   node's path, and each child reference, at the child's path, *eligible*
-  (`rewrite.rs:1411-1445`, called at `rewrite.rs:1561-1563`). Each node that it
+  (`rewrite.rs:1415-1449`, called at `rewrite.rs:1565-1567`). Each node that it
   builds promotes an eligible boundary to *inherited* when it holds the same
-  reference at the same path (`rewrite.rs:1447-1479`, called at
-  `rewrite.rs:1360-1368`). A namespace that the batch leaves unmutated
-  certifies its root at the empty path (`rewrite.rs:650-663`). The verifier
-  consults only inherited boundaries (`rewrite.rs:386-388`). The manifest has
+  reference at the same path (`rewrite.rs:1451-1483`, called at
+  `rewrite.rs:1362-1370`). A namespace that the batch leaves unmutated
+  certifies its root at the empty path (`rewrite.rs:652-665`). The verifier
+  consults only inherited boundaries (`rewrite.rs:388-390`). The manifest has
   no boundary kind, so it is never certified (`closure.rs:1212-1222`).
 - An occurrence is *coincident* when it is certified and its reference is also
   staged.
@@ -3824,6 +4067,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | TS-14 | `ColdModeSuccessIncludesColdAdmission`, `NeverColdReady` | `TrustedSuccessorCapability.cold_demand_is_not_a_function_of_the_inventory_summary` | P | Test-only model extraction; production refinement remains open (task 11946). The cold-checked refusal and the trusted success of one receipt realize the non-implication on every positive demand axis. |
 | TS-15 | `NeverTrustedRefusal` | `TrustedSuccessorCapability.trials_precede_mutation` | P | Test-only model extraction; production refinement remains open (task 11946). The owner mirror's checkpoint is refused by the bind before any write, so the owner emits no event and stays ready. |
 | TS-16 | `EXEC_ONLY` | `TrustedSuccessorCapability.retained_state_maxima_is_cold_componentwise_max`, `TrustedSuccessorCapability.eviction_requires_recomputation_counterexample` | P | Test-only model extraction; production refinement remains open (task 11945). The maxima are checked while retention appends; the eviction counterexample is reproduced on its fixture, and eviction is task 7756. |
+| TS-17 | `EXEC_ONLY` | `ExactStateShapeSummary.admitted_tries_have_no_empty_leaf`, `ExactStateShapeSummary.maximum_logical_path_is_the_longest_key`, `ExactStateShapeSummary.combined_maximum_is_the_walk_maximum`, `ExactStateShapeSummary.batch_weight_delta_is_exact`, `ExactStateShapeSummary.endpoint_existence_delta_is_exact`, `ExactStateShapeSummary.payload_delta_is_exact`, `ExactStateShapeSummary.key_length_multiset_tracks_the_batch`, `ExactStateShapeSummary.largest_nonempty_bucket_is_the_longest_key`, `ExactStateShapeSummary.rewrite_moves_logical_positions_exactly`, `ExactStateShapeSummary.absorbed_reports_move_positions_exactly`, `ExactStateShapeSummary.counted_rewrite_is_the_radix_edit`, `ExactStateShapeSummary.trusted_shape_summary_equals_the_cold_walk`, `ExactStateShapeSummary.emitted_minus_loaded_mutant_miscounts_a_compression_merge`, `ExactStateShapeSummary.digest_dedup_counter_mutant_undercounts_equal_leaves`, `ExactStateShapeSummary.running_maximum_mutant_keeps_a_deleted_longest_key`, `ExactStateShapeSummary.empty_leaf_mutant_breaks_the_path_maximum` | P | Production refinement of the derivation; the trusted publication that returns the summary remains open (task 11946). The production summary is compared with the production cold walk in memory, with durable cold admission after every publication and with restart admission, on shared subtrees, an absorbing merge, deletion of the unique and of tied longest keys, and batches across all three namespaces; the composed theorem's premise that the rewrite lists the batch applied to the entries is checked against an independent rebuild. |
 | TS-18 | `EXEC_ONLY` | `TrustedSuccessorCapability.trusted_successor_rule` | P | Test-only model extraction; production refinement remains open (task 11945). The rule's token and profile premises are checked as refusals at the receipt check. |
 | TS-19 | `EXEC_ONLY` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger` | P | Test-only model extraction; production refinement remains open (task 11945). The first successor's migration and the seeded metadata ledger are compared with the cold traversal; the double-migration control keeps the old anchor counted. |
 | PX-01 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_refuses_a_valid_delta_at_a_coincident_certificate`, `PathExactIncrementalClosure.certificate_first_verifier_complete` | P | Production refinement on the theory's coincidence fixture in canonical bytes, with the two certificates admitted directly; the report's counts and the logical-visit limit bind the model's eight visits. |
@@ -4108,6 +4352,28 @@ candidate's export gate also passed: `cargo check` of all targets, clippy, all
 results cover a production change: the verifier consults the exact certificate
 before the staging overlay. See engineering journal J-251 for the discovery, the
 failed proof strategies, caps and evidence hashes.
+
+The 2026-10-27 shape summary adds `TS-17`. The catalog/derivation/binding
+registry now contains **211** IDs: the 210 above and the shape summary row.
+`ExactStateShapeSummary.v` compiled with all **16** capstones closed under the
+global context, its four negative controls among them, and the module passed
+independent kernel checking (pgmcp artifact 1129); the integrated runner's block
+for the theory passed on the export of the candidate tree. On that export, all
+482 selected rspace++ library tests under `rspace::persistence` passed
+single-threaded in debug (34.50 s) and release (15.37 s), with the three
+unwind-child helpers ignored by design. They include `TS-17`, its companion
+refusal test, the five closure rows and this registry test. `TS-17`'s generated
+chains first exposed bug 11957, whose correction is recorded above, and they
+pass with it. The candidate's export gate also passed: `cargo check` of all
+targets, clippy, all 4,420 release nextest tests of `models`,
+`rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the release doc tests.
+The gate's first run, on an earlier candidate, refused a catch-all arm in the
+key-length histogram's equality; the arm now enumerates its residue, which
+changes no outcome. Unlike the trusted successor models, these results cover a
+production change: the rewrite counts the nodes it places, and durable cold
+admission records the key-length multiset in its existing walk. No persisted
+byte, identity or cold report changes. See pgmcp artifact 1130 for caps and
+evidence hashes.
 
 ## Caller-authority contract (2026-09-06)
 

@@ -275,6 +275,7 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("TS-14", "trusted_success_does_not_imply_cold_admission_under_incoming_limits"),
     ("TS-15", "owner_trusted_policy_refusal_leaves_files_journals_and_authority_unchanged"),
     ("TS-16", "trusted_retained_state_maxima_equal_cold_requirements"),
+    ("TS-17", "trusted_shape_summary_matches_cold_semantic_walk"),
     ("TS-18", "trusted_validity_is_bound_to_the_exact_predecessor_and_receipt"),
     ("TS-19", "trusted_successor_migrates_a_v1_source_once_and_matches_the_cold_seed"),
     ("PX-01", "a_staged_node_equal_to_an_inherited_subtree_stops_at_its_exact_certificate"),

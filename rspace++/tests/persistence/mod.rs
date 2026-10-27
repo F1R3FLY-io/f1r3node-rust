@@ -36,6 +36,7 @@ mod rho_path_streaming_properties;
 mod rba1_checkpoint_recovery_properties;
 mod rewrite_differential;
 mod semantic_validation;
+mod shape_summary_properties;
 mod staging_store;
 mod support;
 mod transaction_sealing;

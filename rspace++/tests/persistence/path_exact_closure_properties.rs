@@ -25,16 +25,16 @@ const DATA_CHANNELS: [&str; 3] = ["chan-a", "chan-b", "chan-c"];
 const DATUM_TEXTS: [&str; 3] = ["datum-0", "datum-pair-a", "datum-pair-b"];
 const DATA_HOLDER: &str = "holder";
 const DATA_SLOTS: usize = DATA_CHANNELS.len() * DATUM_TEXTS.len();
-const CONTINUATION_GROUPS: [&[&str]; 4] =
+pub(super) const CONTINUATION_GROUPS: [&[&str]; 4] =
     [&["alpha"], &["beta"], &["alpha", "beta"], &["gamma", "alpha"]];
-const CONTINUATION_BODIES: [&str; 3] = ["body-0", "body-one", "body-the-second"];
-const CONTINUATION_SLOTS: usize = CONTINUATION_GROUPS.len() * CONTINUATION_BODIES.len();
+pub(super) const CONTINUATION_BODIES: [&str; 3] = ["body-0", "body-one", "body-the-second"];
+pub(super) const CONTINUATION_SLOTS: usize = CONTINUATION_GROUPS.len() * CONTINUATION_BODIES.len();
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct ModelState {
-    data: BTreeMap<Vec<u8>, u64>,
-    continuations: BTreeMap<Vec<u8>, Vec<u8>>,
-    joins: BTreeMap<Vec<u8>, u64>,
+pub(super) struct ModelState {
+    pub(super) data: BTreeMap<Vec<u8>, u64>,
+    pub(super) continuations: BTreeMap<Vec<u8>, Vec<u8>>,
+    pub(super) joins: BTreeMap<Vec<u8>, u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -133,7 +133,7 @@ fn datum_key(channel: &str, text: &str) -> Vec<u8> {
     )
 }
 
-fn continuation(group: &[&str], body: &str, independent: bool) -> (Vec<u8>, Vec<u8>) {
+pub(super) fn continuation(group: &[&str], body: &str, independent: bool) -> (Vec<u8>, Vec<u8>) {
     let channels = group
         .iter()
         .map(|channel| (*channel).to_owned())
@@ -168,7 +168,7 @@ fn continuation(group: &[&str], body: &str, independent: bool) -> (Vec<u8>, Vec<
     (key, payload)
 }
 
-fn join_key(channel: &str, group: &[&str]) -> Vec<u8> {
+pub(super) fn join_key(channel: &str, group: &[&str]) -> Vec<u8> {
     let channels = group
         .iter()
         .map(|member| (*member).to_owned())
@@ -227,7 +227,7 @@ fn admit_object<T: CanonicalEncode>(store: &CanonicalObjectStore, value: &T) -> 
     reference
 }
 
-fn install(store: &CanonicalObjectStore, state: &ModelState) -> ObjectRefV1 {
+pub(super) fn install(store: &CanonicalObjectStore, state: &ModelState) -> ObjectRefV1 {
     let multiplicities = |entries: &BTreeMap<Vec<u8>, u64>| {
         entries
             .iter()
@@ -268,7 +268,11 @@ fn count_transitions<'state>(
         })
 }
 
-fn transition_batch(base: StateVersionV1, from: &ModelState, to: &ModelState) -> Option<Vec<u8>> {
+pub(super) fn transition_batch(
+    base: StateVersionV1,
+    from: &ModelState,
+    to: &ModelState,
+) -> Option<Vec<u8>> {
     let mut batch =
         RSpaceMutationBatchV1::new(base).expect("the model base has a successor generation");
     for (key, before, after) in count_transitions(&from.data, &to.data) {
@@ -304,7 +308,7 @@ fn transition_batch(base: StateVersionV1, from: &ModelState, to: &ModelState) ->
     (!batch.is_empty()).then(|| encode(&batch.plan().expect("a nonempty model batch plans")))
 }
 
-fn staged_sources(from: &ModelState, to: &ModelState) -> Vec<Arc<[u8]>> {
+pub(super) fn staged_sources(from: &ModelState, to: &ModelState) -> Vec<Arc<[u8]>> {
     let changed = to
         .continuations
         .iter()

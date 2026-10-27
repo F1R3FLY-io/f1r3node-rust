@@ -13,10 +13,13 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use pathmap::PathMap;
-use pathmap::zipper::{ZipperMoving, ZipperReadOnlyIteration, ZipperValues};
+use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperReadOnlyIteration, ZipperValues};
 use serde::Serialize;
 
-use super::canonical::{CanonicalFormatError, ObjectDigest, ObjectRefV1, checked_len};
+use super::canonical::{
+    CanonicalFormatError, OBJECT_DOMAIN_LEN, OBJECT_ENVELOPE_HEADER_LEN, ObjectDigest, ObjectRefV1,
+    checked_len, checked_sum,
+};
 use super::closure::{
     ClosureError, RetainedUnionClosureLimitsV1, StructuralClosureLedgerV1, StructuralClosureReport,
     StructuralValidationLimits, StructurallyAdmittedStateV1,
@@ -25,6 +28,7 @@ use super::closure::{
 use super::manifest::{SemanticNamespace, SemanticProfileId, SemanticRoots};
 use super::mutation::MutationBatchViewV1;
 use super::object::{CanonicalBlobKind, CanonicalObjectKind, CanonicalObjectView, EndpointValue};
+use super::rewrite::DagRewriteReport;
 use super::store::ImmutableObjectStore;
 use crate::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use crate::rspace::internal::WaitingContinuation;
@@ -153,6 +157,325 @@ impl SemanticallyAdmittedStateV1 {
     pub(crate) const fn manifest(self) -> ObjectRefV1 { self.manifest }
 
     pub(crate) const fn report(self) -> SemanticValidationReport { self.report }
+}
+
+const CANONICAL_BLOB_ENVELOPE_LEN: u64 =
+    OBJECT_ENVELOPE_HEADER_LEN + OBJECT_DOMAIN_LEN as u64 + 8 + 8;
+
+const KEY_LENGTH_BUCKET_LEN: usize = std::mem::size_of::<u64>();
+
+#[derive(Clone)]
+pub(crate) struct KeyLengthHistogramV1 {
+    buckets: PathMap<u64>,
+    keys: u64,
+}
+
+impl KeyLengthHistogramV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            buckets: PathMap::new(),
+            keys: 0,
+        }
+    }
+
+    pub(crate) const fn keys(&self) -> u64 { self.keys }
+
+    pub(crate) fn record(&mut self, length: u64) -> Result<(), CanonicalFormatError> {
+        let keys = self
+            .keys
+            .checked_add(1)
+            .ok_or(CanonicalFormatError::CounterOverflow("key-length histogram keys"))?;
+        let bucket = length.to_be_bytes();
+        let count = match self.buckets.get(bucket) {
+            Some(count) => count
+                .checked_add(1)
+                .ok_or(CanonicalFormatError::CounterOverflow("key-length histogram bucket"))?,
+            None => 1,
+        };
+        self.buckets.insert(bucket, count);
+        self.keys = keys;
+        Ok(())
+    }
+
+    pub(crate) fn release(&mut self, length: u64) -> Result<(), CanonicalFormatError> {
+        let bucket = length.to_be_bytes();
+        let (Some(keys), Some(remaining)) = (
+            self.keys.checked_sub(1),
+            self.buckets
+                .get(bucket)
+                .and_then(|count| count.checked_sub(1)),
+        ) else {
+            return Err(CanonicalFormatError::SemanticCoherence {
+                detail: "a removed key length is absent from the key-length histogram".to_owned(),
+            });
+        };
+        match remaining {
+            0 => {
+                self.buckets.remove(bucket);
+            }
+            remaining => {
+                self.buckets.insert(bucket, remaining);
+            }
+        }
+        self.keys = keys;
+        Ok(())
+    }
+
+    pub(crate) fn maximum(&self) -> Result<u64, CanonicalFormatError> {
+        let mut cursor = self.buckets.read_zipper();
+        cursor.descend_last_path();
+        match (self.keys, <[u8; KEY_LENGTH_BUCKET_LEN]>::try_from(cursor.path()), cursor.val()) {
+            (0, _, None) if cursor.path().is_empty() => Ok(0),
+            (1.., Ok(bucket), Some(_)) => Ok(u64::from_be_bytes(bucket)),
+            _ => Err(CanonicalFormatError::SemanticCoherence {
+                detail: "the key-length histogram's last path is not a recorded length".to_owned(),
+            }),
+        }
+    }
+}
+
+impl PartialEq for KeyLengthHistogramV1 {
+    fn eq(&self, other: &Self) -> bool {
+        let mut left = self.buckets.read_zipper();
+        let mut right = other.buckets.read_zipper();
+        loop {
+            match (left.to_next_get_val(), right.to_next_get_val()) {
+                (None, None) => return self.keys == other.keys,
+                (Some(left_count), Some(right_count))
+                    if left_count == right_count && left.path() == right.path() => {}
+                (Some(_), Some(_)) | (Some(_), None) | (None, Some(_)) => return false,
+            }
+        }
+    }
+}
+
+impl Eq for KeyLengthHistogramV1 {}
+
+impl std::fmt::Debug for KeyLengthHistogramV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buckets = formatter.debug_map();
+        let mut cursor = self.buckets.read_zipper();
+        while let Some(count) = cursor.to_next_get_val() {
+            match <[u8; KEY_LENGTH_BUCKET_LEN]>::try_from(cursor.path()) {
+                Ok(bucket) => buckets.entry(&u64::from_be_bytes(bucket), count),
+                Err(_) => buckets.entry(&cursor.path(), count),
+            };
+        }
+        buckets.finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CurrentShapeSummaryV1 {
+    logical_nodes: u64,
+    endpoints: u64,
+    data_entries: u64,
+    continuation_entries: u64,
+    join_entries: u64,
+    source_payload_bytes: u64,
+    key_lengths: KeyLengthHistogramV1,
+}
+
+impl CurrentShapeSummaryV1 {
+    pub(crate) fn from_cold(
+        report: SemanticValidationReport,
+        key_lengths: KeyLengthHistogramV1,
+    ) -> Result<Self, CanonicalFormatError> {
+        if key_lengths.keys() != report.endpoints ||
+            key_lengths.maximum()? != report.maximum_logical_path_bytes
+        {
+            return Err(CanonicalFormatError::SemanticCoherence {
+                detail: "the key-length histogram disagrees with the cold semantic walk".to_owned(),
+            });
+        }
+        Ok(Self {
+            logical_nodes: report.logical_nodes,
+            endpoints: report.endpoints,
+            data_entries: report.data_entries,
+            continuation_entries: report.continuation_entries,
+            join_entries: report.join_entries,
+            source_payload_bytes: report.source_payload_bytes,
+            key_lengths,
+        })
+    }
+
+    pub(crate) const fn logical_nodes(&self) -> u64 { self.logical_nodes }
+
+    pub(crate) const fn endpoints(&self) -> u64 { self.endpoints }
+
+    pub(crate) const fn data_entries(&self) -> u64 { self.data_entries }
+
+    pub(crate) const fn continuation_entries(&self) -> u64 { self.continuation_entries }
+
+    pub(crate) const fn join_entries(&self) -> u64 { self.join_entries }
+
+    pub(crate) const fn source_payload_bytes(&self) -> u64 { self.source_payload_bytes }
+
+    pub(crate) fn maximum_logical_path_bytes(&self) -> Result<u64, CanonicalFormatError> {
+        self.key_lengths.maximum()
+    }
+
+    pub(crate) fn successor(
+        &self,
+        mutation: MutationBatchViewV1<'_>,
+        rewrite: DagRewriteReport,
+    ) -> Result<Self, CanonicalFormatError> {
+        let entries =
+            [mutation.data().len(), mutation.continuations().len(), mutation.joins().len()]
+                .into_iter()
+                .try_fold(0_usize, usize::checked_add)
+                .ok_or(CanonicalFormatError::CounterOverflow("summary batch entries"))?;
+        if checked_len(entries, "summary batch entries")? != rewrite.mutations {
+            return Err(CanonicalFormatError::SemanticCoherence {
+                detail: "the rewrite report does not describe the mutation batch".to_owned(),
+            });
+        }
+
+        let mut key_lengths = self.key_lengths.clone();
+        let mut data = EndpointExistenceDelta::default();
+        for entry in mutation.data() {
+            data.track(
+                &mut key_lengths,
+                entry.key,
+                entry.transition.before() != 0,
+                entry.transition.after() != 0,
+            )?;
+        }
+        let mut continuations = EndpointExistenceDelta::default();
+        let mut added_payload = 0_u64;
+        let mut removed_payload = 0_u64;
+        for entry in mutation.continuations() {
+            let before = entry.transition.before();
+            let after = entry.transition.after();
+            continuations.track(&mut key_lengths, entry.key, before.is_some(), after.is_some())?;
+            if let Some(reference) = before {
+                removed_payload = checked_sum(
+                    removed_payload,
+                    blob_payload_len(reference)?,
+                    "summary removed payload bytes",
+                )?;
+            }
+            if let Some(reference) = after {
+                added_payload = checked_sum(
+                    added_payload,
+                    blob_payload_len(reference)?,
+                    "summary added payload bytes",
+                )?;
+            }
+        }
+        let mut joins = EndpointExistenceDelta::default();
+        for entry in mutation.joins() {
+            joins.track(
+                &mut key_lengths,
+                entry.key,
+                entry.transition.before() != 0,
+                entry.transition.after() != 0,
+            )?;
+        }
+
+        let added_endpoints = [data.added, continuations.added, joins.added]
+            .into_iter()
+            .try_fold(0_u64, u64::checked_add)
+            .ok_or(CanonicalFormatError::CounterOverflow("summary added endpoints"))?;
+        let removed_endpoints = [data.removed, continuations.removed, joins.removed]
+            .into_iter()
+            .try_fold(0_u64, u64::checked_add)
+            .ok_or(CanonicalFormatError::CounterOverflow("summary removed endpoints"))?;
+        Ok(Self {
+            logical_nodes: checked_delta(
+                self.logical_nodes,
+                rewrite.placed_nodes,
+                rewrite.loaded_nodes,
+                "logical nodes",
+            )?,
+            endpoints: checked_delta(
+                self.endpoints,
+                added_endpoints,
+                removed_endpoints,
+                "endpoints",
+            )?,
+            data_entries: checked_delta(
+                self.data_entries,
+                data.added,
+                data.removed,
+                "data entries",
+            )?,
+            continuation_entries: checked_delta(
+                self.continuation_entries,
+                continuations.added,
+                continuations.removed,
+                "continuation entries",
+            )?,
+            join_entries: checked_delta(
+                self.join_entries,
+                joins.added,
+                joins.removed,
+                "join entries",
+            )?,
+            source_payload_bytes: checked_delta(
+                self.source_payload_bytes,
+                added_payload,
+                removed_payload,
+                "source payload bytes",
+            )?,
+            key_lengths,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct EndpointExistenceDelta {
+    added: u64,
+    removed: u64,
+}
+
+impl EndpointExistenceDelta {
+    fn track(
+        &mut self,
+        key_lengths: &mut KeyLengthHistogramV1,
+        key: &[u8],
+        before: bool,
+        after: bool,
+    ) -> Result<(), CanonicalFormatError> {
+        let length = checked_len(key.len(), "summary key length")?;
+        if before {
+            key_lengths.release(length)?;
+            self.removed = self
+                .removed
+                .checked_add(1)
+                .ok_or(CanonicalFormatError::CounterOverflow("summary removed endpoints"))?;
+        }
+        if after {
+            key_lengths.record(length)?;
+            self.added = self
+                .added
+                .checked_add(1)
+                .ok_or(CanonicalFormatError::CounterOverflow("summary added endpoints"))?;
+        }
+        Ok(())
+    }
+}
+
+fn blob_payload_len(reference: ObjectRefV1) -> Result<u64, CanonicalFormatError> {
+    reference
+        .encoded_len()
+        .checked_sub(CANONICAL_BLOB_ENVELOPE_LEN)
+        .ok_or(CanonicalFormatError::ObjectLengthTooSmall(reference.encoded_len()))
+}
+
+fn checked_delta(
+    value: u64,
+    added: u64,
+    removed: u64,
+    field: &'static str,
+) -> Result<u64, CanonicalFormatError> {
+    value
+        .checked_add(added)
+        .ok_or(CanonicalFormatError::CounterOverflow(field))?
+        .checked_sub(removed)
+        .ok_or_else(|| CanonicalFormatError::SemanticCoherence {
+            detail: format!("the batch removes more {field} than the summary holds"),
+        })
 }
 
 /// Work ceilings for one locally produced, verified-base transition.
@@ -369,6 +692,27 @@ where
         .map(SemanticallyAdmittedStateV1::report)
 }
 
+pub(crate) fn verify_rspace_semantics_after_structural_with_shape<P, S>(
+    store: &S,
+    structural: StructurallyAdmittedStateV1,
+    limits: SemanticValidationLimits,
+) -> Result<(SemanticallyAdmittedStateV1, CurrentShapeSummaryV1), ClosureError<S::Error>>
+where
+    P: SemanticProfile,
+    S: ImmutableObjectStore,
+{
+    let mut key_lengths = KeyLengthHistogramV1::new();
+    let admitted = verify_semantics_recording_key_lengths::<P, S>(
+        store,
+        structural,
+        limits,
+        Some(&mut key_lengths),
+    )?;
+    let shape =
+        CurrentShapeSummaryV1::from_cold(admitted.report(), key_lengths).map_err(format_error)?;
+    Ok((admitted, shape))
+}
+
 /// Complete semantic admission from the exact structural token produced by
 /// the shared closure PDA. Durable recovery uses this transition so retained
 /// inventory derivation and current-state semantics never repeat the
@@ -377,6 +721,19 @@ pub(crate) fn verify_rspace_semantics_after_structural<P, S>(
     store: &S,
     structural: StructurallyAdmittedStateV1,
     limits: SemanticValidationLimits,
+) -> Result<SemanticallyAdmittedStateV1, ClosureError<S::Error>>
+where
+    P: SemanticProfile,
+    S: ImmutableObjectStore,
+{
+    verify_semantics_recording_key_lengths::<P, S>(store, structural, limits, None)
+}
+
+fn verify_semantics_recording_key_lengths<P, S>(
+    store: &S,
+    structural: StructurallyAdmittedStateV1,
+    limits: SemanticValidationLimits,
+    mut key_lengths: Option<&mut KeyLengthHistogramV1>,
 ) -> Result<SemanticallyAdmittedStateV1, ClosureError<S::Error>>
 where
     P: SemanticProfile,
@@ -396,12 +753,14 @@ where
 
     walk_trie(store, roots.data_bag, limits, &mut report, |path, endpoint, report| {
         validate_data_endpoint::<P::Channel, P::Datum, S::Error>(path, endpoint)?;
-        increment(&mut report.data_entries, 1, "data entries")
+        increment(&mut report.data_entries, 1, "data entries")?;
+        record_key_length(key_lengths.as_deref_mut(), path)
     })?;
 
     walk_trie(store, roots.join_bag, limits, &mut report, |path, endpoint, report| {
         validate_join_endpoint::<P::Channel, S::Error>(path, endpoint)?;
-        increment(&mut report.join_entries, 1, "join entries")
+        increment(&mut report.join_entries, 1, "join entries")?;
+        record_key_length(key_lengths.as_deref_mut(), path)
     })?;
 
     walk_trie(store, roots.continuation_map, limits, &mut report, |path, endpoint, report| {
@@ -413,13 +772,26 @@ where
             limits,
             report,
         )?;
-        increment(&mut report.continuation_entries, 1, "continuation entries")
+        increment(&mut report.continuation_entries, 1, "continuation entries")?;
+        record_key_length(key_lengths.as_deref_mut(), path)
     })?;
 
     Ok(SemanticallyAdmittedStateV1 {
         manifest: structural.manifest(),
         report,
     })
+}
+
+fn record_key_length<E>(
+    key_lengths: Option<&mut KeyLengthHistogramV1>,
+    key: &[u8],
+) -> Result<(), ClosureError<E>> {
+    match key_lengths {
+        Some(key_lengths) => key_lengths
+            .record(checked_len(key.len(), "semantic key length").map_err(format_error)?)
+            .map_err(format_error),
+        None => Ok(()),
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

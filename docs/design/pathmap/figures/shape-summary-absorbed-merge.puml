@@ -1,0 +1,82 @@
+@startuml shape-summary-absorbed-merge
+' ============================================================================
+' The compression merge of ExactStateShapeSummary.v (merge_sample,
+' merge_batch and merge_result, the sample of the negative control
+' emitted_minus_loaded_mutant_miscounts_a_compression_merge; task 11943).
+' One namespace; paths are edge-byte lists; every prefix is empty except the
+' merged root's. TS-17's corner chain builds the same case in canonical bytes:
+' it removes a hub join and updates its sibling.
+'   AMBER  #EF6C00  predecessor positions the rewrite loads (removes)
+'   GREEN  #2E7D32  successor positions the rewrite places (creates)
+'   PURPLE #6A1B9A  an emitted node that the merge absorbs, never placed
+'   RED    #C62828  the emitted-minus-loaded mutant's miscount
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ObjectBorderColor #455A64
+skinparam NoteBorderColor #455A64
+skinparam PackageBorderColor #455A64
+
+title <b>A compression merge absorbs an edited child</b>\nthe batch deletes the key [1] and updates the key [2, 3] from 1 to 2;\nthe root keeps no endpoint and one child, so it merges with that child
+
+package "predecessor s: 4 logical nodes, all loaded" as before {
+  object "R" as root #FFE0B2 {
+    root, no endpoint
+    <color:#EF6C00>loaded: the namespace root is opened</color>
+  }
+  object "A" as deleted #FFE0B2 {
+    endpoint 1 at the key [1]
+    <color:#EF6C00>loaded: expanded, then deleted</color>
+  }
+  object "B" as kept #FFE0B2 {
+    endpoint 1 at the key [2]
+    <color:#EF6C00>loaded: expanded</color>
+  }
+  object "C" as updated #FFE0B2 {
+    endpoint 1 at the key [2, 3]
+    <color:#EF6C00>loaded: expanded</color>
+  }
+}
+
+package "successor t: 2 logical nodes, both placed" as after {
+  object "R''" as merged #C8E6C9 {
+    merged root, prefix [2]
+    endpoint 1 at the key [2]
+    <color:#2E7D32>emitted and placed</color>
+  }
+  object "C'" as leaf #C8E6C9 {
+    endpoint 2 at the key [2, 3]
+    <color:#2E7D32>emitted and placed</color>
+  }
+}
+
+object "B'" as absorbed #E1BEE7 {
+  endpoint 1, one child C'
+  <color:#6A1B9A>emitted, then absorbed into R''</color>
+  <color:#6A1B9A>never placed</color>
+}
+
+root --> deleted : edge 1
+root --> kept : edge 2
+kept --> updated : edge 3
+root -[hidden]right-> absorbed
+absorbed .right.> merged : <color:#6A1B9A>merge: R'' takes its prefix,</color>\n<color:#6A1B9A>endpoint and children</color>
+absorbed ..> leaf : <color:#6A1B9A>its child,</color>\n<color:#6A1B9A>kept by R''</color>
+merged --> leaf : edge 3
+
+note bottom of leaf #FFF3E0
+  <b>Counts of the rewrite</b>
+  loaded <latex>\ell = 4</latex>: the root open and three expansions; no merge load,
+  because the merged child is a rebuilt node, not a reference
+  emitted <latex>e = 3</latex> (C', B', R''), placed <latex>p = 2</latex> (C', R''), absorbed <latex>a = 1</latex> (B')
+  ----
+  <b>Placed minus loaded is exact</b> (rewrite_moves_logical_positions_exactly)
+  <latex>N(t) + \ell = N(s) + p</latex>, here <latex>2 + 4 = 4 + 2</latex>
+  <latex>e = p + a</latex>, here <latex>3 = 2 + 1</latex>
+  ----
+  <color:#C62828><b>Emitted minus loaded miscounts</b></color> (the negative control)
+  <latex>N(s) + e - \ell = 4 + 3 - 4 = 3 \neq 2 = N(t)</latex>
+end note
+@enduml

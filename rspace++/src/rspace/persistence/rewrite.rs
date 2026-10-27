@@ -112,6 +112,7 @@ pub struct DagRewriteReport {
     pub maximum_finalize_worklist: u64,
     pub exact_path_chunks: u64,
     pub inherited_boundaries: u64,
+    pub placed_nodes: u64,
 }
 
 impl DagRewriteReport {
@@ -145,6 +146,7 @@ impl DagRewriteReport {
             other.inherited_boundaries,
             "inherited boundaries",
         )?;
+        self.placed_nodes = checked_add(self.placed_nodes, other.placed_nodes, "placed nodes")?;
         Ok(())
     }
 }
@@ -1396,6 +1398,7 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
     }
 
     fn stage_final(&mut self, node: &FinalNode) -> Result<(), RewriteError<S::Error>> {
+        let placed_nodes = checked_add(self.report.placed_nodes, 1, "placed nodes")?;
         let admission = self
             .store
             .put_if_absent_or_equal(node.reference, Arc::clone(&node.bytes))
@@ -1404,6 +1407,7 @@ impl<'store, 'mutation, 'provenance, S: MutableObjectStore>
             self.report.inserted_objects =
                 checked_add(self.report.inserted_objects, 1, "inserted objects")?;
         }
+        self.report.placed_nodes = placed_nodes;
         Ok(())
     }
 }

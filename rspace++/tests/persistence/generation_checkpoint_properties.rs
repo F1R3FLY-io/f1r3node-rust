@@ -490,6 +490,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("../../../formal/rocq/stack_safe_pda/theories/RetentionV2Format.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/RetentionV2Editor.v"),
         include_str!("../../../formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v"),
+        include_str!("../../../formal/rocq/stack_safe_pda/theories/ExactStateShapeSummary.v"),
     ]
     .concat();
     let mut cited_tla = BTreeSet::new();
@@ -598,6 +599,10 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         formal_gate.contains("theories/TrustedSuccessorCapability.v"),
         "the integrated formal gate does not compile the trusted successor theory cited by TS rows",
     );
+    assert!(
+        formal_gate.contains("theories/ExactStateShapeSummary.v"),
+        "the integrated formal gate does not compile the shape summary theory cited by TS rows",
+    );
     for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("NV-")) {
         let witness = tla_symbols
             .iter()
@@ -673,6 +678,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("path_provenance.rs"),
         include_str!("retention_v2_editor_properties.rs"),
         include_str!("retention_v2_format_properties.rs"),
+        include_str!("shape_summary_properties.rs"),
         include_str!("trusted_successor_properties.rs"),
         include_str!("wal_codec.rs"),
         include_str!("../hot_store/journal_commit.rs"),
