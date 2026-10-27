@@ -20,8 +20,8 @@ use shared::rust::store::key_value_store::KvStoreError;
 use super::backend::ExecutionBackend;
 use super::block_record::BlockRecord;
 use super::body::{Attestation, StateHash, V6Body, V6Records};
-use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore};
-use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink};
+use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore, InclusionCheck};
+use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink, Offence};
 use super::executor::BlockExecutor;
 use super::gate::{screen, BlockGate, RhoBlockGate};
 use super::lag::{Lag, LagGate, Transition};
@@ -286,11 +286,58 @@ impl<R: ExecutionRecord> V6Engine<R> {
 
     pub fn observe_block(&self, block: &BlockMessage, body: &V6Body) {
         if let Some(attestation) = &body.attestation {
-            self.core
-                .lock()
-                .observe_attestation(&block.block_hash, &block.sender, attestation);
+            self.core.lock().observe_attestation(
+                &block.block_hash,
+                &block.sender,
+                attestation,
+                !block.body.deploys.is_empty(),
+            );
         }
         self.report_evidence();
+    }
+
+    async fn check_inclusion(&self, check: InclusionCheck) -> Result<(), CasperError> {
+        let block = self.load(&check.block)?;
+        let started = std::time::Instant::now();
+        let screened = screen(
+            self.gate.as_ref(),
+            &check.root,
+            block.header.timestamp,
+            block.body.deploys.clone(),
+        )
+        .await;
+        let refused = match screened {
+            Ok((_, refused)) => refused,
+            Err(error) => {
+                tracing::warn!(
+                    target: "f1r3fly.v6",
+                    block = %hex::encode(&check.block),
+                    %error,
+                    "v6 inclusion check could not run; the block is not checked"
+                );
+                return Ok(());
+            }
+        };
+        tracing::debug!(
+            target: "f1r3fly.v6",
+            block = %hex::encode(&check.block),
+            envelopes = block.body.deploys.len(),
+            refused = refused.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "v6 inclusion check"
+        );
+        for (envelope, cause) in refused {
+            self.evidence.report(Evidence {
+                offender: check.sender.clone(),
+                citer: check.block.clone(),
+                target: check.attested.clone(),
+                offence: Offence::InclusionViolation {
+                    envelope_id: Bytes::copy_from_slice(envelope.identity_bytes()),
+                    cause,
+                },
+            });
+        }
+        Ok(())
     }
 
     fn load(&self, hash: &BlockHash) -> Result<BlockMessage, CasperError> {
@@ -391,6 +438,11 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 self.core.lock().apply_execute(record);
                 progressed = true;
             }
+        }
+        let check = self.core.lock().next_inclusion_check();
+        if let Some(check) = check {
+            self.check_inclusion(check).await?;
+            progressed = true;
         }
         self.report_evidence();
         if let Some(error) = self.core.lock().take_store_error() {
