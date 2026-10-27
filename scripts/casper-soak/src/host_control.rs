@@ -267,13 +267,14 @@ mod linux {
         confirmed
     }
 
-    fn owned(owner: &str) -> Result<(Vec<Owned>, bool)> {
+    fn owned(owner: &str) -> Result<(Vec<Owned>, Vec<i32>, bool)> {
         ensure!(
             !owner.is_empty() && owner.len() <= 256 && !owner.chars().any(char::is_control),
             "The owner marker is invalid."
         );
         let marker = format!("SOAK_PROCESS_OWNER={owner}");
         let mut result = Vec::new();
+        let mut skipped = Vec::new();
         let mut failed = false;
         for pid in pids()? {
             let process = match open_pid(pid) {
@@ -296,6 +297,7 @@ mod linux {
                     Err(error)
                         if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM)) =>
                     {
+                        skipped.push(pid);
                         return Ok(None);
                     }
                     Err(error) => return Err(error.into()),
@@ -325,11 +327,18 @@ mod linux {
                 }
             }
         }
-        Ok((result, failed))
+        Ok((result, skipped, failed))
+    }
+
+    fn report_skipped(skipped: &[i32]) {
+        for pid in skipped {
+            eprintln!("skipped process {pid}: its environment is unreadable");
+        }
     }
 
     fn stop(owner: &str) -> Result<()> {
-        let (processes, mut failed) = owned(owner)?;
+        let (processes, skipped, mut failed) = owned(owner)?;
+        report_skipped(&skipped);
         for owned in &processes {
             if let Err(error) = signal(&owned.process, libc::SIGKILL) {
                 if error.raw_os_error() != Some(libc::ESRCH) {
@@ -569,7 +578,8 @@ mod linux {
     }
 
     fn prefer_oom(owner: &str) -> Result<()> {
-        let (processes, mut failed) = owned(owner)?;
+        let (processes, skipped, mut failed) = owned(owner)?;
+        report_skipped(&skipped);
         for owned in processes {
             if child(&owned.directory, "oom_score_adj", false, true)
                 .and_then(|mut file| file.write_all(b"1000\n"))
@@ -780,21 +790,39 @@ mod linux {
             Undumpable(pid)
         }
 
-        fn unreadable_environment(pid: libc::pid_t) {
-            let read = fs::read(format!("/proc/{pid}/environ"));
-            if unsafe { libc::geteuid() } != 0 {
-                assert!(matches!(
-                    read.unwrap_err().raw_os_error(),
-                    Some(libc::EACCES | libc::EPERM)
-                ));
+        fn unreadable_environment(pid: libc::pid_t) -> bool {
+            if unsafe { libc::geteuid() } == 0 {
+                eprintln!("skipped: root can read the environment of process {pid}");
+                return false;
             }
+            assert!(matches!(
+                fs::read(format!("/proc/{pid}/environ"))
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EACCES | libc::EPERM)
+            ));
+            true
+        }
+
+        #[test]
+        fn owner_scan_reports_a_process_whose_environment_is_unreadable() {
+            let owner = marker();
+            let hidden = undumpable();
+            if !unreadable_environment(hidden.0) {
+                return;
+            }
+            let (_, skipped, failed) = owned(&owner).unwrap();
+            assert!(skipped.contains(&hidden.0));
+            assert!(!failed);
         }
 
         #[test]
         fn stop_skips_a_process_whose_environment_is_unreadable() {
             let owner = marker();
             let hidden = undumpable();
-            unreadable_environment(hidden.0);
+            if !unreadable_environment(hidden.0) {
+                return;
+            }
             let mut first = process(&owner);
             stop(&owner).unwrap();
             assert!(first.0.wait().unwrap().code().is_none());
@@ -808,7 +836,9 @@ mod linux {
         fn oom_preference_skips_a_process_whose_environment_is_unreadable() {
             let owner = marker();
             let hidden = undumpable();
-            unreadable_environment(hidden.0);
+            if !unreadable_environment(hidden.0) {
+                return;
+            }
             let path = format!("/proc/{}/oom_score_adj", hidden.0);
             let before = fs::read_to_string(&path).unwrap();
             let original = process(&owner);
@@ -1046,7 +1076,9 @@ mod linux {
         #[test]
         fn residual_scan_classifies_an_unreadable_environment() {
             let hidden = undumpable();
-            unreadable_environment(hidden.0);
+            if !unreadable_environment(hidden.0) {
+                return;
+            }
             let directory = directory(Path::new(&format!("/proc/{}", hidden.0))).unwrap();
             let state = owner_state(&directory, &marker()).unwrap();
             match fs::read(format!("/proc/{}/environ", hidden.0)) {
@@ -1160,7 +1192,9 @@ mod linux {
         #[test]
         fn residual_stop_accepts_an_uninspectable_process_that_writes_elsewhere() {
             let hidden = undumpable();
-            unreadable_environment(hidden.0);
+            if !unreadable_environment(hidden.0) {
+                return;
+            }
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("data");
             fs::create_dir_all(root.join("session")).unwrap();
