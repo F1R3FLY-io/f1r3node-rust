@@ -8,8 +8,10 @@ use shared::rust::ByteVector;
 use crate::rspace::errors::RadixTreeError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::PersistedData;
+use crate::rspace::history::history_repository::{PREFIX_DATUM, PREFIX_JOINS, PREFIX_KONT};
 use crate::rspace::shared::trie_exporter::KeyHash;
 use crate::rspace::shared::trie_importer::TrieImporter;
+use crate::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use crate::rspace::state::rspace_exporter::RSpaceExporterInstance;
 
 // See rspace/src/main/scala/coop/rchain/rspace/state/RSpaceImporter.scala
@@ -25,6 +27,7 @@ pub enum StateItemsError {
     HistoryItemsCorrupted,
     DataItemsCorrupted,
     InvalidDataItem(String),
+    LastPathMismatch,
 }
 
 impl std::fmt::Display for StateItemsError {
@@ -53,6 +56,10 @@ impl std::fmt::Display for StateItemsError {
             StateItemsError::InvalidDataItem(err) => {
                 write!(f, "RSpace Importer: Unable to validate data items hashes: {}", err)
             }
+            StateItemsError::LastPathMismatch => write!(
+                f,
+                "RSpace Importer: Last path does not match the traversal of received history"
+            ),
         }
     }
 }
@@ -64,6 +71,7 @@ impl RSpaceImporterInstance {
         history_items: &[(Blake2b256Hash, ByteVector)],
         data_items: &[(Blake2b256Hash, ByteVector)],
         start_path: Vec<(Blake2b256Hash, Option<u8>)>,
+        last_path: &[(Blake2b256Hash, Option<u8>)],
         chunk_size: i32,
         skip: i32,
         get_from_history: Arc<dyn RSpaceImporter>,
@@ -101,35 +109,6 @@ impl RSpaceImporterInstance {
             Ok(validated_items)
         };
 
-        // Validate data hashes
-        let validate_data_items_hashes =
-            data_items.par_iter().try_for_each(|(hash, value_bytes)| {
-                let persisted_data: PersistedData =
-                    bincode::deserialize(value_bytes).map_err(|e| {
-                        format!(
-                            "Data item does not decode, key: {}: {}",
-                            hex::encode(hash.bytes()),
-                            e
-                        )
-                    })?;
-                let bytes = match persisted_data {
-                    PersistedData::Joins(ref leaf) => bincode::serialize(leaf),
-                    PersistedData::Data(ref leaf) => bincode::serialize(leaf),
-                    PersistedData::Continuations(ref leaf) => bincode::serialize(leaf),
-                }
-                .map_err(|e| e.to_string())?;
-                let data_hash = Blake2b256Hash::new(&bytes);
-                if *hash != data_hash {
-                    Err(format!(
-                        "Data hash does not match decoded data, key: {}, decoded: {}.",
-                        hex::encode(hash.bytes()),
-                        hex::encode(data_hash.bytes())
-                    ))
-                } else {
-                    Ok(())
-                }
-            });
-
         // Validate chunk size.
         validate_history_size()?;
 
@@ -145,13 +124,17 @@ impl RSpaceImporterInstance {
             });
         // Traverse trie and extract nodes / the same as in export. Nodes must match
         // hashed keys.
-        let nodes = RSpaceExporterInstance::try_traverse_history(
+        let (nodes, leaf_keys) = RSpaceExporterInstance::try_traverse_history_with_leaf_keys(
             start_path,
             skip,
             chunk_size,
             get_node_function,
         )
         .map_err(StateItemsError::Traversal)?;
+
+        if RSpaceExporterItems::last_path(&nodes).as_deref() != Some(last_path) {
+            return Err(StateItemsError::LastPathMismatch);
+        }
 
         // Extract history and data keys.
         let (leafs, non_leafs): (Vec<_>, Vec<_>) = nodes.into_iter().partition(|node| node.is_leaf);
@@ -177,7 +160,48 @@ impl RSpaceImporterInstance {
             return Err(StateItemsError::DataItemsCorrupted);
         }
 
-        validate_data_items_hashes.map_err(StateItemsError::InvalidDataItem)
+        let mut leaf_kinds: HashMap<Blake2b256Hash, HashSet<Option<u8>>> = HashMap::new();
+        for (hash, key) in leaf_keys {
+            leaf_kinds.entry(hash).or_default().insert(key.first().copied());
+        }
+
+        // Validate data hashes
+        data_items
+            .par_iter()
+            .try_for_each(|(hash, value_bytes)| {
+                let persisted_data: PersistedData =
+                    bincode::deserialize(value_bytes).map_err(|e| {
+                        format!(
+                            "Data item does not decode, key: {}: {}",
+                            hex::encode(hash.bytes()),
+                            e
+                        )
+                    })?;
+                let (kind, bytes) = match persisted_data {
+                    PersistedData::Joins(ref leaf) => (PREFIX_JOINS, bincode::serialize(leaf)),
+                    PersistedData::Data(ref leaf) => (PREFIX_DATUM, bincode::serialize(leaf)),
+                    PersistedData::Continuations(ref leaf) => {
+                        (PREFIX_KONT, bincode::serialize(leaf))
+                    }
+                };
+                let bytes = bytes.map_err(|e| e.to_string())?;
+                let data_hash = Blake2b256Hash::new(&bytes);
+                if *hash != data_hash {
+                    return Err(format!(
+                        "Data hash does not match decoded data, key: {}, decoded: {}.",
+                        hex::encode(hash.bytes()),
+                        hex::encode(data_hash.bytes())
+                    ));
+                }
+                if leaf_kinds.get(hash) != Some(&HashSet::from([Some(kind)])) {
+                    return Err(format!(
+                        "Data item kind does not match its trie key prefix, key: {}.",
+                        hex::encode(hash.bytes())
+                    ));
+                }
+                Ok(())
+            })
+            .map_err(StateItemsError::InvalidDataItem)
     }
 }
 

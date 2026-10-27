@@ -1,9 +1,14 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use rspace_plus_plus::rspace::errors::RadixTreeError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::history::cold_store::{
+    ContinuationsLeaf, DataLeaf, JoinsLeaf, PersistedData,
+};
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepositoryInstances;
 use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
+use rspace_plus_plus::rspace::history::radix_tree::try_decode;
 use rspace_plus_plus::rspace::hot_store::{HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -12,7 +17,9 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
-use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
+use rspace_plus_plus::rspace::state::rspace_importer::{
+    RSpaceImporter, RSpaceImporterInstance, StateItemsError,
+};
 use serde::{Deserialize, Serialize};
 use shared::rust::{Byte, ByteVector};
 
@@ -84,6 +91,7 @@ async fn export_and_import_of_one_page_should_works_correctly() {
         &history_items,
         &data_items,
         init_start_path,
+        &export_data.0.last_path,
         page_size,
         start_skip,
         importer1,
@@ -157,6 +165,7 @@ async fn multipage_export_should_work_correctly() {
             &history_items_page,
             &data_items_page,
             start_path,
+            &last_path,
             page_size,
             start_skip,
             importer1,
@@ -275,6 +284,7 @@ async fn multipage_export_with_skip_should_work_correctly() {
             &history_items_page,
             &data_items_page,
             start_path.clone(),
+            &export_data.0.last_path,
             page_size,
             skip,
             importer1,
@@ -406,6 +416,138 @@ async fn export_with_an_unknown_or_malformed_start_path_returns_an_error() {
             "a {len}-element bad start path must be an error, not a panic or an export"
         );
     }
+}
+
+#[tokio::test]
+async fn a_page_with_a_swapped_leaf_kind_is_rejected() {
+    let (space1, exporter1, _, _, _, importer2) = test_setup().await;
+    for i in 0..10 {
+        space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await
+            .unwrap();
+    }
+    space1
+        .consume(
+            vec!["waiting".to_string()],
+            vec![Pattern::Wildcard],
+            "continuation".to_string(),
+            false,
+            BTreeSet::new(),
+        )
+        .await
+        .unwrap();
+    let root = space1.create_checkpoint().await.unwrap().root;
+    let start_path = vec![(root, None)];
+    let (history, data) =
+        RSpaceExporterItems::get_history_and_data(exporter1, start_path.clone(), 0, 1000)
+            .unwrap();
+    let validate = |data_items: &[(Blake2b256Hash, ByteVector)]| {
+        RSpaceImporterInstance::validate_state_items(
+            &history.items,
+            data_items,
+            start_path.clone(),
+            &history.last_path,
+            1000,
+            0,
+            importer2.clone(),
+        )
+    };
+    assert_eq!(validate(&data.items), Ok(()));
+
+    let swaps = |persisted: PersistedData| -> Vec<PersistedData> {
+        let original = std::mem::discriminant(&persisted);
+        let bytes = match persisted {
+            PersistedData::Data(DataLeaf { bytes })
+            | PersistedData::Continuations(ContinuationsLeaf { bytes })
+            | PersistedData::Joins(JoinsLeaf { bytes }) => bytes,
+        };
+        let all = [
+            PersistedData::Data(DataLeaf {
+                bytes: bytes.clone(),
+            }),
+            PersistedData::Continuations(ContinuationsLeaf {
+                bytes: bytes.clone(),
+            }),
+            PersistedData::Joins(JoinsLeaf { bytes }),
+        ];
+        all.into_iter()
+            .filter(|swapped| std::mem::discriminant(swapped) != original)
+            .collect()
+    };
+    let mut checked = 0;
+    for (index, (_, value)) in data.items.iter().enumerate() {
+        let persisted: PersistedData = bincode::deserialize(value).unwrap();
+        for swapped in swaps(persisted) {
+            let mut forged = data.items.clone();
+            forged[index].1 = bincode::serialize(&swapped).unwrap();
+            assert!(
+                matches!(validate(&forged), Err(StateItemsError::InvalidDataItem(_))),
+                "a data item with only its leaf kind changed must be rejected"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 2 * 12, "the page must hold data, continuation and join leaves");
+}
+
+#[tokio::test]
+async fn a_page_with_a_forged_last_path_is_rejected() {
+    let (space1, exporter1, _, _, _, importer2) = test_setup().await;
+    for i in 0..100 {
+        space1
+            .produce(format!("ch{}", i), format!("data{}", i), false)
+            .await
+            .unwrap();
+    }
+    let root = space1.create_checkpoint().await.unwrap().root;
+    let start_path = vec![(root, None)];
+    let (history, data) =
+        RSpaceExporterItems::get_history_and_data(exporter1, start_path.clone(), 0, 10).unwrap();
+    assert_ne!(history.last_path, start_path, "the first page must not be the last one");
+    let validate = |last_path: &[(Blake2b256Hash, Option<Byte>)]| {
+        RSpaceImporterInstance::validate_state_items(
+            &history.items,
+            &data.items,
+            start_path.clone(),
+            last_path,
+            10,
+            0,
+            importer2.clone(),
+        )
+    };
+    assert_eq!(validate(&history.last_path), Ok(()));
+
+    let mut redirected = history.last_path.clone();
+    redirected[0] = (Blake2b256Hash::new(b"another root"), None);
+    for forged in [start_path.clone(), redirected, Vec::new()] {
+        assert_eq!(validate(&forged), Err(StateItemsError::LastPathMismatch));
+    }
+}
+
+#[tokio::test]
+async fn malformed_radix_bytes_at_the_start_path_are_an_error_not_a_panic() {
+    let (_, _, _, _, _, importer2) = test_setup().await;
+    let malformed = vec![0x00, 0x05, 0xAA];
+    let hash = Blake2b256Hash::new(&malformed);
+    assert!(try_decode(&malformed).is_err());
+
+    let result = RSpaceImporterInstance::validate_state_items(
+        &[(hash.clone(), malformed)],
+        &[],
+        vec![(hash.clone(), None)],
+        &[(hash, None)],
+        750,
+        0,
+        importer2,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(StateItemsError::Traversal(RadixTreeError::SerializationError(_)))
+        ),
+        "got {result:?}"
+    );
 }
 
 async fn test_setup() -> (
