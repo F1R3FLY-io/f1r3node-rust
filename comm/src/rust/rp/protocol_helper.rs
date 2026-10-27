@@ -11,6 +11,25 @@ use crate::rust::errors::{unknown_protocol, CommError};
 use crate::rust::peer_node::{Endpoint, NodeIdentifier, PeerNode};
 use crate::rust::transport::transport_layer::Blob;
 
+/// Protocol-format version this node advertises in the handshake and
+/// expects from peers.  Bumping this constant is the signal that the
+/// shard has adopted a release carrying a new wire + consensus format
+/// (e.g. the Merkle block-hash scheme introduced in PR #815).
+///
+/// Peers that advertise `formatVersion == 0` predate this field and
+/// make no claim about their format — treated as "legacy, unknown"
+/// and accepted with a debug log so a mid-rollout mixed network can
+/// still handshake.  Peers that advertise a non-zero value different
+/// from ours get a `warn!` so the mismatch is diagnosable from logs
+/// before a block fails validation downstream.  See the receiver side
+/// in `comm::rp::handle_messages::handle_protocol_handshake` /
+/// `handle_protocol_handshake_response` for the exact policy.
+///
+/// Hard-fork surface: changing this constant is a per-release knob.
+/// Current value `1` matches the Merkle block-hash scheme's
+/// `BLOCK_HASH_SCHEME_VERSION`.
+pub const PROTOCOL_FORMAT_VERSION: u32 = 1;
+
 pub fn to_protocol_bytes(x: &str) -> Vec<u8> { x.as_bytes().to_vec() }
 
 pub fn header(src: &PeerNode, network_id: &str) -> Header {
@@ -57,6 +76,7 @@ pub fn protocol_handshake(src: &PeerNode, network_id: &str) -> Protocol {
         message: Some(models::routing::protocol::Message::ProtocolHandshake(
             ProtocolHandshake {
                 nonce: Bytes::new(),
+                format_version: PROTOCOL_FORMAT_VERSION,
             },
         )),
     }
@@ -69,6 +89,7 @@ pub fn protocol_handshake_response(src: &PeerNode, network_id: &str) -> Protocol
             models::routing::protocol::Message::ProtocolHandshakeResponse(
                 ProtocolHandshakeResponse {
                     nonce: Bytes::new(),
+                    format_version: PROTOCOL_FORMAT_VERSION,
                 },
             ),
         ),
@@ -173,10 +194,38 @@ mod tests {
                 models::routing::protocol::Message::ProtocolHandshakeResponse(
                     ProtocolHandshakeResponse {
                         nonce: Bytes::new(),
+                        format_version: PROTOCOL_FORMAT_VERSION,
                     }
                 )
             )
         );
+    }
+
+    #[test]
+    fn protocol_handshake_advertises_current_format_version() {
+        let src = peer("id", "host");
+        let proto = protocol_handshake(&src, "net");
+        match proto.message {
+            Some(models::routing::protocol::Message::ProtocolHandshake(hs)) => {
+                assert_eq!(hs.format_version, PROTOCOL_FORMAT_VERSION);
+            }
+            other => panic!("expected ProtocolHandshake variant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn protocol_handshake_response_advertises_current_format_version() {
+        let src = peer("id", "host");
+        let proto = protocol_handshake_response(&src, "net");
+        match proto.message {
+            Some(models::routing::protocol::Message::ProtocolHandshakeResponse(hs)) => {
+                assert_eq!(hs.format_version, PROTOCOL_FORMAT_VERSION);
+            }
+            other => panic!(
+                "expected ProtocolHandshakeResponse variant, got {:?}",
+                other
+            ),
+        }
     }
 
     #[test]

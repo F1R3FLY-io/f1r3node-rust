@@ -30,7 +30,16 @@ The [task tracking guide](docs/task-tracking.md) explains it in full.
 
 - Branch from `dev` and open pull requests against `dev`. Maintainers promote
   `dev` → `master`. Hotfixes are the one exception — see Hotfixes below.
-- Branch prefixes: `feature/`, `fix/`, `docs/`, `perf/`, `chore/`, `hotfix/`.
+- Branch prefixes: `feature/`, `fix/`, `docs/`, `perf/`, `ci/`, `chore/`, `hotfix/`.
+- The prefix sets the merge queue priority. From highest to lowest:
+  1. Security fixes
+  2. `fix/` into `dev` and `hotfix/` into `master`
+  3. Promotions and back-merges
+  4. `perf/`
+  5. `ci/`
+  6. All other prefixes
+
+  See [Queue priority](docs/ci.md#queue-priority).
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`,
   `perf:`, `refactor:`, `test:`, `chore:`.
 - Keep one concern per pull request.
@@ -42,6 +51,11 @@ The [task tracking guide](docs/task-tracking.md) explains it in full.
 Urgent work that cannot wait for the next `dev` → `master` promotion — a broken release or CI
 pipeline, a security patch, a production incident — branches from `master` as
 `hotfix/<topic>` and opens its pull request against `master`.
+
+Name a security patch `hotfix/security-<topic>`, or `fix/security-<topic>` into `dev`. Mergify
+then adds the `security` label, and the pull request goes first in the merge queue. If the
+branch has another name, add the `security` label by hand. Do not describe an undisclosed
+vulnerability in the branch name or the pull request. See [`SECURITY.md`](SECURITY.md).
 
 After the hotfix merges, merge `master` back into `dev` so the fix survives the next
 promotion. Skipping that step is how a hotfix silently disappears from the next release.

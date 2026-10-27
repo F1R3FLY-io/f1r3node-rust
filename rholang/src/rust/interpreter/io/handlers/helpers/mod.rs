@@ -33,10 +33,9 @@
 //     + `write_impl_via_table` — fs_write / fs_write_at reserve +
 //     finalize + syscall shim.  Added by slice 4.38.
 //
-// Yet to land (listed roughly in handler-migration order):
-//
-//   - `journal_read_via_table`, `journal_read_divergence_via_table`
-//     — WAL read entry with divergence discriminator (fs_read).
+//   - `journal_read_via_table` + `journal_read_divergence_via_table`
+//     — WAL read entry with divergence discriminator (fs_read /
+//     fs_read_at).  Added by slice E1.
 
 pub mod ack_hash;
 pub mod fcntl_lock;
@@ -52,7 +51,8 @@ pub use ack_hash::{ack_channel_hash, per_entry_ack_seed, MAX_RECURSION_DEPTH};
 pub use journal::{
     finalize_failure_journal_via_table, finalize_write_journal_via_table,
     journal_path_mutation_single_via_table, journal_path_mutation_two_via_table,
-    journal_state_read_via_table, journal_truncate_via_table, journal_write_via_table,
+    journal_read_divergence_via_table, journal_read_via_table, journal_state_read_via_table,
+    journal_truncate_via_table, journal_write_via_table,
 };
 pub use lock_helpers::{
     dev_inode_from_fd_via_table, holder_id_of, lock_err_reply, resolve_lock_mode,

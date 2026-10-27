@@ -284,6 +284,21 @@ Imports fork pull request #<N>.
 
 Commit Policy then exempts each commit that the fork pull request lists and attributes to its author. The commit must also be in the new pull request. A rebase or an amended commit gets a new SHA, so it loses the exemption.
 
+#### Queue priority
+
+The priority rules of `.mergify.yml` set the order of the queued pull requests across all queues. The queue order in the file does not set a priority. In each tier, the pull requests keep the order in which they entered the queue.
+
+| Priority | Pull requests | Interrupts running checks |
+|---|---|---|
+| 6000 | Security fixes: the `security` label, or a head that contains `security` or `rustsec` | Yes |
+| 5000 | `fix/*` into `dev`, and `hotfix/*` into `master` | No |
+| 4000 | The release flow: `promote/*`, `backmerge/*`, and `ca/*` heads | No |
+| 3000 | `perf/*` into any branch | No |
+| 2500 | `ci/*` | No |
+| 2000 | Every other head, for example `feat/*`, `feature/*`, `docs/*`, and `chore/*` | No |
+
+Name a security fix `hotfix/security-<topic>` into `master` or `fix/security-<topic>` into `dev`. Mergify then adds the `security` label. If a security fix has another name, add the `security` label by hand. A security fix interrupts the checks of the pull request that Mergify checks, and that pull request goes back into the queue. Its heavy run starts again later. A pull request of a lower tier waits until the running checks complete.
+
 `test-mergify-config.sh` checks the queues. It holds copies of the required checks of `devProtect` and `masterProtect`. A change of a ruleset changes that copy and both condition lists of `.mergify.yml` in the same pull request. The test also checks the serial in-place settings.
 
 The Mergify app must be installed in the organization. Mergify reads `.mergify.yml` only from the default branch, `master`. The queues start to operate after a `dev` to `master` promotion carries the file. The `ci-maintainers` team owns `.mergify.yml` through `.github/CODEOWNERS`.

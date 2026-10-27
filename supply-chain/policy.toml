@@ -87,6 +87,60 @@ versions = ["0.6.6", "3.0.0"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-11-15
 
+[exceptions.RUSTSEC-2026-0395]
+package = "zstd-safe"
+versions = ["5.0.2+zstd.1.5.2"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-26
+
+[exceptions.RUSTSEC-2026-0397]
+package = "zstd-safe"
+versions = ["5.0.2+zstd.1.5.2"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-26
+
+[exceptions.RUSTSEC-2026-0399]
+package = "zstd-safe"
+versions = ["5.0.2+zstd.1.5.2"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-26
+
+[exceptions.RUSTSEC-2026-0400]
+package = "zstd-safe"
+versions = ["5.0.2+zstd.1.5.2"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-26
+
+[exceptions.RUSTSEC-2026-0401]
+package = "zstd-safe"
+versions = ["5.0.2+zstd.1.5.2"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-26
+
+[exceptions.RUSTSEC-2026-0402]
+package = "zstd-safe"
+versions = ["5.0.2+zstd.1.5.2"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-26
+
+[exceptions.RUSTSEC-2026-0403]
+package = "zstd-safe"
+versions = ["5.0.2+zstd.1.5.2"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-26
+
+[exceptions.RUSTSEC-2026-0404]
+package = "zstd-safe"
+versions = ["5.0.2+zstd.1.5.2"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-26
+
+[exceptions.RUSTSEC-2026-0406]
+package = "zstd-safe"
+versions = ["5.0.2+zstd.1.5.2"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-11-26
+
 [yanked."zip@3.0.0"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-11-15

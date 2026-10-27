@@ -245,6 +245,23 @@ impl ReplayRuntimeOps {
         with_cost_accounting: bool,
         processed_deploy: &ProcessedDeploy,
     ) -> Result<NumberChannelsEndVal, CasperError> {
+        // Per-deploy filesystem RAII guard mirrors the play-side
+        // `process_deploy` bracket.  Replay must sweep the same per-
+        // deploy state so a mid-replay failure doesn't leak locks,
+        // fds, or trailing WAL entries into subsequent deploys.
+        // The constructor derives a per-execution unique scope from
+        // the deploy sig + an internal 128-bit nonce, so concurrent
+        // play+replay of the same signature against a manager-shared
+        // `SharedLockRegistry` never share scopes.
+        let mut wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime_ops.runtime.fs_handles.wal.clone(),
+                self.runtime_ops.runtime.fs_handles.lock_registry.clone(),
+                &processed_deploy.deploy.sig,
+                processed_deploy.deploy.sig.to_vec(),
+                self.runtime_ops.runtime.fs_handles.clone(),
+            );
+
         let mut mergeable_channels: HashMap<Par, MergeType> = HashMap::new();
 
         let dsig = if tracing::enabled!(target: "f1r3fly.casper.replay_rho_runtime", tracing::Level::DEBUG)
@@ -307,6 +324,11 @@ impl ReplayRuntimeOps {
         metrics::histogram!(BLOCK_REPLAY_SYSDEPLOY_CHECKPOINT_MERGEABLE_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(checkpoint_mergeable_start.elapsed().as_secs_f64());
 
+        // Preserve this deploy's WAL contributions for the block
+        // snapshot — replay must reproduce the same WAL state as
+        // play, which committed on `eval_succeeded`.  Lock + handle
+        // sweeps still fire on Drop.
+        wal_scope.commit();
         Ok(channels_data)
     }
 
@@ -508,6 +530,30 @@ impl ReplayRuntimeOps {
             } => system_deploy,
             ProcessedSystemDeploy::Failed { .. } => &SystemDeployData::Empty,
         };
+
+        // Per-system-deploy RAII guard mirrors
+        // `play_system_deploy`'s bracket.  System deploys have no
+        // primary-signer sig, so the scope seed combines a
+        // replay-system-deploy marker + the block-identifying
+        // `BlockData` fields.  The constructor mixes in a 128-bit
+        // nonce, so even two system deploys in the same block
+        // (slash + close) derive distinct scopes and don't risk
+        // sweeping each other's holders on Drop.  Not committed:
+        // system deploys don't contribute to the block-level WAL on
+        // triage.
+        let mut scope_seed = b"replay-system-deploy:".to_vec();
+        scope_seed.extend_from_slice(&block_data.sender.bytes);
+        scope_seed.extend_from_slice(&block_data.seq_num.to_be_bytes());
+        scope_seed.extend_from_slice(&block_data.block_number.to_be_bytes());
+        scope_seed.extend_from_slice(&block_data.time_stamp.to_be_bytes());
+        let _wal_scope =
+            crate::rust::rholang::wal_deploy_scope::WalDeployScope::new_with_lock_sweep(
+                self.runtime_ops.runtime.fs_handles.wal.clone(),
+                self.runtime_ops.runtime.fs_handles.lock_registry.clone(),
+                &scope_seed,
+                Vec::new(),
+                self.runtime_ops.runtime.fs_handles.clone(),
+            );
 
         match system_deploy {
             SystemDeployData::Slash {

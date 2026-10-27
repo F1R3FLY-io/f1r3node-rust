@@ -22,25 +22,7 @@
 //! multi_deploy_wal_is_byte_identical_on_leader_and_follower in
 //! fs_wal_spec) with the missing Oracular half.
 //!
-//! **Triage port status (slice 5.88)**: all 4 tests are
-//! `#[ignore]`-gated.  Running them on triage trips
-//! `RSpaceError::UnusedCommEvent` on the follower's
-//! `check_replay_data`, indicating a leader/follower event-log
-//! divergence that triage's current state does not yet resolve.
-//! Candidate causes:
-//!   * `on_replay_side_effect` shadow-insert for Consensus-cap
-//!     fds not fully wired for every mutating op family on triage.
-//!   * `cmodeP`/`fdP` cell state visible on the leader not
-//!     mirrored precisely on the follower.
-//!   * The `check_replay_data` sensitivity to multi-deploy event
-//!     ordering under test harness conditions.
-//!
-//! The spec is landed in its ported form so that when the replay
-//! wiring reaches parity, un-ignoring surfaces the regression
-//! coverage without a re-port.  Each test documents its specific
-//! regression value.
-//!
-//! Related port-time deltas from fileio:
+//! Triage port deltas from fileio:
 //!   * `.await.expect(...)` triage patch for `create_rho_runtime`
 //!     and `create_replay_rho_runtime` Result returns.
 //!   * `root_registry.set_test_permissive(true)` is now called on
@@ -50,16 +32,8 @@
 //!     handlers (fs_chmod / fs_rename / fs_remove_file / fs_chown)
 //!     plus removedir now route through
 //!     `resolve_or_identity_gated_for_consensus`, which refuses
-//!     Consensus-mode calls on unregistered logical roots.
-//!     Raw tempdir roots in these tests need the bypass.  Flipping
-//!     the flag unblocks the migration-shape; the remaining
-//!     ignores are the replay-harness UnusedCommEvent gap.
-//!   * `oracular_recursive_remove_dir_replays_without_journaling`
-//!     once had an additional reason to be ignored (the slice-5.44
-//!     FSERR_UNSUPPORTED stub for `removeDir`).  That cause was
-//!     cleared by slices 5.141-5.143; the remaining ignore is the
-//!     replay-harness UnusedCommEvent gap, same as the other three
-//!     ignored tests in this file.
+//!     Consensus-mode calls on unregistered logical roots.  Raw
+//!     tempdir roots in these tests need the bypass.
 
 #[cfg(test)]
 mod tests {
@@ -133,12 +107,6 @@ mod tests {
     ///   * A follower-side handler branch diverges from the leader's
     ///     reply (e.g., is_replay=true doesn't correctly extract the
     ///     cached bytes) — `check_replay_data` fires.
-    // TODO(fileio-triage): un-ignore when `check_replay_data`
-    // succeeds on this workload.  Current failure:
-    // `RSpaceError::UnusedCommEvent` leftover events on follower
-    // (24 events in the last repro) indicate a leader/follower
-    // event-ordering divergence under the harness.
-    #[ignore = "triage: follower's check_replay_data fails with UnusedCommEvent — leader/follower event-log divergence not yet resolved"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn multi_deploy_oracular_workload_replays_cleanly() {
         let dir = tempfile::tempdir().unwrap();
@@ -252,12 +220,6 @@ mod tests {
     /// Mixed Oracular + Consensus workload replays cleanly.
     /// Consensus caps journal; Oracular caps don't; the WAL entries
     /// should reference only Consensus-cap paths.
-    // TODO(fileio-triage): un-ignore when follower's WAL mirrors the
-    // leader's Consensus WriteAt entry.  Current failure: follower's
-    // WAL is empty while leader's has 1 entry — the on-replay
-    // journal-write path for Consensus caps is not yet wired on
-    // triage.
-    #[ignore = "triage: follower WAL does not mirror leader's Consensus-cap entries (on-replay journaling gap)"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn mixed_oracular_consensus_workload_replays_cleanly() {
         let dir = tempfile::tempdir().unwrap();
@@ -344,10 +306,6 @@ mod tests {
     /// Oracular path-based mutations (Rename, RemoveFile, Chmod)
     /// don't journal.  Runs a mixed-op workload on Oracular caps
     /// and replays; asserts the WAL stays empty on both sides.
-    // TODO(fileio-triage): un-ignore when follower's
-    // `check_replay_data` succeeds on Oracular path-mutation
-    // workload.  Current failure: 11 leftover events on follower.
-    #[ignore = "triage: follower's check_replay_data fails with UnusedCommEvent on Oracular path-mutation workload"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn oracular_path_mutations_replay_without_journaling() {
         let dir = tempfile::tempdir().unwrap();
@@ -416,13 +374,6 @@ mod tests {
     /// `remove_dir_recursive_on_oracular_does_not_journal` (which
     /// covers only the leader-side no-journal invariant) by
     /// extending to the leader/follower rig replay.
-    ///
-    /// **Triage status**: `#[ignore]` — the removeDir stub blocker
-    /// was cleared by slices 5.141–5.143 (real handler + URN swap +
-    /// stub cleanup), but `check_replay_data` still fails on this
-    /// test for the same reason as the other replay tests in this
-    /// file (follower WAL mirroring gap + UnusedCommEvent symptom).
-    #[ignore = "replay harness has the same UnusedCommEvent gap as the sibling tests in this file (follower WAL mirroring); the slice-5.44 removeDir stub blocker was separately cleared by slices 5.141-5.143"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn oracular_recursive_remove_dir_replays_without_journaling() {
         let dir = tempfile::tempdir().unwrap();
