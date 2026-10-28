@@ -213,6 +213,7 @@ pub(crate) struct FinalizationContext {
     pub(crate) v6: Option<Arc<crate::rust::v6::V6Engine>>,
     pub(crate) oracle_cache: Arc<crate::rust::safety::clique_oracle::SharedOracleCache>,
     pub(crate) cursor: Arc<crate::rust::finality::floor_runner::SharedCursor>,
+    pub(crate) alin: ALinPolicy,
 }
 
 /// Build a `FinalizationContext` from a `MultiParentCasperImpl`. Single
@@ -241,6 +242,7 @@ pub(crate) fn build_finalization_context<
         v6: this.v6.clone(),
         oracle_cache: this.finalizer_oracle_cache.clone(),
         cursor: this.finalizer_cursor.clone(),
+        alin: ALinPolicy::for_protocol(this.casper_shard_conf.casper_version),
     }
 }
 
@@ -389,7 +391,15 @@ pub enum ALinPolicy {
     Alarm,
 }
 
-pub(crate) const ALIN_POLICY: ALinPolicy = ALinPolicy::Alarm;
+impl ALinPolicy {
+    pub fn for_protocol(casper_version: i64) -> Self {
+        if casper_version == crate::rust::casper::PROTOCOL_V6_VERSION {
+            ALinPolicy::Halt
+        } else {
+            ALinPolicy::Alarm
+        }
+    }
+}
 
 pub(crate) async fn compute_last_finalized_block(
     ctx: FinalizationContext,
@@ -832,18 +842,11 @@ pub(crate) async fn adopt_lfb(
         }
         let block_store = ctx.block_store.clone();
         let ftt = ctx.ftt;
+        let alin = ctx.alin;
         let outcome = ctx
             .block_dag_storage
             .commit_lfb(new_lfb.hash.clone(), ft_value, |dag_now| {
-                validate_commit(
-                    dag_now,
-                    &block_store,
-                    &current,
-                    sigma,
-                    &new_lfb,
-                    ftt,
-                    ALIN_POLICY,
-                )
+                validate_commit(dag_now, &block_store, &current, sigma, &new_lfb, ftt, alin)
             });
         let effect_result: Result<Option<BlockHash>, KvStoreError> = match outcome {
             Ok(CommitOutcome::Committed(marker)) => {

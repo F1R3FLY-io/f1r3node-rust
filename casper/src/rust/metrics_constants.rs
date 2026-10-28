@@ -468,6 +468,7 @@ pub const FINALIZER_CURSOR_INVALIDATIONS_METRIC: &str = "finalizer.cursor.invali
 pub const FINALIZER_CURSOR_FREEZES_METRIC: &str = "finalizer.cursor.freezes";
 pub const COMMIT_LFB_REFUSALS_METRIC: &str = "finalizer.commit.refusals";
 pub const COMMIT_LFB_ALIN_VIOLATIONS_METRIC: &str = "finalizer.commit.alin-violations";
+pub const V6_LINEARIZER_ALIN_HOLDS_METRIC: &str = "v6.linearizer.alin-holds";
 pub const FINALIZATION_EVENTS_REPLAYED_METRIC: &str = "finalizer.events.replayed";
 // Counter: extra cycles a run made because a trigger arrived during it.
 pub const FINALIZER_RUN_RERUNS_METRIC: &str = "finalizer.run.reruns";
