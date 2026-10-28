@@ -25,9 +25,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, MergeableEntryRequest,
     MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
 };
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
-use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
@@ -1971,26 +1969,6 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
             .send_to_bootstrap(self.rp_conf_ask, Arc::new(message_proto))
             .await?;
         Ok(())
-    }
-
-    fn validate_tuple_space_items(
-        &self,
-        history_items: &[(Blake2b256Hash, Vec<u8>)],
-        data_items: &[(Blake2b256Hash, Vec<u8>)],
-        start_path: StatePartPath,
-        page_size: i32,
-        skip: i32,
-        get_from_history: Arc<dyn RSpaceImporter>,
-    ) -> Result<(), CasperError> {
-        RSpaceImporterInstance::validate_state_items(
-            history_items,
-            data_items,
-            start_path,
-            page_size,
-            skip,
-            get_from_history,
-        )
-        .map_err(|e| CasperError::RuntimeError(e.to_string()))
     }
 }
 

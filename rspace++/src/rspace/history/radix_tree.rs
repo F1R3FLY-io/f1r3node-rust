@@ -203,7 +203,17 @@ pub fn encode(node: &Node) -> ByteVector {
 /** Deserialization [[ByteVector]] to [[Node]]
  */
 pub fn decode(bv: ByteVector) -> Node {
+    try_decode(&bv).unwrap_or_else(|e| panic!("Error during deserialization: {}", e))
+}
+
+pub fn try_decode(bv: &[u8]) -> Result<Node, RadixTreeError> {
     let max_size = bv.len();
+    let malformed = |reason: &str| {
+        RadixTreeError::SerializationError(format!(
+            "Radix Tree - malformed node of {} bytes: {}",
+            max_size, reason
+        ))
+    };
 
     // If first bit 0 - return true, otherwise false.
     fn is_leaf(second_byte: u8) -> bool { (second_byte & 0x80) == 0x00 }
@@ -212,21 +222,28 @@ pub fn decode(bv: ByteVector) -> Node {
     let mut pos0 = 0;
     while pos0 < max_size {
         let idx_item = byte_to_int(bv[pos0]); // Take first byte - it's item's index
-        assert!(
-            node[idx_item] == Item::EmptyItem,
-            "Error during deserialization: wrong index of item."
-        );
+        if node[idx_item] != Item::EmptyItem {
+            return Err(malformed("wrong index of item"));
+        }
         let pos1 = pos0 + 1;
-        let second_byte = bv[pos1]; // Take second byte
+        let second_byte = *bv
+            .get(pos1)
+            .ok_or_else(|| malformed("truncated item header"))?; // Take second byte
 
         // Decoding prefix
         let prefix_size = (second_byte & 0x7F) as usize; // Lower 7 bits - it's size of prefix (0..127).
         let pos_prefix_start = pos1 + 1;
-        let prefix = bv[pos_prefix_start..pos_prefix_start + prefix_size].to_vec();
+        let pos_val_or_ptr_start = pos_prefix_start + prefix_size;
+        let prefix = bv
+            .get(pos_prefix_start..pos_val_or_ptr_start)
+            .ok_or_else(|| malformed("truncated item prefix"))?
+            .to_vec();
 
         // Decoding leaf or nodePtr data
-        let pos_val_or_ptr_start = pos_prefix_start + prefix_size;
-        let val_or_ptr = bv[pos_val_or_ptr_start..pos_val_or_ptr_start + DEF_SIZE].to_vec();
+        let val_or_ptr = bv
+            .get(pos_val_or_ptr_start..pos_val_or_ptr_start + DEF_SIZE)
+            .ok_or_else(|| malformed("truncated item value"))?
+            .to_vec();
 
         // Decoding type of non-empty item
         node[idx_item] = if is_leaf(second_byte) {
@@ -245,7 +262,7 @@ pub fn decode(bv: ByteVector) -> Node {
         pos0 = pos_val_or_ptr_start + DEF_SIZE;
     }
 
-    node
+    Ok(node)
 }
 
 fn common_prefix(b1: ByteVector, b2: ByteVector) -> (ByteVector, ByteVector, ByteVector) {
@@ -446,7 +463,7 @@ pub fn sequential_export(
                 { hex::encode(p.hash) }
             )))
         } else {
-            let decoded_node = decode(node_opt.unwrap());
+            let decoded_node = try_decode(&node_opt.unwrap())?;
             if p.rest_prefix.is_empty() {
                 let mut new_path = Vec::new();
                 new_path.push(NodeData::new(p.node_prefix, decoded_node, None));
@@ -622,7 +639,7 @@ pub fn sequential_export(
                 )))
             } else {
                 let child_nv = child_node_opt.unwrap();
-                let child_decoded = decode(child_nv.clone());
+                let child_decoded = try_decode(&child_nv)?;
                 let mut child_np = curr_node_prefix;
                 child_np.push(item_index);
                 child_np.append(&mut ptr_prefix.clone());
