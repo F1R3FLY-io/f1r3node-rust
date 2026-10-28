@@ -5,6 +5,7 @@ use block_storage::rust::pending_blocks::PendingBlockLimits;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
+use casper::rust::engine::block_retriever::AdmitHashReason;
 use casper::rust::engine::peer_scoring::STRIKE_THRESHOLD;
 use casper::rust::errors::CasperError;
 use casper::rust::util::rholang::tools::Tools;
@@ -446,9 +447,6 @@ async fn multi_parent_casper_validate_should_reject_unbonded_sender_before_repla
     );
 }
 
-/// A forged block that names a main parent this node does not hold has an
-/// unknown sender authorization. It may wait for its dependencies, but only in
-/// the bounded in-memory pending area, never on disk.
 #[tokio::test]
 async fn multi_parent_casper_should_hold_a_block_with_an_unknown_main_parent_off_disk() {
     let ctx = TestContext::new().await;
@@ -469,8 +467,6 @@ async fn multi_parent_casper_should_hold_a_block_with_an_unknown_main_parent_off
     assert!(!node.casper.dag_contains(&forged.block_hash));
 }
 
-/// Out-of-order delivery: the child waits in the pending area until its
-/// parent is validated, then reaches disk and the DAG.
 #[tokio::test]
 async fn multi_parent_casper_should_validate_a_child_that_arrived_before_its_parent() {
     let ctx = TestContext::new().await;
@@ -511,9 +507,6 @@ async fn multi_parent_casper_should_validate_a_child_that_arrived_before_its_par
     assert!(nodes[1].contains(&child.block_hash));
 }
 
-/// A pending chain longer than the area limit: the oldest pending block is
-/// evicted, the rest reach the DAG once the chain's root arrives, and the
-/// evicted block is admitted directly when it is delivered again.
 #[tokio::test]
 async fn multi_parent_casper_should_recover_a_pending_chain_longer_than_the_area_limit() {
     let ctx = TestContext::new().await;
@@ -565,8 +558,6 @@ async fn multi_parent_casper_should_recover_a_pending_chain_longer_than_the_area
     assert!(nodes[1].block_store.pending_blocks().is_empty());
 }
 
-/// An evicted pending block that another buffered block waits on leaves the
-/// casper buffer and is requested again, so its child is not stranded.
 #[tokio::test]
 async fn multi_parent_casper_should_request_an_evicted_parent_that_a_child_waits_on() {
     let ctx = TestContext::new().await;
@@ -619,8 +610,6 @@ async fn multi_parent_casper_should_request_an_evicted_parent_that_a_child_waits
     }
 }
 
-/// The pending area can evict a block while the block is processed. When
-/// the block then enters the DAG, its body still reaches disk.
 #[tokio::test]
 async fn multi_parent_casper_should_persist_a_block_evicted_during_processing() {
     let ctx = TestContext::new().await;
@@ -650,6 +639,116 @@ async fn multi_parent_casper_should_persist_a_block_evicted_during_processing() 
         nodes[1].block_store.get(&block.block_hash).unwrap(),
         Some(block)
     );
+}
+
+async fn pending_chain(ctx: &TestContext, length: i32) -> (Vec<TestNode>, Vec<BlockMessage>) {
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let mut chain = Vec::new();
+    for i in 0..length {
+        let deploy =
+            construct_deploy::basic_deploy_data(i, None, Some(ctx.shard_id.clone())).unwrap();
+        chain.push(nodes[0].add_block_from_deploys(&[deploy]).await.unwrap());
+    }
+    (nodes, chain)
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_request_again_an_evicted_parent_marked_as_received() {
+    let ctx = TestContext::new().await;
+    let (mut nodes, chain) = pending_chain(&ctx, 4).await;
+    nodes[1].block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 2,
+        max_bytes: usize::MAX,
+        max_per_sender: 2_048,
+    });
+    for block in &chain[1..3] {
+        nodes[1].process_block(block.clone()).await.unwrap();
+    }
+    let evicted = chain[1].block_hash.clone();
+    nodes[1]
+        .block_retriever
+        .ack_receive(evicted.clone())
+        .await
+        .unwrap();
+
+    nodes[1].process_block(chain[3].clone()).await.unwrap();
+
+    assert!(!nodes[1].block_store.is_pending(&evicted));
+    let requested = nodes[1].requested_blocks.lock().unwrap();
+    assert!(!requested.get(&evicted).unwrap().received);
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_release_a_block_evicted_before_it_entered_the_buffer() {
+    let ctx = TestContext::new().await;
+    let (nodes, chain) = pending_chain(&ctx, 2).await;
+    let block = &chain[1];
+    nodes[1].block_store.put_pending(block, false).unwrap();
+    nodes[1].block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 0,
+        max_bytes: usize::MAX,
+        max_per_sender: 2_048,
+    });
+    nodes[1]
+        .block_store
+        .set_pending_limits(PendingBlockLimits::default());
+
+    let ready = nodes[1]
+        .block_processor
+        .check_dependencies_with_effects(nodes[1].casper.clone(), block)
+        .await
+        .unwrap();
+
+    assert!(!ready);
+    assert!(!nodes[1].casper.buffer_contains(&block.block_hash));
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_keep_a_refused_dependency_requested() {
+    let ctx = TestContext::new().await;
+    let (mut nodes, chain) = pending_chain(&ctx, 3).await;
+    nodes[1].block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 100,
+        max_bytes: usize::MAX,
+        max_per_sender: 1,
+    });
+    nodes[1]
+        .block_retriever
+        .admit_hash(
+            chain[2].block_hash.clone(),
+            None,
+            AdmitHashReason::MissingDependencyRequested,
+        )
+        .await
+        .unwrap();
+    nodes[1].process_block(chain[2].clone()).await.unwrap();
+
+    let status = nodes[1].process_block(chain[1].clone()).await.unwrap();
+
+    assert_eq!(status, Either::Left(BlockError::MissingBlocks));
+    assert!(!nodes[1].block_store.is_pending(&chain[1].block_hash));
+    assert!(nodes[1].casper.buffer_contains(&chain[2].block_hash));
+    let requested = nodes[1].requested_blocks.lock().unwrap();
+    assert!(!requested.get(&chain[1].block_hash).unwrap().received);
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_discard_a_pending_block_that_it_purges() {
+    let ctx = TestContext::new().await;
+    let (nodes, chain) = pending_chain(&ctx, 2).await;
+    let block = &chain[1];
+    nodes[1].block_store.put_pending(block, false).unwrap();
+
+    nodes[1]
+        .block_processor
+        .purge_from_buffer_and_ack(block)
+        .await
+        .unwrap();
+
+    assert!(!nodes[1].block_store.is_pending(&block.block_hash));
+    assert!(nodes[1].block_store.pending_blocks().is_empty());
 }
 
 #[tokio::test]

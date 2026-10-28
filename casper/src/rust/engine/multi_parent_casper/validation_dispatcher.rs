@@ -621,6 +621,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         _ => {
             let block_hash_serde = BlockHashSerde(block.block_hash.clone());
             this.casper_buffer_storage.remove(block_hash_serde)?;
+            this.block_store.discard_pending(&block.block_hash);
             tracing::warn!(
                 "Recording invalid block {} for {:?}.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),

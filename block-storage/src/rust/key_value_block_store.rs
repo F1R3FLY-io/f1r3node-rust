@@ -103,9 +103,6 @@ impl KeyValueBlockStore {
         )
     }
 
-    /// A block held in the pending area is returned too: until it is
-    /// persisted or discarded, readers see it as they saw unvalidated stored
-    /// blocks before the area existed.
     pub fn get(&self, block_hash: &BlockHash) -> Result<Option<BlockMessage>, KvStoreError> {
         let bytes = self.store.get_one(&block_hash.to_vec())?;
         if bytes.is_none() {
@@ -289,9 +286,6 @@ impl KeyValueBlockStore {
         self.put(block.block_hash.clone(), block)
     }
 
-    /// Hold a block whose sender authorization is not known yet in memory
-    /// instead of writing it to disk. `solicited` marks a block this node
-    /// asked for as a dependency; it outlives unsolicited ones on eviction.
     pub fn put_pending(
         &self,
         block: &BlockMessage,
@@ -303,12 +297,13 @@ impl KeyValueBlockStore {
                 evicted: Vec::new(),
             });
         }
-        Ok(self.pending.insert(block.clone(), solicited))
+        let outcome = self.pending.insert(block, solicited);
+        if self.disk_contains(&block.block_hash)? {
+            self.pending.remove(&block.block_hash);
+        }
+        Ok(outcome)
     }
 
-    /// Make sure a block that enters the DAG has its body on disk. The caller
-    /// supplies the body it holds, because the pending area can evict the
-    /// entry while the block is processed.
     pub fn persist_block(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
         if self.disk_contains(&block.block_hash)? {
             self.pending.remove(&block.block_hash);
@@ -325,7 +320,6 @@ impl KeyValueBlockStore {
 
     pub fn pending_blocks(&self) -> &PendingBlocks { &self.pending }
 
-    /// Replace the pending-area bounds. Returns the evicted hashes.
     pub fn set_pending_limits(&self, limits: PendingBlockLimits) -> Vec<BlockHash> {
         self.pending.set_limits(limits)
     }

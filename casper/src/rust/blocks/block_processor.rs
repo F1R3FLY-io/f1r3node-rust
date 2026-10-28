@@ -145,6 +145,13 @@ pub enum SenderAuthorization {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreVerdict {
+    Stored,
+    Malformed,
+    PendingRefused(PendingInsert),
+}
+
 fn of_interest_verdict(
     already_processed: bool,
     shard_of_interest: bool,
@@ -465,28 +472,25 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         self.dependencies.forget_block_source(&block.block_hash);
     }
 
-    /// Check block format and store the block if the check passed. A block
-    /// whose sender authorization is `Unknown` goes to the bounded in-memory
-    /// pending area instead of disk; it reaches disk when it is re-admitted
-    /// with a known authorization or before it enters the DAG.
+    /// check block format and store if check passed
     pub async fn check_if_well_formed_and_store(
         &self,
         block: &BlockMessage,
         authorization: SenderAuthorization,
-    ) -> Result<bool, CasperError> {
+    ) -> Result<StoreVerdict, CasperError> {
         let valid_format = Validate::format_of_fields(block);
         let valid_sig = Validate::block_signature(block);
         if !(valid_format && valid_sig) {
             self.dependencies
                 .strike_block_source(&block.block_hash, Strike::Malformed);
-            return Ok(false);
+            return Ok(StoreVerdict::Malformed);
         }
 
         let storage_start = Instant::now();
-        let stored = match authorization {
+        let verdict = match authorization {
             SenderAuthorization::Authorized => {
                 self.dependencies.store_block(block).await?;
-                true
+                StoreVerdict::Stored
             }
             SenderAuthorization::Unknown => {
                 let held = self.dependencies.hold_pending(block).await?;
@@ -498,18 +502,18 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                         held
                     );
                 }
-                if held == PendingInsert::SenderLimitReached {
-                    self.dependencies
-                        .strike_block_source(&block.block_hash, Strike::SenderLimitReached);
+                if held == PendingInsert::Accepted {
+                    StoreVerdict::Stored
+                } else {
+                    StoreVerdict::PendingRefused(held)
                 }
-                held == PendingInsert::Accepted
             }
-            SenderAuthorization::Unauthorized => false,
+            SenderAuthorization::Unauthorized => StoreVerdict::Malformed,
         };
         metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(storage_start.elapsed().as_secs_f64());
 
-        Ok(stored)
+        Ok(verdict)
     }
 
     /// check if block has all dependencies available and can be validated
@@ -593,6 +597,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                     .await?;
             }
             self.dependencies.ack_processed(block).await?;
+            if !self.dependencies.holds_body(&block.block_hash)? {
+                self.dependencies
+                    .release_evicted_pending(std::slice::from_ref(&block.block_hash))
+                    .await?;
+            }
         }
 
         Ok(is_ready)
@@ -843,6 +852,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             );
             self.ack_processed(block).await
         }
+    }
+
+    pub async fn release_refused_pending(
+        &self,
+        block: &BlockMessage,
+        refusal: PendingInsert,
+    ) -> Result<(), CasperError> {
+        self.dependencies
+            .release_refused_pending(block, refusal)
+            .await
     }
 
     /// Best-effort purge for stale/uninteresting blocks to prevent infinite buffer requeue loops.
@@ -1104,6 +1123,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 })?;
         let (stale_pruned, overflow_pruned) = (stale_hashes.len(), overflow_hashes.len());
         for hash in stale_hashes.iter().chain(overflow_hashes.iter()) {
+            self.block_store.discard_pending(&hash.0);
             self.block_retriever
                 .forget_received_hash_tracking(&hash.0)?;
         }
@@ -1168,24 +1188,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         Ok(outcome.status)
     }
 
-    /// An evicted pending block has no body here any more. Drop it from the
-    /// casper buffer, so a block that waits on it does not count it as held,
-    /// and fetch it again when such a block exists.
     pub async fn release_evicted_pending(&self, evicted: &[BlockHash]) -> Result<(), CasperError> {
         for hash in evicted {
-            let buffered = BlockHashSerde(hash.clone());
-            let has_dependents = self
-                .casper_buffer
-                .get_children(&buffered)
-                .is_some_and(|children| !children.is_empty());
-            self.casper_buffer.remove(buffered)?;
+            let has_dependents = self.has_buffered_dependents(hash);
+            self.casper_buffer.remove(BlockHashSerde(hash.clone()))?;
             if has_dependents {
                 self.block_retriever
-                    .admit_hash(
-                        hash.clone(),
-                        None,
-                        AdmitHashReason::MissingDependencyRequested,
-                    )
+                    .recover_dependency(hash.clone())
                     .await?;
             }
             tracing::debug!(
@@ -1195,6 +1204,30 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             );
         }
         Ok(())
+    }
+
+    pub async fn release_refused_pending(
+        &self,
+        block: &BlockMessage,
+        refusal: PendingInsert,
+    ) -> Result<(), CasperError> {
+        if refusal != PendingInsert::TooLarge && self.has_buffered_dependents(&block.block_hash) {
+            self.block_retriever
+                .recover_dependency(block.block_hash.clone())
+                .await
+        } else {
+            self.ack_processed(block).await
+        }
+    }
+
+    fn has_buffered_dependents(&self, hash: &BlockHash) -> bool {
+        self.casper_buffer
+            .get_children(&BlockHashSerde(hash.clone()))
+            .is_some_and(|children| !children.is_empty())
+    }
+
+    pub fn holds_body(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+        Ok(self.block_store.contains_key(hash)?)
     }
 
     pub fn discard_pending(&self, block: &BlockMessage) -> bool {
@@ -1367,6 +1400,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     pub async fn remove_from_buffer(&self, block: &BlockMessage) -> Result<(), CasperError> {
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
         self.casper_buffer.remove(block_hash_serde)?;
+        self.block_store.discard_pending(&block.block_hash);
         self.clear_missing_dependency_attempts(&block.block_hash)?;
         self.clear_missing_dependency_quarantine(&block.block_hash)?;
 

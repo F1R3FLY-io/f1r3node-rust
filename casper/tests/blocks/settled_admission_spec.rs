@@ -397,9 +397,6 @@ async fn settled_admission_still_admits_a_genuine_straggler() {
     );
 }
 
-/// Settled history always has an unknown authorization (its parents sit below
-/// the restore horizon), so it waits in the pending area. Admission into the
-/// DAG must write it to disk first.
 #[tokio::test]
 async fn settled_admission_persists_a_pending_block() {
     let fixture = Fixture::new().await;
