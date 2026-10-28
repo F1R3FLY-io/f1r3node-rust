@@ -29,13 +29,19 @@ Import ListNotations.
   retained-state count, maxima and index.  Cold demand, by contrast, is not a
   function of the trusted inventory summary, so a fresh checkpoint from a
   trusted core measures it.  The journal owner's empty checkpoint and its
-  awaiting-acknowledgement retry never consult the cold limits.
+  awaiting-acknowledgement retry never consult the cold limits.  Along every
+  faulted history, in which a publication may fail at any durable boundary and
+  recovers the predecessor or the successor its outcome admits, the authority
+  stays one exact core equal to cold admission, and the pack's appointed
+  prefix holds each committed transaction exactly once.
 
   Delta soundness, that a receipt turns a semantically valid base into a valid
   target inside the object universe, is an explicit argument of the theorems
-  that need it.  The variants other than [TrustedFaithful] and the cold
-  preflight variants other than [MeasureColdDemand] are negative controls, each
-  refuted by a closed counterexample theorem at the end.
+  that need it.  The variants other than [TrustedFaithful], the cold preflight
+  variants other than [MeasureColdDemand], the pack write
+  [AppendWithoutTruncation] and the recovery [AdoptPreparedOnIndeterminate] are
+  negative controls, each refuted by a closed counterexample theorem at the
+  end.
 *)
 
 Module TrustedSuccessorCapability.
@@ -2183,6 +2189,487 @@ Proof.
   vm_compute. right. right. left. reflexivity.
 Qed.
 
+(** * Faulted histories
+
+    A faulted history interleaves trusted publications that may fail at any
+    durable boundary with the recoveries their outcomes allow.  A fault never
+    changes the bound, preflighted and assembled successor: it changes only
+    the outcome and the durable suffix of the trace.  So the successor of a
+    faulted publication is the core that the fault-free publication of the
+    same receipt adopts. *)
+
+Lemma faulted_publication_refuses_or_faults_the_successor :
+  forall env schedule capacity core receipt policy fault outcome trace,
+  trusted_publish TrustedFaithful env schedule capacity core receipt policy policy fault =
+    (outcome, trace) ->
+  (exists stage, outcome = DefinitelyNotPublished stage) \/
+  exists successor no_fault_trace,
+    trusted_publish TrustedFaithful env schedule capacity core receipt policy policy NoFault =
+      (TrustedReady successor, no_fault_trace) /\
+    outcome = fault_outcome fault successor.
+Proof.
+  intros env schedule capacity core receipt policy fault outcome trace run.
+  unfold trusted_publish in run |- *.
+  destruct (trusted_bind TrustedFaithful env schedule core receipt policy)
+    as [prepared|why]; cbv beta iota in run |- *.
+  - unfold publish_sealed in run |- *.
+    destruct (preflight_trusted TrustedFaithful (TrustedBinding prepared) policy)
+      as [why|]; cbv beta iota in run |- *.
+    + left. exists (PreflightStage why). injection run as <- _. reflexivity.
+    + destruct (insert_all capacity (core_index core) (next_index_plan prepared))
+        as [index|record why]; cbv beta iota in run |- *.
+      * right. exists (assembled_core core prepared index). eexists.
+        split; [reflexivity|].
+        injection run as <- _. reflexivity.
+      * left. exists (AssemblyStage record why). injection run as <- _. reflexivity.
+  - left. exists (BindStage why). injection run as <- _. reflexivity.
+Qed.
+
+Lemma ready_successor_extends_its_predecessor :
+  forall env schedule capacity core receipt policy fault successor trace,
+  trusted_publish TrustedFaithful env schedule capacity core receipt policy policy fault =
+    (TrustedReady successor, trace) ->
+  core_retained_states successor = S (core_retained_states core) /\
+  core_index_records successor = core_index_records core ++ receipt_index_plan receipt.
+Proof.
+  intros env schedule capacity core receipt policy fault successor trace run.
+  destruct (trusted_publish_ready_inversion _ _ _ _ _ _ _ _ _ run)
+    as (_ & prepared & index & bound & _ & ->).
+  destruct (trusted_bind_prepared_inversion _ _ _ _ _ _ _ bound)
+    as (_ & _ & shared & evidence & _ & _ & ->).
+  split; reflexivity.
+Qed.
+
+Lemma ready_successor_differs_from_its_predecessor :
+  forall env schedule capacity core receipt policy fault successor trace,
+  trusted_publish TrustedFaithful env schedule capacity core receipt policy policy fault =
+    (TrustedReady successor, trace) ->
+  successor <> core.
+Proof.
+  intros env schedule capacity core receipt policy fault successor trace run same.
+  destruct (ready_successor_extends_its_predecessor _ _ _ _ _ _ _ _ _ run) as [count _].
+  rewrite same in count. lia.
+Qed.
+
+(** The recoveries a faulted publication admits, keyed by its outcome: a
+    definite refusal keeps the predecessor; an indeterminate commit recovers
+    the predecessor or the successor, whichever the catalog appoints; a
+    published failure recovers the successor, whose catalog swap is durable
+    although a later sync or the sidecar resolution failed; a ready
+    publication adopts its successor. *)
+Inductive admissible_recovery (env : composed_environment) (schedule : nat -> bool)
+    (capacity : nat) (policy : trusted_policy) (predecessor : authority_core)
+    (receipt : sealed_receipt) : publication_outcome -> authority_core -> Prop :=
+| predecessor_after_refusal : forall stage,
+    admissible_recovery env schedule capacity policy predecessor receipt
+      (DefinitelyNotPublished stage) predecessor
+| predecessor_after_ambiguity :
+    admissible_recovery env schedule capacity policy predecessor receipt CommitIndeterminate
+      predecessor
+| successor_after_ambiguity : forall successor trace,
+    trusted_publish TrustedFaithful env schedule capacity predecessor receipt policy policy
+      NoFault = (TrustedReady successor, trace) ->
+    admissible_recovery env schedule capacity policy predecessor receipt CommitIndeterminate
+      successor
+| successor_after_published_failure : forall failure successor trace,
+    trusted_publish TrustedFaithful env schedule capacity predecessor receipt policy policy
+      NoFault = (TrustedReady successor, trace) ->
+    admissible_recovery env schedule capacity policy predecessor receipt
+      (PublishedFailure failure) successor
+| adopted_ready_successor : forall successor,
+    admissible_recovery env schedule capacity policy predecessor receipt
+      (TrustedReady successor) successor.
+
+Lemma admissible_recovery_selects_predecessor_or_successor :
+  forall env schedule capacity policy core receipt fault outcome trace recovered,
+  trusted_publish TrustedFaithful env schedule capacity core receipt policy policy fault =
+    (outcome, trace) ->
+  admissible_recovery env schedule capacity policy core receipt outcome recovered ->
+  recovered = core \/
+  exists no_fault_trace,
+    trusted_publish TrustedFaithful env schedule capacity core receipt policy policy NoFault =
+      (TrustedReady recovered, no_fault_trace).
+Proof.
+  intros env schedule capacity policy core receipt fault outcome trace recovered run recovery.
+  revert run.
+  destruct recovery as [stage| |successor no_fault_trace no_fault
+    |failure successor no_fault_trace no_fault|successor]; intros run.
+  - left. reflexivity.
+  - left. reflexivity.
+  - right. exists no_fault_trace. exact no_fault.
+  - right. exists no_fault_trace. exact no_fault.
+  - right. destruct (trusted_publish_ready_inversion _ _ _ _ _ _ _ _ _ run) as [no_fault _].
+    subst fault. exists trace. exact run.
+Qed.
+
+(** Every outcome admits a recovery, so a faulted history never gets stuck. *)
+Lemma every_faulted_publication_admits_a_recovery :
+  forall env schedule capacity policy core receipt fault outcome trace,
+  trusted_publish TrustedFaithful env schedule capacity core receipt policy policy fault =
+    (outcome, trace) ->
+  exists recovered,
+    admissible_recovery env schedule capacity policy core receipt outcome recovered.
+Proof.
+  intros env schedule capacity policy core receipt fault outcome trace run.
+  destruct (faulted_publication_refuses_or_faults_the_successor _ _ _ _ _ _ _ _ _ run)
+    as [(stage & ->)|(successor & no_fault_trace & no_fault & ->)].
+  - exists core. apply predecessor_after_refusal.
+  - destruct fault; cbn [fault_outcome].
+    + exists successor. apply adopted_ready_successor.
+    + exists core. apply predecessor_after_refusal.
+    + exists core. apply predecessor_after_refusal.
+    + exists core. apply predecessor_after_ambiguity.
+    + exists successor. eapply successor_after_published_failure. exact no_fault.
+    + exists successor. eapply successor_after_published_failure. exact no_fault.
+Qed.
+
+Inductive faulted_history (env : composed_environment) (schedule : nat -> bool)
+    (capacity : nat) (policy : trusted_policy) (start : authority_core) :
+    authority_core -> Prop :=
+| faulted_start : faulted_history env schedule capacity policy start start
+| faulted_step : forall middle receipt fault outcome trace recovered,
+    faulted_history env schedule capacity policy start middle ->
+    trusted_publish TrustedFaithful env schedule capacity middle receipt policy policy fault =
+      (outcome, trace) ->
+    admissible_recovery env schedule capacity policy middle receipt outcome recovered ->
+    faulted_history env schedule capacity policy start recovered.
+
+(** A faulted history is a commit-only history: a step that recovers its
+    predecessor is a stutter, and a step that recovers its successor is the
+    fault-free publication of the same receipt. *)
+Lemma faulted_history_is_trusted_history :
+  forall env schedule capacity policy start final,
+  faulted_history env schedule capacity policy start final ->
+  trusted_history env schedule capacity policy start final.
+Proof.
+  intros env schedule capacity policy start final history.
+  induction history as [|middle receipt fault outcome trace recovered prefix IH run recovery].
+  - apply history_start.
+  - destruct (admissible_recovery_selects_predecessor_or_successor _ _ _ _ _ _ _ _ _ _ run
+      recovery) as [same|(no_fault_trace & no_fault)].
+    + subst recovered. exact IH.
+    + eapply history_step; [exact IH|exact no_fault].
+Qed.
+
+Lemma trusted_history_is_faulted_history :
+  forall env schedule capacity policy start final,
+  trusted_history env schedule capacity policy start final ->
+  faulted_history env schedule capacity policy start final.
+Proof.
+  intros env schedule capacity policy start final history.
+  induction history as [|middle receipt successor trace prefix IH run].
+  - apply faulted_start.
+  - eapply faulted_step; [exact IH|exact run|apply adopted_ready_successor].
+Qed.
+
+(** Agreement with cold admission: the conclusion of
+    [trusted_inventory_equals_cold_admission] for a final core. *)
+Definition cold_agreement (env : composed_environment) (capacity : nat)
+    (semantically_valid : nat -> Prop) (final : authority_core) : Prop :=
+  exact_authority env capacity semantically_valid final /\
+  (forall current_cold retained_cold,
+     CreditedClosureLedger.credited_build (graph (semantic_environment env))
+       (universe (semantic_environment env))
+       (CreditedClosureLedger.current_epochs (core_state final)) current_cold ->
+     CreditedClosureLedger.credited_build (graph (semantic_environment env))
+       (universe (semantic_environment env))
+       (CreditedClosureLedger.retained_epochs (core_state final)) retained_cold ->
+     predecessor_matches_cold (semantic_environment env) (current_roots (core_state final))
+       (project (core_ledger final) CurrentDomain) current_cold /\
+     predecessor_matches_cold (semantic_environment env) (retained_roots (core_state final))
+       (project (core_ledger final) RetainedDomain) retained_cold) /\
+  (forall metadata_ledger, coherent metadata_ledger ->
+     quiescent (graph (metadata_environment env)) (universe (metadata_environment env))
+       (core_metadata_roots final) metadata_ledger ->
+     predecessor_matches_cold (metadata_environment env) (core_metadata_roots final)
+       (project (core_ledger final) MetadataDomain) metadata_ledger) /\
+  core_retained_states final = length (all_entries (core_state final)) /\
+  (forall other, cold_retained_maxima (semantic_environment env) (core_state final) other ->
+     core_maxima final = other) /\
+  cold_rebuild capacity (core_index_records final) = IndexBuilt (core_index final).
+
+(** Capstone: faults never fork the authority.  Every recovery a faulted
+    publication admits is its predecessor or the successor of the fault-free
+    publication of the same receipt; every faulted history is a commit-only
+    history; and from a cold-admitted base its final core is an exact
+    authority that equals cold admission of its final state. *)
+Theorem faulted_history_keeps_an_exact_sole_authority :
+  forall env semantic_rank metadata_rank schedule capacity semantically_valid policy
+    state current retained metadata_roots metadata maxima shape profile records index start
+    final,
+  environment_well_formed env semantic_rank metadata_rank ->
+  CreditedClosureLedger.credited_build (graph (semantic_environment env))
+    (universe (semantic_environment env)) (CreditedClosureLedger.current_epochs state) current ->
+  CreditedClosureLedger.credited_build (graph (semantic_environment env))
+    (universe (semantic_environment env)) (CreditedClosureLedger.retained_epochs state)
+    retained ->
+  cold_metadata_base (metadata_environment env) metadata_roots metadata ->
+  In (entry_manifest (current_entry state)) (universe (semantic_environment env)) ->
+  cold_retained_maxima (semantic_environment env) state maxima ->
+  semantically_valid (entry_manifest (current_entry state)) ->
+  cold_rebuild capacity records = IndexBuilt index ->
+  start = cold_admitted_core env state current retained metadata_roots metadata maxima shape
+    profile records index ->
+  faulted_history env schedule capacity policy start final ->
+  (forall middle receipt successor trace,
+     faulted_history env schedule capacity policy start middle ->
+     trusted_publish TrustedFaithful env schedule capacity middle receipt policy policy
+       NoFault = (TrustedReady successor, trace) ->
+     delta_sound env semantically_valid receipt) ->
+  (forall core receipt fault outcome trace recovered,
+     trusted_publish TrustedFaithful env schedule capacity core receipt policy policy fault =
+       (outcome, trace) ->
+     admissible_recovery env schedule capacity policy core receipt outcome recovered ->
+     recovered = core \/
+     exists no_fault_trace,
+       trusted_publish TrustedFaithful env schedule capacity core receipt policy policy
+         NoFault = (TrustedReady recovered, no_fault_trace)) /\
+  trusted_history env schedule capacity policy start final /\
+  cold_agreement env capacity semantically_valid final.
+Proof.
+  intros env semantic_rank metadata_rank schedule capacity semantically_valid policy state
+    current retained metadata_roots metadata maxima shape profile records index start final
+    well_formed current_build retained_build metadata_cold member maxima_cold valid index_cold
+    start_is_cold history sound.
+  split; [exact (admissible_recovery_selects_predecessor_or_successor env schedule capacity
+    policy)|].
+  pose proof (faulted_history_is_trusted_history _ _ _ _ _ _ history) as trusted.
+  split; [exact trusted|].
+  exact (trusted_inventory_equals_cold_admission env semantic_rank metadata_rank schedule
+    capacity semantically_valid policy state current retained metadata_roots metadata maxima
+    shape profile records index start final well_formed current_build retained_build
+    metadata_cold member maxima_cold valid index_cold start_is_cold trusted
+    (fun middle receipt successor trace prefix run =>
+       sound middle receipt successor trace
+         (trusted_history_is_faulted_history _ _ _ _ _ _ prefix) run)).
+Qed.
+
+(** ** The pack of a faulted history
+
+    The pack is a list of bytes, of which the catalog appoints a prefix.  A
+    publication truncates the pack to the appointed prefix and appends what it
+    wrote.  [AppendWithoutTruncation] is the negative control that appends
+    behind whatever an earlier failure left. *)
+Inductive pack_variant := TruncateThenAppend | AppendWithoutTruncation.
+
+Definition pack_write (variant : pack_variant) (appointed : nat) (pack written : list nat) :
+    list nat :=
+  match variant with
+  | TruncateThenAppend => firstn appointed pack ++ written
+  | AppendWithoutTruncation => pack ++ written
+  end.
+
+(** A faulted history with its pack.  [encode] gives the bytes of the
+    transaction that appends an index plan, and [initial] is the pack the
+    history starts from, all of it appointed.  A step refused before its first
+    mutation writes nothing; any other step that recovers its predecessor
+    leaves what it wrote, torn or whole, as an orphan behind the appointed
+    prefix; a step that recovers its successor writes its whole transaction,
+    and the catalog appoints it. *)
+Inductive faulted_pack_history (env : composed_environment) (schedule : nat -> bool)
+    (capacity : nat) (policy : trusted_policy) (encode : list index_record -> list nat)
+    (start : authority_core) (initial : list nat) :
+    authority_core -> list (list index_record) -> nat -> list nat -> Prop :=
+| pack_history_start :
+    faulted_pack_history env schedule capacity policy encode start initial start []
+      (length initial) initial
+| pack_history_unwritten : forall middle plans appointed pack receipt fault outcome trace,
+    faulted_pack_history env schedule capacity policy encode start initial middle plans
+      appointed pack ->
+    trusted_publish TrustedFaithful env schedule capacity middle receipt policy policy fault =
+      (outcome, trace) ->
+    existsb mutates trace = false ->
+    admissible_recovery env schedule capacity policy middle receipt outcome middle ->
+    faulted_pack_history env schedule capacity policy encode start initial middle plans
+      appointed pack
+| pack_history_orphaned :
+    forall middle plans appointed pack receipt fault outcome trace written,
+    faulted_pack_history env schedule capacity policy encode start initial middle plans
+      appointed pack ->
+    trusted_publish TrustedFaithful env schedule capacity middle receipt policy policy fault =
+      (outcome, trace) ->
+    admissible_recovery env schedule capacity policy middle receipt outcome middle ->
+    faulted_pack_history env schedule capacity policy encode start initial middle plans
+      appointed (pack_write TruncateThenAppend appointed pack written)
+| pack_history_committed :
+    forall middle plans appointed pack receipt fault outcome trace successor,
+    faulted_pack_history env schedule capacity policy encode start initial middle plans
+      appointed pack ->
+    trusted_publish TrustedFaithful env schedule capacity middle receipt policy policy fault =
+      (outcome, trace) ->
+    admissible_recovery env schedule capacity policy middle receipt outcome successor ->
+    successor <> middle ->
+    faulted_pack_history env schedule capacity policy encode start initial successor
+      (plans ++ [receipt_index_plan receipt])
+      (appointed + length (encode (receipt_index_plan receipt)))
+      (pack_write TruncateThenAppend appointed pack (encode (receipt_index_plan receipt))).
+
+(** Every faulted history has a pack: its steps recover either their
+    predecessor, which leaves an orphan, or their successor, which differs from
+    the predecessor and commits. *)
+Lemma faulted_history_has_a_pack_history :
+  forall env schedule capacity policy encode start initial final,
+  faulted_history env schedule capacity policy start final ->
+  exists plans appointed pack,
+    faulted_pack_history env schedule capacity policy encode start initial final plans
+      appointed pack.
+Proof.
+  intros env schedule capacity policy encode start initial final history.
+  induction history as [|middle receipt fault outcome trace recovered prefix IH run recovery].
+  - exists [], (length initial), initial. apply pack_history_start.
+  - destruct IH as (plans & appointed & pack & packed).
+    destruct (admissible_recovery_selects_predecessor_or_successor _ _ _ _ _ _ _ _ _ _ run
+      recovery) as [same|(no_fault_trace & no_fault)].
+    + subst recovered. exists plans, appointed, (pack_write TruncateThenAppend appointed pack []).
+      eapply pack_history_orphaned; [exact packed|exact run|exact recovery].
+    + exists (plans ++ [receipt_index_plan receipt]),
+        (appointed + length (encode (receipt_index_plan receipt))),
+        (pack_write TruncateThenAppend appointed pack (encode (receipt_index_plan receipt))).
+      eapply pack_history_committed; [exact packed|exact run|exact recovery|].
+      exact (ready_successor_differs_from_its_predecessor _ _ _ _ _ _ _ _ _ no_fault).
+Qed.
+
+(** Capstone: a faulted history appoints each commit exactly once.  The
+    appointed prefix of its pack is the initial pack followed by the
+    transactions of the committed steps, in order, each once, and never an
+    orphan; the authority's index records are the start's records followed
+    by the same plans; and the history is a faulted history of the
+    authority. *)
+Theorem faulted_history_appoints_each_commit_once :
+  forall env schedule capacity policy encode start initial final plans appointed pack,
+  faulted_pack_history env schedule capacity policy encode start initial final plans
+    appointed pack ->
+  faulted_history env schedule capacity policy start final /\
+  appointed = length (initial ++ concat (map encode plans)) /\
+  firstn appointed pack = initial ++ concat (map encode plans) /\
+  core_index_records final = core_index_records start ++ concat plans.
+Proof.
+  intros env schedule capacity policy encode start initial final plans appointed pack history.
+  induction history as
+    [|middle plans appointed pack receipt fault outcome trace prefix IH run unwritten recovery
+     |middle plans appointed pack receipt fault outcome trace written prefix IH run recovery
+     |middle plans appointed pack receipt fault outcome trace successor prefix IH run recovery
+        moved].
+  - cbn [map concat]. rewrite !app_nil_r.
+    split; [apply faulted_start|].
+    split; [reflexivity|]. split; [apply firstn_all|reflexivity].
+  - destruct IH as (faulted & appointed_length & appointed_bytes & records).
+    split; [eapply faulted_step; [exact faulted|exact run|exact recovery]|].
+    split; [exact appointed_length|]. split; [exact appointed_bytes|exact records].
+  - destruct IH as (faulted & appointed_length & appointed_bytes & records).
+    split; [eapply faulted_step; [exact faulted|exact run|exact recovery]|].
+    split; [exact appointed_length|]. split; [|exact records].
+    subst appointed. unfold pack_write.
+    rewrite <- (firstn_skipn (length (initial ++ concat (map encode plans))) pack).
+    rewrite appointed_bytes.
+    exact (CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes _ _ _).
+  - destruct IH as (faulted & appointed_length & appointed_bytes & records).
+    split; [eapply faulted_step; [exact faulted|exact run|exact recovery]|].
+    rewrite map_app, concat_app, concat_app. cbn [map concat]. rewrite !app_nil_r.
+    subst appointed. unfold pack_write. rewrite appointed_bytes.
+    split; [rewrite !length_app; lia|].
+    split.
+    + rewrite <- length_app, firstn_all, app_assoc. reflexivity.
+    + destruct (admissible_recovery_selects_predecessor_or_successor _ _ _ _ _ _ _ _ _ _ run
+        recovery) as [same|(no_fault_trace & no_fault)]; [contradiction (moved same)|].
+      destruct (ready_successor_extends_its_predecessor _ _ _ _ _ _ _ _ _ no_fault)
+        as [_ ->].
+      rewrite records, app_assoc. reflexivity.
+Qed.
+
+(** The recovery after an indeterminate commit reads one catalog image: the
+    old slot, a torn slot, or the new slot.  The faithful recovery adopts the
+    core the image appoints, the predecessor under an old or torn slot and the
+    successor under the new slot; [AdoptPreparedOnIndeterminate] is the
+    negative control that adopts the prepared successor without reading the
+    catalog. *)
+Inductive catalog_image := OldCatalog | TornCatalog | NewCatalog.
+
+Inductive ambiguity_variant := RecoverFromCatalog | AdoptPreparedOnIndeterminate.
+
+Definition recover_after_ambiguity (variant : ambiguity_variant) (image : catalog_image)
+    (predecessor successor : authority_core) : authority_core :=
+  match variant, image with
+  | RecoverFromCatalog, NewCatalog => successor
+  | RecoverFromCatalog, _ => predecessor
+  | AdoptPreparedOnIndeterminate, _ => successor
+  end.
+
+Lemma catalog_recovery_is_admissible :
+  forall env schedule capacity policy core receipt successor trace image,
+  trusted_publish TrustedFaithful env schedule capacity core receipt policy policy NoFault =
+    (TrustedReady successor, trace) ->
+  admissible_recovery env schedule capacity policy core receipt CommitIndeterminate
+    (recover_after_ambiguity RecoverFromCatalog image core successor).
+Proof.
+  intros env schedule capacity policy core receipt successor trace image no_fault.
+  destruct image; cbn [recover_after_ambiguity].
+  - apply predecessor_after_ambiguity.
+  - apply predecessor_after_ambiguity.
+  - eapply successor_after_ambiguity. exact no_fault.
+Qed.
+
+(** Adopting the prepared successor after an indeterminate commit forks the
+    authority.  The interrupted catalog swap of the skipped-trial fixture is
+    indeterminate; when the catalog kept its old slot, the faithful recovery
+    holds the predecessor the catalog appoints, while the mutant holds a
+    successor the catalog never appointed. *)
+Theorem ambiguous_adoption_mutant_breaks_sole_authority :
+  fst (trusted_publish TrustedFaithful skip_fixture prefer_cursors 8 skip_core skip_receipt
+         generous_policy generous_policy CatalogInterrupted) = CommitIndeterminate /\
+  exists successor trace,
+    trusted_publish TrustedFaithful skip_fixture prefer_cursors 8 skip_core skip_receipt
+      generous_policy generous_policy NoFault = (TrustedReady successor, trace) /\
+    recover_after_ambiguity RecoverFromCatalog OldCatalog skip_core successor = skip_core /\
+    admissible_recovery skip_fixture prefer_cursors 8 generous_policy skip_core skip_receipt
+      CommitIndeterminate
+      (recover_after_ambiguity RecoverFromCatalog OldCatalog skip_core successor) /\
+    recover_after_ambiguity AdoptPreparedOnIndeterminate OldCatalog skip_core successor <>
+      skip_core.
+Proof.
+  split; [vm_compute; reflexivity|].
+  assert (ready : exists successor,
+    fst (trusted_publish TrustedFaithful skip_fixture prefer_cursors 8 skip_core skip_receipt
+           generous_policy generous_policy NoFault) = TrustedReady successor)
+    by (vm_compute; eexists; reflexivity).
+  destruct ready as [successor ready].
+  assert (run : trusted_publish TrustedFaithful skip_fixture prefer_cursors 8 skip_core
+    skip_receipt generous_policy generous_policy NoFault =
+    (TrustedReady successor, snd (trusted_publish TrustedFaithful skip_fixture prefer_cursors 8
+      skip_core skip_receipt generous_policy generous_policy NoFault))).
+  { rewrite <- ready. apply surjective_pairing. }
+  exists successor, (snd (trusted_publish TrustedFaithful skip_fixture prefer_cursors 8 skip_core
+    skip_receipt generous_policy generous_policy NoFault)).
+  split; [exact run|].
+  split; [reflexivity|].
+  split; [exact (catalog_recovery_is_admissible _ _ _ _ _ _ _ _ OldCatalog run)|].
+  cbn [recover_after_ambiguity].
+  exact (ready_successor_differs_from_its_predecessor _ _ _ _ _ _ _ _ _ run).
+Qed.
+
+(** A retry that appends behind an orphan instead of truncating to the
+    appointed prefix appoints the orphan.  After a torn write that kept only
+    the first byte of the transaction [1; 2], the catalog appoints the prefix
+    and the transaction's two bytes: the mutant's appointed bytes are the
+    orphan byte and the transaction's first byte, while the faithful retry's
+    are exactly the transaction. *)
+Theorem append_without_truncation_mutant_appoints_an_orphan :
+  forall prefix : list nat,
+  firstn (length prefix + length [1; 2])
+    (pack_write AppendWithoutTruncation (length prefix)
+       (pack_write TruncateThenAppend (length prefix) prefix [1]) [1; 2]) = prefix ++ [1; 1] /\
+  firstn (length prefix + length [1; 2])
+    (pack_write TruncateThenAppend (length prefix)
+       (pack_write TruncateThenAppend (length prefix) prefix [1]) [1; 2]) = prefix ++ [1; 2] /\
+  prefix ++ [1; 1] <> prefix ++ [1; 2].
+Proof.
+  intros prefix. unfold pack_write. rewrite firstn_all.
+  rewrite CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes.
+  rewrite <- app_assoc, !(firstn_app_2 (length [1; 2]) prefix).
+  split; [reflexivity|]. split; [reflexivity|].
+  intros same. apply app_inv_head in same. discriminate same.
+Qed.
+
 End TrustedSuccessorCapability.
 
 Print Assumptions TrustedSuccessorCapability.production_order_is_run_composed.
@@ -2201,3 +2688,7 @@ Print Assumptions TrustedSuccessorCapability.trusted_source_preflight_mutant_acc
 Print Assumptions TrustedSuccessorCapability.skipped_domain_trial_mutant_breaks_cold_agreement.
 Print Assumptions TrustedSuccessorCapability.changed_policy_mutant_accepts_unbound_limits.
 Print Assumptions TrustedSuccessorCapability.publication_before_trials_mutant_publishes_refused_successor.
+Print Assumptions TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority.
+Print Assumptions TrustedSuccessorCapability.faulted_history_appoints_each_commit_once.
+Print Assumptions TrustedSuccessorCapability.ambiguous_adoption_mutant_breaks_sole_authority.
+Print Assumptions TrustedSuccessorCapability.append_without_truncation_mutant_appoints_an_orphan.

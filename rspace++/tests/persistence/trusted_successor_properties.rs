@@ -37,7 +37,7 @@ impl SharedLedger {
         Self([base.current.clone(), base.retained.clone(), base.metadata.clone()])
     }
 
-    fn project(&self, domain: Domain) -> &Predecessor { &self.0[domain as usize] }
+    pub(super) fn project(&self, domain: Domain) -> &Predecessor { &self.0[domain as usize] }
 
     fn projections(&self) -> ComposedPredecessor {
         ComposedPredecessor {
@@ -130,11 +130,11 @@ pub(super) struct TrustedPolicy {
 }
 
 impl TrustedPolicy {
-    const GENEROUS: Self = Self {
+    pub(super) const GENEROUS: Self = Self {
         state: [64; 11],
         work: [[64; 7]; 3],
     };
-    const UNBOUNDED: Self = Self {
+    pub(super) const UNBOUNDED: Self = Self {
         state: [u64::MAX; 11],
         work: [[u64::MAX; 7]; 3],
     };
@@ -348,15 +348,15 @@ fn index_tail(count: usize) -> u64 {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct AuthorityCore {
-    entries: RetentionEntries,
-    metadata_roots: Vec<usize>,
-    ledger: SharedLedger,
+    pub(super) entries: RetentionEntries,
+    pub(super) metadata_roots: Vec<usize>,
+    pub(super) ledger: SharedLedger,
     retained_states: u64,
     maxima: (u64, u64),
-    shape: ShapeSummary,
+    pub(super) shape: ShapeSummary,
     validity: usize,
-    profile: usize,
-    index_records: Vec<IndexRecord>,
+    pub(super) profile: usize,
+    pub(super) index_records: Vec<IndexRecord>,
     index: CommittedIndex,
 }
 
@@ -451,7 +451,7 @@ enum ColdAxis {
 const COLD_AXES: [ColdAxis; 3] = [ColdAxis::Objects, ColdAxis::Bytes, ColdAxis::References];
 
 impl ColdDemand {
-    const LOOSE: Self = Self {
+    pub(super) const LOOSE: Self = Self {
         objects: u64::MAX,
         bytes: u64::MAX,
         references: u64::MAX,
@@ -525,7 +525,7 @@ pub(super) enum PublicationFault {
     SidecarFault,
 }
 
-const PUBLICATION_FAULTS: [PublicationFault; 6] = [
+pub(super) const PUBLICATION_FAULTS: [PublicationFault; 6] = [
     PublicationFault::NoFault,
     PublicationFault::PinFault,
     PublicationFault::CatalogMismatch,
@@ -698,7 +698,10 @@ fn assembled_core(
     }
 }
 
-fn fault_outcome(fault: PublicationFault, successor: AuthorityCore) -> PublicationOutcome {
+pub(super) fn fault_outcome(
+    fault: PublicationFault,
+    successor: AuthorityCore,
+) -> PublicationOutcome {
     match fault {
         PublicationFault::NoFault => PublicationOutcome::TrustedReady(Box::new(successor)),
         PublicationFault::PinFault => {
@@ -749,7 +752,7 @@ fn trusted_safe_prefix() -> Vec<PublicationEvent> {
 
 #[derive(Clone, Debug)]
 pub(super) struct TrustedWorld {
-    env: ComposedEnvironment,
+    pub(super) env: ComposedEnvironment,
     schedule: Vec<bool>,
     capacity: usize,
     sidecar: SidecarState,
@@ -927,7 +930,7 @@ impl TrustedWorld {
         }
     }
 
-    fn publish(
+    pub(super) fn publish(
         &self,
         variant: TrustedVariant,
         core: &AuthorityCore,
@@ -1054,7 +1057,7 @@ fn per_state_preflight(values: &[(u64, u64)], objects_limit: u64, bytes_limit: u
         .all(|&(objects, bytes)| objects <= objects_limit && bytes <= bytes_limit)
 }
 
-fn cold_admitted_core(
+pub(super) fn cold_admitted_core(
     world: &TrustedWorld,
     entries: RetentionEntries,
     metadata_roots: Vec<usize>,
@@ -1097,7 +1100,7 @@ fn state_references(env: &TrialEnvironment, ledger: &Ledger) -> u64 {
         .sum()
 }
 
-fn measure_cold_demand(env: &TrialEnvironment, ledger: &Ledger) -> ColdDemand {
+pub(super) fn measure_cold_demand(env: &TrialEnvironment, ledger: &Ledger) -> ColdDemand {
     let (objects, bytes) = env.inventory(ledger);
     ColdDemand {
         objects,
@@ -1153,8 +1156,8 @@ pub(super) enum OwnerJournal {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct OwnerLimits {
-    cold: ColdDemand,
-    trusted: TrustedPolicy,
+    pub(super) cold: ColdDemand,
+    pub(super) trusted: TrustedPolicy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1173,18 +1176,18 @@ pub(super) enum OwnerOutcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct OwnerRequest {
-    current: usize,
-    pending: OwnerPhase,
-    journal: OwnerJournal,
-    limits: OwnerLimits,
-    recovery_demand: ColdDemand,
-    recovered: usize,
+    pub(super) current: usize,
+    pub(super) pending: OwnerPhase,
+    pub(super) journal: OwnerJournal,
+    pub(super) limits: OwnerLimits,
+    pub(super) recovery_demand: ColdDemand,
+    pub(super) recovered: usize,
 }
 
 #[derive(Debug, Default)]
 pub(super) struct OwnerProbe {
-    cold_checks: Cell<usize>,
-    publications: Cell<usize>,
+    pub(super) cold_checks: Cell<usize>,
+    pub(super) publications: Cell<usize>,
 }
 
 impl OwnerProbe {
@@ -1193,6 +1196,8 @@ impl OwnerProbe {
         demand.within(limits)
     }
 }
+
+pub(super) fn owner_state(core: &AuthorityCore) -> usize { core.entries.current.generation }
 
 fn owner_capture(
     request: &OwnerRequest,
@@ -1207,14 +1212,21 @@ fn owner_capture(
             probe.publications.set(probe.publications.get() + 1);
             match publish(&request.limits.trusted) {
                 PublicationOutcome::TrustedReady(successor) => {
-                    (OwnerOutcome::Accepted(successor.validity), vec![
+                    let state = owner_state(&successor);
+                    (OwnerOutcome::Accepted(state), vec![
                         OwnerEvent::TrustedPublished,
-                        OwnerEvent::AcknowledgedOnce(successor.validity),
+                        OwnerEvent::AcknowledgedOnce(state),
                     ])
                 }
-                PublicationOutcome::DefinitelyNotPublished(_) => {
+                PublicationOutcome::DefinitelyNotPublished(NotPublishedStage::Bind(_)) => {
                     (OwnerOutcome::Refused(OwnerPhase::Ready), Vec::new())
                 }
+                PublicationOutcome::DefinitelyNotPublished(
+                    NotPublishedStage::Preflight(_) |
+                    NotPublishedStage::Assembly(..) |
+                    NotPublishedStage::Pin |
+                    NotPublishedStage::Catalog,
+                ) => (OwnerOutcome::Refused(OwnerPhase::RecoveryRequired), Vec::new()),
                 PublicationOutcome::PublishedFailure(_) |
                 PublicationOutcome::CommitIndeterminate => {
                     (OwnerOutcome::Refused(OwnerPhase::RecoveryRequired), vec![
@@ -1226,7 +1238,10 @@ fn owner_capture(
     }
 }
 
-fn owner_reconcile(request: &OwnerRequest, probe: &OwnerProbe) -> (OwnerOutcome, Vec<OwnerEvent>) {
+pub(super) fn owner_reconcile(
+    request: &OwnerRequest,
+    probe: &OwnerProbe,
+) -> (OwnerOutcome, Vec<OwnerEvent>) {
     match request.pending {
         OwnerPhase::Ready => (OwnerOutcome::Accepted(request.current), Vec::new()),
         OwnerPhase::AwaitingAck(successor) => {
@@ -1247,7 +1262,7 @@ fn owner_reconcile(request: &OwnerRequest, probe: &OwnerProbe) -> (OwnerOutcome,
     }
 }
 
-fn owner_checkpoint(
+pub(super) fn owner_checkpoint(
     request: &OwnerRequest,
     probe: &OwnerProbe,
     publish: &dyn Fn(&TrustedPolicy) -> PublicationOutcome,
@@ -1268,13 +1283,13 @@ fn owner_checkpoint(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum PublicationMode {
+pub(super) enum PublicationMode {
     Trusted,
     ColdChecked,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum CatalogImage {
+pub(super) enum CatalogImage {
     Old,
     New,
     Torn,
@@ -1282,7 +1297,7 @@ enum CatalogImage {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum RunPhase {
+pub(super) enum RunPhase {
     Idle,
     Bound,
     Preflighted,
@@ -1301,21 +1316,21 @@ enum RunPhase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum TrialStatus {
+pub(super) enum TrialStatus {
     Pending,
     Accepted,
     Refused,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum EvidenceKind {
+pub(super) enum EvidenceKind {
     Absent,
     Measured,
     Fabricated,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum RunRefusal {
+pub(super) enum RunRefusal {
     TrustedPolicy,
     ColdLimits,
     ModeMismatch,
@@ -1325,7 +1340,7 @@ enum RunRefusal {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum RunFailure {
+pub(super) enum RunFailure {
     Io,
     Stage,
     CasMismatch,
@@ -1338,7 +1353,7 @@ enum RunFailure {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum RunOutcome {
+pub(super) enum RunOutcome {
     Pending,
     DefinitelyNotPublished,
     Indeterminate,
@@ -1347,38 +1362,38 @@ enum RunOutcome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct PublicationScenario {
-    sealed_mode: PublicationMode,
-    call_mode: PublicationMode,
-    exact_margin: bool,
-    sealed_call_policy: bool,
-    assembly_succeeds: bool,
-    loose_cold_limits: bool,
+pub(super) struct PublicationScenario {
+    pub(super) sealed_mode: PublicationMode,
+    pub(super) call_mode: PublicationMode,
+    pub(super) exact_margin: bool,
+    pub(super) sealed_call_policy: bool,
+    pub(super) assembly_succeeds: bool,
+    pub(super) loose_cold_limits: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct PublicationRun {
-    scenario: PublicationScenario,
-    phase: RunPhase,
-    trial: TrialStatus,
-    checked: bool,
-    mutated: bool,
-    slot_write_started: bool,
-    catalog: CatalogImage,
-    catalog_file_durable: bool,
-    directory_synced: bool,
-    resolved: bool,
-    recovered: bool,
-    cold_admitted: bool,
-    evidence: EvidenceKind,
-    adopted: Option<CatalogImage>,
-    refusal: Option<RunRefusal>,
-    failure: Option<RunFailure>,
-    outcome: RunOutcome,
+pub(super) struct PublicationRun {
+    pub(super) scenario: PublicationScenario,
+    pub(super) phase: RunPhase,
+    pub(super) trial: TrialStatus,
+    pub(super) checked: bool,
+    pub(super) mutated: bool,
+    pub(super) slot_write_started: bool,
+    pub(super) catalog: CatalogImage,
+    pub(super) catalog_file_durable: bool,
+    pub(super) directory_synced: bool,
+    pub(super) resolved: bool,
+    pub(super) recovered: bool,
+    pub(super) cold_admitted: bool,
+    pub(super) evidence: EvidenceKind,
+    pub(super) adopted: Option<CatalogImage>,
+    pub(super) refusal: Option<RunRefusal>,
+    pub(super) failure: Option<RunFailure>,
+    pub(super) outcome: RunOutcome,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RunAction {
+pub(super) enum RunAction {
     Bind,
     PolicyPreflight,
     AssembleSuccessorIndex,
@@ -1410,7 +1425,7 @@ enum RunAction {
     ColdReadyWithoutAdmission,
 }
 
-const BASE_RUN_ACTIONS: [RunAction; 22] = [
+pub(super) const BASE_RUN_ACTIONS: [RunAction; 22] = [
     RunAction::Bind,
     RunAction::PolicyPreflight,
     RunAction::AssembleSuccessorIndex,
@@ -1479,7 +1494,7 @@ impl PublicationMutant {
 }
 
 impl PublicationRun {
-    fn initial(scenario: PublicationScenario) -> Self {
+    pub(super) fn initial(scenario: PublicationScenario) -> Self {
         Self {
             scenario,
             phase: RunPhase::Idle,
@@ -1510,7 +1525,7 @@ impl PublicationRun {
         }
     }
 
-    fn fail(self, kind: RunFailure, outcome: RunOutcome) -> Self {
+    pub(super) fn fail(self, kind: RunFailure, outcome: RunOutcome) -> Self {
         Self {
             phase: RunPhase::Failed,
             failure: Some(kind),
@@ -1519,7 +1534,7 @@ impl PublicationRun {
         }
     }
 
-    fn adopt(self, image: CatalogImage) -> Self {
+    pub(super) fn adopt(self, image: CatalogImage) -> Self {
         Self {
             phase: RunPhase::Ready,
             adopted: Some(image),
@@ -1528,7 +1543,7 @@ impl PublicationRun {
         }
     }
 
-    fn step(self, action: RunAction) -> Option<Self> {
+    pub(super) fn step(self, action: RunAction) -> Option<Self> {
         let scenario = self.scenario;
         let trusted = scenario.call_mode == PublicationMode::Trusted;
         let cold = scenario.call_mode == PublicationMode::ColdChecked;
@@ -1828,12 +1843,12 @@ fn adoption_follows_directory_sync_and_resolution(run: &PublicationRun) -> bool 
     run.adopted.is_none() || (run.catalog_file_durable && run.directory_synced && run.resolved)
 }
 
-fn adopted_successor_is_exact_catalog(run: &PublicationRun) -> bool {
+pub(super) fn adopted_successor_is_exact_catalog(run: &PublicationRun) -> bool {
     run.adopted.is_none() ||
         (run.adopted == Some(CatalogImage::New) && run.catalog == CatalogImage::New)
 }
 
-fn trusted_outcome_boundary_is_exact(run: &PublicationRun) -> bool {
+pub(super) fn trusted_outcome_boundary_is_exact(run: &PublicationRun) -> bool {
     let terminal = matches!(run.phase, RunPhase::Ready | RunPhase::Refused | RunPhase::Failed);
     (run.outcome != RunOutcome::DefinitelyNotPublished ||
         (!run.slot_write_started && run.catalog != CatalogImage::New && run.adopted.is_none())) &&
@@ -1966,7 +1981,7 @@ fn assert_publication_model(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HookPhase {
+pub(super) enum HookPhase {
     AfterPrepareWrite,
     AfterPrepareSync,
     AfterIndexWrite,
@@ -2006,7 +2021,9 @@ const COLD_HOOK_PHASES: [HookPhase; 16] = [
 
 const TRUSTED_HOOK_PHASE_COUNT: usize = 13;
 
-fn trusted_hook_phases() -> &'static [HookPhase] { &COLD_HOOK_PHASES[..TRUSTED_HOOK_PHASE_COUNT] }
+pub(super) fn trusted_hook_phases() -> &'static [HookPhase] {
+    &COLD_HOOK_PHASES[..TRUSTED_HOOK_PHASE_COUNT]
+}
 
 fn event_hooks(event: &PublicationEvent) -> &'static [HookPhase] {
     match event {
@@ -2030,7 +2047,7 @@ fn hook_trace(trace: &[PublicationEvent]) -> Vec<HookPhase> {
     trace.iter().flat_map(event_hooks).copied().collect()
 }
 
-fn hook_failure_behaviors(hook: HookPhase) -> Vec<Vec<RunAction>> {
+pub(super) fn hook_failure_behaviors(hook: HookPhase) -> Vec<Vec<RunAction>> {
     let through =
         |count: usize, failure: RunAction| [&TRUSTED_SUCCESS_ACTIONS[..count], &[failure]].concat();
     match hook {
@@ -2148,7 +2165,7 @@ fn event_actions(
     }
 }
 
-fn tla_behavior(
+pub(super) fn tla_behavior(
     trace: &[PublicationEvent],
     outcome: &PublicationOutcome,
     persisted: CatalogImage,
@@ -2200,14 +2217,14 @@ fn tla_behavior(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PackEntry {
+pub(super) enum PackEntry {
     Prepare(usize),
     Record(IndexRecord),
     Commit(usize),
     TornTail,
 }
 
-fn transaction_entries(receipt: &SealedReceipt) -> Vec<PackEntry> {
+pub(super) fn transaction_entries(receipt: &SealedReceipt) -> Vec<PackEntry> {
     let mut entries = Vec::with_capacity(receipt.index_plan.len() + 2);
     entries.push(PackEntry::Prepare(receipt.generation));
     entries.extend(receipt.index_plan.iter().copied().map(PackEntry::Record));
@@ -2236,7 +2253,7 @@ fn durable_window(hook: HookPhase, transaction_len: usize) -> (usize, usize) {
     }
 }
 
-fn catalog_images(hook: HookPhase) -> &'static [CatalogImage] {
+pub(super) fn catalog_images(hook: HookPhase) -> &'static [CatalogImage] {
     match hook {
         HookPhase::AfterPrepareWrite |
         HookPhase::AfterPrepareSync |
@@ -2259,7 +2276,7 @@ fn catalog_images(hook: HookPhase) -> &'static [CatalogImage] {
     }
 }
 
-fn interrupted_images(
+pub(super) fn interrupted_images(
     prefix: &[PackEntry],
     transaction: &[PackEntry],
     hook: HookPhase,
@@ -2281,7 +2298,7 @@ fn interrupted_images(
     images
 }
 
-fn recover_appointed(
+pub(super) fn recover_appointed(
     pack: &[PackEntry],
     catalog: CatalogImage,
     predecessor_entries: usize,
@@ -2305,9 +2322,9 @@ pub(super) struct StepChoice {
 
 #[derive(Clone, Debug)]
 pub(super) struct TrustedHistory {
-    world: TrustedWorld,
-    initial: AuthorityCore,
-    steps: Vec<StepChoice>,
+    pub(super) world: TrustedWorld,
+    pub(super) initial: AuthorityCore,
+    pub(super) steps: Vec<StepChoice>,
 }
 
 #[derive(Clone, Debug)]
@@ -2328,7 +2345,7 @@ fn first_entries(manifest: usize) -> RetentionEntries {
     }
 }
 
-fn initial_records(count: usize) -> Vec<IndexRecord> {
+pub(super) fn initial_records(count: usize) -> Vec<IndexRecord> {
     (0..count)
         .map(|offset| IndexRecord {
             digest: 10_000 + offset,
@@ -2346,7 +2363,11 @@ fn metadata_anchors(core: &AuthorityCore) -> Vec<usize> {
         .collect()
 }
 
-fn receipt_for(core: &AuthorityCore, generation: usize, choice: &StepChoice) -> SealedReceipt {
+pub(super) fn receipt_for(
+    core: &AuthorityCore,
+    generation: usize,
+    choice: &StepChoice,
+) -> SealedReceipt {
     SealedReceipt {
         base: core.validity,
         target: choice.manifest,
@@ -2381,7 +2402,7 @@ fn shape_summaries() -> impl Strategy<Value = ShapeSummary> {
     )
 }
 
-fn trusted_histories() -> impl Strategy<Value = TrustedHistory> {
+pub(super) fn trusted_histories() -> impl Strategy<Value = TrustedHistory> {
     (1usize..8, 1usize..5).prop_flat_map(|(semantic_count, metadata_count)| {
         (
             prop::collection::vec(prop::collection::vec(any::<u8>(), 0..4), semantic_count),
@@ -2565,7 +2586,10 @@ pub(super) fn expected_refusal(
     }
 }
 
-fn assert_exact_authority(world: &TrustedWorld, core: &AuthorityCore) -> Result<(), TestCaseError> {
+pub(super) fn assert_exact_authority(
+    world: &TrustedWorld,
+    core: &AuthorityCore,
+) -> Result<(), TestCaseError> {
     let env = &world.env;
     prop_assert!(core.entries.current.manifest < env.semantic.graph.len());
     prop_assert_eq!(
@@ -2593,7 +2617,10 @@ fn assert_exact_authority(world: &TrustedWorld, core: &AuthorityCore) -> Result<
     Ok(())
 }
 
-fn trusted_runner(cases: u32, source_file: &'static str) -> prop::test_runner::TestRunner {
+pub(super) fn trusted_runner(
+    cases: u32,
+    source_file: &'static str,
+) -> prop::test_runner::TestRunner {
     prop::test_runner::TestRunner::new(ProptestConfig {
         cases,
         source_file: Some(source_file),
@@ -2658,7 +2685,7 @@ fn tight_policy() -> TrustedPolicy {
     TrustedPolicy::GENEROUS.with(PolicyAxis::State(StateCeiling::UnionObjects), 2)
 }
 
-fn mutation_free(trace: &[PublicationEvent]) -> bool {
+pub(super) fn mutation_free(trace: &[PublicationEvent]) -> bool {
     !trace.iter().any(PublicationEvent::mutates)
 }
 
@@ -4350,7 +4377,7 @@ pub(super) fn owner_trusted_policy_refusal_model_property() {
                     }
                     let lowered = exact.with(axis, value - 1);
                     let request = OwnerRequest {
-                        current: core.validity,
+                        current: owner_state(core),
                         pending: OwnerPhase::Ready,
                         journal: OwnerJournal::Captured,
                         limits: OwnerLimits {
@@ -4358,7 +4385,7 @@ pub(super) fn owner_trusted_policy_refusal_model_property() {
                             trusted: lowered,
                         },
                         recovery_demand: ColdDemand::default(),
-                        recovered: core.validity,
+                        recovered: owner_state(core),
                     };
                     let traces = std::cell::RefCell::new(Vec::with_capacity(1));
                     let publish = |policy: &TrustedPolicy| {

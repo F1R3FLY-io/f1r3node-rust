@@ -79,20 +79,26 @@ VARIABLE run
 
 vars == <<run>>
 
+(* The run a scenario starts from.  RSpaceTrustedIncrementalHistory starts
+   each history step from it. *)
+InitialRun(sealedMode, callMode, margin, callPolicy, assembly, coldLimit) ==
+    [sealedMode |-> sealedMode, callMode |-> callMode,
+     margin |-> margin, callPolicy |-> callPolicy,
+     assembly |-> assembly, coldLimit |-> coldLimit,
+     phase |-> "Idle", trial |-> "pending", checked |-> FALSE,
+     mutated |-> FALSE, slotWriteStarted |-> FALSE,
+     catalog |-> "old", catalogFileDurable |-> FALSE,
+     dirSynced |-> FALSE, resolved |-> FALSE, recovered |-> FALSE,
+     coldAdmitted |-> FALSE, evidence |-> "none",
+     adopted |-> "none", refusal |-> "none", failure |-> "none",
+     outcome |-> "none"]
+
 Init ==
     \E sealedMode \in Modes, callMode \in Modes, margin \in Margins,
        callPolicy \in CallPolicies, assembly \in Assemblies,
        coldLimit \in ColdLimits :
-      run = [sealedMode |-> sealedMode, callMode |-> callMode,
-             margin |-> margin, callPolicy |-> callPolicy,
-             assembly |-> assembly, coldLimit |-> coldLimit,
-             phase |-> "Idle", trial |-> "pending", checked |-> FALSE,
-             mutated |-> FALSE, slotWriteStarted |-> FALSE,
-             catalog |-> "old", catalogFileDurable |-> FALSE,
-             dirSynced |-> FALSE, resolved |-> FALSE, recovered |-> FALSE,
-             coldAdmitted |-> FALSE, evidence |-> "none",
-             adopted |-> "none", refusal |-> "none", failure |-> "none",
-             outcome |-> "none"]
+      run = InitialRun(sealedMode, callMode, margin, callPolicy, assembly,
+                       coldLimit)
 
 Refuse(kind) ==
     run' = [run EXCEPT !.phase = "Refused", !.refusal = kind,

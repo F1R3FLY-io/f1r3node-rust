@@ -879,7 +879,7 @@ rocq_check_modules "path-local retention V2 metadata editor" \
   StackSafePDA.CreditedClosureLedger StackSafePDA.RetentionV2Format \
   StackSafePDA.RetentionV2Editor
 rocq_reject_placeholders theories/TrustedSuccessorCapability.v
-rocq_compile_with_closed_count theories/TrustedSuccessorCapability.v 16 \
+rocq_compile_with_closed_count theories/TrustedSuccessorCapability.v 20 \
   "trusted successor capability"
 rocq_check_modules "trusted successor capability" \
   StackSafePDA.ChannelImage StackSafePDA.GenerationCheckpointPublication \
@@ -1831,6 +1831,7 @@ do
     exit 1
   fi
 done
+bash "$repo_root/scripts/check-rspace-trusted-history-model.sh"
 bash "$repo_root/scripts/check-rspace-journal-owner-model.sh"
 TLC_RSS=4G bash "$repo_root/scripts/check-rspace-compaction-model.sh"
 tlc_run "$tla_metadir" \

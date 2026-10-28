@@ -20581,6 +20581,207 @@ successor's work against growing history.
   (review decision 6 of the same reviewed plan, pgmcp artifact 1114), and the
   scaling claim against geometrically growing history is task 7929.
 
+### J-253 — 2026-10-27: faulted trusted histories and cold restart equivalence (task 7928)
+
+**DERIVED.** This entry follows J-252, with which task 7927 made the trusted
+successor the journal owner's publication path. Task 7928 asks that, after
+every step of generated histories, the trusted successor be compared with cold
+admission, with kills at every hook. Its reviewed plan (pgmcp artifact 1140)
+builds the task in four slices, each a child task of 7928, run in order with
+one in progress (review decision 7). This entry opens with the first slice and
+stays open until the last; each later slice appends its row and its evidence.
+
+| Slice | Task | Commit |
+|---|---|---|
+| The history, journal owner and Rocq models, and the test-model extraction of TH-01 to TH-08 | 11966 | the commit that opens this entry |
+
+The production halves of TH-01 to TH-07 on real files are task 11967, the
+production half of TH-08 through the journal owner is task 11968, and the
+production negative controls, the timing and the completion of this entry are
+task 11969.
+
+The
+[faulted trusted histories section](generation-checkpoint-invariant-catalog-2026-08-28.md#faulted-trusted-histories-and-cold-restart-equivalence-2026-10-27)
+of the invariant catalog states the models with their invariants, negative
+controls and witnesses, the Rocq theory, the transliteration, the generated
+chains and the TH rows. This entry records the decisions, the hypotheses with
+their tests, the corrections that the slice made to the test model, and the
+evidence.
+
+The slice changes no production source. Its history model,
+`RSpaceTrustedIncrementalHistory.tla`, instantiates the single-publication
+model `RSpaceTrustedIncrementalPublication.tla` and composes its publications
+into histories of at most three commits and one restart. It adds what happens
+between publications: the writer settles each outcome, recovers through its
+held lease and restarts by path; a reader pins the appointed prefix; and the
+environment binds a stale copy, a decoy, to the store's pathname and replaces
+the live catalog with an image that the writer did not write. The journal owner
+model `RSpaceJournalPublicationOwner.tla` gains the decoy. The Rocq theory in
+`TrustedSuccessorCapability.v` composes faulted publications, each followed by
+an admissible recovery, and proves that such a history keeps one exact
+authority and appoints each commit once.
+
+**DECISIONS.** The review of the plan settled, against the code, what the
+task's words mean (pgmcp artifact 1140):
+
+1. *Eviction* (review decision 2). Retention keeps all history: every sealed
+   transaction computes its retention step with `commit_retention_v2` or
+   `migrate_retention_v1`, a fresh generation checkpoint takes no retention
+   parameter, and `evict_retention_v2` is reachable only from tests. No
+   production history can evict a retained root, so the family covers
+   physical eviction, the reclamation of a superseded generation that waits for
+   a pinned reader, crossed with faults. At every step it also checks the
+   keep-all premise under which the trusted maxima are exact.
+2. *Reset-target references* (decision 3). Generated histories reach a reset's
+   target without a reset: steps whose next state equals a retained earlier
+   state, readers that pin retained generations, and reset-shaped binds, which
+   must be refused before any mutation. The alias lookup, reset identity and
+   activation remain tasks 7931 and 7756.
+3. *Kills at every hook* (decision 4). Every hook that a trusted publication
+   passes is killed in a child process at a later history step, after an
+   earlier fault and its recovery. The hook list is taken from the trusted
+   path's trip sites, not from a hand count.
+4. *Defects* (decision 5). A defect that a TH check finds is diagnosed from a
+   model counterexample first, opened as its own bug item and fixed before task
+   7928 closes; no test is left failing or filtered.
+5. *Limits* (decision 6). Overflow, scratch and final limit errors appear as
+   refusals in generated histories. The three overflows that need a 64-bit
+   counter to overflow are listed with their sources, and no seam is added.
+6. *Model bounds* (decision 8). `MaxSteps = 3` and `MaxRestarts = 1`. A smaller
+   bound would be used only after a diagnosis from TLC's state counts, and only
+   if every negative control and witness still discriminated at it.
+7. *Gate location* (decision 9). Every check runs in the temporary-index
+   export, with its own target directory, one heavy job at a time in a capped
+   user scope with zero swap.
+8. *Production negative controls* (decision 10). The nine controls are
+   required. Each is applied only in the export, never committed, and must be
+   killed by its named test. They run in task 11969.
+
+**HYPOTHESES.** The slice tests five hypotheses. H1 and H4 restate what the
+reviewed plan required before implementation (review decision 1). H2, H3 and
+H5 state what the models and the transliteration must show for the TH rows'
+model halves to mean anything.
+
+- *H1.* The refactor that makes the single-publication model's initial run a
+  value, `InitialRun(sealedMode, callMode, margin, callPolicy, assembly,
+  coldLimit)`, preserves its behavior: TLC again generates 664 states, 588 of
+  them distinct, to depth 13, with its nine invariants satisfied, and its eight
+  negative controls and six witnesses pass. The TS rows' transliteration
+  asserts the 588.
+- *H2.* Under `MaxSteps = 3` and `MaxRestarts = 1`, the history model's ten
+  invariants hold, each of its ten negative controls violates exactly its named
+  invariant, each of its eight witnesses is reached, and every run finishes
+  within its runtime cap.
+- *H3.* With the decoy, the journal owner model keeps its seventeen invariants;
+  the `journal-replay` fault violates `ReopenDiscardsVolatileJournal`, the
+  `pathname-recovery` fault violates `RecoveryAcceptsOnlyExactTerminal`, the
+  witness `NeverReconciledUnderDecoy` is reached, and the seventeen earlier
+  causal mutants and ten earlier witnesses still pass.
+- *H4.* The faulted-history theory closes with nothing assumed:
+  `TrustedSuccessorCapability.v` reports 20 capstones closed under the global
+  context, 16 before, and the module passes independent kernel checking.
+- *H5.* The Rust transliteration reaches exactly TLC's 6,841 states and
+  reproduces every invariant, negative control and witness; the authority,
+  pack and owner chains meet every coverage counter; and the model halves of
+  TS-12 to TS-15 still pass with the corrected owner mirror.
+
+**MEASURED.** Each hypothesis held. The commands ran on tree `76d3ff4d`, which
+is HEAD `68e61c0f9` plus this slice's sources, exported to
+`target/scratch/idx`. The uncertainty column states what each result does not
+show; for TLC it gives the checker's own estimate of the probability that a
+fingerprint collision hid a state.
+
+| Claim | Command or artifact | Result | Uncertainty | Decision |
+|---|---|---|---|---|
+| H1 | `bash target/scratch/session-401d0c58/tla-ts/run-trusted-publication.sh target/scratch/idx`, in a 4 GiB scope | 64 initial states; 664 generated, 588 distinct, depth 13; the nine invariants satisfied; the eight negative controls and six witnesses as expected | collision estimate $`2.4 \times 10^{-15}`$ | H1 holds; the TS transliteration's 588 stands |
+| H2 | `bash scripts/check-rspace-trusted-history-model.sh` under the integrated runner's TLC environment: one worker, a 512 MiB heap, 768 MiB high and 4 GiB maximum memory, 900 s | one initial state; 19,420 generated, 6,841 distinct, depth 46, in 2 s; each of the ten negative controls violated its named invariant and each of the eight witnesses was reached, each check in at most 1 s; the script took 30 s | collision estimate $`4.7 \times 10^{-12}`$; histories of more than three commits or with a second restart lie outside the bounds | H2 holds; the bounds stay |
+| H3 | `bash scripts/check-rspace-journal-owner-model.sh` under the same environment | four initial states; 1,716,908 generated, 64,080 distinct (44,272 before the decoy), depth 21, in 13 s; the nineteen causal mutants and eleven witnesses passed their designated checks; the script took 60 s | collision estimate $`5.7 \times 10^{-9}`$; the model's constants bound it | H3 holds |
+| H4 | `target/scratch/session-401d0c58/scripts/rocq_focus.sh` on `theories/TrustedSuccessorCapability.v` with 20 expected, after compiling its seven dependencies | exit 0; 20 reports "Closed under the global context"; `coqchk` reported the module successfully checked | the theorems say nothing about whether production matches the abstract publication; tasks 11967 and 11968 test that | H4 holds |
+| H5 | the three TH test functions, single-threaded with per-test times in debug and release; then the persistence suite | all three passed, in 0.58 s, 0.69 s and 0.20 s in debug, 1.48 s together, and 0.31 s together in release; their breadth-first search asserts 6,841 states and every coverage counter; the persistence suite passed 489 tests in both profiles | the generated cases are unseeded, so each run draws new cases; the counters, met by deterministic sweeps, fix what every run must reach | H5 holds |
+| The release suite took longer than at task 11946 | the persistence suites of this gate and of task 11946's (J-252) | debug from 86.17 s to 86.01 s; release from 37.97 s to 43.03 s, of which the TH tests account for 0.31 s | neither run recorded per-test times, and both draw unseeded proptest cases | not attributed here; task 11969 times the suite with a fixed seed, as J-252 did |
+
+**THE OWNER MIRROR.** The trusted successor section's owner mirror
+(`trusted_successor_properties.rs`) maps the test model's publication outcomes
+to the journal owner's. Composing it into owner histories, the slice compared
+it with the production owner and found two departures by reading the code;
+no test had failed.
+
+1. *A definite non-publication depends on where it occurs.* Production drops
+   the capture and returns the owner to ready when the trusted bind refuses
+   (`durable/rspace_authority.rs:225-231`), but it enters `RecoveryRequired`
+   before it publishes (`:268-276`), so a refusal at the preflight, the
+   successor assembly, the pin or the catalog leaves the owner requiring
+   recovery. The mirror returned every definite non-publication to ready. The
+   TS model checks did not observe the difference: the one that reaches the
+   path, `owner_awaiting_ack_retry_model_property`, counts the acknowledgements
+   of its two checkpoints and compares their outcomes with each other, and
+   under either mapping each acknowledges once and the two agree.
+   `owner_capture` now maps a bind refusal to ready and the other four to
+   `RecoveryRequired`, with no event.
+2. *A state is named by its generation.* The mirror named the owner's state by
+   the core's validity token, which is the current retention entry's manifest
+   (`trusted_successor_properties.rs:1082`). Generated histories draw each
+   step's manifest from one to seven nodes (`:2406`, `:2414`), so two
+   generations of one history can share a token, and the rule that each
+   generation is acknowledged at most once needs one name per generation.
+   `owner_state` returns the current entry's generation (`:1200`).
+
+The model halves of TS-12 to TS-15 pass with both corrections, their
+assertions unchanged.
+
+**VERIFICATION BOUNDARY.** The evidence ran on tree `76d3ff4d`, exported to
+`target/scratch/idx`, which is HEAD `68e61c0f9` plus this slice. It differs from
+the commit that opens this entry only in documentation written after the runs:
+this entry, and the catalog's pinned-source table and verification-record
+paragraph. One heavy job ran at a time, each in a user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| obligation registries | in the export | all sixteen current after the workspace regression and PathMap aggregate registries were regenerated; every self-test passed | `target/perf/logs/c32/registries-7928a-20261028T015728Z.log` | `1a48ef98b52098f6a7ed174160759474031b2b712c8b2ffcc07bb3ae689e22af` |
+| the history model's script | 8 GiB; the runner's TLC environment | as H2 | `target/perf/logs/phase0/7928a-gate-tlc-check-rspace-trusted-history-model-20261028T015801Z.log` | `4552394fec519162f6e7565224e23b66aa5d6c6e8ff23298c5d880e261ff3df7` |
+| the journal owner model's script | as above | as H3 | `target/perf/logs/phase0/7928a-gate-tlc-check-rspace-journal-owner-model-20261028T015801Z.log` | `9944cec59b9d214c37bbdee8c8615658ace219a0741d51aae4802ec062695d22` |
+| `TrustedSuccessorCapability.v` and its kernel check | 8 GiB | 20 of 20 closed; `coqchk` passed | `target/perf/logs/phase0/7928a-rocq-20261028T015931Z.log` | `9af60d18c2cc4476778e6328c10b65b7ccef59afe5d98c302111170099214795` |
+| the formal gate's summary | as above | the three steps above exited 0 in 30 s, 60 s and 50 s | `target/perf/logs/phase0/7928a-gate-summary-20261028T015801Z.txt` | `a58cf11b083298e492d258d4a416353d6fe6437c16e763ed6016d306414b0085` |
+| the single-publication model's block | 4 GiB | as H1 | `target/perf/logs/c32/ts-block-export-7928a-20261028T020344Z.log` | `f2c7585c94a3b52ea036313157bbef99c110875bf6024f43fd64514baabba845` |
+| the 489 selected rspace++ library tests under `rspace::persistence`, debug | 24 GiB, one test thread | 489 passed, 0 failed, 3 ignored, in 86.01 s | `target/perf/logs/phase4/c32-7928a-persistence-debug-20261028T020405Z.log` | `15e3238d9c222d14636a0c251c1f72d86824abd26fb49ef44dd63210c6ac556c` |
+| the same, release | as above | 489 passed, 0 failed, 3 ignored, in 43.03 s | `target/perf/logs/phase4/c32-7928a-persistence-release-20261028T020405Z.log` | `ab8a839f84f075af0b6caecbcce43e9c3acf20e93fb9227ca316c159f7155346` |
+| the three TH test functions, debug | 16 GiB, one test thread, `-Z unstable-options --report-time` | 3 passed in 1.48 s | `target/perf/logs/c32/th-time-debug-20261028T020747Z.log` | `7ddfbe05681c4c6c0e853179fc8f955f09ae9630b5a6e4c62a67e577d83e658b` |
+| the same, release | as above | 3 passed in 0.31 s | `target/perf/logs/c32/th-time-release-20261028T020747Z.log` | `8fe6a33008b398a31594225916a65e07fe94136a010e8ca37ed249b021309209` |
+| `cargo check --locked --workspace --all-targets` | 48 GiB, one scope for this and the next three steps | exit 0; the same eight warnings as the previous slice's gate | `target/perf/logs/phase0/7928a-gate-check-20261028T021020Z.log` | `71d66ce6326ed0c87e2490cf032f79a3f10fb35dcd5268f4f0b4a9ec7990aa99` |
+| `cargo clippy --locked --workspace` | as above | exit 0; one warning, also in the previous slice's gate: `active_obligation` (`models/src/rust/rholang/canonical_path_admission.rs:1518`) is never used | `target/perf/logs/phase0/7928a-gate-clippy-json-20261028T021020Z.log` | `7e08497efcfceeff15c05af5678ebe4f00bf14cddd3e98022e80e22f8073921a` |
+| `cargo nextest run --locked --release --no-fail-fast` of `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang` | as above | 4,427 passed, 0 failed, 45 skipped, in 821.24 s | `target/perf/logs/phase0/7928a-gate-nextest-20261028T021020Z.log` | `40c18a208dccb4698ab442d51eed825b6b7b81c27dda728bf3638296b428d632` |
+| `cargo test --locked --release --doc` of `models` and `rholang` | as above | 4 passed, 0 failed, 3 ignored | `target/perf/logs/phase0/7928a-gate-doc-20261028T021020Z.log` | `aeae094a5a9d97bd141a0f70627910e2175441f7a942355a7f643790846dde5b` |
+| the workspace gate's summary | as above | the four steps above exited 0 in 14 s, 9 s, 913 s and 38 s | `target/perf/logs/phase0/7928a-gate-summary-20261028T021020Z.txt` | `2d6b65a57b1844639d06752b37d0224303ddd126ddab5f9c6a1d14a82b3e166d` |
+| `cargo fmt --all -- --check` | in the export | exit 0, no difference | `target/perf/logs/c32/fmt-7928a-20261028T020801Z.log` | `59d1ecd0ad2b861e8983c91f8e5000c867360780533806ed3f29e304d6b35702` |
+| `scripts/check-fmt.sh`, the pre-commit hook's check | in the export | clean, 0 differences | `target/perf/logs/c32/check-fmt-7928a-20261028T020801Z.log` | `a6ba863d6d396c0b2835c624f1af04eae5244fe485c106a003205cdb8489b79c` |
+
+The one compiler warning in both suites, an unused import in
+`tests/persistence/object_store_collision.rs`, is also in the previous
+commit's runs; bug 11963 removes it. The manifest test ran again on the final
+export after the two documents were filled; the pgmcp progress note of task
+11966 records that run. pgmcp artifact 1141 holds this table with the model
+results. These are agent-run results; independent review and the approved
+pgmcp verification recipe remain required.
+
+**BOUNDARY.**
+
+- This slice changes no production code. Every TH row is a test-only model
+  extraction until tasks 11967 and 11968 add its production half. The
+  production negative controls, the timing and the completion of this entry
+  are task 11969, and the entry stays open until then.
+- Semantic root eviction does not exist under the approved keep-all retention.
+  A future eviction needs the trusted maxima recomputed cold, as
+  `eviction_requires_recomputation_counterexample` shows, and an extension of
+  the TH family.
+- Reset identity and activation remain task 7756, and the substrate stays out
+  of RSpace until task 7931 wires it in.
+- No scaling is claimed; task 7929 measures the successor's work against
+  geometrically growing history.
+- No power-loss claim is made: a killed process leaves its writes with the
+  operating system, and nothing here models a lost page cache.
+- No persisted byte, identity, format, wire message or production outcome
+  changes, so the consensus-change register gets no note (review decision 11).
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

@@ -78,7 +78,7 @@ Init ==
        unwoundAfterAck |-> FALSE, ackRetriedAfterUnwind |-> FALSE,
        coldLimit |-> "loose", coldEvidence |-> "admitted",
        emptyCheckpointUnderTightLimits |-> FALSE,
-       acknowledgedUnderTightLimits |-> FALSE]
+       acknowledgedUnderTightLimits |-> FALSE, decoy |-> FALSE]
 
 Capture(receipt) ==
     /\ state.phase = "Ready"
@@ -117,8 +117,9 @@ Recover(report) ==
     /\ report \in Reports
     /\ LET exact == report = state.durable /\ report \in {Old, state.expected}
            weak == Fault = "wrong-recovery" /\ report.version = 1
+           pathname == Fault = "pathname-recovery" /\ state.decoy /\ report = Old
            withinLimits == state.coldLimit = "loose" \/ Fault = "cold-limit-ignored"
-       IN IF (exact \/ weak) /\ withinLimits
+       IN IF (exact \/ weak \/ pathname) /\ withinLimits
           THEN state' = [state EXCEPT
               !.phase = IF report = Old THEN "Ready" ELSE "AwaitingAck",
               !.gate = report # Old,
@@ -189,10 +190,22 @@ CancelCall ==
     /\ state' = [state EXCEPT !.cancelled = TRUE,
                   !.gate = IF Fault = "cancel-gate-release" THEN FALSE ELSE @]
 
+PlaceDecoy ==
+    /\ state.phase \in OpenPhases
+    /\ ~state.decoy
+    /\ state' = [state EXCEPT !.decoy = TRUE]
+
+RemoveDecoy ==
+    /\ state.phase \in OpenPhases
+    /\ state.decoy
+    /\ state' = [state EXCEPT !.decoy = FALSE]
+
 CrashAndReopen ==
     /\ state.phase \in OpenPhases \union {"Done"}
+    /\ ~state.decoy
     /\ state' = [state EXCEPT !.phase = "Reopened", !.gate = FALSE,
-        !.hotBase = state.durable.version, !.journal = Empty,
+        !.hotBase = state.durable.version,
+        !.journal = IF Fault = "journal-replay" THEN @ ELSE Empty,
         !.incarnation = 1 - @, !.epoch = 0,
         !.admitted = state.durable,
         !.ackCommitted = FALSE,
@@ -254,6 +267,7 @@ Next ==
     \/ \E receipt \in AckReceipts, terminal \in Reports: Acknowledge(receipt, terminal)
     \/ FinishAcknowledgement \/ Unwind \/ CancelCall
     \/ TightenColdLimits \/ EmptyCheckpoint
+    \/ PlaceDecoy \/ RemoveDecoy
     \/ CrashAndReopen
     \/ EarlyAck \/ PartialClear \/ LosePin \/ UnresolvedRebase
     \/ DuplicatePublish \/ MutationDuringGate
@@ -280,6 +294,7 @@ TypeInvariant ==
     /\ state.coldEvidence \in {"none", "admitted", "exceeds-limits", "fabricated"}
     /\ state.emptyCheckpointUnderTightLimits \in BOOLEAN
     /\ state.acknowledgedUnderTightLimits \in BOOLEAN
+    /\ state.decoy \in BOOLEAN
 GateHeldUntilResolution == state.phase \in OpenPhases => state.gate
 ContinuousAuthority == state.writer /\ (state.oldPin \/ state.newPin)
 ExactPendingReceipt ==
@@ -321,4 +336,5 @@ NeverCancelled == ~state.cancelled
 NeverRetriedAcknowledgementAfterUnwind == ~state.ackRetriedAfterUnwind
 NeverEmptyCheckpointUnderTightenedColdLimits == ~state.emptyCheckpointUnderTightLimits
 NeverAwaitingAckRetryUnderTightenedColdLimits == ~state.acknowledgedUnderTightLimits
+NeverReconciledUnderDecoy == ~(state.decoy /\ state.acceptedRecovery)
 =============================================================================

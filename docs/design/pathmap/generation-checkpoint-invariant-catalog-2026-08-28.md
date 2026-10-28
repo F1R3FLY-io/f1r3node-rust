@@ -304,6 +304,8 @@ executable target. JO names remain a separate model boundary, not extra central 
 | JO-11 | `cold_restart_before_acknowledgement_selects_old_or_new_without_delta_replay` destroys the unresolved owner and old hot incarnation before recovery, checks all five fresh journals, and then publishes another mutation. |
 | JO-13, JO-14, JO-15 | The unwind matrix and acknowledgement-conflict test distinguish exact retry from changed marker/version, including non-panicking and panicking post-acknowledgement restores. A shared read-only exact-marker predicate guards owner completion. |
 | JO-02 cancellation | `cancelling_a_checkpoint_waiting_for_the_exact_gate_does_not_capture_or_publish` drops a pending caller before gate acquisition. There is no await or detached worker after capture. |
+| JO-11 journal replay (2026-10-27) | The owner model's `journal-replay` fault keeps the volatile journal across `CrashAndReopen` and violates `ReopenDiscardsVolatileJournal`, the invariant's first negative control (the faulted trusted histories section). TH-08's owner mirror, in `tests/persistence/trusted_history_properties.rs`, reopens the owner after each restart with an empty journal, whose checkpoint publishes nothing and runs no cold check. Task 11968 adds the restart through this file's real owner. |
+| JO-09 pathname recovery (2026-10-27) | The `pathname-recovery` fault accepts the old report as exact while a decoy is bound to the store's pathname and violates `RecoveryAcceptsOnlyExactTerminal`; the witness `NeverReconciledUnderDecoy` shows that exact recovery under a decoy is reachable. This slice has model evidence only; task 11968 adds a decoy reconciliation through this file's real owner. |
 
 Combined HotStore/persistence debug and release gates pass 403/403 with 233 other
 library tests excluded. The owner property has an explicit 64-history configuration,
@@ -1500,8 +1502,9 @@ from them. They leave these questions open:
   every schedule are not re-tested in production.
 - The trusted bind of task 11945 derives the deltas and runs the trials; the
   trusted publication that replaces cold re-admission is task 11946, its fault
-  acceptance is task 7928, and the scaling claim against geometrically growing
-  history is task 7929. CL-07 shows work independence on small cases only.
+  acceptance is task 7928 (the faulted trusted histories section), and the
+  scaling claim against geometrically growing history is task 7929. CL-07
+  shows work independence on small cases only.
 - A trial that removes an object's last reference in both domains leaves a
   zero entry in `states`. Every report, enumeration and inventory ignores it.
   Production retention is keep-all, so no production path creates one before
@@ -2458,8 +2461,9 @@ constructors. These questions remain open:
   confirmation. Until it lands, a V2 source refuses every successor.
 - The trusted successor that replaces cold re-admission on ordinary commits is
   task 7927, which task 11946 completes (the trusted successor publication
-  section); its comparison with cold admission after every step is task 7928,
-  and the scaling evidence is task 7929.
+  section); its comparison with cold admission after every step is task 7928
+  (the faulted trusted histories section), and the scaling evidence is task
+  7929.
 - At a terminal that is not a checkpoint, no $`\mathrm{DATA}`$ is declared, so
   step 7 has nothing to compare. A V2 source can have such a terminal only after
   a V2 successor, which this task refuses; task 7926 must bind the metadata of
@@ -3027,7 +3031,8 @@ capstones.
   costs $`O(n)`$ end to end on that path. Since task 11946 the trusted
   publication replaces re-admission on ordinary commits (the trusted successor
   publication section). Comparing that successor with cold admission after
-  every step is task 7928, and the scaling evidence is task 7929.
+  every step is task 7928 (the faulted trusted histories section), and the
+  scaling evidence is task 7929.
 - Superseded radix nodes stay in their packs until compaction or the garbage
   collector reclaims them; the collector must treat the metadata closure of
   every retained anchor as live (tasks 7943 to 7945).
@@ -3385,7 +3390,8 @@ is described in the next section.
   concern of task 7756.
 - No scaling is claimed (task 7929). Task 11946 checks the publication's
   faults in-process on real files; crossing generated histories with
-  failpoints at every hook is task 7928.
+  failpoints at every hook is task 7928 (the faulted trusted histories
+  section).
 - Damage to the catalog after adoption is the trade that J-067 accepts: the next
   cold boundary finds it. The re-read before adoption (step 6 above) reports
   damage that precedes it as published with an error.
@@ -4781,8 +4787,8 @@ types, keep a trusted successor honest: each mutant compiles and publishes.
   crash check covers every trusted hook at a single step, all in-process on
   real files. Crossing generated histories with failpoints at every hook,
   eviction and reset-target references, pinned readers and cancellation is
-  task 7928, and the scaling claim against geometrically growing history is
-  task 7929.
+  task 7928 (the faulted trusted histories section), and the scaling claim
+  against geometrically growing history is task 7929.
 - No persisted byte, identity, cold report or cold-checked outcome changes.
 - The owner stays out of RSpace until task 7931 wires the substrate in.
 - A catalog damaged after the publication returns is the trade that J-067
@@ -4807,6 +4813,409 @@ at these sources.
 | `docs/design/pathmap/figures/trusted-successor-publication.puml` | `59b2f5878fa1ef73c1f0fc01dde8b95471960d789e3c5a7e2c5de189b0609a3c` |
 | `docs/design/pathmap/figures/journal-owner-trusted-checkpoint.puml` | `162838f6d92c9316cd545a563b2a1a03ba9a7f61b66ea55b4cf1acd57cfbc418` |
 | `docs/design/pathmap/figures/durable-authority-core-split.puml` | `15269e5faa5610ab3689bab10393453caea73dd9faa759e727c04ff3343283ba` |
+
+### Faulted trusted histories and cold restart equivalence (2026-10-27)
+
+Task 7928 checks that a history of trusted successors keeps one exact
+authority, equal to independent cold admission, while its publications fail,
+its writer restarts, a reader pins its generations and the environment binds a
+stale copy to the store's pathname. Its reviewed plan (pgmcp artifact 1140)
+splits the task into four slices. This section records the first, task 11966:
+the formal models, and the test-model extraction of a new property family,
+TH-01 to TH-08. Task 11967 adds the production halves of TH-01 to TH-07 on
+real files, task 11968 the production half of TH-08 through the journal owner,
+and task 11969 the production negative controls, the timing and the completion
+of this section and of engineering journal J-253. The slice changes no
+production code, so until those tasks every TH row below is a test-only model
+extraction, as the TS rows were after the trusted successor section's first
+slice.
+
+**Scope.** The task asks for the comparison with cold admission across
+replacement, removal, sharing, retention, eviction and reset-target
+references; under faults at the physical failpoints, overflow, scratch and
+final limit errors, cancellation, ambiguous catalog publication and
+acknowledgement retry; with one sole authority that never replays the journal
+and never reopens the store by pathname. The reviewed plan settles what each
+of these means against the code.
+
+- *Eviction.* Retention keeps all history. Every sealed transaction computes
+  its retention step with `commit_retention_v2` or `migrate_retention_v1`
+  (`durable/admission.rs:1397`, `:1418`, `:2258`, `:2277`); a fresh generation
+  checkpoint rewrites the admitted retained closure and takes no retention
+  parameter (`durable/publication.rs:563-571`); and `evict_retention_v2` is
+  reachable only from tests (`retention/v2_writer.rs:62-67`). No production
+  history can therefore evict a retained root. The family covers physical
+  eviction instead: reclamation of a superseded generation, deferred while a
+  reader pins it and completed after the unpin, crossed with faults, including
+  a crash in the middle of reclamation. At every generated step it also checks
+  the premise under which the trusted maxima are exact (TS-16): the
+  successor's history holds every predecessor entry and the predecessor's
+  current state, one entry more than the predecessor's history. A semantic
+  eviction would need the maxima recomputed
+  (`eviction_requires_recomputation_counterexample`) and an extension of this
+  family.
+- *Reset-target references.* A reset publishes an earlier retained state at a
+  fresh generation. Generated histories reach that target without a reset:
+  steps whose next state equals a retained earlier state, readers that pin and
+  read retained generations, and reset-shaped binds from retained states,
+  which must be refused before any mutation after faults and restarts. The
+  alias lookup, reset identity and activation remain tasks 7931 and 7756.
+- *Overflow, scratch and final limits.* Overflow is the generation-lease
+  counter's: at the owner's successor pin it leaves the owner awaiting
+  acknowledgement, and at a reader's pin it is refused with nothing changed.
+  The scratch limits are the trial axes `Scratch`, `UnionObjects` and
+  `UnionBytes`, and the final limits are `FinalObjects` and `FinalBytes`
+  (`closure/ledger_trial.rs:19-26`) and the six state ceilings; both appear as
+  refusals interleaved in generated histories. Three overflows need a 64-bit
+  counter to overflow, which no test can bring about without a production
+  seam: the canonical counters' `CanonicalFormatError::CounterOverflow`, the
+  retained-root registry's `RetentionRegistryError::CounterOverflow`, and the
+  reclamation's pack count and range (`DurableIoError::SuccessorOverflow`,
+  `durable/io.rs:1283-1302`). They are listed here, and no seam is added.
+- *Cancellation.* The operation gate is the owner's only await
+  (`durable/rspace_authority.rs:213`), and the trusted publication is
+  synchronous, so a checkpoint can be cancelled only while it waits for the
+  gate; generated owner histories cancel it there.
+- *Independent cold admission.* The comparison at every step admits a byte
+  copy of the store in a fresh directory, written with plain writes, mode
+  0o600 and no hard links, under its own lease. An in-process reopen is not
+  independent: the generation-lease registry is keyed by the directory's
+  device and inode (`retention.rs:574-598`), and the writer lock refuses a
+  second writer of the live directory (`durable/io.rs:907-915`). Restart is a
+  generated action, which drops the writer and reopens the store by path, and
+  every history ends with one.
+- *Kills at every hook.* Every hook that a trusted publication passes is
+  killed in a child process at a later history step, after an earlier fault
+  and its recovery. The child aborts at the hook, without unwinding; the parent
+  reopens the store by path, admits it cold, requires the predecessor or the
+  exact successor and the committed appointed prefix, retries, and compares the
+  result with a reference chain. No destructor in the persistence substrate
+  writes a file (`durable/io.rs:1012-1021`, `retention.rs:464-475`,
+  `:714-723`), so an in-process failure followed by its drops leaves the files
+  that a kill at the same hook leaves; the child processes check it. Power
+  loss is not modelled.
+- *Defects.* A defect that a TH check finds is diagnosed from a model
+  counterexample first and fixed, under its own bug item, before task 7928
+  closes; no TH test is left failing or filtered.
+
+**The history model.** `RSpaceTrustedIncrementalHistory.tla` instantiates the
+single-publication model `RSpaceTrustedIncrementalPublication.tla` as `P` and
+composes its publications into histories of at most `MaxSteps` commits. It adds
+what happens between publications: the writer settles each outcome, recovers
+through its held lease after an ambiguous one and restarts by path; one reader
+pins the appointed prefix; and the environment binds a stale copy, a *decoy*,
+to the store's pathname, replaces the live catalog with an image that the
+writer did not write, and repairs it. A history record abstracts the store.
+
+| Field | Meaning |
+|---|---|
+| `durable` | the number of commits that the live catalog appoints |
+| `log` | the commits in the appointed prefix, a ghost sequence in which commit $`k`$ is the integer $`k`$ and `Orphan`, 0, a commit left behind the appointed tail |
+| `suffix` | whether bytes exist behind the appointed tail |
+| `core` | the generation that the writer's in-process authority names, or `NoGen`, $`\mathit{MaxSteps} + 1`$, when it holds none |
+| `mode` | `idle`, `publishing`, `recovery` or `damaged` |
+| `pre` | the predecessor generation of the current or last attempt |
+| `pinned`, `pinnedLog` | the reader's pinned generation, or `NoGen`, and the prefix that it pinned |
+| `restarts` | the restarts so far, at most `MaxRestarts` |
+| `decoy` | whether a decoy is bound to the store's pathname |
+| `foreign` | whether the live catalog holds an image that this writer did not write |
+| `atBegin` | `log`, `suffix` and `durable` at the last `Begin` |
+| `last` | the tag of the last event |
+
+| Action | Effect |
+|---|---|
+| `Begin` | From an idle writer whose authority names the live catalog's generation, below `MaxSteps` commits and with no foreign image, starts a publication from one of five scenarios: the sealed trusted publication under the sealed policy, or one that the bind's trials refuse (a margin one below the measurement), that the preflight's policy check refuses (a changed policy), that its mode check refuses (a cold call), or that the successor index assembly refuses (a conflict). |
+| `Publish` | Takes one step of the single-publication model, its faults and its external catalog change included, while the run is not terminal. |
+| `Settle` | Applies the terminal outcome. Ready adopts the successor and appends it to the log. A definite non-publication keeps the predecessor authority and leaves a suffix if the run appended. An indeterminate catalog write appoints the successor only if the new image persisted, and a published error appoints it. Both leave the writer without authority and recovering, or damaged after a published error that left another image in the live catalog. |
+| `Recover` | Held-lease recovery through the pinned directory adopts the generation that the live catalog selects; it reads neither the suffix nor the pathname. |
+| `RecoverRefused` | Recovery against a foreign image leaves the writer damaged. |
+| `ReplaceCatalog`, `Repair` | The environment replaces the live catalog with an image that the writer did not write, and later restores the writer's last image. |
+| `Restart` | Drops the writer and its reader and reopens the store by path, never under a decoy. A publication abandoned during the slot write leaves the old, a torn or the new image; one abandoned elsewhere leaves the image that its run left. A restart that finds a foreign image leaves the writer damaged. |
+| `PinReader`, `UnpinReader` | The reader pins the idle writer's generation and prefix, and releases them. |
+| `PlaceDecoy`, `RemoveDecoy` | The environment binds a decoy while the writer is idle or recovering, and removes it. |
+
+Ten invariants hold in the base configuration.
+
+| Invariant | Statement |
+|---|---|
+| `HistoryTypeInvariant` | The single-publication type invariant, and the types of the history record. |
+| `HistorySoleAuthority` | An idle writer's authority names exactly the generation that the live catalog appoints. |
+| `HistoryAuthorityIsCatalogSelected` | After a recovery or a restart the authority is the catalog's selection, the predecessor or the successor of the last attempt. |
+| `HistoryRecoveryRequiredAfterAmbiguity` | After an indeterminate or published-error outcome the writer holds no authority and is recovering or damaged. |
+| `HistoryAppointedPrefixIsCommitted` | The appointed prefix holds commits 1 to `durable`, in order. |
+| `HistoryCommitsAtMostOnce` | No commit appears twice in the appointed prefix. |
+| `HistoryPinnedPrefixStable` | The reader's pinned prefix is a prefix of the appointed one. |
+| `HistoryRefusalPreservesFiles` | A refused publication leaves the log, the suffix and the appointed count as they were at its `Begin`. |
+| `RunOutcomeBoundaryIsExact` | The single-publication model's outcome boundary, `TrustedOutcomeBoundaryIsExact`, at every history step. |
+| `RunAdoptedSuccessorIsExactCatalog` | The single-publication model's exact re-read, `AdoptedSuccessorIsExactCatalog`, at every history step. |
+
+Each negative control adds one action to `Next`, and its configuration checks
+the type invariant and the invariant that it must violate.
+`MisclassifiedCatalogWrite` is the first negative control of
+`TrustedOutcomeBoundaryIsExact`, which no configuration of the
+single-publication model violated.
+
+| Negative control | Defect | Violates |
+|---|---|---|
+| `AdoptPreparedOnIndeterminate` | an indeterminate catalog write whose image stayed old or torn adopts the prepared successor | `HistorySoleAuthority` |
+| `SuffixReplay` | recovery adopts the synced commit left behind the appointed tail | `HistoryAuthorityIsCatalogSelected` |
+| `PathnameRecovery` | recovery reopens the store by path and, under a decoy, adopts the stale copy's generation | `HistoryAuthorityIsCatalogSelected` |
+| `PathnameReread` | adoption re-reads the catalog by path, where a decoy holds the expected new image while the live catalog holds another | `RunAdoptedSuccessorIsExactCatalog` |
+| `StaleWriterRestoration` | an ambiguous outcome hands the predecessor authority back to the writer | `HistoryRecoveryRequiredAfterAmbiguity` |
+| `AppendWithoutTruncation` | a publication that began over a suffix appends behind it | `HistoryAppointedPrefixIsCommitted` |
+| `StaleCoreRetry` | after an ambiguous outcome that appointed the successor, a retry from the stale authority skips the base check and commits the transaction again | `HistoryCommitsAtMostOnce` |
+| `TruncateBelowAppointed` | truncating a suffix also cuts the last appointed commit | `HistoryPinnedPrefixStable` |
+| `TruncateOnRefusal` | the suffix is truncated before the preflight, so a refused publication changes the files | `HistoryRefusalPreservesFiles` |
+| `MisclassifiedCatalogWrite` | a failed slot write whose new image persisted is reported as definitely not published | `RunOutcomeBoundaryIsExact` |
+
+Each witness must be violated by the faithful specification, which shows that
+the histories over which the invariants quantify occur.
+
+| Witness | History that violates it |
+|---|---|
+| `NeverRecoveredSuccessorAfterAmbiguity` | recovery selects the successor after an ambiguous outcome |
+| `NeverRecoveredPredecessorAfterAmbiguity` | recovery selects the predecessor after an ambiguous outcome |
+| `NeverRetriedAfterSuffix` | a publication that began over a suffix becomes ready |
+| `NeverReaderAcrossFault` | the reader stays pinned across a definite non-publication or an ambiguous outcome |
+| `NeverRestartedMidPublication` | a restart abandons a publication |
+| `NeverRecoveredUnderDecoy` | recovery completes while a decoy is bound |
+| `NeverRefusedWithSuffix` | a refused publication leaves an existing suffix in place |
+| `NeverRepairedForeignCatalog` | the environment repairs a foreign catalog image |
+
+**Model checking.** Under `MaxSteps = 3` and `MaxRestarts = 1`, TLC explored
+the base configuration from its one initial state, generating 19,420 states,
+**6,841** of them distinct, to depth 46, with the ten invariants satisfied.
+Each of the ten negative controls violated its named invariant, and each of the
+eight witnesses was reached.
+`bash scripts/check-rspace-trusted-history-model.sh` runs the base
+configuration and the eighteen checks with the shared bounded TLC helper (a
+512 MiB heap, two workers, a 2 GiB memory cap and 120 s) and requires every
+counterexample to name its invariant; the integrated stack-safe runner calls it
+before the journal owner's checker.
+
+The history needs the single-publication model's initial run as a value, so
+that model now defines
+`InitialRun(sealedMode, callMode, margin, callPolicy, assembly, coldLimit)`,
+the record that its `Init` wrote out, and its `Init` quantifies over the
+arguments. The refactor changes no behavior: TLC again generated 664 states,
+**588** of them distinct, to depth 13, with its nine invariants satisfied, and
+its eight negative controls and six witnesses passed, as the TS rows'
+transliteration requires.
+
+**The journal owner model.** `RSpaceJournalPublicationOwner.tla` gains the
+decoy. `PlaceDecoy` and `RemoveDecoy` bind and unbind it while an operation is
+open, and `CrashAndReopen`, a reopen by path, is disabled while it is bound.
+Two faults misuse it.
+
+| Fault | Defect | Violates |
+|---|---|---|
+| `journal-replay` | `CrashAndReopen` keeps the volatile journal | `ReopenDiscardsVolatileJournal` (JO-11), whose first negative control it is |
+| `pathname-recovery` | `Recover` accepts the old report as exact while a decoy is bound | `RecoveryAcceptsOnlyExactTerminal` (JO-09) |
+
+The witness `NeverReconciledUnderDecoy` shows that an exact recovery accepted
+while a decoy is bound is reachable. TLC explored the extended model from its
+four initial states, generating 1,716,908 states, **64,080** of them distinct,
+to depth 21 (44,272 before the decoy), with its seventeen invariants
+satisfied, and its nineteen causal mutants and eleven witnesses passed their
+designated checks (`bash scripts/check-rspace-journal-owner-model.sh`). The
+executable publication-owner composition table binds the two faults.
+
+**The Rocq theory.** `TrustedSuccessorCapability.v` gains a theory of faulted
+histories.
+
+- `admissible_recovery` relates a faulted publication's outcome to the cores
+  that recovery may select. A definite non-publication keeps the predecessor.
+  An indeterminate commit recovers the predecessor or the successor of the
+  fault-free publication of the same receipt, whichever the catalog appoints.
+  A published failure recovers that successor, whose catalog swap is durable
+  although a later sync or the sidecar resolution failed. A ready publication
+  adopts its successor. `every_faulted_publication_admits_a_recovery` shows
+  that no outcome leaves a history stuck.
+- `faulted_history` composes faulted publications, each followed by an
+  admissible recovery. `faulted_history_is_trusted_history` and
+  `trusted_history_is_faulted_history` show that faulted and fault-free
+  histories from the same start reach the same cores: a step that recovers its
+  predecessor is a stutter.
+- `faulted_pack_history` adds the pack, a list of bytes of which the catalog
+  appoints a prefix. A step refused before its first mutation writes nothing;
+  any other step that recovers its predecessor leaves what it wrote, torn or
+  whole, behind the appointed prefix; and a step that recovers its successor
+  truncates the pack to the appointed prefix, appends its transaction, and has
+  the catalog appoint it.
+
+| Capstone | Statement |
+|---|---|
+| `faulted_history_keeps_an_exact_sole_authority` | Every admissible recovery is the predecessor or the fault-free successor; every faulted history is a trusted history; and from a cold-admitted base the final core is an exact authority equal to cold admission of its final state (`trusted_inventory_equals_cold_admission`). |
+| `faulted_history_appoints_each_commit_once` | The appointed prefix of a faulted history's pack is the initial pack followed by the committed steps' transactions, in order, each once and never an orphan, and the final core's index records are the start's followed by the same plans. |
+| `ambiguous_adoption_mutant_breaks_sole_authority` | On the skipped-trial fixture an interrupted catalog swap is indeterminate. When the old slot persisted, recovery from the catalog holds the predecessor, which is admissible, while adopting the prepared successor holds a core that the catalog never appointed. |
+| `append_without_truncation_mutant_appoints_an_orphan` | After a torn write kept the first byte of a two-byte transaction, a retry that appends behind it appoints the orphan byte and the transaction's first byte, while one that truncates first appoints exactly the transaction. |
+
+With these four capstones the theory compiles with **20** capstones closed
+under the global context, sixteen before.
+
+**Transliteration.** `rspace++/tests/persistence/trusted_history_properties.rs`
+transliterates the history model. `HistoryState::step` implements each action,
+the negative controls' actions included, and its `Publish` steps the
+single-publication transliteration's `PublicationRun`. A breadth-first search
+from the initial state reaches exactly TLC's 6,841 states. The first two TH
+test functions divide the ten invariants, ten negative controls and eight
+witnesses between them by row: in every reachable state each invariant holds,
+each negative control reaches a state that violates its invariant, and each
+witness reaches a state that violates it.
+
+**Generated model chains.** Each test function then runs a generated chain on
+the trusted successor section's test model, over its generated histories of
+one to four steps. A step's eight fault choices are the six publication
+faults, the interrupted catalog swap with each of the old, a torn and the new
+image. The authority and pack chains replay every publication's trace through
+the transliteration, so each of their steps is also a history step that keeps
+the invariants.
+
+- *The authority chain*, 256 cases. At every step, from a state with a pinned
+  reader and a decoy, it settles all eight fault choices, recovers or repairs,
+  and requires the recovered core to be the predecessor or the fault-free
+  successor, as the persisted image selects, and to equal the test model's
+  cold admission of its state; the drawn choice then advances the chain from
+  its recovered core. Successor and predecessor recoveries after ambiguity,
+  readers pinned across faults, recoveries under a decoy, repaired catalogs
+  and adoption controls, in which an indeterminate swap whose image stayed old
+  or torn recovers a core other than the prepared successor, all occur.
+- *The pack chain*, 256 cases. At every step a changed-policy refusal must
+  write nothing and leave the pack, its suffix and the appointed count as they
+  were, and a restart at each image that an interrupted trusted hook leaves
+  must recover the prefix that the model selects. After the drawn fault the
+  prefix recovered from the pack must equal the committed transactions, and,
+  for a commit that began over a suffix, appending without truncation must
+  recover a different prefix. Retries over a suffix, refusals with a suffix,
+  restarts mid-publication and orphaned attempts all occur.
+- *The owner histories*, 128 cases. At every step, all eight fault choices
+  crossed with four interleavings run through the owner mirror: uninterrupted,
+  a recovery under tightened cold limits, an unwind after the acknowledgement,
+  and a restart. A checkpoint publishes once with no cold check and is
+  accepted only without a fault, acknowledging the successor once. Otherwise
+  the owner requires recovery, and one cold check then acknowledges the
+  successor that the catalog appoints, or recovers the predecessor and
+  publishes again. A tightened recovery is refused after one cold check,
+  publishing nothing; an awaiting retry acknowledges once with no cold check
+  and no publication; and a restart reopens the owner with an empty journal,
+  whose checkpoint changes nothing. No generation is acknowledged twice in a
+  history. Successor reconciliations, predecessor retries, awaiting retries,
+  tightened refusals and discarded journals all occur.
+
+**Corrections to the owner mirror.** Composing the trusted successor section's
+owner mirror (`trusted_successor_properties.rs`) into histories exposed two
+departures from production, both corrected here.
+
+1. A definite non-publication now depends on where it occurred. A refusal at
+   the trusted bind returns the owner to ready and drops the capture
+   (`durable/rspace_authority.rs:225-231`). One at the preflight, the
+   successor assembly, the pin or the catalog leaves the owner requiring
+   recovery, because production enters `RecoveryRequired` before it publishes
+   (`:268-276`). The mirror had returned every definite non-publication to
+   ready.
+2. The mirror names an owner state by the generation of its current retention
+   entry (`owner_state`), not by the core's validity token. The generated
+   histories draw each step's manifest from a few states, so two generations
+   can share a token, and acknowledging each generation at most once needs one
+   name per generation.
+
+The model halves of TS-12 to TS-15 pass with the corrected mirror.
+
+**The TH rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| TH-01 | Sole authority. After every faulted step of a generated history the writer holds exactly one authority, the predecessor or the exact successor that the live catalog selects. An ambiguous outcome leaves it none until held-lease recovery, and an indeterminate swap whose catalog kept its old or a torn slot never adopts the prepared successor. | `faulted_trusted_histories_match_independent_cold_admission_at_every_step` |
+| TH-02 | Independent cold admission. At every step the authority equals cold admission of the same state by an admission that shares no lease, registry or process state with the writer: the test model's cold admission in the model half, and admission of a byte copy in a fresh directory in the production half. | `faulted_trusted_histories_match_independent_cold_admission_at_every_step` |
+| TH-03 | Each commit appointed once. A failure at any later history step recovers the appointed prefix of the committed transactions, and the next publication truncates whatever an earlier failure left behind it, so no commit is appointed twice and no orphan is appointed. | `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps` |
+| TH-04 | Refusals change no file. A publication refused before its first mutation leaves the pack, any suffix behind the appointed prefix, the index and the catalog as they were. | `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps` |
+| TH-05 | Pinned readers and physical eviction. A reader's pinned prefix stays a prefix of the appointed one across faults, recoveries and restarts, and reclamation of a superseded generation waits while a reader pins it and completes after the unpin, after a crash in the middle of reclamation too. | `faulted_trusted_histories_match_independent_cold_admission_at_every_step` |
+| TH-06 | Recovery after ambiguity, restart anywhere. After an indeterminate or published-error outcome the writer acts again only after recovery, and a restart at any point, mid-publication included, adopts the generation that the catalog selects. | `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps` |
+| TH-07 | No pathname authority. Recovery, the re-read after the swap and the base check read through the pinned directory, so a decoy bound to the pathname is never adopted, and a foreign catalog image is refused until it is repaired. | `faulted_trusted_histories_match_independent_cold_admission_at_every_step` |
+| TH-08 | Owner histories. Across faults, recoveries under tightened limits, acknowledgement unwinds and restarts, the journal owner publishes each step once, holds its gate until the outcome is resolved, accepts recovery only of the exact terminal, acknowledges each generation once, and reopens after a restart with an empty journal, never replaying it. | `owner_histories_resolve_ambiguity_acknowledge_once_and_never_replay_the_journal` |
+
+Each test function checks its rows' model halves now: TH-01, TH-02, TH-05 and
+TH-07 through the transliteration and the authority chain, TH-03, TH-04 and
+TH-06 through the transliteration and the pack chain, and TH-08 through the
+owner histories. Tasks 11967 and 11968 add the production halves to the same
+test functions, so the bindings do not change.
+
+`model_property_manifest_is_unique_and_exhaustive` checks these eight
+bindings. It reads the history model with its base configuration, and the
+journal owner and compaction models without theirs, so that the citations of
+TH-05 and TH-08 resolve while only the history's ten base invariants join the
+exhaustive rule; the owner's invariants stay outside it, as the journal-owner
+rows' boundary states. It requires every witness that a TH row cites to have
+its configuration and to be checked by
+`scripts/check-rspace-trusted-history-model.sh`, and the integrated runner to
+call that script. TH-01 and TH-03 cite the four new capstones.
+
+**Boundary.**
+
+- These results hold for the models and the test model; this slice changes no
+  production code. The production halves are tasks 11967 and 11968, and the
+  production negative controls, the timing and the completion of J-253 are
+  task 11969.
+- Semantic eviction does not exist under keep-all retention; a future one
+  needs the maxima recomputed and this family extended.
+- Reset identity and activation remain task 7756, and the substrate stays out
+  of RSpace until task 7931 wires it in.
+- No scaling is claimed (task 7929), and no power-loss claim is made.
+- No persisted byte, identity, format, wire message or production outcome
+  changes.
+
+Cited works:
+
+- K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing
+  of Haskell programs", *Proceedings of the Fifth ACM SIGPLAN International
+  Conference on Functional Programming (ICFP '00)*, 268–279, 2000,
+  [doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266), for the
+  generated chains.
+- L. Lamport, "The temporal logic of actions", *ACM Transactions on Programming
+  Languages and Systems* 16(3):872–923, 1994,
+  [doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726), for the
+  history model and its instantiation of the publication model.
+
+The faulted-history model evidence in the verification record was taken at
+these sources. This slice changes no production source, so the production
+sources are those of its parent commit.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v` | `10362cfb85c4d483aaf521367462690d60bb1d62ad72d8242f85b7e4ba0389da` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistory.tla` | `0d2ffd08fed463e4dac7ab9957eb37f41c3a53869225f1aa751fdae70aab7a8e` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistory.cfg` | `a013eced00f1450ef071534542d19f71d480f555c3bf74b528453eee7bfddefd` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryAdoptPreparedOnIndeterminateMutant.cfg` | `56fbf98fc93030c39e3d445b9fa7a1641e09eba3cd92883721bcfefbf6e1e75b` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryAppendWithoutTruncationMutant.cfg` | `e333606122c3c1657349028d0930f75d0c9cd86470e4dcbf9fc52cf1ce889081` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryMisclassifiedCatalogWriteMutant.cfg` | `db71a3d64ee86a91d17b6815b3234c0219935ad6adc9027211665e806897ba2a` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryPathnameRecoveryMutant.cfg` | `cf9e3522ffa3d314e0d028a363d97a42f8fadf7aba30b2c1f7cbd20c44ac8e97` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryPathnameRereadMutant.cfg` | `e0eb1ba202e5f3f3aea7104ccec7e8448984cd2c34d8aec81ba98ef81672656d` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryStaleCoreRetryMutant.cfg` | `20615e8d801b4d24b48ae014ac555521a4b71c783aaafbda503c9fe1536819f7` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryStaleWriterRestorationMutant.cfg` | `b524ab4650ba7f4a0dd370426dac8c8c41f63da6e9b0bfcf1d9bb62d2111fc16` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistorySuffixReplayMutant.cfg` | `caa05838f0c0a564f8bf03c946bd4f4cc36ee8be1e4266ea32b05acf836def70` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryTruncateBelowAppointedMutant.cfg` | `a3fab5bacf12f5f3448f8e3a8c88fda19c9d84483e5c1007730b67fb5b53bbb7` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryTruncateOnRefusalMutant.cfg` | `b57071d6455dec6a52a4073c203c2d70f0873a871fb6bff0644051897dd41455` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryNeverReaderAcrossFault.cfg` | `cdc2ff5148aafc3936c4ce331c045434a05f8695027d7b2062e259b2e6c978d1` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryNeverRecoveredPredecessorAfterAmbiguity.cfg` | `090a88fcd4e41bfb2a81d5f84bc44c44f9edaff87bf366468f73913957f5685b` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryNeverRecoveredSuccessorAfterAmbiguity.cfg` | `b4bb1867ea01e5d97b036e3950794036a0a39bb8a34eea6dc3c9a94ee3d58c24` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryNeverRecoveredUnderDecoy.cfg` | `23a2eea0b0812dc51e916e0a08d1aacfca867af1cc671fde7c1f2ffb66e583a1` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryNeverRefusedWithSuffix.cfg` | `36959684c68ff8810795fff59836428cd74a89e2dffba0e474c67214caaabfa2` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryNeverRepairedForeignCatalog.cfg` | `499f397e48c8834a3d3294d0d859973fda7f6a5d48bcc2f4361489810028ccbd` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryNeverRestartedMidPublication.cfg` | `63e1a03bddc8fb29fb2db8385c014929538a4fac8a5f31f2e10619dd43694f56` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistoryNeverRetriedAfterSuffix.cfg` | `d82d9a183b412ba6407fe0e0db32eb632b08b02126bd8d8f729ebc2a0d57812b` |
+| `formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublication.tla` | `f1b1a9c3f5ad00a056b1d421a2bfbde086208f14adbac73112474765d7c78851` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla` | `fa9a5ae423c4513d4b3474ef2c9c480c1a11542cef1b92179693f52e07fe866c` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwnerJournalReplayMutant.cfg` | `066d4d739978c045ccce0853fa037bbd7545476a4b039aaf0f0b9ce6c4de0240` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwnerPathnameRecoveryMutant.cfg` | `0d698ccd5481610418cbb86fdbf40b5408f434ecf609018af5aa1537e632bb77` |
+| `formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwnerNeverReconciledUnderDecoy.cfg` | `8b577c829fe29be31cc0bc05567e2d807f0246c1be5a92fff3172f44583c4526` |
+| `scripts/check-rspace-trusted-history-model.sh` | `c39e94b593e2ff6ed6088620e64d90e097e76fb832dbb9473732062c7fe3f543` |
+| `scripts/check-rspace-journal-owner-model.sh` | `a3bd4547837de39389550f850527c11b96674fa27f48386e747aa280332157ac` |
+| `scripts/check-stack-safe-pda-proofs.sh` | `03a816749ce02ffec16217c8a463d713de94a682a0c66642fc3923a356a52ff5` |
+| `rspace++/tests/persistence/trusted_history_properties.rs` | `3c28c5bf0f1e6b9ffd15195428d8bf3676908192bb5c57814089b1ce8fdd7e39` |
+| `rspace++/tests/persistence/trusted_successor_properties.rs` | `d7647265b2bd05d10fd1d7c58e6af0dcd88d9a7c95002f3d5cfc0648c039f2b6` |
+| `rspace++/tests/persistence/property_support.rs` | `d34553b7b9dc6032b9691629ae7e8bd3092afeb66e0c65ec467a53479d25fe90` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `b9afcc8d401861152c8f0d599242f0f4b1a4dc047e1116bbf08aedf8b4f21a55` |
+| `rspace++/tests/persistence/mod.rs` | `9843c8f00ea540f9c2b3a37bba38f74b63ed27b9519dc00aa50923f685015a01` |
 
 ## Formal-to-executable derivation matrix
 
@@ -4914,7 +5323,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | TS-08 | `EXEC_ONLY` | `TrustedSuccessorCapability.cold_demand_is_not_a_function_of_the_inventory_summary`, `TrustedSuccessorCapability.reused_predecessor_demand_mutant_fabricates_cold_evidence`, `TrustedSuccessorCapability.trusted_source_preflight_mutant_accepts_minus_one` | P | Model extraction; the same test also checks production (task 11946; the trusted successor publication section). Cold demand is measured by a fresh traversal of the successor; the predecessor-demand and summary-demand controls realize the two mutant theorems. |
 | TS-09 | `NoPhysicalRecoveryOnTrustedSuccess`, `TrustedSuccessorHasNoColdEvidence`, `NeverTrustedReady` | `EXEC_ONLY` | P | Model extraction; the same test also checks production (task 11946; the trusted successor publication section). No theorem models the publication hooks; the test model's hook trace and production's are compared with `FORMAL_PUBLICATION_PHASE_ORDER`. |
 | TS-10 | `AdoptionFollowsDirectorySyncAndResolution` | `EXEC_ONLY` | P | Model extraction; the same test also checks production (task 11946; the trusted successor publication section). The two modes' durable writes are compared in the test model and, byte for byte, on real files under the three sidecars. |
-| TS-11 | `TrustedOutcomeBoundaryIsExact`, `TrustedPublicationTypeInvariant`, `NeverIndeterminate`, `NeverPublishedResolutionFailure`, `NeverStageFailureBeforeCas` | `CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes` | P | Model extraction; the same test also checks production (task 11946; the trusted successor publication section; generated histories crossed with failpoints at every hook are task 7928). Every trusted hook's failure is replayed in the transliteration and on real files, and every interrupted pack image recovers the appointed prefix. |
+| TS-11 | `TrustedOutcomeBoundaryIsExact`, `TrustedPublicationTypeInvariant`, `NeverIndeterminate`, `NeverPublishedResolutionFailure`, `NeverStageFailureBeforeCas` | `CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes` | P | Model extraction; the same test also checks production (task 11946; the trusted successor publication section; generated histories crossed with failpoints at every hook are task 7928, the faulted trusted histories section). Every trusted hook's failure is replayed in the transliteration and on real files, and every interrupted pack image recovers the appointed prefix. |
 | TS-12 | `EXEC_ONLY` | `TrustedSuccessorCapability.empty_and_awaiting_ack_branches_do_not_consult_cold_limits` | P | Model extraction; the same test also checks the production owner (task 11946; the trusted successor publication section). The owner mirror and the production owner count cold checks; the owner model's witness `NeverEmptyCheckpointUnderTightenedColdLimits`, checked by `scripts/check-rspace-journal-owner-model.sh`, reaches the same branch. |
 | TS-13 | `EXEC_ONLY` | `TrustedSuccessorCapability.empty_and_awaiting_ack_branches_do_not_consult_cold_limits` | P | Model extraction; the same test also checks the production owner (task 11946; the trusted successor publication section). The owner mirror and the production owner count cold checks and acknowledgements; the owner model's witness `NeverAwaitingAckRetryUnderTightenedColdLimits` reaches the same branch. |
 | TS-14 | `ColdModeSuccessIncludesColdAdmission`, `NeverColdReady` | `TrustedSuccessorCapability.cold_demand_is_not_a_function_of_the_inventory_summary` | P | Model extraction; the same test also checks production and the production owner (task 11946; the trusted successor publication section). The cold-checked refusal and the trusted success of one receipt realize the non-implication on every positive demand axis. |
@@ -4923,6 +5332,14 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | TS-17 | `EXEC_ONLY` | `ExactStateShapeSummary.admitted_tries_have_no_empty_leaf`, `ExactStateShapeSummary.maximum_logical_path_is_the_longest_key`, `ExactStateShapeSummary.combined_maximum_is_the_walk_maximum`, `ExactStateShapeSummary.batch_weight_delta_is_exact`, `ExactStateShapeSummary.endpoint_existence_delta_is_exact`, `ExactStateShapeSummary.payload_delta_is_exact`, `ExactStateShapeSummary.key_length_multiset_tracks_the_batch`, `ExactStateShapeSummary.largest_nonempty_bucket_is_the_longest_key`, `ExactStateShapeSummary.rewrite_moves_logical_positions_exactly`, `ExactStateShapeSummary.absorbed_reports_move_positions_exactly`, `ExactStateShapeSummary.counted_rewrite_is_the_radix_edit`, `ExactStateShapeSummary.trusted_shape_summary_equals_the_cold_walk`, `ExactStateShapeSummary.emitted_minus_loaded_mutant_miscounts_a_compression_merge`, `ExactStateShapeSummary.digest_dedup_counter_mutant_undercounts_equal_leaves`, `ExactStateShapeSummary.running_maximum_mutant_keeps_a_deleted_longest_key`, `ExactStateShapeSummary.empty_leaf_mutant_breaks_the_path_maximum` | P | Production refinement of the derivation and of the trusted publication that returns it (task 11946; the trusted successor publication section). The production summary is compared with the production cold walk in memory, with durable cold admission after every publication and with restart admission, on shared subtrees, an absorbing merge, deletion of the unique and of tied longest keys, and batches across all three namespaces; the composed theorem's premise that the rewrite lists the batch applied to the entries is checked against an independent rebuild. |
 | TS-18 | `EXEC_ONLY` | `TrustedSuccessorCapability.trusted_successor_rule` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). The rule's token and profile premises are checked as refusals at the receipt check. |
 | TS-19 | `EXEC_ONLY` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). The first successor's migration and the seeded metadata ledger are compared with the cold traversal; the double-migration control keeps the old anchor counted. |
+| TH-01 | `HistorySoleAuthority`, `HistoryAuthorityIsCatalogSelected`, `NeverRecoveredSuccessorAfterAmbiguity`, `NeverRecoveredPredecessorAfterAmbiguity` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority`, `TrustedSuccessorCapability.ambiguous_adoption_mutant_breaks_sole_authority` | P | Model extraction; production refinement is task 11967 (the faulted trusted histories section). Every recovery that the authority chain settles is the predecessor or the fault-free successor, as the persisted image selects, which realizes the capstone's admissible recoveries; the adoption controls realize the mutant theorem. |
+| TH-02 | `HistoryTypeInvariant`, `RunOutcomeBoundaryIsExact` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority`, `TrustedSuccessorCapability.trusted_inventory_equals_cold_admission` | P | Model extraction; production refinement, cold admission of a byte copy that shares no lease, registry or process state with the writer, is task 11967. Every recovered core equals the test model's cold admission of its state, and every publication's outcome is replayed through the single-publication transliteration. |
+| TH-03 | `HistoryAppointedPrefixIsCommitted`, `HistoryCommitsAtMostOnce`, `NeverRetriedAfterSuffix` | `TrustedSuccessorCapability.faulted_history_appoints_each_commit_once`, `TrustedSuccessorCapability.append_without_truncation_mutant_appoints_an_orphan`, `CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes` | P | Model extraction; production refinement is task 11967. The pack chain's appointed prefix equals the committed transactions after every drawn fault, and appending over a suffix without truncation recovers a different prefix, which realizes the mutant theorem. |
+| TH-04 | `HistoryRefusalPreservesFiles`, `NeverRefusedWithSuffix` | `TrustedSuccessorCapability.trials_precede_mutation` | P | Model extraction; production refinement is task 11967. A changed-policy refusal at every step writes nothing and leaves the pack, any suffix and the appointed count as they were. |
+| TH-05 | `HistoryPinnedPrefixStable`, `NeverReaderAcrossFault`, `LeaseSafety`, `NoDeletionBeforePublication` | `CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes` | P | Model extraction; production refinement, with reclamation deferred by a pinned reader and completed after the unpin, is task 11967. The compaction model's lease invariants are cited, not remodelled; the authority chain keeps a reader pinned across faults and their recoveries. |
+| TH-06 | `HistoryRecoveryRequiredAfterAmbiguity`, `NeverRestartedMidPublication` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority` | P | Model extraction; production refinement is task 11967. The transliteration requires recovery after every ambiguous outcome, and the pack chain restarts at every image that an interrupted trusted hook leaves and recovers the prefix that the model selects. |
+| TH-07 | `HistoryAuthorityIsCatalogSelected`, `RunAdoptedSuccessorIsExactCatalog`, `NeverRecoveredUnderDecoy`, `NeverRepairedForeignCatalog` | `EXEC_ONLY` | P | Model extraction; production refinement, with decoys on real files, is task 11967. No theorem models the pathname; the authority chain recovers under a decoy to the catalog's selection, and repaired catalogs occur. |
+| TH-08 | `ReopenDiscardsVolatileJournal`, `RecoveryAcceptsOnlyExactTerminal`, `AtMostOneAcknowledgement`, `GateHeldUntilResolution` | `TrustedSuccessorCapability.empty_and_awaiting_ack_branches_do_not_consult_cold_limits` | P | Model extraction; production refinement, which also checks the operation gate that the mirror does not model, is task 11968. The owner mirror counts cold checks, publications and acknowledgements across eight fault choices and four interleavings; the owner model's journal-replay and pathname-recovery faults and its witness `NeverReconciledUnderDecoy`, checked by `scripts/check-rspace-journal-owner-model.sh`, reach the same branches. |
 | PX-01 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_refuses_a_valid_delta_at_a_coincident_certificate`, `PathExactIncrementalClosure.certificate_first_verifier_complete` | P | Production refinement on the theory's coincidence fixture in canonical bytes, with the two certificates admitted directly; the report's counts and the logical-visit limit bind the model's eight visits. |
 | PX-02 | `EXEC_ONLY` | `PathExactIncrementalClosure.digest_only_certificate_mutant_admits_an_uncovered_occurrence`, `PathExactIncrementalClosure.certificate_first_verifier_sound` | P | Production refinement of exactness: a certificate that differs from the exact one in its path, namespace, kind or reference does not stop the walk, the executable side of the digest-only mutant. |
 | PX-03 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_accepts_a_staged_object_owned_only_at_inherited_positions`, `PathExactIncrementalClosure.skipped_reachability_mutant_admits_an_unreached_staged_object` | P | Production refinement of the second outcome change: the final reachability check refuses a staged object that the walk reaches only at a certified occurrence. |
@@ -5286,6 +5703,33 @@ byte, identity or cold-checked outcome changes; the owner's accepted outcomes
 change as the consensus-change register's CBR-053 continuation of 2026-10-27
 records. See pgmcp artifact 1137 for caps and evidence hashes, and artifact
 1138 for the timing attribution with its script.
+
+The 2026-10-27 faulted-history models add `TH-01` through `TH-08`. The
+catalog/derivation/binding registry now contains **219** IDs: the 211 above and
+the eight history rows. `TrustedSuccessorCapability.v` compiled with all **20**
+capstones closed under the global context, the four faulted-history capstones
+among them, and the module passed independent kernel checking. On the export of
+the candidate tree, TLC explored `RSpaceTrustedIncrementalHistory`, generating
+19,420 states, **6,841** of them distinct, to depth 46, with its ten invariants
+satisfied, and each of its ten causal mutants and eight witnesses passed its
+designated check. The journal owner model with the decoy generated 1,716,908
+states, **64,080** of them distinct (44,272 before), and its nineteen causal
+mutants and eleven witnesses passed. The refactored single-publication model
+still has **588** distinct states, and its fourteen controls passed. All 489
+selected rspace++ library tests under `rspace::persistence` passed
+single-threaded in debug (86.01 s) and release (43.03 s), with the three
+unwind-child helpers ignored by design. They include the three TH test
+functions, whose transliteration reaches exactly TLC's 6,841 states, the model
+halves of TS-12 to TS-15 with the corrected owner mirror, and this registry
+test. The TH tests took 1.48 s in debug and 0.31 s in release. The release suite
+took 5.06 s longer than in the previous commit's gate (37.97 s), and the rest of
+that rise is not attributed here; task 11969 times the suite with a fixed seed.
+The candidate's export gate also passed: `cargo check` of all targets, clippy,
+all 4,427 release nextest tests of `models`, `rspace_plus_plus`, `rho-pure-eval`
+and `rholang`, and the release doc tests. These results cover the models and the
+test model only: no production code changed, and every TH row remains a
+test-only extraction until tasks 11967 and 11968 add its production half. See
+engineering journal J-253 and pgmcp artifact 1141 for caps and evidence hashes.
 
 ## Caller-authority contract (2026-09-06)
 

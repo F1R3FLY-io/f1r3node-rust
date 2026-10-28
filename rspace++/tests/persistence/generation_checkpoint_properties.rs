@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR", "CR", "LT", "DC", "CL", "RV", "TS", "PX",
+        "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -468,6 +468,9 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!(
             "../../../formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublication.tla"
         ),
+        include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistory.tla"),
+        include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla"),
+        include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceCompaction.tla"),
     ]
     .concat();
     let tla_configs = [
@@ -478,6 +481,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!(
             "../../../formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalPublication.cfg"
         ),
+        include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistory.cfg"),
     ];
     let rocq_source = [
         include_str!(
@@ -603,6 +607,10 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         formal_gate.contains("theories/ExactStateShapeSummary.v"),
         "the integrated formal gate does not compile the shape summary theory cited by TS rows",
     );
+    assert!(
+        formal_gate.contains("check-rspace-trusted-history-model.sh"),
+        "the integrated formal gate does not run the trusted history model cited by TH rows",
+    );
     for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("NV-")) {
         let witness = tla_symbols
             .iter()
@@ -663,6 +671,30 @@ fn model_property_manifest_is_unique_and_exhaustive() {
             );
         }
     }
+    let history_gate = std::fs::read_to_string(
+        repository_root.join("scripts/check-rspace-trusted-history-model.sh"),
+    )
+    .expect("the trusted history model gate is readable");
+    for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("TH-")) {
+        for witness in tla_symbols
+            .iter()
+            .copied()
+            .filter(|symbol| symbol.starts_with("Never"))
+        {
+            let config_name = format!("RSpaceTrustedIncrementalHistory{witness}.cfg");
+            let config = std::fs::read_to_string(
+                repository_root
+                    .join("formal/tlaplus/stack_safe_pda")
+                    .join(&config_name),
+            )
+            .unwrap_or_else(|error| panic!("history row {id} lacks {config_name}: {error}"));
+            assert!(config.contains(&format!("INVARIANT {witness}")));
+            assert!(
+                history_gate.contains(&config_name) && history_gate.contains(witness),
+                "history row {id} witness {witness} is not enforced by the trusted history gate",
+            );
+        }
+    }
 
     let executable_sources = [
         include_str!("checkpoint_codec.rs"),
@@ -679,6 +711,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("retention_v2_editor_properties.rs"),
         include_str!("retention_v2_format_properties.rs"),
         include_str!("shape_summary_properties.rs"),
+        include_str!("trusted_history_properties.rs"),
         include_str!("trusted_successor_properties.rs"),
         include_str!("wal_codec.rs"),
         include_str!("../hot_store/journal_commit.rs"),
