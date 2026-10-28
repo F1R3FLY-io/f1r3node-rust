@@ -808,3 +808,111 @@ async fn a_block_recorded_on_another_host_replays_here() {
         *record.post_root()
     );
 }
+
+fn record_breakdown(record: &BlockRecord) -> String {
+    let proto = casper::rust::v6::block_record::BlockRecordProto::decode(record.encode().as_ref())
+        .expect("a record proto");
+    let mut recording = 0;
+    let mut journal = 0;
+    let mut evidence = 0;
+    let mut logs = 0;
+    for entry in &proto.entries {
+        recording += entry.budget_recording.len();
+        journal += entry.operation_journal.len();
+        evidence += entry.cost_evidence.len();
+        logs += entry
+            .user_log
+            .iter()
+            .chain(&entry.wallet_log)
+            .chain(&entry.receipt_log)
+            .map(Message::encoded_len)
+            .sum::<usize>();
+    }
+    format!("recording={recording} journal={journal} evidence={evidence} logs={logs}")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn record_bytes_per_envelope_and_validation_at_the_byte_cap() {
+    use casper::rust::v6::body::{Attestation, V6Body, V6Records};
+    use casper::rust::v6::validity::{check_structure, Limits};
+    use models::rust::cost_protocol_limits::{DEFAULT_BLOCK_RECORDS, DEFAULT_BLOCK_RECORD_BYTES};
+
+    let host = launch(16).await;
+    let mut largest = None;
+    for size in [1usize, 4, 16] {
+        let deploys = (0..size)
+            .map(|index| {
+                offer(
+                    &payer(index),
+                    &format!("@\"sized-{index}\"!({index})"),
+                    i64::try_from(index + 1).expect("a small index"),
+                )
+            })
+            .collect();
+        let block = block(&host, 1, deploys);
+        let record = host
+            .executor
+            .execute(&pre_root(&host), &block)
+            .await
+            .expect("the block executes");
+        let bytes = record.encode().len();
+        println!(
+            "envelopes={size} record_bytes={bytes} per_envelope={} {}",
+            bytes / size,
+            record_breakdown(&record)
+        );
+        assert!(bytes <= DEFAULT_BLOCK_RECORD_BYTES);
+        largest = Some(record);
+    }
+
+    let record = largest.expect("a measured record");
+    let attestation = Attestation {
+        block_hash: host.genesis.block_hash.clone(),
+        root: pre_root(&host),
+    };
+    let mut records = Vec::new();
+    let mut total = 0;
+    while records.len() < DEFAULT_BLOCK_RECORDS {
+        let copy = BlockRecord::new(
+            Bytes::from(format!("cited-{}", records.len()).into_bytes()),
+            record.pre_root().clone(),
+            record.mid_root().clone(),
+            record.post_root().clone(),
+            record.entries().to_vec(),
+            record.system_deploys().to_vec(),
+        )
+        .expect("a copied record");
+        let size = copy.encode().len();
+        if total + size > DEFAULT_BLOCK_RECORD_BYTES {
+            break;
+        }
+        total += size;
+        records.push(copy);
+    }
+    let mut at_cap = block(&host, 2, vec![]);
+    at_cap.body.system_deploys.clear();
+    at_cap.body.rejected_deploys.clear();
+    at_cap.body.applied_from_scope.clear();
+    at_cap.body.extra_bytes = Bytes::new();
+    at_cap.body.state.pre_state_hash = attestation.root.clone();
+    at_cap.body.state.post_state_hash = attestation.root.clone();
+    at_cap.body.merge_base = host.genesis.block_hash.clone();
+    at_cap.body.v6 = Some(V6Body::with_records(attestation, &records));
+    let limits = Limits {
+        ordered_only: true,
+        ..Limits::default()
+    };
+    let started = std::time::Instant::now();
+    let (_, decoded) =
+        check_structure::<BlockRecord>(&at_cap, &limits, &|_| Some(0)).expect("a block at the cap");
+    let elapsed = started.elapsed();
+    println!(
+        "records={} record_bytes={total} validation={elapsed:?}",
+        decoded.len()
+    );
+    assert_eq!(decoded.len(), records.len());
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "validation took {elapsed:?}"
+    );
+}

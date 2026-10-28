@@ -490,6 +490,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             block_dag_storage.clone(),
             deploy_storage.clone(),
             casper_shard_conf.v6_execution_lag_threshold,
+            casper_shard_conf.v6_fallback_distance,
         )?;
         engine.start();
         Some(engine)
@@ -668,6 +669,7 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
     pub v6_execution_lag_threshold: u64,
+    pub v6_fallback_distance: usize,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -717,6 +719,7 @@ impl CasperShardConf {
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
             v6_execution_lag_threshold: crate::rust::v6::lag::DEFAULT_LAG_THRESHOLD,
+            v6_fallback_distance: crate::rust::v6::core::DEFAULT_FALLBACK_DISTANCE,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,

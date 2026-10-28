@@ -3,7 +3,9 @@ use std::collections::BTreeSet;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use thiserror::Error;
 
-use super::cost_protocol_limits::ProtocolCaps;
+use super::cost_protocol_limits::{
+    ProtocolCaps, DEFAULT_BLOCK_RECORDS, DEFAULT_BLOCK_RECORD_BYTES,
+};
 use super::phlo_wire::{PhloWireDecoder, PhloWireEncoder, PhloWireError, PhloWireLimits};
 
 pub const PHLO_SCHEDULE_V1_DOMAIN: &[u8] = b"f1r3node:phlo-schedule:v1";
@@ -65,8 +67,14 @@ impl PhloGenesisPolicy {
         if let Some(caps) = self.offered_funded_v6 {
             caps.check()
                 .map_err(|_| PhloScheduleError::GenesisPolicyCaps)?;
-            wire.bytes(&[1])?;
-            for value in [caps.funding_search_scans, caps.authority_search_nodes] {
+            let mut values = vec![caps.funding_search_scans, caps.authority_search_nodes];
+            if caps.default_block_caps() {
+                wire.bytes(&[1])?;
+            } else {
+                wire.bytes(&[2])?;
+                values.extend([caps.block_records, caps.block_record_bytes]);
+            }
+            for value in values {
                 let value =
                     u64::try_from(value).map_err(|_| PhloScheduleError::GenesisPolicyCaps)?;
                 wire.bytes(&value.to_be_bytes())?;
@@ -84,9 +92,11 @@ impl PhloGenesisPolicy {
         };
         let bytes = wire.bytes()?;
         let offered_funded_v6 = if offered_funded_v6_active {
-            if wire.bytes()? != [1] {
-                return Err(PhloScheduleError::GenesisPolicyActivation);
-            }
+            let with_block_caps = match wire.bytes()? {
+                [1] => false,
+                [2] => true,
+                _ => return Err(PhloScheduleError::GenesisPolicyActivation),
+            };
             let mut cap = || -> Result<usize, PhloScheduleError> {
                 let field: [u8; 8] = wire
                     .bytes()?
@@ -95,9 +105,18 @@ impl PhloGenesisPolicy {
                 usize::try_from(u64::from_be_bytes(field))
                     .map_err(|_| PhloScheduleError::GenesisPolicyCaps)
             };
+            let funding_search_scans = cap()?;
+            let authority_search_nodes = cap()?;
+            let (block_records, block_record_bytes) = if with_block_caps {
+                (cap()?, cap()?)
+            } else {
+                (DEFAULT_BLOCK_RECORDS, DEFAULT_BLOCK_RECORD_BYTES)
+            };
             let caps = ProtocolCaps {
-                funding_search_scans: cap()?,
-                authority_search_nodes: cap()?,
+                funding_search_scans,
+                authority_search_nodes,
+                block_records,
+                block_record_bytes,
             };
             caps.check()
                 .map_err(|_| PhloScheduleError::GenesisPolicyCaps)?;

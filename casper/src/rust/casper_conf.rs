@@ -116,6 +116,12 @@ pub struct CasperConf {
     )]
     pub v6_execution_lag_threshold: u64,
 
+    #[serde(
+        rename = "v6-fallback-distance",
+        default = "default_v6_fallback_distance"
+    )]
+    pub v6_fallback_distance: usize,
+
     /// Enable background garbage collection for mergeable channels.
     /// When enabled, uses safe reachability-based GC (required for multi-parent mode).
     /// When disabled (default), mergeable data is retained.
@@ -160,6 +166,8 @@ fn default_synchrony_finalized_baseline_max_distance() -> u64 { 2048 }
 fn default_max_user_deploys_per_block() -> u32 { 128 }
 
 pub fn default_v6_execution_lag_threshold() -> u64 { crate::rust::v6::lag::DEFAULT_LAG_THRESHOLD }
+
+pub fn default_v6_fallback_distance() -> usize { crate::rust::v6::core::DEFAULT_FALLBACK_DISTANCE }
 
 /// Matches the shipped defaults.conf value: a sparse operator conf that omits
 /// the key must not silently disable GC. Public so the node's config tests

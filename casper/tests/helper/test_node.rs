@@ -57,6 +57,7 @@ use crate::util::rholang::resources;
 tokio::task_local! {
     static V6_ORDER_THEN_EXECUTE: bool;
     static V6_DRIVEN_EXECUTORS: u64;
+    static MAX_USER_DEPLOYS_PER_BLOCK: u32;
 }
 
 pub struct TestNode {
@@ -814,6 +815,19 @@ impl TestNode {
             .await
     }
 
+    pub async fn create_v6_network_with_block_deploys(
+        genesis: GenesisContext,
+        network_size: usize,
+        max_user_deploys_per_block: u32,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        MAX_USER_DEPLOYS_PER_BLOCK
+            .scope(
+                max_user_deploys_per_block,
+                Self::create_v6_network(genesis, network_size),
+            )
+            .await
+    }
+
     pub async fn create_v6_network_driven(
         genesis: GenesisContext,
         network_size: usize,
@@ -1225,6 +1239,9 @@ impl TestNode {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
             mergeable_channels_gc_depth_buffer: 10,
+            max_user_deploys_per_block: MAX_USER_DEPLOYS_PER_BLOCK
+                .try_with(|max| *max)
+                .unwrap_or(CasperShardConf::new().max_user_deploys_per_block),
             ..CasperShardConf::new()
         };
         if v6_enabled {
@@ -1258,6 +1275,7 @@ impl TestNode {
                 block_dag_storage.clone(),
                 deploy_storage.clone(),
                 driven_lag_threshold.unwrap_or(casper::rust::v6::lag::DEFAULT_LAG_THRESHOLD),
+                casper::rust::v6::core::DEFAULT_FALLBACK_DISTANCE,
             )
             .expect("the v6 engine opens its executor state");
             if driven_lag_threshold.is_none() {

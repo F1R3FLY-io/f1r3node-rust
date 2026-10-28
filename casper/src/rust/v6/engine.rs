@@ -26,7 +26,7 @@ use super::executor::BlockExecutor;
 use super::gate::{screen, BlockGate, RhoBlockGate};
 use super::lag::{Lag, LagGate, Transition};
 use super::linearizer::{Advance, Linearizer};
-use super::propose::{select_envelopes, PoolEntry, SelectionContext};
+use super::propose::{pack_records, select_envelopes, PoolEntry, SelectionContext};
 use super::record::ExecutionRecord;
 use super::store::{
     LmdbRecordStore, MemoryRecordStore, Opened, RecordSource, RecordStore, Retention,
@@ -79,6 +79,7 @@ impl V6Engine<BlockRecord> {
         dag_storage: BlockDagKeyValueStorage,
         deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
         lag_threshold: u64,
+        fallback_distance: usize,
     ) -> Result<Arc<Self>, CasperError> {
         let source: Arc<dyn RecordSource<BlockRecord>> = Arc::new(block_store.clone());
         let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
@@ -108,6 +109,7 @@ impl V6Engine<BlockRecord> {
             runtime_manager.clone(),
             Arc::clone(&policy),
         ));
+        let caps = policy.protocol_caps().unwrap_or_default();
         let gate = Arc::new(RhoBlockGate::new(runtime_manager.clone(), policy));
         let parts = V6Parts {
             backend,
@@ -116,10 +118,15 @@ impl V6Engine<BlockRecord> {
             evidence: Arc::new(MemoryEvidenceSink::new()),
             store: Some(Box::new(store)),
             limits: Limits {
+                max_records: caps.block_records,
+                max_record_bytes: caps.block_record_bytes,
                 ordered_only: true,
                 ..Limits::default()
             },
-            params: CoreParams::default(),
+            params: CoreParams {
+                fallback_distance,
+                ..CoreParams::default()
+            },
             lag_threshold,
         };
         Ok(Self::with_parts(
@@ -253,6 +260,23 @@ impl<R: ExecutionRecord> V6Engine<R> {
             snapshot.dag.block_number(&lfb),
             snapshot.dag.block_number(&attestation.block_hash),
         );
+        let lfb_number = snapshot.dag.block_number(&lfb);
+        if let Some(lfb_number) = lfb_number {
+            let floor_distance = snapshot.max_block_num - lfb_number;
+            if crate::rust::util::rholang::interpreter_util::floor_pacing_engaged(floor_distance) {
+                metrics::counter!(
+                    crate::rust::metrics_constants::FLOOR_PACING_ENGAGED_METRIC,
+                    "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+                )
+                .increment(1);
+                tracing::info!(
+                    target: "f1r3fly.v6",
+                    floor_distance,
+                    "finality lags the newest block past the pacing threshold; proposing without envelopes"
+                );
+                return false;
+            }
+        }
         let (admits, transition) = self.lag_gate.admits(lag);
         let threshold = self.lag_gate.threshold();
         match (lag, transition) {
@@ -500,6 +524,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
                     .unwrap_or(false)
             })
             .collect();
+        let records = pack_records(records, &self.limits);
 
         let envelopes = if self.admits_envelopes(snapshot, &attestation) {
             let pool = self

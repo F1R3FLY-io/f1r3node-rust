@@ -649,3 +649,33 @@ async fn a_long_run_keeps_executor_memory_flat_and_old_receipts_available() {
         );
     }
 }
+
+#[tokio::test]
+async fn offered_envelopes_are_refused_once_the_pool_is_full() {
+    let genesis = v6_genesis().await;
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let node = TestNode::create_v6_network_with_block_deploys(genesis, 1, 1)
+        .await
+        .unwrap()
+        .remove(0);
+    let base = now();
+    for index in 0..64 {
+        let proto = offer(
+            &construct_deploy::DEFAULT_SEC,
+            body(&shard_id, base + index, None),
+            1,
+        );
+        submit(&node, proto, &shard_id)
+            .await
+            .unwrap_or_else(|error| panic!("offer {index} was refused: {}", message(error)));
+    }
+    let overflow = offer(
+        &construct_deploy::DEFAULT_SEC,
+        body(&shard_id, base + 64, None),
+        1,
+    );
+    let error = submit(&node, overflow, &shard_id)
+        .await
+        .expect_err("the 65th offer finds the pool full");
+    assert!(message(error).contains("pool is full"));
+}

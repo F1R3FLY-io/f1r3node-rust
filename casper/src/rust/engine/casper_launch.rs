@@ -208,6 +208,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                 .synchrony_finalized_baseline_max_distance,
             max_user_deploys_per_block: conf.max_user_deploys_per_block,
             v6_execution_lag_threshold: conf.v6_execution_lag_threshold,
+            v6_fallback_distance: conf.v6_fallback_distance,
             native_token_name: conf.genesis_block_data.native_token_name.clone(),
             native_token_symbol: conf.genesis_block_data.native_token_symbol.clone(),
             native_token_decimals: conf.genesis_block_data.native_token_decimals,

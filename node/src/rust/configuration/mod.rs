@@ -271,6 +271,12 @@ pub mod builder {
                 node_conf.casper.deploy_lifespan,
             ));
         }
+        if node_conf.casper.v6_fallback_distance == 0 {
+            return Err(eyre::eyre!(
+                "casper.v6-fallback-distance must be at least 1: at zero a node would cite \
+                every other validator's record as soon as it is emitted"
+            ));
+        }
         if node_conf.casper.v6_execution_lag_threshold == 0 {
             return Err(eyre::eyre!(
                 "casper.v6-execution-lag-threshold must be at least 1: the execution-lag \
@@ -805,6 +811,13 @@ mod embedded_defaults_tests {
             .expect_err("v6-execution-lag-threshold 0 must fail startup");
         assert!(err.to_string().contains("v6-execution-lag-threshold"));
         assert_eq!(base.casper.v6_execution_lag_threshold, 32);
+
+        let mut cfg = base.clone();
+        cfg.casper.v6_fallback_distance = 0;
+        let err =
+            builder::validate_config(&cfg).expect_err("v6-fallback-distance 0 must fail startup");
+        assert!(err.to_string().contains("v6-fallback-distance"));
+        assert_eq!(base.casper.v6_fallback_distance, 8);
 
         let mut cfg = base.clone();
         cfg.casper.min_phlo_price = -1;

@@ -165,6 +165,8 @@ fn caps() -> ProtocolCaps {
     ProtocolCaps {
         funding_search_scans: 32_768,
         authority_search_nodes: 65_536,
+        block_records: 64,
+        block_record_bytes: 8 * 1024 * 1024,
     }
 }
 
@@ -219,6 +221,61 @@ fn the_protocol_6_policy_carries_its_protocol_caps_canonically() {
             })
             .encode(),
         Err(PhloScheduleError::GenesisPolicyCaps)
+    );
+}
+
+#[test]
+fn non_default_block_caps_take_the_second_layout_and_default_ones_keep_the_first() {
+    let historical = PhloGenesisPolicy::from_schedule(&schedule()).unwrap();
+    let default_wire = historical
+        .clone()
+        .with_offered_funded_v6(caps())
+        .encode()
+        .unwrap();
+    assert_eq!(unpack(&default_wire)[2], vec![1]);
+    let block = ProtocolCaps {
+        block_records: 32,
+        block_record_bytes: 4_194_304,
+        ..caps()
+    };
+    let offered = historical.clone().with_offered_funded_v6(block);
+    let wire = offered.encode().unwrap();
+    let fields = unpack(&wire);
+    assert_eq!(fields[2], vec![2]);
+    assert_eq!(fields.len(), 7);
+    assert_eq!(PhloGenesisPolicy::decode(&wire).unwrap(), offered);
+    let field = |value: u64| value.to_be_bytes().to_vec();
+    let with = |marker: u8, extra: Vec<Vec<u8>>| {
+        let mut fields = vec![
+            PHLO_GENESIS_POLICY_V2_DOMAIN.to_vec(),
+            historical.schedule_bytes.clone(),
+            vec![marker],
+        ];
+        fields.extend(extra);
+        PhloGenesisPolicy::decode(&pack(&fields))
+    };
+    assert_eq!(
+        with(2, vec![
+            field(32_768),
+            field(65_536),
+            field(64),
+            field(8 * 1024 * 1024)
+        ]),
+        Err(PhloScheduleError::GenesisPolicyCanonical)
+    );
+    assert_eq!(
+        with(2, vec![
+            field(32_768),
+            field(65_536),
+            field(0),
+            field(4_194_304)
+        ]),
+        Err(PhloScheduleError::GenesisPolicyCaps)
+    );
+    assert!(with(2, vec![field(32_768), field(65_536), field(32)]).is_err());
+    assert_eq!(
+        with(3, vec![field(32_768), field(65_536)]),
+        Err(PhloScheduleError::GenesisPolicyActivation)
     );
 }
 

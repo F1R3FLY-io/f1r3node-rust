@@ -14,11 +14,13 @@ pub struct CoreParams {
     pub fallback_distance: usize,
 }
 
+pub const DEFAULT_FALLBACK_DISTANCE: usize = 8;
+
 impl Default for CoreParams {
     fn default() -> Self {
         CoreParams {
             max_speculation: 32,
-            fallback_distance: 8,
+            fallback_distance: DEFAULT_FALLBACK_DISTANCE,
         }
     }
 }

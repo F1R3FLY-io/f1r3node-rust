@@ -14,18 +14,24 @@ use super::signed_phlo_deploy::FundedDeployLimits;
 pub enum ProtocolCap {
     FundingSearchScans,
     AuthoritySearchNodes,
+    BlockRecords,
+    BlockRecordBytes,
 }
 
 impl ProtocolCap {
-    pub const ALL: [ProtocolCap; 2] = [
+    pub const ALL: [ProtocolCap; 4] = [
         ProtocolCap::FundingSearchScans,
         ProtocolCap::AuthoritySearchNodes,
+        ProtocolCap::BlockRecords,
+        ProtocolCap::BlockRecordBytes,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
             ProtocolCap::FundingSearchScans => "funding-search-scans",
             ProtocolCap::AuthoritySearchNodes => "authority-search-nodes",
+            ProtocolCap::BlockRecords => "block-records",
+            ProtocolCap::BlockRecordBytes => "block-record-bytes",
         }
     }
 
@@ -39,6 +45,8 @@ impl ProtocolCap {
 pub struct ProtocolCaps {
     pub funding_search_scans: usize,
     pub authority_search_nodes: usize,
+    pub block_records: usize,
+    pub block_record_bytes: usize,
 }
 
 impl Default for ProtocolCaps {
@@ -50,7 +58,14 @@ impl ProtocolCaps {
         match cap {
             ProtocolCap::FundingSearchScans => self.funding_search_scans,
             ProtocolCap::AuthoritySearchNodes => self.authority_search_nodes,
+            ProtocolCap::BlockRecords => self.block_records,
+            ProtocolCap::BlockRecordBytes => self.block_record_bytes,
         }
+    }
+
+    pub fn default_block_caps(&self) -> bool {
+        self.block_records == DEFAULT_BLOCK_RECORDS
+            && self.block_record_bytes == DEFAULT_BLOCK_RECORD_BYTES
     }
 
     pub fn check(&self) -> Result<(), ProtocolCap> {
@@ -64,25 +79,38 @@ impl ProtocolCaps {
     }
 }
 
+pub const DEFAULT_BLOCK_RECORDS: usize = 64;
+
+pub const DEFAULT_BLOCK_RECORD_BYTES: usize = 8 * 1024 * 1024;
+
 pub const OFFERED_FUNDED_V6_CAPS: ProtocolCaps = ProtocolCaps {
     funding_search_scans: 32_768,
     authority_search_nodes: 65_536,
+    block_records: DEFAULT_BLOCK_RECORDS,
+    block_record_bytes: DEFAULT_BLOCK_RECORD_BYTES,
 };
 
 pub const UNADOPTED_PROTOCOL_CAPS: ProtocolCaps = ProtocolCaps {
     funding_search_scans: 268_435_456,
     authority_search_nodes: 268_435_456,
+    block_records: DEFAULT_BLOCK_RECORDS,
+    block_record_bytes: DEFAULT_BLOCK_RECORD_BYTES,
 };
 
 static FUNDING_SEARCH_SCANS: AtomicUsize =
     AtomicUsize::new(UNADOPTED_PROTOCOL_CAPS.funding_search_scans);
 static AUTHORITY_SEARCH_NODES: AtomicUsize =
     AtomicUsize::new(UNADOPTED_PROTOCOL_CAPS.authority_search_nodes);
+static BLOCK_RECORDS: AtomicUsize = AtomicUsize::new(UNADOPTED_PROTOCOL_CAPS.block_records);
+static BLOCK_RECORD_BYTES: AtomicUsize =
+    AtomicUsize::new(UNADOPTED_PROTOCOL_CAPS.block_record_bytes);
 
 pub fn set_protocol_caps(caps: ProtocolCaps) -> Result<(), ProtocolCap> {
     caps.check()?;
     FUNDING_SEARCH_SCANS.store(caps.funding_search_scans, Ordering::Relaxed);
     AUTHORITY_SEARCH_NODES.store(caps.authority_search_nodes, Ordering::Relaxed);
+    BLOCK_RECORDS.store(caps.block_records, Ordering::Relaxed);
+    BLOCK_RECORD_BYTES.store(caps.block_record_bytes, Ordering::Relaxed);
     Ok(())
 }
 
@@ -90,6 +118,8 @@ pub fn protocol_caps() -> ProtocolCaps {
     ProtocolCaps {
         funding_search_scans: FUNDING_SEARCH_SCANS.load(Ordering::Relaxed),
         authority_search_nodes: AUTHORITY_SEARCH_NODES.load(Ordering::Relaxed),
+        block_records: BLOCK_RECORDS.load(Ordering::Relaxed),
+        block_record_bytes: BLOCK_RECORD_BYTES.load(Ordering::Relaxed),
     }
 }
 
@@ -193,10 +223,17 @@ mod tests {
 
     #[test]
     fn the_v6_defaults_are_below_the_unadopted_process_caps() {
-        for cap in ProtocolCap::ALL {
+        for cap in [
+            ProtocolCap::FundingSearchScans,
+            ProtocolCap::AuthoritySearchNodes,
+        ] {
             assert!(OFFERED_FUNDED_V6_CAPS.value(cap) < UNADOPTED_PROTOCOL_CAPS.value(cap));
+        }
+        for cap in ProtocolCap::ALL {
             assert!(OFFERED_FUNDED_V6_CAPS.value(cap).is_power_of_two());
         }
+        assert!(UNADOPTED_PROTOCOL_CAPS.default_block_caps());
+        assert!(OFFERED_FUNDED_V6_CAPS.default_block_caps());
     }
 
     #[test]
@@ -218,6 +255,25 @@ mod tests {
         };
         assert_eq!(zero.check(), Err(ProtocolCap::AuthoritySearchNodes));
         assert_eq!(partial.check(), Ok(()));
+        assert_eq!(partial.block_records, 64);
+        assert_eq!(partial.block_record_bytes, 8 * 1024 * 1024);
+        assert!(partial.default_block_caps());
+        let records: ProtocolCaps =
+            serde_json::from_str(r#"{"block-records": 32, "block-record-bytes": 4194304}"#)
+                .expect("block caps");
+        assert_eq!(
+            (records.block_records, records.block_record_bytes),
+            (32, 4_194_304)
+        );
+        assert!(!records.default_block_caps());
+        assert_eq!(
+            ProtocolCaps {
+                block_record_bytes: 0,
+                ..records
+            }
+            .check(),
+            Err(ProtocolCap::BlockRecordBytes)
+        );
     }
 
     #[test]
