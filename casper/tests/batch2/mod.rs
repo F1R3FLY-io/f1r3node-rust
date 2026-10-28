@@ -1,5 +1,7 @@
 pub mod carrier_record_spec;
 pub mod clique_edge_stall_spec;
+pub mod cursor_slot_test;
+pub mod validate_commit_test;
 pub mod clique_oracle_metadata_reads_spec;
 pub mod clique_oracle_test;
 pub mod dedup_orphan_recovery_spec;

@@ -88,6 +88,18 @@ pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
 
+    let cap = deploy_pool_cap(this.casper_shard_conf.max_user_deploys_per_block);
+    let pending = this.deploy_storage.lock().pending_count()?;
+    if let Some(error) = pool_admission(pending, cap) {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "pool_full",
+            cap,
+            "deploy lifecycle"
+        );
+        return Ok(Either::Left(error));
+    }
+
     // Create normalizer environment from deploy
     let normalizer_env = match normalizer_env_from_deploy(&deploy) {
         Ok(env) => env,
@@ -147,6 +159,17 @@ pub(crate) fn admit_deploy_envelope<T: TransportLayer + Send + Sync>(
     if deploy_is_known(this, &deploy_id)? {
         return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
+    let cap = deploy_pool_cap(this.casper_shard_conf.max_user_deploys_per_block);
+    let pending = this.deploy_storage.lock().pending_count()?;
+    if let Some(error) = pool_admission(pending, cap) {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "pool_full",
+            cap,
+            "deploy lifecycle"
+        );
+        return Ok(Either::Left(error));
+    }
     if let Err(interpreter_error) = interpreter_util::mk_term(
         &envelope.body().term,
         normalizer_env_from_envelope(&envelope),
@@ -188,6 +211,19 @@ fn reserve_envelope<T: TransportLayer + Send + Sync>(
     deploy_storage
         .add_envelope_if_absent(envelope)
         .map_err(Into::into)
+}
+
+pub(crate) const DEPLOY_POOL_BLOCKS_OF_BACKLOG: usize = 64;
+
+pub(crate) fn deploy_pool_cap(max_user_deploys_per_block: u32) -> usize {
+    (max_user_deploys_per_block.max(1) as usize).saturating_mul(DEPLOY_POOL_BLOCKS_OF_BACKLOG)
+}
+
+pub(crate) fn pool_admission(pending: Option<usize>, cap: usize) -> Option<DeployError> {
+    match pending {
+        Some(pending) if pending >= cap => Some(DeployError::pool_full(pending, cap)),
+        _ => None,
+    }
 }
 
 fn deploy_is_known<T: TransportLayer + Send + Sync>(
@@ -542,8 +578,33 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
 
 #[cfg(test)]
 mod tests {
-    use super::stored_deploy_is_pending_for_snapshot;
+    use super::{
+        deploy_pool_cap, pool_admission, stored_deploy_is_pending_for_snapshot,
+        DEPLOY_POOL_BLOCKS_OF_BACKLOG,
+    };
     use crate::rust::casper::test_helpers::TestCasperWithSnapshot;
+    use crate::rust::casper::DeployError;
+
+    #[test]
+    fn the_pool_cap_scales_with_the_per_block_limit() {
+        assert_eq!(deploy_pool_cap(128), 128 * DEPLOY_POOL_BLOCKS_OF_BACKLOG);
+        assert_eq!(deploy_pool_cap(0), DEPLOY_POOL_BLOCKS_OF_BACKLOG);
+    }
+
+    #[test]
+    fn admission_refuses_only_at_or_over_the_cap() {
+        assert_eq!(pool_admission(Some(0), 10), None);
+        assert_eq!(pool_admission(Some(9), 10), None);
+        assert_eq!(
+            pool_admission(Some(10), 10),
+            Some(DeployError::PoolFull {
+                pending: 10,
+                cap: 10
+            })
+        );
+        assert!(pool_admission(Some(11), 10).is_some());
+        assert_eq!(pool_admission(None, 0), None);
+    }
     use crate::rust::util::construct_deploy;
 
     #[test]

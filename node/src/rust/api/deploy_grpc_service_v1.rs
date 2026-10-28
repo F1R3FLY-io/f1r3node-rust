@@ -298,14 +298,14 @@ impl DeployService for DeployGrpcServiceV1Impl {
         match result {
             Ok(result) => Self::create_success_deploy_response(result),
             Err(e) => {
-                let is_duplicate = e.chain().any(|cause| {
+                let is_expected_rejection = e.chain().any(|cause| {
                     matches!(
                         cause.downcast_ref::<DeployError>(),
-                        Some(DeployError::DuplicateDeploy(_))
+                        Some(DeployError::DuplicateDeploy(_) | DeployError::PoolFull { .. })
                     )
                 });
-                if is_duplicate {
-                    tracing::debug!("Duplicate deploy rejected: {}", e);
+                if is_expected_rejection {
+                    tracing::debug!("Deploy rejected: {}", e);
                 } else {
                     error!("Deploy service method error do_deploy: {}", e);
                 }

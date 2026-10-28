@@ -178,6 +178,11 @@ impl KeyValueStore for InMemoryKeyValueStore {
         let _guard = self.read_guard();
         Ok(!self.state.is_empty())
     }
+
+    fn entry_count(&self) -> Result<Option<usize>, KvStoreError> {
+        let _guard = self.read_guard();
+        Ok(Some(self.state.len()))
+    }
 }
 
 impl InMemoryKeyValueStore {

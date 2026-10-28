@@ -295,6 +295,13 @@ impl KeyValueStore for LmdbKeyValueStore {
         drop(reader);
         Ok(has_first)
     }
+
+    fn entry_count(&self) -> Result<Option<usize>, KvStoreError> {
+        let reader = self.env.read_txn()?;
+        let count = self.db.len(&reader)?;
+        drop(reader);
+        Ok(Some(count as usize))
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -1095,6 +1102,18 @@ mod store_tests {
         assert_eq!(map.len(), 3);
         assert_eq!(map.get(b"k2".as_slice()), Some(&b"v2".to_vec()));
         store.print_store().unwrap();
+    }
+
+    #[test]
+    fn entry_count_tracks_puts_and_deletes() {
+        let store = open_store(&open_env(), "s");
+        assert_eq!(store.entry_count().unwrap(), Some(0));
+        store.put_one(b"a".to_vec(), b"v".to_vec()).unwrap();
+        store.put_one(b"b".to_vec(), b"v".to_vec()).unwrap();
+        store.put_one(b"a".to_vec(), b"w".to_vec()).unwrap();
+        assert_eq!(store.entry_count().unwrap(), Some(2));
+        store.delete(vec![b"a".to_vec()]).unwrap();
+        assert_eq!(store.entry_count().unwrap(), Some(1));
     }
 
     #[test]

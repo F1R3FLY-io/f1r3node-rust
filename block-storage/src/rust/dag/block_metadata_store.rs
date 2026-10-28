@@ -216,57 +216,77 @@ impl BlockMetadataStore {
         indirectly: HashSet<BlockHash>,
         ft_value: f32,
     ) -> Result<(), KvStoreError> {
+        let (rows, directly_number) =
+            self.prepare_finalized_rows(&directly, &indirectly, ft_value)?;
+        self.store.raw_store().put(rows)?;
+        self.apply_finalized_in_memory(directly, directly_number, indirectly);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_finalized_rows(
+        &self,
+        directly: &BlockHash,
+        indirectly: &HashSet<BlockHash>,
+        ft_value: f32,
+    ) -> Result<(Vec<(Vec<u8>, Vec<u8>)>, i64), KvStoreError> {
         let indirectly_serde: Vec<BlockHashSerde> = indirectly
             .iter()
             .map(|hash| BlockHashSerde(hash.clone()))
             .collect();
-
         let cur_metas_for_if = self.store.get_batch(&indirectly_serde)?;
 
-        // new values to persist
         let mut new_meta_for_df = self.store.get_unsafe(&BlockHashSerde(directly.clone()))?;
         new_meta_for_df.finalized = true;
         new_meta_for_df.directly_finalized = true;
         if ft_value > new_meta_for_df.fault_tolerance_value {
             new_meta_for_df.fault_tolerance_value = ft_value;
         }
+        let directly_number = new_meta_for_df.block_number;
 
-        let new_metas_for_if: Vec<(BlockHashSerde, BlockMetadata)> = cur_metas_for_if
-            .into_iter()
-            .map(|mut v| {
-                v.finalized = true;
-                if v.fault_tolerance_value < ft_value {
-                    v.fault_tolerance_value = ft_value;
-                }
-                (BlockHashSerde(v.block_hash.clone()), v)
-            })
-            .collect();
+        let mut rows = Vec::with_capacity(1 + cur_metas_for_if.len());
+        rows.push((
+            self.store.encode_key(&BlockHashSerde(directly.clone()))?,
+            self.store.encode_value(&new_meta_for_df)?,
+        ));
+        for mut meta in cur_metas_for_if {
+            meta.finalized = true;
+            if meta.fault_tolerance_value < ft_value {
+                meta.fault_tolerance_value = ft_value;
+            }
+            rows.push((
+                self.store
+                    .encode_key(&BlockHashSerde(meta.block_hash.clone()))?,
+                self.store.encode_value(&meta)?,
+            ));
+        }
+        Ok((rows, directly_number))
+    }
 
-        // Add all blocks to finalized set
+    pub(crate) fn apply_finalized_in_memory(
+        &self,
+        directly: BlockHash,
+        directly_number: i64,
+        indirectly: HashSet<BlockHash>,
+    ) {
         let mut dag_state_guard = self.dag_state.write();
         for hash in indirectly {
             dag_state_guard.finalized_block_set.insert(hash);
         }
         dag_state_guard.finalized_block_set.insert(directly.clone());
-
-        // update lastFinalizedBlock only when current one is lower
-        if dag_state_guard.last_finalized_block.is_none()
-            || dag_state_guard.last_finalized_block.as_ref().unwrap().1
-                <= new_meta_for_df.block_number
+        if dag_state_guard
+            .last_finalized_block
+            .as_ref()
+            .is_none_or(|(_, number)| *number <= directly_number)
         {
-            dag_state_guard.last_finalized_block =
-                Some((directly.clone(), new_meta_for_df.block_number));
+            dag_state_guard.last_finalized_block = Some((directly, directly_number));
         }
         Self::prune_finalized_cache_if_needed(&mut dag_state_guard);
-        drop(dag_state_guard);
+    }
 
-        // persist new values all at once
-        let mut new_values = Vec::with_capacity(1 + new_metas_for_if.len());
-        new_values.push((BlockHashSerde(directly), new_meta_for_df));
-        new_values.extend(new_metas_for_if);
-        self.store.put(new_values)?;
-
-        Ok(())
+    pub(crate) fn raw_store(
+        &self,
+    ) -> &Arc<dyn shared::rust::store::key_value_store::KeyValueStore> {
+        self.store.raw_store()
     }
 
     pub fn update_ft_if_higher(

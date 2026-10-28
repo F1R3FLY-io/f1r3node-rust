@@ -899,6 +899,12 @@ pub struct BlockDagKeyValueStorage {
     /// that need a network-uniform genesis sentinel read this register.
     pub(crate) genesis_hash_index: KeyValueTypedStoreImpl<String, BlockHashSerde>,
     pub(crate) v6_executor_state: Arc<dyn KeyValueStore>,
+    pub(crate) commit_marker_index: KeyValueTypedStoreImpl<
+        Vec<u8>,
+        crate::rust::dag::finalization_commit::FinalizationCommitMarker,
+    >,
+    pub(crate) lfb_pointer_index:
+        KeyValueTypedStoreImpl<String, crate::rust::dag::finalization_commit::LfbPointer>,
 }
 
 impl BlockDagKeyValueStorage {
@@ -1014,6 +1020,8 @@ impl BlockDagKeyValueStorage {
         let genesis_hash_kv_store = kvm.store("genesis-hash".to_string()).await?;
         let genesis_hash_db: KeyValueTypedStoreImpl<String, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(genesis_hash_kv_store);
+        let commit_marker_kv_store = kvm.store("finalization-commit-marker".to_string()).await?;
+        let lfb_pointer_kv_store = kvm.store("lfb-pointer".to_string()).await?;
 
         Ok(Self {
             global_lock: Arc::new(PlRwLock::new(())),
@@ -1029,6 +1037,8 @@ impl BlockDagKeyValueStorage {
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             genesis_hash_index: genesis_hash_db,
             v6_executor_state,
+            commit_marker_index: KeyValueTypedStoreImpl::new(commit_marker_kv_store),
+            lfb_pointer_index: KeyValueTypedStoreImpl::new(lfb_pointer_kv_store),
         })
     }
 
@@ -1136,6 +1146,12 @@ impl BlockDagKeyValueStorage {
             v6_executor_state: Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             ),
+            commit_marker_index: KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
+            lfb_pointer_index: KeyValueTypedStoreImpl::new(Arc::new(
+                rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+            )),
         }
     }
 
@@ -1583,7 +1599,6 @@ impl BlockDagKeyValueStorage {
         f(&self.equivocation_tracker_index)
     }
 
-    /** Record that some hash is directly finalized (detected by finalizer and becomes LFB). */
     pub async fn record_directly_finalized<F, Fut>(
         &self,
         directly_finalized_hash: BlockHash,
@@ -1594,118 +1609,143 @@ impl BlockDagKeyValueStorage {
         F: FnMut(&HashSet<BlockHash>) -> Fut,
         Fut: std::future::Future<Output = Result<(), KvStoreError>>,
     {
-        // P5 (slashing audit): bound chosen because typical reconciliation
-        // converges in 1–4 loops under realistic block-insert load. A
-        // 128-loop ceiling prevents the (TOCTOU-driven) pathological case
-        // from spinning indefinitely while leaving generous headroom for
-        // catastrophic concurrency. The cap is observable: hitting it
-        // emits an `IoError(...)` so operators can detect the condition.
-        const MAX_FINALIZATION_RECONCILE_LOOPS: usize = 128;
-
-        // Close TOCTOU race by repeatedly applying effects for newly observed finalized
-        // hashes until the lock-protected snapshot is stable. Keep metadata persistence
-        // aligned with already-applied effects when exiting due to errors or retry cap.
-        let persist_effect_applied =
-            |force_direct: bool, effect_applied: &HashSet<BlockHash>| -> Result<(), KvStoreError> {
-                if !force_direct && effect_applied.is_empty() {
-                    return Ok(());
-                }
-
-                let indirectly_finalized: HashSet<BlockHash> = effect_applied
-                    .iter()
-                    .filter(|hash| *hash != &directly_finalized_hash)
-                    .cloned()
-                    .collect();
-
-                // P2-12: record_finalized mutates block metadata; exclusive lock.
-                let _lock_guard = self.global_lock.write();
-
-                // These blocks enter at `ft_value`, possibly below what earlier
-                // rounds propagated — the bound has to follow them down. Lowered
-                // BEFORE the fallible write, not after: `record_finalized` adds to
-                // `finalized_block_set` before it persists, so an error on the way
-                // out would leave those blocks in the set with the bound still
-                // high, and every later propagate at or under it would skip the
-                // scan that raises them. Lowering early can only cost one
-                // unnecessary scan.
-                let _ = self.ft_lower_bound.fetch_update(
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                    |bits| (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits()),
-                );
-
-                let mut block_metadata_index_guard = self.block_metadata_index.write();
-                block_metadata_index_guard.record_finalized(
-                    directly_finalized_hash.clone(),
-                    indirectly_finalized,
-                    ft_value,
-                )?;
-                drop(block_metadata_index_guard);
-                Ok(())
-            };
-
-        let mut effect_applied: HashSet<BlockHash> = HashSet::new();
-        for _attempt in 0..MAX_FINALIZATION_RECONCILE_LOOPS {
-            let pending_effect: HashSet<BlockHash> = {
-                // P2-12: snapshot read; shared lock allows concurrent readers.
-                let _lock_guard = self.global_lock.read();
-
-                let dag = self.get_representation_internal()?;
-                if !dag.contains(&directly_finalized_hash) {
-                    return Err(KvStoreError::InvalidArgument(format!(
-                        "Attempting to finalize nonexistent hash {}",
-                        PrettyPrinter::build_string_bytes(&directly_finalized_hash)
-                    )));
-                }
-
-                // Held, unfinalized ancestry only. A parent edge can reach
-                // BELOW a restored node's truncation horizon — referenced but
-                // not held — and such an ancestor is settled by the restore
-                // contract (everything under the shipped window is finalized
-                // ancestry). Descending into it errored the whole finalizer
-                // run on the first sub-horizon parent, permanently: the same
-                // ancestry re-walks every run, so a restored node's LFB froze
-                // at its restore-era floor while the shard finalized on.
-                let indirectly_finalized = dag
-                    .held_ancestors(directly_finalized_hash.clone(), |hash| {
-                        !dag.is_finalized(hash)
-                    })?;
-
-                let mut all_finalized = indirectly_finalized.clone();
-                all_finalized.insert(directly_finalized_hash.clone());
-
-                let pending: HashSet<BlockHash> =
-                    all_finalized.difference(&effect_applied).cloned().collect();
-
-                pending
-            };
-
-            if pending_effect.is_empty() {
-                persist_effect_applied(true, &effect_applied)?;
-
-                // Propagate FT to all finalized blocks whose cached value is lower.
-                // This ensures FT converges toward 1.0 as later finalization
-                // rounds produce higher agreement. Covers orphaned branches
-                // not reachable via the new LFB's ancestor chain.
-                self.propagate_ft_to_finalized_blocks(ft_value)?;
-
-                return Ok(());
+        use crate::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
+        match self.commit_lfb(directly_finalized_hash.clone(), ft_value, |_| Ok(()))? {
+            CommitOutcome::Committed(marker) => {
+                let finalized: HashSet<BlockHash> =
+                    marker.finalized_in_order().into_iter().collect();
+                finalization_effect(&finalized).await?;
+                self.mark_events_published(marker.commit_epoch)
             }
-
-            // Execute async effect without holding lock.
-            if let Err(err) = finalization_effect(&pending_effect).await {
-                persist_effect_applied(false, &effect_applied)?;
-                return Err(err);
+            CommitOutcome::Refused(CommitRefusal::NotInDag) => {
+                Err(KvStoreError::InvalidArgument(format!(
+                    "Attempting to finalize nonexistent hash {}",
+                    PrettyPrinter::build_string_bytes(&directly_finalized_hash)
+                )))
             }
-            effect_applied.extend(pending_effect);
+            CommitOutcome::Refused(_) => Ok(()),
         }
+    }
 
-        persist_effect_applied(false, &effect_applied)?;
-        Err(KvStoreError::IoError(format!(
-            "record_directly_finalized exceeded {} reconcile loops for {}",
-            MAX_FINALIZATION_RECONCILE_LOOPS,
-            PrettyPrinter::build_string_bytes(&directly_finalized_hash)
-        )))
+    pub fn commit_lfb<V>(
+        &self,
+        directly: BlockHash,
+        ft_value: f32,
+        validate: V,
+    ) -> Result<crate::rust::dag::finalization_commit::CommitOutcome, KvStoreError>
+    where
+        V: FnOnce(
+            &KeyValueDagRepresentation,
+        ) -> Result<(), crate::rust::dag::finalization_commit::CommitRefusal>,
+    {
+        use crate::rust::dag::finalization_commit::{
+            commit_epoch_key, CommitOutcome, CommitRefusal, FinalizationCommitMarker, LfbPointer,
+            LFB_POINTER_KEY,
+        };
+        let marker = {
+            let _lock_guard = self.global_lock.write();
+            let dag = self.get_representation_internal()?;
+            if !dag.contains(&directly) {
+                return Ok(CommitOutcome::Refused(CommitRefusal::NotInDag));
+            }
+            let directly_number = dag.block_number_unsafe(&directly)?;
+            if let Err(refusal) = validate(&dag) {
+                return Ok(CommitOutcome::Refused(refusal));
+            }
+
+            let mut indirectly =
+                dag.held_ancestors(directly.clone(), |hash| !dag.is_finalized(hash))?;
+            indirectly.remove(&directly);
+            let mut indirect_sorted: Vec<(i64, BlockHash)> = indirectly
+                .iter()
+                .map(|hash| Ok((dag.block_number_unsafe(hash)?, hash.clone())))
+                .collect::<Result<_, KvStoreError>>()?;
+            indirect_sorted.sort();
+
+            let previous_pointer = self
+                .lfb_pointer_index
+                .get_one(&LFB_POINTER_KEY.to_string())?;
+            let commit_epoch = previous_pointer
+                .as_ref()
+                .map_or(1, |pointer| pointer.commit_epoch + 1);
+            let marker = FinalizationCommitMarker {
+                directly: BlockHashSerde(directly.clone()),
+                height: directly_number,
+                indirect_sorted: indirect_sorted
+                    .into_iter()
+                    .map(|(_, hash)| BlockHashSerde(hash))
+                    .collect(),
+                ft_value,
+                commit_epoch,
+            };
+            let pointer = match previous_pointer {
+                Some(previous) if previous.height > directly_number => LfbPointer {
+                    commit_epoch,
+                    ..previous
+                },
+                _ => LfbPointer {
+                    hash: BlockHashSerde(directly.clone()),
+                    height: directly_number,
+                    commit_epoch,
+                },
+            };
+
+            let _ =
+                self.ft_lower_bound
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bits| {
+                        (ft_value < f32::from_bits(bits)).then(|| ft_value.to_bits())
+                    });
+
+            let metadata_guard = self.block_metadata_index.write();
+            let (metadata_rows, _) =
+                metadata_guard.prepare_finalized_rows(&directly, &indirectly, ft_value)?;
+            let marker_rows = vec![(
+                self.commit_marker_index
+                    .encode_key(&commit_epoch_key(commit_epoch))?,
+                self.commit_marker_index.encode_value(&marker)?,
+            )];
+            let pointer_rows = vec![(
+                self.lfb_pointer_index
+                    .encode_key(&LFB_POINTER_KEY.to_string())?,
+                self.lfb_pointer_index.encode_value(&pointer)?,
+            )];
+            shared::rust::store::lmdb_key_value_store::batched_put(vec![
+                (metadata_guard.raw_store().as_ref(), metadata_rows),
+                (self.commit_marker_index.raw_store().as_ref(), marker_rows),
+                (self.lfb_pointer_index.raw_store().as_ref(), pointer_rows),
+            ])?;
+            metadata_guard.apply_finalized_in_memory(directly.clone(), directly_number, indirectly);
+            drop(metadata_guard);
+            marker
+        };
+        self.propagate_ft_to_finalized_blocks(ft_value)?;
+        Ok(CommitOutcome::Committed(marker))
+    }
+
+    pub fn mark_events_published(&self, commit_epoch: u64) -> Result<(), KvStoreError> {
+        let key = crate::rust::dag::finalization_commit::commit_epoch_key(commit_epoch);
+        self.commit_marker_index.delete(vec![key])?;
+        Ok(())
+    }
+
+    pub fn pending_finalization_events(
+        &self,
+    ) -> Result<Vec<crate::rust::dag::finalization_commit::FinalizationCommitMarker>, KvStoreError>
+    {
+        if !self.commit_marker_index.raw_store().non_empty()? {
+            return Ok(Vec::new());
+        }
+        let mut markers: Vec<crate::rust::dag::finalization_commit::FinalizationCommitMarker> =
+            self.commit_marker_index.to_map()?.into_values().collect();
+        markers.sort_by_key(|marker| marker.commit_epoch);
+        Ok(markers)
+    }
+
+    pub fn lfb_pointer(
+        &self,
+    ) -> Result<Option<crate::rust::dag::finalization_commit::LfbPointer>, KvStoreError> {
+        self.lfb_pointer_index
+            .get_one(&crate::rust::dag::finalization_commit::LFB_POINTER_KEY.to_string())
     }
 
     fn propagate_ft_to_finalized_blocks(&self, ft_value: f32) -> Result<(), KvStoreError> {

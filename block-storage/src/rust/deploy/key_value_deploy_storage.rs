@@ -326,6 +326,14 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     pub fn non_empty(&self) -> Result<bool, KvStoreError> {
         Ok(self.store.non_empty()? || self.envelope_store.non_empty()?)
     }
+
+    pub fn pending_count(&self) -> Result<Option<usize>, KvStoreError> {
+        let legacy = self.store.raw_store().entry_count()?;
+        let offered = self.envelope_store.raw_store().entry_count()?;
+        Ok(legacy
+            .zip(offered)
+            .map(|(legacy, offered)| legacy + offered))
+    }
 }
 
 #[cfg(test)]
