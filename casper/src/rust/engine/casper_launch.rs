@@ -8,6 +8,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+use block_storage::rust::dag::buffer_dag_transition::purge_buffered_blocks_without_body;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
@@ -268,6 +269,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             blocks_in_processing: &Arc<InFlightBlocks>,
             block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
         ) -> Result<(), CasperError> {
+            let purged = purge_buffered_blocks_without_body(casper_buffer_storage, block_store)?;
+            if purged > 0 {
+                tracing::warn!(
+                    "Purged {} CasperBuffer entries whose block body is not stored.",
+                    purged
+                );
+            }
             let pendants = casper_buffer_storage.get_pendants();
 
             // Filter pendants to only those that exist in BlockStore
