@@ -7,8 +7,6 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use prost::Message;
 
-/// Bounds of the in-memory area that holds blocks whose sender authorization
-/// is not known yet. The area is node-local and never part of consensus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingBlockLimits {
     pub max_blocks: usize,
@@ -34,17 +32,12 @@ pub enum PendingInsert {
     TooLarge,
 }
 
-/// The result of an insert, with the hashes that the insert evicted. The
-/// caller must release the dependency state of each evicted block, or a
-/// block that waits on it is never fetched again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingOutcome {
     pub status: PendingInsert,
     pub evicted: Vec<BlockHash>,
 }
 
-/// An entry keeps the encoded block, so the byte limit counts the memory
-/// that the entry really holds.
 struct Entry {
     encoded: Bytes,
     sender: Bytes,
@@ -65,6 +58,7 @@ struct Inner {
     solicited: BTreeMap<u64, BlockHash>,
     per_sender: HashMap<Bytes, usize>,
     bytes: usize,
+    unsolicited_bytes: usize,
     next_seq: u64,
 }
 
@@ -75,6 +69,7 @@ impl Inner {
             self.solicited.remove(&entry.seq);
         } else {
             self.unsolicited.remove(&entry.seq);
+            self.unsolicited_bytes -= entry.encoded.len();
         }
         self.bytes -= entry.encoded.len();
         if let Some(count) = self.per_sender.get_mut(&entry.sender) {
@@ -97,14 +92,28 @@ impl Inner {
             })
             .cloned()
     }
+
+    fn oldest_unsolicited_from(&self, sender: &Bytes) -> Option<BlockHash> {
+        self.unsolicited
+            .values()
+            .find(|hash| {
+                self.entries
+                    .get(*hash)
+                    .is_some_and(|entry| entry.sender == *sender)
+            })
+            .cloned()
+    }
+
+    fn can_fit(&self, bytes: usize, solicited: bool) -> bool {
+        let (kept_blocks, kept_bytes) = if solicited {
+            (0, 0)
+        } else {
+            (self.solicited.len(), self.bytes - self.unsolicited_bytes)
+        };
+        kept_blocks < self.limits.max_blocks && kept_bytes + bytes <= self.limits.max_bytes
+    }
 }
 
-/// Blocks that passed format and signature checks but whose main parent is
-/// not validated yet, so the sender's bond cannot be judged. They stay here,
-/// off disk, until the authorization is known. When the area is full,
-/// unsolicited blocks are evicted before blocks this node asked for as a
-/// dependency, oldest first: a catch-up is mostly solicited blocks, and a
-/// flood starts from an unsolicited one.
 pub struct PendingBlocks {
     inner: Mutex<Inner>,
 }
@@ -119,6 +128,7 @@ impl PendingBlocks {
                 solicited: BTreeMap::new(),
                 per_sender: HashMap::new(),
                 bytes: 0,
+                unsolicited_bytes: 0,
                 next_seq: 0,
             }),
         }
@@ -128,8 +138,6 @@ impl PendingBlocks {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).limits
     }
 
-    /// Replace the bounds and evict, unsolicited first, until the area fits.
-    /// Returns the evicted hashes.
     pub fn set_limits(&self, limits: PendingBlockLimits) -> Vec<BlockHash> {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.limits = limits;
@@ -146,7 +154,7 @@ impl PendingBlocks {
         evicted
     }
 
-    pub fn insert(&self, block: BlockMessage, solicited: bool) -> PendingOutcome {
+    pub fn insert(&self, block: &BlockMessage, solicited: bool) -> PendingOutcome {
         let encoded = Bytes::from(block.to_proto().encode_to_vec());
         let bytes = encoded.len();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -159,8 +167,10 @@ impl PendingBlocks {
         if let Some(existing) = inner.entries.get(&block.block_hash) {
             if solicited && !existing.solicited {
                 let seq = existing.seq;
+                let size = existing.encoded.len();
                 let hash = block.block_hash.clone();
                 inner.unsolicited.remove(&seq);
+                inner.unsolicited_bytes -= size;
                 inner.solicited.insert(seq, hash.clone());
                 if let Some(entry) = inner.entries.get_mut(&hash) {
                     entry.solicited = true;
@@ -171,10 +181,27 @@ impl PendingBlocks {
         if bytes > limits.max_bytes {
             return outcome(PendingInsert::TooLarge);
         }
-        if inner.per_sender.get(&block.sender).copied().unwrap_or(0) >= limits.max_per_sender {
-            return outcome(PendingInsert::SenderLimitReached);
+        let sender_victim =
+            if inner.per_sender.get(&block.sender).copied().unwrap_or(0) >= limits.max_per_sender {
+                match solicited
+                    .then(|| inner.oldest_unsolicited_from(&block.sender))
+                    .flatten()
+                {
+                    Some(victim) => Some(victim),
+                    None => return outcome(PendingInsert::SenderLimitReached),
+                }
+            } else {
+                None
+            };
+        if !inner.can_fit(bytes, solicited) {
+            return outcome(PendingInsert::AreaFull);
         }
+
         let mut evicted = Vec::new();
+        if let Some(victim) = sender_victim {
+            inner.remove(&victim);
+            evicted.push(victim);
+        }
         while inner.entries.len() + 1 > limits.max_blocks || inner.bytes + bytes > limits.max_bytes
         {
             match inner.oldest(solicited) {
@@ -200,10 +227,11 @@ impl PendingBlocks {
             inner.solicited.insert(seq, hash.clone());
         } else {
             inner.unsolicited.insert(seq, hash.clone());
+            inner.unsolicited_bytes += bytes;
         }
         inner.entries.insert(hash, Entry {
             encoded,
-            sender: block.sender,
+            sender: block.sender.clone(),
             solicited,
             seq,
         });
@@ -274,10 +302,7 @@ mod tests {
     fn inserted_block_is_readable_and_removable() {
         let area = PendingBlocks::new(PendingBlockLimits::default());
         let b = block(1, 1);
-        assert_eq!(
-            area.insert(b.clone(), false).status,
-            PendingInsert::Accepted
-        );
+        assert_eq!(area.insert(&b, false).status, PendingInsert::Accepted);
         assert_eq!(area.get(&b.block_hash), Some(b.clone()));
         assert_eq!(area.len(), 1);
         assert!(area.bytes() > 0);
@@ -289,11 +314,11 @@ mod tests {
     #[test]
     fn full_area_evicts_the_oldest_unsolicited_block_first() {
         let area = PendingBlocks::new(limits(3, usize::MAX, 10));
-        area.insert(block(1, 1), true);
-        area.insert(block(2, 2), false);
-        area.insert(block(3, 3), false);
+        area.insert(&block(1, 1), true);
+        area.insert(&block(2, 2), false);
+        area.insert(&block(3, 3), false);
         assert_eq!(
-            area.insert(block(4, 4), false).status,
+            area.insert(&block(4, 4), false).status,
             PendingInsert::Accepted
         );
         assert!(area.contains(&block(1, 1).block_hash));
@@ -306,14 +331,14 @@ mod tests {
     #[test]
     fn unsolicited_block_never_evicts_a_solicited_one() {
         let area = PendingBlocks::new(limits(2, usize::MAX, 10));
-        area.insert(block(1, 1), true);
-        area.insert(block(2, 2), true);
+        area.insert(&block(1, 1), true);
+        area.insert(&block(2, 2), true);
         assert_eq!(
-            area.insert(block(3, 3), false).status,
+            area.insert(&block(3, 3), false).status,
             PendingInsert::AreaFull
         );
         assert_eq!(
-            area.insert(block(4, 4), true).status,
+            area.insert(&block(4, 4), true).status,
             PendingInsert::Accepted
         );
         assert!(!area.contains(&block(1, 1).block_hash));
@@ -326,13 +351,13 @@ mod tests {
         let size = block(1, 1).to_proto().encoded_len();
         let area = PendingBlocks::new(limits(100, size * 2, 100));
         for i in 0..10u8 {
-            area.insert(block(i, i), false);
+            area.insert(&block(i, i), false);
         }
         assert!(area.bytes() <= size * 2);
         assert!(area.len() <= 2);
         assert_eq!(
             PendingBlocks::new(limits(100, size - 1, 100))
-                .insert(block(1, 1), false)
+                .insert(&block(1, 1), false)
                 .status,
             PendingInsert::TooLarge
         );
@@ -341,19 +366,19 @@ mod tests {
     #[test]
     fn sender_limit_rejects_new_blocks_from_that_sender_only() {
         let area = PendingBlocks::new(limits(100, usize::MAX, 2));
-        area.insert(block(1, 7), false);
-        area.insert(block(2, 7), false);
+        area.insert(&block(1, 7), false);
+        area.insert(&block(2, 7), false);
         assert_eq!(
-            area.insert(block(3, 7), false).status,
+            area.insert(&block(3, 7), false).status,
             PendingInsert::SenderLimitReached
         );
         assert_eq!(
-            area.insert(block(4, 8), false).status,
+            area.insert(&block(4, 8), false).status,
             PendingInsert::Accepted
         );
         area.remove(&block(1, 7).block_hash);
         assert_eq!(
-            area.insert(block(3, 7), false).status,
+            area.insert(&block(3, 7), false).status,
             PendingInsert::Accepted
         );
     }
@@ -362,7 +387,7 @@ mod tests {
     fn many_identities_stay_inside_the_global_limit() {
         let area = PendingBlocks::new(limits(16, usize::MAX, 1));
         for i in 0..=255u8 {
-            area.insert(block(i, i), false);
+            area.insert(&block(i, i), false);
         }
         assert_eq!(area.len(), 16);
     }
@@ -370,9 +395,9 @@ mod tests {
     #[test]
     fn shrinking_the_limits_evicts_unsolicited_blocks_first() {
         let area = PendingBlocks::new(limits(10, usize::MAX, 10));
-        area.insert(block(1, 1), true);
-        area.insert(block(2, 2), false);
-        area.insert(block(3, 3), false);
+        area.insert(&block(1, 1), true);
+        area.insert(&block(2, 2), false);
+        area.insert(&block(3, 3), false);
         area.set_limits(limits(2, usize::MAX, 10));
         assert_eq!(area.len(), 2);
         assert!(area.contains(&block(1, 1).block_hash));
@@ -383,10 +408,10 @@ mod tests {
     #[test]
     fn a_solicited_reinsert_protects_an_unsolicited_entry() {
         let area = PendingBlocks::new(limits(2, usize::MAX, 10));
-        area.insert(block(1, 1), false);
-        area.insert(block(2, 2), false);
-        area.insert(block(1, 1), true);
-        area.insert(block(3, 3), false);
+        area.insert(&block(1, 1), false);
+        area.insert(&block(2, 2), false);
+        area.insert(&block(1, 1), true);
+        area.insert(&block(3, 3), false);
         assert!(area.contains(&block(1, 1).block_hash));
         assert!(!area.contains(&block(2, 2).block_hash));
     }
@@ -394,9 +419,9 @@ mod tests {
     #[test]
     fn an_insert_reports_the_blocks_it_evicted() {
         let area = PendingBlocks::new(limits(2, usize::MAX, 10));
-        assert!(area.insert(block(1, 1), false).evicted.is_empty());
-        area.insert(block(2, 2), false);
-        let outcome = area.insert(block(3, 3), false);
+        assert!(area.insert(&block(1, 1), false).evicted.is_empty());
+        area.insert(&block(2, 2), false);
+        let outcome = area.insert(&block(3, 3), false);
         assert_eq!(outcome.status, PendingInsert::Accepted);
         assert_eq!(outcome.evicted, vec![block(1, 1).block_hash]);
         assert_eq!(area.set_limits(limits(1, usize::MAX, 10)), vec![
@@ -418,9 +443,55 @@ mod tests {
         let encoded = big.to_proto().encoded_len();
         let area = PendingBlocks::new(PendingBlockLimits::default());
 
-        area.insert(big.clone(), false);
+        area.insert(&big, false);
 
         assert_eq!(area.bytes(), encoded);
         assert_eq!(area.get(&big.block_hash), Some(big));
+    }
+
+    #[test]
+    fn a_requested_block_replaces_the_oldest_unsolicited_block_of_its_sender() {
+        let area = PendingBlocks::new(limits(100, usize::MAX, 2));
+        area.insert(&block(1, 7), false);
+        area.insert(&block(2, 7), true);
+        area.insert(&block(5, 8), false);
+
+        let outcome = area.insert(&block(3, 7), true);
+
+        assert_eq!(outcome.status, PendingInsert::Accepted);
+        assert_eq!(outcome.evicted, vec![block(1, 7).block_hash]);
+        assert!(area.contains(&block(5, 8).block_hash));
+        assert_eq!(
+            area.insert(&block(4, 7), true).status,
+            PendingInsert::SenderLimitReached
+        );
+        assert_eq!(
+            area.insert(&block(6, 7), false).status,
+            PendingInsert::SenderLimitReached
+        );
+    }
+
+    #[test]
+    fn an_insert_that_cannot_fit_evicts_nothing() {
+        use models::rust::casper::protocol::casper_message::Justification;
+
+        let mut big = block(9, 9);
+        big.justifications = (0..100u32)
+            .map(|i| Justification {
+                validator: Bytes::from(vec![9u8; 65]),
+                latest_block_hash: Bytes::copy_from_slice(&[i.to_be_bytes(); 8].concat()),
+            })
+            .collect();
+        let small = block(1, 1).to_proto().encoded_len();
+        let area = PendingBlocks::new(limits(100, small + big.to_proto().encoded_len() - 1, 100));
+        area.insert(&block(1, 1), true);
+        area.insert(&block(2, 2), false);
+
+        let outcome = area.insert(&big, false);
+
+        assert_eq!(outcome.status, PendingInsert::AreaFull);
+        assert!(outcome.evicted.is_empty());
+        assert!(area.contains(&block(2, 2).block_hash));
+        assert_eq!(area.len(), 2);
     }
 }
