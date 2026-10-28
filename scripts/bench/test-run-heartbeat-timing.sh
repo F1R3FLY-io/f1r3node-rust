@@ -69,6 +69,13 @@ awk '
 ' "$ROOT/.github/workflows/heartbeat-timing.yml" >"$TMP/resolve.sh"
 mkdir -p "$TMP/control/.github"
 printf 'SYSTEM_INTEGRATION_REF=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' >"$TMP/control/.github/oci-validation.env"
+mkdir -p "$TMP/control/.github/scripts"
+cat >"$TMP/control/.github/scripts/require-repository-commit.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" >"$FAKE_GUARD_ARGS"
+[ "$FAKE_GUARD" = accept ]
+SH
 cat >"$TMP/bin/gh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -77,9 +84,11 @@ printf '%s\n' "$FAKE_TARGET_SHA"
 SH
 chmod +x "$TMP/bin/gh"
 resolve_case() {
-	(cd "$TMP/control" && PATH="$TMP/bin:$PATH" GITHUB_REPOSITORY=example/node \
-		TARGET_REF=feature/heartbeat REPETITIONS="$1" GITHUB_OUTPUT="$TMP/resolved" \
-		FAKE_GH_ARGS="$TMP/gh-args" FAKE_TARGET_SHA="${2:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" \
+	: >"$TMP/resolved"
+	(cd "$TMP/control" && PATH="$TMP/bin:$PATH" GITHUB_SERVER_URL=https://github.example \
+		GITHUB_REPOSITORY=example/node TARGET_REF=feature/heartbeat REPETITIONS="$1" \
+		GITHUB_OUTPUT="$TMP/resolved" FAKE_GH_ARGS="$TMP/gh-args" FAKE_GUARD_ARGS="$TMP/guard-args" \
+		FAKE_GUARD="${3:-accept}" FAKE_TARGET_SHA="${2:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" \
 		bash -euo pipefail "$TMP/resolve.sh")
 }
 resolve_case 20
@@ -87,12 +96,30 @@ grep -Fxq 'target_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$TMP/resolved"
 grep -Fxq 'harness_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' "$TMP/resolved"
 grep -Fxq 'repetitions=20' "$TMP/resolved"
 grep -Fxq 'repos/example/node/commits/feature%2Fheartbeat' "$TMP/gh-args"
+printf '%s\n' https://github.example/example/node.git aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa |
+	cmp -s - "$TMP/guard-args" || {
+	printf 'The workflow did not check that the repository contains the node revision.\n' >&2
+	exit 1
+}
+if resolve_case 20 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa reject; then
+	printf 'The workflow accepted a node revision that no branch or tag holds.\n' >&2
+	exit 1
+fi
+if [ -s "$TMP/resolved" ]; then
+	printf 'The workflow wrote outputs for a rejected node revision.\n' >&2
+	exit 1
+fi
 if resolve_case 21; then
 	printf 'The workflow accepted invalid repetitions.\n' >&2
 	exit 1
 fi
+rm -f "$TMP/guard-args"
 if resolve_case 20 invalid-revision; then
 	printf 'The workflow accepted an invalid node revision.\n' >&2
+	exit 1
+fi
+if [ -e "$TMP/guard-args" ]; then
+	printf 'The workflow checked an unvalidated node revision.\n' >&2
 	exit 1
 fi
 bash "$ROOT/.github/scripts/test-ephemeral-run-tagging.sh" "$ROOT/.github/workflows/heartbeat-timing.yml"
