@@ -478,7 +478,7 @@ async fn a_restarted_engine_resumes_its_canonical_prefix_without_replaying_it() 
     use casper::rust::v6::engine::V6Parts;
     use casper::rust::v6::evidence::MemoryEvidenceSink;
     use casper::rust::v6::gate::RhoBlockGate;
-    use casper::rust::v6::store::{LmdbRecordStore, Opened};
+    use casper::rust::v6::store::{LmdbRecordStore, Opened, RecordSource};
     use casper::rust::v6::validators::AttestedRootValidators;
 
     let genesis = v6_genesis().await;
@@ -514,8 +514,10 @@ async fn a_restarted_engine_resumes_its_canonical_prefix_without_replaying_it() 
     assert!(prefix.len() >= canonical);
 
     let node = &nodes[0];
+    let source: Arc<dyn RecordSource<BlockRecord>> = Arc::new(node.block_store.clone());
     let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
         node.block_dag_storage.v6_executor_state(),
+        source,
         node.genesis.block_hash.clone(),
         node.genesis.body.state.post_state_hash.clone(),
     )
@@ -570,4 +572,80 @@ async fn a_restarted_engine_resumes_its_canonical_prefix_without_replaying_it() 
         assert!(!touched.contains(hash), "a resumed block was run again");
     }
     assert!(restarted.evidence().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_long_run_keeps_executor_memory_flat_and_old_receipts_available() {
+    let genesis = v6_genesis().await;
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_v6_network(genesis, 3).await.unwrap();
+
+    let first = offer(
+        &construct_deploy::DEFAULT_SEC,
+        body(&shard_id, now(), None),
+        1,
+    );
+    let first_id = identity(&first);
+    submit(&nodes[0], first, &shard_id).await.unwrap();
+
+    let mut blocks = Vec::new();
+    let mut largest_ratio_breach = None;
+    let mut peak = 0usize;
+    for round in 0..72 {
+        if round > 0 && round % 12 == 0 {
+            let mut later_body = body(&shard_id, now() + round as i64, None);
+            later_body.valid_after_block_number = round as i64;
+            let later = offer(&construct_deploy::DEFAULT_SEC, later_body, 1);
+            submit(&nodes[round % 3], later, &shard_id).await.unwrap();
+        }
+        let block = propose(&nodes[round % 3]).await;
+        blocks.push(block.block_hash.clone());
+        for node in nodes.iter_mut() {
+            let status = node.process_block(block.clone()).await.unwrap();
+            assert!(
+                matches!(status, Either::Right(_)),
+                "block rejected: {:?}",
+                status
+            );
+        }
+        for node in &nodes {
+            engine(node).wake();
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for node in &nodes {
+            let received = blocks.len() + 1;
+            let lag = received.saturating_sub(engine(node).canonical_len());
+            let resident = engine(node).resident();
+            peak = peak.max(resident);
+            if resident > 6 * lag + 48 {
+                largest_ratio_breach = Some((round, resident, lag));
+            }
+        }
+    }
+
+    let canonical = engine(&nodes[0]).canonical_len();
+    eprintln!("canonical={canonical} peak={peak}");
+    assert!(canonical >= 30, "only {canonical} positions were fixed");
+    assert_eq!(
+        largest_ratio_breach, None,
+        "resident state outgrew the unfixed blocks (round, resident, lag)"
+    );
+
+    match status(&nodes[1], &first_id).await {
+        OfferedStatus::Executed(receipt) => assert!(receipt.verdict.is_admitted()),
+        other => panic!("the first offer's receipt is not served: {:?}", other),
+    }
+    for block in &blocks {
+        let roots: Vec<_> = nodes.iter().map(|n| engine(n).executed(block)).collect();
+        if roots.iter().all(Option::is_some) {
+            assert!(roots.iter().all(|r| *r == roots[0]), "validators disagree");
+        }
+    }
+    for node in &nodes {
+        assert!(
+            engine(node).evidence().is_empty(),
+            "{:?}",
+            engine(node).evidence()
+        );
+    }
 }

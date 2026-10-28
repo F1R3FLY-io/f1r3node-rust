@@ -22,21 +22,21 @@ impl DagView for KeyValueDagRepresentation {
 pub fn epoch_order<D: DagView>(
     dag: &D,
     tip: &BlockHash,
-    emitted: &HashSet<BlockHash>,
+    emitted: &dyn Fn(&BlockHash) -> bool,
 ) -> Result<Vec<BlockHash>, KvStoreError> {
-    if emitted.contains(tip) {
+    if emitted(tip) {
         return Ok(Vec::new());
     }
     let mut members: HashSet<BlockHash> = HashSet::new();
     let mut parents_of: HashMap<BlockHash, Vec<BlockHash>> = HashMap::new();
     let mut queue = VecDeque::from([tip.clone()]);
     while let Some(hash) = queue.pop_front() {
-        if emitted.contains(&hash) || !members.insert(hash.clone()) {
+        if emitted(&hash) || !members.insert(hash.clone()) {
             continue;
         }
         let parents = dag.parents(&hash)?;
         for parent in &parents {
-            if !emitted.contains(parent) && !members.contains(parent) {
+            if !members.contains(parent) && !emitted(parent) {
                 queue.push_back(parent.clone());
             }
         }
@@ -89,62 +89,68 @@ pub enum Advance {
     },
 }
 
+#[derive(Default)]
 pub struct Linearizer {
-    last: BlockHash,
-    last_number: i64,
-    emitted: HashSet<BlockHash>,
+    last: Option<(BlockHash, i64)>,
 }
 
 impl Linearizer {
-    pub fn new(genesis: BlockHash, genesis_number: i64) -> Self {
-        Linearizer {
-            emitted: HashSet::from([genesis.clone()]),
-            last: genesis,
-            last_number: genesis_number,
-        }
-    }
+    pub fn new() -> Self { Linearizer { last: None } }
 
-    pub fn last(&self) -> &BlockHash { &self.last }
+    pub fn last(&self) -> Option<&BlockHash> { self.last.as_ref().map(|(hash, _)| hash) }
 
     pub fn advance<D: DagView>(
         &mut self,
         dag: &D,
         lfb: &BlockHash,
+        emitted: &dyn Fn(&BlockHash) -> bool,
     ) -> Result<Advance, KvStoreError> {
-        if *lfb == self.last {
+        if self.last.as_ref().is_some_and(|(last, _)| last == lfb) {
             return Ok(Advance::Unchanged);
         }
+        let hold = |last: &BlockHash| Advance::Hold {
+            previous: last.clone(),
+            proposed: lfb.clone(),
+        };
         let mut chain = Vec::new();
         let mut cursor = lfb.clone();
         loop {
-            if cursor == self.last {
-                break;
+            if emitted(&cursor) {
+                match &self.last {
+                    Some((last, _)) if *last != cursor => return Ok(hold(last)),
+                    _ => break,
+                }
             }
-            if dag.number(&cursor)? <= self.last_number {
-                return Ok(Advance::Hold {
-                    previous: self.last.clone(),
-                    proposed: lfb.clone(),
-                });
+            if let Some((last, last_number)) = &self.last {
+                if dag.number(&cursor)? <= *last_number {
+                    return Ok(hold(last));
+                }
             }
             chain.push(cursor.clone());
             match dag.parents(&cursor)?.first() {
                 Some(main_parent) => cursor = main_parent.clone(),
                 None => {
-                    return Ok(Advance::Hold {
-                        previous: self.last.clone(),
-                        proposed: lfb.clone(),
+                    return Ok(match &self.last {
+                        Some((last, _)) => hold(last),
+                        None => Advance::Hold {
+                            previous: cursor,
+                            proposed: lfb.clone(),
+                        },
                     })
                 }
             }
         }
+        let mut fresh: HashSet<BlockHash> = HashSet::new();
         let mut out = Vec::new();
         for main in chain.into_iter().rev() {
-            let epoch = epoch_order(dag, &main, &self.emitted)?;
-            self.emitted.extend(epoch.iter().cloned());
+            let epoch = {
+                let seen = |hash: &BlockHash| fresh.contains(hash) || emitted(hash);
+                epoch_order(dag, &main, &seen)?
+            };
+            fresh.extend(epoch.iter().cloned());
             out.extend(epoch);
         }
-        self.last_number = dag.number(lfb)?;
-        self.last = lfb.clone();
+        self.last = Some((lfb.clone(), dag.number(lfb)?));
         Ok(Advance::Emitted(out))
     }
 }
@@ -181,6 +187,34 @@ mod tests {
             .collect()
     }
 
+    struct Run {
+        lin: Linearizer,
+        emitted: HashSet<BlockHash>,
+    }
+
+    impl Run {
+        fn new() -> Self { Run::from(&["g"]) }
+
+        fn from(emitted: &[&str]) -> Self {
+            Run {
+                lin: Linearizer::new(),
+                emitted: emitted.iter().map(|b| h(b)).collect(),
+            }
+        }
+
+        fn advance(&mut self, d: &TestDag, lfb: &str) -> Advance {
+            let emitted = self.emitted.clone();
+            let advance = self
+                .lin
+                .advance(d, &h(lfb), &|b| emitted.contains(b))
+                .unwrap();
+            if let Advance::Emitted(out) = &advance {
+                self.emitted.extend(out.iter().cloned());
+            }
+            advance
+        }
+    }
+
     fn sample() -> TestDag {
         dag(&[
             ("g", 0, &[]),
@@ -197,8 +231,8 @@ mod tests {
     #[test]
     fn epochs_follow_the_main_chain_and_respect_ancestry() {
         let d = sample();
-        let mut lin = Linearizer::new(h("g"), 0);
-        let Advance::Emitted(out) = lin.advance(&d, &h("m3")).unwrap() else {
+        let mut lin = Run::new();
+        let Advance::Emitted(out) = lin.advance(&d, "m3") else {
             panic!()
         };
         assert_eq!(names(&out), vec!["a", "x", "m1", "s1", "m2", "s2", "m3"]);
@@ -207,14 +241,14 @@ mod tests {
     #[test]
     fn order_is_independent_of_finality_steps() {
         let d = sample();
-        let mut one = Linearizer::new(h("g"), 0);
-        let Advance::Emitted(all) = one.advance(&d, &h("m3")).unwrap() else {
+        let mut one = Run::new();
+        let Advance::Emitted(all) = one.advance(&d, "m3") else {
             panic!()
         };
-        let mut two = Linearizer::new(h("g"), 0);
+        let mut two = Run::new();
         let mut stepped = Vec::new();
         for lfb in ["m1", "m2", "m3"] {
-            let Advance::Emitted(part) = two.advance(&d, &h(lfb)).unwrap() else {
+            let Advance::Emitted(part) = two.advance(&d, lfb) else {
                 panic!()
             };
             stepped.extend(part);
@@ -225,8 +259,8 @@ mod tests {
     #[test]
     fn every_block_appears_once_and_after_its_parents() {
         let d = sample();
-        let mut lin = Linearizer::new(h("g"), 0);
-        let Advance::Emitted(out) = lin.advance(&d, &h("m3")).unwrap() else {
+        let mut lin = Run::new();
+        let Advance::Emitted(out) = lin.advance(&d, "m3") else {
             panic!()
         };
         let position: HashMap<&BlockHash, usize> =
@@ -249,9 +283,9 @@ mod tests {
             ("b", 1, &["g"]),
             ("c", 2, &["b", "a"]),
         ]);
-        let mut lin = Linearizer::new(h("g"), 0);
-        lin.advance(&d, &h("a")).unwrap();
-        assert_eq!(lin.advance(&d, &h("c")).unwrap(), Advance::Hold {
+        let mut lin = Run::new();
+        lin.advance(&d, "a");
+        assert_eq!(lin.advance(&d, "c"), Advance::Hold {
             previous: h("a"),
             proposed: h("c")
         });
@@ -260,8 +294,43 @@ mod tests {
     #[test]
     fn unchanged_lfb_emits_nothing() {
         let d = sample();
-        let mut lin = Linearizer::new(h("g"), 0);
-        lin.advance(&d, &h("m2")).unwrap();
-        assert_eq!(lin.advance(&d, &h("m2")).unwrap(), Advance::Unchanged);
+        let mut lin = Run::new();
+        lin.advance(&d, "m2");
+        assert_eq!(lin.advance(&d, "m2"), Advance::Unchanged);
+    }
+
+    #[test]
+    fn a_resumed_linearizer_emits_the_same_tail_after_any_canonical_prefix() {
+        let d = sample();
+        let mut full = Run::new();
+        let Advance::Emitted(all) = full.advance(&d, "m3") else {
+            panic!()
+        };
+        for cut in 1..all.len() {
+            let mut prefix: Vec<&str> = vec!["g"];
+            let names = names(&all[..cut]);
+            prefix.extend(names.iter().map(String::as_str));
+            let mut resumed = Run::from(&prefix);
+            let Advance::Emitted(tail) = resumed.advance(&d, "m3") else {
+                panic!("cut {cut}")
+            };
+            assert_eq!(tail, all[cut..].to_vec(), "cut {cut}");
+        }
+    }
+
+    #[test]
+    fn a_resumed_linearizer_checks_a_lin_from_its_first_step_on() {
+        let d = dag(&[
+            ("g", 0, &[]),
+            ("a", 1, &["g"]),
+            ("b", 1, &["g"]),
+            ("c", 2, &["b", "a"]),
+        ]);
+        let mut resumed = Run::from(&["g", "a"]);
+        assert!(matches!(resumed.advance(&d, "a"), Advance::Emitted(out) if out.is_empty()));
+        assert_eq!(resumed.advance(&d, "c"), Advance::Hold {
+            previous: h("a"),
+            proposed: h("c")
+        });
     }
 }
