@@ -202,6 +202,37 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         (Self { d: new_d }, requested_keys)
     }
 
+    /// Like [`ST::get_next`], but moves an `Init` key to `Requested` only while
+    /// fewer than `limit` keys are `Requested`. On resend every `Requested` key
+    /// is returned again.
+    pub fn get_next_bounded(&self, resend: bool, limit: usize) -> (Self, Vec<Key>) {
+        let mut new_d = self.d.clone();
+        let mut requested_keys: Vec<Key> = Vec::new();
+        let mut in_flight = 0usize;
+
+        for (key, status) in &self.d {
+            if *status == ReqStatus::Requested {
+                in_flight += 1;
+                if resend {
+                    requested_keys.push(key.clone());
+                }
+            }
+        }
+
+        for (key, status) in &self.d {
+            if in_flight >= limit {
+                break;
+            }
+            if *status == ReqStatus::Init {
+                new_d.insert(key.clone(), ReqStatus::Requested);
+                requested_keys.push(key.clone());
+                in_flight += 1;
+            }
+        }
+
+        (Self { d: new_d }, requested_keys)
+    }
+
     /// Confirm key is Received if it was Requested.
     ///
     /// **Scala equivalent**: `def received(k: Key): (ST[Key], Boolean)`

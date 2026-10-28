@@ -16,8 +16,8 @@
 //!
 //! Mirrors `lfs_tuple_space_requester` and `lfs_block_requester`. Each
 //! horizon root enters an `ST<StatePartPath>` state machine as
-//! `Init → Requested → Received → Done`. A request loop fans out all
-//! pending paths in parallel via `try_join_all`, while a response loop
+//! `Init → Requested → Received → Done`. A request loop fans out pending
+//! paths in parallel, at most `MAX_IN_FLIGHT_REQUESTS` at once, while a response loop
 //! demultiplexes incoming `StoreItemsMessage`s by `start_path`, applies
 //! items, paginates within each root, and on the terminal cursor calls
 //! `set_root`.
@@ -46,6 +46,12 @@ use crate::rust::errors::CasperError;
 /// Per-request chunk size, carried in the request (the responder pages by
 /// it); independent of `lfs_tuple_space_requester::PAGE_SIZE`.
 pub const PAGE_SIZE: i32 = 1024;
+
+/// Most chunk requests outstanding at the serving peer at once. A first
+/// page is close to the full state, and the peer holds every response in
+/// memory until its single per-peer stream worker sends it, so an unbounded
+/// fan-out over ~100 horizon roots exhausts the peer's memory (#883).
+pub const MAX_IN_FLIGHT_REQUESTS: usize = 4;
 
 /// Network operations needed by the horizon requester. Decoupled from
 /// `TransportLayer` so unit tests can stub it without spinning up a
@@ -326,7 +332,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             if state.is_finished() {
                 (true, Vec::new())
             } else {
-                let (new_state, paths) = state.get_next(resend);
+                let (new_state, paths) = state.get_next_bounded(resend, MAX_IN_FLIGHT_REQUESTS);
                 *state = new_state;
                 (false, paths)
             }
@@ -711,6 +717,27 @@ mod tests {
         let (st, _) = st.get_next(false); // 1 -> Requested
         let (_, batch) = st.get_next(true); // resend: pick Requested again
         assert_eq!(batch, vec![1]);
+    }
+
+    #[test]
+    fn st_get_next_bounded_keeps_at_most_limit_requested() {
+        let st: ST<i32> = ST::new((1..=10).collect());
+        let (st, first) = st.get_next_bounded(false, 3);
+        assert_eq!(first.len(), 3);
+        let (st, none) = st.get_next_bounded(false, 3);
+        assert!(none.is_empty());
+
+        let (st, _) = st.received(first[0]);
+        let (st, next) = st.get_next_bounded(false, 3);
+        assert_eq!(next.len(), 1);
+        assert!(!first.contains(&next[0]));
+
+        let (_, resent) = st.get_next_bounded(true, 3);
+        let mut resent = resent;
+        resent.sort();
+        let mut expected = vec![first[1], first[2], next[0]];
+        expected.sort();
+        assert_eq!(resent, expected);
     }
 
     #[test]
@@ -1320,6 +1347,61 @@ mod tests {
              max_in_flight={}",
             observed
         );
+    }
+
+    /// Regression for #883: a horizon of ~100 roots was requested all at
+    /// once, and the serving peer held one near-full-state response per
+    /// request in memory until it was OOM-killed. The orchestrator must keep
+    /// at most `MAX_IN_FLIGHT_REQUESTS` unanswered and still sync every root.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_keeps_at_most_max_in_flight_requests_outstanding() {
+        let roots: Vec<Blake2b256Hash> = (1..=100u8).map(hash_for).collect();
+        let (recording, recorded) = RecordingImporter::new();
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(recording);
+        let has_root: HasRootFn = {
+            let recorded = recorded.clone();
+            Arc::new(move |query| Ok(recorded.lock().unwrap().contains(query)))
+        };
+        let ops = MockOps::new();
+        let (sends, _) = ops.handles();
+        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(256);
+
+        let (stream, _) = stream(
+            roots.clone(),
+            has_root,
+            importer,
+            ops,
+            rx,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+        let mut stream = Box::pin(stream);
+
+        let mut answered = 0usize;
+        let mut max_outstanding = 0usize;
+        let mut last = None;
+        while let Some(st) = stream.next().await {
+            let sent: Vec<StatePartPath> = sends.lock().unwrap().clone();
+            max_outstanding = max_outstanding.max(sent.len() - answered);
+            for path in &sent[answered..] {
+                tx.send(make_response(path.clone(), path.clone(), Some(hash_for(0))))
+                    .await
+                    .unwrap();
+            }
+            answered = sent.len();
+            last = Some(st);
+        }
+
+        assert!(
+            max_outstanding <= MAX_IN_FLIGHT_REQUESTS,
+            "at most {} requests may be outstanding, observed {}",
+            MAX_IN_FLIGHT_REQUESTS,
+            max_outstanding
+        );
+        assert!(last.expect("stream yields a final state").is_finished());
+        assert_eq!(recorded.lock().unwrap().len(), roots.len());
     }
 
     /// Regression: two roots whose first chunks return the SAME continuation
