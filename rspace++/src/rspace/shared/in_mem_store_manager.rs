@@ -26,6 +26,10 @@ impl KeyValueStoreManager for InMemoryStoreManager {
         Ok(Arc::new(kv_store.value().clone()))
     }
 
+    async fn store_names(&mut self) -> Result<Vec<String>, heed::Error> {
+        Ok(self.state.iter().map(|entry| entry.key().clone()).collect())
+    }
+
     async fn shutdown(&mut self) -> Result<(), heed::Error> {
         self.state.clear();
         Ok(())

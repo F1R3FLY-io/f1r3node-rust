@@ -118,6 +118,10 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
         manager.store(database_name).await
     }
 
+    async fn store_names(&mut self) -> Result<Vec<String>, heed::Error> {
+        Ok(self.db_mapping.keys().map(|db| db.id.clone()).collect())
+    }
+
     async fn shutdown(&mut self) -> Result<(), heed::Error> {
         let managers: Vec<Arc<Mutex<Box<dyn KeyValueStoreManager>>>> = {
             let mut state = self.managers_state.lock().await;

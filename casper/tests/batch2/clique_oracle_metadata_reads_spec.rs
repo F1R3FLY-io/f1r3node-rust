@@ -84,6 +84,10 @@ impl KeyValueStoreManager for CountingStoreManager {
         }
     }
 
+    async fn store_names(&mut self) -> Result<Vec<String>, heed::Error> {
+        self.inner.store_names().await
+    }
+
     async fn shutdown(&mut self) -> Result<(), heed::Error> { self.inner.shutdown().await }
 }
 

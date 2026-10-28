@@ -2397,9 +2397,22 @@ async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_h
 }
 
 #[tokio::test]
-async fn bigint_schema_rejects_legacy_metadata_without_decoding_or_deleting_it() {
+async fn bigint_schema_rejects_nonempty_unmarked_stores_without_mutation() {
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-    for name in ["block-metadata", "invalid-blocks"] {
+    for name in [
+        "block-metadata",
+        "invalid-blocks",
+        "blocks",
+        "blocks-approved",
+        "deploy_storage",
+        "rejected_deploy_buffer",
+        "deploy_storage_quarantine",
+        "rejected_deploy_buffer_quarantine",
+        "transaction",
+        "rspace-roots",
+        "another-store",
+        "block-metadata-schema",
+    ] {
         let mut manager = InMemoryStoreManager::new();
         let store = manager.store(name.to_string()).await.unwrap();
         let key = b"legacy-key".to_vec();
@@ -2407,9 +2420,16 @@ async fn bigint_schema_rejects_legacy_metadata_without_decoding_or_deleting_it()
         store.put_one(key.clone(), value.clone()).unwrap();
         let result = BlockDagKeyValueStorage::new(&mut manager).await;
         assert!(
-            matches!(result, Err(KvStoreError::InvalidArgument(message)) if message.contains("Incompatible block metadata schema"))
+            matches!(result, Err(KvStoreError::InvalidArgument(message)) if message.contains("Use a fresh data directory"))
         );
         assert_eq!(store.get_one(&key).unwrap(), Some(value));
+        assert!(manager
+            .store("block-metadata-schema".to_string())
+            .await
+            .unwrap()
+            .get_one(&b"version".to_vec())
+            .unwrap()
+            .is_none());
     }
 }
 
