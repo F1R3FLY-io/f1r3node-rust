@@ -2,11 +2,23 @@
 // entry.  Separates "file" from "dir" so the handler can refuse
 // `?sub_rel` on a File entry and require it on a Dir entry.
 //
-// Consensus-mode entries land in a separate map that returns a
-// specific 503 diagnostic — the sidecar can't resolve
-// `/@bundle/<X>` to a per-validator on-disk path without the
-// node's `RootIdentityRegistry`.  Operators who hit the endpoint
-// for a consensus logical get a readable error, not a 404.
+// Buckets routed into the servable `oracular` map:
+//
+//   * `oracle-static-files`  — operator-declared bytes, no WAL.
+//   * `oracle-static-dirs`   — operator-declared bytes, no WAL.
+//   * `consensus-static-dirs` — operator-declared on-disk path
+//     that the node WAL-replicates writes into.  The sidecar can
+//     resolve directly because `register_consensus_bundle_roots`
+//     uses `entry.path` verbatim (see setup.rs:186).  Each
+//     validator writes the SAME bytes to its own copy, so the
+//     per-node sidecar serves a locally-consistent view.
+//
+// Buckets that land in `skip` with a 503 diagnostic:
+//
+//   * `consensus-static-files` — writes stage through
+//     `fs_bundle_staging` before the atomic rename, so the
+//     logical→on-disk mapping is not stable from HOCON alone.
+//     The sidecar would need the node's registry to resolve.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -61,11 +73,12 @@ impl FileReadIndex {
                 path: entry.path().to_path_buf(),
             });
         }
-        for name in cfg
-            .consensus_static_files
-            .keys()
-            .chain(cfg.consensus_static_dirs.keys())
-        {
+        for (name, entry) in &cfg.consensus_static_dirs {
+            oracular.insert(name.clone(), Entry::Dir {
+                path: entry.path().to_path_buf(),
+            });
+        }
+        for name in cfg.consensus_static_files.keys() {
             skip.insert(name.clone(), SkipReason::ConsensusMode);
         }
         FileReadIndex { oracular, skip }
@@ -134,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn consensus_entry_routes_to_skip() {
+    fn consensus_static_file_routes_to_skip() {
         let mut cfg = SidecarConfig::default();
         cfg.consensus_static_files
             .insert("state".into(), mk_file("/var/state"));
@@ -142,6 +155,24 @@ mod tests {
         match idx.lookup("state") {
             Lookup::Skipped(SkipReason::ConsensusMode) => {}
             _ => panic!("expected Skipped(ConsensusMode)"),
+        }
+    }
+
+    #[test]
+    fn consensus_static_dir_resolves_to_dir_entry() {
+        let mut cfg = SidecarConfig::default();
+        cfg.consensus_static_dirs
+            .insert("root".into(), mk_file("/var/lib/rnode/f1r3drive"));
+        let idx = FileReadIndex::build(&cfg);
+        match idx.lookup("root") {
+            Lookup::Found(Entry::Dir { path }) => {
+                assert_eq!(path, &PathBuf::from("/var/lib/rnode/f1r3drive"));
+            }
+            _ => panic!(
+                "expected Found(Dir) for operator-declared consensus-static-dirs; \
+                 node setup registers entry.path verbatim, so the sidecar can \
+                 serve it the same as oracle-static-dirs"
+            ),
         }
     }
 

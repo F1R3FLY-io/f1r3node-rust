@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
     mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark,
-    ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
+    SenderAuthorization, StoreVerdict, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
 };
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -189,7 +189,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         // Already logged at INFO by the pipeline; a routine
                         // drop is not a failure.
                         Ok(BlockProcessOutcome::NotOfInterest)
-                        | Ok(BlockProcessOutcome::Malformed) => {}
+                        | Ok(BlockProcessOutcome::UnauthorizedSender)
+                        | Ok(BlockProcessOutcome::Malformed)
+                        | Ok(BlockProcessOutcome::PendingRefused) => {}
                         Err(e) => {
                             tracing::error!(block = %block_str, error = %e, "block processing failed");
                             match block_processor.note_validation_failure(&block.block_hash) {
@@ -320,7 +322,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
 enum BlockProcessOutcome {
     Processed(BlockMessage, ValidBlockProcessing),
     NotOfInterest,
+    UnauthorizedSender,
     Malformed,
+    PendingRefused,
     MissingDependencies,
 }
 
@@ -328,6 +332,8 @@ enum BlockProcessOutcome {
 ///
 /// This implements the Scala pipeline:
 /// 1. checkIfOfInterest
+///    then checkSenderAuthorization (drops a sender unbonded in a validated
+///    main parent before any store write or dependency request)
 /// 2. checkIfWellFormedAndStore
 /// 3. checkDependenciesWithEffects
 /// 4. validateWithEffects
@@ -370,10 +376,42 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         return Ok(BlockProcessOutcome::NotOfInterest);
     }
 
+    let authorization = match block_processor.check_sender_authorization(&block) {
+        Ok(authorization) => authorization,
+        Err(err) => {
+            block_processor
+                .ack_processed(&block)
+                .await
+                .map_err(|ack_err| {
+                    CasperError::RuntimeError(format!(
+                        "check_sender_authorization failed for {}, and cleanup failed: {}",
+                        block_str, ack_err
+                    ))
+                })?;
+            return Err(err);
+        }
+    };
+
+    if authorization == SenderAuthorization::Unauthorized {
+        block_processor
+            .purge_from_buffer_and_ack(&block)
+            .await
+            .map_err(|err| {
+                CasperError::RuntimeError(format!(
+                    "Unauthorized block {} purge+cleanup failed: {}",
+                    block_str, err
+                ))
+            })?;
+        return Ok(BlockProcessOutcome::UnauthorizedSender);
+    }
+
     // Step 2: Check if well-formed and store
     // Equivalent to: blockProcessor.checkIfWellFormedAndStore(b)
-    let is_well_formed = match block_processor.check_if_well_formed_and_store(&block).await {
-        Ok(is_well_formed) => is_well_formed,
+    let store_verdict = match block_processor
+        .check_if_well_formed_and_store(&block, authorization)
+        .await
+    {
+        Ok(store_verdict) => store_verdict,
         Err(err) => {
             block_processor
                 .ack_processed(&block)
@@ -388,7 +426,20 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         }
     };
 
-    if !is_well_formed {
+    if let StoreVerdict::PendingRefused(refusal) = store_verdict {
+        block_processor
+            .release_refused_pending(&block, refusal)
+            .await
+            .map_err(|err| {
+                CasperError::RuntimeError(format!(
+                    "Refused pending block {} cleanup failed: {}",
+                    block_str, err
+                ))
+            })?;
+        return Ok(BlockProcessOutcome::PendingRefused);
+    }
+
+    if store_verdict == StoreVerdict::Malformed {
         tracing::info!("Block {} is malformed. Dropped.", block_str);
         block_processor
             .purge_from_buffer_and_ack(&block)

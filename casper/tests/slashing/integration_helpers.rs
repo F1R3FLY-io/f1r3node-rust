@@ -413,11 +413,18 @@ pub async fn process_block_bypassing_of_interest_filter(
     CasperError,
 > {
     use casper::rust::block_status::BlockStatus;
-    let is_well_formed = node
+    use casper::rust::blocks::block_processor::{SenderAuthorization, StoreVerdict};
+    let authorization = node.block_processor.check_sender_authorization(&block)?;
+    if authorization == SenderAuthorization::Unauthorized {
+        return Ok(rspace_plus_plus::rspace::history::Either::Left(
+            BlockStatus::invalid_sender(),
+        ));
+    }
+    let store_verdict = node
         .block_processor
-        .check_if_well_formed_and_store(&block)
+        .check_if_well_formed_and_store(&block, authorization)
         .await?;
-    if !is_well_formed {
+    if store_verdict != StoreVerdict::Stored {
         return Ok(rspace_plus_plus::rspace::history::Either::Left(
             BlockStatus::invalid_format(),
         ));

@@ -77,6 +77,22 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     snapshot: &mut CasperSnapshot,
     skip_checkpoint_and_bonds: bool,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    // Authorization comes before every other check: a sender without stake in
+    // the block's main parent is rejected before the summary walk and replay.
+    match Validate::block_sender_has_weight(block, &this.approved_block, &this.block_store) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Ok(Either::Left(BlockError::Invalid(
+                InvalidBlock::InvalidSender,
+            )))
+        }
+        Err(err) => {
+            return Ok(Either::Left(BlockError::from_validation_error(
+                CasperError::from(err),
+            )));
+        }
+    }
+
     // The per-validate derivation slot: block_summary fills it at the first
     // floor-consuming step; the checkpoint and bonds steps below reuse it.
     let mut floor_ctx: Option<crate::rust::finality::floor_context::FloorContext> = None;
@@ -462,11 +478,10 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
     // (pre/post state hash and bond set) against the same snapshot we're
     // validating against. Re-running these two validators would be a
     // deterministic NOOP — the proposer cannot disagree with itself on the
-    // post-state of its own block. The validator-identity check upstream
-    // (`block_sender_has_weight` + signature verification in the receiving
-    // path) prevents any third party from passing a "self-created" block
-    // through this dispatch, so skipping checkpoint+bonds here closes no
-    // security hole. Remaining validators (block_summary, neglected-invalid,
+    // post-state of its own block. This dispatch is reached only from the
+    // local proposer, never from the receiving path, so skipping
+    // checkpoint+bonds here closes no security hole. Remaining validators
+    // (sender weight, block_summary, neglected-invalid,
     // neglected-equivocation, phlo-price, simple-equivocation) all run.
     let start = std::time::Instant::now();
     let val_result = run_validation_steps(
@@ -516,6 +531,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         // buffer state_lock B) and the on-resume reconciliation
         // closes any crash-window drift. See
         // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+        this.block_store.persist_block(block)?;
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
         let updated_dag =
             block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
@@ -605,6 +621,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         _ => {
             let block_hash_serde = BlockHashSerde(block.block_hash.clone());
             this.casper_buffer_storage.remove(block_hash_serde)?;
+            this.block_store.discard_pending(&block.block_hash);
             tracing::warn!(
                 "Recording invalid block {} for {:?}.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),

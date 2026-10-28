@@ -1772,8 +1772,9 @@ async fn prepare_slashing_deploys(
     // Symmetry note: the receive-side predicate
     // `validate_received_slash_deploys` does NOT require the block sender to
     // be bonded — it only checks the slash *target* is bonded (rule 6). The
-    // block-sender-bonded invariant is enforced upstream by
-    // `block_sender_has_weight` (validate.rs); this proposer-side filter is
+    // block-sender-bonded invariant is enforced at admission
+    // (`BlockProcessor::check_sender_authorization`) and at validation
+    // (`block_sender_has_weight` in `run_validation_steps`); this proposer-side filter is
     // an optimization, not an authorization predicate. The two cannot
     // diverge in a way that admits unauthorized slashes.
     //
