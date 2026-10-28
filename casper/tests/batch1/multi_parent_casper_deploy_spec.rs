@@ -570,6 +570,7 @@ async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
+    use casper::rust::util::rspace_util;
     use num_bigint::BigInt;
     use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoMap};
     use rholang::rust::interpreter::util::vault_address::VaultAddress;
@@ -621,16 +622,20 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
         .unwrap();
     let recipient = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
     let term = r#"
-        new rl(`rho:registry:lookup`), systemCh, vaultCh, authCh, ret,
+        new rl(`rho:registry:lookup`), systemCh, vaultCh, recipientCh, authCh, ret,
             deployerId(`rho:system:deployerId`), abort(`rho:execution:abort`) in {
             rl!(`rho:vault:system`, *systemCh) |
             for (@(_, system) <- systemCh) {
                 @system!("findOrCreate", "PAYER", *vaultCh) |
+                @system!("findOrCreate", "RECIPIENT", *recipientCh) |
                 @system!("deployerAuthKey", *deployerId, *authCh) |
-                for (@(true, vault) <- vaultCh & key <- authCh) {
+                for (@(true, vault) <- vaultCh & @(true, _) <- recipientCh & key <- authCh) {
                     @vault!("transfer", "RECIPIENT", AMOUNTn, *key, *ret) |
                     for (@result <- ret) {
-                        match result { (true, _) => Nil _ => { abort!(result) } }
+                        match result {
+                            (true, _) => { @1!(true) }
+                            _ => { abort!(result) }
+                        }
                     }
                 }
             }
@@ -669,6 +674,12 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
         for node in &nodes {
             assert!(node.casper.dag_contains(&block.block_hash));
             let hash = &block.body.state.post_state_hash;
+            assert_eq!(
+                rspace_util::get_data_at_public_channel_block(&block, 1, &node.runtime_manager)
+                    .await,
+                vec!["true"],
+                "The transfer must reply successfully before balances are read"
+            );
             assert_eq!(
                 balance(node, hash, &payer.to_base58()).await,
                 &funding - &amount - &paid
