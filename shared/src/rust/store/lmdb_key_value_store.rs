@@ -33,16 +33,14 @@ fn in_blocking<T>(f: impl FnOnce() -> T) -> T {
 impl KeyValueStore for LmdbKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
+    // Unlike the other operations, point reads run on the calling worker: they
+    // are served from mapped pages in microseconds, and handing the worker off
+    // for each one serialized concurrent readers on the blocking pool.
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
-        in_blocking(|| {
-            let reader = self.env.read_txn()?;
-            let results = keys
-                .iter()
-                .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
-                .collect();
-            drop(reader);
-            results
-        })
+        let reader = self.env.read_txn()?;
+        keys.iter()
+            .map(|key| self.db.get(&reader, key).map_err(|e| e.into()))
+            .collect()
     }
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
@@ -633,5 +631,52 @@ mod store_tests {
             store.get_one(&b"k9".to_vec()).unwrap(),
             Some(b"fresh".to_vec())
         );
+    }
+
+    // Run manually:
+    // cargo test -p shared --release concurrent_point_reads -- --ignored --nocapture
+    //
+    // Point reads per second from 1, 16 and 64 concurrent tasks on a runtime
+    // with a worker per core. Throughput should grow with the readers; a read
+    // path that serializes callers caps it near the single-reader rate.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[ignore]
+    async fn concurrent_point_reads_scale_with_readers() {
+        let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+        let store = open_store(&open_env(), "reads");
+        let keys: Arc<Vec<ByteBuffer>> =
+            Arc::new((0..1024u32).map(|i| i.to_be_bytes().to_vec()).collect());
+        store
+            .put(keys.iter().map(|key| (key.clone(), key.clone())).collect())
+            .unwrap();
+
+        for readers in [1usize, 16, 64] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let window = std::time::Duration::from_secs(2);
+            let deadline = std::time::Instant::now() + window;
+            let tasks: Vec<_> = (0..readers)
+                .map(|reader| {
+                    let (store, keys, reads) = (store.clone(), keys.clone(), reads.clone());
+                    tokio::spawn(async move {
+                        let mut index = reader;
+                        while std::time::Instant::now() < deadline {
+                            store.get_one(&keys[index % keys.len()]).unwrap();
+                            reads.fetch_add(1, Ordering::Relaxed);
+                            index += readers;
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                })
+                .collect();
+            for task in tasks {
+                task.await.unwrap();
+            }
+            tracing::info!(
+                target: "f1r3.bench.lmdb_point_reads",
+                readers,
+                reads_per_second = reads.load(Ordering::Relaxed) as f64 / window.as_secs_f64(),
+                "concurrent point reads"
+            );
+        }
     }
 }
