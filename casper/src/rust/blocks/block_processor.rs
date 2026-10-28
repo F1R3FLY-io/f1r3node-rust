@@ -19,6 +19,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::pending_blocks::PendingInsert;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
@@ -141,6 +142,13 @@ pub enum SenderAuthorization {
     Authorized,
     Unauthorized,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreVerdict {
+    Stored,
+    Malformed,
+    PendingRefused(PendingInsert),
 }
 
 fn of_interest_verdict(
@@ -440,6 +448,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     ) -> Result<SenderAuthorization, CasperError> {
         let authorization = self.dependencies.sender_authorization(block)?;
         if authorization == SenderAuthorization::Unauthorized {
+            self.dependencies.discard_pending(block);
             tracing::warn!(
                 "Ignoring block {} because block creator {} has 0 weight in main parent.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),
@@ -453,20 +462,42 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn check_if_well_formed_and_store(
         &self,
         block: &BlockMessage,
-    ) -> Result<bool, CasperError> {
+        authorization: SenderAuthorization,
+    ) -> Result<StoreVerdict, CasperError> {
         let valid_format = Validate::format_of_fields(block);
         let valid_sig = Validate::block_signature(block);
-        let is_valid = valid_format && valid_sig;
-
-        if is_valid {
-            // Time storage operation
-            let storage_start = Instant::now();
-            self.dependencies.store_block(block).await?;
-            metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
-                .record(storage_start.elapsed().as_secs_f64());
+        if !(valid_format && valid_sig) {
+            return Ok(StoreVerdict::Malformed);
         }
 
-        Ok(is_valid)
+        let storage_start = Instant::now();
+        let verdict = match authorization {
+            SenderAuthorization::Authorized => {
+                self.dependencies.store_block(block).await?;
+                StoreVerdict::Stored
+            }
+            SenderAuthorization::Unknown => {
+                let held = self.dependencies.hold_pending(block).await?;
+                if held != PendingInsert::Accepted {
+                    tracing::warn!(
+                        "Dropping block {} from {}: pending area refused it ({:?}).",
+                        PrettyPrinter::build_string_bytes(&block.block_hash),
+                        PrettyPrinter::build_string_bytes(&block.sender),
+                        held
+                    );
+                }
+                if held == PendingInsert::Accepted {
+                    StoreVerdict::Stored
+                } else {
+                    StoreVerdict::PendingRefused(held)
+                }
+            }
+            SenderAuthorization::Unauthorized => StoreVerdict::Malformed,
+        };
+        metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+            .record(storage_start.elapsed().as_secs_f64());
+
+        Ok(verdict)
     }
 
     /// check if block has all dependencies available and can be validated
@@ -550,6 +581,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                     .await?;
             }
             self.dependencies.ack_processed(block).await?;
+            if !self.dependencies.holds_body(&block.block_hash)? {
+                self.dependencies
+                    .release_evicted_pending(std::slice::from_ref(&block.block_hash))
+                    .await?;
+            }
         }
 
         Ok(is_ready)
@@ -791,6 +827,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             );
             self.ack_processed(block).await
         }
+    }
+
+    pub async fn release_refused_pending(
+        &self,
+        block: &BlockMessage,
+        refusal: PendingInsert,
+    ) -> Result<(), CasperError> {
+        self.dependencies
+            .release_refused_pending(block, refusal)
+            .await
     }
 
     /// Best-effort purge for stale/uninteresting blocks to prevent infinite buffer requeue loops.
@@ -1052,6 +1098,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 })?;
         let (stale_pruned, overflow_pruned) = (stale_hashes.len(), overflow_hashes.len());
         for hash in stale_hashes.iter().chain(overflow_hashes.iter()) {
+            self.block_store.discard_pending(&hash.0);
             self.block_retriever
                 .forget_received_hash_tracking(&hash.0)?;
         }
@@ -1107,6 +1154,59 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.block_store.put_block_message(block)?;
         Ok(())
+    }
+
+    pub async fn hold_pending(&self, block: &BlockMessage) -> Result<PendingInsert, CasperError> {
+        let solicited = self.was_requested_as_dependency(&block.block_hash)?;
+        let outcome = self.block_store.put_pending(block, solicited)?;
+        self.release_evicted_pending(&outcome.evicted).await?;
+        Ok(outcome.status)
+    }
+
+    pub async fn release_evicted_pending(&self, evicted: &[BlockHash]) -> Result<(), CasperError> {
+        for hash in evicted {
+            let has_dependents = self.has_buffered_dependents(hash);
+            self.casper_buffer.remove(BlockHashSerde(hash.clone()))?;
+            if has_dependents {
+                self.block_retriever
+                    .recover_dependency(hash.clone())
+                    .await?;
+            }
+            tracing::debug!(
+                "Pending block {} evicted; dependents waiting: {}.",
+                PrettyPrinter::build_string_bytes(hash),
+                has_dependents
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn release_refused_pending(
+        &self,
+        block: &BlockMessage,
+        refusal: PendingInsert,
+    ) -> Result<(), CasperError> {
+        if refusal != PendingInsert::TooLarge && self.has_buffered_dependents(&block.block_hash) {
+            self.block_retriever
+                .recover_dependency(block.block_hash.clone())
+                .await
+        } else {
+            self.ack_processed(block).await
+        }
+    }
+
+    fn has_buffered_dependents(&self, hash: &BlockHash) -> bool {
+        self.casper_buffer
+            .get_children(&BlockHashSerde(hash.clone()))
+            .is_some_and(|children| !children.is_empty())
+    }
+
+    pub fn holds_body(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+        Ok(self.block_store.contains_key(hash)?)
+    }
+
+    pub fn discard_pending(&self, block: &BlockMessage) -> bool {
+        self.block_store.discard_pending(&block.block_hash)
     }
 
     /// Equivalent to Scala's: getCasperStateSnapshot = (c: Casper[F]) => c.getSnapshot
@@ -1275,6 +1375,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     pub async fn remove_from_buffer(&self, block: &BlockMessage) -> Result<(), CasperError> {
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
         self.casper_buffer.remove(block_hash_serde)?;
+        self.block_store.discard_pending(&block.block_hash);
         self.clear_missing_dependency_attempts(&block.block_hash)?;
         self.clear_missing_dependency_quarantine(&block.block_hash)?;
 
@@ -1673,6 +1774,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             return Ok(false);
         };
 
+        if let Err(persist_err) = self.block_store.persist_block(block) {
+            self.settled_admissions.fetch_sub(1, Ordering::Relaxed);
+            return Err(persist_err.into());
+        }
         if let Err(insert_err) = self.block_dag_storage.insert(
             block,
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,

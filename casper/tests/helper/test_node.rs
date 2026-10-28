@@ -8,7 +8,8 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks, SenderAuthorization,
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
+    SenderAuthorization, StoreVerdict,
 };
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -206,18 +207,24 @@ impl TestNode {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
-        if block_processor.check_sender_authorization(&block)? == SenderAuthorization::Unauthorized
-        {
+        let authorization = block_processor.check_sender_authorization(&block)?;
+        if authorization == SenderAuthorization::Unauthorized {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
         }
 
         // Check if well-formed and store
-        let is_well_formed = block_processor
-            .check_if_well_formed_and_store(&block)
-            .await?;
-
-        if !is_well_formed {
-            return Ok(Either::Left(BlockStatus::invalid_format()));
+        match block_processor
+            .check_if_well_formed_and_store(&block, authorization)
+            .await?
+        {
+            StoreVerdict::Stored => {}
+            StoreVerdict::Malformed => return Ok(Either::Left(BlockStatus::invalid_format())),
+            StoreVerdict::PendingRefused(refusal) => {
+                block_processor
+                    .release_refused_pending(&block, refusal)
+                    .await?;
+                return Ok(Either::Left(BlockStatus::missing_blocks()));
+            }
         }
 
         // Check dependencies
