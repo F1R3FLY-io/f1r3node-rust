@@ -21,6 +21,7 @@ use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBu
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, InsertMode, KeyValueDagRepresentation,
 };
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::block_processor::{new_block_processor, BlockProcessor};
 use casper::rust::casper::{Casper, CasperSnapshot, DeployError};
@@ -120,6 +121,7 @@ impl Casper for AnchorCasper {
 
 struct Fixture {
     processor: BlockProcessor<TransportLayerStub>,
+    block_store: KeyValueBlockStore,
     dag_reader: BlockDagKeyValueStorage,
     casper: Arc<dyn Casper + Send + Sync + 'static>,
     sender: Validator,
@@ -218,6 +220,7 @@ impl Fixture {
         let anchor = lean_block(40, 9, None, vec![genesis.block_hash.clone()], bonds.clone());
         let casper: Arc<dyn Casper + Send + Sync + 'static> = Arc::new(AnchorCasper { anchor });
 
+        let fixture_block_store = block_store.clone();
         let processor = new_block_processor(
             block_store,
             casper_buffer,
@@ -231,6 +234,7 @@ impl Fixture {
 
         Self {
             processor,
+            block_store: fixture_block_store,
             dag_reader,
             casper,
             sender,
@@ -390,5 +394,34 @@ async fn settled_admission_still_admits_a_genuine_straggler() {
         fixture.latest_message_of_sender(),
         Some(fixture.live_head.block_hash.clone()),
         "a straggler below the sender's latest message must not move it",
+    );
+}
+
+#[tokio::test]
+async fn settled_admission_persists_a_pending_block() {
+    let fixture = Fixture::new().await;
+
+    let straggler = lean_block(
+        6,
+        2,
+        Some(fixture.sender.clone()),
+        vec![fixture.genesis.block_hash.clone()],
+        fixture.bonds.clone(),
+    );
+    fixture.block_store.put_pending(&straggler, true).unwrap();
+    assert!(fixture.block_store.is_pending(&straggler.block_hash));
+    fixture.solicit(&straggler.block_hash).await;
+
+    let admitted = fixture
+        .processor
+        .try_admit_settled(fixture.casper.clone(), &straggler)
+        .await
+        .unwrap();
+
+    assert!(admitted);
+    assert!(!fixture.block_store.is_pending(&straggler.block_hash));
+    assert_eq!(
+        fixture.block_store.get(&straggler.block_hash).unwrap(),
+        Some(straggler.clone())
     );
 }
