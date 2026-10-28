@@ -601,23 +601,20 @@ async fn a_failed_restore_requests_the_approved_block_again() {
     InitializingSpec::after_each(&fixture);
 }
 
-/// A truncated restore learns its genesis hash only from the bootstrap's
-/// floor-cache response. When every floor-cache attempt times out, the restore
-/// fails and recovery asks again. The retry must reach the bootstrap and learn
-/// the hash once the bootstrap answers: the first attempt consumed the
-/// floor-cache receiver, so recovery must install a new channel.
-#[tokio::test]
-async fn a_floor_cache_retry_after_a_timeout_learns_the_genesis_hash() {
+/// An Initializing engine whose DAG holds only the anchor of a truncated
+/// restore, at height 5. Such a restore learns its genesis hash only from the
+/// bootstrap's floor-cache response.
+async fn truncated_restore(
+    fixture: &TestFixture,
+) -> (
+    Arc<Initializing<TransportLayerStub>>,
+    BlockDagKeyValueStorage,
+    ApprovedBlock,
+) {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
-    use casper::rust::engine::engine::Engine;
     use models::rust::block_implicits::get_random_block;
-    use models::rust::casper::protocol::casper_message::{
-        ApprovedBlockCandidate, FloorCacheResponse,
-    };
+    use models::rust::casper::protocol::casper_message::ApprovedBlockCandidate;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-
-    let fixture = TestFixture::new().await;
-    InitializingSpec::before_each(&fixture);
 
     let mut kvm = InMemoryStoreManager::new();
     let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
@@ -655,30 +652,90 @@ async fn a_floor_cache_retry_after_a_timeout_learns_the_genesis_hash() {
         Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
     });
     let engine = create_initializing_engine_with_dag(
-        &fixture,
+        fixture,
         the_init,
         Arc::new(EngineCell::init()),
         dag_storage.clone(),
     )
     .await
     .expect("Failed to create Initializing engine");
+    (engine, dag_storage, approved_block)
+}
 
-    let floor_cache_requested = || {
-        fixture
-            .transport_layer
-            .get_all_requests()
-            .iter()
-            .any(|request| {
-                matches!(&request.msg.message, Some(ProtocolMessage::Packet(packet))
-                    if packet.type_id == "FloorCacheRequest")
-            })
-    };
+fn floor_cache_requests(fixture: &TestFixture) -> usize {
+    fixture
+        .transport_layer
+        .get_all_requests()
+        .iter()
+        .filter(|request| {
+            matches!(&request.msg.message, Some(ProtocolMessage::Packet(packet))
+                if packet.type_id == "FloorCacheRequest")
+        })
+        .count()
+}
+
+async fn wait_for_floor_cache_requests(fixture: &TestFixture, count: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while floor_cache_requests(fixture) < count {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the restore asks the bootstrap for the floor cache");
+}
+
+async fn respond_with_floor_cache(
+    engine: &Initializing<TransportLayerStub>,
+    from: comm::rust::peer_node::PeerNode,
+    genesis_hash: Bytes,
+) {
+    use casper::rust::engine::engine::Engine;
+    use models::rust::casper::protocol::casper_message::FloorCacheResponse;
+
+    engine
+        .handle(
+            from,
+            CasperMessage::FloorCacheResponse(FloorCacheResponse {
+                entries: vec![],
+                genesis_hash,
+                genesis_block: None,
+            }),
+        )
+        .await
+        .expect("FloorCacheResponse handling");
+}
+
+fn request_floor_cache_in_background(
+    engine: &Arc<Initializing<TransportLayerStub>>,
+    approved_block: &ApprovedBlock,
+) -> tokio::task::JoinHandle<()> {
+    let (engine, approved_block) = (engine.clone(), approved_block.clone());
+    tokio::spawn(async move { engine.request_floor_cache(&approved_block).await })
+}
+
+async fn await_floor_cache_request(request: tokio::task::JoinHandle<()>) {
+    tokio::time::timeout(std::time::Duration::from_secs(30), request)
+        .await
+        .expect("the floor-cache request finishes once the bootstrap answers")
+        .expect("the floor-cache request does not panic");
+}
+
+/// A truncated restore learns its genesis hash only from the bootstrap's
+/// floor-cache response. When every floor-cache attempt times out, the restore
+/// fails and recovery asks again. The retry must reach the bootstrap and learn
+/// the hash once the bootstrap answers: the first attempt consumed the
+/// floor-cache receiver, so recovery must install a new channel.
+#[tokio::test]
+async fn a_floor_cache_retry_after_a_timeout_learns_the_genesis_hash() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let (engine, dag_storage, approved_block) = truncated_restore(&fixture).await;
 
     tokio::time::pause();
 
     engine.request_floor_cache(&approved_block).await;
     assert!(
-        floor_cache_requested(),
+        floor_cache_requests(&fixture) > 0,
         "the first attempt asks the bootstrap"
     );
     assert!(
@@ -697,39 +754,113 @@ async fn a_floor_cache_retry_after_a_timeout_learns_the_genesis_hash() {
         .await
         .expect("the first failure is recovered");
 
-    let retry = {
-        let (engine, approved_block) = (engine.clone(), approved_block.clone());
-        tokio::spawn(async move { engine.request_floor_cache(&approved_block).await })
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while !floor_cache_requested() {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the retry asks the bootstrap for the floor cache again");
-
+    let retry = request_floor_cache_in_background(&engine, &approved_block);
+    wait_for_floor_cache_requests(&fixture, 1).await;
     let genesis_hash = fixture.genesis.block_hash.clone();
-    engine
-        .handle(
-            fixture.local.clone(),
-            CasperMessage::FloorCacheResponse(FloorCacheResponse {
-                entries: vec![],
-                genesis_hash: genesis_hash.clone(),
-                genesis_block: None,
-            }),
-        )
-        .await
-        .expect("FloorCacheResponse handling");
-    tokio::time::timeout(std::time::Duration::from_secs(30), retry)
-        .await
-        .expect("the retry finishes once the bootstrap answers")
-        .expect("the retry task does not panic");
+    respond_with_floor_cache(&engine, fixture.local.clone(), genesis_hash.clone()).await;
+    await_floor_cache_request(retry).await;
 
     assert_eq!(
         dag_storage.genesis_hash().unwrap(),
         Some(genesis_hash),
         "the retry learns the genesis hash from the recovered bootstrap"
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
+/// The floor cache, and the genesis hash in it, is requested only from the
+/// bootstrap. A response from another peer must not reach the restore: the
+/// recorded hash is write-once and becomes this node's chain identity. This
+/// applies also to a response that arrives before the request.
+#[tokio::test]
+async fn a_floor_cache_response_from_a_peer_that_is_not_the_bootstrap_is_ignored() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let (engine, dag_storage, approved_block) = truncated_restore(&fixture).await;
+    let forged = Bytes::from(vec![0x66; 32]);
+    let genesis_hash = fixture.genesis.block_hash.clone();
+
+    tokio::time::pause();
+
+    respond_with_floor_cache(&engine, stranger(), forged.clone()).await;
+    let request = request_floor_cache_in_background(&engine, &approved_block);
+    wait_for_floor_cache_requests(&fixture, 1).await;
+    respond_with_floor_cache(&engine, stranger(), forged).await;
+    respond_with_floor_cache(&engine, fixture.local.clone(), genesis_hash.clone()).await;
+    await_floor_cache_request(request).await;
+
+    assert_eq!(
+        dag_storage.genesis_hash().unwrap(),
+        Some(genesis_hash),
+        "only the bootstrap's answer sets the genesis hash"
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
+/// A node that adopted its chain identity from the bootstrap does not record a
+/// shipped genesis hash that disagrees with it. The record is write-once, so a
+/// wrong one would cut the node off from its network until a resync.
+#[tokio::test]
+async fn a_shipped_genesis_hash_that_contradicts_the_adopted_identity_is_not_recorded() {
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let (engine, dag_storage, approved_block) = truncated_restore(&fixture).await;
+    let genesis_hash = fixture.genesis.block_hash.clone();
+    fixture
+        .rp_conf_ask
+        .chain_id
+        .set_once(genesis_hash.clone())
+        .expect("the identity adopted from the bootstrap");
+
+    tokio::time::pause();
+
+    let request = request_floor_cache_in_background(&engine, &approved_block);
+    wait_for_floor_cache_requests(&fixture, 1).await;
+    respond_with_floor_cache(&engine, fixture.local.clone(), Bytes::from(vec![0x66; 32])).await;
+    wait_for_floor_cache_requests(&fixture, 2).await;
+    respond_with_floor_cache(&engine, fixture.local.clone(), genesis_hash.clone()).await;
+    await_floor_cache_request(request).await;
+
+    assert_eq!(
+        dag_storage.genesis_hash().unwrap(),
+        Some(genesis_hash),
+        "the contradicting hash is ignored and the agreeing one is recorded"
+    );
+
+    InitializingSpec::after_each(&fixture);
+}
+
+/// A restore that failed on this node's chain identity fails the same way on
+/// every retry, because the identity is write-once. Recovery gives up at once
+/// and does not start another full restore.
+#[tokio::test]
+async fn a_restore_that_failed_on_the_chain_identity_is_not_retried() {
+    use comm::rust::errors::CommError;
+
+    let fixture = TestFixture::new().await;
+    InitializingSpec::before_each(&fixture);
+    let the_init = Arc::new(|| {
+        Box::pin(async { Ok(()) }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+    });
+    let engine = create_initializing_engine(&fixture, the_init, Arc::new(EngineCell::init()))
+        .await
+        .expect("Failed to create Initializing engine");
+
+    let outcome = engine
+        .recover_from_restore_failure(CasperError::CommError(CommError::WrongChainId(
+            "local".to_string(),
+            "the shipped genesis hash conflicts with the adopted identity".to_string(),
+        )))
+        .await;
+
+    assert!(outcome.is_err(), "a permanent failure ends the recovery");
+    let requests = fixture.transport_layer.get_all_requests();
+    assert!(
+        requests.is_empty(),
+        "no new restore starts after a permanent failure. Requests sent: {:?}",
+        requests.iter().map(|r| &r.msg).collect::<Vec<_>>()
     );
 
     InitializingSpec::after_each(&fixture);

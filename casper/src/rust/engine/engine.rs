@@ -11,6 +11,7 @@ use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::errors::CommError;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -205,6 +206,9 @@ pub async fn send_no_approved_block_available<T: TransportLayer + Send + Sync + 
 /// block hash from storage: the held height-0 block, or the hash that a
 /// restored node learned from its bootstrap. It must agree with any identity
 /// the node already published, for example one adopted from the bootstrap.
+///
+/// A disagreement is a `CommError::WrongChainId`. Both identities are
+/// write-once, so the caller can know that a retry fails the same way.
 pub(crate) fn publish_chain_identity(
     genesis: Result<Option<BlockHash>, CasperError>,
     chain_id: &ChainIdCell,
@@ -223,11 +227,15 @@ pub(crate) fn publish_chain_identity(
                     .to_string(),
             )
         })?;
-    chain_id.set_once(genesis).map_err(|e| {
-        CasperError::RuntimeError(format!(
-            "Refusing to run: this node's chain identity is inconsistent. {}",
-            e
-        ))
+    chain_id.set_once(genesis).map_err(|e| match e {
+        CommError::WrongChainId(peer, reason) => CasperError::CommError(CommError::WrongChainId(
+            peer,
+            format!(
+                "Refusing to run: this node's chain identity is inconsistent. {}",
+                reason
+            ),
+        )),
+        other => CasperError::CommError(other),
     })
 }
 
@@ -469,9 +477,10 @@ mod tests {
     fn a_node_does_not_run_with_an_identity_that_disagrees_with_its_genesis() {
         let chain_id = ChainIdCell::known(Bytes::from_static(b"adopted"));
 
-        assert!(
-            publish_chain_identity(Ok(Some(Bytes::from_static(b"genesis"))), &chain_id).is_err()
-        );
+        assert!(matches!(
+            publish_chain_identity(Ok(Some(Bytes::from_static(b"genesis"))), &chain_id),
+            Err(CasperError::CommError(CommError::WrongChainId(..)))
+        ));
         assert_eq!(chain_id.get(), Some(&Bytes::from_static(b"adopted")));
     }
 }

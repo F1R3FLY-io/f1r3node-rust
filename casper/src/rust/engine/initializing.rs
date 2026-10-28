@@ -14,7 +14,9 @@ use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::errors::CommError;
 use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
@@ -40,8 +42,8 @@ use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
-    log_no_approved_block_available, send_no_approved_block_available, transition_to_running,
-    Engine,
+    log_no_approved_block_available, publish_chain_identity, send_no_approved_block_available,
+    transition_to_running, Engine,
 };
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::lfs_block_requester::{self, BlockRequesterOps};
@@ -214,6 +216,35 @@ fn require_genesis_hash(block_dag_storage: &BlockDagKeyValueStorage) -> Result<(
                 .to_string(),
         )),
     }
+}
+
+/// Publish the genesis hash of a restore as this node's chain identity.
+///
+/// The restore does this before its replay and before it creates Casper. A
+/// conflict with an identity adopted from the bootstrap thus stops the restore
+/// before its expensive steps, and `recover_from_restore_failure` does not
+/// retry it.
+fn establish_chain_identity(
+    block_dag_storage: &BlockDagKeyValueStorage,
+    chain_id: &ChainIdCell,
+) -> Result<(), CasperError> {
+    require_genesis_hash(block_dag_storage)?;
+    publish_chain_identity(
+        block_dag_storage.genesis_hash().map_err(Into::into),
+        chain_id,
+    )
+}
+
+/// A restore failure that every retry repeats.
+///
+/// The chain identity and the network identifier stay fixed while the process
+/// runs. A restore that failed on one of them fails the same way again, so a
+/// retry only repeats the download.
+fn is_permanent_restore_failure(err: &CasperError) -> bool {
+    matches!(
+        err,
+        CasperError::CommError(CommError::WrongChainId(..) | CommError::WrongNetwork(..))
+    )
 }
 
 /// Land the shipped genesis block on a truncated node: verified against the
@@ -534,6 +565,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                 Ok(())
             }
             CasperMessage::FloorCacheResponse(resp) => {
+                // The response carries the genesis hash, which becomes this node's
+                // chain identity and is write-once in storage. The floor cache is
+                // requested only from the bootstrap, so only its answer counts.
+                if self.rp_conf_ask.bootstrap.as_ref() != Some(&peer) {
+                    tracing::warn!(
+                        "Dropping FloorCacheResponse from {}: the floor cache is requested only from the bootstrap.",
+                        peer
+                    );
+                    return Ok(());
+                }
                 let sender = self.floor_cache_tx.lock().unwrap().as_ref().cloned();
                 if let Some(tx) = sender {
                     if tx.try_send(resp).is_err() {
@@ -701,6 +742,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// peer that has no answer yet, and waiting is the right thing to do
     /// indefinitely. This one had an answer and could not use it, which is a
     /// fault to surface rather than to hide behind an endless loop.
+    ///
+    /// A failure on the chain identity or the network is not retried at all:
+    /// every retry repeats it (see `is_permanent_restore_failure`).
     pub async fn recover_from_restore_failure(&self, err: CasperError) -> Result<(), CasperError> {
         const MAX_RESTORE_ATTEMPTS: u64 = 3;
 
@@ -717,6 +761,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             attempt = attempts,
             "Approved-state restore failed; this node holds no state it can run on"
         );
+
+        if is_permanent_restore_failure(&err) {
+            return Err(CasperError::RuntimeError(format!(
+                "approved-state restore failed on this node's chain identity or network, which \
+                 a retry cannot change; giving up: {}",
+                err
+            )));
+        }
 
         if attempts >= MAX_RESTORE_ATTEMPTS {
             return Err(CasperError::RuntimeError(format!(
@@ -973,7 +1025,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // reads back as a missing block rather than as a floor.
             self.seed_floor_caches(approved_block)?;
             self.request_floor_cache(approved_block).await;
-            require_genesis_hash(&self.block_dag_storage)?;
+            establish_chain_identity(&self.block_dag_storage, &self.rp_conf_ask.chain_id)?;
         } else {
             tracing::warn!(
                 "request_approved_state: block_request_stream returned no final state (None)"
@@ -1179,6 +1231,24 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 }
                 match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
                     Ok(Some(response)) => {
+                        // This node may already hold an identity, for example one
+                        // adopted from the bootstrap. A different shipped hash cannot
+                        // agree with it, and the record is write-once, so such a
+                        // hash is not recorded.
+                        if let Some(adopted) = self.rp_conf_ask.chain_id.get() {
+                            if !response.genesis_hash.is_empty()
+                                && response.genesis_hash != *adopted
+                            {
+                                tracing::warn!(
+                                    attempt,
+                                    shipped = %PrettyPrinter::build_string_bytes(&response.genesis_hash),
+                                    adopted = %PrettyPrinter::build_string_bytes(adopted),
+                                    "floor-cache response names a genesis hash other than this \
+                                     node's chain identity; ignoring it"
+                                );
+                                continue;
+                            }
+                        }
                         // The genesis hash rides the same trusted exchange:
                         // a truncated node holds no height-0 block, and the
                         // newly-bonded latest-message placeholder must be
@@ -1628,11 +1698,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // RuntimeManager is lock-free Arc<RuntimeManager>; clone the Arc.
         let runtime_manager = self.runtime_manager.clone();
 
+        // Cloned, not taken: a failure after this point leaves the estimator for
+        // the retry that `recover_from_restore_failure` starts.
         let estimator = self
             .estimator
             .lock()
             .unwrap()
-            .take()
+            .clone()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
 
         // The on-chain fault-tolerance threshold is read and adopted by
@@ -2559,6 +2631,36 @@ mod tests {
                 dag_storage.genesis_hash().unwrap(),
                 Some(genesis.block_hash.clone())
             );
+        });
+    }
+
+    /// A restore publishes its genesis hash before the replay. A conflict with
+    /// an identity adopted from the bootstrap is a failure that no retry fixes.
+    #[test]
+    fn a_restore_publishes_its_genesis_hash_and_does_not_retry_a_conflict() {
+        use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let genesis = hash(&[0x01; 32]);
+
+            let unknown = ChainIdCell::unknown();
+            assert!(establish_chain_identity(&dag_storage, &unknown).is_err());
+            assert!(unknown.get().is_none());
+
+            dag_storage.record_genesis_hash(genesis.clone()).unwrap();
+            establish_chain_identity(&dag_storage, &unknown).unwrap();
+            assert_eq!(unknown.get(), Some(&genesis));
+
+            let adopted = ChainIdCell::known(hash(&[0x02; 32]));
+            let conflict = establish_chain_identity(&dag_storage, &adopted).unwrap_err();
+            assert!(is_permanent_restore_failure(&conflict));
+            assert!(!is_permanent_restore_failure(&CasperError::RuntimeError(
+                "a transient failure".to_string()
+            )));
         });
     }
 }

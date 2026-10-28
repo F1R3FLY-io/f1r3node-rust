@@ -181,10 +181,10 @@ impl ChainIdCell {
     /// already this node's trust root for joining, so only that peer is
     /// believed, and only while this node knows nothing.
     ///
-    /// `sender` must be an identity the transport has bound to the peer's TLS
-    /// certificate, as the unary path does. A chunk header's sender is bound
-    /// to nothing, so a stream must never call this: any peer could claim to
-    /// be the bootstrap.
+    /// `sender` must be an identity that the transport bound to the peer's TLS
+    /// certificate. Only the unary path calls this. A stream sender is bound
+    /// too (`verify_stream_sender`), but adoption does not need streams: the
+    /// bootstrap's handshake response and heartbeats are unary.
     ///
     /// The adopted value is not final: `set_once` later compares it against
     /// the genesis the node records for itself, and the mismatch fails loudly.
