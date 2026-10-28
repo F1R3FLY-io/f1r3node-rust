@@ -55,6 +55,11 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    PoolBusy {
+        pending_ahead: usize,
+        capacity: usize,
+    },
+    AdmissionBusy,
 }
 
 impl DeployError {
@@ -82,6 +87,15 @@ impl Display for DeployError {
             DeployError::DuplicateDeploy(deploy_id) => {
                 write!(f, "Deploy already known: {}", hex::encode(deploy_id))
             }
+            DeployError::PoolBusy { capacity, .. } => write!(
+                f,
+                "deploy_pool_busy: the fresh queue has reached the three-block capacity {}. Retry later or submit to another validator.",
+                capacity
+            ),
+            DeployError::AdmissionBusy => write!(
+                f,
+                "deploy_admission_busy: admission state changed during retries. Deploy was not accepted. Retry later."
+            ),
         }
     }
 }
@@ -395,6 +409,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         block_store: finalization.block_store.clone(),
         block_dag_storage: finalization.block_dag_storage.clone(),
         deploy_storage: finalization.deploy_storage.clone(),
+        deploy_admission: Arc::new(crate::rust::deploy_admission::DeployAdmission::default()),
         rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,

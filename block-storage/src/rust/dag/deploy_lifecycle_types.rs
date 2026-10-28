@@ -74,6 +74,14 @@ pub struct DeployLifecycleTables {
 }
 
 impl DeployLifecycleTables {
+    pub fn revision(&self) -> Option<(usize, usize)> {
+        use crate::rust::deploy::key_value_deploy_storage::store_revision;
+        Some((
+            store_revision(self.events.raw_store())?,
+            store_revision(self.terminal.raw_store())?,
+        ))
+    }
+
     pub fn new(events_kv: Arc<dyn KeyValueStore>, terminal_kv: Arc<dyn KeyValueStore>) -> Self {
         Self {
             events: KeyValueTypedStoreImpl::new(events_kv),
@@ -88,6 +96,17 @@ impl DeployLifecycleTables {
             events: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
             terminal: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         }
+    }
+
+    pub fn open_dropped(&self, sig: &[u8], valid_after: i64) -> Result<bool, KvStoreError> {
+        if self.get_terminal(sig)?.is_some() || self.get_events(sig)?.is_some() {
+            return Ok(false);
+        }
+        self.events.put_one(sig.to_vec(), LifecycleEvents {
+            valid_after: Some(valid_after),
+            events: Vec::new(),
+        })?;
+        Ok(true)
     }
 
     pub fn get_events(&self, sig: &[u8]) -> Result<Option<LifecycleEvents>, KvStoreError> {
@@ -224,6 +243,56 @@ impl DeployLifecycleTables {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_dropped_preserves_existing_rows() {
+        let tables = DeployLifecycleTables::in_memory();
+        let other = tables.clone();
+        assert!(tables.open_dropped(b"new", 7).unwrap());
+        assert_eq!(
+            tables.get_events(b"new").unwrap(),
+            Some(LifecycleEvents {
+                valid_after: Some(7),
+                events: Vec::new(),
+            })
+        );
+        assert!(!tables.open_dropped(b"new", 9).unwrap());
+        tables
+            .append_events(b"seen", Some(3), vec![included(4, false)])
+            .unwrap();
+        assert!(!tables.open_dropped(b"seen", 3).unwrap());
+        assert_eq!(tables.get_events(b"seen").unwrap().unwrap().events, vec![
+            included(4, false)
+        ]);
+        tables
+            .put_terminal_if_absent(b"done", terminal(TerminalState::Finalized))
+            .unwrap();
+        assert!(!tables.open_dropped(b"done", 1).unwrap());
+        assert!(tables.get_events(b"done").unwrap().is_none());
+        assert_eq!(other.open_rows().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_new_table_handle_recovers_the_persisted_open_drop() {
+        let events = Arc::new(InMemoryKeyValueStore::new());
+        let terminal = Arc::new(InMemoryKeyValueStore::new());
+        let tables = DeployLifecycleTables::new(events.clone(), terminal.clone());
+        assert!(tables.open_dropped(b"drop", 7).unwrap());
+        let restored = DeployLifecycleTables::new(events, terminal);
+        assert_eq!(
+            restored
+                .open_rows()
+                .unwrap()
+                .into_iter()
+                .map(|(sig, _)| sig)
+                .collect::<Vec<_>>(),
+            vec![b"drop".to_vec()]
+        );
+        assert_eq!(
+            restored.get_events(b"drop").unwrap().unwrap().valid_after,
+            Some(7)
+        );
+    }
 
     fn included(height: i64, is_failed: bool) -> LifecycleEvent {
         LifecycleEvent {

@@ -281,14 +281,18 @@ impl DeployService for DeployGrpcServiceV1Impl {
         {
             Ok(result) => Self::create_success_deploy_response(result),
             Err(e) => {
-                let is_duplicate = e.chain().any(|cause| {
+                let is_expected_refusal = e.chain().any(|cause| {
                     matches!(
                         cause.downcast_ref::<DeployError>(),
-                        Some(DeployError::DuplicateDeploy(_))
+                        Some(
+                            DeployError::DuplicateDeploy(_)
+                                | DeployError::PoolBusy { .. }
+                                | DeployError::AdmissionBusy
+                        )
                     )
                 });
-                if is_duplicate {
-                    tracing::debug!("Duplicate deploy rejected: {}", e);
+                if is_expected_refusal {
+                    tracing::debug!("Deploy admission refused: {}", e);
                 } else {
                     error!("Deploy service method error do_deploy: {}", e);
                 }
@@ -1278,6 +1282,45 @@ mod tests {
         match response.into_inner().message.unwrap() {
             models::casper::v1::deploy_response::Message::Error(error) => {
                 assert!(!error.messages.is_empty());
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pool_busy_uses_the_existing_deploy_service_error_envelope() {
+        let error = eyre::Report::new(DeployError::PoolBusy {
+            pending_ahead: 24,
+            capacity: 24,
+        });
+        let response =
+            DeployGrpcServiceV1Impl::create_error_deploy_response(error.into_service_error())
+                .unwrap()
+                .into_inner();
+        match response.message.unwrap() {
+            models::casper::v1::deploy_response::Message::Error(error) => {
+                assert!(error
+                    .messages
+                    .iter()
+                    .any(|message| message.contains("deploy_pool_busy")));
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn admission_busy_uses_the_existing_deploy_service_error_envelope() {
+        let error = eyre::Report::new(DeployError::AdmissionBusy);
+        let response =
+            DeployGrpcServiceV1Impl::create_error_deploy_response(error.into_service_error())
+                .unwrap()
+                .into_inner();
+        match response.message.unwrap() {
+            models::casper::v1::deploy_response::Message::Error(error) => {
+                assert!(error
+                    .messages
+                    .iter()
+                    .any(|message| message.contains("deploy_admission_busy")));
             }
             other => panic!("expected Error, got {:?}", other),
         }

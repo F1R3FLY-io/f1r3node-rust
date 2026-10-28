@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
@@ -267,15 +268,19 @@ fn trace_retry_gate_deferral(sig: &Bytes, basis: &RetryGateBasis, ctx: &FloorCon
     );
 }
 
+fn record_expired_deploys(
+    dag: &KeyValueDagRepresentation,
+    deploys: &[Signed<DeployData>],
+) -> Result<(), CasperError> {
+    for deploy in deploys {
+        dag.open_dropped_deploy_lifecycle_row(&deploy.sig, deploy.data.valid_after_block_number)?;
+    }
+    Ok(())
+}
+
 fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<DeployData>> {
     let mut ordered: Vec<Signed<DeployData>> = deploys.iter().cloned().collect();
-    ordered.sort_by(|a, b| {
-        a.data
-            .valid_after_block_number
-            .cmp(&b.data.valid_after_block_number)
-            .then_with(|| a.data.time_stamp.cmp(&b.data.time_stamp))
-            .then_with(|| a.sig.cmp(&b.sig))
-    });
+    ordered.sort_by(crate::rust::deploy_admission::compare_deploys);
     ordered
 }
 
@@ -658,6 +663,7 @@ async fn prepare_user_deploys_with_policy(
             "Removing {} expired rejected-buffer deploy(s) from storage and rejected-deploy buffer",
             expired_buffered.len()
         );
+        record_expired_deploys(&casper_snapshot.dag, &expired_buffered)?;
         deploy_storage.remove(expired_buffered.clone())?;
         rejected_deploy_buffer
             .lock()?
@@ -1451,6 +1457,7 @@ async fn prepare_user_deploys_with_policy(
             all_expired.len()
         );
         let expired_list: Vec<Signed<DeployData>> = all_expired.into_iter().cloned().collect();
+        record_expired_deploys(&casper_snapshot.dag, &expired_list)?;
         deploy_storage.remove(expired_list.clone())?;
 
         // Also purge expired sigs from the rejected-deploy buffer.
@@ -3706,8 +3713,48 @@ fn not_future_deploy(current_block_number: i64, deploy_data: &DeployData) -> boo
 mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
+    use shared::rust::ByteBuffer;
 
     use super::*;
+
+    struct UnwritableLifecycleStore;
+
+    impl KeyValueStore for UnwritableLifecycleStore {
+        fn as_any(&self) -> &dyn std::any::Any { self }
+        fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
+            Ok(vec![None; keys.len()])
+        }
+        fn put(&self, _: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
+            Err(KvStoreError::IoError(
+                "injected lifecycle write failure".to_string(),
+            ))
+        }
+        fn put_one_if_absent(&self, _: ByteBuffer, _: ByteBuffer) -> Result<bool, KvStoreError> {
+            Err(KvStoreError::IoError(
+                "injected lifecycle write failure".to_string(),
+            ))
+        }
+        fn delete(&self, _: Vec<ByteBuffer>) -> Result<usize, KvStoreError> { Ok(0) }
+
+        fn delete_if_value(&self, _: &ByteBuffer, _: &ByteBuffer) -> Result<bool, KvStoreError> {
+            Ok(false)
+        }
+        fn iterate(&self, _: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> { Ok(()) }
+        fn iterate_while(
+            &self,
+            _: &mut dyn FnMut(ByteBuffer, ByteBuffer) -> Result<bool, KvStoreError>,
+        ) -> Result<(), KvStoreError> {
+            Ok(())
+        }
+        fn clone_box(&self) -> Box<dyn KeyValueStore> { Box::new(Self) }
+        fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError> {
+            Ok(BTreeMap::new())
+        }
+        fn print_store(&self) -> Result<(), KvStoreError> { Ok(()) }
+        fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(false) }
+        fn size_bytes(&self) -> usize { 0 }
+    }
 
     fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
 
@@ -6025,6 +6072,25 @@ mod tests {
 
     #[tokio::test]
     async fn prepare_user_deploys_purges_expired_rejected_buffer_entries() {
+        expired_buffer_removal(false, true).await;
+    }
+
+    #[tokio::test]
+    async fn failed_expiry_record_preserves_the_pool_and_buffer_copies() {
+        expired_buffer_removal(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn ordinary_expiry_removal_records_the_drop() {
+        expired_buffer_removal(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn failed_ordinary_expiry_record_preserves_the_pool_copy() {
+        expired_buffer_removal(true, false).await;
+    }
+
+    async fn expired_buffer_removal(fail_recording: bool, buffered: bool) {
         let mut kvm = InMemoryStoreManager::new();
         let deploy_storage = Arc::new(
             KeyValueDeployStorage::new(&mut kvm)
@@ -6068,12 +6134,20 @@ mod tests {
         deploy_storage
             .add(vec![expired.clone()])
             .expect("seed deploy storage");
-        rejected_deploy_buffer
-            .lock()
-            .expect("rejected buffer lock")
-            .add(vec![expired.clone()])
-            .expect("seed rejected buffer");
+        if buffered {
+            rejected_deploy_buffer
+                .lock()
+                .expect("rejected buffer lock")
+                .add(vec![expired.clone()])
+                .expect("seed rejected buffer");
+        }
 
+        if fail_recording {
+            *snapshot.dag.lifecycle.write() = block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::new(
+                Arc::new(UnwritableLifecycleStore),
+                Arc::new(rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new()),
+            );
+        }
         let prepared = prepare_user_deploys(
             &snapshot,
             20,
@@ -6084,8 +6158,37 @@ mod tests {
             true,
             true,
         )
-        .await
-        .expect("prepare deploys");
+        .await;
+
+        if fail_recording {
+            assert!(matches!(
+                prepared,
+                Err(CasperError::KvStoreError(KvStoreError::IoError(_)))
+            ));
+            assert!(deploy_storage.contains_sig(&expired.sig).unwrap());
+            assert_eq!(
+                rejected_deploy_buffer
+                    .lock()
+                    .unwrap()
+                    .contains_sig(&expired.sig)
+                    .unwrap(),
+                buffered
+            );
+            assert!(snapshot
+                .dag
+                .deploy_lifecycle_events(&expired.sig)
+                .unwrap()
+                .is_none());
+            return;
+        }
+        let prepared = prepared.expect("prepare deploys");
+        let row = snapshot
+            .dag
+            .deploy_lifecycle_events(&expired.sig)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.valid_after, Some(10));
+        assert!(row.events.is_empty());
 
         assert!(prepared.deploys.is_empty());
         assert!(!deploy_storage
