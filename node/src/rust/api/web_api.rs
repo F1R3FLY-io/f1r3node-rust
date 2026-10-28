@@ -933,7 +933,9 @@ impl WebApi for WebApiImpl {
         if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
             for (public_key, value) in data {
                 let stake = match value {
-                    RhoExpr::ExprBigInt { data } => shared::rust::asi_amount::parse(data).map_err(|e| eyre!(e))?,
+                    RhoExpr::ExprBigInt { data } => {
+                        shared::rust::asi_amount::parse(data).map_err(|e| eyre!(e))?
+                    }
                     other => {
                         return Err(eyre!(
                             "Unexpected stake type for validator {}: {:?}",

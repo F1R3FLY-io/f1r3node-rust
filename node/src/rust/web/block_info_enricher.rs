@@ -206,7 +206,9 @@ pub fn extract_transfers_from_report(
                 })
                 .unwrap_or_default();
 
-            let batches: &[models::casper::SingleReport] = if precharge_amount == num_bigint::BigInt::from(0) {
+            let batches: &[models::casper::SingleReport] = if precharge_amount
+                == num_bigint::BigInt::from(0)
+            {
                 &deploy.report
             } else {
                 let first = &deploy.report[0];

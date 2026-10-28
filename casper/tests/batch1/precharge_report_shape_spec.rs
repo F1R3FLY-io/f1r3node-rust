@@ -100,7 +100,9 @@ fn transfers_in_batch(
                 if let Some(data) = &produce.data {
                     if data.pars.len() >= 6 {
                         let from = data.pars[0].get_g_string();
-                        let amount = rholang::rust::interpreter::rho_type::RhoBigInt::unapply(&data.pars[3]).or_else(|| data.pars[3].get_g_int().map(Into::into));
+                        let amount =
+                            rholang::rust::interpreter::rho_type::RhoBigInt::unapply(&data.pars[3])
+                                .or_else(|| data.pars[3].get_g_int().map(Into::into));
                         if let (Some(from), Some(amount)) = (from, amount) {
                             out.push((from, amount));
                         }
@@ -289,7 +291,8 @@ async fn genesis_deploys_carry_zero_phlo_price_so_no_precharge() {
 
     for (i, processed) in deploys.iter().enumerate() {
         assert_eq!(
-            processed.deploy.data.phlo_price, 0.into(),
+            processed.deploy.data.phlo_price,
+            0.into(),
             "genesis deploy {} must carry phlo_price == 0 (standard_deploys::to_deploy)",
             i
         );

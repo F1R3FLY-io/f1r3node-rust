@@ -82,11 +82,11 @@ impl VaultParser {
             })?;
 
             // Parse balance
-            let initial_balance =
-                shared::rust::asi_amount::parse(balance_str)
-                    .map_err(|_| VaultParserError::InvalidBalance {
-                        balance: balance_str.to_string(),
-                    })?;
+            let initial_balance = shared::rust::asi_amount::parse(balance_str).map_err(|_| {
+                VaultParserError::InvalidBalance {
+                    balance: balance_str.to_string(),
+                }
+            })?;
 
             tracing::info!("Wallet loaded: {}", trimmed_line);
 

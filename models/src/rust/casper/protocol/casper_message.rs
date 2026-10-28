@@ -1398,7 +1398,10 @@ impl DeployData {
         DeployDataProto {
             term: dd.term,
             timestamp: dd.time_stamp,
-            phlo_price: shared::rust::asi_amount::encode(&dd.phlo_price).expect("validated phlo price").to_vec().into(),
+            phlo_price: shared::rust::asi_amount::encode(&dd.phlo_price)
+                .expect("validated phlo price")
+                .to_vec()
+                .into(),
             phlo_limit: dd.phlo_limit,
             valid_after_block_number: dd.valid_after_block_number,
             shard_id: dd.shard_id,
@@ -1419,7 +1422,10 @@ impl DeployData {
         DeployDataProto {
             term: dd.data.term.clone(),
             timestamp: dd.data.time_stamp,
-            phlo_price: shared::rust::asi_amount::encode(&dd.data.phlo_price).expect("validated phlo price").to_vec().into(),
+            phlo_price: shared::rust::asi_amount::encode(&dd.data.phlo_price)
+                .expect("validated phlo price")
+                .to_vec()
+                .into(),
             phlo_limit: dd.data.phlo_limit,
             valid_after_block_number: dd.data.valid_after_block_number,
             shard_id: dd.data.shard_id.clone(),

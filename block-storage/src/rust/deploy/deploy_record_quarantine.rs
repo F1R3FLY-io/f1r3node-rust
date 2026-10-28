@@ -703,7 +703,7 @@ mod tests {
                         let mut bytes = stored_bytes();
                         bytes.extend_from_slice(&[0xf8, 0x07, 0x01]);
                         live.put_one(stored_key.clone(), bytes).unwrap();
-                    },
+                    }
                 }
                 let live_before = live.get_one(&stored_key).unwrap();
                 quarantine

@@ -83,11 +83,11 @@ impl BondsParser {
             let public_key = PublicKey::from_bytes(&public_key_bytes);
 
             // Parse stake
-            let stake =
-                shared::rust::asi_amount::parse(stake_str)
-                    .map_err(|_| BondsParserError::InvalidStake {
-                        stake: stake_str.to_string(),
-                    })?;
+            let stake = shared::rust::asi_amount::parse(stake_str).map_err(|_| {
+                BondsParserError::InvalidStake {
+                    stake: stake_str.to_string(),
+                }
+            })?;
 
             tracing::info!(
                 "Bond loaded {} => {}",

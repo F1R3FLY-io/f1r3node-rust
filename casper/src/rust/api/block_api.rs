@@ -581,7 +581,8 @@ impl BlockAPI {
         }
 
         // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), DeployValidationError> = d.data
+        let validation_result: Result<(), DeployValidationError> = d
+            .data
             .validate_amounts()
             .map_err(|message| DeployValidationError { message })
             .and_then(|_| {

@@ -1613,7 +1613,11 @@ impl RuntimeOps {
             Some(ExprInstance::ETupleBody(tuple)) if tuple.ps.len() == 3 => {
                 let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
                 let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
-                let min_phlo = match tuple.ps[2].exprs.first().and_then(|expr| expr.expr_instance.as_ref()) {
+                let min_phlo = match tuple.ps[2]
+                    .exprs
+                    .first()
+                    .and_then(|expr| expr.expr_instance.as_ref())
+                {
                     Some(ExprInstance::GBigInt(bytes)) => bytes_to_bigint(bytes),
                     _ => return Err(bad("non-BigInt minPhloPrice")),
                 };

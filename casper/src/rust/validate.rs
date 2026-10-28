@@ -1929,11 +1929,10 @@ impl Validate {
         b: &BlockMessage,
         min_phlo_price: num_bigint::BigInt,
     ) -> ValidBlockProcessing {
-        if b.body
-            .deploys
-            .iter()
-            .all(|deploy| deploy.deploy.data.validate_amounts().is_ok() && deploy.deploy.data.phlo_price >= min_phlo_price)
-        {
+        if b.body.deploys.iter().all(|deploy| {
+            deploy.deploy.data.validate_amounts().is_ok()
+                && deploy.deploy.data.phlo_price >= min_phlo_price
+        }) {
             Either::Right(ValidBlock::Valid)
         } else {
             Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))

@@ -60,7 +60,7 @@ fn g1_max_clique_has_4_nodes() {
 
 #[test]
 fn g1_with_self_loops_same_result() {
-    let mut g3 = vec![(1, 1.into())];
+    let mut g3 = vec![(1, 1)];
     g3.extend(g1().iter().cloned());
     let weights: HashMap<i32, num_bigint::BigInt> = (1..=11).map(|i| (i, 1.into())).collect();
     assert_eq!(
@@ -105,7 +105,7 @@ fn g2_max_weight_beats_max_size() {
 
 #[test]
 fn single_edge_returns_sum_of_weights() {
-    let edges = vec![(1, 2.into())];
+    let edges = vec![(1, 2)];
     let weights = HashMap::from([(1, 5.into()), (2, 3.into())]);
     assert_eq!(
         Clique::find_maximum_clique_by_weight(&edges, &weights),
@@ -128,14 +128,7 @@ fn disconnected_nodes_returns_max_single_weight() {
 #[test]
 fn complete_graph_returns_total_weight() {
     // K4: every pair connected — one clique of all 4 nodes
-    let edges = vec![
-        (1, 2.into()),
-        (1, 3.into()),
-        (1, 4.into()),
-        (2, 3.into()),
-        (2, 4.into()),
-        (3, 4.into()),
-    ];
+    let edges = vec![(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)];
     let weights = HashMap::from([
         (1, 10.into()),
         (2, 20.into()),

@@ -94,8 +94,12 @@ pub mod helpers {
             let from_addr = pars[0].get_g_string()?;
             let to_addr = pars[2].get_g_string()?;
             let amount = match pars[3].exprs.as_slice() {
-                [models::rhoapi::Expr { expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(value)) }] => value.to_string(),
-                [models::rhoapi::Expr { expr_instance: Some(models::rhoapi::expr::ExprInstance::GBigInt(bytes)) }] => bytes_to_bigint(bytes).to_string(),
+                [models::rhoapi::Expr {
+                    expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(value)),
+                }] => value.to_string(),
+                [models::rhoapi::Expr {
+                    expr_instance: Some(models::rhoapi::expr::ExprInstance::GBigInt(bytes)),
+                }] => bytes_to_bigint(bytes).to_string(),
                 _ => return None,
             };
             let ret_unforgeable = pars[5].clone();

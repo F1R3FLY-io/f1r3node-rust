@@ -50,7 +50,10 @@ mod tests {
             DeployData {
                 term: "Nil".into(),
                 time_stamp: 123,
-                phlo_price: shared::rust::asi_amount::parse("340282366920938463463374607431768211456").unwrap(),
+                phlo_price: shared::rust::asi_amount::parse(
+                    "340282366920938463463374607431768211456",
+                )
+                .unwrap(),
                 phlo_limit: 100_000,
                 valid_after_block_number: 17,
                 shard_id: "root".into(),
