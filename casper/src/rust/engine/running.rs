@@ -257,6 +257,9 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     .await
             }
             CasperMessage::BlockMessage(b) => {
+                if IntegrityChecked::check(&b).is_err() {
+                    return Ok(());
+                }
                 if let Some(id) = self.casper.get_validator() {
                     if b.sender == id.public_key.bytes {
                         tracing::warn!(
@@ -592,7 +595,8 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, IntegrityChecked,
+    MAX_BLOCKS_IN_PROCESSING,
 };
 
 impl<T: TransportLayer + Send + Sync> Running<T> {

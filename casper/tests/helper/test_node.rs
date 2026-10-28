@@ -8,8 +8,8 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
-    SenderAuthorization, StoreVerdict,
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks, IntegrityChecked,
+    IntegrityFailure, SenderAuthorization, StoreVerdict,
 };
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -191,8 +191,9 @@ impl TestNode {
     /// Processes a block through the validation pipeline.
     ///
     /// This method:
+    /// 0. Checks format, signature, and hash, the same first step as the node
     /// 1. Checks if block is of interest
-    /// 2. Checks if well-formed and stores
+    /// 2. Stores
     /// 3. Checks dependencies
     /// 4. Validates with effects
     pub async fn process_block_through_pipe(
@@ -200,28 +201,32 @@ impl TestNode {
         block_processor: &BlockProcessor<TransportLayerTestImpl>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
+        let checked = match IntegrityChecked::check(&block) {
+            Ok(checked) => checked,
+            Err(IntegrityFailure::Malformed) => {
+                return Ok(Either::Left(BlockStatus::invalid_format()))
+            }
+            Err(IntegrityFailure::HashMismatch) => {
+                return Ok(Either::Left(BlockStatus::invalid_block_hash()))
+            }
+        };
+
         // Check if block is of interest
-        let verdict = block_processor.check_if_of_interest(casper.clone(), &block)?;
+        let verdict = block_processor.check_if_of_interest(casper.clone(), checked)?;
 
         if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
-        let authorization = block_processor.check_sender_authorization(&block)?;
+        let authorization = block_processor.check_sender_authorization(checked)?;
         if authorization == SenderAuthorization::Unauthorized {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
         }
 
-        // Check if well-formed and store
-        match block_processor
-            .check_if_well_formed_and_store(&block, authorization)
-            .await?
-        {
+        // Store
+        match block_processor.store(checked, authorization).await? {
             StoreVerdict::Stored => {}
-            StoreVerdict::Malformed => return Ok(Either::Left(BlockStatus::invalid_format())),
-            StoreVerdict::HashMismatch => {
-                return Ok(Either::Left(BlockStatus::invalid_block_hash()))
-            }
+            StoreVerdict::Unauthorized => return Ok(Either::Left(BlockStatus::invalid_sender())),
             StoreVerdict::PendingRefused(refusal) => {
                 block_processor
                     .release_refused_pending(&block, refusal)

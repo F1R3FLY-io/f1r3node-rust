@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
-    mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark,
+    mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark, IntegrityChecked,
     SenderAuthorization, StoreVerdict, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
 };
 use casper::rust::casper::MultiParentCasper;
@@ -330,11 +330,14 @@ enum BlockProcessOutcome {
 
 /// Process a block through all validation steps
 ///
-/// This implements the Scala pipeline:
+/// This implements the Scala pipeline, with one step added in front:
+/// 0. IntegrityChecked::check (format, signature, and hash against the
+///    contents; a message that fails is dropped before any step reads or
+///    changes state keyed by the hash it claims)
 /// 1. checkIfOfInterest
 ///    then checkSenderAuthorization (drops a sender unbonded in a validated
 ///    main parent before any store write or dependency request)
-/// 2. checkIfWellFormedAndStore
+/// 2. store (checkIfWellFormedAndStore without the checks of step 0)
 /// 3. checkDependenciesWithEffects
 /// 4. validateWithEffects
 /// 5. Enqueue dependency-free blocks from buffer (in the outer loop)
@@ -345,17 +348,14 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 ) -> Result<BlockProcessOutcome, CasperError> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
-    if BlockProcessor::<T>::check_message_integrity(&block).is_some() {
-        tracing::debug!(
-            "Block {} failed the format, signature, or hash check. Dropped.",
-            block_str
-        );
+    // Step 0: Check integrity
+    let Ok(checked) = IntegrityChecked::check(&block) else {
         return Ok(BlockProcessOutcome::Malformed);
-    }
+    };
 
     // Step 1: Check if block is of interest
     // Equivalent to: blockProcessor.checkIfOfInterest(c, b)
-    let verdict = match block_processor.check_if_of_interest(casper.clone(), &block) {
+    let verdict = match block_processor.check_if_of_interest(casper.clone(), checked) {
         Ok(verdict) => verdict,
         Err(err) => {
             block_processor
@@ -373,7 +373,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 
     if !verdict.is_fresh() {
         block_processor
-            .dispose_not_of_interest(verdict, &block)
+            .dispose_not_of_interest(verdict, checked)
             .await
             .map_err(|err| {
                 CasperError::RuntimeError(format!(
@@ -384,7 +384,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         return Ok(BlockProcessOutcome::NotOfInterest);
     }
 
-    let authorization = match block_processor.check_sender_authorization(&block) {
+    let authorization = match block_processor.check_sender_authorization(checked) {
         Ok(authorization) => authorization,
         Err(err) => {
             block_processor
@@ -413,9 +413,10 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         return Ok(BlockProcessOutcome::UnauthorizedSender);
     }
 
-    // Step 2: Check if well-formed and store
-    // Equivalent to: blockProcessor.checkIfWellFormedAndStore(b)
-    let store_verdict = match block_processor.store_checked(&block, authorization).await {
+    // Step 2: Store
+    // Equivalent to: blockProcessor.checkIfWellFormedAndStore(b), with the
+    // checks already done in step 0
+    let store_verdict = match block_processor.store(checked, authorization).await {
         Ok(store_verdict) => store_verdict,
         Err(err) => {
             block_processor
@@ -423,7 +424,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
                 .await
                 .map_err(|ack_err| {
                     CasperError::RuntimeError(format!(
-                        "store_checked failed for {}, and cleanup failed: {}",
+                        "store failed for {}, and cleanup failed: {}",
                         block_str, ack_err
                     ))
                 })?;
@@ -431,28 +432,21 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         }
     };
 
-    if let StoreVerdict::PendingRefused(refusal) = store_verdict {
-        block_processor
-            .release_refused_pending(&block, refusal)
-            .await
-            .map_err(|err| {
-                CasperError::RuntimeError(format!(
-                    "Refused pending block {} cleanup failed: {}",
-                    block_str, err
-                ))
-            })?;
-        return Ok(BlockProcessOutcome::PendingRefused);
-    }
-
-    if matches!(
-        store_verdict,
-        StoreVerdict::Malformed | StoreVerdict::HashMismatch
-    ) {
-        tracing::debug!(
-            "Block {} failed the format, signature, or hash check. Dropped.",
-            block_str
-        );
-        return Ok(BlockProcessOutcome::Malformed);
+    match store_verdict {
+        StoreVerdict::Stored => {}
+        StoreVerdict::Unauthorized => return Ok(BlockProcessOutcome::UnauthorizedSender),
+        StoreVerdict::PendingRefused(refusal) => {
+            block_processor
+                .release_refused_pending(&block, refusal)
+                .await
+                .map_err(|err| {
+                    CasperError::RuntimeError(format!(
+                        "Refused pending block {} cleanup failed: {}",
+                        block_str, err
+                    ))
+                })?;
+            return Ok(BlockProcessOutcome::PendingRefused);
+        }
     }
 
     // Step 3: Log started
@@ -575,6 +569,7 @@ mod tests {
     use casper::rust::util::rholang::runtime_manager::{
         ExploratoryDeployConfig, ReplayLock, RuntimeManager,
     };
+    use casper::rust::validate::Validate;
     use casper::rust::validator_identity::ValidatorIdentity;
     use comm::rust::peer_node::{NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::ConnectionsCell;
@@ -819,9 +814,15 @@ mod tests {
 
         fn item(&self, byte: u8) -> BlockQueueItem { self.queue(self.signed(byte)) }
 
-        fn forged_item(&self, byte: u8) -> BlockQueueItem {
-            let mut block = self.signed(byte);
+        fn forged_item(&self, byte: u8, signed_hash: bool) -> BlockQueueItem {
+            let (sk, _pk) = Secp256k1.new_key_pair();
+            let attacker = ValidatorIdentity::new(&sk);
+            let mut block = attacker.sign_block(&self.casper.approved);
             block.block_hash = vec![byte; 32].into();
+            if signed_hash {
+                block.sig = attacker.signature(block.block_hash.as_ref()).sig;
+            }
+            assert_eq!(Validate::block_signature(&block), signed_hash);
             self.queue(block)
         }
 
@@ -889,8 +890,7 @@ mod tests {
             .is_empty());
     }
 
-    #[tokio::test]
-    async fn a_refused_message_does_not_ack_the_hash_that_it_claims() {
+    async fn refuse_without_touching_the_claimed_hash(signed_hash: bool) {
         let fixture = StartupFixture::new().await;
         let claimed: BlockHash = vec![31; 32].into();
         fixture
@@ -909,7 +909,7 @@ mod tests {
 
         let (tx, instance) = fixture.instance();
         let mut results = instance.create().unwrap();
-        assert!(tx.send(fixture.forged_item(31)).await.is_ok());
+        assert!(tx.send(fixture.forged_item(31, signed_hash)).await.is_ok());
         drop(tx);
         assert!(
             tokio::time::timeout(Duration::from_secs(10), results.recv())
@@ -924,6 +924,16 @@ mod tests {
             .unwrap());
         assert!(fixture.casper.processed.lock().unwrap().is_empty());
         assert!(fixture.in_flight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_body_signed_under_a_foreign_hash_does_not_touch_that_hash() {
+        refuse_without_touching_the_claimed_hash(true).await;
+    }
+
+    #[tokio::test]
+    async fn a_badly_signed_message_does_not_touch_the_hash_that_it_claims() {
+        refuse_without_touching_the_claimed_hash(false).await;
     }
 
     #[tokio::test]

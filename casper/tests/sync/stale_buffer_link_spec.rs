@@ -1,4 +1,4 @@
-use casper::rust::blocks::block_processor::OfInterestVerdict;
+use casper::rust::blocks::block_processor::{IntegrityChecked, OfInterestVerdict};
 use casper::rust::casper::Casper;
 use casper::rust::util::construct_deploy;
 use models::rust::block_hash::BlockHashSerde;
@@ -51,7 +51,10 @@ async fn a_released_block_with_a_stale_parent_link_is_processed() {
 
     let verdict = nodes[1]
         .block_processor
-        .check_if_of_interest(nodes[1].casper.clone(), &block_b)
+        .check_if_of_interest(
+            nodes[1].casper.clone(),
+            IntegrityChecked::check(&block_b).unwrap(),
+        )
         .unwrap();
     assert_eq!(
         verdict,

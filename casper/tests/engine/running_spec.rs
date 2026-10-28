@@ -15,7 +15,10 @@ use casper::rust::engine::engine::Engine;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::running::{update_fork_choice_tips_if_stuck, Running};
 use casper::rust::errors::CasperError;
+use casper::rust::validate::Validate;
 use casper::rust::validator_identity::ValidatorIdentity;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::casper::ApprovedBlockRequestProto;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::block_hash::BlockHash;
@@ -571,6 +574,38 @@ mod tests {
             enqueued, 1,
             "a block already queued/in-processing must not be enqueued again"
         );
+    }
+
+    #[tokio::test]
+    async fn forged_copy_does_not_take_the_in_flight_slot_of_the_honest_block() {
+        let fixture = TestFixture::new().await;
+        let block_message = get_random_block(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        );
+        let honest = fixture.validator_id.sign_block(&block_message);
+
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let attacker = ValidatorIdentity::new(&sk);
+        let mut forged = attacker.sign_block(&honest);
+        forged.seq_num = honest.seq_num + 1;
+        forged.block_hash = honest.block_hash.clone();
+        forged.sig = attacker.signature(honest.block_hash.as_ref()).sig;
+        assert!(Validate::block_signature(&forged));
+
+        for block in [forged, honest.clone()] {
+            fixture
+                .engine
+                .handle(fixture.local.clone(), CasperMessage::BlockMessage(block))
+                .await
+                .unwrap();
+        }
+
+        let mut rx = fixture.block_processing_queue_rx.lock().await;
+        let mut enqueued = Vec::new();
+        while let Ok((_, block, _)) = rx.try_recv() {
+            enqueued.push(block);
+        }
+        assert_eq!(enqueued, vec![honest]);
     }
 
     #[tokio::test]

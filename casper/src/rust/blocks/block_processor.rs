@@ -38,9 +38,10 @@ use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::rust::engine::multi_parent_casper::buffer_resolver::dependencies_are_ready;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
-    BLOCK_PROCESSOR_METRICS_SOURCE, BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC,
-    BLOCK_VALIDATION_SUCCESS_METRIC, BLOCK_VALIDATION_TIME_METRIC,
+    BLOCK_INTEGRITY_REJECTED_METRIC, BLOCK_PROCESSING_STORAGE_TIME_METRIC,
+    BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
+    BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC, BLOCK_VALIDATION_SUCCESS_METRIC,
+    BLOCK_VALIDATION_TIME_METRIC,
 };
 use crate::rust::util::proto_util;
 use crate::rust::validate::Validate;
@@ -147,9 +148,57 @@ pub enum SenderAuthorization {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreVerdict {
     Stored,
+    Unauthorized,
+    PendingRefused(PendingInsert),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrityFailure {
     Malformed,
     HashMismatch,
-    PendingRefused(PendingInsert),
+}
+
+impl IntegrityFailure {
+    fn reason(self) -> &'static str {
+        match self {
+            IntegrityFailure::Malformed => "malformed",
+            IntegrityFailure::HashMismatch => "hash-mismatch",
+        }
+    }
+}
+
+/// A block whose fields, signature, and hash have been checked against its
+/// contents. Every step that reads or changes state keyed by the block hash
+/// takes this proof, so no caller can act on a hash that a message only claims.
+#[derive(Debug, Clone, Copy)]
+pub struct IntegrityChecked<'a>(&'a BlockMessage);
+
+impl<'a> IntegrityChecked<'a> {
+    pub fn check(block: &'a BlockMessage) -> Result<Self, IntegrityFailure> {
+        let failure = if !(Validate::format_of_fields(block) && Validate::block_signature(block)) {
+            Some(IntegrityFailure::Malformed)
+        } else if matches!(Validate::block_hash(block), Either::Left(_)) {
+            Some(IntegrityFailure::HashMismatch)
+        } else {
+            None
+        };
+        match failure {
+            None => Ok(Self(block)),
+            Some(failure) => {
+                tracing::warn!(
+                    "Refusing block {} from {}: integrity check failed ({}).",
+                    PrettyPrinter::build_string_bytes(&block.block_hash),
+                    PrettyPrinter::build_string_bytes(&block.sender),
+                    failure.reason()
+                );
+                metrics::counter!(BLOCK_INTEGRITY_REJECTED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE, "reason" => failure.reason())
+                    .increment(1);
+                Err(failure)
+            }
+        }
+    }
+
+    pub fn block(&self) -> &'a BlockMessage { self.0 }
 }
 
 fn of_interest_verdict(
@@ -401,8 +450,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub fn check_if_of_interest(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        block: &BlockMessage,
+        checked: IntegrityChecked<'_>,
     ) -> Result<OfInterestVerdict, CasperError> {
+        let block = checked.block();
         // TODO casper.dag_contains does not take into account equivocation tracker
         let already_processed = casper.dag_contains(&block.block_hash)
             || casper.buffer_waits_on_dependency(&block.block_hash);
@@ -445,8 +495,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     /// stored or its dependencies are requested.
     pub fn check_sender_authorization(
         &self,
-        block: &BlockMessage,
+        checked: IntegrityChecked<'_>,
     ) -> Result<SenderAuthorization, CasperError> {
+        let block = checked.block();
         let authorization = self.dependencies.sender_authorization(block)?;
         if authorization == SenderAuthorization::Unauthorized {
             self.dependencies.discard_pending(block);
@@ -459,38 +510,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         Ok(authorization)
     }
 
-    /// check block format and store if check passed
-    pub async fn check_if_well_formed_and_store(
+    /// Store a checked block, or hold it as pending when its sender's
+    /// authorization is not yet known.
+    pub async fn store(
         &self,
-        block: &BlockMessage,
+        checked: IntegrityChecked<'_>,
         authorization: SenderAuthorization,
     ) -> Result<StoreVerdict, CasperError> {
-        if let Some(verdict) = Self::check_message_integrity(block) {
-            return Ok(verdict);
-        }
-        self.store_checked(block, authorization).await
-    }
-
-    pub fn check_message_integrity(block: &BlockMessage) -> Option<StoreVerdict> {
-        if !(Validate::format_of_fields(block) && Validate::block_signature(block)) {
-            return Some(StoreVerdict::Malformed);
-        }
-        if proto_util::hash_block(block) != block.block_hash {
-            tracing::debug!(
-                "Refusing block {} from {}: its hash does not match its contents.",
-                PrettyPrinter::build_string_bytes(&block.block_hash),
-                PrettyPrinter::build_string_bytes(&block.sender)
-            );
-            return Some(StoreVerdict::HashMismatch);
-        }
-        None
-    }
-
-    pub async fn store_checked(
-        &self,
-        block: &BlockMessage,
-        authorization: SenderAuthorization,
-    ) -> Result<StoreVerdict, CasperError> {
+        let block = checked.block();
         let storage_start = Instant::now();
         let verdict = match authorization {
             SenderAuthorization::Authorized => {
@@ -513,7 +540,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                     StoreVerdict::PendingRefused(held)
                 }
             }
-            SenderAuthorization::Unauthorized => StoreVerdict::Malformed,
+            SenderAuthorization::Unauthorized => StoreVerdict::Unauthorized,
         };
         metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(storage_start.elapsed().as_secs_f64());
@@ -823,8 +850,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn dispose_not_of_interest(
         &self,
         verdict: OfInterestVerdict,
-        block: &BlockMessage,
+        checked: IntegrityChecked<'_>,
     ) -> Result<(), CasperError> {
+        let block = checked.block();
         if verdict.purges_buffer() {
             tracing::info!(
                 "Block {} is not of interest. Dropped.",
