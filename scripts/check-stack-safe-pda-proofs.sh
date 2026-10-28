@@ -1834,6 +1834,7 @@ done
 bash "$repo_root/scripts/check-rspace-trusted-history-model.sh"
 bash "$repo_root/scripts/check-rspace-journal-owner-model.sh"
 TLC_RSS=4G bash "$repo_root/scripts/check-rspace-compaction-model.sh"
+bash "$repo_root/scripts/check-rspace-gc-pending-reclaim-intent-model.sh"
 tlc_run "$tla_metadir" \
   RSpaceIncrementalPrepareStreaming.cfg \
   RSpaceIncrementalPrepareStreaming.tla -cleanup

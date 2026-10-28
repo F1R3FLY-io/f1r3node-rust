@@ -293,6 +293,7 @@ pub(crate) fn recover_physical_from_lease_v1(
     limits: DurableLimits,
     wal_limits: LogPackDecodeLimits,
 ) -> Result<IndexBoundPhysicalRecoveryV1, DurableStartupErrorV1> {
+    lease.remove_reclamation_temporary()?;
     let candidate = lease.read_reclamation_candidate()?;
     let reader = lease.directory().try_clone_reader()?;
     let recovered = recover_index_bound_v1(&reader, lease, limits, wal_limits)?;

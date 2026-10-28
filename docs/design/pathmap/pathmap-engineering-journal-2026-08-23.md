@@ -20596,6 +20596,7 @@ stays open until the last; each later slice appends its row and its evidence.
 | The history, journal owner and Rocq models, and the test-model extraction of TH-01 to TH-08 | 11966 | the commit that opens this entry |
 | The production halves of TH-01 to TH-07 on real files: generated faulted histories against cold admission of byte copies, the later-step failpoint sweep and kill children at the thirteen trusted hooks | 11967 | the commit that appends this row |
 | The production half of TH-08 through the journal owner: generated owner histories under faults, cancellation, retries, decoys and restarts on real files, judged by cold admission of byte copies, and a retry after an unwind past the acknowledgement | 11968 | the commit that appends this row |
+| The fix of bug 11970: the reclamation intent published through a synchronized temporary and a no-replace rename, recovery's removal of a leftover temporary, and the RI rows | 11970 | the commit that appends this row |
 
 The production halves of TH-01 to TH-07 on real files are task 11967, the
 production half of TH-08 through the journal owner is task 11968, and the
@@ -21071,6 +21072,208 @@ required.
 - The production negative controls, the timing and the completion of this
   entry are task 11969, and the entry stays open until then. Bug 11970 is
   fixed model-first before task 7928 closes.
+
+**BUG 11970: TORN RECLAMATION INTENTS.** Bug 11970 was found by reading the
+code during the design review of task 11967. Under decision 4 above it was
+diagnosed from a model counterexample, opened as its own bug item and fixed
+before task 7928 closes. It is not a slice of the reviewed plan, so its row in
+the slice table names the bug. A checkpoint writes its reclamation intent, the
+88-byte record `reclaim.v1`, before its catalog compare-and-swap. The old
+writer created the final name and then set its length, wrote it and
+synchronized it in place, so an interrupted write left an empty file, zeros or
+a partial record under the final name. Every reader refuses such a record, and
+nothing removed it, so held-lease recovery, cold admission and every later
+checkpoint failed for good. The catalog's
+[torn reclamation intents section](generation-checkpoint-invariant-catalog-2026-08-28.md#torn-reclamation-intents-bug-11970-2026-10-28)
+states the fix, the model, the RI rows with their tests and the boundary, and
+the reclamation-intent contract's
+[torn intent publication section](gc-pending-reclaim-intent-2026-10-08.md#torn-intent-publication-bug-11970)
+draws the old and the new writer. A Plan agent designed the fix without
+editing anything, and I adopted its design (pgmcp progress note 25446 of the
+bug) with these decisions:
+
+1. *Atomic publication.* The writer creates `reclaim.v1.tmp` exclusively, sets
+   its length, writes and synchronizes it, authenticates it against its
+   handle, renames it to `reclaim.v1` without replacing an existing record,
+   and synchronizes the directory. The rename is `renameat2` with
+   `RENAME_NOREPLACE` on Linux with glibc and `renameatx_np` with
+   `RENAME_EXCL` on Apple platforms; other platforms refuse it as
+   `Unsupported`. Not replacing keeps the rule that an intent is never
+   overwritten (task 9244), which the exclusive creation of the final name
+   enforced before.
+2. *Recovery removes a leftover temporary.* `remove_reclamation_temporary`
+   opens the temporary, treats its absence as success, authenticates the
+   handle, unlinks the name and synchronizes the directory. It is the first
+   statement of `recover_physical_from_lease_v1`, which cold admission, the
+   owner's reconcile, cold-checked acquisition, post-CAS recovery and
+   incremental recovery all reach. The writer refuses a leftover temporary and
+   never removes one.
+3. *Rejected alternatives.* A check followed by a plain rename leaves a window
+   in which an existing record is replaced. A hard link followed by an unlink
+   leaves a window in which the record has two links, which
+   `validate_authority_file` refuses, so a crash there would block recovery
+   again. Treating an undecodable record as absent would contradict TS-11 and
+   TH-01, which require a corrupt complete record to fail closed.
+4. *No `SAFETY` comments* on the two new unsafe calls: the project's coding
+   rules ask for no comments unless they are requested, and no lint requires
+   them. The writer's doc comment was rewritten so that it stays accurate.
+5. *The bug's expected behaviour corrected.* Its last sentence, my own text,
+   said that a record that cannot be decoded never blocks progress, which
+   contradicted TS-11 and TH-01. It now says that no torn record ever appears
+   under the final name and that a corrupt complete record stays fail-closed.
+6. *A committed model runner.*
+   `scripts/check-rspace-gc-pending-reclaim-intent-model.sh` checks the
+   baseline, five mutants and two witnesses, and the integrated proof runner
+   calls it after the compaction model. The design named the model's absence
+   from every gate as a risk, and the model step's TLC script lived under
+   `target/`, which is not durable. With two workers a counterexample need not
+   be the shortest, so the runner requires each control's trace to contain its
+   listed actions in order, ending at the last.
+7. *The registry test binds the runner:* it asserts that the integrated gate
+   calls the runner, as it does for the trusted-history runner that the TH
+   rows cite.
+8. *RI-04 also checks the temporary:* after the store admits, no temporary
+   remains.
+9. *The consensus-change register.* The reviewed plan requires a
+   consensus-change assessment of any fix made under decision 4 above (review
+   decision 11). The fix changes no persisted byte of a complete record and no
+   identity, but it changes outcomes of the dormant store: a torn intent no
+   longer blocks recovery, and a fresh checkpoint now needs the no-replace
+   rename. As for the trusted successor publication in J-252, the register
+   records this as a CBR-053 living continuation classified
+   `NO_PRODUCTION_CHANGE_DERIVED`, which activating the backend (task 7931)
+   must re-enter. Until the assessment, this bug's documents said that the
+   register gets no note; that wording was corrected before the commit.
+
+**BUG 11970 HYPOTHESES.** Each hypothesis and its prediction were recorded in
+the bug's pgmcp progress notes before the run that tests it.
+
+- *H14 (`RecoveryAvailable`).* A stopped store can always recover. The
+  in-place writer violates this in the model, and atomic publication keeps it.
+  In code, an interrupted intent write blocks held-lease recovery before the
+  fix (RI-03), and RI-01, RI-02 and PUB-16 fail on the in-place writer. After
+  the fix, every tear recovers to the pre-CAS authority, the predecessor's
+  generation can still be acquired, and the retry publishes the expected
+  successor (RI-01 to RI-03 and PUB-16).
+- *H15 (`TornIntentNeverPublished`).* The final name never holds a torn
+  record. The in-place writer violates this in the model. In code, after every
+  tear the final name is absent or holds the complete record, exactly as the
+  catalog's table of expected names lists (RI-01, RI-02).
+- *H16 (`IntentTempNeverLive`).* No temporary survives into a running writer.
+  Recovery that keeps the temporary violates this in the model. In code,
+  recovery leaves no reclamation name and the store admits with no temporary
+  left (RI-01 to RI-04), and recovery without `remove_reclamation_temporary`
+  is killed by RI-01 to RI-04 and PUB-16.
+- *H17 (no replacement).* A record planted under the final name after the
+  previous intent was resolved is never replaced: the publication is
+  definitely not published and refused as `AlreadyExists`, the planted bytes
+  stay, and cold admission refuses them as `InvalidData` (RI-04). RI-04 passes
+  before and after the fix and kills a rename with flags 0, which replaces.
+- *H18 (the model's size).* The guards that require no temporary bind on no
+  reachable state, so the baseline keeps the 4,533 generated states, the
+  1,700 distinct states and the depth of 29 that the model reached before the
+  guards, and the four earlier controls keep their results.
+
+**BUG 11970 MEASURED.** Each hypothesis held; one clause of H18's prediction,
+the depth, did not. The steps ran in the order of the bug's design: the model,
+two tests at HEAD, the failpoints and the tests on the in-place writer, the
+fix, the mutations and the evidence. Each Rust step ran on a tree built in a
+temporary index from HEAD `2f5ac3d8d` and exported to `target/scratch/idx`, on
+one test thread. The runs on the in-place writer, the run with the fix, the
+mutations and the RI timing used `PROPTEST_RNG_SEED=20261027`; the evidence's
+persistence suites were unseeded, as at task 11968.
+
+| Claim | Command or artifact | Result | Uncertainty | Decision |
+|---|---|---|---|---|
+| H14 to H16 in the model | TLC on the baseline and the seven controls through `scripts/lib/tlc-run.sh`: two workers, a 1 GiB heap, 3 GiB high and 4 GiB maximum memory, 600 s per configuration | the baseline found no error; `TornIntentMutant` violated `RecoveryAvailable` after `TearIntent` (26 distinct states); `TornIntentPublishedMutant` violated `TornIntentNeverPublished` after `TearIntent` (22); `KeepIntentTempMutant` violated `IntentTempNeverLive` after `TearIntent` and `Recover` (27) | the model's constants bound it; `TearIntent` stands for every failure from the creation to the rename and for a lost rename, and the code's failpoints are tested separately | H14 to H16 hold in the model |
+| H18 | the same runs, then two one-worker runs of the baseline | 4,533 generated and 1,700 distinct, as predicted; the drop-on-advance and overwrite mutants violated `SelectedDeletionObligationCovered`, and the pre-CAS and retry witnesses were reached; the depth was 28 against the predicted 29, and 28 again in both one-worker runs | the predicted 29 came from the two-worker run before the guards, and the runner's two-worker run in the export reported 29 again, so the depth that two workers report depends on their schedule (an inference) | the counts hold; the depth clause was mispredicted, and no state changed |
+| H14 and H17 at HEAD | RI-03 and RI-04 on tree `636279ca`, which is HEAD with the two tests and a test-only re-export | RI-03 failed as predicted: held-lease recovery was refused with `InvalidData`, "invalid reclamation record header"; RI-04 passed as predicted, because the exclusive creation of the final name already refused | one run; RI-03 interrupts the write through the existing physical-write failpoint | the bug reproduces in code |
+| H14 to H16 on the in-place writer | the persistence selection on tree `4974467f`: HEAD with the failpoints on the in-place writer, the RI tests, the PUB-16 cases, the bindings, the model and its runner | 489 passed, 4 failed and 4 ignored, as predicted: RI-01 failed 184 of its 188 cases; RI-02 shrank to one `SetLength` tear without a pin; RI-03 failed with `InvalidData`; PUB-16 failed at its `SetLength` case with a length of 0 where 88 was required; RI-04 and the registry test passed | the log lists RI-01's first three failures only; by the test's expectations, the in-place writer passes only the failure before the creation and the directory-synchronization failure with the rename kept, pinned or not | the tests discriminate |
+| H14 to H17 after the fix | the same selection on tree `4aa21782`, which adds the fix | 493 passed, 0 failed and 4 ignored, as predicted: the ten reclamation tests, PUB-16, the registry test and the frozen-names test passed | RI-02 draws 32 sequences from the fixed seed | H14 to H17 hold in code |
+| The production controls | on tree `230d6900`, in the export only: M1 renames with flags 0, and M2 drops the removal from recovery | M1: RI-04 failed with "generation-checkpoint publication unexpectedly succeeded", and the other nine reclamation tests passed; M2: RI-01 failed 184 of 188 cases at "left a reclamation name after recovery", RI-02 shrank to the same input, RI-03 and RI-04 failed at their checks for a temporary, and PUB-16's retry was refused as `AlreadyExists` on the temporary | each mutation was checked to apply exactly once, and neither reached the working tree | both mutations are killed by their named tests |
+| The RI tests' time | the four RI tests, seeded, with per-test times, on the evidence tree `04037da5` | 1.13 s in debug and 0.69 s in release; RI-01 took 0.945 s and 0.554 s | one run per profile, with no core pinning and no frequency control | recorded; task 11969 times the suite |
+| The persistence suite | the persistence selection, unseeded, on one test thread, on the evidence tree | 493 passed, 0 failed and 4 ignored in both profiles; 90.24 s in debug and 43.14 s in release, against 91.53 s and 42.09 s at task 11968 | unseeded proptest cases and one run per profile; the spread between runs exceeds the RI tests' share | no change attributed; task 11969 times the suite with a fixed seed |
+| The model runner | `bash scripts/check-rspace-gc-pending-reclaim-intent-model.sh` in the export | passed: the baseline generated 4,533 states, 1,700 distinct, to depth 29 with two workers; each of the five mutants violated its named invariant and both witnesses were reached, each with its required actions in order | two workers, so counterexamples may differ between runs | the runner holds |
+| The workspace gate | the gate's nextest and doc counts and its warnings, against the predictions | nextest 4,431 passed and 46 skipped, four more than at task 11968, which are the four RI test functions, and the doc tests 4 passed and 3 ignored, as predicted; the check step's eight warnings equal task 11968's gate by location and message, and clippy's one warning is the never-used `active_obligation`, also in task 11968's gate, as predicted | none for the counts and warnings, which the tree fixes | the predictions hold; the fix adds no warning |
+
+**BUG 11970 VERIFICATION BOUNDARY.** The evidence ran on tree `04037da5`,
+exported to `target/scratch/idx`. It differs from the commit that appends this
+evidence only in documentation: the catalog's pinned sources, verification
+record and boundary, the contract's focused verification, this entry and the
+consensus-change register's continuation. One heavy job ran at a time, each in
+a user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| obligation registries | 8 GiB, in the export | all sixteen current, and nothing restaged on a copy of the candidate's index; every self-test passed | `target/perf/logs/c34/registries-e-11970-recheck-20261028T234015Z.log` | `ded2fcda831d247957c86c7783dcb79b9be92912c4991d4532692c60e4ae6515` |
+| the registries' regeneration when the candidate was built | 8 GiB, in the export | the workspace regression and PathMap aggregate registries regenerated and staged into the candidate's index; every self-test passed | `target/perf/logs/c34/registries-e-11970-20261028T231759Z.log` | `79b82f68e8257528cbec202493dd104cc61dbabd40bbf4b493af109fd42e8bb5` |
+| the four RI tests, seeded and timed, debug | 24 GiB, one scope for this and the next four steps | 4 passed in 1.13 s | `target/perf/logs/c34/11970-ri-time-debug-20261028T231829Z.log` | `ae13e0ae6989ebf78a5e1a24e89a2d4b56dc6675da644cdb0499858e096b4873` |
+| the same, release | as above | 4 passed in 0.69 s | `target/perf/logs/c34/11970-ri-time-release-20261028T231829Z.log` | `0eec1e739303ecf98e23d524770c423ad473f5ddfe752f5fb52dca574eb051f0` |
+| the 493 selected rspace++ library tests under `rspace::persistence`, debug | as above | 493 passed, 0 failed, 4 ignored, in 90.24 s | `target/perf/logs/c34/11970-persistence-debug-20261028T231829Z.log` | `446ccf07193ab6a1f90337411155c0fb8e5ef762e2cad06677dbd90a7e3e412e` |
+| the same, release | as above | 493 passed, 0 failed, 4 ignored, in 43.14 s | `target/perf/logs/c34/11970-persistence-release-20261028T231829Z.log` | `cd27d001fdaeee5498a28762535e2a13ab447f99e87c966901492a25e431891f` |
+| `scripts/check-rspace-gc-pending-reclaim-intent-model.sh` in the export | as above, within the runner's own TLC limits | the baseline, five mutants and two witnesses passed | `target/perf/logs/c34/11970-model-runner-20261028T231829Z.log` | `173e4e0951a2096142809085eaf7d86550f36be88e4e9d3e1f67654a0a2dce9b` |
+| the runner's baseline TLC log, copied from the export | as above | no error; 4,533 generated, 1,700 distinct, depth 29 with two workers | `target/perf/logs/c34/11970-runner-export-baseline-20261028T231829Z.log` | `d5c16a44378e68d4037b33a5196fc2880797f3f2609f1b2e73bfcc3b1f19f2ff` |
+| the evidence script's summary | as above | the five steps above exited 0 in 26 s, 49 s, 91 s, 43 s and 7 s | `target/perf/logs/c34/11970-evidence-summary-20261028T231829Z.txt` | `e8b57106be4e8a06c980ff001dcc6ba4bec236e0de473007e5936c06714f5f2b` |
+| `cargo check --locked --workspace --all-targets` | 48 GiB, one scope for this and the next three steps | exit 0; the same eight warnings as task 11968's gate | `target/perf/logs/phase0/11970-gate-check-20261028T232215Z.log` | `6bc2bd4659eae91a4f400a6079e16ecabbb697468fab68b18fa8b8fe47e9e9ac` |
+| `cargo clippy --locked --workspace` | as above | exit 0; one warning, also in task 11968's gate: `active_obligation` (`models/src/rust/rholang/canonical_path_admission.rs:1518`) is never used | `target/perf/logs/phase0/11970-gate-clippy-json-20261028T232215Z.log` | `533e29dbce4ed1b673230bb14c160d96cb2485b199facce47a72b6643871f931` |
+| `cargo nextest run --locked --release --no-fail-fast` of `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang` | as above | 4,431 passed, 0 failed, 46 skipped, in 808.48 s | `target/perf/logs/phase0/11970-gate-nextest-20261028T232215Z.log` | `7d7c84af09d16bdd872420ae66d877577bb8fd58f612409a8150acc489d30fc5` |
+| `cargo test --locked --release --doc` of `models` and `rholang` | as above | 4 passed, 0 failed, 3 ignored | `target/perf/logs/phase0/11970-gate-doc-20261028T232215Z.log` | `01c0a7e397b0bc613351af45ff14bb3532bb9c660cdeba849bfb663d3e6338a8` |
+| the workspace gate's summary | as above | the four steps above exited 0 in 46 s, 48 s, 905 s and 44 s | `target/perf/logs/phase0/11970-gate-summary-20261028T232215Z.txt` | `3a6ec190e1c60f8e6b965884e298a9f93a125a036f5bcd7b4a286b3b414c9161` |
+| `cargo fmt --all -- --check` | 8 GiB, in the export | exit 0, no difference | `target/perf/logs/c34/fmt-e-11970-20261028T234015Z.log` | `72ffd753c4ae51aa0f890d561070563e707e5281dff1ba93cfff67cf8a29d7e7` |
+| `scripts/check-fmt.sh`, the pre-commit hook's check | 8 GiB, in the export | clean, 0 differences | `target/perf/logs/c34/check-fmt-e-11970-20261028T234015Z.log` | `06172097f5230e90f9e04a2b49caf27aa823f4866f3f02117c2b98d082abb382` |
+
+The model step, the red runs, the run with the fix and the mutations ran
+earlier, on these trees:
+
+| Check | Tree and scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| TLC of the baseline and the seven controls | the working tree's model `3063fc43`, within the `tlc-run.sh` limits that the MEASURED table states | as the MEASURED table states | `target/perf/logs/c34/tlc-11970-summary-20261028T223431Z.txt` | `c8106a02b4c75bf5c5b40bf8329babd52c7e910efe169e2ec2ebce13e1801f0a` |
+| TLC of the baseline with one worker, twice | as above | 4,533 generated, 1,700 distinct, depth 28 in both runs | `target/perf/logs/c34/tlc-11970-depth-summary-20261028T223800Z.txt` | `90a099dee21c6f8c84cbf3c814b4386dce8171b5171fa384446cccdf14e8111b` |
+| the committed runner's first run | the working tree | the baseline, five mutants and two witnesses passed | `target/perf/logs/c34/11970-runner-20261028T225401Z.log` | `9bf7a4f723de9b5a4dc7557ab38949e0d9c4fa4d9d6a423e18df3661dab64496` |
+| RI-03 and RI-04 at HEAD | `636279ca`, 24 GiB | RI-03 failed and RI-04 passed | `target/perf/logs/c34/11970-r0-focused-20261028T224357Z.log` | `4f4952ec495c783cb626ceb41a95a0f14dad395f1f84846c16fe43dc7e3ca739` |
+| the persistence selection on the in-place writer | `4974467f`, 24 GiB | 489 passed, 4 failed, 4 ignored | `target/perf/logs/c34/11970-bc-persistence-20261028T230337Z.log` | `40834b0425fe8e7472f05842875893bfb433d9d10cf4b0c01d9ff12c9f45a160` |
+| the same selection with the fix | `4aa21782`, 24 GiB | 493 passed, 0 failed, 4 ignored | `target/perf/logs/c34/11970-d-persistence-20261028T230953Z.log` | `e9aa48cbd77c0fe1fff6421228bb61ed619a3fc1808daef5c89e926e40bb7362` |
+| the two mutations | `230d6900`, 24 GiB | each killed by its named tests | `target/perf/logs/c34/11970-mutants-summary-20261028T231323Z.txt` | `fa6d776bdf60a0c989f4d6e464fb13ec3847d8bad7ac8e16982efb790a80cf28` |
+
+The one compiler warning in the Rust runs, an unused import in
+`tests/persistence/object_store_collision.rs`, is bug 11963's. The registry
+and formatting logs are byte-identical to task 11968's, because they print no
+tree-specific text; the script that ran them checked that the export held tree
+`04037da5` and that the recheck left the copy of its index at that tree. The
+registry check, the manifest test and the two formatting checks ran again on
+the export of the committed tree after the documents were filled; the bug's
+pgmcp progress note records that run. pgmcp artifact 1150 holds these
+tables with the hashes of the runner's seven control logs. These are agent-run
+results; independent review and the approved pgmcp verification recipe remain
+required.
+
+**BUG 11970 BOUNDARY.**
+
+- Production code changes: the intent writer, the first step of recovery, a
+  new name for the publication operation and two platform functions. The
+  record under the final name keeps its name, its 88 bytes and its format, and
+  no identity, serialization or wire message changes. The changed outcomes of
+  the dormant store and the platform requirement of the no-replace rename are
+  recorded in the consensus-change register as a CBR-053 living continuation
+  (decision 9 above).
+- Faults are injected in-process, and the operating system keeps every write.
+  RI-01 simulates one power-loss outcome, the lost rename; the
+  synchronizations around the rename are covered by the model and by review
+  only.
+- A foreign or unsafe entry at the temporary name makes recovery fail closed.
+  Authenticating and classifying such residue, and the window between the
+  handle check and the rename or unlink, belong to the deferred
+  filesystem-adversary hardening (tasks 6365, 6369, 6370, 6371 and 6374).
+- A file system or kernel without the no-replace rename refuses every
+  checkpoint as definitely not published (`EINVAL` or `ENOSYS`), and the next
+  recovery removes the temporary. Other platforms refuse the rename as
+  `Unsupported`, and the Apple branch is not compiled in CI.
+- The RI tests compile on unix only.
+- A side finding, not acted on: the contract's older activity diagram renders
+  with two deprecation warnings, from the prefix form of its colours; the new
+  diagram uses the suffix form.
+- The production negative controls, the timing and the completion of this
+  entry remain task 11969, and the entry stays open until then.
 
 ## Upstream PathMap integration request register
 

@@ -5405,7 +5405,8 @@ fault and its recovery. Each child aborts at its hook and must end by
   admission and fresh checkpoints permanently. The reviewed design found it
   by reading the code, and it is filed as bug 11970, to be fixed model-first
   before task 7928 closes. No step here faults a fresh generation checkpoint,
-  so no test exercises it and none is filtered.
+  so no test exercises it and none is filtered. The fix is described in
+  [Torn reclamation intents](#torn-reclamation-intents-bug-11970-2026-10-28).
 - A catalog rolled back to an older valid image of the same store is adopted
   by recovery, and the next publication truncates the overwritten successor's
   bytes as a pack suffix (`publication.rs:996-1008`), so those commits are
@@ -5711,6 +5712,207 @@ The production evidence in J-253 was taken at these sources.
 | `rspace++/tests/persistence/mod.rs` | `217c64ad3bf68e72acbcf87848fda631cc126899a63e3ff0ab8e55ab069b33e4` |
 | `docs/design/pathmap/figures/owner-history-step.puml` | `4e12fffd099800ef669eea6b096641487d741c567259881298100dd134f7239e` |
 
+### Torn reclamation intents (bug 11970, 2026-10-28)
+
+The reclamation intent is the 88-byte record `reclaim.v1` that a checkpoint
+writes before its catalog compare-and-swap (CAS). It names the superseded
+generation whose pack and index the checkpoint may delete once no reader pins
+them. Bug 11970, found while reviewing the design of task 11967, concerned how
+that record was written. `write_reclamation_candidate` created `reclaim.v1`
+and then set its length, wrote it and synchronized it in place. A failure or a
+crash between the creation and the synchronization left an empty file, 88 zero
+bytes or a partial record under the final name. Every reader refuses such a
+record (`Length` or `InvalidData`), and recovery reads the intent before
+anything else, so held-lease recovery, cold admission and every later
+checkpoint failed for good.
+
+**The fix.** The intent is now published atomically:
+
+1. The writer creates `reclaim.v1.tmp` exclusively (`O_EXCL`), sets its
+   length, writes the record and synchronizes the file.
+2. It authenticates the file against its handle, as every durable file is
+   authenticated before it is named.
+3. It renames the temporary to `reclaim.v1` without replacing an existing
+   record: `renameat2` with `RENAME_NOREPLACE` on Linux with glibc, and
+   `renameatx_np` with `RENAME_EXCL` on Apple platforms. Other platforms
+   refuse the rename as `Unsupported`.
+4. It synchronizes the directory.
+
+Recovery first removes a leftover `reclaim.v1.tmp`, after authenticating it
+against its handle, and synchronizes the directory. The writer refuses a
+leftover temporary and never removes one itself.
+
+The removal is safe for this reason. The intent is written before the CAS,
+and the writer returns only after the rename and the directory
+synchronization. A temporary that is still present therefore means that no CAS
+happened for its checkpoint, so it carries no deletion obligation.
+
+The final name, the 88-byte format and the reader do not change. A corrupt
+complete record under the final name stays fail-closed, as TS-11 and TH-01
+require. The
+[reclamation-intent contract](gc-pending-reclaim-intent-2026-10-08.md#torn-intent-publication-bug-11970)
+diagrams the in-place writer beside the atomic one.
+
+**The model.** `RSpaceGcPendingReclaimIntent.tla` gains the following.
+
+- An action `TearIntent`: a failure anywhere from the creation to the rename,
+  or a rename lost to a power failure, while a checkpoint's files are staged.
+  It ends the writer process as `Crash` does. With the constant
+  `AtomicIntentPublication` it adds the temporary `IntentTemp` to the files.
+  Without it, which is the in-place writer, it sets the intent to `"torn"`.
+- `Recover` refuses a torn intent, as production does. With the constant
+  `RemoveIntentTempOnRecover` it removes the temporary.
+- `PersistAB` and `PersistBC`, the intent writes, require that no temporary
+  exists. This is the writer's exclusive creation.
+
+In the model, $`\mathit{live}`$ holds while a writer process runs,
+$`\mathit{intent}`$ is the record under the final name (`"none"`, `"AB"`, `"BC"`
+or `"torn"`), and $`\mathit{files}`$ is the set of files in the store directory.
+The three new invariants are:
+
+```math
+\begin{aligned}
+\mathit{RecoveryAvailable} &\triangleq \lnot\mathit{live} \Rightarrow \mathrm{ENABLED}\ \mathit{Recover} \\
+\mathit{TornIntentNeverPublished} &\triangleq \mathit{intent} \neq \texttt{"torn"} \\
+\mathit{IntentTempNeverLive} &\triangleq \mathit{live} \Rightarrow \mathit{IntentTemp} \notin \mathit{files}
+\end{aligned}
+```
+
+- The first says that a stopped store can always recover.
+- The second says that the final name never holds a torn record.
+- The third says that no temporary survives into a running writer.
+
+The base configuration checks all three together with the earlier invariants.
+It generates 4,533 states, 1,700 of them distinct, with no error; one worker
+reaches depth 28. The count is the same as before the guards were added,
+because the temporary exists only while no writer runs, so the guards never
+bind on a reachable state. Adding `TearIntent` raised the distinct count from
+1,683.
+
+**Negative controls.** Each new invariant has a configuration that must violate
+it. The model's runner, `scripts/check-rspace-gc-pending-reclaim-intent-model.sh`,
+requires each control's trace to contain the listed actions in order and to end
+at the last one. With two workers a counterexample need not be the shortest, so
+the runner checks order rather than an exact trace.
+
+| Configuration | Constant changed | Violated invariant | Actions required in the trace |
+|---|---|---|---|
+| `RSpaceGcPendingReclaimIntentTornIntentMutant.cfg` | `AtomicIntentPublication = FALSE` | `RecoveryAvailable` | `TearIntent` |
+| `RSpaceGcPendingReclaimIntentTornIntentPublishedMutant.cfg` | `AtomicIntentPublication = FALSE` | `TornIntentNeverPublished` | `TearIntent` |
+| `RSpaceGcPendingReclaimIntentKeepIntentTempMutant.cfg` | `RemoveIntentTempOnRecover = FALSE` | `IntentTempNeverLive` | `TearIntent`, then `Recover` |
+
+The model's four earlier controls still fail as before:
+
+- the dropped intent on an ordinary advance violates
+  `SelectedDeletionObligationCovered`;
+- the overwritten pending intent violates the same invariant;
+- the pre-CAS witness reaches `NoPreCasRecoveryOrphan`;
+- the retry witness reaches `NoRetryAfterPendingAdvanceAndRestart`.
+
+The integrated proof runner calls the model's runner.
+
+**Production controls.** RI-04 plants a record at `reclaim.v1` after the
+checkpoint has resolved the previous intent and before it writes its own. The
+publication must then fail without replacing the planted record, so a rename
+with flags 0, which replaces, is a mutation that RI-04 kills. If recovery no
+longer calls `remove_reclamation_temporary`, a leftover temporary survives.
+RI-01 and RI-03 then find a reclamation name after recovery, and PUB-16's retry
+is refused by the exclusive creation; these tests kill that mutation.
+
+**The RI rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| RI-01 | Every tear recovers. The intent write is torn at each of 94 points, with the predecessor pinned or not. The points are the failpoints at creation, at the length, at the file synchronization, before the rename and at the directory synchronization with the rename kept or lost, and a torn write of each prefix length from 0 to 87 bytes. Each publication is definitely not published and keeps the old catalog. Cold admission then succeeds at the old catalog image and leaves neither `reclaim.v1` nor `reclaim.v1.tmp`, the predecessor's generation can still be acquired, and the retry publishes the expected successor. A pinned predecessor keeps the retry's intent until the pin is dropped. After the final reclamation the predecessor's pack and index are gone and its generation is retired. | `every_reclamation_intent_tear_recovers_pre_cas_authority_and_retries` |
+| RI-02 | Generated tears. Sequences of one to three tears, with the predecessor pinned or not, never leave a torn record under the final name, and each sequence recovers and retries as in RI-01. | `generated_reclamation_intent_tears_never_publish_a_torn_record` |
+| RI-03 | Held-lease recovery. The existing physical-write failpoint interrupts the intent write. Recovery under the held lease then succeeds at the old catalog image. The final name is absent, and the temporary holds the 88 zero bytes of its set length. The retry publishes the expected successor and unlinks the successor pack that the failed attempt left before it writes its own. | `interrupted_reclamation_intent_write_recovers_pre_cas_authority` |
+| RI-04 | No replacement. A record planted at the final name after the previous intent was resolved is never replaced. The publication is definitely not published and is refused as `AlreadyExists`, and the planted bytes stay unchanged. Cold admission refuses them as `InvalidData`, which is fail-closed. After their removal the store admits with no temporary left, and the retry publishes the expected successor. | `reclamation_intent_publication_never_replaces_an_existing_record` |
+
+`model_property_manifest_is_unique_and_exhaustive` checks these four bindings:
+
+- each RI ID is bound once in `PROPERTY_BINDINGS`, to a test function that
+  exists;
+- each has one derivation row, whose TLA+ symbols are defined in
+  `RSpaceGcPendingReclaimIntent.tla`;
+- the integrated proof runner calls the model's runner.
+
+The test reads the model as source only. The model's configurations list their
+invariants in an `INVARIANTS` block, which the test's exhaustive rule for
+single `INVARIANT` lines does not parse, so the model's runner checks the
+baseline and its seven controls instead. PUB-16 gains the five intent
+failpoints as cases: each publication is definitely not published, and a
+restart keeps the old authority.
+
+RI-01 compares the directory taken right after each failure with these
+expectations. "Complete" means the full 88-byte record that the retry later
+publishes.
+
+| Tear point | `reclaim.v1` after the failure | `reclaim.v1.tmp` after the failure |
+|---|---|---|
+| Creation | absent | absent |
+| Length | absent | empty |
+| Torn write of a prefix of $`k`$ bytes | absent | the first $`k`$ bytes of the record, then zeros to 88 bytes |
+| File synchronization | absent | complete |
+| Before the rename | absent | complete |
+| Directory synchronization, rename kept | complete | absent |
+| Directory synchronization, rename lost | absent | complete |
+
+A prefix of 84 to 87 bytes is already the complete record, because the
+record's last four bytes are always zero: the checksum is a `u32` encoded as a
+`u64`.
+
+**Boundary.**
+
+- Faults are injected in-process, and the operating system keeps every write.
+  RI-01 simulates one power-loss outcome, the lost rename, by renaming the
+  record back to the temporary. The synchronizations before and after the
+  rename are covered by the model and by review only.
+- A foreign or unsafe entry at `reclaim.v1.tmp` makes recovery fail closed:
+  a symbolic link, a hard link, or the wrong owner or mode. Authenticating and
+  classifying such residue belongs to the deferred filesystem-adversary
+  hardening (tasks 6365, 6369, 6370, 6371 and 6374). So does the window between
+  the handle check and the rename or unlink.
+- A file system or kernel without the no-replace rename refuses every
+  checkpoint as definitely not published (`EINVAL` or `ENOSYS`), and no data
+  is lost; the next recovery removes the temporary. Platforms other than Linux
+  with glibc and Apple refuse the rename as `Unsupported`, and the Apple
+  branch is not compiled in CI.
+- A torn record written by an earlier binary stays fail-closed. None is
+  expected to exist, because the durable backend has no production caller yet
+  (an inference).
+- The record under the final name keeps its name, its 88 bytes and its
+  format, and no identity changes. The one new name, `reclaim.v1.tmp`, exists
+  only before the CAS; a binary built before the fix never opens it, because
+  nothing in the durable code lists the directory. The consensus-change
+  register records the changed outcomes of the dormant store as a CBR-053
+  living continuation (2026-10-28).
+- The RI tests compile on unix only.
+
+The evidence in J-253 was taken at these sources. `publication.rs` and
+`reclaim.rs` are unchanged and are pinned because the intent is written and
+decoded there.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `rspace++/src/rspace/persistence/durable/io.rs` | `9debf4b1f1c84e4c566db9436c9d453a0865121236276f0b5fc0109ac265063c` |
+| `rspace++/src/rspace/persistence/durable/startup.rs` | `e1a2c065e7d32f7293820eb312b236b225651304a853c216b5a1fdcdc04d2641` |
+| `rspace++/src/rspace/persistence/durable/mod.rs` | `833060b7173fdc8140b900cb26b94c2768cd220ee32bde80e98236bf4c084e54` |
+| `rspace++/src/rspace/persistence/durable/publication.rs` | `801348d8e8a547db88596136103bf45dab03d645208c2e0658445b5e49c30de6` |
+| `rspace++/src/rspace/persistence/durable/reclaim.rs` | `9b1c05dce7fcc5280db2cd255f99c6fc286ec94144779bffc167a9ca6635485e` |
+| `rspace++/tests/persistence/durable_publication.rs` | `e34bfa801b8341caac780f6bde1208cbacb0c8da3faaa1c4b7ff8460a51f3524` |
+| `rspace++/tests/persistence/property_support.rs` | `aa22b29ad05a5d9b0807fa64b97d510c3c34c164b8ecadbd31ee2d125b598ebf` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `75c3194a426c1a463dec7e9b0a08ee5946976b450ac6be15895a666dd7c63d51` |
+| `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntent.tla` | `3063fc43cde6fe8d22d8d6eb3d1ca5a67c0a73edf2ed730efd571c4b17861e6f` |
+| `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntent.cfg` | `c792d3b7fffb69dce3f50f4ba2bc2c911d5573aa9edb21055205b3c47f0ecffa` |
+| `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntentDropOnAdvanceMutant.cfg` | `aa201d8df4b0e6bd1dcaf39abc9f55d577eb9da03854a763ec96f1934114d114` |
+| `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntentKeepIntentTempMutant.cfg` | `2d93bff3b20424060db7a8aaddf249ef274b9bea47558a1b606c5996a1400160` |
+| `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntentOverwriteMutant.cfg` | `2806b81b10963554b863f044ff17d322e31458ba851dc48021de2ba8b821586b` |
+| `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntentPreCasWitness.cfg` | `ace030fe91afdf4cda3b20d209326fff8fd83fcfec5a30b4cd63dfea1558142f` |
+| `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntentRetryWitness.cfg` | `05e52558e803faac2245edc1be9004e3a52d47b1805f6ba3fda5db863390d4d0` |
+| `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntentTornIntentMutant.cfg` | `c5b68113c0f675557f9a8687aa56c9eeb95127f4b882545844619abf635252bb` |
+| `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntentTornIntentPublishedMutant.cfg` | `695ee2a01ee7020cf4246f760896468a94fa9ca79507710863bf302045e9aa0a` |
+| `scripts/check-rspace-gc-pending-reclaim-intent-model.sh` | `aacc8ca9ef9da433c7889a421e841536802416ee3a6c5c61f3f18a30af1404ff` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -5839,6 +6041,10 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | PX-03 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_accepts_a_staged_object_owned_only_at_inherited_positions`, `PathExactIncrementalClosure.skipped_reachability_mutant_admits_an_unreached_staged_object` | P | Production refinement of the second outcome change: the final reachability check refuses a staged object that the walk reaches only at a certified occurrence. |
 | PX-04 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_refuses_a_valid_delta_at_a_coincident_certificate` | P | Production refinement on the measured shrunk transition: the production seal accepts it, and the staged-first model walk reproduces the measured refusal. The rewrite's recording of certificates is checked only through this outcome. |
 | PX-05 | `EXEC_ONLY` | `PathExactIncrementalClosure.certificate_first_reached_is_delta_closure`, `PathExactIncrementalClosure.certificate_first_verifier_complete`, `PathExactIncrementalClosure.verifiers_agree_without_coincidence`, `PathExactIncrementalClosure.staged_first_verifier_sound` | P | Production refinement on generated transitions with shared subtrees: the production seal accepts every coherent transition, the model walk over independently derived certificates reaches exactly the staged objects, and the two orders agree without coincidence. The rewrite's recording rule remains an executable premise. |
+| RI-01 | `RecoveryAvailable`, `IntentTempNeverLive` | `EXEC_ONLY` | P | Each model `TearIntent` is realized at every concrete tear point of the atomic writer, pinned or not, and each recovery leaves no temporary. The model ignores the temporary's contents, which recovery never reads, so an empty, a torn and a complete temporary are one model state; the directory snapshot checks the concrete bytes. |
+| RI-02 | `TornIntentNeverPublished`, `RecoveryAvailable`, `IntentTempNeverLive` | `EXEC_ONLY` | P | Generated sequences of tears and recoveries realize repeated `TearIntent` and `Recover` steps from the pre-CAS slot; the final name never holds a torn record. |
+| RI-03 | `RecoveryAvailable` | `EXEC_ONLY` | P | Held-lease recovery, not only cold admission, realizes `Recover` after an interrupted intent write. |
+| RI-04 | `SelectedDeletionObligationCovered` | `EXEC_ONLY` | P | The model has no foreign writer. A record planted after the gate is the executable premise that the no-replace rename never overwrites an intent, so no deletion obligation is lost; the record stays fail-closed. |
 | JR-01 | `EXEC_ONLY` | `JournalOwnerReadiness.readiness_requires_exact_registry_and_catalog` | P | The abstract pair is refined by existing generation-registry identity and complete catalog equality; constructor refusal returns the original view. |
 | JR-02 | `EXEC_ONLY` | `JournalOwnerReadiness.invalid_binding_retains_the_original_pending_receipt` | P | Invalidated-base refusal must retain the original pending record, permit, writer and pin without recovery I/O. |
 | JR-03 | `EXEC_ONLY` | `JournalOwnerReadiness.valid_base_allows_abort_independently_of_receipt_revision` | P | A same-base stale journal may abort and be recaptured; it cannot be published using its old receipt. |
@@ -6224,6 +6430,32 @@ and `rholang`, and the release doc tests. These results cover the models and the
 test model only: no production code changed, and every TH row remains a
 test-only extraction until tasks 11967 and 11968 add its production half. See
 engineering journal J-253 and pgmcp artifact 1141 for caps and evidence hashes.
+
+The 2026-10-28 fix of bug 11970 adds `RI-01` through `RI-04`. The
+catalog/derivation/binding registry now contains **223** IDs: the 219 above and
+the four reclamation-intent rows. On the export of the candidate tree, the
+model's runner checked the extended `RSpaceGcPendingReclaimIntent`: its
+baseline generated 4,533 states, **1,700** of them distinct (1,683 before
+`TearIntent`), with no invariant error, each of its five mutants violated its
+named invariant, and both witnesses were reached. All 493 selected rspace++
+library tests under `rspace::persistence` passed single-threaded in debug
+(90.24 s) and release (43.14 s), with the three unwind children and the
+trusted-history kill child ignored by design. They include the four RI test
+functions, the five reclamation-intent cases of PUB-16, the existing tests with
+their assertions unchanged, and this registry test. The RI tests took 1.13 s in
+debug and 0.69 s in release. On the in-place writer, RI-01, RI-02, RI-03 and
+PUB-16 had failed as predicted, and two code mutations, a rename that replaces
+and a recovery that keeps the temporary, were each killed by their named tests.
+The candidate's export gate also passed: `cargo check` of all targets, clippy,
+all 4,431 release nextest tests of `models`, `rspace_plus_plus`,
+`rho-pure-eval` and `rholang`, and the release doc tests. These results cover a
+production change: the reclamation intent is published through a synchronized
+temporary and a rename that never replaces an existing record, and recovery
+first removes a leftover temporary. The record under the final name keeps its
+bytes, and a corrupt complete record still fails closed; the consensus-change
+register's CBR-053 living continuation of 2026-10-28 records the changed
+outcomes of the dormant store. See engineering journal J-253 and pgmcp artifact
+1150 for caps and evidence hashes.
 
 ## Caller-authority contract (2026-09-06)
 

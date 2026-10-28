@@ -42,9 +42,10 @@ use crate::rspace::persistence::durable::{
     DurableWriterLeaseV1, GenerationCheckpointPublicationErrorV1,
     GenerationCheckpointPublicationHookPointV1, GenerationCheckpointPublicationOutcomeV1,
     IndexBindingDispositionV1, InventoryMismatchKindV1, PreparedGenerationCheckpointIndexV1,
-    RecoveryError, SealedDurableTransactionV1, SemanticallyAdmittedDurableWriterV1,
-    TrustedSuccessorPolicyV1, arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
-    arm_generation_checkpoint_publication_failpoint, arm_generation_checkpoint_publication_hook,
+    RECLAMATION_RECORD_LEN_V1, ReclamationCandidateV1, RecoveryError, SealedDurableTransactionV1,
+    SemanticallyAdmittedDurableWriterV1, TrustedSuccessorPolicyV1, arm_catalog_slot_write_prefix,
+    arm_durable_io_failpoint, arm_generation_checkpoint_publication_failpoint,
+    arm_generation_checkpoint_publication_hook, arm_reclamation_intent_write_prefix,
     index_file_name, pack_file_name, start_generation_checkpoint_publication_trace,
     take_generation_checkpoint_publication_trace,
 };
@@ -2303,6 +2304,371 @@ fn pending_reclamation_waits_for_selected_successor_verification() {
 }
 
 #[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IntentTear {
+    Create,
+    SetLength,
+    Prefix(usize),
+    Sync,
+    BeforeRename,
+    DirectorySync { lost: bool },
+}
+
+#[cfg(unix)]
+impl IntentTear {
+    fn arm(self) {
+        match self {
+            Self::Create => arm_durable_io_failpoint(DurableIoFailpointV1::ReclamationIntentCreate),
+            Self::SetLength => {
+                arm_durable_io_failpoint(DurableIoFailpointV1::ReclamationIntentSetLength)
+            }
+            Self::Prefix(prefix_len) => arm_reclamation_intent_write_prefix(prefix_len),
+            Self::Sync => arm_durable_io_failpoint(DurableIoFailpointV1::ReclamationIntentSync),
+            Self::BeforeRename => {
+                arm_durable_io_failpoint(DurableIoFailpointV1::ReclamationIntentBeforeRename)
+            }
+            Self::DirectorySync { .. } => {
+                arm_durable_io_failpoint(DurableIoFailpointV1::ReclamationIntentDirectorySync)
+            }
+        }
+    }
+
+    fn expected_names(
+        self,
+        record: &[u8; RECLAMATION_RECORD_LEN_V1],
+    ) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        match self {
+            Self::Create => (None, None),
+            Self::SetLength => (None, Some(Vec::new())),
+            Self::Prefix(prefix_len) => {
+                let mut torn = vec![0; RECLAMATION_RECORD_LEN_V1];
+                torn[..prefix_len].copy_from_slice(&record[..prefix_len]);
+                (None, Some(torn))
+            }
+            Self::Sync | Self::BeforeRename | Self::DirectorySync { lost: true } => {
+                (None, Some(record.to_vec()))
+            }
+            Self::DirectorySync { lost: false } => (Some(record.to_vec()), None),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn every_intent_tear() -> Vec<IntentTear> {
+    let mut tears = Vec::with_capacity(RECLAMATION_RECORD_LEN_V1 + 6);
+    tears.extend([IntentTear::Create, IntentTear::SetLength]);
+    tears.extend((0..RECLAMATION_RECORD_LEN_V1).map(IntentTear::Prefix));
+    tears.extend([
+        IntentTear::Sync,
+        IntentTear::BeforeRename,
+        IntentTear::DirectorySync { lost: false },
+        IntentTear::DirectorySync { lost: true },
+    ]);
+    tears
+}
+
+#[cfg(unix)]
+fn check_reclamation_intent_tears(
+    root: &Path,
+    tears: &[IntentTear],
+    pinned: bool,
+) -> Result<(), TestCaseError> {
+    use crate::rspace::persistence::{GenerationLeaseError, GenerationLeaseKeyV1};
+
+    install_checkpoint_store(root);
+    let mut writer = admit(root);
+    let old_catalog = *writer.authority().image();
+    let old_slot = writer.authority().slot();
+    let old_key = GenerationLeaseKeyV1::from_catalog(old_slot);
+    let expected = expected_successor(writer.authority());
+    let record = ReclamationCandidateV1::from_catalogs(old_slot, expected.slot)
+        .expect("the successor supersedes its predecessor")
+        .encode();
+    let registry = writer.generation_leases();
+    let pin = pinned.then(|| {
+        registry
+            .acquire(old_key)
+            .expect("pin the predecessor generation")
+    });
+    let final_name = root.join("reclaim.v1");
+    let temporary_name = root.join("reclaim.v1.tmp");
+    let old_pack = root.join(pack_file_name(PackId::GENESIS));
+    let old_index = root.join(index_file_name(IndexGenerationV1::FIRST));
+
+    for &tear in tears {
+        tear.arm();
+        let error = match publish(writer) {
+            Err(error) => error,
+            Ok(_) => return Err(TestCaseError::fail(format!("tear {tear:?} published"))),
+        };
+        prop_assert_eq!(
+            error.publication_outcome(),
+            GenerationCheckpointPublicationOutcomeV1::DefinitelyNotPublished,
+            "tear {:?}",
+            tear
+        );
+        prop_assert!(
+            matches!(error, GenerationCheckpointPublicationErrorV1::Io(DurableIoError::Io { .. })),
+            "tear {:?} failed otherwise: {:?}",
+            tear,
+            error
+        );
+        prop_assert_eq!(
+            fs::read(root.join("catalog.v1")).expect("read the catalog"),
+            old_catalog,
+            "tear {:?}",
+            tear
+        );
+        if tear == (IntentTear::DirectorySync { lost: true }) {
+            fs::rename(&final_name, &temporary_name).expect("undo the unsynchronized rename");
+        }
+        let snapshot = directory_snapshot(root);
+        writer = DurableDirectoryV1::open(root)
+            .expect("open the durable directory")
+            .recover_and_admit_v1::<TestSemanticProfile>(
+                limits(),
+                LogPackDecodeLimits::UNBOUNDED,
+                DurableAdmissionLimitsV1::UNBOUNDED,
+            )
+            .map_err(|error| {
+                TestCaseError::fail(format!("tear {tear:?} blocked cold admission: {error:?}"))
+            })?;
+        prop_assert_eq!(writer.authority().image(), &old_catalog, "tear {:?}", tear);
+        prop_assert!(
+            !final_name.exists() && !temporary_name.exists(),
+            "tear {:?} left a reclamation name after recovery",
+            tear
+        );
+        drop(registry.acquire(old_key).map_err(|error| {
+            TestCaseError::fail(format!("tear {tear:?} retired the predecessor: {error:?}"))
+        })?);
+        let (expected_final, expected_temporary) = tear.expected_names(&record);
+        prop_assert_eq!(snapshot.get("reclaim.v1"), expected_final.as_ref(), "tear {:?}", tear);
+        prop_assert_eq!(
+            snapshot.get("reclaim.v1.tmp"),
+            expected_temporary.as_ref(),
+            "tear {:?}",
+            tear
+        );
+    }
+
+    let retried = publish(writer)
+        .map_err(|error| TestCaseError::fail(format!("the retry failed: {error:?}")))?;
+    prop_assert_eq!(retried.authority().image(), &expected.catalog);
+    let successor_pack = root.join(pack_file_name(
+        PackId::new(expected.slot.pack().active_pack()).expect("the successor pack is nonzero"),
+    ));
+    let successor_index = root.join(index_file_name(
+        IndexGenerationV1::new(expected.slot.pack().index_generation())
+            .expect("the successor index generation is nonzero"),
+    ));
+    prop_assert_eq!(fs::read(successor_pack).expect("read the successor pack"), expected.pack);
+    prop_assert_eq!(fs::read(successor_index).expect("read the successor index"), expected.index);
+    drop(retried);
+    if let Some(pin) = pin {
+        prop_assert_eq!(
+            fs::read(&final_name).expect("read the deferred reclamation intent"),
+            record.to_vec()
+        );
+        prop_assert!(old_pack.exists() && old_index.exists());
+        drop(pin);
+        drop(admit(root));
+    }
+    prop_assert!(!old_pack.exists() && !old_index.exists());
+    prop_assert!(!final_name.exists() && !temporary_name.exists());
+    prop_assert!(matches!(
+        registry.acquire(old_key),
+        Err(GenerationLeaseError::Retired(key)) if key == old_key
+    ));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn every_reclamation_intent_tear_recovers_pre_cas_authority_and_retries() {
+    let tears = every_intent_tear();
+    let mut failures = Vec::with_capacity(2 * tears.len());
+    let mut cases = 0_usize;
+    for pinned in [false, true] {
+        for &tear in &tears {
+            cases += 1;
+            let outcome = super::trusted_history_production::isolated(move || {
+                let trial = trial_scratch("reclaim-intent-tear-");
+                check_reclamation_intent_tears(trial.path(), &[tear], pinned)
+            });
+            if let Err(error) = outcome {
+                failures.push(format!("{tear:?} pinned={pinned}: {error}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {cases} reclamation-intent tears failed; the first three: {:#?}",
+        failures.len(),
+        &failures[..failures.len().min(3)]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn generated_reclamation_intent_tears_never_publish_a_torn_record() {
+    let strategy =
+        (prop::collection::vec(prop::sample::select(every_intent_tear()), 1..=3), any::<bool>());
+    runner(32)
+        .run(&strategy, |(tears, pinned)| {
+            super::trusted_history_production::isolated(move || {
+                let trial = trial_scratch("reclaim-intent-tears-");
+                check_reclamation_intent_tears(trial.path(), &tears, pinned)
+            })
+        })
+        .expect("every generated sequence of interrupted intents recovers and retries");
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_reclamation_intent_write_recovers_pre_cas_authority() {
+    use std::os::unix::fs::MetadataExt;
+
+    use crate::rspace::persistence::durable::recover_physical_from_lease_v1;
+
+    let scratch = test_scratch::acquire("rspace-reclaim-intent-interrupted-");
+    install_checkpoint_store(scratch.path());
+    let writer = admit(scratch.path());
+    let old_catalog = *writer.authority().image();
+    let expected = expected_successor(writer.authority());
+    let successor_pack = pack_file_name(
+        PackId::GENESIS
+            .successor()
+            .expect("the genesis pack has a successor"),
+    );
+    let successor_index = index_file_name(
+        IndexGenerationV1::FIRST
+            .successor()
+            .expect("the first index generation has a successor"),
+    );
+
+    arm_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterCommitSync,
+        || arm_durable_io_failpoint(DurableIoFailpointV1::PhysicalWrite),
+    );
+    let error = publication_error(publish(writer));
+    assert_eq!(
+        error.publication_outcome(),
+        GenerationCheckpointPublicationOutcomeV1::DefinitelyNotPublished
+    );
+    assert!(
+        matches!(error, GenerationCheckpointPublicationErrorV1::Io(DurableIoError::Io { .. })),
+        "the interrupted intent write failed otherwise: {error:?}"
+    );
+    let interrupted = directory_snapshot(scratch.path());
+    let held_successor = fs::File::open(scratch.path().join(&successor_pack))
+        .expect("hold the unpublished successor pack");
+
+    let mut lease = DurableDirectoryV1::open(scratch.path())
+        .expect("open the durable directory")
+        .try_acquire_writer()
+        .expect("acquire the writer lease");
+    let recovered = match recover_physical_from_lease_v1(
+        &mut lease,
+        limits(),
+        LogPackDecodeLimits::UNBOUNDED,
+    ) {
+        Ok(recovered) => recovered,
+        Err(error) => {
+            panic!("an interrupted reclamation-intent write blocked held-lease recovery: {error:?}")
+        }
+    };
+    assert_eq!(recovered.catalog_authority().image(), &old_catalog);
+    assert_eq!(
+        interrupted.get("reclaim.v1.tmp"),
+        Some(&vec![0; RECLAMATION_RECORD_LEN_V1]),
+        "the interrupted write left its zero-filled length under the temporary name only"
+    );
+    assert!(!interrupted.contains_key("reclaim.v1"));
+    assert_eq!(interrupted.get("catalog.v1"), Some(&old_catalog.to_vec()));
+    assert_eq!(interrupted.get(successor_pack.as_str()), Some(&expected.pack));
+    assert_eq!(interrupted.get(successor_index.as_str()), Some(&expected.index));
+    assert!(!scratch.path().join("reclaim.v1").exists());
+    assert!(!scratch.path().join("reclaim.v1.tmp").exists());
+    drop(recovered);
+    drop(lease);
+
+    let retried = publish(admit(scratch.path())).expect("the retry publishes the successor");
+    assert_eq!(retried.authority().image(), &expected.catalog);
+    assert_eq!(
+        fs::read(scratch.path().join(&successor_pack)).expect("read the successor pack"),
+        expected.pack
+    );
+    assert_eq!(
+        fs::read(scratch.path().join(&successor_index)).expect("read the successor index"),
+        expected.index
+    );
+    assert_eq!(
+        held_successor
+            .metadata()
+            .expect("read the held successor pack metadata")
+            .nlink(),
+        0,
+        "the retry removed the unpublished successor pack before writing its own"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn reclamation_intent_publication_never_replaces_an_existing_record() {
+    let scratch = test_scratch::acquire("rspace-reclaim-intent-no-replace-");
+    install_checkpoint_store(scratch.path());
+    let writer = admit(scratch.path());
+    let old_catalog = *writer.authority().image();
+    let expected = expected_successor(writer.authority());
+    let record = scratch.path().join("reclaim.v1");
+    let planted = [0x5a; RECLAMATION_RECORD_LEN_V1];
+    let hook_record = record.clone();
+
+    arm_generation_checkpoint_publication_hook(
+        GenerationCheckpointPublicationHookPointV1::AfterCommitSync,
+        move || write_owner_only(&hook_record, &planted),
+    );
+    let error = publication_error(publish(writer));
+    assert_eq!(
+        error.publication_outcome(),
+        GenerationCheckpointPublicationOutcomeV1::DefinitelyNotPublished
+    );
+    match &error {
+        GenerationCheckpointPublicationErrorV1::Io(DurableIoError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::AlreadyExists => {}
+        error => panic!("an existing reclamation record was not refused as present: {error:?}"),
+    }
+    assert_eq!(fs::read(&record).expect("read the planted record"), planted);
+    assert_eq!(fs::read(scratch.path().join("catalog.v1")).expect("read the catalog"), old_catalog);
+
+    let refusal = match DurableDirectoryV1::open(scratch.path())
+        .expect("open the durable directory")
+        .recover_and_admit_v1::<TestSemanticProfile>(
+            limits(),
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        ) {
+        Err(refusal) => refusal,
+        Ok(_) => panic!("cold admission resolved an undecodable reclamation record"),
+    };
+    match refusal {
+        DurableAdmissionErrorV1::Startup(DurableStartupErrorV1::Io(DurableIoError::Io {
+            source,
+            ..
+        })) if source.kind() == std::io::ErrorKind::InvalidData => {}
+        refusal => panic!("the undecodable reclamation record was refused otherwise: {refusal:?}"),
+    }
+    assert_eq!(fs::read(&record).expect("read the planted record"), planted);
+
+    fs::remove_file(&record).expect("remove the planted record");
+    let writer = admit(scratch.path());
+    assert!(!scratch.path().join("reclaim.v1.tmp").exists());
+    let retried = publish(writer).expect("the retry publishes the successor");
+    assert_eq!(retried.authority().image(), &expected.catalog);
+}
+
+#[cfg(unix)]
 #[test]
 fn retired_pack_frontier_survives_all_handle_drop_until_process_exit() {
     use crate::rspace::persistence::GenerationLeaseKeyV1;
@@ -3268,6 +3634,7 @@ enum PublicationOutcomeCase {
     CatalogSlotWrite,
     CatalogFileSync,
     CatalogDirectorySync,
+    ReclamationIntent(DurableIoFailpointV1),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3330,6 +3697,23 @@ fn publication_outcomes_are_total_and_mutually_exclusive() {
         (PublicationOutcomeCase::CatalogFileSync, Some(Indeterminate), RestartAuthority::New, 12),
         (PublicationOutcomeCase::CatalogDirectorySync, Some(Published), RestartAuthority::New, 13),
     ]);
+    cases.extend(
+        [
+            DurableIoFailpointV1::ReclamationIntentCreate,
+            DurableIoFailpointV1::ReclamationIntentSetLength,
+            DurableIoFailpointV1::ReclamationIntentSync,
+            DurableIoFailpointV1::ReclamationIntentBeforeRename,
+            DurableIoFailpointV1::ReclamationIntentDirectorySync,
+        ]
+        .map(|failpoint| {
+            (
+                PublicationOutcomeCase::ReclamationIntent(failpoint),
+                Some(DefinitelyNotPublished),
+                RestartAuthority::Old,
+                8,
+            )
+        }),
+    );
 
     for (case, expected, restart, trace_len) in cases {
         let scratch = test_scratch::acquire("rspace-durable-publication-outcome-matrix-");
@@ -3373,6 +3757,9 @@ fn publication_outcomes_are_total_and_mutually_exclusive() {
             }
             PublicationOutcomeCase::CatalogDirectorySync => {
                 arm_durable_io_failpoint(DurableIoFailpointV1::CatalogDirectorySync);
+            }
+            PublicationOutcomeCase::ReclamationIntent(failpoint) => {
+                arm_durable_io_failpoint(failpoint);
             }
         }
 

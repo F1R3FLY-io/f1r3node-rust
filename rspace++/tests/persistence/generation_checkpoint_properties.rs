@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX",
+        "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -471,6 +471,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistory.tla"),
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla"),
         include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceCompaction.tla"),
+        include_str!("../../../formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntent.tla"),
     ]
     .concat();
     let tla_configs = [
@@ -610,6 +611,10 @@ fn model_property_manifest_is_unique_and_exhaustive() {
     assert!(
         formal_gate.contains("check-rspace-trusted-history-model.sh"),
         "the integrated formal gate does not run the trusted history model cited by TH rows",
+    );
+    assert!(
+        formal_gate.contains("check-rspace-gc-pending-reclaim-intent-model.sh"),
+        "the integrated formal gate does not run the reclamation-intent model cited by RI rows",
     );
     for (id, (tla_symbols, _, _)) in derivations.iter().filter(|(id, _)| id.starts_with("NV-")) {
         let witness = tla_symbols

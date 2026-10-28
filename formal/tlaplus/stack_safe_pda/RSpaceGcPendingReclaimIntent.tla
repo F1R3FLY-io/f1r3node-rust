@@ -1,18 +1,22 @@
 ------------------ MODULE RSpaceGcPendingReclaimIntent ------------------
 EXTENDS FiniteSets, TLC
 
-CONSTANTS DropOnOrdinaryAdvance, OverwritePendingIntent
+CONSTANTS DropOnOrdinaryAdvance, OverwritePendingIntent, AtomicIntentPublication,
+          RemoveIntentTempOnRecover
 ASSUME DropOnOrdinaryAdvance \in BOOLEAN
 ASSUME OverwritePendingIntent \in BOOLEAN
+ASSUME AtomicIntentPublication \in BOOLEAN
+ASSUME RemoveIntentTempOnRecover \in BOOLEAN
 
 AParts == {"aPack", "aIndex"}
 BParts == {"bPack", "bIndex"}
 CParts == {"cPack", "cIndex"}
-Parts == AParts \cup BParts \cup CParts
+IntentTemp == "intentTemp"
+Parts == AParts \cup BParts \cup CParts \cup {IntentTemp}
 Generations == {"A", "B"}
 SyncMarkers == {"aUnlinksSynced", "bUnlinksSynced"}
 Catalogs == {"A", "B", "B1", "C", "C1"}
-Intents == {"none", "AB", "BC"}
+Intents == {"none", "AB", "BC", "torn"}
 Stages == {"idle", "ABFiles", "ABIntent", "ABSelected",
            "BCFiles", "BCIntent", "BCSelected"}
 
@@ -93,6 +97,7 @@ StageAB ==
 
 PersistAB ==
   /\ live /\ catalog = "A" /\ stage = "ABFiles" /\ intent = "none"
+  /\ IntentTemp \notin files
   /\ intent' = "AB"
   /\ stage' = "ABIntent"
   /\ UNCHANGED <<live, catalog, files, pins, retired,
@@ -146,6 +151,7 @@ StageBC ==
 
 PersistBC ==
   /\ live /\ SelectedB /\ stage = "BCFiles"
+  /\ IntentTemp \notin files
   /\ (intent = "none" \/ OverwritePendingIntent)
   /\ intent' = "BC"
   /\ stage' = "BCIntent"
@@ -251,14 +257,32 @@ Crash ==
   /\ UNCHANGED <<catalog, intent, files, ackAB, ackBC, refusedBC, pinnedRefusal,
                  pendingAdvance, restartedPending, retryWitness>>
 
+TearIntent ==
+  /\ live
+  /\ \/ stage = "ABFiles" /\ intent = "none"
+     \/ stage = "BCFiles" /\ (intent = "none" \/ OverwritePendingIntent)
+  /\ live' = FALSE
+  /\ stage' = "idle"
+  /\ pins' = {}
+  /\ retired' = {}
+  /\ IF AtomicIntentPublication
+       THEN /\ files' = files \cup {IntentTemp}
+            /\ UNCHANGED intent
+       ELSE /\ intent' = "torn"
+            /\ UNCHANGED files
+  /\ UNCHANGED <<catalog, ackAB, ackBC, refusedBC, pinnedRefusal,
+                 pendingAdvance, restartedPending, retryWitness>>
+
 Recover ==
   /\ ~live
+  /\ intent # "torn"
   /\ live' = TRUE
+  /\ files' = IF RemoveIntentTempOnRecover THEN files \ {IntentTemp} ELSE files
   /\ intent' = IF (catalog = "A") \/ (SelectedB /\ intent = "BC")
                    THEN "none" ELSE intent
   /\ restartedPending' = (restartedPending \/
        (SelectedB /\ intent = "AB" /\ OldPartsRemain /\ pendingAdvance))
-  /\ UNCHANGED <<catalog, stage, files, pins, retired,
+  /\ UNCHANGED <<catalog, stage, pins, retired,
                  ackAB, ackBC, refusedBC, pinnedRefusal, pendingAdvance, retryWitness>>
 
 Next ==
@@ -269,7 +293,7 @@ Next ==
   (\E part \in AParts : DeleteAPart(part)) \/ SyncAUnlinks \/ FinishA \/
   RetireB \/ (\E part \in BParts : DeleteBPart(part)) \/
   SyncBUnlinks \/ FinishB \/
-  Crash \/ Recover
+  Crash \/ TearIntent \/ Recover
 
 Spec == Init /\ [][Next]_vars
 
@@ -297,6 +321,10 @@ NoSecondAcknowledgementWhileOldPending ==
   ackBC => ~OldPartsRemain
 
 NoRetryAfterPendingAdvanceAndRestart == ~retryWitness
+RecoveryAvailable == ~live => ENABLED Recover
+TornIntentNeverPublished == intent # "torn"
+IntentTempNeverLive == live => IntentTemp \notin files
+
 NoPreCasRecoveryOrphan ==
   ~(live /\ catalog = "A" /\ stage = "idle" /\ intent = "none" /\
     BParts \subseteq files)

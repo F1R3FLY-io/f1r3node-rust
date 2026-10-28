@@ -7126,3 +7126,42 @@ artifact 1136). See
 for the decisions and the evidence, and the invariant catalog's
 [trusted successor publication section](../design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#trusted-successor-publication-and-owner-2026-10-27)
 for the publication's steps and checks.
+
+**CBR-053 living continuation (2026-10-28, atomic reclamation-intent
+publication).** The dormant durable RSpace store now publishes the reclamation
+intent of a fresh generation checkpoint atomically. Bug 11970, found in the
+design review of task 11967 and fixed under the reviewed plan of task 7928
+(pgmcp artifact 1140, review decision 5; its decision 11 requires this
+assessment), showed that the in-place writer could leave a torn record under
+`reclaim.v1` that blocked every later recovery. `write_reclamation_candidate`
+(`rspace++/src/rspace/persistence/durable/io.rs:1190-1265`) now writes and
+synchronizes `reclaim.v1.tmp`, authenticates it, renames it to `reclaim.v1`
+without replacing an existing record and synchronizes the directory, and
+`recover_physical_from_lease_v1`
+(`rspace++/src/rspace/persistence/durable/startup.rs:291-302`) first removes a
+leftover temporary (`io.rs:1306-1324`).
+
+| Surface | Finding at this checkpoint |
+|---|---|
+| Production reachability | None: the persistence module is `expect(dead_code)` outside tests (`rspace++/src/rspace/mod.rs:11-18`), and the RSpace authority backends are `Memory` and `Lmdb` (`rspace++/src/rspace/state/rspace_state_authority.rs:142-145`); no node opens a durable directory |
+| Durable bytes | The record under `reclaim.v1` keeps its name, its 88 bytes and its format, and the WAL, pack, index and catalog framings are unchanged. One transient name is new: `reclaim.v1.tmp` exists only before the catalog compare-and-swap, can survive a crash there, and the next recovery removes it. A binary built before this change never opens it, because nothing in the durable code lists the directory, and it creates `reclaim.v1` by name as before |
+| Outcomes of the dormant store | A torn intent no longer makes held-lease recovery, cold admission and every later checkpoint fail: recovery returns the pre-CAS authority, and the retry publishes (invariant-catalog properties RI-01 to RI-03). A record already present under the final name refuses the publication as definitely not published with `AlreadyExists` from the rename instead of from the exclusive creation (RI-04). A foreign or unsafe entry at the temporary name makes recovery fail closed. A file system or kernel without the no-replace rename refuses every fresh checkpoint as definitely not published (`EINVAL` or `ENOSYS`), and targets other than Linux with glibc and Apple platforms refuse it as `Unsupported`; the release and container builds target Linux with glibc (`Cross.toml`, `node/Dockerfile:9`, `:88`) |
+| State and cryptographic identities | No block, state root, legacy history root, semantic manifest or canonical semantic object byte changes |
+| Serialization | No RhoPath, protobuf, bincode, ACT, WAL, pack, index, catalog or reclamation-record format change |
+| Language and metering | No syntax, matching, COMM order, accepted program, blessed contract, compute or storage charge change |
+| Classification | `NO_PRODUCTION_CHANGE_DERIVED`; activating the durable backend (task 7931) must re-enter this register with the release note of 2026-10-26, the owner's outcomes of 2026-10-27 and this platform requirement |
+
+Evidence: on the candidate tree `04037da5` (HEAD `2f5ac3d8d` plus this change,
+before its documents were filled), the 493 selected rspace++ persistence tests
+passed in debug and release, and the commit gate passed: `cargo check` of all
+targets, clippy, all 4,431 release nextest tests of `models`,
+`rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the release doc tests
+of `models` and `rholang` (summary SHA-256
+`3a6ec190e1c60f8e6b965884e298a9f93a125a036f5bcd7b4a286b3b414c9161`, pgmcp
+artifact 1150). On the in-place writer the RI tests failed as predicted,
+and two code mutations, a rename that replaces and a recovery that keeps the
+temporary, were each killed by their named tests. See
+[J-253](../design/pathmap/pathmap-engineering-journal-2026-08-23.md#j-253--2026-10-27-faulted-trusted-histories-and-cold-restart-equivalence-task-7928)
+for the decisions and the evidence, and the invariant catalog's
+[torn reclamation intents section](../design/pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#torn-reclamation-intents-bug-11970-2026-10-28)
+for the fix, the model and the tests.

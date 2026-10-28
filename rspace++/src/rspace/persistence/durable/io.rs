@@ -17,6 +17,7 @@ use crate::rspace::persistence::{CanonicalSink, GenerationLeaseRegistryV1, PackI
 pub(crate) const CATALOG_FILE_NAME_V1: &str = "catalog.v1";
 pub(crate) const WRITER_LOCK_FILE_NAME_V1: &str = "writer.lock.v1";
 pub(crate) const RECLAMATION_CANDIDATE_FILE_NAME_V1: &str = "reclaim.v1";
+const RECLAMATION_CANDIDATE_TEMPORARY_FILE_NAME_V1: &str = "reclaim.v1.tmp";
 const PACK_FILE_PREFIX_V1: &str = "pack-";
 const PACK_FILE_SUFFIX_V1: &str = ".rsp";
 const INDEX_FILE_PREFIX_V1: &str = "index-";
@@ -36,6 +37,11 @@ pub(crate) enum DurableIoFailpointV1 {
     CatalogSlotWrite,
     CatalogSync,
     CatalogDirectorySync,
+    ReclamationIntentCreate,
+    ReclamationIntentSetLength,
+    ReclamationIntentSync,
+    ReclamationIntentBeforeRename,
+    ReclamationIntentDirectorySync,
 }
 
 #[cfg(test)]
@@ -47,6 +53,12 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
     static CATALOG_SLOT_WRITE_PREFIX: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static RECLAMATION_INTENT_WRITE_PREFIX: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
 }
 
@@ -67,6 +79,20 @@ pub(crate) fn arm_catalog_slot_write_prefix(prefix_len: usize) {
         assert!(
             armed.replace(Some(prefix_len)).is_none(),
             "catalog prefix failpoint already armed"
+        );
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn arm_reclamation_intent_write_prefix(prefix_len: usize) {
+    assert!(
+        prefix_len < RECLAMATION_RECORD_LEN_V1,
+        "a torn reclamation-intent prefix must be shorter than one complete record"
+    );
+    RECLAMATION_INTENT_WRITE_PREFIX.with(|armed| {
+        assert!(
+            armed.replace(Some(prefix_len)).is_none(),
+            "reclamation-intent prefix failpoint already armed"
         );
     });
 }
@@ -105,6 +131,7 @@ pub(crate) enum DurableIoOperation {
     SyncDirectory,
     RemoveFile,
     ReplaceFile,
+    PublishFile,
 }
 
 impl DurableIoOperation {
@@ -123,6 +150,7 @@ impl DurableIoOperation {
             Self::SyncDirectory => "synchronize durable directory",
             Self::RemoveFile => "remove durable temporary file",
             Self::ReplaceFile => "atomically replace durable file",
+            Self::PublishFile => "publish durable file without replacement",
         }
     }
 }
@@ -1153,21 +1181,86 @@ impl DurableWriterLeaseV1 {
         self.directory.generation_leases()
     }
 
-    /// Write and synchronize the advisory reclamation record. A torn record
-    /// cannot authorize deletion because readers validate its exact length,
-    /// version, checksum, and catalog identity before use.
+    /// Publish the advisory reclamation record without ever exposing a torn
+    /// record under its final name: write and synchronize it under a temporary
+    /// name, rename it to the final name without replacing an existing record,
+    /// and synchronize the directory. A failure before the rename leaves only
+    /// the temporary, which recovery removes. Readers still validate the exact
+    /// length, version, checksum, and catalog identity before using it.
     pub(crate) fn write_reclamation_candidate(
         &mut self,
         candidate: ReclamationCandidateV1,
     ) -> Result<(), DurableIoError> {
-        let name = RECLAMATION_CANDIDATE_FILE_NAME_V1;
+        let temporary = RECLAMATION_CANDIDATE_TEMPORARY_FILE_NAME_V1;
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::ReclamationIntentCreate,
+            DurableIoOperation::CreateFile,
+            &self.directory.path.join(temporary),
+        )?;
         let mut file = DurableWritableFileV1 {
-            file: self.directory.create_new(name)?,
+            file: self.directory.create_new(temporary)?,
             _lease: PhantomData,
         };
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::ReclamationIntentSetLength,
+            DurableIoOperation::SetLength,
+            file.path(),
+        )?;
         file.set_len(RECLAMATION_RECORD_LEN_V1 as u64)?;
-        file.write_all_at(0, &candidate.encode())?;
+        let encoded = candidate.encode();
+        #[cfg(test)]
+        if let Some(prefix_len) = RECLAMATION_INTENT_WRITE_PREFIX.with(|armed| armed.take()) {
+            if prefix_len != 0 {
+                file.write_all_at(0, &encoded[..prefix_len])?;
+            }
+            return Err(DurableIoError::Io {
+                operation: DurableIoOperation::PositionalWrite,
+                path: file.path().to_path_buf(),
+                source: io::Error::other(format!(
+                    "injected torn reclamation-intent write after {prefix_len} bytes"
+                )),
+            });
+        }
+        file.write_all_at(0, &encoded)?;
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::ReclamationIntentSync,
+            DurableIoOperation::SyncFile,
+            file.path(),
+        )?;
         file.sync_all()?;
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::ReclamationIntentBeforeRename,
+            DurableIoOperation::PublishFile,
+            file.path(),
+        )?;
+        validate_authority_file(&file.file.file, DurableIoOperation::PublishFile, file.path())?;
+        ensure_child_matches_handle(
+            &self.directory.directory,
+            temporary,
+            &file.file.file,
+            &self.directory.path,
+            DurableIoOperation::PublishFile,
+        )?;
+        publish_child_handle_without_replace(
+            &self.directory.directory,
+            temporary,
+            RECLAMATION_CANDIDATE_FILE_NAME_V1,
+        )
+        .map_err(|source| DurableIoError::Io {
+            operation: DurableIoOperation::PublishFile,
+            path: self.directory.path.join(RECLAMATION_CANDIDATE_FILE_NAME_V1),
+            source,
+        })?;
+        #[cfg(test)]
+        trip_durable_io_failpoint(
+            DurableIoFailpointV1::ReclamationIntentDirectorySync,
+            DurableIoOperation::SyncDirectory,
+            &self.directory.path,
+        )?;
         self.sync_directory()
     }
 
@@ -1199,6 +1292,26 @@ impl DurableWriterLeaseV1 {
     pub(crate) fn remove_reclamation_candidate(&mut self) -> Result<(), DurableIoError> {
         let name = RECLAMATION_CANDIDATE_FILE_NAME_V1;
         let opened = self.directory.open_child(name, ChildOpenMode::ReadOnly)?;
+        ensure_child_matches_handle(
+            &self.directory.directory,
+            name,
+            &opened.file,
+            &self.directory.path,
+            DurableIoOperation::RemoveFile,
+        )?;
+        self.remove_child(name)?;
+        self.sync_directory()
+    }
+
+    pub(crate) fn remove_reclamation_temporary(&mut self) -> Result<(), DurableIoError> {
+        let name = RECLAMATION_CANDIDATE_TEMPORARY_FILE_NAME_V1;
+        let opened = match self.directory.open_child(name, ChildOpenMode::ReadOnly) {
+            Ok(opened) => opened,
+            Err(DurableIoError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         ensure_child_matches_handle(
             &self.directory.directory,
             name,
@@ -1739,6 +1852,66 @@ fn replace_child_handle(directory: &File, source: &str, target: &str) -> Result<
     }
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn publish_child_handle_without_replace(
+    directory: &File,
+    source: &str,
+    target: &str,
+) -> Result<(), io::Error> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+
+    let source = CString::new(source).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "durable source name contains an interior NUL")
+    })?;
+    let target = CString::new(target).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "durable target name contains an interior NUL")
+    })?;
+    let result = unsafe {
+        libc::renameat2(
+            directory.as_raw_fd(),
+            source.as_ptr(),
+            directory.as_raw_fd(),
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    match result {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+fn publish_child_handle_without_replace(
+    directory: &File,
+    source: &str,
+    target: &str,
+) -> Result<(), io::Error> {
+    use std::ffi::CString;
+    use std::os::fd::AsRawFd;
+
+    let source = CString::new(source).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "durable source name contains an interior NUL")
+    })?;
+    let target = CString::new(target).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "durable target name contains an interior NUL")
+    })?;
+    let result = unsafe {
+        libc::renameatx_np(
+            directory.as_raw_fd(),
+            source.as_ptr(),
+            directory.as_raw_fd(),
+            target.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    match result {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
 #[cfg(unix)]
 fn ensure_child_matches_handle(
     directory: &File,
@@ -1847,6 +2020,18 @@ fn replace_child_handle(_directory: &File, _source: &str, _target: &str) -> Resu
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "handle-relative durable replace is unsupported on this platform",
+    ))
+}
+
+#[cfg(not(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple")))]
+fn publish_child_handle_without_replace(
+    _directory: &File,
+    _source: &str,
+    _target: &str,
+) -> Result<(), io::Error> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "handle-relative no-replace durable rename is unsupported on this platform",
     ))
 }
 
@@ -2144,6 +2329,8 @@ mod tests {
     fn durable_names_are_frozen_and_numeric_order_is_lexical() {
         assert_eq!(CATALOG_FILE_NAME_V1, "catalog.v1");
         assert_eq!(WRITER_LOCK_FILE_NAME_V1, "writer.lock.v1");
+        assert_eq!(RECLAMATION_CANDIDATE_FILE_NAME_V1, "reclaim.v1");
+        assert_eq!(RECLAMATION_CANDIDATE_TEMPORARY_FILE_NAME_V1, "reclaim.v1.tmp");
         assert_eq!(pack_file_name(PackId::GENESIS), "pack-00000000000000000001.rsp");
         assert_eq!(pack_file_name(PackId::new(u64::MAX).unwrap()), "pack-18446744073709551615.rsp");
         assert_eq!(index_file_name(IndexGenerationV1::FIRST), "index-00000000000000000001.rsi");

@@ -74,6 +74,7 @@ pub(crate) use io::{
 #[cfg(test)]
 pub(crate) use io::{
     DurableIoFailpointV1, arm_catalog_slot_write_prefix, arm_durable_io_failpoint,
+    arm_reclamation_intent_write_prefix,
 };
 pub use layout::{INDEX_HEADER_LEN_V1, INDEX_RECORD_LEN_V1, PACK_HEADER_LEN_V1};
 pub use limits::{DurableLimitConfig, DurableLimitError, DurableLimitKind, DurableLimits};
@@ -92,6 +93,8 @@ pub(crate) use publication::{
     arm_generation_checkpoint_publication_hook, start_generation_checkpoint_publication_trace,
     take_generation_checkpoint_publication_trace,
 };
+#[cfg(test)]
+pub(crate) use reclaim::RECLAMATION_RECORD_LEN_V1;
 pub(crate) use reclaim::ReclamationCandidateV1;
 #[cfg(test)]
 pub(crate) use recovery::{
