@@ -9,6 +9,7 @@ use casper::rust::engine::block_retriever::AdmitHashReason;
 use casper::rust::errors::CasperError;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
+use casper::rust::validate::Validate;
 use casper::rust::validator_identity::ValidatorIdentity;
 use casper::rust::ValidBlockProcessing;
 use comm::rust::rp::protocol_helper;
@@ -420,6 +421,56 @@ async fn multi_parent_casper_should_hold_a_block_with_an_unknown_main_parent_off
     assert_eq!(status, Either::Left(BlockError::MissingBlocks));
     assert!(node.block_store.is_pending(&forged.block_hash));
     assert!(!node.casper.dag_contains(&forged.block_hash));
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_refuse_a_forged_body_under_an_honest_hash() {
+    let ctx = TestContext::new().await;
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+
+    let parent_deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let child_deploy =
+        construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone())).unwrap();
+    let parent = nodes[0]
+        .add_block_from_deploys(&[parent_deploy])
+        .await
+        .unwrap();
+    let child = nodes[0]
+        .add_block_from_deploys(&[child_deploy])
+        .await
+        .unwrap();
+
+    let (sk, _pk) = Secp256k1.new_key_pair();
+    let attacker = ValidatorIdentity::new(&sk);
+    let mut forged = attacker.sign_block(&child);
+    forged.seq_num = child.seq_num + 1;
+    forged.block_hash = child.block_hash.clone();
+    forged.sig = attacker.signature(child.block_hash.as_ref()).sig;
+    assert!(Validate::block_signature(&forged));
+
+    let status = nodes[1].process_block(forged.clone()).await.unwrap();
+    assert_eq!(
+        status,
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidBlockHash))
+    );
+    assert!(!nodes[1].block_store.is_pending(&child.block_hash));
+
+    let status = nodes[1].process_block(child.clone()).await.unwrap();
+    assert_eq!(status, Either::Left(BlockError::MissingBlocks));
+    assert!(nodes[1].block_store.is_pending(&child.block_hash));
+    assert_eq!(
+        nodes[1].block_store.get(&child.block_hash).unwrap(),
+        Some(child.clone())
+    );
+
+    let status = nodes[1].process_block(parent.clone()).await.unwrap();
+    assert_eq!(status, Either::Right(Valid));
+    let status = nodes[1].process_block(child.clone()).await.unwrap();
+    assert_eq!(status, Either::Right(Valid));
+    assert!(nodes[1].contains(&child.block_hash));
 }
 
 #[tokio::test]

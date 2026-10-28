@@ -219,6 +219,9 @@ impl TestNode {
         {
             StoreVerdict::Stored => {}
             StoreVerdict::Malformed => return Ok(Either::Left(BlockStatus::invalid_format())),
+            StoreVerdict::HashMismatch => {
+                return Ok(Either::Left(BlockStatus::invalid_block_hash()))
+            }
             StoreVerdict::PendingRefused(refusal) => {
                 block_processor
                     .release_refused_pending(&block, refusal)

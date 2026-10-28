@@ -345,6 +345,14 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 ) -> Result<BlockProcessOutcome, CasperError> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
+    if BlockProcessor::<T>::check_message_integrity(&block).is_some() {
+        tracing::debug!(
+            "Block {} failed the format, signature, or hash check. Dropped.",
+            block_str
+        );
+        return Ok(BlockProcessOutcome::Malformed);
+    }
+
     // Step 1: Check if block is of interest
     // Equivalent to: blockProcessor.checkIfOfInterest(c, b)
     let verdict = match block_processor.check_if_of_interest(casper.clone(), &block) {
@@ -407,10 +415,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 
     // Step 2: Check if well-formed and store
     // Equivalent to: blockProcessor.checkIfWellFormedAndStore(b)
-    let store_verdict = match block_processor
-        .check_if_well_formed_and_store(&block, authorization)
-        .await
-    {
+    let store_verdict = match block_processor.store_checked(&block, authorization).await {
         Ok(store_verdict) => store_verdict,
         Err(err) => {
             block_processor
@@ -418,7 +423,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
                 .await
                 .map_err(|ack_err| {
                     CasperError::RuntimeError(format!(
-                        "check_if_well_formed_and_store failed for {}, and cleanup failed: {}",
+                        "store_checked failed for {}, and cleanup failed: {}",
                         block_str, ack_err
                     ))
                 })?;
@@ -439,17 +444,14 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         return Ok(BlockProcessOutcome::PendingRefused);
     }
 
-    if store_verdict == StoreVerdict::Malformed {
-        tracing::info!("Block {} is malformed. Dropped.", block_str);
-        block_processor
-            .purge_from_buffer_and_ack(&block)
-            .await
-            .map_err(|err| {
-                CasperError::RuntimeError(format!(
-                    "Malformed block {} purge+cleanup failed: {}",
-                    block_str, err
-                ))
-            })?;
+    if matches!(
+        store_verdict,
+        StoreVerdict::Malformed | StoreVerdict::HashMismatch
+    ) {
+        tracing::debug!(
+            "Block {} failed the format, signature, or hash check. Dropped.",
+            block_str
+        );
         return Ok(BlockProcessOutcome::Malformed);
     }
 
@@ -567,7 +569,7 @@ mod tests {
     use casper::rust::casper::{
         Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
     };
-    use casper::rust::engine::block_retriever::BlockRetriever;
+    use casper::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
     use casper::rust::errors::CasperError;
     use casper::rust::genesis::genesis::Genesis;
     use casper::rust::util::rholang::runtime_manager::{
@@ -577,6 +579,8 @@ mod tests {
     use comm::rust::peer_node::{NodeIdentifier, PeerNode};
     use comm::rust::rp::connect::ConnectionsCell;
     use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
     use models::rust::block_hash::BlockHash;
     use models::rust::block_implicits::get_random_block_default;
@@ -721,6 +725,7 @@ mod tests {
         casper: Arc<StartupCasper>,
         processor: Arc<BlockProcessor<TransportLayerStub>>,
         in_flight: Arc<InFlightBlocks>,
+        retriever: BlockRetriever<TransportLayerStub>,
     }
 
     impl StartupFixture {
@@ -768,7 +773,7 @@ mod tests {
                 block_store.clone(),
                 buffer,
                 dag,
-                retriever,
+                retriever.clone(),
                 transport,
                 connections,
                 conf,
@@ -785,6 +790,7 @@ mod tests {
                 }),
                 processor: Arc::new(BlockProcessor::new(dependencies)),
                 in_flight: Arc::new(InFlightBlocks::new()),
+                retriever,
             }
         }
 
@@ -804,9 +810,22 @@ mod tests {
             (tx, instance)
         }
 
-        fn item(&self, byte: u8) -> BlockQueueItem {
+        fn signed(&self, byte: u8) -> BlockMessage {
             let mut block = self.casper.approved.clone();
+            block.seq_num = i32::from(byte);
+            let (sk, _pk) = Secp256k1.new_key_pair();
+            ValidatorIdentity::new(&sk).sign_block(&block)
+        }
+
+        fn item(&self, byte: u8) -> BlockQueueItem { self.queue(self.signed(byte)) }
+
+        fn forged_item(&self, byte: u8) -> BlockQueueItem {
+            let mut block = self.signed(byte);
             block.block_hash = vec![byte; 32].into();
+            self.queue(block)
+        }
+
+        fn queue(&self, block: BlockMessage) -> BlockQueueItem {
             let InFlightMark::Marked(guard) =
                 mark_in_flight(&self.in_flight, block.block_hash.clone())
             else {
@@ -840,8 +859,14 @@ mod tests {
         let fixture = StartupFixture::new().await;
         let (tx, instance) = fixture.instance();
         let mut results = instance.create().unwrap();
-        for byte in 21..=23 {
-            assert!(tx.send(fixture.item(byte)).await.is_ok());
+        let items: Vec<BlockQueueItem> = (21..=23).map(|byte| fixture.item(byte)).collect();
+        let mut expected: Vec<BlockHash> = items
+            .iter()
+            .map(|(_, block, _)| block.block_hash.clone())
+            .collect();
+        expected.sort();
+        for item in items {
+            assert!(tx.send(item).await.is_ok());
         }
         drop(tx);
         assert!(
@@ -852,7 +877,6 @@ mod tests {
         );
         let mut processed = fixture.casper.processed.lock().unwrap().clone();
         processed.sort();
-        let expected: Vec<BlockHash> = (21..=23).map(|byte| vec![byte; 32].into()).collect();
         assert_eq!(processed, expected);
         assert!(fixture.in_flight.is_empty());
         assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);
@@ -863,6 +887,40 @@ mod tests {
             .lock()
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_message_does_not_ack_the_hash_that_it_claims() {
+        let fixture = StartupFixture::new().await;
+        let claimed: BlockHash = vec![31; 32].into();
+        fixture
+            .retriever
+            .admit_hash(
+                claimed.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await
+            .unwrap();
+        assert!(!fixture
+            .retriever
+            .is_received(claimed.clone())
+            .await
+            .unwrap());
+
+        let (tx, instance) = fixture.instance();
+        let mut results = instance.create().unwrap();
+        assert!(tx.send(fixture.forged_item(31)).await.is_ok());
+        drop(tx);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), results.recv())
+                .await
+                .expect("The refused message must finish processing")
+                .is_none()
+        );
+
+        assert!(!fixture.retriever.is_received(claimed).await.unwrap());
+        assert!(fixture.in_flight.is_empty());
     }
 
     #[tokio::test]

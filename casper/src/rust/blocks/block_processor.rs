@@ -148,6 +148,7 @@ pub enum SenderAuthorization {
 pub enum StoreVerdict {
     Stored,
     Malformed,
+    HashMismatch,
     PendingRefused(PendingInsert),
 }
 
@@ -464,12 +465,32 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         block: &BlockMessage,
         authorization: SenderAuthorization,
     ) -> Result<StoreVerdict, CasperError> {
-        let valid_format = Validate::format_of_fields(block);
-        let valid_sig = Validate::block_signature(block);
-        if !(valid_format && valid_sig) {
-            return Ok(StoreVerdict::Malformed);
+        if let Some(verdict) = Self::check_message_integrity(block) {
+            return Ok(verdict);
         }
+        self.store_checked(block, authorization).await
+    }
 
+    pub fn check_message_integrity(block: &BlockMessage) -> Option<StoreVerdict> {
+        if !(Validate::format_of_fields(block) && Validate::block_signature(block)) {
+            return Some(StoreVerdict::Malformed);
+        }
+        if proto_util::hash_block(block) != block.block_hash {
+            tracing::debug!(
+                "Refusing block {} from {}: its hash does not match its contents.",
+                PrettyPrinter::build_string_bytes(&block.block_hash),
+                PrettyPrinter::build_string_bytes(&block.sender)
+            );
+            return Some(StoreVerdict::HashMismatch);
+        }
+        None
+    }
+
+    pub async fn store_checked(
+        &self,
+        block: &BlockMessage,
+        authorization: SenderAuthorization,
+    ) -> Result<StoreVerdict, CasperError> {
         let storage_start = Instant::now();
         let verdict = match authorization {
             SenderAuthorization::Authorized => {
