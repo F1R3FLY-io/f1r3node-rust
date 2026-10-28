@@ -12,10 +12,10 @@
 //!
 //! Trust model, unchanged from the restore-time horizon sync this reuses the
 //! wire protocol of: chunks are radix nodes validated against their own
-//! hashes by the importer, so a peer cannot substitute state for a root — it
-//! can only fail to serve, which leaves the waiting blocks deferred under
-//! their existing retry bounds. Roots enter the queue from exactly two
-//! places, both authenticated: the declared state of an admitted block
+//! hashes and the trie walk before import, so a peer cannot substitute state
+//! for a root — it can only fail to serve, which leaves the waiting blocks
+//! deferred under their existing retry bounds. Roots enter the queue from
+//! exactly two places, both authenticated: the declared state of an admitted block
 //! (bonded-citer-gated, budgeted) and a replay of a signature-checked block.
 //!
 //! [`RootError::RootNotFound`]: rspace_plus_plus::rspace::errors::RootError::RootNotFound
@@ -33,7 +33,9 @@ use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
 
 use crate::rust::engine::lfs_horizon_requester::{HasRootFn, HorizonRequesterOps};
-use crate::rust::engine::lfs_tuple_space_requester::{StatePartPath, PAGE_SIZE};
+use crate::rust::engine::lfs_tuple_space_requester::{
+    validate_store_items, StatePartPath, StoreItems, ValidChunk, PAGE_SIZE,
+};
 use crate::rust::errors::CasperError;
 
 /// Lifetime cap on roots this node will fetch at runtime. A healthy join needs
@@ -46,6 +48,12 @@ const ROOT_FETCH_BUDGET: u64 = 1_024;
 /// own deferral bounds either way.
 const RESEND_INTERVAL: Duration = Duration::from_secs(10);
 const ROOT_DEADLINE: Duration = Duration::from_secs(120);
+
+struct Chunk {
+    root: Blake2b256Hash,
+    start_path: StatePartPath,
+    last_path: StatePartPath,
+}
 
 struct PendingRoot {
     started: Instant,
@@ -116,7 +124,7 @@ impl Core {
 
     /// A chunk arrived. Imports its items and returns the continuation path to
     /// request, if the walk paginates further.
-    fn on_items(&mut self, message: StoreItemsMessage) -> Option<StatePartPath> {
+    fn accept(&mut self, message: StoreItemsMessage) -> Option<(Chunk, StoreItems, StoreItems)> {
         let StoreItemsMessage {
             start_path,
             last_path,
@@ -146,18 +154,50 @@ impl Core {
             return None;
         }
 
-        self.importer.set_history_items(
-            history_items
-                .into_iter()
-                .map(|(hash, bytes)| (hash, bytes.to_vec()))
-                .collect(),
-        );
-        self.importer.set_data_items(
-            data_items
-                .into_iter()
-                .map(|(hash, bytes)| (hash, bytes.to_vec()))
-                .collect(),
-        );
+        let history_items: StoreItems = history_items
+            .into_iter()
+            .map(|(hash, bytes)| (hash, bytes.to_vec()))
+            .collect();
+        let data_items: StoreItems = data_items
+            .into_iter()
+            .map(|(hash, bytes)| (hash, bytes.to_vec()))
+            .collect();
+        let chunk = Chunk {
+            root,
+            start_path,
+            last_path,
+        };
+        Some((chunk, history_items, data_items))
+    }
+
+    fn on_validated(
+        &mut self,
+        chunk: Chunk,
+        validated: Result<ValidChunk, CasperError>,
+    ) -> Option<StatePartPath> {
+        let Chunk {
+            root,
+            start_path,
+            last_path,
+        } = chunk;
+        let pending = self.pending.get_mut(&root)?;
+        let valid = match validated {
+            Ok(valid) => valid,
+            Err(error) => {
+                tracing::warn!(
+                    %root,
+                    %error,
+                    "state requester: rejected an invalid chunk; asking for it again"
+                );
+                pending.outstanding.insert(start_path.clone());
+                self.path_to_root.insert(start_path.clone(), root);
+                return Some(start_path);
+            }
+        };
+        let is_terminal = last_path == start_path || valid.complete;
+
+        self.importer.set_history_items(valid.history_items);
+        self.importer.set_data_items(valid.data_items);
         pending.chunks_imported += 1;
 
         if is_terminal {
@@ -278,13 +318,27 @@ pub fn prepare<T: TransportLayer + Send + Sync + 'static>(
     let sender = BootstrapChunkSender { transport, rp_conf };
 
     let task = async move {
-        let mut core = Core::new(importer, has_root);
+        let mut core = Core::new(importer.clone(), has_root);
         let mut resend = tokio::time::interval(RESEND_INTERVAL);
         resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let to_request: Vec<StatePartPath> = tokio::select! {
                 biased;
-                Some(message) = items_rx.recv() => core.on_items(message).into_iter().collect(),
+                Some(message) = items_rx.recv() => match core.accept(message) {
+                    Some((chunk, history_items, data_items)) => {
+                        let validated = validate_store_items(
+                            history_items,
+                            data_items,
+                            chunk.start_path.clone(),
+                            chunk.last_path.clone(),
+                            PAGE_SIZE,
+                            importer.clone(),
+                        )
+                        .await;
+                        core.on_validated(chunk, validated).into_iter().collect()
+                    }
+                    None => Vec::new(),
+                },
                 Some(root) = fetch_rx.recv() => core.on_fetch(root).into_iter().collect(),
                 _ = resend.tick() => core.on_tick(),
                 else => break,
@@ -339,6 +393,20 @@ mod tests {
         (Core::new(importer, has_root), recorded)
     }
 
+    fn deliver(core: &mut Core, message: StoreItemsMessage, valid: bool) -> Option<StatePartPath> {
+        let (chunk, history_items, data_items) = core.accept(message)?;
+        let validated = if valid {
+            Ok(ValidChunk {
+                history_items,
+                data_items,
+                complete: false,
+            })
+        } else {
+            Err(CasperError::RuntimeError("invalid".to_string()))
+        };
+        core.on_validated(chunk, validated)
+    }
+
     fn root(tag: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![tag; 32]) }
 
     fn chunk(start: StatePartPath, last: StatePartPath, items: usize) -> StoreItemsMessage {
@@ -364,7 +432,7 @@ mod tests {
         let path = core.on_fetch(r.clone()).expect("an absent root is fetched");
         assert_eq!(path, vec![(r.clone(), None)]);
 
-        let more = core.on_items(chunk(path.clone(), path.clone(), 2));
+        let more = deliver(&mut core, chunk(path.clone(), path.clone(), 2), true);
         assert!(more.is_none(), "a terminal chunk ends the walk");
         assert!(
             recorded.lock().unwrap().contains(&r),
@@ -383,8 +451,7 @@ mod tests {
         let cursor: StatePartPath = vec![(root(0x11), Some(3))];
 
         let first = core.on_fetch(r.clone()).expect("fetch starts");
-        let next = core
-            .on_items(chunk(first, cursor.clone(), 1))
+        let next = deliver(&mut core, chunk(first, cursor.clone(), 1), true)
             .expect("non-terminal chunk paginates");
         assert_eq!(next, cursor);
         assert!(
@@ -392,9 +459,30 @@ mod tests {
             "a root recorded before its trie is complete would verify against a lie"
         );
 
-        let done = core.on_items(chunk(cursor.clone(), cursor, 1));
+        let done = deliver(&mut core, chunk(cursor.clone(), cursor, 1), true);
         assert!(done.is_none());
         assert!(recorded.lock().unwrap().contains(&r));
+    }
+
+    #[test]
+    fn an_invalid_chunk_is_not_imported_and_is_asked_again() {
+        let (mut core, recorded) = core_with_store();
+        let r = root(0x5A);
+
+        let path = core.on_fetch(r.clone()).expect("fetch starts");
+        assert_eq!(
+            deliver(&mut core, chunk(path.clone(), path.clone(), 1), false),
+            Some(path.clone())
+        );
+        assert!(
+            !recorded.lock().unwrap().contains(&r),
+            "a root was recorded from a chunk that failed validation"
+        );
+        assert_eq!(core.on_tick(), vec![path.clone()]);
+        assert!(
+            core.on_fetch(r).is_none(),
+            "the fetch is still in flight, not dropped"
+        );
     }
 
     /// A peer that answers "terminal, empty" on the first chunk does not have
@@ -406,7 +494,7 @@ mod tests {
         let r = root(0x4F);
 
         let path = core.on_fetch(r.clone()).expect("fetch starts");
-        let more = core.on_items(chunk(path.clone(), path, 0));
+        let more = deliver(&mut core, chunk(path.clone(), path, 0), true);
         assert!(more.is_none());
         assert!(
             !recorded.lock().unwrap().contains(&r),
