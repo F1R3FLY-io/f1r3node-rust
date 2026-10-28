@@ -902,10 +902,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(!fixture
+        assert!(fixture
             .retriever
-            .is_received(claimed.clone())
-            .await
+            .was_requested_as_dependency(&claimed)
             .unwrap());
 
         let (tx, instance) = fixture.instance();
@@ -919,7 +918,11 @@ mod tests {
                 .is_none()
         );
 
-        assert!(!fixture.retriever.is_received(claimed).await.unwrap());
+        assert!(fixture
+            .retriever
+            .was_requested_as_dependency(&claimed)
+            .unwrap());
+        assert!(fixture.casper.processed.lock().unwrap().is_empty());
         assert!(fixture.in_flight.is_empty());
     }
 
