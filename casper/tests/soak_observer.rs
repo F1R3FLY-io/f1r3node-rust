@@ -45,9 +45,8 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::key_value_store::KeyValueStore;
 
-const STORES: [&str; 14] = [
+const STORES: [&str; 13] = [
     "block-metadata",
-    "block-metadata-schema",
     "equivocation-tracker",
     "latest-messages",
     "invalid-blocks",

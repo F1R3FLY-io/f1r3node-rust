@@ -980,40 +980,7 @@ impl BlockDagKeyValueStorage {
         metadata_guard.delete_kv_row_for_tests(hash)
     }
 
-    pub async fn ensure_metadata_schema(
-        kvm: &mut impl KeyValueStoreManager,
-    ) -> Result<(), KvStoreError> {
-        let schema_store = kvm.store("block-metadata-schema".to_string()).await?;
-        let schema_key = b"version".to_vec();
-        let expected_schema = b"asi-u256-v1".to_vec();
-        let incompatible = || {
-            KvStoreError::InvalidArgument(
-                concat!(
-                    "Incompatible ASI amount storage schema. ",
-                    "Use a fresh data directory for 256-bit ASI amounts."
-                )
-                .to_string(),
-            )
-        };
-        match schema_store.get_one(&schema_key)? {
-            Some(version) if version == expected_schema => return Ok(()),
-            Some(_) => return Err(incompatible()),
-            None => {}
-        }
-        for name in kvm.store_names().await? {
-            if kvm.store(name).await?.non_empty()? {
-                return Err(incompatible());
-            }
-        }
-        schema_store.put_one_if_absent(schema_key.clone(), expected_schema.clone())?;
-        if schema_store.get_one(&schema_key)? != Some(expected_schema) {
-            return Err(incompatible());
-        }
-        Ok(())
-    }
-
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
-        Self::ensure_metadata_schema(kvm).await?;
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
         let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =

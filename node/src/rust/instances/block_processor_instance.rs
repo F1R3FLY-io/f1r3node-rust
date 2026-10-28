@@ -708,7 +708,6 @@ mod tests {
     impl StartupFixture {
         async fn new() -> Self {
             let mut stores = InMemoryStoreManager::new();
-            let dag = BlockDagKeyValueStorage::new(&mut stores).await.unwrap();
             let block_store = KeyValueBlockStore::create_from_kvm(&mut stores)
                 .await
                 .unwrap();
@@ -746,6 +745,7 @@ mod tests {
             )
             .await
             .unwrap();
+            let dag = BlockDagKeyValueStorage::new(&mut stores).await.unwrap();
             let dependencies = BlockProcessorDependencies::new(
                 block_store.clone(),
                 buffer,

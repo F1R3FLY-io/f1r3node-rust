@@ -169,7 +169,7 @@ impl ApproveBlockProtocolFactory {
             },
             vaults,
             supply: i64::MAX.into(),
-            version: crate::rust::casper::CASPER_PROTOCOL_VERSION,
+            version: 1,
             native_token_name,
             native_token_symbol,
             native_token_decimals,

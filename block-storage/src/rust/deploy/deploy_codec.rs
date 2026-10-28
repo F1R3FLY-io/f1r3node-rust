@@ -6,7 +6,7 @@ use prost::Message;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::BitVector;
 
-const PREFIX: &[u8] = b"F1R3DEP\x02";
+const PREFIX: &[u8] = b"F1R3DEP\x01";
 pub(super) fn encode(deploy: &Signed<DeployData>) -> Result<BitVector, KvStoreError> {
     deploy
         .data
@@ -28,7 +28,7 @@ pub(super) fn decode(bytes: &BitVector) -> Result<Signed<DeployData>, KvStoreErr
         return DeployData::from_proto(proto).map_err(KvStoreError::SerializationError);
     }
     Err(KvStoreError::SerializationError(
-        "Unsupported deploy storage format; use a fresh data directory".into(),
+        "Unsupported deploy storage format".into(),
     ))
 }
 
@@ -44,17 +44,6 @@ mod tests {
     use crate::rust::deploy::key_value_deploy_storage::{
         KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
     };
-
-    const LEGACY_DEPLOY_369DBFCC4: &str = concat!(
-        "03000000000000004e696c7b000000000000000700000000000000a086010000",
-        "00000011000000000000000400000000000000726f6f7401e803000000000000",
-        "4100000000000000041b84c5567b126440995d3ed5aaba0565d71e1834604819",
-        "ff9c17f5e9d5dd078f70beaf8f588b541507fed6a642c5ab42dfdf8120a7f639",
-        "de5122d47a69a8e8d14700000000000000304502210092526253b63faa274731",
-        "a1907908ded5bb5e46fea2d28464985ca4bf3ec3c4b802206f05828da0310cfd",
-        "c5e7da0cd34385559b5f6d4cf3b25ca78176416ecf6fadb50900000000000000",
-        "736563703235366b31",
-    );
 
     fn signed(parameters: Vec<DeployParameter>) -> Signed<DeployData> {
         Signed::create(
@@ -72,14 +61,6 @@ mod tests {
             PrivateKey::from_bytes(&[1; 32]),
         )
         .unwrap()
-    }
-
-    #[test]
-    fn deploy_storage_rejects_previous_amount_formats() {
-        assert!(decode(&hex::decode(LEGACY_DEPLOY_369DBFCC4).unwrap()).is_err());
-        let mut old = encode(&signed(Vec::new())).unwrap();
-        old[7] = 1;
-        assert!(decode(&old).is_err());
     }
 
     #[test]

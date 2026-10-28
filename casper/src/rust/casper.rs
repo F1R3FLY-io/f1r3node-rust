@@ -489,7 +489,7 @@ impl OnChainCasperState {
 
 /// Protocol version stamped into proposed block headers and judged against
 /// peers' blocks. Changes only with a coordinated protocol upgrade.
-pub const CASPER_PROTOCOL_VERSION: i64 = 2;
+pub const CASPER_PROTOCOL_VERSION: i64 = 1;
 
 #[derive(Debug, Clone)]
 pub struct CasperShardConf {

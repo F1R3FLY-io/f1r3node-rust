@@ -24,9 +24,8 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::{ReadLimits, SnapshotError};
 use tokio::runtime::Runtime;
 
-const DAG_STORES: [&str; 12] = [
+const DAG_STORES: [&str; 11] = [
     "block-metadata",
-    "block-metadata-schema",
     "equivocation-tracker",
     "latest-messages",
     "invalid-blocks",
@@ -1554,7 +1553,7 @@ fn tracker_rows_are_captured_in_the_dag_transaction() {
     let generation = fx.dag.current_generation();
     let (snapshot, tracker) =
         capture_with_equivocations(&fx.dag, &fx.blocks, &request(&[]), 16).unwrap();
-    assert_eq!(snapshot.schema_version, 3);
+    assert_eq!(snapshot.schema_version, 2);
     assert_eq!(tracker.rows().len(), 2);
     assert_eq!(tracker.rows()[0].base_sequence_number, -2);
     assert_eq!(tracker.rows()[1].base_sequence_number, 4);

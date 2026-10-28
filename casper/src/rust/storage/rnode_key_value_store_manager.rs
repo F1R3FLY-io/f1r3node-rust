@@ -82,10 +82,6 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
-            Db::new("block-metadata-schema".to_string(), None),
-            dag_storage_env_config(),
-        ),
-        (
             Db::new("equivocation-tracker".to_string(), None),
             dag_storage_env_config(),
         ),
@@ -251,52 +247,7 @@ mod bigint_metadata_tests {
     use super::*;
 
     #[tokio::test]
-    async fn production_schema_checks_every_registered_store_before_stamping() {
-        for (db, _) in rnode_db_mapping(None) {
-            let directory = tempfile::tempdir().unwrap();
-            let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
-            let name = db.id().to_string();
-            manager
-                .store(name.clone())
-                .await
-                .unwrap()
-                .put_one(b"legacy-key".to_vec(), b"legacy-value".to_vec())
-                .unwrap();
-            manager.shutdown().await.unwrap();
-            drop(manager);
-            let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
-            let result = BlockDagKeyValueStorage::ensure_metadata_schema(&mut manager).await;
-            assert!(
-                matches!(result,
-                Err(shared::rust::store::key_value_store::KvStoreError::InvalidArgument(message))
-                    if message.contains("Use a fresh data directory")),
-                "{name}"
-            );
-            assert!(
-                manager
-                    .store("block-metadata-schema".to_string())
-                    .await
-                    .unwrap()
-                    .get_one(&b"version".to_vec())
-                    .unwrap()
-                    .is_none(),
-                "{name}"
-            );
-            assert_eq!(
-                manager
-                    .store(name.clone())
-                    .await
-                    .unwrap()
-                    .get_one(&b"legacy-key".to_vec())
-                    .unwrap(),
-                Some(b"legacy-value".to_vec()),
-                "{name}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn production_lmdb_mapping_supports_bigint_restart_and_legacy_refusal() {
+    async fn production_lmdb_mapping_supports_bigint_restart() {
         let directory = tempfile::tempdir().unwrap();
         let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
         let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
@@ -320,19 +271,5 @@ mod bigint_metadata_tests {
             block.body.state.bonds[0].stake
         );
         drop(dag);
-        let metadata = manager.store("block-metadata".to_string()).await.unwrap();
-        let before = metadata.to_map().unwrap();
-        manager
-            .store("block-metadata-schema".to_string())
-            .await
-            .unwrap()
-            .delete(vec![b"version".to_vec()])
-            .unwrap();
-        assert!(
-            BlockDagKeyValueStorage::ensure_metadata_schema(&mut manager)
-                .await
-                .is_err()
-        );
-        assert_eq!(metadata.to_map().unwrap(), before);
     }
 }

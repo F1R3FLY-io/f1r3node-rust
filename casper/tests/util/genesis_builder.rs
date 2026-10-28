@@ -134,7 +134,7 @@ impl GenesisBuilder {
         let header = Header {
             parents_hash_list: vec![],
             timestamp: 0, // Using 0 like in GenesisBuilder
-            version: casper::rust::casper::CASPER_PROTOCOL_VERSION,
+            version: 1,
             extra_bytes: bytes::Bytes::new(),
         };
 
@@ -243,7 +243,7 @@ impl GenesisBuilder {
             vaults,
             supply: i64::MAX.into(),
             block_number: 0,
-            version: casper::rust::casper::CASPER_PROTOCOL_VERSION,
+            version: 1,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,

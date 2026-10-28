@@ -87,21 +87,6 @@ impl KeyValueStoreManager for LmdbStoreManager {
         Ok(Arc::new(LmdbKeyValueStore::new(db_env.env, db_env.db)))
     }
 
-    async fn store_names(&mut self) -> Result<Vec<String>, heed::Error> {
-        let env = env_cache::get_or_open_env(&self.dir_path, self.max_env_size, self.max_dbs)?;
-        let txn = env.read_txn()?;
-        let Some(directory) =
-            env.open_database::<heed::types::Str, heed::types::Bytes>(&txn, None)?
-        else {
-            return Ok(Vec::new());
-        };
-        let names = directory
-            .iter(&txn)?
-            .map(|entry| entry.map(|(name, _)| name.to_string()))
-            .collect();
-        names
-    }
-
     async fn shutdown(&mut self) -> Result<(), heed::Error> {
         // Drop our Arc<Env> clones. The env_cache holds Weak refs, so when
         // the last consumer drops, the cache entry auto-evicts on the next
@@ -123,37 +108,5 @@ impl Drop for LmdbStoreManager {
         if let Ok(mut env_slot) = self.env.try_lock() {
             *env_slot = None;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn store_names_includes_unopened_databases_after_restart() {
-        let directory = tempfile::tempdir().unwrap();
-        let mut manager =
-            LmdbStoreManager::new(directory.path().to_path_buf(), 16 * 1024 * 1024, 32);
-        manager
-            .store("legacy-unopened".to_string())
-            .await
-            .unwrap()
-            .put_one(b"key".to_vec(), b"old-value".to_vec())
-            .unwrap();
-        manager.shutdown().await.unwrap();
-        drop(manager);
-        let mut manager =
-            LmdbStoreManager::new(directory.path().to_path_buf(), 16 * 1024 * 1024, 32);
-        assert_eq!(manager.store_names().await.unwrap(), vec!["legacy-unopened"]);
-        assert_eq!(
-            manager
-                .store("legacy-unopened".to_string())
-                .await
-                .unwrap()
-                .get_one(&b"key".to_vec())
-                .unwrap(),
-            Some(b"old-value".to_vec())
-        );
     }
 }

@@ -10,8 +10,6 @@ use crate::rspace::rspace::RSpaceStore;
 pub trait KeyValueStoreManager: Send + Sync {
     async fn store(&mut self, name: String) -> Result<Arc<dyn KeyValueStore>, heed::Error>;
 
-    async fn store_names(&mut self) -> Result<Vec<String>, heed::Error>;
-
     async fn shutdown(&mut self) -> Result<(), heed::Error>;
 
     async fn r_space_stores(&mut self) -> Result<RSpaceStore, heed::Error> {

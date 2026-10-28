@@ -24,7 +24,7 @@ use super::deploy_lifecycle_types::DeployLifecycleTables;
 use super::soak_equivocations::{self, EquivocationSnapshot};
 use crate::rust::key_value_block_store::{BlockDecodeLimits, KeyValueBlockStore};
 
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 pub const SNAPSHOT_SCOPE: &str = "batch-b1-bounded-detached-capture";
 pub const EXCLUDED_STORES: [&str; 5] = [
     "blocks-approved",
@@ -1101,7 +1101,6 @@ mod tests {
         ));
         let stores = [
             "block-metadata",
-            "block-metadata-schema",
             "equivocation-tracker",
             "latest-messages",
             "invalid-blocks",
