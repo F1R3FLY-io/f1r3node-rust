@@ -79,6 +79,7 @@ pub fn transfer_unforgeable() -> Par {
 
 pub mod helpers {
     use models::rust::par_ext::ParExt;
+    use rholang::rust::interpreter::rho_type::bytes_to_bigint;
 
     use crate::rust::web::transaction::Transaction;
 
@@ -94,7 +95,7 @@ pub mod helpers {
             let to_addr = pars[2].get_g_string()?;
             let amount = match pars[3].exprs.as_slice() {
                 [models::rhoapi::Expr { expr_instance: Some(models::rhoapi::expr::ExprInstance::GInt(value)) }] => value.to_string(),
-                [models::rhoapi::Expr { expr_instance: Some(models::rhoapi::expr::ExprInstance::GBigInt(bytes)) }] => num_bigint::BigInt::from_signed_bytes_be(bytes).to_string(),
+                [models::rhoapi::Expr { expr_instance: Some(models::rhoapi::expr::ExprInstance::GBigInt(bytes)) }] => bytes_to_bigint(bytes).to_string(),
                 _ => return None,
             };
             let ret_unforgeable = pars[5].clone();

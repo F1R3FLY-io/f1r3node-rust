@@ -40,7 +40,7 @@ use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::rholang_merging_logic::RholangMergingLogic;
 use rholang::rust::interpreter::rho_runtime::{bootstrap_registry, RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::rho_type::{bytes_to_bigint, RhoNumber};
 use rholang::rust::interpreter::system_processes::{
     BlockData, DeployData as SystemProcessDeployData,
 };
@@ -1614,7 +1614,7 @@ impl RuntimeOps {
                 let mpd = int_at(tuple, 0).ok_or_else(|| bad("non-integer maxParentDepth"))?;
                 let lifespan = int_at(tuple, 1).ok_or_else(|| bad("non-integer deployLifespan"))?;
                 let min_phlo = match tuple.ps[2].exprs.first().and_then(|expr| expr.expr_instance.as_ref()) {
-                    Some(ExprInstance::GBigInt(bytes)) => num_bigint::BigInt::from_signed_bytes_be(bytes),
+                    Some(ExprInstance::GBigInt(bytes)) => bytes_to_bigint(bytes),
                     _ => return Err(bad("non-BigInt minPhloPrice")),
                 };
                 // RANGE GATES at the single read choke point. The parent-spread
@@ -1743,9 +1743,7 @@ impl RuntimeOps {
                 }?;
 
                 let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
-                    ExprInstance::GBigInt(bytes) => {
-                        Ok(num_bigint::BigInt::from_signed_bytes_be(bytes))
-                    }
+                    ExprInstance::GBigInt(bytes) => Ok(bytes_to_bigint(bytes)),
                     _ => Err(CasperError::RuntimeError(
                         "Expected BigInt in stake data".to_string(),
                     )),
