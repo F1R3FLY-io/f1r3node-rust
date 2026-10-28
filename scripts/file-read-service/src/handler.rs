@@ -10,8 +10,10 @@
 //   * 404 — unknown logical name.
 //   * 400 — bad `?sub_rel`, `?offset`, or `?length`; File entry
 //     given a sub_rel; Dir entry missing sub_rel.
-//   * 503 — Consensus-mode logical (sidecar can't resolve
-//     `/@bundle/<X>`).
+//   * 503 — Consensus-static-FILE logical.  Dir entries are
+//     served directly from `entry.path`; file entries pass
+//     through `fs_bundle_staging`, which the sidecar can't resolve
+//     from HOCON alone.
 //   * 500 — I/O error during open/lock/read.
 //
 // # MAX_READ bytes
@@ -32,6 +34,102 @@ use serde::Deserialize;
 
 use crate::fcntl::FcntlReadLockGuard;
 use crate::index::{Entry, FileReadIndex, Lookup, SkipReason};
+
+/// Query shape for the directory-listing route.
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    /// Optional filename-prefix filter.  Matched against the entry's
+    /// basename (`starts_with`).  Absent → return every entry.
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
+/// `GET /list/{logical}?prefix=` — enumerate immediate children of
+/// a dir-kind logical name.  Returns JSON array of UTF-8 basenames.
+///
+/// Rationale: the node's `Dir.entries()` method is stream-backed on
+/// consensus caps (`entriesStream*` natives) and refused with
+/// `FSERR_UNSUPPORTED` because fs-ordered readdir isn't stable
+/// across validators.  Clients still need to enumerate operator-
+/// declared consensus-static-dirs for things like FUSE readdir on
+/// a mounted bundle; routing that through the sidecar avoids the
+/// chain path entirely.  The sidecar's listing isn't consensus-
+/// observable, so lack of cross-node sort stability doesn't matter.
+pub async fn list_dir(
+    State(state): State<Arc<AppState>>,
+    AxumPath(logical): AxumPath<String>,
+    Query(q): Query<ListQuery>,
+) -> Response {
+    let entry = match state.index.lookup(&logical) {
+        Lookup::Found(e) => e,
+        Lookup::Skipped(SkipReason::ConsensusMode) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("logical name `{logical}` is a consensus-static-FILE entry; list only supports Dir entries"),
+            )
+                .into_response();
+        }
+        Lookup::NotFound => {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("unknown logical `{logical}`"),
+            )
+                .into_response();
+        }
+    };
+
+    let dir_path = match entry {
+        Entry::Dir { path } => path,
+        Entry::File { .. } => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "list only supports Dir entries".to_string(),
+            )
+                .into_response();
+        }
+    };
+
+    let read_dir = match std::fs::read_dir(dir_path) {
+        Ok(rd) => rd,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read_dir failed: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    let prefix = q.prefix.as_deref().unwrap_or("");
+    let mut names: Vec<String> = Vec::new();
+    for entry in read_dir.flatten() {
+        if let Some(name) = entry.file_name().to_str() {
+            if name.starts_with(prefix) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    // Sort for a stable response ordering (host-local only — not
+    // consensus-observable).
+    names.sort();
+
+    let body = match serde_json::to_vec(&names) {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("json encode: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    (StatusCode::OK, headers, body).into_response()
+}
 
 /// Server state shared across handler calls.
 pub struct AppState {
@@ -73,12 +171,14 @@ pub async fn get_file(
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!(
-                    "logical name `{logical}` is a Consensus-mode entry; the \
-                     sidecar can't resolve `/@bundle/<X>` to a per-validator \
-                     on-disk path without the node's RootIdentityRegistry.  \
-                     Use the node's deploy surface instead, or declare the \
-                     entry as oracle-static-{{files,dirs}} if the data is \
-                     operator-shared."
+                    "logical name `{logical}` is a consensus-static-FILE \
+                     entry; those stage through `fs_bundle_staging` before \
+                     an atomic rename, so the logical→on-disk mapping is \
+                     not stable from HOCON alone.  Use the node's deploy \
+                     surface, declare the entry as oracle-static-files \
+                     for operator-shared bytes, or expose the parent \
+                     directory as consensus-static-DIRS so the sidecar \
+                     can serve the WAL-replicated path directly."
                 ),
             )
                 .into_response();
