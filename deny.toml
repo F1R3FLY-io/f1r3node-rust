@@ -100,7 +100,7 @@ allow-build-scripts = [
   "openssl-sys@0.9.117", "openssl@0.10.81", "parking_lot_core@0.9.12", "paste@1.0.15",
   "portable-atomic-util@0.2.7", "portable-atomic@1.14.0", "portable-atomic@1.15.0",
   "prettyplease@0.2.37", "proc-macro2@1.0.107", "protobuf@2.28.0",
-  "psm@0.1.31", "psm@0.1.32", "pulldown-cmark@0.13.4", "quinn-udp@0.5.15",
+  "psm@0.1.31", "psm@0.1.32", "pulldown-cmark@0.13.5", "quinn-udp@0.5.15",
   "quinn@0.11.11", "quote@1.0.47", "radium@0.7.0", "rayon-core@1.13.0",
   "ref-cast@1.0.26", "rend@0.4.2", "rholang-tree-sitter@0.1.2", "ring@0.17.14",
   "rkyv@0.7.46", "rstest_macros@0.19.0", "rust-bert@0.23.0", "rust_decimal@1.42.1",

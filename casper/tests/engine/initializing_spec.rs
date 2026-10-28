@@ -176,7 +176,7 @@ impl InitializingSpec {
             store_request_messages.push(request);
             store_response_messages.push(response);
 
-            if last_path.is_empty() || last_path == next_start_path {
+            if last_path.len() <= 1 || last_path == next_start_path {
                 break;
             }
             next_start_path = last_path;

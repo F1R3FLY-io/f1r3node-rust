@@ -133,6 +133,16 @@ impl OfInterestVerdict {
     }
 }
 
+/// Whether a block's sender is bonded in the block's own main parent, judged
+/// at admission. Only a validated main parent can say `Unauthorized`; any
+/// other state is `Unknown` and leaves the verdict to full validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SenderAuthorization {
+    Authorized,
+    Unauthorized,
+    Unknown,
+}
+
 fn of_interest_verdict(
     already_processed: bool,
     shard_of_interest: bool,
@@ -621,6 +631,23 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             old_block,
             requested_as_dependency,
         ))
+    }
+
+    /// Judge the sender against its main parent's bonds before the block is
+    /// stored or its dependencies are requested.
+    pub fn check_sender_authorization(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<SenderAuthorization, CasperError> {
+        let authorization = self.dependencies.sender_authorization(block)?;
+        if authorization == SenderAuthorization::Unauthorized {
+            tracing::warn!(
+                "Ignoring block {} because block creator {} has 0 weight in main parent.",
+                PrettyPrinter::build_string_bytes(&block.block_hash),
+                PrettyPrinter::build_string_bytes(&block.sender)
+            );
+        }
+        Ok(authorization)
     }
 
     /// check block format and store if check passed
@@ -1253,6 +1280,26 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         }
 
         Ok(())
+    }
+
+    pub fn sender_authorization(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<SenderAuthorization, CasperError> {
+        let Some(main_parent) = block.header.parents_hash_list.first() else {
+            return Ok(SenderAuthorization::Unknown);
+        };
+        let representation = self.block_dag_storage.get_representation()?;
+        Ok(match representation.lookup(main_parent)? {
+            Some(parent) if !parent.invalid => {
+                if parent.weight_map.get(&block.sender).copied().unwrap_or(0) > 0 {
+                    SenderAuthorization::Authorized
+                } else {
+                    SenderAuthorization::Unauthorized
+                }
+            }
+            _ => SenderAuthorization::Unknown,
+        })
     }
 
     /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)

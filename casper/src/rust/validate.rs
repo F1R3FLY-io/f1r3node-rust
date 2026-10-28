@@ -262,28 +262,35 @@ impl Validate {
     pub fn block_sender_has_weight(
         b: &BlockMessage,
         genesis: &BlockMessage,
-        block_store: &mut KeyValueBlockStore,
+        block_store: &KeyValueBlockStore,
     ) -> Result<bool, KvStoreError> {
         if b == genesis {
+            return Ok(true);
+        }
+        // A parentless block that is not the genesis names no main parent, so
+        // its sender is judged against the genesis bonds, never its own.
+        let weight = if b.header.parents_hash_list.is_empty() {
+            proto_util::weight_map(genesis)
+                .get(&b.sender)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            proto_util::weight_from_sender(block_store, b)?
+        };
+        if weight > 0 {
             Ok(true)
         } else {
-            proto_util::weight_from_sender(block_store, b).map(|weight| {
-                if weight > 0 {
-                    true
-                } else {
-                    tracing::warn!(
-                        "{}",
-                        Self::ignore(
-                            b,
-                            &format!(
-                                "block creator {} has 0 weight.",
-                                PrettyPrinter::build_string_bytes(&b.sender)
-                            )
-                        )
-                    );
-                    false
-                }
-            })
+            tracing::warn!(
+                "{}",
+                Self::ignore(
+                    b,
+                    &format!(
+                        "block creator {} has 0 weight.",
+                        PrettyPrinter::build_string_bytes(&b.sender)
+                    )
+                )
+            );
+            Ok(false)
         }
     }
 
