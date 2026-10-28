@@ -488,27 +488,37 @@ impl GrpcTransportClient {
 
                 // Use pre-created client directly (no connection management needed)
                 let mut client_guard = client.lock().await;
-                let stream_result = GrpcTransport::stream(
-                    &mut *client_guard,
-                    peer,
-                    network_id,
-                    &blob,
-                    packet_chunk_size as usize,
+                let stream_result = tokio::time::timeout(
+                    timeout,
+                    GrpcTransport::stream(
+                        &mut *client_guard,
+                        peer,
+                        network_id,
+                        &blob,
+                        packet_chunk_size as usize,
+                    ),
                 )
                 .await;
                 drop(client_guard); // Release lock
 
                 // Handle the result
                 match stream_result {
-                    Ok(()) => {
+                    Ok(Ok(())) => {
                         tracing::debug!("Streamed packet {} to {}", key, peer.to_address());
                     }
-                    Err(error) => {
+                    Ok(Err(error)) => {
                         tracing::debug!(
                             "Error while streaming packet to {} (timeout: {}ms): {}",
                             peer.to_address(),
                             timeout.as_millis(),
                             error
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            peer = %peer.to_address(),
+                            timeout_ms = timeout.as_millis(),
+                            "Outgoing stream timed out"
                         );
                     }
                 }
