@@ -6,7 +6,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
-use comm::rust::test_instances::TransportLayerStub;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::casper::Signature as ProtoSignature;
@@ -54,35 +53,6 @@ impl Eq for SignatureWrapper {}
 pub struct ApproveBlockProtocolFactory;
 
 impl ApproveBlockProtocolFactory {
-    pub fn unsafe_new(
-        genesis_block: BlockMessage,
-        required_sigs: i32,
-        duration: Duration,
-        interval: Duration,
-    ) -> ApproveBlockProtocolImpl<TransportLayerStub> {
-        let sigs = Arc::new(Mutex::new(HashSet::new()));
-        let last_approved_block = Arc::new(Mutex::new(None));
-        let transport = Arc::new(TransportLayerStub::new());
-        let start = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        ApproveBlockProtocolImpl::<TransportLayerStub>::new(
-            genesis_block,
-            required_sigs,
-            start,
-            duration,
-            interval,
-            sigs,
-            last_approved_block,
-            None,
-            transport,
-            None,
-            None,
-        )
-    }
-
     pub fn unsafe_new_with_infrastructure<T: TransportLayer + Send + Sync + 'static>(
         genesis_block: BlockMessage,
         required_sigs: i32,

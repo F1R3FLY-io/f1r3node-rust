@@ -140,6 +140,8 @@ pub fn fs_copy_file_cost() -> Cost { Cost::create(FS_PATH_MUTATION_CONST, "fs_co
 
 pub fn fs_remove_file_cost() -> Cost { Cost::create(FS_PATH_MUTATION_CONST, "fs_remove_file") }
 
+pub fn fs_mkdir_cost() -> Cost { Cost::create(FS_PATH_MUTATION_CONST, "fs_mkdir") }
+
 // -------- Length-parameterized syscalls --------
 
 /// Compute `base + coefficient * argument` with saturating

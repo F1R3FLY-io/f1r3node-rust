@@ -298,12 +298,20 @@ pub enum WalOp {
     /// on Consensus caps only.  The Bool value is inside the
     /// hashed reply.
     Exists = 15,
+    /// `fs_mkdir(root, rel, mode, parents, cmode)` — directory
+    /// creation.  `mode_bits = Some(mode)`.  The `parents` flag is
+    /// encoded in `length`: `Some(1)` ↔ `parents = true`
+    /// (idempotent on EEXIST, create intermediate dirs);
+    /// `None` ↔ `parents = false` (strict EEXIST error, parent
+    /// must exist).  Reusing `length` (which is otherwise unused
+    /// by path-mutation ops) keeps the WalEntry schema stable.
+    Mkdir = 16,
 }
 
 /// Total variant count of `WalOp`.  Registered in `CONSENSUS_FOLD`
 /// so any add/remove is a fingerprint-hex roll.  Bump this + the
 /// golden hex if a variant is added.
-pub const WAL_OP_VARIANTS: usize = 16;
+pub const WAL_OP_VARIANTS: usize = 17;
 
 crate::register_consensus_constant!(order = 3, name = WAL_OP_VARIANTS, u64_be);
 
@@ -993,6 +1001,7 @@ mod tests {
             (WalOp::Size, 13),
             (WalOp::EntriesStreamNext, 14),
             (WalOp::Exists, 15),
+            (WalOp::Mkdir, 16),
         ] {
             assert_eq!(
                 variant as u8, expected,
@@ -1034,10 +1043,10 @@ mod tests {
     #[test]
     fn wal_op_variants_matches_authoritative_count() {
         // Authoritative count comes from `wal_op_discriminants_pinned`'s
-        // table (16 rows).  Duplicated deliberately: a new variant
+        // table (17 rows).  Duplicated deliberately: a new variant
         // requires updating both this count AND the discriminant table
         // — a single-side edit trips one of these two tests, not both.
-        assert_eq!(WAL_OP_VARIANTS, 16);
+        assert_eq!(WAL_OP_VARIANTS, 17);
     }
 
     #[test]
