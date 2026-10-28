@@ -79,6 +79,7 @@ tonic-reflection = "0.14"
 tokio = { workspace = true }
 rspace_plus_plus = { path = "../rspace++" }
 casper = { path = "../casper", features = ["test-utils"] }
+comm = { path = "../comm", features = ["test-utils"] }
 tower = { workspace = true }
 serial_test = { workspace = true }
 proptest = { workspace = true }

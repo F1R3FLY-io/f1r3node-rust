@@ -1707,6 +1707,7 @@ mod tests {
             ("lockSequential", 5), // (fd, holder, cmode, wait, ack)
             ("releaseLock", 3), // (lockId, holder, ack)
             ("releaseAllForHolder", 2), // (holder, ack)
+            ("mkdir", 6),     // (root, rel, mode, parents, cmode, ack)
         ];
 
         // Every FS_HANDLERS entry must have a golden-table row with

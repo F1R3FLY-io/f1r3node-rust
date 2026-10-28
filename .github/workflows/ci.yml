@@ -681,6 +681,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-check-promotion-source.sh
 
+      - name: Verify benchmark target check
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-require-repository-commit.sh
+
       - name: Verify daily back-merge provenance
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-check-ca-daily-provenance.sh
