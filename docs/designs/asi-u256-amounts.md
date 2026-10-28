@@ -26,7 +26,7 @@ This change includes the maximum bond increase. The minimum bond stays at 1. Del
 
 Test 0, 1, 2^63-1, 2^63, 2^128, 2^256-1, negative values, and 2^256. Verify exact encoding, hashing, storage, reporting, and replay. Exercise intermediate products above 256 bits. Compare execution and peer replay costs, events, errors, and state roots.
 
-Run workspace checks and an independent Opus review. Keep commits focused. Do not push this branch.
+Run workspace checks and an independent Opus review. Keep commits focused.
 
 ## Fresh-chain interfaces
 
@@ -66,4 +66,4 @@ The release suites also cover node, block-storage, rholang, rspace_plus_plus, mo
 - Boundary regressions cover maximum genesis allocations, bonds-file comments, metadata snapshot capture, transfer reports, fee admission, refunds, and peer replay.
 - Independent Opus review completed. Confirmed parser, snapshot, configuration, and test-fixture findings were corrected and tested.
 
-All commits remain local on `feature/asi-u256-amounts`. No pull request, push, client change, or deployment is part of this task.
+The branch `feature/asi-u256-amounts` is published in [PR 881](https://github.com/F1R3FLY-io/f1r3node-rust/pull/881). Client changes and deployments remain outside this task.

@@ -1,8 +1,3 @@
-// BOUND seams (B2/B3/B4) — the real `tips_with_latest_messages(max_parents,
-// depth)` truncation, exact score sums, and empty edges. B2 and B4 retain the
-// `formal/rocq/fork_choice/theories/Bound.v` model. B3 now checks exact BigInt sums
-// above the legacy i64 bound instead of an overflow error.
-//
 //   * B2 (sentinel / usize-safe) — estimator.rs:120-129 treats BOTH "unlimited"
 //     sentinels EXPLICITLY (`max_number_of_parents < 0` OR `== UNLIMITED_PARENTS`
 //     (i32::MAX)) rather than relying on `-1 as usize == usize::MAX` wrapping. A
@@ -13,9 +8,6 @@
 //   * count-cap (take_never_drops_head) — `take(cap)` preserves order and never
 //     drops the head, so the MAIN parent (`tips[0]`) survives ANY positive cap.
 //     Proptest over random positive caps.
-//
-//   * B3 (exact score sum) — two validators each bonded at `i64::MAX` share
-//     a supported genesis block. Its score must equal `2 * i64::MAX` exactly.
 //
 //   * B4 (empty-tips typed Err) — estimator.rs:156-162: when `rank_forkchoices`
 //     returns no tips AND a `Some(max_parent_depth)` is configured, `filter_deep_parents`

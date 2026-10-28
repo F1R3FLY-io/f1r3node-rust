@@ -711,9 +711,6 @@ fn applied_from_scope_root(block: &BlockMessage) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Merkle root over the bonds sub-tree.  Bonds are sorted by validator
-/// public key before leaf-hashing so the root is independent of
-/// in-memory order.
 fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
     let mut sorted: Vec<&Bond> = bonds.iter().collect();
     sorted.sort_by(|a, b| a.validator.as_ref().cmp(b.validator.as_ref()));
