@@ -1568,7 +1568,7 @@ pub struct RegistryResponse {
 pub struct ValidatorInfo {
     #[serde(rename = "publicKey")]
     pub public_key: String,
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[serde(with = "shared::rust::asi_amount")]
     #[schema(value_type = String)]
     pub stake: BigInt,
 }
@@ -1645,7 +1645,7 @@ pub struct ValidatorStatusResponse {
     pub public_key: String,
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::asi_amount::optional")]
     #[schema(value_type = Option<String>)]
     pub stake: Option<BigInt>,
     #[serde(rename = "blockNumber")]
@@ -2132,6 +2132,53 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn validator_json_uses_canonical_uint256_stakes() {
+        let max = shared::rust::asi_amount::maximum();
+        for stake in [
+            "0".to_string(),
+            (BigInt::from(1) << 128usize).to_string(),
+            max.to_string(),
+        ] {
+            let info = serde_json::json!({"publicKey": "validator", "stake": stake});
+            let value: ValidatorInfo = serde_json::from_value(info.clone()).unwrap();
+            assert_eq!(serde_json::to_value(value).unwrap(), info);
+            let status = serde_json::json!({"publicKey": "validator", "isBonded": true,
+                "stake": stake, "blockNumber": 0, "blockHash": "hash"});
+            let value: ValidatorStatusResponse = serde_json::from_value(status.clone()).unwrap();
+            assert_eq!(serde_json::to_value(value).unwrap(), status);
+        }
+        for stake in [
+            serde_json::json!(0),
+            serde_json::json!(-5),
+            serde_json::json!("-5"),
+            serde_json::json!("-0"),
+            serde_json::json!("007"),
+            serde_json::json!("+1"),
+            serde_json::json!("1e2"),
+            serde_json::json!((max + 1u8).to_string()),
+        ] {
+            assert!(serde_json::from_value::<ValidatorInfo>(serde_json::json!(
+                {"publicKey": "validator", "stake": stake}))
+            .is_err());
+            assert!(
+                serde_json::from_value::<ValidatorStatusResponse>(serde_json::json!(
+                {"publicKey": "validator", "isBonded": true, "stake": stake,
+                 "blockNumber": 0, "blockHash": "hash"}))
+                .is_err()
+            );
+        }
+        let status: ValidatorStatusResponse = serde_json::from_value(serde_json::json!(
+            {"publicKey": "validator", "isBonded": false, "stake": null,
+             "blockNumber": 0, "blockHash": "hash"}))
+        .unwrap();
+        assert!(status.stake.is_none());
+        let total = shared::rust::asi_amount::maximum() * 2u8;
+        let response: ValidatorsResponse = serde_json::from_value(serde_json::json!(
+            {"validators": [], "totalStake": total.to_string(), "blockNumber": 0, "blockHash": "hash"})).unwrap();
+        assert_eq!(response.total_stake, total);
+    }
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {

@@ -15,15 +15,21 @@ pub fn validate(amount: &BigInt) -> Result<(), String> {
     }
 }
 
-pub fn parse(value: &str) -> Result<BigInt, String> {
+pub fn parse_decimal(value: &str) -> Result<BigInt, String> {
     if value.is_empty()
-        || value.len() > MAX_DECIMAL.len()
         || !value.bytes().all(|byte| byte.is_ascii_digit())
         || (value.len() > 1 && value.starts_with('0'))
     {
         return Err("ASI amount must be a canonical unsigned decimal integer".to_string());
     }
-    let amount = value.parse::<BigInt>().map_err(|error| error.to_string())?;
+    value.parse::<BigInt>().map_err(|error| error.to_string())
+}
+
+pub fn parse(value: &str) -> Result<BigInt, String> {
+    if value.len() > MAX_DECIMAL.len() {
+        return Err("ASI amount must be between 0 and 2^256-1".to_string());
+    }
+    let amount = parse_decimal(value)?;
     validate(&amount)?;
     Ok(amount)
 }
@@ -50,6 +56,31 @@ pub fn serialize<S: Serializer>(amount: &BigInt, serializer: S) -> Result<S::Ok,
 
 pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BigInt, D::Error> {
     parse(&String::deserialize(deserializer)?).map_err(de::Error::custom)
+}
+
+pub mod optional {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(
+        amount: &Option<BigInt>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match amount {
+            Some(amount) => {
+                validate(amount).map_err(serde::ser::Error::custom)?;
+                serializer.serialize_some(&amount.to_string())
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<BigInt>, D::Error> {
+        Option::<String>::deserialize(deserializer)?
+            .map(|value| parse(&value).map_err(de::Error::custom))
+            .transpose()
+    }
 }
 
 #[cfg(test)]
