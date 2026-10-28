@@ -20595,6 +20595,7 @@ stays open until the last; each later slice appends its row and its evidence.
 |---|---|---|
 | The history, journal owner and Rocq models, and the test-model extraction of TH-01 to TH-08 | 11966 | the commit that opens this entry |
 | The production halves of TH-01 to TH-07 on real files: generated faulted histories against cold admission of byte copies, the later-step failpoint sweep and kill children at the thirteen trusted hooks | 11967 | the commit that appends this row |
+| The production half of TH-08 through the journal owner: generated owner histories under faults, cancellation, retries, decoys and restarts on real files, judged by cold admission of byte copies, and a retry after an unwind past the acknowledgement | 11968 | the commit that appends this row |
 
 The production halves of TH-01 to TH-07 on real files are task 11967, the
 production half of TH-08 through the journal owner is task 11968, and the
@@ -20922,6 +20923,154 @@ required.
 - The production half of TH-08 is task 11968, and the production negative
   controls, the timing and the completion of this entry are task 11969; the
   entry stays open until then.
+
+**TASK 11968: THE PRODUCTION HALF OF TH-08.** The third slice adds
+`rspace++/tests/persistence/owner_history_production.rs`, compiled on unix
+only, and calls its driver from the TH-08 test function after the model
+half, so the binding does not change. The catalog's
+[journal-owner histories on real files section](generation-checkpoint-invariant-catalog-2026-08-28.md#journal-owner-histories-on-real-files-2026-10-28)
+states what the row requires on real files, with a figure of one step, the
+outcomes and effects of each action, and the counts that the runs reached.
+The reviewed code-level design (pgmcp artifact 1144) fixed eleven decisions,
+and its review accepted them with one amendment:
+
+1. *A sibling module.* The production half is its own module, beside task
+   11967's, rather than a child module of `durable_rspace_authority.rs`,
+   which would have grown that 1,641-line file. The cost is that JO-09 and
+   JO-11, which named "this file's real owner", are reworded.
+2. *The V2 writer only.* Production opens every store with the V2 retention
+   writer (`durable/io.rs:835-841`), and the V1 writer exists only behind a
+   test seam (`:860-864`). The owner publishes through
+   `publish_trusted_incremental_v1` with whatever writer its lease carries,
+   so it has no writer branch, and task 11967 already runs both writers over
+   the same publication. The fixture is a V1 source, so each history's first
+   publication also migrates it to V2.
+3. *Four strict seeds and 32 generated histories.* The seeds, 59 steps in
+   all, meet every required counter alone under either outcome of their torn
+   slot write, as a simulation of the design showed before any code ran. The
+   generated histories add breadth at one to eight steps each, with zero to
+   three edits per step.
+4. *Faults armed inside the owner.* Each fault is armed in the owner's
+   one-shot `AfterPreparation` hook, after the transaction is prepared and
+   before the trusted publication, so it binds to the publication that the
+   owner runs. The hook must have fired, so a refusal before preparation
+   cannot leave a failpoint armed for a later operation.
+5. *An independent judge after every step:* a byte copy admitted cold with
+   its own registry, and a hot store bootstrapped from it with
+   `create_from_durable`, both checked against the model, as task 11967
+   judges its histories.
+6. *One unwind past the acknowledgement,* at the third step of a four-step
+   script, through the existing `authority_unwind_child` dispatcher.
+7. *Coverage.* `OwnerHistoryCoverage` counts every behaviour that the row
+   names. Every counter but the informational normalization counts is
+   required, from the seeds alone and again with the generated histories.
+8. *Widenings.* The module reuses 37 test items that become `pub(super)`:
+   9 in `durable_rspace_authority.rs` and 28 in
+   `trusted_history_production.rs`. No item is copied.
+9. *No production change.* Every behaviour that the row needs is reachable
+   through existing production paths and test hooks, and the design found
+   no defect.
+10. *Documents.* The catalog gains the section on journal-owner histories on
+    real files and rewords JO-09, JO-11 and TH-08's matrix cell; this entry
+    gains the slice row and these blocks.
+11. *Evidence.* The candidate is labelled `7928c`, its scratch directory is
+    `c34`, and the scripts of task 11967 are reused.
+
+The amendment: the owner's hot store is read only in Ready, under the gate's
+read side, where an RSpace operation could read it too. In an open phase the
+judge reads the durable copy alone, so no step observes the hot store
+through a path that production forbids.
+
+**TASK 11968 HYPOTHESES.** Here $`g_0`$ is the state that a trial's first
+open admits, $`d`$ the number of publications committed since, and
+$`\mathrm{gen}`$ a state's generation.
+
+- *H10 (TH-08, `ReopenDiscardsVolatileJournal`).* After every restart, all
+  five journals of the reopened owner are empty, its hot store equals the
+  durable model, and the next checkpoint over an unchanged model is empty.
+  After every step, a byte copy admitted cold has generation
+  $`\mathrm{gen}(g_0) + d`$, and its contents and its bootstrapped hot store
+  equal the durable model.
+- *H11 (`RecoveryAcceptsOnlyExactTerminal`).* Every reconcile, explicit,
+  implicit or under a decoy, adopts exactly the predecessor for a kept class
+  or the terminal for a new class. The decoy is never adopted or written. A
+  zero-limit reconcile is refused, keeping RecoveryRequired, the terminal,
+  the gate and the files up to the index rebuild.
+- *H12 (`AtMostOneAcknowledgement`).* Each of the four retry kinds
+  acknowledges with no hook, no cold admission and no index construction.
+  After an unwind past the acknowledgement, the retry acknowledges through
+  the committed marker, with no hook and no cold check, and the next
+  checkpoint publishes once.
+- *H13 (`GateHeldUntilResolution`).* The gate is held exactly in the open
+  phases, and edits are blocked there. A checkpoint cancelled at the gate
+  captures and publishes nothing and leaves the gate free.
+
+**TASK 11968 MEASURED.** Each hypothesis held. The commands ran on tree
+`ce47e8d6`, which is HEAD `3a75b441d` plus this slice's tests and two
+regenerated registries, exported to `target/scratch/idx`. The seeded runs used
+`PROPTEST_RNG_SEED=20261027`, one test thread and per-test times. The pgmcp
+progress note of task 11968 recorded predictions before the runs; each held
+except one clause, which the last row reports.
+
+| Claim | Command or artifact | Result | Uncertainty | Decision |
+|---|---|---|---|---|
+| H10 | `owner_histories_resolve_ambiguity_acknowledge_once_and_never_replay_the_journal`, seeded, in debug and release | passed in 1.522 s in debug and 0.412 s in release; restarts from all five settled kinds of phase, once each in the seeds and 4, 4, 1, 2 and 1 times with the generated histories, each reopening with empty journals and the durable contents, and the checkpoint that follows the second seed's restart, over an unchanged model, was empty; every judged copy had generation $`\mathrm{gen}(g_0) + d`$, and its bootstrapped hot store held the durable model with empty journals | one seed; another draws other generated histories, while the seeds, which every run executes, meet every required counter alone | H10 holds |
+| H11 | the same runs | the four recovery paths 6, 2, 6 and 2 times in the seeds and 10, 3, 13 and 3 times in all, each adopting the predecessor or the exact terminal as its outcome class required; a reconcile under a decoy once to each; the zero-limit refusal once in the seeds and twice in all, each keeping RecoveryRequired, the terminal and the gate | a decoy placed in the middle of a publication is beyond reach, because the publication runs within one poll | H11 holds |
+| H12 | the same runs, and the unwind child that the driver spawns | the four acknowledgement retries once each in the seeds and 3, 1, 1 and 1 times in all, each with no hook, no cold admission and no index construction; the child panicked with "owner history acknowledgement unwind" and wrote its marker after its retry acknowledged once and its next checkpoint published one generation | the child exercises one unwind point; the existing boundary children cover capture, preparation and both pins | H12 holds |
+| H13 | the same runs | 3 edits blocked by the held gate in the seeds and 25 in all; one checkpoint cancelled at the gate in the seeds and 9 in all, each leaving the gate free and no file or journal changed | the gate's read side stands in for RSpace operations; no concurrent producer or consumer runs | H13 holds |
+| The seeds' coverage line | the line `owner history production seeds` of both runs | equal in both profiles to the design's prediction for a torn write that keeps the old slot | the seeds are fixed, so every run repeats it | the prediction holds |
+| The TH tests' time | the three TH test functions, seeded, against task 11967's runs | debug from 7.13 s to 8.47 s and release from 3.35 s to 3.79 s, within the predicted increase of at most 7 s and 3 s; TH-08 alone took 1.522 s and 0.412 s | one run per profile, with no core pinning and no frequency control | the prediction holds; task 11969 times the suite |
+| The persistence suite | the persistence selection, unseeded, on one test thread | 489 passed, 0 failed, 4 ignored in both profiles, as predicted; 91.53 s in debug and 42.09 s in release, against 87.24 s and 39.27 s at task 11967 | unseeded proptest cases and one run per profile; the spread between runs exceeds the TH tests' share | no change attributed; task 11969 times the suite with a fixed seed |
+| The workspace gate | the gate's nextest and doc counts and its warnings, against the predictions | nextest 4,427 passed and 46 skipped, and the doc tests 4 passed and 3 ignored, as predicted; the check step's eight warnings equal the previous slice's gate by location and message; clippy reported one warning, the never-used `active_obligation`, where the prediction said none, and the previous slice's gate reported the same warning in a file that this slice does not touch | none for the counts and warnings, which the tree fixes | the counts hold; the clippy clause misstated the baseline, and this slice adds no warning |
+
+**TASK 11968 VERIFICATION BOUNDARY.** The evidence ran on tree `ce47e8d6`,
+exported to `target/scratch/idx`. It differs from the commit that appends
+this evidence only in documentation: the catalog, the figure and this entry.
+One heavy job ran at a time, each in a user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| obligation registries | in the export | all sixteen current, with the workspace regression and PathMap aggregate registries regenerated for this slice when the candidate was built; every self-test passed | `target/perf/logs/c34/registries-7928c-20261028T174605Z.log` | `ded2fcda831d247957c86c7783dcb79b9be92912c4991d4532692c60e4ae6515` |
+| `cargo check --locked -p rspace_plus_plus --lib --tests` | 24 GiB | exit 0; one warning, bug 11963's, and none in the new module | `target/perf/logs/c34/11968-check-20261028T172105Z.log` | `94fbd9c7a84f8ad464ea947361d10d5cb82c8caff13c9490e1433d8499568a21` |
+| the three TH test functions, seeded and timed, debug | 24 GiB, one scope for this and the next three steps | 3 passed in 8.47 s, TH-08 in 1.522 s | `target/perf/logs/c34/11968-th-time-debug-20261028T172432Z.log` | `97bce13762d06de6ad453b7885cc826f7ce4786df64fad5c3878e6636e32db24` |
+| the same, release | as above | 3 passed in 3.79 s, TH-08 in 0.412 s; the two coverage lines equal the debug run's | `target/perf/logs/c34/11968-th-time-release-20261028T172432Z.log` | `fee21763a18f090437ecfbc9bb19cd8682e8be58618df5cb2490d40590076675` |
+| the 489 selected rspace++ library tests under `rspace::persistence`, debug | as above | 489 passed, 0 failed, 4 ignored, in 91.53 s | `target/perf/logs/c34/11968-persistence-debug-20261028T172432Z.log` | `fa2418500e5b94dac86b0aadf8fd0505ecd8e5a3fd7b19cf930da6cc7e0d29ac` |
+| the same, release | as above | 489 passed, 0 failed, 4 ignored, in 42.09 s | `target/perf/logs/c34/11968-persistence-release-20261028T172432Z.log` | `9b3db61dda3ad1a37e93690b1f79f61e73be569319eea1c480097fffe33a3922` |
+| the evidence script's summary | as above | the four steps above exited 0 in 69 s, 54 s, 92 s and 42 s | `target/perf/logs/c34/11968-evidence-summary-20261028T172432Z.txt` | `c3c89489da351493aa67e0b208aa8608138d4ef93a55e847bcb51bbb7eedae64` |
+| `cargo check --locked --workspace --all-targets` | 48 GiB, one scope for this and the next three steps | exit 0; the same eight warnings as the previous slice's gate | `target/perf/logs/phase0/7928c-gate-check-20261028T172918Z.log` | `63369014f621431f40502f3e39d52cf447a3469cdf1ab640f8b4be0bad7ab4df` |
+| `cargo clippy --locked --workspace` | as above | exit 0; one warning, also in the previous slice's gate: `active_obligation` (`models/src/rust/rholang/canonical_path_admission.rs:1518`) is never used | `target/perf/logs/phase0/7928c-gate-clippy-json-20261028T172918Z.log` | `35b0efc1ae5b0966bc087b82ee6b523f9c218127a838ece9d46879f84339c5fa` |
+| `cargo nextest run --locked --release --no-fail-fast` of `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang` | as above | 4,427 passed, 0 failed, 46 skipped, in 810.39 s; the counts equal the previous slice's gate, because the driver runs inside the existing TH-08 test function | `target/perf/logs/phase0/7928c-gate-nextest-20261028T172918Z.log` | `cf7f4b0b733ec1f4693d9a6991f609f85ac2b977f9d0ebf23775239d78c628c1` |
+| `cargo test --locked --release --doc` of `models` and `rholang` | as above | 4 passed, 0 failed, 3 ignored | `target/perf/logs/phase0/7928c-gate-doc-20261028T172918Z.log` | `98b500d0ee2b25c1a12a3e1c2f7839a82122af9269d0414a8087fbb4341a6b62` |
+| the workspace gate's summary | as above | the four steps above exited 0 in 14 s, 41 s, 901 s and 39 s | `target/perf/logs/phase0/7928c-gate-summary-20261028T172918Z.txt` | `07ce711e5a315c3bf794b342e3f60a4d2b77f7d4f9fe8f6fe41b6cae07482c72` |
+| `cargo fmt --all -- --check` | in the export | exit 0, no difference | `target/perf/logs/c34/fmt-7928c-20261028T174605Z.log` | `72ffd753c4ae51aa0f890d561070563e707e5281dff1ba93cfff67cf8a29d7e7` |
+| `scripts/check-fmt.sh`, the pre-commit hook's check | in the export | clean, 0 differences | `target/perf/logs/c34/check-fmt-7928c-20261028T174605Z.log` | `06172097f5230e90f9e04a2b49caf27aa823f4866f3f02117c2b98d082abb382` |
+
+The one compiler warning in the evidence runs, an unused import in
+`tests/persistence/object_store_collision.rs`, is bug 11963's. The registry
+check, the manifest test and the two formatting checks ran again on the export
+of the committed tree after the two documents were filled; the pgmcp progress
+note of task 11968 records that run. pgmcp artifact 1145 holds these
+tables with the coverage lines of the runs. These are agent-run results;
+independent review and the approved pgmcp verification recipe remain
+required.
+
+**TASK 11968 BOUNDARY.**
+
+- No production source changes: the ten production sources pinned in the
+  catalog equal HEAD's. No persisted byte, identity, format, wire message or
+  production outcome changes, so the consensus-change register gets no note.
+- Each history runs one process, one owner and one thread. The gate's read
+  side stands in for RSpace operations; no concurrent producer or consumer
+  runs.
+- Faults are injected in-process, and the operating system keeps every
+  write; no power-loss claim is made.
+- Only the V2 retention writer is used, and the production half compiles on
+  unix only.
+- A panic past the acknowledgement refines a stutter of the owner model, not
+  its `Unwind`, so the test checks a subset of the model's behaviours.
+- The production negative controls, the timing and the completion of this
+  entry are task 11969, and the entry stays open until then. Bug 11970 is
+  fixed model-first before task 7928 closes.
 
 ## Upstream PathMap integration request register
 

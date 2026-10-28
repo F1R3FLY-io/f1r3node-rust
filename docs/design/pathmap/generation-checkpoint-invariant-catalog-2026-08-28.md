@@ -304,8 +304,8 @@ executable target. JO names remain a separate model boundary, not extra central 
 | JO-11 | `cold_restart_before_acknowledgement_selects_old_or_new_without_delta_replay` destroys the unresolved owner and old hot incarnation before recovery, checks all five fresh journals, and then publishes another mutation. |
 | JO-13, JO-14, JO-15 | The unwind matrix and acknowledgement-conflict test distinguish exact retry from changed marker/version, including non-panicking and panicking post-acknowledgement restores. A shared read-only exact-marker predicate guards owner completion. |
 | JO-02 cancellation | `cancelling_a_checkpoint_waiting_for_the_exact_gate_does_not_capture_or_publish` drops a pending caller before gate acquisition. There is no await or detached worker after capture. |
-| JO-11 journal replay (2026-10-27) | The owner model's `journal-replay` fault keeps the volatile journal across `CrashAndReopen` and violates `ReopenDiscardsVolatileJournal`, the invariant's first negative control (the faulted trusted histories section). TH-08's owner mirror, in `tests/persistence/trusted_history_properties.rs`, reopens the owner after each restart with an empty journal, whose checkpoint publishes nothing and runs no cold check. Task 11968 adds the restart through this file's real owner. |
-| JO-09 pathname recovery (2026-10-27) | The `pathname-recovery` fault accepts the old report as exact while a decoy is bound to the store's pathname and violates `RecoveryAcceptsOnlyExactTerminal`; the witness `NeverReconciledUnderDecoy` shows that exact recovery under a decoy is reachable. This slice has model evidence only; task 11968 adds a decoy reconciliation through this file's real owner. |
+| JO-11 journal replay (2026-10-27) | The owner model's `journal-replay` fault keeps the volatile journal across `CrashAndReopen` and violates `ReopenDiscardsVolatileJournal`, the invariant's first negative control (the faulted trusted histories section). TH-08's owner mirror, in `tests/persistence/trusted_history_properties.rs`, reopens the owner after each restart with an empty journal, whose checkpoint publishes nothing and runs no cold check. Task 11968 restarts the real owner by path, in `tests/persistence/owner_history_production.rs`, from every phase that a history reaches. All five fresh journals are empty and the hot store equals the durable state. |
+| JO-09 pathname recovery (2026-10-27) | The `pathname-recovery` fault accepts the old report as exact while a decoy is bound to the store's pathname and violates `RecoveryAcceptsOnlyExactTerminal`; the witness `NeverReconciledUnderDecoy` shows that exact recovery under a decoy is reachable. Task 11968 reconciles the real owner in `tests/persistence/owner_history_production.rs` under such a decoy. The owner recovers its held directory's selected slot, either the predecessor or the exact terminal, and the decoy's files stay byte-identical. |
 
 Combined HotStore/persistence debug and release gates pass 403/403 with 233 other
 library tests excluded. The owner property has an explicit 64-history configuration,
@@ -5448,6 +5448,269 @@ The production evidence in J-253 was taken at these sources.
 | `rspace++/tests/persistence/mod.rs` | `7f97eb6dd116d9c1d3c3efd327d6e0e5ca14a1ccd7b5b0b8c123cfc0cd45fd6a` |
 | `docs/design/pathmap/figures/trusted-history-step.puml` | `327b7f7aeb731261802aa1fe1ed1e163cd8dc7bc57d1d3c6e7f0a23e0b04a10e` |
 
+### Journal-owner histories on real files (2026-10-28)
+
+Task 11968, the third slice of task 7928, adds the production half of TH-08.
+It drives the real journal owner, `DurableRSpaceAuthorityV1`, over real files
+through histories of hot-store edits, checkpoints, faults, reconciliations,
+acknowledgement retries, cancellations and restarts. After every step it
+judges the store by cold admission of a byte copy and by a hot store
+bootstrapped from that copy. It changes no production source.
+
+**Production refinement.** The production half is in
+`rspace++/tests/persistence/owner_history_production.rs`, which is compiled
+on unix only. The TH-08 test function runs its model half and then calls
+`production_owner_histories(32)`, so the row's binding does not change. The
+driver works in three parts:
+
+1. It runs four seeded histories of 18, 14, 16 and 11 steps, 59 in all, and
+   requires the coverage counters below from them alone.
+2. It runs 32 generated histories of one to eight steps, each step with zero
+   to three edits, adds their counts to the seeds' and requires the counters
+   again.
+3. It spawns one child process, through the existing
+   `authority_unwind_child` dispatcher, that unwinds the owner past its
+   acknowledgement.
+
+Each history runs on a fresh scoped thread, so a failed case cannot leave a
+failpoint or a hook armed for the next one. Only the V2 retention writer is
+used: production opens every store with it (`durable/io.rs:835-841`), the
+owner's publication has no writer branch, and task 11967 already runs both
+writers over the same trusted publication.
+
+**The model.** A history keeps a model of the owner,
+
+```math
+M = (H, D, d, \varphi, a, s, t),
+```
+
+whose components are:
+
+- $`H`$, the contents that the owner's hot store must hold;
+- $`D`$, the contents of the durable state that the catalog selects;
+- $`d`$, the number of publications committed since the trial opened;
+- $`\varphi`$, the owner's phase;
+- $`a`$, the catalog slot whose state the owner has adopted;
+- $`s`$, the catalog slot that the live catalog selects;
+- $`t`$, the terminal that an open publication retained, if any.
+
+The *open phases* are Captured, RecoveryRequired and AwaitingAck: exactly
+the phases in which the owner holds a pending publication, and with it the
+operation gate's write permit. The contents range over a small fixed
+universe: two data channels with three values each, kept as a bag so that
+multiplicities count; two continuation groups, of one and of two channels,
+with three bodies each; and the three joins of those groups. A step is
+*changed* when $`H \neq D`$, and an owner in RecoveryRequired is *kept* when
+$`s = a`$, that is, when its publication's outcome left the predecessor
+selected. With $`g_0`$ the state that the trial's first open admits and
+$`\mathrm{gen}`$ the generation of a slot, every step must leave
+
+```math
+\mathrm{gen}(s) = \mathrm{gen}(g_0) + d,\qquad
+\varphi = \mathrm{Ready} \;\Rightarrow\; a = s,\qquad
+\varphi \neq \mathrm{Ready} \;\Leftrightarrow\; \text{the operation gate is held}.
+```
+
+**One step.** A step runs in six stages.
+
+1. *Observe.* At the settled point the trial records the catalog image and
+   its selection, the predecessor's appointed pack prefix, whether the active
+   pack holds a suffix beyond its appointed tail, and $`d`$.
+2. *Edit.* Each edit runs only while the gate's read side is free, as an
+   RSpace operation would: a datum put or removal, a continuation put with
+   the joins of its group, a continuation removal, or a join put or removal.
+   In an open phase the owner holds the gate, so the edit is blocked and
+   counted. A join removal while its group holds a continuation is refused
+   by the hot store, as intended, and counted.
+3. *Normalize.* The drawn action becomes one that the phase admits. A fault,
+   a successor pin overflow or a cancellation needs Ready, and the first two
+   also a changed step. An explicit or zero-limit reconcile needs an open
+   phase. A minimal checkpoint needs an unchanged Ready step or a pending
+   acknowledgement. A reconcile under a decoy needs RecoveryRequired with
+   $`\mathrm{gen}(a) > \mathrm{gen}(g_0)`$ or $`s \neq a`$, so that recovery
+   by pathname, which would find $`g_0`$'s slot in the decoy, could not pass
+   for correct recovery. A seeded history runs strictly: any normalization of
+   its edits or actions fails the test.
+4. *Call.* The owner call runs under `observed_effects`. A fault is armed
+   inside the owner's one-shot `AfterPreparation` hook, so it binds to the
+   publication that the owner actually runs, and the hook must have fired.
+   The call's hook trace, cold admissions and index constructions must equal
+   the action's expected effects (the table below).
+5. *Settle.* The outcome is checked as the table below states, and then the
+   settled point: the phase; the gate, held exactly in the open phases; the
+   pins, with the adopted generation pinned and a superseded generation or an
+   unacknowledged terminal unpinned; the selected slot; the predecessor's
+   appointed prefix; and at most one new generation. In Ready the hot store,
+   read under the gate's read side with its five journals compared before and
+   after the reads, must hold $`H`$.
+6. *Judge.* The store is copied byte for byte into a fresh directory, and the
+   copy is admitted cold with its own writer lease and lease registry. The
+   copy must select $`s`$, have generation $`\mathrm{gen}(g_0) + d`$ and
+   enumerate exactly $`D`$ through its authenticated data, continuation and
+   join enumerators. In Ready the owner's state and pin key must equal the
+   copy's; in an open phase the owner must report its phase as unresolved. A
+   hot store bootstrapped from the copy must have five empty journals and
+   hold $`D`$. The judge's admission and bootstrap run outside every
+   `observed_effects` window, so they never count toward a step's effects.
+
+![One step of a journal-owner history on real files, as an activity diagram. In grey, the settled point: the owner's phase, the operation gate, the generation pins, the slot that the catalog selects, the predecessor's appointed pack prefix, any pack suffix, the files and the five journals. In purple, the step's edits to the hot store under the gate's read side, blocked while an open phase holds the gate. In amber, the action normalized to what the phase admits, which a seeded history must keep as written, and the fault armed inside the owner's AfterPreparation hook: a failpoint at one of the hooks 2 to 14, an I/O failpoint or a torn slot prefix. In blue, the owner call under observed_effects: a checkpoint, a minimal checkpoint, a checkpoint cancelled at the gate, a reconcile, also under zero admission limits or under a decoy, or a restart by path, whose hook trace, cold admissions and index constructions must match the action. A switch on the phase after the call: Ready in green, with the journals empty or unchanged, the gate free and only the adopted generation pinned; RecoveryRequired in red, after a faulted checkpoint whose outcome class keeps the predecessor or selects the exact terminal, or after a refused zero-limit reconcile, with the gate held and the journals unchanged; AwaitingAck in red, after the successor pin overflowed, with the terminal retained and unpinned. In green, the settled checks and the judge: a byte copy admitted cold with its own lease registry, whose slot, generation and contents equal the model's durable state, and a hot store bootstrapped from it with empty journals](figures/owner-history-step.svg)
+
+**Outcomes and effects per action.** The effects are counted per call: the
+hook trace of the trusted publication, the cold admissions and the index
+constructions. "Trusted order" is the trace of hooks 2 to 14, and "one
+recovery" is one cold admission with one index construction and no trace.
+
+| Phase and step before the call | Action | Result | Effects | Model |
+|---|---|---|---|---|
+| Ready, changed | checkpoint | the next generation is published and acknowledged, and the five journals are empty | trusted order | commit, then adopt the new slot |
+| Ready, unchanged | checkpoint, or checkpoint under minimal limits | the adopted state, with no file and no journal changed | none | unchanged |
+| Ready, changed | faulted checkpoint | a publication error whose outcome class keeps the predecessor or selects the exact retained terminal; RecoveryRequired with the journals unchanged | the trusted order up to the fault | commit the terminal when the class selects it |
+| Ready, changed | successor pin overflow | the publication commits, then the exhausted lease counter refuses the successor's pin; AwaitingAck with the terminal retained and the journals unchanged | trusted order | commit the terminal |
+| Ready | cancellation at the gate | while a reader holds the gate, the checkpoint waits before capturing and is dropped; Ready, with no file and no journal changed and the gate free afterwards | none | unchanged |
+| RecoveryRequired | reconcile, also under a decoy at the store's pathname | the predecessor with the journals unchanged when kept, or the terminal with the journals empty; the decoy's files are unchanged | one recovery | adopt the selected slot |
+| RecoveryRequired | checkpoint | when kept, recovery and then a publication of the journal; otherwise recovery adopts the terminal | one recovery, with the trusted order when kept | adopt, and when kept commit and adopt the new slot |
+| RecoveryRequired | reconcile under zero admission limits | refused at admission after the physical recovery; RecoveryRequired, with the terminal, the gate and the journals unchanged and the files changed at most by the index rebuild | one recovery | unchanged |
+| AwaitingAck | checkpoint, checkpoint under minimal limits, reconcile, or reconcile under zero admission limits | the terminal's state, acknowledged once; the journals are empty and the files unchanged | none | adopt the terminal |
+| any | restart by path | the owner and its hot store are dropped, which frees the gate, and reopened: Ready at the selected slot, with five empty journals and the hot store holding $`D`$ | one recovery | $`H := D`$, adopt the selected slot |
+
+Every recovery, the refused one included, rebuilds the selected slot's index
+file to its appointed tail when the file is longer, and changes no other
+file; only a publication truncates a pack suffix.
+
+**The unwind past the acknowledgement.** The child process publishes once,
+faults its second publication at hook 13, a published error that retains the
+terminal, and then reconciles. A one-shot owner hook at
+`AfterAcknowledgement` checks that the gate is held, that the five journals
+are empty and that both the predecessor's and the terminal's pins are
+active, and then panics. While the stack unwinds, a drop guard checks that
+the owner is still in AwaitingAck with the gate held, the journals empty and
+both pins active, and retries the checkpoint. The retry returns the
+terminal's state with no hook, no cold admission and no index construction,
+leaves the files unchanged, releases the predecessor's pin and the gate, and
+the next checkpoint publishes exactly one generation, which the judge
+confirms. The journal is therefore acknowledged once:
+
+1. the first call committed the acknowledgement before the hook ran;
+2. nothing changed the hot store between the panic and the retry;
+3. with an empty journal, the retry's acknowledgement can only find the
+   committed marker, which changes nothing.
+
+In `RSpaceJournalPublicationOwner.tla` this panic is a stutter between
+`Acknowledge` and `FinishAcknowledgement`, not the model's `Unwind`, which
+moves to RecoveryRequired. Production thus refines a subset of the model's
+behaviours (an inference from the code: the owner has no drop guard that
+resets its phase).
+
+**What the row requires.** The "What it requires" column states the
+production checks that TH-08's test makes, in addition to its model half.
+
+| Row | Production check | What it requires |
+|---|---|---|
+| TH-08 | `production_owner_histories`, four seeded and thirty-two generated histories, and `run_owner_history_unwind_child` through `authority_unwind_child` | `ReopenDiscardsVolatileJournal`: after every restart by path, from every phase that a history reaches, the reopened owner's five journals are empty and its hot store holds the durable contents, and after every step a hot store bootstrapped from a cold copy does the same. `RecoveryAcceptsOnlyExactTerminal`: every reconcile, explicit, implicit or under a decoy bound to the store's pathname, adopts exactly the predecessor after an outcome class that keeps it and exactly the retained terminal after one that selects it; the decoy is never adopted or written; a reconcile under zero admission limits is refused and keeps RecoveryRequired, the terminal, the gate and the journals. `AtMostOneAcknowledgement`: each of the four acknowledgement retries after a successor pin overflow acknowledges with no hook, no cold admission and no index construction, and after an unwind past the acknowledgement the retry acknowledges through the committed marker and the next checkpoint publishes one generation. `GateHeldUntilResolution`: the operation gate is held exactly in the open phases, edits are blocked there, and a checkpoint cancelled while a reader holds the gate captures and publishes nothing and leaves the gate free. |
+
+**Reachability.** Some behaviours of the owner model cannot be reached, or
+mean nothing, in production histories, and the slice replaces them.
+
+1. *Cancellation in an open phase.* The model's `CancelCall` cancels a call
+   in progress. The owner's only await, for the gate's write permit
+   (`rspace_authority.rs:213`), comes before the capture (`:216`), while
+   `reconcile` and the acknowledgement are synchronous, so a call can be
+   cancelled only at the gate. The histories cancel there; the unwind child
+   covers a panic past the acknowledgement; and the existing boundary
+   children cover panics at capture, preparation, both pins and the
+   acknowledgement. In an open phase the test cannot hold the gate's read
+   side, so a cancellation there normalizes to a checkpoint.
+2. *A torn slot write that selects the new slot.* Whether a torn prefix
+   leaves a valid new slot depends on the bytes it overlays. The class that
+   selects the new slot is met deterministically by hook 11 and by a failed
+   catalog sync, and the torn write's own class is counted with the outcome
+   classes.
+3. *Captured and Invalidated after a step.* Captured exists only inside a
+   checkpoint call, and Invalidated needs a foreign rebinding of the hot
+   store. The existing capture, preparation and acknowledgement unwinds and
+   the invalidated-base regressions (JO-08) cover them.
+4. *A restart in the middle of a publication.* The publication runs within
+   one poll, so an in-process history cannot restart inside it. Task 11967's
+   kill children (TH-06) cover it.
+5. *Vacuous actions.* A reconcile under a decoy in AwaitingAck returns
+   through the acknowledgement shortcut before any recovery, and a
+   zero-limit reconcile in Ready returns the state; both normalize.
+6. *A publication over an index suffix.* Every route out of
+   RecoveryRequired passes through a recovery that rebuilds the index first,
+   so the owner never publishes over an index suffix. The refusal at
+   `publication.rs:1254` stays covered by task 11967.
+
+**Coverage.** The four seeds alone, and then the seeds together with the
+generated histories, must meet every counter except the informational
+normalization counts (`assert_authority`). The seeds run strictly, so their
+counts are fixed; the generated counts are those of
+`PROPTEST_RNG_SEED=20261027`. The torn slot write of the seeds kept the old
+slot, one of the two outcomes that the design predicted for it.
+
+| Counter | Entries, in order | Seeds | Seeds and generated |
+|---|---|---|---|
+| Faulted checkpoint at a trusted hook | hooks 2 to 14 | 1 each | 1, 1, 1, 4, 4, 1, 1, 1, 1, 1, 1, 1, 2 |
+| Faulted checkpoint at an I/O failpoint | physical write, physical sync, catalog slot write, catalog sync, catalog directory sync | 1, 2, 1, 1, 1 | 2, 4, 1, 2, 2 |
+| Site of a failed physical sync | the sync after the prepare write; the sync after truncating a pack suffix | 1, 1 | 3, 1 |
+| Torn slot write | one entry | 1 | 6 |
+| Outcome class of a faulted checkpoint | definitely not published; indeterminate with the old slot; indeterminate with the new slot; published with an error | 12, 2, 2, 4 | 21, 7, 3, 6 |
+| Recovery path | explicit, to the predecessor; explicit, to the terminal; implicit, to the predecessor and a republication; implicit, to the terminal | 6, 2, 6, 2 | 10, 3, 13, 3 |
+| Reconcile under a decoy | to the predecessor; to the terminal | 1, 1 | 1, 1 |
+| Reconcile refused under zero admission limits | one entry | 1 | 2 |
+| Successor pin overflow | one entry | 5 | 8 |
+| Acknowledgement retry | checkpoint, minimal checkpoint, reconcile, zero-limit reconcile | 1, 1, 1, 1 | 3, 1, 1, 1 |
+| Checkpoint cancelled at the gate | one entry | 1 | 9 |
+| Empty checkpoint | normal limits; minimal limits | 1, 1 | 37, 8 |
+| Restart by path | Ready, unchanged; Ready, with a discarded journal; RecoveryRequired, kept; RecoveryRequired, with the terminal selected; AwaitingAck | 1 each | 4, 4, 1, 2, 1 |
+| Edit blocked by the held gate | one entry | 3 | 25 |
+| Durable commit that changed a namespace | data, continuations, joins | 12, 5, 6 | 47, 25, 31 |
+| Durable commit that removed an entry | data, continuations, joins | 2, 2, 2 | 5, 2, 2 |
+| Join removal refused while its group holds a continuation | one entry | 1 | 5 |
+| Durable commit that leaves a datum with multiplicity at least two | one entry | 3 | 8 |
+| Normalized, informational | edits, actions | 0, 0 | 77, 54 |
+
+The faulted checkpoints of the seeds and generated histories together number
+37 by trigger (20 at hooks, 11 at I/O failpoints, 6 torn) and 37 by outcome
+class, as they must.
+
+**Boundary.**
+
+- Each history runs one process, one owner and one thread. RSpace operations
+  are emulated through the gate's read side; there is no concurrent producer
+  or consumer.
+- Faults are injected in-process, and the operating system keeps every
+  write; no power-loss claim is made.
+- The production half compiles on unix only; elsewhere the TH-08 function
+  runs its model half alone.
+- Only the V2 retention writer is used.
+- In an open phase the judge reads the durable copy only. The owner's hot
+  store is read in Ready alone, where an RSpace operation could read it too.
+- A restart drops every handle of the owner first. The directory registry
+  can hand a surviving clone the state of the old registry for the same
+  directory, so the test keeps no clone across a restart (an inference from
+  `retention.rs:575-598`).
+
+The production evidence in J-253 was taken at these sources.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `rspace++/src/rspace/persistence/durable/rspace_authority.rs` | `9c5acd88d7ac44719ddce6d7f6cd846a1c592bde831417c630767f8237921e70` |
+| `rspace++/src/rspace/hot_store.rs` | `4b0ea9cdde34385b4f13f62cd9872fcc8ce4319a581428c9009fb759f2986460` |
+| `rspace++/src/rspace/persistence/durable/publication.rs` | `801348d8e8a547db88596136103bf45dab03d645208c2e0658445b5e49c30de6` |
+| `rspace++/src/rspace/persistence/durable/io.rs` | `7811573c32e8cf8942eed3530c52b3f7a620f664880e517204ac258ffda05cf7` |
+| `rspace++/src/rspace/persistence/durable/startup.rs` | `3a1da653d1206d0dcc9563c0cd14b6197cd49081cc605d78aed3c6cc4db863d6` |
+| `rspace++/src/rspace/persistence/durable/recovery.rs` | `60c375acd1eeefd8f821bea60ffec84fa9b1eb51b0856541d01059c8423fcfb8` |
+| `rspace++/src/rspace/persistence/durable/admission.rs` | `eef3657433921ca66c94d3e24c028d903f7599de18d9c4510e797b419c9b1671` |
+| `rspace++/src/rspace/persistence/durable/index.rs` | `28d5ae62109e70dee01a9e63044bb26f269fd4adfcf2d79c2da5ae98161ccfc0` |
+| `rspace++/src/rspace/persistence/durable/mod.rs` | `143f15ce54a0d20d1fe64b21c3f6a207331f1e75c1464ed4895dd7d2c35143e8` |
+| `rspace++/src/rspace/persistence/retention.rs` | `e5971ed87b6973bdbc09fd02609507c2a8dc8af4459f8bb973df59e2782529de` |
+| `rspace++/tests/persistence/owner_history_production.rs` | `b9047bdfee02e99f91fbb2d2e14e2f6d7cd6901e1562a6457e0b4230bfb99b69` |
+| `rspace++/tests/persistence/trusted_history_properties.rs` | `986fd173fa171ba90c95a5702bbe8322d9443a77e3aa568f373bfc0b4c2f3f74` |
+| `rspace++/tests/persistence/durable_rspace_authority.rs` | `6d8d8d64652eeb9e46341a250700d2c1863f39b9e4405f07c940be1df0c3e8cb` |
+| `rspace++/tests/persistence/trusted_history_production.rs` | `61cb02a4c26bd4868bbf464df9b9a202d9119604184018626f37536ada9df82e` |
+| `rspace++/tests/persistence/mod.rs` | `217c64ad3bf68e72acbcf87848fda631cc126899a63e3ff0ab8e55ab069b33e4` |
+| `docs/design/pathmap/figures/owner-history-step.puml` | `4e12fffd099800ef669eea6b096641487d741c567259881298100dd134f7239e` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -5570,7 +5833,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | TH-05 | `HistoryPinnedPrefixStable`, `NeverReaderAcrossFault`, `LeaseSafety`, `NoDeletionBeforePublication` | `CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). The compaction model's lease invariants are cited, not remodelled; the authority chain keeps a reader pinned across faults and their recoveries. On real files, a reader's pinned generation files keep their pinned prefix and serve its objects by name across faults, recoveries, fresh checkpoints and restarts; reclamation is deferred while the reader pins and completes after the unpin, also after a crash in the middle of reclamation, and a lease counter at its maximum refuses the pin with nothing changed. |
 | TH-06 | `HistoryRecoveryRequiredAfterAmbiguity`, `NeverRestartedMidPublication` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). The transliteration requires recovery after every ambiguous outcome, and the pack chain restarts at every image that an interrupted trusted hook leaves and recovers the prefix that the model selects. On real files, a publication from the stale predecessor after an ambiguous outcome is refused, at the catalog compare with no hook when the catalog changed and at the index length check when an indeterminate write kept the old image; each of the thirteen trusted hooks is killed in a child process at step 3, and restarts mid-publication adopt the catalog's selection. |
 | TH-07 | `HistoryAuthorityIsCatalogSelected`, `RunAdoptedSuccessorIsExactCatalog`, `NeverRecoveredUnderDecoy`, `NeverRepairedForeignCatalog` | `EXEC_ONLY` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). No theorem models the pathname; the authority chain recovers under a decoy to the catalog's selection, and repaired catalogs occur. On real files, decoys bound to the pathname at the base check, at the re-read, during held-lease recovery and at a forged re-read are never adopted or written, and a foreign catalog image is refused by the re-read, by held-lease recovery and by a restart until it is repaired. |
-| TH-08 | `ReopenDiscardsVolatileJournal`, `RecoveryAcceptsOnlyExactTerminal`, `AtMostOneAcknowledgement`, `GateHeldUntilResolution` | `TrustedSuccessorCapability.empty_and_awaiting_ack_branches_do_not_consult_cold_limits` | P | Model extraction; production refinement, which also checks the operation gate that the mirror does not model, is task 11968. The owner mirror counts cold checks, publications and acknowledgements across eight fault choices and four interleavings; the owner model's journal-replay and pathname-recovery faults and its witness `NeverReconciledUnderDecoy`, checked by `scripts/check-rspace-journal-owner-model.sh`, reach the same branches. |
+| TH-08 | `ReopenDiscardsVolatileJournal`, `RecoveryAcceptsOnlyExactTerminal`, `AtMostOneAcknowledgement`, `GateHeldUntilResolution` | `TrustedSuccessorCapability.empty_and_awaiting_ack_branches_do_not_consult_cold_limits` | P | Model extraction; the same test also checks production (task 11968; the journal-owner histories on real files section), including the operation gate that the mirror does not model. On real files, after every step of four seeded and thirty-two generated owner histories, a byte copy admitted cold and its bootstrapped hot store match the model. Restarts replay no journal, every acknowledgement retry runs no publication phase and no cold check, and a retry after an unwind past the acknowledgement acknowledges exactly once. The owner mirror counts cold checks, publications and acknowledgements across eight fault choices and four interleavings; the owner model's journal-replay and pathname-recovery faults and its witness `NeverReconciledUnderDecoy`, checked by `scripts/check-rspace-journal-owner-model.sh`, reach the same branches. |
 | PX-01 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_refuses_a_valid_delta_at_a_coincident_certificate`, `PathExactIncrementalClosure.certificate_first_verifier_complete` | P | Production refinement on the theory's coincidence fixture in canonical bytes, with the two certificates admitted directly; the report's counts and the logical-visit limit bind the model's eight visits. |
 | PX-02 | `EXEC_ONLY` | `PathExactIncrementalClosure.digest_only_certificate_mutant_admits_an_uncovered_occurrence`, `PathExactIncrementalClosure.certificate_first_verifier_sound` | P | Production refinement of exactness: a certificate that differs from the exact one in its path, namespace, kind or reference does not stop the walk, the executable side of the digest-only mutant. |
 | PX-03 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_accepts_a_staged_object_owned_only_at_inherited_positions`, `PathExactIncrementalClosure.skipped_reachability_mutant_admits_an_unreached_staged_object` | P | Production refinement of the second outcome change: the final reachability check refuses a staged object that the walk reaches only at a certified occurrence. |

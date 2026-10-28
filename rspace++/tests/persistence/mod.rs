@@ -25,6 +25,8 @@ mod mutation_codec;
 mod mutation_streaming_properties;
 mod object_codec;
 mod object_store_collision;
+#[cfg(unix)]
+mod owner_history_production;
 mod pack_codec;
 mod path_exact_closure_properties;
 mod path_provenance;

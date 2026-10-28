@@ -42,14 +42,14 @@ use crate::rspace::persistence::{
     StagingStoreLimits, StateVersionV1, StructuralValidationLimits,
 };
 
-type Profile = RSpaceSemanticProfile<String, String, String, String>;
-type Store = Arc<Box<dyn HotStore<String, String, String, String>>>;
+pub(super) type Profile = RSpaceSemanticProfile<String, String, String, String>;
+pub(super) type Store = Arc<Box<dyn HotStore<String, String, String, String>>>;
 
 fn poll_checkpoint(owner: &mut DurableRSpaceAuthorityV1<Profile>) {
     drop(poll_checkpoint_with(owner, publication_limits()));
 }
 
-fn poll_checkpoint_with(
+pub(super) fn poll_checkpoint_with(
     owner: &mut DurableRSpaceAuthorityV1<Profile>,
     limits: DurableRSpacePublicationLimitsV1,
 ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
@@ -78,7 +78,7 @@ fn observed_checkpoint(
     (result, trace, cold_admissions())
 }
 
-fn assert_authority_unwind_child(case: &str, expected_diagnostic: &str) {
+pub(super) fn assert_authority_unwind_child(case: &str, expected_diagnostic: &str) {
     let scratch = shared::rust::test_scratch::acquire("rspace-durable-owner-unwind-");
     let marker = scratch.path().join("verified");
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -141,6 +141,14 @@ fn authority_unwind_child() {
         "ack-conflict" => {
             assert!(parts.next().is_none());
             run_ack_conflict_unwind_child(case);
+        }
+        #[cfg(unix)]
+        "history" => {
+            assert!(parts.next().is_none());
+            super::owner_history_production::run_owner_history_unwind_child(
+                case,
+                authority_unwind_marker(),
+            );
         }
         _ => panic!("unknown durable owner unwind case: {case}"),
     }
@@ -539,7 +547,7 @@ async fn a_stale_capture_is_rejected_before_publication_even_when_its_journal_by
     }
 }
 
-fn publication_limits() -> DurableRSpacePublicationLimitsV1 {
+pub(super) fn publication_limits() -> DurableRSpacePublicationLimitsV1 {
     DurableRSpacePublicationLimitsV1 {
         transaction: DagTransactionLimits::UNBOUNDED,
         recovery: limits(),
@@ -556,7 +564,7 @@ const ZERO_STRUCTURAL: StructuralValidationLimits = StructuralValidationLimits {
     max_worklist: 0,
 };
 
-const ZERO_ADMISSION: DurableAdmissionLimitsV1 = DurableAdmissionLimitsV1 {
+pub(super) const ZERO_ADMISSION: DurableAdmissionLimitsV1 = DurableAdmissionLimitsV1 {
     current_semantics: SemanticValidationLimits {
         structural: ZERO_STRUCTURAL,
         max_logical_nodes: 0,
@@ -577,7 +585,7 @@ const ZERO_ADMISSION: DurableAdmissionLimitsV1 = DurableAdmissionLimitsV1 {
     max_object_read_bytes: 0,
 };
 
-fn minimal_publication_limits() -> DurableRSpacePublicationLimitsV1 {
+pub(super) fn minimal_publication_limits() -> DurableRSpacePublicationLimitsV1 {
     DurableRSpacePublicationLimitsV1 {
         transaction: DagTransactionLimits {
             staging: StagingStoreLimits {
@@ -698,7 +706,7 @@ fn populate(hot: &Store) {
     hot.put_join(&channels[0], &channels).unwrap();
 }
 
-fn assert_empty(hot: &Store) {
+pub(super) fn assert_empty(hot: &Store) {
     let pending = hot.pending_deltas().unwrap();
     assert!(pending.data.unwrap().is_empty());
     assert!(pending.continuations.unwrap().is_empty());
@@ -1035,7 +1043,10 @@ fn run_invalid_base_unwind_child(replace: bool, case: &str) {
     poll_checkpoint(&mut verify.owner);
 }
 
-fn assert_journals_unchanged(hot: &Store, before: &crate::rspace::hot_store::PendingDeltas) {
+pub(super) fn assert_journals_unchanged(
+    hot: &Store,
+    before: &crate::rspace::hot_store::PendingDeltas,
+) {
     let after = hot.pending_deltas().unwrap();
     assert_eq!(before.data, after.data);
     assert_eq!(before.continuations, after.continuations);

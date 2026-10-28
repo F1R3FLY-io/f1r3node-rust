@@ -72,10 +72,11 @@ const ORDER: [HookPoint; 18] = FORMAL_PUBLICATION_PHASE_ORDER;
 const CATALOG: &str = "catalog.v1";
 const UNBOUNDED: TrustedSuccessorPolicyV1 = TrustedSuccessorPolicyV1::UNBOUNDED;
 const FLIPPED_SLOT_BYTE: usize = 50;
-const TORN_PREFIXES: [usize; 14] = [0, 1, 2, 7, 8, 63, 64, 65, 127, 128, 255, 256, 334, 335];
+pub(super) const TORN_PREFIXES: [usize; 14] =
+    [0, 1, 2, 7, 8, 63, 64, 65, 127, 128, 255, 256, 334, 335];
 const KILL_FAULTS: [FaultChoice; 4] =
     [FaultChoice::Hook(6), FaultChoice::Hook(11), FaultChoice::Hook(13), FaultChoice::Torn(200)];
-const IO_FAULTS: [IoFault; 5] = [
+pub(super) const IO_FAULTS: [IoFault; 5] = [
     IoFault::PhysicalWrite,
     IoFault::PhysicalSync,
     IoFault::CatalogSlotWrite,
@@ -107,7 +108,7 @@ const ZERO_SLOTS: Slots = Slots {
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum IoFault {
+pub(super) enum IoFault {
     PhysicalWrite,
     PhysicalSync,
     CatalogSlotWrite,
@@ -116,7 +117,7 @@ enum IoFault {
 }
 
 impl IoFault {
-    const fn failpoint(self) -> DurableIoFailpointV1 {
+    pub(super) const fn failpoint(self) -> DurableIoFailpointV1 {
         match self {
             Self::PhysicalWrite => DurableIoFailpointV1::PhysicalWrite,
             Self::PhysicalSync => DurableIoFailpointV1::PhysicalSync,
@@ -126,7 +127,7 @@ impl IoFault {
         }
     }
 
-    const fn index(self) -> usize { self as usize }
+    pub(super) const fn index(self) -> usize { self as usize }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,7 +246,7 @@ struct HistoryStep {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OutcomeClass {
+pub(super) enum OutcomeClass {
     NotPublished,
     IndeterminateOld,
     IndeterminateNew,
@@ -253,9 +254,11 @@ enum OutcomeClass {
 }
 
 impl OutcomeClass {
-    const fn index(self) -> usize { self as usize }
+    pub(super) const fn index(self) -> usize { self as usize }
 
-    const fn kept(self) -> bool { matches!(self, Self::NotPublished | Self::IndeterminateOld) }
+    pub(super) const fn kept(self) -> bool {
+        matches!(self, Self::NotPublished | Self::IndeterminateOld)
+    }
 
     const fn restart_index(self) -> usize {
         match self {
@@ -267,7 +270,7 @@ impl OutcomeClass {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Failure {
+pub(super) enum Failure {
     Append,
     Io,
     CompareAndSwap,
@@ -452,15 +455,15 @@ struct Coverage {
     kills: [u32; 13],
 }
 
-fn add<const N: usize>(total: &mut [u32; N], part: [u32; N]) {
+pub(super) fn add<const N: usize>(total: &mut [u32; N], part: [u32; N]) {
     for (total, part) in total.iter_mut().zip(part) {
         *total = total.checked_add(part).expect("a coverage count fits u32");
     }
 }
 
-fn add_one(total: &mut u32, part: u32) { add(std::array::from_mut(total), [part]); }
+pub(super) fn add_one(total: &mut u32, part: u32) { add(std::array::from_mut(total), [part]); }
 
-fn require(name: &str, counts: &[u32]) {
+pub(super) fn require(name: &str, counts: &[u32]) {
     assert!(
         counts.iter().all(|count| *count > 0),
         "no trusted history covered every {name}: {counts:?}"
@@ -560,7 +563,7 @@ impl Coverage {
     }
 }
 
-fn failure(context: &str, detail: impl Debug) -> TestCaseError {
+pub(super) fn failure(context: &str, detail: impl Debug) -> TestCaseError {
     TestCaseError::fail(format!("{context}: {detail:?}"))
 }
 
@@ -574,11 +577,13 @@ fn index_generation(value: u64) -> IndexGenerationV1 {
     IndexGenerationV1::new(value).expect("a catalog names a nonzero index generation")
 }
 
-fn index_name(slot: CatalogSlotV1) -> String {
+pub(super) fn index_name(slot: CatalogSlotV1) -> String {
     index_file_name(index_generation(slot.pack().index_generation()))
 }
 
-fn active_pack_name(slot: CatalogSlotV1) -> String { pack_file_name(pack_id(slot.active_pack())) }
+pub(super) fn active_pack_name(slot: CatalogSlotV1) -> String {
+    pack_file_name(pack_id(slot.active_pack()))
+}
 
 fn old_files(slot: CatalogSlotV1, index_too: bool) -> Vec<String> {
     let pack = slot.pack();
@@ -598,24 +603,26 @@ fn write_file(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).expect("a trial file is writable")
 }
 
-fn file_length(path: &Path) -> u64 { fs::metadata(path).expect("a trial file has metadata").len() }
+pub(super) fn file_length(path: &Path) -> u64 {
+    fs::metadata(path).expect("a trial file has metadata").len()
+}
 
 fn file_exists(path: &Path) -> bool { path.try_exists().expect("a trial path is inspectable") }
 
-fn read_image(root: &Path) -> [u8; CATALOG_IMAGE_LEN] {
+pub(super) fn read_image(root: &Path) -> [u8; CATALOG_IMAGE_LEN] {
     read_file(&root.join(CATALOG))
         .try_into()
         .expect("the catalog holds exactly two slots")
 }
 
-fn select(image: &[u8; CATALOG_IMAGE_LEN]) -> Result<CatalogSelectionV1, TestCaseError> {
+pub(super) fn select(image: &[u8; CATALOG_IMAGE_LEN]) -> Result<CatalogSelectionV1, TestCaseError> {
     match CatalogSelectionV1::select(image) {
         Ok(Some(selection)) => Ok(selection),
         selection => Err(failure("the catalog image selects no slot", selection)),
     }
 }
 
-fn appointed_prefix(root: &Path, slot: CatalogSlotV1) -> Vec<u8> {
+pub(super) fn appointed_prefix(root: &Path, slot: CatalogSlotV1) -> Vec<u8> {
     let mut bytes = read_file(&root.join(active_pack_name(slot)));
     let tail = to_usize(slot.durable_pack_tail());
     assert!(bytes.len() >= tail, "the active pack is shorter than its appointed tail");
@@ -631,7 +638,7 @@ fn flip_byte(path: &Path, offset: usize) {
     write_file(path, &bytes);
 }
 
-fn torn_image(
+pub(super) fn torn_image(
     pre: &[u8; CATALOG_IMAGE_LEN],
     terminal: CatalogSlotV1,
     inactive: usize,
@@ -643,14 +650,14 @@ fn torn_image(
     image
 }
 
-fn make_directory(root: &Path) {
+pub(super) fn make_directory(root: &Path) {
     DirBuilder::new()
         .mode(0o700)
         .create(root)
         .expect("a trial directory is created");
 }
 
-fn copy_snapshot(files: &Snapshot, to: &Path) {
+pub(super) fn copy_snapshot(files: &Snapshot, to: &Path) {
     make_directory(to);
     for (name, bytes) in files {
         OpenOptions::new()
@@ -663,7 +670,11 @@ fn copy_snapshot(files: &Snapshot, to: &Path) {
     }
 }
 
-fn same_files(context: &str, left: &Snapshot, right: &Snapshot) -> Result<(), TestCaseError> {
+pub(super) fn same_files(
+    context: &str,
+    left: &Snapshot,
+    right: &Snapshot,
+) -> Result<(), TestCaseError> {
     let differing = left
         .keys()
         .chain(right.keys())
@@ -1043,9 +1054,9 @@ fn sweep_slots(position: usize) -> Slots {
     slots
 }
 
-fn phases(through: usize) -> Vec<HookPoint> { ORDER[2..=through].to_vec() }
+pub(super) fn phases(through: usize) -> Vec<HookPoint> { ORDER[2..=through].to_vec() }
 
-const fn hook_failure(hook: usize) -> Failure {
+pub(super) const fn hook_failure(hook: usize) -> Failure {
     match hook {
         0..=5 => Failure::Append,
         6..=10 => Failure::Io,
@@ -1089,7 +1100,7 @@ fn expectation(
     }
 }
 
-fn check_failure(
+pub(super) fn check_failure(
     error: &IncrementalPublicationErrorV1,
     expected: Failure,
     lease_path: &Path,
@@ -1134,7 +1145,7 @@ fn check_failure(
     Ok(())
 }
 
-fn classify(
+pub(super) fn classify(
     outcome: GenerationCheckpointPublicationOutcomeV1,
     disk: &[u8; CATALOG_IMAGE_LEN],
     pre_slot: CatalogSlotV1,
@@ -1189,7 +1200,7 @@ fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-fn isolated<T: Send>(
+pub(super) fn isolated<T: Send>(
     run: impl FnOnce() -> Result<T, TestCaseError> + Send,
 ) -> Result<T, TestCaseError> {
     std::thread::scope(|scope| {

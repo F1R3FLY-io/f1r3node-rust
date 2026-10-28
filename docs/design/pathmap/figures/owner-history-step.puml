@@ -1,0 +1,60 @@
+@startuml owner-history-step
+' ============================================================================
+' One step of a generated journal-owner history on real files (task 11968, the
+' third slice of task 7928): OwnerHistoryTrial::run_step in
+' rspace++/tests/persistence/owner_history_production.rs.
+' Model:  formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla
+' Mirror: owner_history_property in
+'         rspace++/tests/persistence/trusted_history_properties.rs
+'   GREY   #CFD8DC  the settled point: phase, gate, pins, selected slot,
+'                   appointed prefix, pack suffix, files and journals
+'   PURPLE #E1BEE7  edits under the gate's read side, blocked in open phases
+'   AMBER  #FFE0B2  the normalized action and the fault armed in the owner's
+'                   AfterPreparation hook
+'   BLUE   #BBDEFB  the owner call under observed_effects
+'   RED    #FFCDD2  the open phases after a call: a faulted checkpoint's
+'                   outcome class, the zero-limit refusal, the pin overflow
+'   GREEN  #C8E6C9  a call that settles in Ready, and the judges: the settled
+'                   checks, the byte copy admitted cold, the hot store
+'                   bootstrapped from it, and the generation
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+skinparam NoteBorderColor #455A64
+
+title <b>One step of a journal-owner history on real files</b>\nThe real owner takes the step's edits, action and fault; a byte copy admitted cold\nand a hot store bootstrapped from it judge the result against the model
+
+start
+:observe the settled point: the owner's phase, the operation gate,\nthe generation pins, the slot that the catalog selects, the\npredecessor's appointed pack prefix, any pack suffix, the files\nand the five journals; <<#CFD8DC>>
+:apply the step's edits to the hot store under the gate's read side:\nputs and removals of data, continuations and joins, a join removal\nrefused while its group holds a continuation; in an open phase the\ngate is held and every edit is blocked; <<#E1BEE7>>
+:normalize the action on the model to one that the phase admits;\na seeded history must keep every action and edit as written; <<#FFE0B2>>
+if (a faulted checkpoint?) then (yes)
+  :arm the fault inside the owner's AfterPreparation hook, so it\nbinds to the publication that the owner actually runs: a failpoint\nat one of the hooks 2 to 14, an I/O failpoint, or a torn slot prefix; <<#FFE0B2>>
+else (no)
+endif
+:call the owner under observed_effects: a checkpoint, a minimal\ncheckpoint, a checkpoint cancelled at the gate, a reconcile (also\nunder zero admission limits or under a decoy at the store's\npathname), or a restart by path; the hook trace, the cold\nadmissions and the index constructions must match the action; <<#BBDEFB>>
+switch (phase after the call?)
+case (Ready)
+  :published once, empty, cancelled,\nreconciled, retried or restarted:\nthe journals are empty or unchanged,\nthe gate is free, and only the\nadopted generation is pinned; <<#C8E6C9>>
+case (RecoveryRequired)
+  :a faulted checkpoint: its outcome class\nkeeps the predecessor or selects the exact\nterminal, the predecessor's prefix is\nunchanged; or a zero-limit reconcile is\nrefused; the gate stays held and the\njournals are unchanged; <<#FFCDD2>>
+case (AwaitingAck)
+  :the successor pin overflowed after\nthe publication: the terminal is\nretained and unpinned, the old pin\nis kept, the gate stays held, and\nthe next retry acknowledges once; <<#FFCDD2>>
+endswitch
+:check the settled point: phase, gate, pins, the selected slot, the\npredecessor's appointed prefix and at most one new generation; in\nReady, the hot store read under the gate's read side equals the model; <<#C8E6C9>>
+:judge: copy the store byte for byte into a fresh directory and admit\nthe copy cold with its own lease registry; its slot, its generation\nand its contents must equal the model's durable state, and so must\na hot store bootstrapped from it with empty journals; <<#C8E6C9>>
+note right #ECEFF1
+  <b>The independent judge</b>
+  The copy shares no lease, registry or
+  process state with the live owner, and
+  its admission and bootstrap run outside
+  every observed_effects window, so they
+  never count toward a step's effects.
+end note
+stop
+
+@enduml

@@ -5,6 +5,8 @@ use proptest::prelude::*;
 
 use super::incremental_reachability_properties::Domain;
 #[cfg(unix)]
+use super::owner_history_production::production_owner_histories;
+#[cfg(unix)]
 use super::trusted_history_production::{
     production_every_failpoint_at_later_steps, production_faulted_trusted_histories,
 };
@@ -1722,4 +1724,6 @@ fn every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps() {
 #[test]
 fn owner_histories_resolve_ambiguity_acknowledge_once_and_never_replay_the_journal() {
     owner_history_property();
+    #[cfg(unix)]
+    production_owner_histories(32);
 }
