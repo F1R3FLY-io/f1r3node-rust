@@ -4749,6 +4749,29 @@ blocked_by:
   - "BountyMesh CPU runners on Docker are planned. Their repository is not yet in the workspace."
 decision: "2026-10-27: the user chose BountyMesh as the DePIN provider, DePIN as the primary provider with automatic OCI fallback, and OCI for the merge recovery soaks."
 tasks:
+  - id: TASK-031-8
+    title: "Profile and benchmark the BountyMesh host against the OCI runners"
+    status: in_progress
+    priority: p2
+    claimed_by: claude-session-5dae053b
+    claimed_at: 2026-10-28T04:45:00Z
+    blocked_by: []
+    decision: "2026-10-28: the user chose to emulate the OCI amd64 shape on the BountyMesh host, to measure only the heavy Integration Pipeline jobs and the Docker image builds, and to use the dev head. cargo build and cargo test stay on the GitHub-hosted runners."
+    notes:
+      - "2026-10-27: the user asked to profile and benchmark the current BountyMesh host before the routing and fallback work, because this host will run the jobs that the OCI runners run now."
+      - "The first host is x86_64 bare metal: AMD Threadripper PRO 5995WX, 128 threads, 995 GB RAM, 915 GB ext4. It is not DGX Spark. The results can change the architecture routing of TASK-031-2."
+      - "launch-runner.sh in the system-integration repository sets the OCI shapes. This repository does not set them."
+      - "Only amd64 is compared now. arm64 is compared when a BountyMesh arm64 host is available."
+      - "system-integration ci/oci-runners/state.env sets the OCI shapes: amd64 VM.Standard.E6.Flex with 16 OCPUs (32 threads) and 48 GB, arm64 VM.Standard.A1.Flex with 16 OCPUs and 32 GB."
+      - "The Docker image builds do not run on OCI. They run on the persistent f1r3fly-rust-ci runners."
+      - "Each emulated job runs in a privileged Docker-in-Docker container with a 32 CPU and 48 GB limit, so the node containers of the docker provider also get the limit. A plain cgroup limit does not cover containers that dockerd starts."
+    acceptance:
+      - "A hardware profile of the BountyMesh host and of each OCI runner shape (amd64 and arm64) records the CPU model, threads, RAM, disk type, and network throughput to GitHub and to the container registry"
+      - "The dev head runs on the BountyMesh host in the emulated OCI amd64 shape and without a limit: the Docker image build and each amd64 heavy Integration Pipeline job, with three runs for each measurement. Recent OCI runs of the same jobs give the OCI times."
+      - "A table in docs/discoveries/ gives the wall-clock time of each measurement on each provider, with the median and the spread, and the run IDs and the head SHA"
+      - "The table records the job startup time on each provider, from queue to first step"
+      - "The discovery states how many concurrent heavy runs the host supports before the median job time is more than the OCI median, and TASK-031-5 uses this value as its concurrency limit"
+
   - id: TASK-031-1
     title: "Runner provider variable, depin-run label, and one shared resolver"
     status: pending
@@ -4770,7 +4793,7 @@ tasks:
     status: pending
     priority: p2
     claimed_by: null
-    blocked_by: []
+    blocked_by: ["TASK-031-8"]
     notes:
       - "BountyMesh GPU compute is NVIDIA DGX Spark (GB10), which is an aarch64 platform. The amd64 jobs of the heavy Integration Pipeline cannot run on it."
       - "2026-10-27: the user reported that BountyMesh will soon support CPU runners on Docker. Their repository is not yet in the workspace. The routing must use these runners when they declare the job architecture."
@@ -4798,7 +4821,7 @@ tasks:
     status: pending
     priority: p2
     claimed_by: null
-    blocked_by: []
+    blocked_by: ["TASK-031-8"]
     acceptance:
       - "If no BountyMesh runner is online for the required labels, or the job does not start within a set time, the run uses OCI runners"
       - "The run summary records the fallback, the failed provider, and the reason"
