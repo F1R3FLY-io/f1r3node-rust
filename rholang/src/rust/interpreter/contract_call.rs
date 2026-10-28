@@ -119,9 +119,15 @@ impl ContractCall {
                                 );
                                 match (result, restored) {
                                     (result, Ok(())) => result,
-                                    (Ok(_), Err(error)) => Err(error),
-                                    (Err(dispatch_error), Err(error)) => reducer
+                                    (
+                                        Ok(DispatchType::FailedNonDeterministicCall(
+                                            dispatch_error,
+                                        )),
+                                        Err(error),
+                                    )
+                                    | (Err(dispatch_error), Err(error)) => reducer
                                         .aggregate_evaluator_errors(vec![dispatch_error, error]),
+                                    (Ok(_), Err(error)) => Err(error),
                                 }
                             } else {
                                 dispatch.await
