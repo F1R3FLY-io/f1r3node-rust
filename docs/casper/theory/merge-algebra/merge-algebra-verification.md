@@ -338,9 +338,7 @@ keeps the merge's meaning intact while removing the fork.
 **Runtime enforcement of the no-fork assumption.** The canonical-order determinism above assumes
 the non-associative operator only ever folds a survivor set on which *no order-dependent pair
 reaches apply*. That assumption is now **enforced at runtime** by `OrderDependenceGuard`
-(`conflict_set_merger.rs`): it trips iff a datum is contributed to a side (`added` or `removed`)
-by **≥ 2 distinct survivors** on a **non-mergeable** channel — the exact precondition under which
-the max-union fold differs from the order-independent sum-union fold. It is **detection-only**
+(`conflict_set_merger.rs`). The guard groups survivors by **source block**. Every chain of one block carries the full pre→post diff of that block on each channel that the chain touches. Thus sibling chains of one block repeat the same contribution, and the idempotent max-union applies it once, as the block executed it (issue #746). On a **non-mergeable** channel, the guard trips iff a datum is contributed to a side (`added` or `removed`) by **≥ 2 distinct source blocks**, or by **≥ 2 sibling survivors** while another survivor contributes the datum to the opposite side. The first condition is the precondition under which the max-union fold differs from the order-independent sum-union fold over blocks. The second condition is the case where the fold result depends on the association. It is **detection-only**
 (`debug_assert!` in debug/CI + a release `tracing::error!` / metric): post-state, trie actions,
 and the merged root are byte-identical whether or not it fires, so it cannot itself fork. Number
 channels are excluded (they merge via the commutative-group `combine_mergeable_value`). Soundness

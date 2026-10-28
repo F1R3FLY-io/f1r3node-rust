@@ -205,7 +205,8 @@ pub static FS_HANDLERS: [FsHandlerEntry] = [..];
 ///   - 4.37: +1 (`fs_release_all_for_holder`, LOCK 4/4).  Count = 25.
 ///   - 4.38: +1 (`fs_write`, FIRST LENGTH-PARAMETERIZED MUTATION).  Count = 26.
 ///   - 4.39: +1 (`fs_write_at`, MUTATION 8/8 — MIGRATION COMPLETE).  Count = 27.
-pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 27;
+///   - fs_mkdir: +1 (new directory-create verifying mutation).  Count = 28.
+pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 28;
 
 /// Expected count of trait-registered handlers whose
 /// `<H as FsHandler>::VERIFYING == true`.  Verifying handlers
@@ -233,7 +234,7 @@ pub const EXPECTED_MIGRATED_HANDLER_COUNT: usize = 27;
 ///
 /// Trait-exempt verifying handler (NOT in FS_HANDLERS): `fs_remove_dir`
 /// (see `handler_trait::fs_handler` module docstring).
-pub const EXPECTED_VERIFYING_HANDLER_COUNT: usize = 14;
+pub const EXPECTED_VERIFYING_HANDLER_COUNT: usize = 15;
 
 /// Expected count of trait-registered handlers per
 /// [`HandlerFamily`](super::family::HandlerFamily).  Variant order
@@ -261,7 +262,7 @@ pub const EXPECTED_VERIFYING_HANDLER_COUNT: usize = 14;
 /// handler's `family: HandlerFamily::...` field was set wrong at
 /// registration time.
 pub const EXPECTED_PER_FAMILY_HANDLER_COUNTS: [(super::family::HandlerFamily, usize); 5] = [
-    (super::family::HandlerFamily::Mutation, 8),
+    (super::family::HandlerFamily::Mutation, 9),
     (super::family::HandlerFamily::Observation, 9),
     (super::family::HandlerFamily::Stream, 3),
     (super::family::HandlerFamily::Lock, 4),
@@ -296,7 +297,7 @@ pub const EXPECTED_PER_FAMILY_HANDLER_COUNTS: [(super::family::HandlerFamily, us
 /// journaling differently; a mis-labeled flip changes the
 /// replay-side effect ordering.
 pub const EXPECTED_PER_FAMILY_VERIFYING_COUNTS: [(super::family::HandlerFamily, usize); 5] = [
-    (super::family::HandlerFamily::Mutation, 7),
+    (super::family::HandlerFamily::Mutation, 8),
     (super::family::HandlerFamily::Observation, 7),
     (super::family::HandlerFamily::Stream, 0),
     (super::family::HandlerFamily::Lock, 0),
@@ -384,6 +385,7 @@ mod tests {
             "fs_release_all_for_holder", // slice 4.37 (lock 4/4)
             "fs_write",                  // slice 4.38 (first length-parameterized mutation)
             "fs_write_at",               // slice 4.39 (mutation 8/8 — migration complete)
+            "fs_mkdir",                  // directory create — verifying mutation
         ];
 
         assert_eq!(
@@ -644,7 +646,7 @@ mod tests {
             "fs_read",
             "fs_read_at",
             "fs_entries",
-            // Mutation family (7).
+            // Mutation family (8).
             "fs_truncate",
             "fs_chmod",
             "fs_rename",
@@ -652,6 +654,7 @@ mod tests {
             "fs_write",
             "fs_write_at",
             "fs_copy_file",
+            "fs_mkdir",
         ];
         assert_eq!(
             EXPECTED_VERIFYING_NAMES.len(),
