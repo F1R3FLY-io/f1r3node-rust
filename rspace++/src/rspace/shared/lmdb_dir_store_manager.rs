@@ -46,7 +46,11 @@ impl LmdbEnvConfig {
         LmdbEnvConfig {
             name,
             max_env_size,
-            max_dbs: 20,
+            // Bumped from 20 for f1r3drive-rust bring-up on top-of-tree
+            // f1r3node-rust at commit 3e1a807ad — current source opens
+            // >20 named sub-DBs against the shared env and MDB_DBS_FULL
+            // trips at setup_node_program. 64 is cheap in LMDB.
+            max_dbs: 64,
         }
     }
 

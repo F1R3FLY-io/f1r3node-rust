@@ -452,6 +452,15 @@ impl FixedChannels {
     /// without tripping `eval_new`'s "No value set for URN" check,
     /// even before the real handler landed.
     pub fn fs_remove_dir() -> Par { byte_name(58) }
+
+    /// `rho:io:fs:native:1.0.0/mkdir` — directory creation.
+    /// Signature `(root, rel, mode: Int, parents: Bool, cmode)`.
+    /// `parents = true` mirrors Node.js `fs.mkdir(..., {recursive:
+    /// true})`: EEXIST on a directory is success, intermediate
+    /// parents are created automatically.  `parents = false`:
+    /// EEXIST is `FSERR_EXISTS`, missing parent is
+    /// `FSERR_NOT_FOUND`.  Verifying mutation; constant cost.
+    pub fn fs_mkdir() -> Par { byte_name(41) }
 }
 
 pub struct BodyRefs;
@@ -589,6 +598,10 @@ impl BodyRefs {
     /// 5.142 (URN swap from stub to `FsProcesses::fs_remove_dir`).
     /// See `FixedChannels::fs_remove_dir` above.
     pub const FS_REMOVE_DIR: i64 = 58;
+
+    /// `rho:io:fs:native:1.0.0/mkdir` body-ref.  Uses the free slot
+    /// at 41 (previously a gap between FS_OPEN=40 and FS_READ=42).
+    pub const FS_MKDIR: i64 = 41;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -639,6 +652,7 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
         BodyRefs::FS_ENTRIES_STREAM_OPEN,
         BodyRefs::FS_ENTRIES_STREAM_NEXT,
         BodyRefs::FS_ENTRIES_STREAM_CLOSE,
+        BodyRefs::FS_MKDIR,
     ])
 }
 
@@ -2605,8 +2619,9 @@ mod body_refs_fs_tests {
             ("FS_WRITE", BodyRefs::FS_WRITE),
             ("FS_WRITE_AT", BodyRefs::FS_WRITE_AT),
             ("FS_REMOVE_DIR", BodyRefs::FS_REMOVE_DIR),
+            ("FS_MKDIR", BodyRefs::FS_MKDIR),
         ];
-        const EXPECTED_FS_BODY_REF_COUNT: usize = 28;
+        const EXPECTED_FS_BODY_REF_COUNT: usize = 29;
         assert_eq!(
             ENUMERATED_FS_BODY_REFS.len(),
             EXPECTED_FS_BODY_REF_COUNT,
