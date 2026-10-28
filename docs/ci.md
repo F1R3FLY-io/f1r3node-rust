@@ -264,20 +264,19 @@ The rulesets require a branch to be up to date before a merge. Mergify then acce
 
 Each queue lists its checks in both condition lists. A pull request therefore enters a queue only after its checks pass.
 
-Mergify adds the `ci-heavy` label to every open pull request of this repository into `dev`, `master`, `ca-canary`, and `ca-release`. It does not label a protected head, or a `ca-canary` pull request that is not a `ca/` item. A draft gets the label when it is ready for review. If someone removes the label, Mergify adds it again. The label runs the heavy pipeline on the pull request.
+Mergify adds the `ci-heavy` label to every open pull request of this repository into `dev`, `master`, `ca-canary`, and `ca-release`. It does not label a protected head, or a `ca-canary` pull request that is not a `ca/` item. A draft gets the label when it is ready for review. If someone removes the label without a valid waiver, Mergify adds it again. The label runs the heavy pipeline on the pull request.
 
 Each push to a labeled pull request runs the heavy pipeline again. Each heavy run uses OCI instances from the shared daily quota, so push in batches. A `LimitExceeded` error means that the quota is used up for the day.
 
 Without a waiver, a queue merges only when both Integration Gate checks succeed. A skipped check does not satisfy `check-success`.
 
-A member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run on the member's own pull request into `dev` or `ca-canary`. To avoid any heavy run, open the pull request with `--label ci-heavy-waived`. On an open pull request:
+A member of `@F1R3FLY-io/ci-maintainers` can waive the heavy run on the member's own pull request into `dev`, `master`, or `ca-canary`. To waive, remove the `ci-heavy` label. To avoid any heavy run, open the pull request with `--label ci-heavy-waived`.
 
-1. Add the `ci-heavy-waived` label. Mergify then does not add `ci-heavy` again.
-2. Remove the `ci-heavy` label.
+When the author removes `ci-heavy`, the **CI Heavy Label** workflow adds `ci-heavy-waived`. If Mergify adds `ci-heavy` again before it sees the waiver, the workflow removes `ci-heavy` one more time. The workflow then cancels the running CI run, including its OCI jobs, and reruns CI with the current labels. The heavy pipeline is skipped, and the Integration Gate checks report skipped. Failed gate results of an earlier heavy run are replaced in the same way. If `ci-heavy` is back after that, the workflow reports a warning, and the heavy pipeline runs.
 
-When the pull request has `ci-heavy-waived` and no `ci-heavy`, the **CI Heavy Label** workflow cancels the running CI run, including its OCI jobs. It then reruns CI with the current labels, so the heavy pipeline is skipped and the Integration Gate checks report skipped. Failed gate results of an earlier heavy run are replaced in the same way.
+The `dev`, `master`, and `ca-item` queues accept the waiver only when the author is a ci-maintainers member. The workflow records a removal as a waiver only when the remover is the author and an organization member. For another author, Mergify adds `ci-heavy` again and keeps it, so the heavy pipeline runs. `devProtect` requires both Integration Gate checks, and GitHub counts a skipped gate job as passing, so a waived pull request can merge into `dev`. `masterProtect` does not require the gates. The `ca-release` queue has no waiver.
 
-The `dev` and `ca-item` queues accept the waiver only when the author is a ci-maintainers member. A waiver on another pull request does not count, so the pull request cannot merge until `ci-heavy` is back. `devProtect` requires both Integration Gate checks, and GitHub counts a skipped gate job as passing, so a waived pull request can merge into `dev`. The `master` and `ca-release` queues have no waiver. Every promotion and every hotfix needs `ci-heavy` and both gates.
+On `master`, the waiver covers a hotfix that a ci-maintainers member authored. The promotion app is the author of every promotion, so a promotion always needs `ci-heavy` and both gates. A waiver into `master` skips only the heavy run before the merge. The push to `master` runs the heavy pipeline. A release needs a CI run of its source that has all Integration Pipeline jobs.
 
 CI does not run on a `labeled` event. A run for a label replaces the checks of the pull request head with pending checks. The merge queue adds the `queued` label when it queues a pull request, so the required checks became pending and the merge failed (pull request #826).
 
@@ -286,10 +285,10 @@ The **CI Heavy Label** workflow reruns the newest CI run of the head when the `c
 | Queue | Pull requests | Queue and merge conditions |
 |---|---|---|
 | `dev` | Any pull request of this repository into `dev`, also the `master` back-merge | An approval or a `ci-maintainers` author, requested reviews, no requested changes, the `devProtect` checks, Promotion Source, and `ci-heavy` with the gates, or a maintainer waiver |
-| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | An approving review, no requested changes, the `ci-heavy` label, the `masterProtect` checks, Promotion Source, the casper shards, and the Integration Gates |
+| `master` | Head `promote/<UTC timestamp>` or `hotfix/*` into `master` | An approving review, no requested changes, the `masterProtect` checks, Promotion Source, the casper shards, and `ci-heavy` with the Integration Gates, or a maintainer waiver |
 | `ca-item` | Head `ca/*` into `ca-canary`, also the dev sync | As for `dev`, and also the `ca-soaked` label |
 | `ca-daily` | Head `backmerge/ca-release-<SHA>` into `ca-canary`, opened by the promotion app | The light `ci.yml` checks and `CA Daily Provenance`. No review and no heavy run. The trusted validator accepts the release source and clean base merges only. |
-| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | As for `master`, with the `dev` checks |
+| `ca-release` | Head `promote/ca-release-<UTC timestamp>` into `ca-release` | An approving review, no requested changes, the `ci-heavy` label with the Integration Gates and no waiver, and the `dev` checks |
 
 To merge a pull request into `master` or `ca-release`, get an approving review.
 
