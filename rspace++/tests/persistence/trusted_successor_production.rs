@@ -62,13 +62,13 @@ use crate::rspace::persistence::{
 };
 
 #[derive(Clone, Copy)]
-struct Scenario {
-    writer: RetentionFormat,
-    source: fn() -> SyntheticCheckpointSource,
-    foreign: fn() -> SyntheticCheckpointSource,
+pub(super) struct Scenario {
+    pub(super) writer: RetentionFormat,
+    pub(super) source: fn() -> SyntheticCheckpointSource,
+    pub(super) foreign: fn() -> SyntheticCheckpointSource,
 }
 
-const SCENARIOS: [Scenario; 4] = [
+pub(super) const SCENARIOS: [Scenario; 4] = [
     Scenario {
         writer: RetentionFormat::V1,
         source: fixture,
@@ -190,14 +190,14 @@ pub(super) fn traced<T>(
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct PublicationEffects {
-    trace: Vec<GenerationCheckpointPublicationHookPointV1>,
-    cold_admissions: u64,
-    index_constructions: u64,
+pub(super) struct PublicationEffects {
+    pub(super) trace: Vec<GenerationCheckpointPublicationHookPointV1>,
+    pub(super) cold_admissions: u64,
+    pub(super) index_constructions: u64,
 }
 
 impl PublicationEffects {
-    fn trusted() -> Self {
+    pub(super) fn trusted() -> Self {
         Self {
             trace: FORMAL_PUBLICATION_PHASE_ORDER[2..=14].to_vec(),
             cold_admissions: 0,
@@ -214,7 +214,7 @@ impl PublicationEffects {
     }
 }
 
-fn observed_effects<T>(run: impl FnOnce() -> T) -> (T, PublicationEffects) {
+pub(super) fn observed_effects<T>(run: impl FnOnce() -> T) -> (T, PublicationEffects) {
     reset_cold_admissions();
     reset_committed_index_constructions();
     let (result, trace) = traced(run);
@@ -238,7 +238,7 @@ fn trusted_published(
     Ok(core)
 }
 
-fn preparation_refusal<T>(
+pub(super) fn preparation_refusal<T>(
     (published, trace): (
         Result<T, IncrementalPublicationErrorV1>,
         Vec<GenerationCheckpointPublicationHookPointV1>,
@@ -293,7 +293,7 @@ struct UnchangedWitness {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct SuccessorObservation {
+pub(super) struct SuccessorObservation {
     version: StateVersionV1,
     validity: ObjectRefV1,
     retention: Vec<u8>,
@@ -324,7 +324,7 @@ pub(super) enum BindOutcome {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum PreflightOutcome {
+pub(super) enum PreflightOutcome {
     Accepted,
     AuthorityMismatch,
     ModeMismatch,
@@ -994,7 +994,7 @@ impl TrustedPolicyEvidence {
     }
 }
 
-const RECLAMATION_INTENT: &str = "reclaim.v1";
+pub(super) const RECLAMATION_INTENT: &str = "reclaim.v1";
 
 #[derive(Debug, PartialEq, Eq)]
 struct ObservedResolution {
@@ -1130,7 +1130,7 @@ fn trusted_successor<'a, P: SemanticProfile>(
     }
 }
 
-fn trusted_observation<P: SemanticProfile>(
+pub(super) fn trusted_observation<P: SemanticProfile>(
     bound: &SealedDurableTransactionV1<'_, P>,
 ) -> SuccessorObservation {
     let successor = trusted_successor(bound);
@@ -1145,7 +1145,9 @@ fn trusted_observation<P: SemanticProfile>(
     }
 }
 
-fn core_observation<P: SemanticProfile>(core: &DurableAuthorityCoreV1<P>) -> SuccessorObservation {
+pub(super) fn core_observation<P: SemanticProfile>(
+    core: &DurableAuthorityCoreV1<P>,
+) -> SuccessorObservation {
     SuccessorObservation {
         version: core.authority().slot().state(),
         validity: core.validity().manifest(),
@@ -1302,7 +1304,7 @@ fn policy_value(mut policy: TrustedSuccessorPolicyV1, axis: PolicyAxis) -> u64 {
     *policy_slot(&mut policy, axis)
 }
 
-fn policy_with(
+pub(super) fn policy_with(
     mut policy: TrustedSuccessorPolicyV1,
     axis: PolicyAxis,
     value: u64,

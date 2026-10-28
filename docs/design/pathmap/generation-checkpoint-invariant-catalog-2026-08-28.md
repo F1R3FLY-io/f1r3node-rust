@@ -5127,7 +5127,7 @@ The model halves of TS-12 to TS-15 pass with the corrected mirror.
 |---|---|---|
 | TH-01 | Sole authority. After every faulted step of a generated history the writer holds exactly one authority, the predecessor or the exact successor that the live catalog selects. An ambiguous outcome leaves it none until held-lease recovery, and an indeterminate swap whose catalog kept its old or a torn slot never adopts the prepared successor. | `faulted_trusted_histories_match_independent_cold_admission_at_every_step` |
 | TH-02 | Independent cold admission. At every step the authority equals cold admission of the same state by an admission that shares no lease, registry or process state with the writer: the test model's cold admission in the model half, and admission of a byte copy in a fresh directory in the production half. | `faulted_trusted_histories_match_independent_cold_admission_at_every_step` |
-| TH-03 | Each commit appointed once. A failure at any later history step recovers the appointed prefix of the committed transactions, and the next publication truncates whatever an earlier failure left behind it, so no commit is appointed twice and no orphan is appointed. | `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps` |
+| TH-03 | Each commit appointed once. A failure at any later history step recovers the appointed prefix of the committed transactions, and the next publication truncates a pack suffix that an earlier failure left behind it and refuses an index suffix, definitely not published, until held-lease recovery rebuilds the index, so no commit is appointed twice and no orphan is appointed. | `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps` |
 | TH-04 | Refusals change no file. A publication refused before its first mutation leaves the pack, any suffix behind the appointed prefix, the index and the catalog as they were. | `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps` |
 | TH-05 | Pinned readers and physical eviction. A reader's pinned prefix stays a prefix of the appointed one across faults, recoveries and restarts, and reclamation of a superseded generation waits while a reader pins it and completes after the unpin, after a crash in the middle of reclamation too. | `faulted_trusted_histories_match_independent_cold_admission_at_every_step` |
 | TH-06 | Recovery after ambiguity, restart anywhere. After an indeterminate or published-error outcome the writer acts again only after recovery, and a restart at any point, mid-publication included, adopts the generation that the catalog selects. | `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps` |
@@ -5216,6 +5216,237 @@ sources are those of its parent commit.
 | `rspace++/tests/persistence/property_support.rs` | `d34553b7b9dc6032b9691629ae7e8bd3092afeb66e0c65ec467a53479d25fe90` |
 | `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `b9afcc8d401861152c8f0d599242f0f4b1a4dc047e1116bbf08aedf8b4f21a55` |
 | `rspace++/tests/persistence/mod.rs` | `9843c8f00ea540f9c2b3a37bba38f74b63ed27b9519dc00aa50923f685015a01` |
+
+### Faulted trusted histories on real files (2026-10-28)
+
+Task 11967, the second slice of task 7928, adds the production halves of
+TH-01 to TH-07. It runs histories of trusted publications on real files,
+crosses their later steps with every fault that the trusted path can meet,
+kills a child process at each of the thirteen trusted hooks, and judges every
+outcome by cold admission of a byte copy of the store. It changes no
+production source.
+
+**Production refinement.** The production halves are in
+`rspace++/tests/persistence/trusted_history_production.rs`, which is compiled
+on unix only. Each TH test function runs its model checks first and then calls
+one driver, so the bindings of the TH rows do not change.
+
+- `faulted_trusted_histories_match_independent_cold_admission_at_every_step`
+  (TH-01, TH-02, TH-05 and TH-07) calls
+  `production_faulted_trusted_histories(16)`. For each retention writer, V1
+  and V2, over the structural fixture, it runs three seeded histories of
+  eight, nine and six steps, then sixteen generated histories of one to nine
+  steps. Each history runs on a fresh scoped thread, so a failed case cannot
+  leave a failpoint or a hook armed for the next one.
+- `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps`
+  (TH-03, TH-04 and TH-06) calls `production_every_failpoint_at_later_steps()`.
+  It runs a scripted sweep of 96 items in each of four scenarios, the two
+  writers crossed with the structural and the semantic fixture, one scenario
+  per thread, and then the thirteen kill children of
+  `trusted_history_kill_child`.
+
+**One step.** A trial holds two chains in separate directories. The live chain
+takes each step's interleave and fault; the reference chain publishes the same
+transitions with neither. An in-memory canonical object store, the oracle,
+holds every model state that the trial installs, so a walk from a manifest
+gives the closure that the store must serve, byte for byte. A step draws a
+transition (a jump to a slot configuration, a path edit, or a revert to an
+earlier adopted state), a fault and an interleave, and runs in seven stages.
+
+1. *Normalize.* The drawn fault and interleave are reduced to what the settled
+   store admits. A corrupt sidecar needs a pending reclamation intent, a
+   foreign catalog needs none, an unpin needs a reader, and a refusal needs a
+   non-empty transition. The seeded histories and the sweep run strictly, so
+   any normalization there fails the test: each of their steps runs as
+   written.
+2. *Interleave.* At the settled point, before the publication, one of:
+   refusals; a reader pin or unpin; a lease counter at its maximum; a fresh
+   generation checkpoint; a crash in the middle of reclamation; an idle
+   foreign catalog; a restart; a bind of a past version; or a decoy at the
+   store's pathname.
+3. *Publish.* The live writer binds and prepares the transition, the fault is
+   armed, and `publish_trusted_incremental_v1` runs. Its hook trace must be
+   the publication order up to the fault, with no cold admission and no index
+   construction, and the error determines the outcome class.
+4. *Judge.* The store is copied byte for byte into a fresh directory, and the
+   copy is admitted cold with its own writer lease and lease registry. It must
+   select the slot that the outcome class requires (figure below), and the
+   live core that settles the fault must equal the copy's, observation for
+   observation. The comparison uses observations, never the copy's bytes after
+   admission, because the copy's fresh registry may reclaim what the live
+   writer's reader still defers.
+5. *Stale retry.* After an ambiguous or published-error outcome, the same
+   prepared publication is retried from the stale core and must be refused.
+6. *Settle.* The fault's own settlement: a retry over a pack suffix,
+   held-lease recovery, a restart and cold admission by path in place of
+   recovery, or a repaired catalog.
+7. *Close.* The catalog file holds the core's image; the manifest is the
+   oracle's installation of the model state; the current closure and a pinned
+   reader's closure read the oracle's bytes; the retention history is the
+   previous one plus the previous current state; and once the successor is
+   adopted, the live and reference stores hold the same files and equal
+   cores.
+
+![One step of a faulted trusted history on real files, as an activity diagram. In grey, the settled point, where the live catalog file holds the core's image, the index length is its appointed tail and the live and reference stores hold the same files and cores with equal observations, and the normalization of the drawn fault and interleave to what the settled store admits. In purple, the interleave at the settled point: refusals that change no file, a reader pin or unpin, a lease counter at its maximum, a fresh generation checkpoint, a crash in the middle of reclamation, an idle foreign catalog, a restart, a bind of a past version, or a decoy bound to the store's pathname. In blue, the transition that the reference chain publishes without a fault, and the byte copy of the store admitted cold with its own writer lease and lease registry, whose current closure must read the oracle's bytes and which refuses a corrupt sidecar or a foreign catalog. In amber, the armed fault and publish_trusted_incremental_v1 on the live chain, whose hook trace is the publication order up to the fault with no cold admission and no index construction. The outcome class decides the slot that the copy must select: the successor after a success, in green; the predecessor after a definite non-publication, with no new object readable; the slot that the persisted image selects after an indeterminate write, the old slot or the exact terminal; and the exact retained terminal slot after a published error, in red. In red too, the stale retry from the stale core after an ambiguous or published-error outcome, refused at the catalog compare or at the index length check, and the settling: a retry over a pack suffix, held-lease recovery, a restart with cold admission by path, or a repaired catalog. In green, the comparisons that close the step: the settled core against the copy's, the catalog file, the manifest against the oracle, the closures, the pinned reader's prefixes and the keep-all retention history, and finally the live store against the reference store](figures/trusted-history-step.svg)
+
+**What each row requires.** The "What it requires" column states the
+production checks that the row's test makes, in addition to its model half.
+
+| Row | Production check | What it requires |
+|---|---|---|
+| TH-01 | `production_faulted_trusted_histories`, three seeded and sixteen generated histories per writer | After every step, the copy admitted cold selects the predecessor after a definite non-publication (hooks 2 to 10, a physical write or sync failure, a short pack, a catalog changed at the compare), the slot that the persisted image selects after an indeterminate write (hook 11, a slot write or slot sync failure, a torn slot prefix), and the exact retained terminal slot after a published error (hooks 12 to 14, a directory sync failure). The copy of a store with a corrupt sidecar or a foreign catalog is refused, a copy taken under the forged re-read follows the rolled-back image, and in every other case the settled core equals the copy's. After a definite non-publication, and after an indeterminate write that kept the old slot, no new object reads through the settled core or the copy. All four outcome classes occur for each writer. |
+| TH-02 | `production_faulted_trusted_histories` | The copy lives in a fresh directory with its own writer lease, and its registry is not the live writer's. Every adopted step's core equals the trusted observation of the bound transaction; the catalog file equals the core's image; the manifest equals the oracle's installation of the model state; the current closure reads the oracle's bytes through the core and through the copy; the retention history grows by exactly the previous current state, and the retained closure exceeds the current one. At every restart and at the end, the ledger's retained domain equals the union of the adopted current closures, and its current domain equals the current walk. |
+| TH-03 | `production_every_failpoint_at_later_steps`, four scenario sweeps | From step 2 on, each of hooks 2 to 14, the five I/O failpoints, the fourteen torn slot prefixes at both slot parities, a short pack, a catalog changed at the compare and a failed sync of the truncation is injected. Right after each of these faults, the appointed pack prefix of the persisted image equals the predecessor's or the reference chain's. A retry over a pack suffix truncates it. A retry over an index suffix, after each of hooks 4 to 10, is refused at the index length check (`publication.rs:1254`) until held-lease recovery rebuilds the index, and that recovery survives each of its six rebuild failpoints. A commit abandoned by an indeterminate write that kept the old slot is truncated by the next publication, and its new objects never become readable. After settling, the live store holds the reference store's files. |
+| TH-04 | `production_every_failpoint_at_later_steps` | At a clean point, a bind under each lowered axis of the measured policy evidence, a publication under a changed policy, a publication of a cold-bound transaction and a publication after a changed inactive slot are refused before any write. Over a pack suffix one of each kind is refused, and over a pack and an index suffix all but the cold-bound transaction, whose cold acquisition would rebuild the index. The store's files, suffixes included, are byte-identical before and after each refusal. |
+| TH-05 | `production_faulted_trusted_histories` | A pinned reader holds a generation lease in the registry that the writer shares. After every step, its pinned pack and index prefixes are unchanged when read by name, and each object of its closure lies, through the pinned index prefix, at a pack location that holds the oracle's bytes. This holds across faults, recoveries, fresh generation checkpoints and a restart that keeps the reader. A fresh checkpoint under the reader leaves the superseded generation's files and the reclamation intent in place, and after an unpin the next publication completes the reclamation. A crash in the middle of reclamation, with or without the old index and with or without a restart, completes and retires the old key. A lease counter at its maximum refuses a pin and changes no file and no active lease. |
+| TH-06 | `production_every_failpoint_at_later_steps` and `trusted_history_kill_child` | After every ambiguous or published-error outcome, a publication from the stale core is refused: at the catalog compare, with an empty hook trace and no file changed, when the catalog image changed; and at the index length check, after truncating the abandoned commit, when an indeterminate write kept the old image. A restart in place of recovery, after a definite non-publication and after indeterminate writes that kept the old or the new slot, adopts the catalog's selection. Each of the thirteen trusted hooks is killed in a child process at step 3, after step 2 met a fault of one of the four outcome classes and settled. Cold admission then yields the step-2 state for hooks 2 to 10, where a retry publishes step 3 with the trusted effects, and the step-3 state for hooks 11 to 14; either way the store ends with the reference store's files. |
+| TH-07 | `production_faulted_trusted_histories` | A decoy, a copy of the store's initial files bound to its pathname while the live directory sits under another name, is placed before the base check, by hook 14 before the re-read, before held-lease recovery, and as a forged re-read. The publication, the re-read and the recovery go through the pinned directory descriptor, so the decoy is never adopted and its files are unchanged when it is removed. A foreign catalog image, a valid catalog of the same store that names the other fixture's checkpoint, is refused by the re-read after the swap, by held-lease recovery, by the base check of an idle publication and by cold admission after a restart, all with the store's files unchanged, until the saved image is written back. |
+
+**Reachability.** Four coverage items of the reviewed plan for task 7928
+(pgmcp artifact 1140, section 4.3) cannot be met as written, and the slice
+replaces them.
+
+1. *Sharing.* "References exceed distinct objects" holds before any step:
+   references are counted per root, child edge and content edge, and the empty
+   fixture state points all three roots at one empty node. The slice counts
+   instead a node with at least two distinct parent nodes in the oracle's walk,
+   and a blob with at least two distinct parent leaves.
+2. *Duplicate child edges.* A valid node cannot hold two edges with the same
+   byte: non-strict edges are refused at encoding and at parsing, and a
+   256-way node stores one bit per edge. The slice instead counts a node that
+   reaches one object through two edges, and requires the count to be zero:
+   a channel child begins with its own identity, so sibling edges never reach
+   one object for the fixture's alphabet.
+3. *Equal epochs.* The selection branch for two slots with one epoch is
+   unreachable for the writer, because
+   `CatalogAuthorityTokenV1::successor_image` requires the next epoch
+   (`durable/catalog.rs:507-521`).
+4. *Lease-counter overflow.* It is reachable in this family only through a
+   reader's pin, through the counter seam at `retention.rs:601-603`. The
+   owner's own successor pin belongs to TH-08.
+
+Append errors are matched only by their variant, `Append(_)`:
+`IncrementalAppendErrorV1` is declared in the private module `publication`
+and is not re-exported (`durable/mod.rs:25`, `:81-94`). The length detail of
+a retry over an index suffix is therefore checked in the error's debug text,
+as `expected: Exact(old_tail)` beside the index's length.
+
+**Coverage and kills.** The sweep alone must meet every coverage counter
+(`assert_complete`). Each writer's three seeded histories alone, and then its
+seeded and generated histories together, must meet the authority subset
+(`assert_authority`): the four outcome classes, a reader across a fault and
+across a restart, a fresh checkpoint, deferred and completed reclamation, both
+crashes in the middle of reclamation, a pin overflow, the four decoys, both
+foreign catalogs, an idle foreign catalog, an idle restart, both past binds, a
+revert, a corrupt sidecar, a shared blob and a retained closure above the
+current one. The table gives the counts. The sweep is scripted, so its counts
+are fixed. The writer counts are those of the seeded and generated histories
+together under `PROPTEST_RNG_SEED=20261027`, which drew the same histories for
+V1 and V2; the two writers differ only in which check refused the lowered
+axes. A zero in the writer column is either a counter outside the authority
+subset, which the sweep meets, or the count of nodes that reach one object
+through two edges, which must be zero. An adopted step is a step whose
+successor became the live core.
+
+| Counter | Entries, in order | Four sweeps | Each writer |
+|---|---|---|---|
+| Fault at a trusted hook | hooks 2 to 14 | 4, 4, 4, 12, 8, 8, 4, 4, 4, 12, 4, 4, 4 | 1, 1, 2, 1, 1, 1, 2, 1, 0, 1, 3, 4, 1 |
+| I/O failpoint | physical write, physical sync, catalog slot write, catalog sync, catalog directory sync | 4, 4, 8, 4, 4 | 1, 1, 2, 2, 1 |
+| Failed sync of the truncation | one entry | 4 | 0 |
+| Torn slot prefix at a fixed length | the lengths 0, 1, 2, 7, 8, 63, 64, 65, 127, 128, 255, 256, 334 and 335, each written into either catalog slot as the inactive one | 4 at each of the 28 | 1, at length 335 written into slot 0 |
+| Effect of a torn slot write | image unchanged; image changed with the old slot selected; new slot selected | 40, 56, 16 | 1, 8, 1 |
+| Short pack | one entry | 4 | 4 |
+| Corrupt sidecar | one entry | 4 | 1 |
+| Foreign catalog met by a publication | repaired under the held lease; repaired after a restart | 4, 4 | 3, 5 |
+| Idle foreign catalog | one entry | 4 | 7 |
+| Catalog changed at the compare | one entry | 4 | 6 |
+| Retry over a pack suffix without recovery | after hooks 4 to 10 | 4 each | 0, 0, 0, 2, 0, 0, 0 |
+| Index rebuild failpoint | candidate write, candidate length, candidate sync, before the replace, after the replace and before the directory sync, directory sync | 4 each | 2, 0, 0, 2, 0, 1 |
+| Outcome class | definitely not published; indeterminate with the old slot; indeterminate with the new slot; published with an error | 132, 104, 32, 32 | 29, 11, 4, 19 |
+| Stale retry refused | at the compare after a new slot or a published error; at the compare after a changed image that kept the old slot; at the index length check after an unchanged image | 60, 56, 48 | 22, 8, 3 |
+| Abandoned commit truncated by the next publication | one entry | 4 | 0 |
+| Refusal over a pack suffix | lowered axis, changed policy, cold-bound transaction, changed inactive slot | 4 each | 0 each |
+| Refusal over a pack and an index suffix | lowered axis, changed policy, changed inactive slot | 4 each | 0 each |
+| Refusal at a clean point | lowered axis, changed policy, cold-bound transaction, changed inactive slot | 102, 4, 4, 4 | 3, 3, 1, 3 |
+| Lowered axis refused by | the ledger trial on an axis other than the final totals; the ledger trial on the final object or byte total; a ceiling | 62, 12, 36 | V1: 2, 0, 1; V2: 3, 0, 0 |
+| Pinned reader checked after a faulted step | one entry | 12 | 13 |
+| Pinned reader checked after a restart | one entry | 4 | 1 |
+| Fresh generation checkpoint | one entry | 12 | 7 |
+| Reclamation deferred under a reader | one entry | 12 | 4 |
+| Deferred reclamation completed | one entry | 12 | 4 |
+| Crash in the middle of reclamation | without a restart; with a restart | 4, 4 | 1, 1 |
+| Pin refused at the lease counter's maximum | one entry | 4 | 6 |
+| Decoy | before the base check, before the re-read, during recovery, forged re-read | 4 each | 2, 1, 1, 1 |
+| Idle restart | one entry | 8 | 26 |
+| Restart in place of recovery | after a definite non-publication; after an indeterminate write that kept the old slot; after one that selected the new slot, or after a published error | 8, 4, 4 | 0, 0, 2 |
+| Bind of a past version | after a clean step; after a faulted step | 4, 8 | 2, 2 |
+| Adopted step whose state equals an earlier adopted state | one entry | 336 | 9 |
+| Adopted step with a node of two distinct parent nodes | one entry | 292 | 91 |
+| Adopted step with a blob of two distinct parent leaves | one entry | 92 | 32 |
+| Slot replaced by an adopted step | one entry | 576 | 324 |
+| Slot removed by an adopted step | one entry | 1492 | 291 |
+| Adopted step whose retained closure exceeds its current one | one entry | 384 | 105 |
+| Node that reaches one object through two edges | must be zero | 0 | 0 |
+| Kill child | hooks 2 to 14 | 1 each | 0 each |
+
+The thirteen kill hooks are not counted by hand: they are
+the hook trace of the sweep's first clean step, which must equal the
+publication order from hook 2 to hook 14 in all four scenarios. Hook `h` goes
+to scenario `h mod 4`, whose step 2 meets a failure at hook 6, hook 11 or
+hook 13, or a torn slot prefix of 200 bytes, so every kill follows an earlier
+fault and its recovery. Each child aborts at its hook and must end by
+`SIGABRT` after writing its marker; a core dump is suppressed.
+
+**Boundary.**
+
+- No production source changes, and no persisted byte, identity, format, wire
+  message or production outcome; the consensus-change register gets no note.
+- A torn or zero-filled reclamation intent stops held-lease recovery, cold
+  admission and fresh checkpoints permanently. The reviewed design found it
+  by reading the code, and it is filed as bug 11970, to be fixed model-first
+  before task 7928 closes. No step here faults a fresh generation checkpoint,
+  so no test exercises it and none is filtered.
+- A catalog rolled back to an older valid image of the same store is adopted
+  by recovery, and the next publication truncates the overwritten successor's
+  bytes as a pack suffix (`publication.rs:996-1008`), so those commits are
+  lost. The forged re-read shows it: the copy taken under it selects the
+  predecessor. Production cannot detect a rollback without external monotonic
+  state, and the history model's environment writes only a foreign image
+  (`RSpaceTrustedIncrementalPublication.tla:251-256`).
+- `publish_trusted_incremental_v1` resolves the reclamation intent against
+  the in-memory successor (`publication.rs:956`) before the re-read
+  (`:957-968`) confirms the catalog, so a rollback inside that window would
+  delete files that the restored catalog names. Recovery resolves against the
+  verified selection (`startup.rs:299`). The tests stay out of the window: a
+  replaced catalog and the forged re-read require that no intent is pending.
+- No power-loss claim is made: a killed child leaves its writes with the
+  operating system, and nothing here models a lost page cache.
+- A reader kept across a restart, decoys placed in the middle of a
+  publication, and the forged re-read go beyond the history model. Its
+  restart drops every reader
+  (`RSpaceTrustedIncrementalHistory.tla:216`), it places a decoy only while
+  the writer is idle or recovering (`:240-244`), and its environment never
+  writes an older image of the store.
+- The production halves compile on unix only; elsewhere the two TH functions
+  run their model halves alone.
+
+The production evidence in J-253 was taken at these sources.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `rspace++/src/rspace/persistence/durable/publication.rs` | `801348d8e8a547db88596136103bf45dab03d645208c2e0658445b5e49c30de6` |
+| `rspace++/src/rspace/persistence/durable/io.rs` | `7811573c32e8cf8942eed3530c52b3f7a620f664880e517204ac258ffda05cf7` |
+| `rspace++/src/rspace/persistence/durable/startup.rs` | `3a1da653d1206d0dcc9563c0cd14b6197cd49081cc605d78aed3c6cc4db863d6` |
+| `rspace++/src/rspace/persistence/durable/admission.rs` | `eef3657433921ca66c94d3e24c028d903f7599de18d9c4510e797b419c9b1671` |
+| `rspace++/src/rspace/persistence/durable/reclaim.rs` | `9b1c05dce7fcc5280db2cd255f99c6fc286ec94144779bffc167a9ca6635485e` |
+| `rspace++/src/rspace/persistence/durable/catalog.rs` | `bec65f927d812bb73198f0d1267de344cbc831d5024992e44e31582b63d81eaf` |
+| `rspace++/src/rspace/persistence/retention.rs` | `e5971ed87b6973bdbc09fd02609507c2a8dc8af4459f8bb973df59e2782529de` |
+| `rspace++/tests/persistence/trusted_history_production.rs` | `c13278b6edc9249c250df8295748e4b8b96cb0752fb1afbf069ae95684c68a9a` |
+| `rspace++/tests/persistence/trusted_history_properties.rs` | `a532881c9d6a087ef8e87940b1b28c05880382c12b3ae016e83c23d4b7e81b26` |
+| `rspace++/tests/persistence/trusted_successor_production.rs` | `57557ac33cd057613cde2d683290d78b7fd95bc1226662ef55f9fb7ae58ca9c2` |
+| `rspace++/tests/persistence/path_exact_closure_properties.rs` | `62c6d34d6cf5f9ade05273d739d4d58878bdb0a4e1b886ce4c697c9291fc5a4f` |
+| `rspace++/tests/persistence/mod.rs` | `7f97eb6dd116d9c1d3c3efd327d6e0e5ca14a1ccd7b5b0b8c123cfc0cd45fd6a` |
+| `docs/design/pathmap/figures/trusted-history-step.puml` | `327b7f7aeb731261802aa1fe1ed1e163cd8dc7bc57d1d3c6e7f0a23e0b04a10e` |
 
 ## Formal-to-executable derivation matrix
 
@@ -5332,13 +5563,13 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | TS-17 | `EXEC_ONLY` | `ExactStateShapeSummary.admitted_tries_have_no_empty_leaf`, `ExactStateShapeSummary.maximum_logical_path_is_the_longest_key`, `ExactStateShapeSummary.combined_maximum_is_the_walk_maximum`, `ExactStateShapeSummary.batch_weight_delta_is_exact`, `ExactStateShapeSummary.endpoint_existence_delta_is_exact`, `ExactStateShapeSummary.payload_delta_is_exact`, `ExactStateShapeSummary.key_length_multiset_tracks_the_batch`, `ExactStateShapeSummary.largest_nonempty_bucket_is_the_longest_key`, `ExactStateShapeSummary.rewrite_moves_logical_positions_exactly`, `ExactStateShapeSummary.absorbed_reports_move_positions_exactly`, `ExactStateShapeSummary.counted_rewrite_is_the_radix_edit`, `ExactStateShapeSummary.trusted_shape_summary_equals_the_cold_walk`, `ExactStateShapeSummary.emitted_minus_loaded_mutant_miscounts_a_compression_merge`, `ExactStateShapeSummary.digest_dedup_counter_mutant_undercounts_equal_leaves`, `ExactStateShapeSummary.running_maximum_mutant_keeps_a_deleted_longest_key`, `ExactStateShapeSummary.empty_leaf_mutant_breaks_the_path_maximum` | P | Production refinement of the derivation and of the trusted publication that returns it (task 11946; the trusted successor publication section). The production summary is compared with the production cold walk in memory, with durable cold admission after every publication and with restart admission, on shared subtrees, an absorbing merge, deletion of the unique and of tied longest keys, and batches across all three namespaces; the composed theorem's premise that the rewrite lists the batch applied to the entries is checked against an independent rebuild. |
 | TS-18 | `EXEC_ONLY` | `TrustedSuccessorCapability.trusted_successor_rule` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). The rule's token and profile premises are checked as refusals at the receipt check. |
 | TS-19 | `EXEC_ONLY` | `RetentionV2Editor.v1_migration_is_the_canonical_rebuild_of_its_history`, `RetentionV2Editor.metadata_ledger_seed_is_the_cold_ledger` | P | Model extraction; the same test also checks the production bind (task 11945; the trusted successor bind section). The first successor's migration and the seeded metadata ledger are compared with the cold traversal; the double-migration control keeps the old anchor counted. |
-| TH-01 | `HistorySoleAuthority`, `HistoryAuthorityIsCatalogSelected`, `NeverRecoveredSuccessorAfterAmbiguity`, `NeverRecoveredPredecessorAfterAmbiguity` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority`, `TrustedSuccessorCapability.ambiguous_adoption_mutant_breaks_sole_authority` | P | Model extraction; production refinement is task 11967 (the faulted trusted histories section). Every recovery that the authority chain settles is the predecessor or the fault-free successor, as the persisted image selects, which realizes the capstone's admissible recoveries; the adoption controls realize the mutant theorem. |
-| TH-02 | `HistoryTypeInvariant`, `RunOutcomeBoundaryIsExact` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority`, `TrustedSuccessorCapability.trusted_inventory_equals_cold_admission` | P | Model extraction; production refinement, cold admission of a byte copy that shares no lease, registry or process state with the writer, is task 11967. Every recovered core equals the test model's cold admission of its state, and every publication's outcome is replayed through the single-publication transliteration. |
-| TH-03 | `HistoryAppointedPrefixIsCommitted`, `HistoryCommitsAtMostOnce`, `NeverRetriedAfterSuffix` | `TrustedSuccessorCapability.faulted_history_appoints_each_commit_once`, `TrustedSuccessorCapability.append_without_truncation_mutant_appoints_an_orphan`, `CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes` | P | Model extraction; production refinement is task 11967. The pack chain's appointed prefix equals the committed transactions after every drawn fault, and appending over a suffix without truncation recovers a different prefix, which realizes the mutant theorem. |
-| TH-04 | `HistoryRefusalPreservesFiles`, `NeverRefusedWithSuffix` | `TrustedSuccessorCapability.trials_precede_mutation` | P | Model extraction; production refinement is task 11967. A changed-policy refusal at every step writes nothing and leaves the pack, any suffix and the appointed count as they were. |
-| TH-05 | `HistoryPinnedPrefixStable`, `NeverReaderAcrossFault`, `LeaseSafety`, `NoDeletionBeforePublication` | `CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes` | P | Model extraction; production refinement, with reclamation deferred by a pinned reader and completed after the unpin, is task 11967. The compaction model's lease invariants are cited, not remodelled; the authority chain keeps a reader pinned across faults and their recoveries. |
-| TH-06 | `HistoryRecoveryRequiredAfterAmbiguity`, `NeverRestartedMidPublication` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority` | P | Model extraction; production refinement is task 11967. The transliteration requires recovery after every ambiguous outcome, and the pack chain restarts at every image that an interrupted trusted hook leaves and recovers the prefix that the model selects. |
-| TH-07 | `HistoryAuthorityIsCatalogSelected`, `RunAdoptedSuccessorIsExactCatalog`, `NeverRecoveredUnderDecoy`, `NeverRepairedForeignCatalog` | `EXEC_ONLY` | P | Model extraction; production refinement, with decoys on real files, is task 11967. No theorem models the pathname; the authority chain recovers under a decoy to the catalog's selection, and repaired catalogs occur. |
+| TH-01 | `HistorySoleAuthority`, `HistoryAuthorityIsCatalogSelected`, `NeverRecoveredSuccessorAfterAmbiguity`, `NeverRecoveredPredecessorAfterAmbiguity` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority`, `TrustedSuccessorCapability.ambiguous_adoption_mutant_breaks_sole_authority` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). Every recovery that the authority chain settles is the predecessor or the fault-free successor, as the persisted image selects, which realizes the capstone's admissible recoveries; the adoption controls realize the mutant theorem. On real files, after every step of the seeded and generated histories, a byte copy admitted cold selects the predecessor after a definite non-publication, the exact retained terminal slot after a published error, and the slot that the persisted image selects after an indeterminate write, and the settled core equals that copy's; a copy that holds a corrupt reclamation intent or a foreign catalog is refused instead, and a copy taken under the forged re-read follows the rolled-back image to the predecessor. |
+| TH-02 | `HistoryTypeInvariant`, `RunOutcomeBoundaryIsExact` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority`, `TrustedSuccessorCapability.trusted_inventory_equals_cold_admission` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). Every recovered core equals the test model's cold admission of its state, and every publication's outcome is replayed through the single-publication transliteration. On real files, every step's settled core equals, observation for observation, cold admission of a byte copy in a fresh directory with its own lease and registry, except where the copy must be refused or follows a forged image; the current closure reads the bytes of an independent rebuild of the model state through the core and through the copy, a pinned closure through the core and through the pinned files by name, and the ledger's retained domain equals the union of the adopted current closures at every restart and at the end. |
+| TH-03 | `HistoryAppointedPrefixIsCommitted`, `HistoryCommitsAtMostOnce`, `NeverRetriedAfterSuffix` | `TrustedSuccessorCapability.faulted_history_appoints_each_commit_once`, `TrustedSuccessorCapability.append_without_truncation_mutant_appoints_an_orphan`, `CatalogAppointedPrefix.retry_after_suffix_discard_preserves_appointed_bytes` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). The pack chain's appointed prefix equals the committed transactions after every drawn fault, and appending over a suffix without truncation recovers a different prefix, which realizes the mutant theorem. On real files, hooks 2 to 14, the five I/O failpoints, torn slot prefixes at both parities, a short pack and a catalog changed at the compare are injected from step 2 on; a retry over a pack suffix truncates it, a retry over an index suffix is refused at the index length check until held-lease recovery rebuilds the index, which also survives each of its six rebuild failpoints, a commit abandoned by an indeterminate write that kept the old slot is truncated by the next publication rather than replayed, and the appointed prefix equals the reference chain's. |
+| TH-04 | `HistoryRefusalPreservesFiles`, `NeverRefusedWithSuffix` | `TrustedSuccessorCapability.trials_precede_mutation` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). A changed-policy refusal at every step writes nothing and leaves the pack, any suffix and the appointed count as they were. On real files, a bind under each lowered axis, a changed policy, a cold-bound transaction and a changed inactive slot are refused with no hook at a clean point; one of each is refused over a pack suffix, and all but the cold-bound transaction, whose cold acquisition would rebuild the index, over an index suffix; every file is unchanged. |
+| TH-05 | `HistoryPinnedPrefixStable`, `NeverReaderAcrossFault`, `LeaseSafety`, `NoDeletionBeforePublication` | `CatalogAppointedPrefix.discarding_unselected_suffix_preserves_appointed_bytes` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). The compaction model's lease invariants are cited, not remodelled; the authority chain keeps a reader pinned across faults and their recoveries. On real files, a reader's pinned generation files keep their pinned prefix and serve its objects by name across faults, recoveries, fresh checkpoints and restarts; reclamation is deferred while the reader pins and completes after the unpin, also after a crash in the middle of reclamation, and a lease counter at its maximum refuses the pin with nothing changed. |
+| TH-06 | `HistoryRecoveryRequiredAfterAmbiguity`, `NeverRestartedMidPublication` | `TrustedSuccessorCapability.faulted_history_keeps_an_exact_sole_authority` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). The transliteration requires recovery after every ambiguous outcome, and the pack chain restarts at every image that an interrupted trusted hook leaves and recovers the prefix that the model selects. On real files, a publication from the stale predecessor after an ambiguous outcome is refused, at the catalog compare with no hook when the catalog changed and at the index length check when an indeterminate write kept the old image; each of the thirteen trusted hooks is killed in a child process at step 3, and restarts mid-publication adopt the catalog's selection. |
+| TH-07 | `HistoryAuthorityIsCatalogSelected`, `RunAdoptedSuccessorIsExactCatalog`, `NeverRecoveredUnderDecoy`, `NeverRepairedForeignCatalog` | `EXEC_ONLY` | P | Model extraction; the same test also checks production (task 11967; the faulted trusted histories on real files section). No theorem models the pathname; the authority chain recovers under a decoy to the catalog's selection, and repaired catalogs occur. On real files, decoys bound to the pathname at the base check, at the re-read, during held-lease recovery and at a forged re-read are never adopted or written, and a foreign catalog image is refused by the re-read, by held-lease recovery and by a restart until it is repaired. |
 | TH-08 | `ReopenDiscardsVolatileJournal`, `RecoveryAcceptsOnlyExactTerminal`, `AtMostOneAcknowledgement`, `GateHeldUntilResolution` | `TrustedSuccessorCapability.empty_and_awaiting_ack_branches_do_not_consult_cold_limits` | P | Model extraction; production refinement, which also checks the operation gate that the mirror does not model, is task 11968. The owner mirror counts cold checks, publications and acknowledgements across eight fault choices and four interleavings; the owner model's journal-replay and pathname-recovery faults and its witness `NeverReconciledUnderDecoy`, checked by `scripts/check-rspace-journal-owner-model.sh`, reach the same branches. |
 | PX-01 | `EXEC_ONLY` | `PathExactIncrementalClosure.staged_first_refuses_a_valid_delta_at_a_coincident_certificate`, `PathExactIncrementalClosure.certificate_first_verifier_complete` | P | Production refinement on the theory's coincidence fixture in canonical bytes, with the two certificates admitted directly; the report's counts and the logical-visit limit bind the model's eight visits. |
 | PX-02 | `EXEC_ONLY` | `PathExactIncrementalClosure.digest_only_certificate_mutant_admits_an_uncovered_occurrence`, `PathExactIncrementalClosure.certificate_first_verifier_sound` | P | Production refinement of exactness: a certificate that differs from the exact one in its path, namespace, kind or reference does not stop the walk, the executable side of the digest-only mutant. |

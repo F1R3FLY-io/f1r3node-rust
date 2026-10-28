@@ -24,7 +24,7 @@ use crate::rspace::serializers::serializers::{
 const DATA_CHANNELS: [&str; 3] = ["chan-a", "chan-b", "chan-c"];
 const DATUM_TEXTS: [&str; 3] = ["datum-0", "datum-pair-a", "datum-pair-b"];
 const DATA_HOLDER: &str = "holder";
-const DATA_SLOTS: usize = DATA_CHANNELS.len() * DATUM_TEXTS.len();
+pub(super) const DATA_SLOTS: usize = DATA_CHANNELS.len() * DATUM_TEXTS.len();
 pub(super) const CONTINUATION_GROUPS: [&[&str]; 4] =
     [&["alpha"], &["beta"], &["alpha", "beta"], &["gamma", "alpha"]];
 pub(super) const CONTINUATION_BODIES: [&str; 3] = ["body-0", "body-one", "body-the-second"];
@@ -38,13 +38,13 @@ pub(super) struct ModelState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Slots {
-    data: [u8; DATA_SLOTS],
-    continuations: [u8; CONTINUATION_SLOTS],
+pub(super) struct Slots {
+    pub(super) data: [u8; DATA_SLOTS],
+    pub(super) continuations: [u8; CONTINUATION_SLOTS],
 }
 
 #[derive(Clone, Copy, Debug)]
-enum SlotEdit {
+pub(super) enum SlotEdit {
     Datum { slot: usize, value: u8 },
     Continuation { slot: usize, value: u8 },
     CopyChannel { source: usize, target: usize },
@@ -52,7 +52,7 @@ enum SlotEdit {
 }
 
 impl SlotEdit {
-    fn apply(self, slots: &mut Slots) {
+    pub(super) fn apply(self, slots: &mut Slots) {
         match self {
             Self::Datum { slot, value } => slots.data[slot] = value,
             Self::Continuation { slot, value } => slots.continuations[slot] = value,
@@ -120,9 +120,11 @@ fn runner(cases: u32) -> TestRunner {
     })
 }
 
-const fn data_slot(channel: usize, text: usize) -> usize { channel * DATUM_TEXTS.len() + text }
+pub(super) const fn data_slot(channel: usize, text: usize) -> usize {
+    channel * DATUM_TEXTS.len() + text
+}
 
-const fn continuation_slot(group: usize, body: usize) -> usize {
+pub(super) const fn continuation_slot(group: usize, body: usize) -> usize {
     group * CONTINUATION_BODIES.len() + body
 }
 
@@ -183,7 +185,7 @@ fn source_blob(payload: &[u8]) -> CanonicalBlob {
         .expect("a continuation source payload forms a canonical blob")
 }
 
-fn model_state(slots: &Slots) -> ModelState {
+pub(super) fn model_state(slots: &Slots) -> ModelState {
     let mut state = ModelState::default();
     for (slot, value) in slots.data.iter().enumerate() {
         let multiplicity = match *value {
@@ -600,7 +602,7 @@ fn edit_strategy() -> impl Strategy<Value = SlotEdit> {
     ]
 }
 
-fn transition_strategy() -> impl Strategy<Value = (Slots, Vec<SlotEdit>)> {
+pub(super) fn transition_strategy() -> impl Strategy<Value = (Slots, Vec<SlotEdit>)> {
     let uniform = (slots_strategy(), prop::collection::vec(edit_strategy(), 1..5));
     let node_alias = (
         slots_strategy(),

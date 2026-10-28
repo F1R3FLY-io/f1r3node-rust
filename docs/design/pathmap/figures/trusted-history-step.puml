@@ -1,0 +1,61 @@
+@startuml trusted-history-step
+' ============================================================================
+' One step of a faulted trusted history on real files (task 11967, the second
+' slice of task 7928): Trial::run_step and Trial::publish_step in
+' rspace++/tests/persistence/trusted_history_production.rs.
+' Model:  formal/tlaplus/stack_safe_pda/RSpaceTrustedIncrementalHistory.tla
+' Theory: formal/rocq/stack_safe_pda/theories/TrustedSuccessorCapability.v
+'   GREY   #CFD8DC  the settled live chain and the step's preparation
+'   PURPLE #E1BEE7  the environment: the interleave at the settled point
+'   AMBER  #FFE0B2  the armed fault and the trusted publication
+'   BLUE   #BBDEFB  the independent judges: the byte copy admitted cold, the
+'                   fault-free reference chain and the in-memory oracle store
+'   RED    #FFCDD2  the outcome classes, the stale retries and the settling
+'   GREEN  #C8E6C9  the comparisons that close the step
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+skinparam NoteBorderColor #455A64
+
+title <b>One step of a faulted trusted history on real files</b>\nThe live chain takes the fault; a byte copy admitted cold, a fault-free reference chain\nand an in-memory oracle store judge its outcome before the next step
+
+start
+:settled point: the live catalog file holds the core's image, the\nindex length is its appointed tail, and the live and reference\nstores hold the same files and cores with equal observations; <<#CFD8DC>>
+:normalize the drawn fault and interleave to what the settled\nstore admits: a corrupt sidecar needs a pending reclamation\nintent, an unpin needs a reader, a refusal needs a change; <<#CFD8DC>>
+:run the interleave: refusals that change no file, a reader pin\nor unpin, a lease counter at its maximum, a fresh generation\ncheckpoint, a crash in the middle of reclamation, an idle\nforeign catalog, a restart, a bind of a past version, or a\ndecoy bound to the store's pathname; <<#E1BEE7>>
+:bind and prepare the step's transition: a jump to a slot\nconfiguration, a path edit, or a revert to an earlier state;\nthe reference chain publishes it without a fault; <<#BBDEFB>>
+:arm the fault: a failpoint at one of the hooks 2 to 14, an I/O\nfailpoint, a torn slot prefix, a short pack, a corrupt sidecar,\na replaced catalog, a catalog changed at the compare, or a\ndecoy at the re-read; <<#FFE0B2>>
+:publish_trusted_incremental_v1 on the live chain: the hook trace\nis the publication order up to the fault, with no cold\nadmission and no index construction; <<#FFE0B2>>
+switch (outcome class?)
+case (success)
+  :the copy must select\nthe successor slot; <<#C8E6C9>>
+case (definitely not\npublished)
+  :the copy must select the\npredecessor, and no new\nobject may read; <<#FFCDD2>>
+case (indeterminate)
+  :the copy must select the slot\nthat the persisted image selects:\nthe old slot or the exact terminal; <<#FFCDD2>>
+case (published\nwith an error)
+  :the copy must select the\nexact retained terminal slot; <<#FFCDD2>>
+endswitch
+:copy the store byte for byte into a fresh directory and admit\nthe copy cold, with its own writer lease and lease registry;\nevery object of its current closure must read the oracle's\nbytes, and a corrupt sidecar or a foreign catalog is refused; <<#BBDEFB>>
+note right #ECEFF1
+  <b>The independent judge</b>
+  The copy shares no lease, registry or process
+  state with the live writer. Its observation is
+  compared, never its bytes after admission: its
+  fresh registry may reclaim what the live
+  writer's reader still defers.
+end note
+if (an ambiguous or published-error outcome?) then (yes)
+  :stale retry of the same prepared publication from\nthe stale core: refused at the catalog compare with no\nhook when the catalog changed, or at the index length\ncheck when an indeterminate write kept the old slot; <<#FFCDD2>>
+else (no)
+endif
+:settle: retry the prepared publication over a pack suffix,\nor recover through the held lease, which rebuilds the index,\nor restart and admit cold by path, or repair a foreign catalog; <<#FFCDD2>>
+:compare the settled core with the copy's, observation for\nobservation; check the catalog file, the manifest against\nthe oracle, the closures, the pinned reader's prefixes and\nthe keep-all retention history; <<#C8E6C9>>
+:retry until the successor is adopted; the live and reference\nstores then hold the same files and equal cores; <<#C8E6C9>>
+stop
+
+@enduml

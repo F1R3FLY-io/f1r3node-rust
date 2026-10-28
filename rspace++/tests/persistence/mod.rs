@@ -41,6 +41,8 @@ mod shape_summary_properties;
 mod staging_store;
 mod support;
 mod transaction_sealing;
+#[cfg(unix)]
+mod trusted_history_production;
 mod trusted_history_properties;
 mod trusted_successor_production;
 mod trusted_successor_properties;

@@ -4,6 +4,10 @@ use std::collections::{HashSet, VecDeque};
 use proptest::prelude::*;
 
 use super::incremental_reachability_properties::Domain;
+#[cfg(unix)]
+use super::trusted_history_production::{
+    production_every_failpoint_at_later_steps, production_faulted_trusted_histories,
+};
 use super::trusted_successor_properties::{
     AuthorityCore, BASE_RUN_ACTIONS, CatalogImage, ColdDemand, HookPhase, NotPublishedStage,
     OwnerEvent, OwnerJournal, OwnerLimits, OwnerOutcome, OwnerPhase, OwnerProbe, OwnerRequest,
@@ -1689,6 +1693,8 @@ fn faulted_trusted_histories_match_independent_cold_admission_at_every_step() {
         ],
     );
     faulted_authority_chain_property();
+    #[cfg(unix)]
+    production_faulted_trusted_histories(16);
 }
 
 #[test]
@@ -1709,6 +1715,8 @@ fn every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps() {
         ],
     );
     faulted_pack_chain_property();
+    #[cfg(unix)]
+    production_every_failpoint_at_later_steps();
 }
 
 #[test]

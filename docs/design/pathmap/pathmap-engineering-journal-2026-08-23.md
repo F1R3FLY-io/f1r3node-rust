@@ -20594,6 +20594,7 @@ stays open until the last; each later slice appends its row and its evidence.
 | Slice | Task | Commit |
 |---|---|---|
 | The history, journal owner and Rocq models, and the test-model extraction of TH-01 to TH-08 | 11966 | the commit that opens this entry |
+| The production halves of TH-01 to TH-07 on real files: generated faulted histories against cold admission of byte copies, the later-step failpoint sweep and kill children at the thirteen trusted hooks | 11967 | the commit that appends this row |
 
 The production halves of TH-01 to TH-07 on real files are task 11967, the
 production half of TH-08 through the journal owner is task 11968, and the
@@ -20781,6 +20782,146 @@ pgmcp verification recipe remain required.
   operating system, and nothing here models a lost page cache.
 - No persisted byte, identity, format, wire message or production outcome
   changes, so the consensus-change register gets no note (review decision 11).
+
+**TASK 11967: THE PRODUCTION HALVES OF TH-01 TO TH-07.** The second slice
+adds `rspace++/tests/persistence/trusted_history_production.rs`, compiled on
+unix only, and calls its two drivers from the existing TH test functions
+after their model checks, so the bindings do not change. The catalog's
+[faulted trusted histories on real files section](generation-checkpoint-invariant-catalog-2026-08-28.md#faulted-trusted-histories-on-real-files-2026-10-28)
+states what each row requires on real files, with a figure of one step and
+the counts that the runs reached. The reviewed code-level design (pgmcp
+artifact 1142) fixed the drivers, the step executor, the per-fault table, the
+seeds and the kills. Its review accepted it with the first six decisions
+below, and the implementation added the seventh:
+
+1. *The production halves stay in the same test functions.* The catalog binds
+   TH-05 and TH-07 to TH-01's function, while the sweep that meets every
+   coverage counter runs from TH-03's. The history driver therefore runs
+   three fixed seeded histories per writer before its sixteen generated
+   cases, and the seeds alone meet the counters of TH-01, TH-02, TH-05 and
+   TH-07.
+2. *Coverage items replaced.* "References exceed distinct objects" is true
+   before any step, and a valid node cannot hold duplicate child edges; the
+   slice counts a node with two distinct parents and a blob with two
+   distinct parent leaves, and requires that no node reach one object
+   through two edges.
+3. *TH-03's statement corrected.* Production refuses an index suffix at
+   `publication.rs:1254` rather than truncating it, until held-lease
+   recovery rebuilds the index. This refines the history model, whose suffix
+   does not separate pack from index: the refusal is the model's stage
+   failure before the catalog compare-and-swap, a definite non-publication
+   that keeps the suffix.
+4. *Kills at all thirteen trusted hooks,* taken from the hook trace of the
+   sweep's first clean step, as decision 3 of this entry requires.
+5. *A defect filed.* The design found, by reading the code, that a torn or
+   zero-filled reclamation intent stops held-lease recovery, cold admission
+   and fresh checkpoints permanently. It is bug 11970, a child of task 7928,
+   fixed model-first before task 7928 closes (decision 4 of this entry). No
+   step of this slice faults a fresh checkpoint, so no test exercises it.
+6. *Boundaries, not defects.* A catalog rolled back to an older valid image
+   of the same store is adopted, and recovery resolves the reclamation
+   intent before the re-read confirms the catalog; both are documented.
+7. *A reader kept across a restart is required (added in implementation).*
+   The design's TH-05 text claims pinned prefixes across restarts, but no
+   counter required a restart that keeps a reader, and neither the seeds nor
+   the sweep made one. The third step of seeded history A, a failure at
+   hook 13, now settles by a restart that keeps the pinned reader in place
+   of held-lease recovery; a counter records a pinned reader checked after a
+   restart; and `assert_authority` requires it. The history driver also
+   asserts the authority subset after the seeds alone, before the generated
+   cases. The first run of that candidate failed in the sweep with "no
+   trusted history covered every reader across a restart: [0]", because
+   `assert_complete` includes the authority subset and every restart of the
+   sweep either found no reader pinned or dropped it. The sweep's failure at
+   hook 6, the step after its pin, now settles by a restart that keeps the
+   reader, again a restart in place of recovery after a definite
+   non-publication, and the sweep keeps its 96 items. The prediction, that
+   the sweep's restarts after a definite non-publication rise from 4 to 8
+   and its readers checked after a restart from 0 to 4, held in the next
+   run.
+
+**TASK 11967 HYPOTHESES.**
+
+- *H6 (TH-01, TH-02).* After every step, the byte copy admitted cold selects
+  the slot that the outcome class requires, and the settled core equals the
+  copy's.
+- *H7 (TH-03, TH-04, TH-06).* Every fault class from step 2 on recovers the
+  appointed prefix; the index-suffix refusal at `publication.rs:1254` holds
+  until recovery; refusals keep every file; stale retries are refused; and
+  an abandoned commit is not replayed.
+- *H8 (TH-05, TH-07).* Pins hold across faults, recoveries, fresh checkpoints
+  and a restart; reclamation is deferred and completes, also after a crash
+  in the middle of it; a lease counter at its maximum refuses a pin; decoys
+  are never adopted or written; a foreign catalog is refused until repaired.
+- *H9 (TH-06).* A child killed at each of the thirteen trusted hooks leaves a
+  store whose cold admission selects the step-2 state for hooks 2 to 10 and
+  the step-3 state for hooks 11 to 14, and which reaches the reference
+  store's files.
+
+**TASK 11967 MEASURED.** Each hypothesis held. The commands ran on tree
+`2464ce9e`, which is HEAD `6e60ac076` plus this slice's tests and two
+regenerated registries, exported to `target/scratch/idx`. The seeded runs used
+`PROPTEST_RNG_SEED=20261027`, one test thread and per-test times.
+
+| Claim | Command or artifact | Result | Uncertainty | Decision |
+|---|---|---|---|---|
+| H6 | `faulted_trusted_histories_match_independent_cold_admission_at_every_step`, seeded, in debug and release | passed in 3.419 s in debug and 1.447 s in release; each writer's three seeded and sixteen generated histories admitted a byte copy cold after every step, adopted 105 steps and reached the four outcome classes 29, 11, 4 and 19 times; V1 and V2 drew the same histories | one seed; another draws other generated histories, while the seeds, which every run executes, meet the authority subset alone | H6 holds |
+| H7 | `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps`, as above | passed in 3.526 s in debug and 1.839 s in release; the four sweeps of 96 items met every coverage counter, with 384 adopted steps, the outcome classes 132, 104, 32 and 32 times, stale retries refused 60, 56 and 48 times, and every refusal kind, rebuild failpoint, I/O failpoint and torn prefix | the sweep is scripted, so it fixes which faults meet which steps; the catalog's coverage table gives every count | H7 holds |
+| H8 | the coverage of both drivers, as above | each writer checked its pinned reader after 13 faulted steps and after 1 restart, and reached 7 fresh checkpoints, 4 deferred and 4 completed reclamations, both crashes in the middle of reclamation, 6 refused pins at the counter maximum, the four decoys 2, 1, 1 and 1 times, a foreign catalog 3 and 5 times and an idle one 7 times; the sweeps checked a reader after 4 restarts | a reader kept across a restart goes beyond the history model, whose restart drops every reader | H8 holds |
+| H9 | `trusted_history_kill_child`, spawned by the sweep driver once per hook | each of the thirteen children ended by `SIGABRT` after writing its marker; cold admission selected the step-2 state after hooks 2 to 10 and the step-3 state after hooks 11 to 14, and each store ended with the reference store's files | the children abort; nothing models a lost page cache | H9 holds |
+| The sweep must restart with its reader (decision 7) | the TH test functions in debug on candidate tree `ba817623`, then on tree `2464ce9e` after the sweep change | the first failed in the sweep after 3.733 s with "no trusted history covered every reader across a restart: [0]"; the second passed, with restarts in place of recovery 8, 4 and 4 times and a reader checked after 4 restarts, as predicted | the sweep is deterministic, so every run repeats these counts | the sweep keeps the change |
+| The persistence suite's time | the persistence selection, unseeded and on one test thread, against task 11966's runs in this entry | debug from 86.01 s to 87.24 s, release from 43.03 s to 39.27 s; the TH tests took 7.13 s and 3.35 s in their own seeded runs, against 1.48 s and 0.31 s at task 11966; a run of a superseded candidate took 110.16 s and 56.48 s | unseeded proptest cases, no core pinning and no frequency control, one run per profile; the spread between runs exceeds the TH tests' share | no change attributed; task 11969 times the suite with a fixed seed |
+
+**TASK 11967 VERIFICATION BOUNDARY.** The evidence ran on tree `2464ce9e`,
+exported to `target/scratch/idx`. It differs from the commit that appends
+this evidence only in documentation: the catalog, the figure and this entry.
+One heavy job ran at a time, each in a user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| obligation registries | in the export | all sixteen current, with the workspace regression and PathMap aggregate registries regenerated for this slice on an earlier candidate; every self-test passed | `target/perf/logs/c33/registries-7928b3-20261028T132607Z.log` | `ded2fcda831d247957c86c7783dcb79b9be92912c4991d4532692c60e4ae6515` |
+| the three TH test functions, debug, candidate tree `ba817623` | a capped user scope, seeded | failed as decision 7 states | `target/perf/logs/c33/11967-th-debug-c2-20261028T132019Z.log` | `d14371781e99b4b7c93ce9c7a39c095471fd5fa6b00dabb4b7e436db4ee5521b` |
+| the same, tree `2464ce9e` | 24 GiB, seeded | 3 passed in 6.99 s | `target/perf/logs/c33/11967-th-debug-c3-20261028T132633Z.log` | `bae3dd3d838953470d1c3203a5212fe030581c7011ca0ac58773c7deff1ee20b` |
+| the same, timed, debug | 24 GiB, one scope for this and the next three steps | 3 passed in 7.13 s | `target/perf/logs/c33/11967-th-time-debug-20261028T132714Z.log` | `ec12a7a23a562ed26b05bf9fd998a20793d367daf113512f0752374f6ffe975f` |
+| the same, release | as above | 3 passed in 3.35 s; the coverage lines equal those of both debug runs | `target/perf/logs/c33/11967-th-time-release-20261028T132714Z.log` | `66991ff6db6555cd344b028d85bcf5de7a7538421ba790b54001b20f4523aea6` |
+| the 489 selected rspace++ library tests under `rspace::persistence`, debug | as above | 489 passed, 0 failed, 4 ignored, in 87.24 s; the fourth ignored test is the kill child, which only its parent runs | `target/perf/logs/c33/11967-persistence-debug-20261028T132714Z.log` | `eb7d1acbcfc759d70f8e97739020140dd060cd1a4f20f63f6142258436e464b1` |
+| the same, release | as above | 489 passed, 0 failed, 4 ignored, in 39.27 s | `target/perf/logs/c33/11967-persistence-release-20261028T132714Z.log` | `b53033c4075521f0a5d6b6f42223eb04180ee2e7207856d2021ed25af2b16565` |
+| the evidence script's summary | as above | the four steps above exited 0 in 7 s, 52 s, 88 s and 40 s | `target/perf/logs/c33/11967-evidence-summary-20261028T132714Z.txt` | `d819adf479dfce36eab49be0aa8bf3f00ca0c58601301cdbf62e96efc05971e5` |
+| `cargo check --locked --workspace --all-targets` | 48 GiB, one scope for this and the next three steps | exit 0; the same eight warnings as the previous slice's gate | `target/perf/logs/phase0/7928b3-gate-check-20261028T133052Z.log` | `686628398ebda9cfc088030c91158db2a7eccedca205795b57bbbc487b3b9322` |
+| `cargo clippy --locked --workspace` | as above | exit 0; one warning, also in the previous slice's gate: `active_obligation` (`models/src/rust/rholang/canonical_path_admission.rs:1518`) is never used | `target/perf/logs/phase0/7928b3-gate-clippy-json-20261028T133052Z.log` | `603c8ce8a52c505e8f6481643b351df9c1cb3990a70d1ab13927790cd942af7a` |
+| `cargo nextest run --locked --release --no-fail-fast` of `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang` | as above | 4,427 passed, 0 failed, 46 skipped, in 807.27 s; the skip added since the previous slice is the ignored kill child | `target/perf/logs/phase0/7928b3-gate-nextest-20261028T133052Z.log` | `861ba469777c3774e8f5a5f45a2e97dc81b3308b2a2cc5cc0f4b9f637a4fdcf3` |
+| `cargo test --locked --release --doc` of `models` and `rholang` | as above | 4 passed, 0 failed, 3 ignored | `target/perf/logs/phase0/7928b3-gate-doc-20261028T133052Z.log` | `b70a800b250ecd55363a75ee05b7d93856952a58671eb5dc28d122b184453720` |
+| the workspace gate's summary | as above | the four steps above exited 0 in 4 s, 4 s, 897 s and 41 s | `target/perf/logs/phase0/7928b3-gate-summary-20261028T133052Z.txt` | `9584d8de7b433892146f473c56a6b3ac6ea16bc94b7f0eb1906362f00d9fa484` |
+| `cargo fmt --all -- --check` | in the export | exit 0, no difference | `target/perf/logs/c33/fmt-7928b3-20261028T134659Z.log` | `b60c16426d12215b81499f5523407fba07eaa25c9e3fb5001119a92f4569d0ca` |
+| `scripts/check-fmt.sh`, the pre-commit hook's check | in the export | clean, 0 differences | `target/perf/logs/c33/check-fmt-7928b3-20261028T134659Z.log` | `06172097f5230e90f9e04a2b49caf27aa823f4866f3f02117c2b98d082abb382` |
+
+The one compiler warning in the suites, an unused import in
+`tests/persistence/object_store_collision.rs`, is bug 11963's. The registry
+check, the manifest test and the two formatting checks ran again on the export
+of the committed tree after the two documents were filled; the pgmcp progress
+note of task 11967 records that run. pgmcp artifact 1143 holds these
+tables with the coverage lines of the runs. These are agent-run results;
+independent review and the approved pgmcp verification recipe remain
+required.
+
+**TASK 11967 BOUNDARY.**
+
+- No production source changes: the seven production sources pinned in the
+  catalog equal HEAD's. No persisted byte, identity, format, wire message or
+  production outcome changes, so the consensus-change register gets no note.
+- Bug 11970 is not exercised, because no step faults a fresh generation
+  checkpoint; it is fixed model-first before task 7928 closes.
+- The adoption of a rolled-back catalog and the reclamation intent resolved
+  before the re-read are production boundaries that the catalog documents;
+  the tests stay out of the window between them.
+- A reader kept across a restart, decoys placed in the middle of a
+  publication and the forged re-read go beyond the history model.
+- No power-loss claim is made: a killed child leaves its writes with the
+  operating system.
+- The production halves compile on unix only.
+- The production half of TH-08 is task 11968, and the production negative
+  controls, the timing and the completion of this entry are task 11969; the
+  entry stays open until then.
 
 ## Upstream PathMap integration request register
 
