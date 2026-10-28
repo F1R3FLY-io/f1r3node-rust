@@ -660,8 +660,6 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
             .unwrap_or(false))
     }
 
-    /// Remember the peer that pushed this block, unless this node asked for
-    /// it as a dependency. Its outcome may then strike that peer.
     pub fn note_block_source(&self, hash: &BlockHash, peer: &PeerNode) -> Result<(), CasperError> {
         if !self.was_requested_as_dependency(hash)? {
             self.peer_scores.note_unsolicited(hash, peer);
@@ -701,8 +699,6 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         }
     }
 
-    /// Whether block traffic from this peer is ignored. Each `true` counts as
-    /// a dropped message.
     pub fn should_ignore_peer(&self, peer: &PeerNode) -> bool {
         let ignored = self.peer_scores.is_ignored(peer, Self::current_millis());
         if ignored {
@@ -710,6 +706,12 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 .increment(1);
         }
         ignored
+    }
+
+    pub fn awaits_block(&self, hash: &BlockHash) -> bool {
+        self.requested_blocks
+            .lock()
+            .is_ok_and(|state| state.get(hash).is_some_and(|request| !request.received))
     }
 
     /// Helper method to add a source peer to an existing request

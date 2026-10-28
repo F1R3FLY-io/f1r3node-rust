@@ -4,32 +4,21 @@ use std::sync::Mutex;
 use comm::rust::peer_node::PeerNode;
 use models::rust::block_hash::BlockHash;
 
-/// Unsolicited blocks whose delivering peer is remembered until the block's
-/// outcome is known. The oldest entry is forgotten first past this bound.
 pub const MAX_TRACKED_SOURCES: usize = 16_384;
 
-/// Peers with strikes in the current window, and peers being ignored. A new
-/// peer past either bound is not tracked, as in the WAL payload blacklist.
 pub const MAX_TRACKED_PEERS: usize = 1_024;
 
-/// Strikes inside this window count towards the threshold.
 pub const STRIKE_WINDOW_MS: u64 = 10 * 60 * 1000;
 
-/// Strikes inside one window that make the node ignore a peer.
 pub const STRIKE_THRESHOLD: usize = 16;
 
-/// How long the node ignores block traffic from a peer past the threshold.
 pub const IGNORE_TTL_MS: u64 = 60 * 60 * 1000;
 
-/// An outcome that an honest peer never produces for a block it pushes
-/// unsolicited: honest nodes announce and relay a block only after it
-/// entered their DAG, so it passed every one of these checks there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strike {
     UnauthorizedSender,
     Malformed,
     InvalidSender,
-    SenderLimitReached,
 }
 
 impl Strike {
@@ -38,17 +27,14 @@ impl Strike {
             Strike::UnauthorizedSender => "unauthorized-sender",
             Strike::Malformed => "malformed",
             Strike::InvalidSender => "invalid-sender",
-            Strike::SenderLimitReached => "pending-sender-limit",
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StrikeOutcome {
-    /// The block was solicited, or its source is no longer tracked.
     NoSource,
     Counted(PeerNode),
-    /// This strike crossed the threshold; the peer is now ignored.
     Ignored(PeerNode),
 }
 
@@ -86,13 +72,30 @@ impl Inner {
             !times.is_empty()
         });
     }
+
+    fn evict_weakest_striker(&mut self) {
+        let weakest = self
+            .strikes
+            .iter()
+            .min_by_key(|(_, times)| (times.len(), times.back().copied()))
+            .map(|(peer, _)| peer.clone());
+        if let Some(peer) = weakest {
+            self.strikes.remove(&peer);
+        }
+    }
+
+    fn evict_earliest_expiry(&mut self) {
+        let earliest = self
+            .ignored_until
+            .iter()
+            .min_by_key(|(_, until)| **until)
+            .map(|(peer, _)| peer.clone());
+        if let Some(peer) = earliest {
+            self.ignored_until.remove(&peer);
+        }
+    }
 }
 
-/// Node-local scoring of the peers that push blocks to this node. A peer
-/// that pushes [`STRIKE_THRESHOLD`] blocks with a [`Strike`] outcome inside
-/// [`STRIKE_WINDOW_MS`] has its block traffic ignored for [`IGNORE_TTL_MS`].
-/// Blocks this node requested as a dependency are never attributed: an
-/// honest peer can serve a forged block that this node asked for.
 #[derive(Debug)]
 pub struct PeerScores {
     inner: Mutex<Inner>,
@@ -113,7 +116,6 @@ impl PeerScores {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Remember the first peer that pushed this block.
     pub fn note_unsolicited(&self, hash: &BlockHash, peer: &PeerNode) {
         let mut inner = self.lock();
         if inner.sources.contains_key(hash) {
@@ -131,7 +133,6 @@ impl PeerScores {
         inner.source_order.insert(seq, hash.clone());
     }
 
-    /// Drop the source of a block whose outcome carries no strike.
     pub fn forget(&self, hash: &BlockHash) { self.lock().take_source(hash); }
 
     pub fn strike(&self, hash: &BlockHash, now_ms: u64) -> StrikeOutcome {
@@ -145,7 +146,7 @@ impl PeerScores {
         if !inner.strikes.contains_key(&peer) && inner.strikes.len() >= MAX_TRACKED_PEERS {
             inner.sweep(now_ms);
             if inner.strikes.len() >= MAX_TRACKED_PEERS {
-                return StrikeOutcome::Counted(peer);
+                inner.evict_weakest_striker();
             }
         }
         let times = inner.strikes.entry(peer.clone()).or_default();
@@ -163,7 +164,7 @@ impl PeerScores {
         if inner.ignored_until.len() >= MAX_TRACKED_PEERS {
             inner.sweep(now_ms);
             if inner.ignored_until.len() >= MAX_TRACKED_PEERS {
-                return StrikeOutcome::Counted(peer);
+                inner.evict_earliest_expiry();
             }
         }
         inner
@@ -310,5 +311,44 @@ mod tests {
             scores.strike(&hash(i), 0);
         }
         assert!(scores.lock().strikes.len() <= MAX_TRACKED_PEERS);
+    }
+
+    #[test]
+    fn a_flooder_is_ignored_when_throwaway_identities_fill_the_strike_table() {
+        let scores = PeerScores::new();
+        for i in 0..MAX_TRACKED_PEERS as u32 {
+            let p = peer(&format!("id{i}"));
+            scores.note_unsolicited(&hash(i), &p);
+            scores.strike(&hash(i), 0);
+        }
+        let bad = peer("bad");
+        let last = strike_n(&scores, &bad, 100_000, STRIKE_THRESHOLD as u32, 1);
+        assert_eq!(last, StrikeOutcome::Ignored(bad.clone()));
+        assert!(scores.is_ignored(&bad, 1));
+        assert!(scores.lock().strikes.len() <= MAX_TRACKED_PEERS);
+    }
+
+    #[test]
+    fn a_new_flooder_is_ignored_when_the_ignore_table_is_full() {
+        let scores = PeerScores::new();
+        for i in 0..MAX_TRACKED_PEERS as u32 {
+            let p = peer(&format!("id{i}"));
+            strike_n(&scores, &p, i * 100, STRIKE_THRESHOLD as u32, i as u64);
+        }
+        assert_eq!(
+            scores.ignored_peers(MAX_TRACKED_PEERS as u64),
+            MAX_TRACKED_PEERS
+        );
+        let bad = peer("bad");
+        let last = strike_n(
+            &scores,
+            &bad,
+            1_000_000,
+            STRIKE_THRESHOLD as u32,
+            MAX_TRACKED_PEERS as u64,
+        );
+        assert_eq!(last, StrikeOutcome::Ignored(bad.clone()));
+        assert!(scores.is_ignored(&bad, MAX_TRACKED_PEERS as u64));
+        assert!(!scores.is_ignored(&peer("id0"), MAX_TRACKED_PEERS as u64));
     }
 }

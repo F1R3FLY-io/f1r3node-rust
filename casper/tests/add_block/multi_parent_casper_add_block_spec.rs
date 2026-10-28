@@ -330,9 +330,6 @@ async fn multi_parent_casper_should_drop_unbonded_sender_at_admission() {
         .contains_key(&unknown_hash));
 }
 
-/// A peer that keeps pushing blocks from unbonded senders crosses the strike
-/// threshold, and the node then ignores its block traffic. Other peers are
-/// not affected.
 #[tokio::test]
 async fn multi_parent_casper_should_ignore_a_peer_that_pushes_unauthorized_blocks() {
     let ctx = TestContext::new().await;
@@ -371,6 +368,49 @@ async fn multi_parent_casper_should_ignore_a_peer_that_pushes_unauthorized_block
 
     assert!(node.block_retriever.should_ignore_peer(&attacker));
     assert!(!node.block_retriever.should_ignore_peer(&node.local));
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_not_ignore_a_peer_that_relays_blocks_above_the_sender_limit() {
+    let ctx = TestContext::new().await;
+    let mut node = TestNode::standalone(ctx.genesis.clone()).await.unwrap();
+    let relay = PeerNode::new(
+        NodeIdentifier {
+            key: Bytes::from_static(b"relay"),
+        },
+        "relay.local".to_string(),
+        40400,
+        40404,
+    );
+    node.block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 8_192,
+        max_bytes: usize::MAX,
+        max_per_sender: 1,
+    });
+
+    let deploy = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let template = node.create_block_unsafe(&[deploy]).await.unwrap();
+    let key = node.validator_id_opt.as_ref().unwrap().private_key.clone();
+
+    for i in 0..=STRIKE_THRESHOLD as u8 {
+        let mut ahead = template.clone();
+        ahead.header.parents_hash_list = vec![Bytes::from(vec![i; 32])];
+        let ahead = resign_block(&ahead, &key);
+        node.block_retriever
+            .note_block_source(&ahead.block_hash, &relay)
+            .unwrap();
+
+        let status = node.process_block(ahead).await.unwrap();
+
+        assert_eq!(
+            status,
+            Either::Left(BlockError::MissingBlocks),
+            "relayed block {i}"
+        );
+    }
+
+    assert_eq!(node.block_store.pending_blocks().len(), 1);
+    assert!(!node.block_retriever.should_ignore_peer(&relay));
 }
 
 /// A parentless block that is not the genesis has no bonds to be judged

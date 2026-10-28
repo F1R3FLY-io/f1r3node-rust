@@ -461,13 +461,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         Ok(authorization)
     }
 
-    /// Strike the peer that pushed this block unsolicited, if one is known.
     pub fn strike_block_source(&self, block: &BlockMessage, strike: Strike) {
         self.dependencies
             .strike_block_source(&block.block_hash, strike);
     }
 
-    /// Drop the pushing peer of a block whose outcome carries no strike.
     pub fn forget_block_source(&self, block: &BlockMessage) {
         self.dependencies.forget_block_source(&block.block_hash);
     }

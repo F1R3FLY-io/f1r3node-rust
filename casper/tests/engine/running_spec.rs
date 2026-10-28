@@ -1011,4 +1011,57 @@ mod tests {
             .unwrap();
         assert_eq!(drain_queue(&fixture).await, vec![next.block_hash]);
     }
+
+    #[tokio::test]
+    async fn engine_should_accept_a_requested_block_from_an_ignored_peer() {
+        let fixture = TestFixture::new().await;
+        let peer = peer_node("only-holder", 40400);
+        push_struck_blocks(&fixture, &peer, STRIKE_THRESHOLD).await;
+        assert!(fixture.block_retriever.should_ignore_peer(&peer));
+
+        let announced = Bytes::from(vec![9u8; 32]);
+        fixture
+            .block_retriever
+            .admit_hash(
+                announced.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await
+            .unwrap();
+        fixture
+            .engine
+            .handle(
+                peer.clone(),
+                CasperMessage::HasBlock(HasBlock {
+                    hash: announced.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+        let state = fixture
+            .block_retriever
+            .get_request_state_for_test(&announced)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.waiting_list.contains(&peer) || state.peers.contains(&peer));
+
+        let requested = signed_random_block(&fixture);
+        fixture
+            .block_retriever
+            .admit_hash(
+                requested.block_hash.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await
+            .unwrap();
+        fixture
+            .engine
+            .handle(peer, CasperMessage::BlockMessage(requested.clone()))
+            .await
+            .unwrap();
+        assert_eq!(drain_queue(&fixture).await, vec![requested.block_hash]);
+    }
 }
