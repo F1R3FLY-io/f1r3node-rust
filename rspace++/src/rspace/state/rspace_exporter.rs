@@ -14,6 +14,8 @@ pub trait RSpaceExporter: TrieExporter + Send + Sync {
     fn get_root(&self) -> Result<KeyHash, RootError>;
 }
 
+pub type LeafKeys = Vec<(Blake2b256Hash, ByteVector)>;
+
 pub struct RSpaceExporterInstance;
 
 impl RSpaceExporterInstance {
@@ -33,11 +35,30 @@ impl RSpaceExporterInstance {
         take: i32,
         get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
     ) -> Result<Vec<TrieNode<Blake2b256Hash>>, RadixTreeError> {
+        Self::traverse(start_path, skip, take, get_from_history, false).map(|(nodes, _)| nodes)
+    }
+
+    pub fn try_traverse_history_with_leaf_keys(
+        start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
+        skip: i32,
+        take: i32,
+        get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
+    ) -> Result<(Vec<TrieNode<Blake2b256Hash>>, LeafKeys), RadixTreeError> {
+        Self::traverse(start_path, skip, take, get_from_history, true)
+    }
+
+    fn traverse(
+        start_path: Vec<(Blake2b256Hash, Option<Byte>)>,
+        skip: i32,
+        take: i32,
+        get_from_history: Arc<dyn Fn(&ByteVector) -> Option<ByteVector>>,
+        flag_leaf_prefixes: bool,
+    ) -> Result<(Vec<TrieNode<Blake2b256Hash>>, LeafKeys), RadixTreeError> {
         let settings = ExportDataSettings {
             flag_node_prefixes: false,
             flag_node_keys: true,
             flag_node_values: false,
-            flag_leaf_prefixes: false,
+            flag_leaf_prefixes,
             flag_leaf_values: true,
         };
 
@@ -133,7 +154,7 @@ impl RSpaceExporterInstance {
         }
 
         if start_path.is_empty() {
-            Ok(Vec::new())
+            Ok((Vec::new(), Vec::new()))
         } else {
             let path_vec: Vec<Blake2b256Hash> =
                 start_path.iter().map(|path| path.0.clone()).collect();
@@ -156,10 +177,15 @@ impl RSpaceExporterInstance {
                 node_prefixes: _,
                 node_keys,
                 node_values: _,
-                leaf_prefixes: _,
+                leaf_prefixes,
                 leaf_values: leaf_keys,
             } = data;
 
+            let leaves: LeafKeys = leaf_keys
+                .iter()
+                .map(|key| Blake2b256Hash::from_bytes(key.clone()))
+                .zip(leaf_prefixes)
+                .collect();
             let nodes = construct_nodes(leaf_keys, node_keys.clone());
             let mut nodes_without_last = if !nodes.is_empty() {
                 nodes[..nodes.len() - 1].to_vec()
@@ -178,7 +204,7 @@ impl RSpaceExporterInstance {
             };
 
             nodes_without_last.extend(last_history_node);
-            Ok(nodes_without_last)
+            Ok((nodes_without_last, leaves))
         }
     }
 

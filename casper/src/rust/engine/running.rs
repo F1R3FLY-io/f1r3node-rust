@@ -412,6 +412,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             // Chunks answering the runtime state requester's root fetches.
             // Without a requester wired these fall through as they always did.
             CasperMessage::StoreItemsMessage(items) => {
+                if self.conf.bootstrap.as_ref() != Some(&peer) {
+                    tracing::warn!(
+                        "Dropping StoreItemsMessage from {}: state chunks are requested only from the bootstrap.",
+                        peer
+                    );
+                    return Ok(());
+                }
                 if let Some(tx) = &self.state_items_tx {
                     if tx.try_send(items).is_err() {
                         tracing::warn!(
