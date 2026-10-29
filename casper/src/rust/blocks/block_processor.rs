@@ -9,7 +9,7 @@
  * async support while maintaining the same flexibility as the original Scala version.
  */
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -26,11 +26,13 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage};
+use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::store::key_value_store::MissingBlockContext;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
+use tokio::task::JoinHandle;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
@@ -560,6 +562,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 .clear_missing_dependency_attempts(&block.block_hash)?;
             // store pendant block in buffer, it will be removed once block is validated and added to DAG
             self.dependencies.commit_to_buffer(block, None).await?;
+            if !self.dependencies.holds_body(&block.block_hash)? {
+                self.dependencies
+                    .release_evicted_pending(std::slice::from_ref(&block.block_hash))
+                    .await?;
+                return Ok(false);
+            }
         } else {
             if self
                 .dependencies
@@ -928,6 +936,26 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     /// announce holds one until its sends resolve, so slow peers cap the task
     /// count at the permit count instead of block-rate x send-timeout.
     announce_permits: Arc<tokio::sync::Semaphore>,
+    deferred_pending: Arc<DeferredPending>,
+}
+
+struct DeferredPending {
+    entries: Mutex<HashMap<BlockHash, (Bytes, usize)>>,
+    wake: Arc<Notify>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for DeferredPending {
+    fn drop(&mut self) {
+        if let Some(worker) = self
+            .worker
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            worker.abort();
+        }
+    }
 }
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
@@ -958,6 +986,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             settled_admissions: Arc::new(AtomicU64::new(0)),
             state_root_fetch_tx,
             announce_permits: Arc::new(tokio::sync::Semaphore::new(ANNOUNCE_MAX_IN_FLIGHT)),
+            deferred_pending: Arc::new(DeferredPending {
+                entries: Mutex::new(HashMap::new()),
+                wake: Arc::new(Notify::new()),
+                worker: Mutex::new(None),
+            }),
         }
     }
 
@@ -1183,17 +1216,64 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         let solicited = self.was_requested_as_dependency(&block.block_hash)?;
         let outcome = self.block_store.put_pending(block, solicited)?;
         self.release_evicted_pending(&outcome.evicted).await?;
+        if matches!(
+            outcome.status,
+            PendingInsert::SenderLimitReached | PendingInsert::AreaFull
+        ) && self.has_buffered_dependents(&block.block_hash)
+        {
+            if let Some(descendant) = self.pending_descendant(block) {
+                let replacement = self
+                    .block_store
+                    .put_pending_replacing(block, &descendant.block_hash)?;
+                if replacement.evicted.contains(&descendant.block_hash) {
+                    self.defer_pending(&descendant);
+                }
+                let other_evictions: Vec<_> = replacement
+                    .evicted
+                    .into_iter()
+                    .filter(|hash| hash != &descendant.block_hash)
+                    .collect();
+                self.release_evicted_pending(&other_evictions).await?;
+                return Ok(replacement.status);
+            }
+        }
         Ok(outcome.status)
+    }
+
+    fn pending_descendant(&self, block: &BlockMessage) -> Option<BlockMessage> {
+        let mut queue = VecDeque::from([block.block_hash.clone()]);
+        let mut seen = HashSet::new();
+        let mut candidate = None;
+        while let Some(parent) = queue.pop_front() {
+            for child in self
+                .casper_buffer
+                .get_children(&BlockHashSerde(parent))
+                .into_iter()
+                .flatten()
+            {
+                if !seen.insert(child.0.clone()) {
+                    continue;
+                }
+                if let Some(pending) = self.block_store.pending_blocks().get(&child.0) {
+                    if pending.sender == block.sender {
+                        candidate = Some(pending);
+                    }
+                }
+                queue.push_back(child.0);
+            }
+        }
+        candidate
     }
 
     pub async fn release_evicted_pending(&self, evicted: &[BlockHash]) -> Result<(), CasperError> {
         for hash in evicted {
             let has_dependents = self.has_buffered_dependents(hash);
-            self.casper_buffer.remove(BlockHashSerde(hash.clone()))?;
             if has_dependents {
                 self.block_retriever
                     .recover_dependency(hash.clone())
                     .await?;
+            } else {
+                self.casper_buffer.remove(BlockHashSerde(hash.clone()))?;
             }
             tracing::debug!(
                 "Pending block {} evicted; dependents waiting: {}.",
@@ -1209,13 +1289,84 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         block: &BlockMessage,
         refusal: PendingInsert,
     ) -> Result<(), CasperError> {
+        self.ack_processed(block).await?;
         if refusal != PendingInsert::TooLarge && self.has_buffered_dependents(&block.block_hash) {
-            self.block_retriever
-                .recover_dependency(block.block_hash.clone())
-                .await
-        } else {
-            self.ack_processed(block).await
+            self.defer_pending(block);
         }
+        Ok(())
+    }
+
+    fn defer_pending(&self, block: &BlockMessage) {
+        let bytes = block.to_proto().encoded_len();
+        self.deferred_pending
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(block.block_hash.clone(), (block.sender.clone(), bytes));
+        self.start_deferred_pending_worker();
+        self.deferred_pending.wake.notify_one();
+    }
+
+    fn start_deferred_pending_worker(&self) {
+        let mut worker = self
+            .deferred_pending
+            .worker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if worker.is_some() {
+            return;
+        }
+        let state = Arc::downgrade(&self.deferred_pending);
+        let block_store = self.block_store.clone();
+        let casper_buffer = self.casper_buffer.clone();
+        let block_retriever = self.block_retriever.clone();
+        let mut capacity_changes = block_store.pending_blocks().subscribe_capacity_changes();
+        *worker = Some(tokio::spawn(async move {
+            loop {
+                let Some(state) = state.upgrade() else { break };
+                let ready = {
+                    let mut entries = state.entries.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut capacity = block_store.pending_blocks().available_capacity();
+                    let mut ready = Vec::new();
+                    entries.retain(|hash, (sender, bytes)| {
+                        let has_dependents = casper_buffer
+                            .get_children(&BlockHashSerde(hash.clone()))
+                            .is_some_and(|children| !children.is_empty());
+                        if !has_dependents && !casper_buffer.contains(&BlockHashSerde(hash.clone()))
+                        {
+                            return false;
+                        }
+                        match block_store.contains_key(hash) {
+                            Ok(true) => return false,
+                            Err(err) => {
+                                tracing::warn!(%err, "Could not inspect deferred pending block");
+                                return true;
+                            }
+                            Ok(false) => {}
+                        }
+                        if capacity.reserve(sender, *bytes) {
+                            ready.push(hash.clone());
+                            return false;
+                        }
+                        true
+                    });
+                    ready
+                };
+                for hash in ready {
+                    if let Err(err) = block_retriever.recover_dependency(hash).await {
+                        tracing::warn!(%err, "Could not retry deferred pending dependency");
+                    }
+                }
+                let wake = state.wake.clone();
+                drop(state);
+                tokio::select! {
+                    result = capacity_changes.changed() => {
+                        if result.is_err() { break; }
+                    }
+                    _ = wake.notified() => {}
+                }
+            }
+        }));
     }
 
     fn has_buffered_dependents(&self, hash: &BlockHash) -> bool {

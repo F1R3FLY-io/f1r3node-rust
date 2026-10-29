@@ -114,7 +114,7 @@ pub fn total_unresolved_rerequest_span_ms() -> u64 {
         .sum()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     requested_blocks: RequestedBlocks,
     dependency_recovery_last_request: Arc<Mutex<HashMap<BlockHash, u64>>>,
@@ -128,6 +128,25 @@ pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     transport: Arc<T>,
     connections_cell: ConnectionsCell,
     conf: RPConf,
+}
+
+impl<T: TransportLayer + Send + Sync> Clone for BlockRetriever<T> {
+    fn clone(&self) -> Self {
+        Self {
+            requested_blocks: self.requested_blocks.clone(),
+            dependency_recovery_last_request: self.dependency_recovery_last_request.clone(),
+            broadcast_retry_last_request: self.broadcast_retry_last_request.clone(),
+            peer_requery_last_request: self.peer_requery_last_request.clone(),
+            peer_requery_attempts_by_hash: self.peer_requery_attempts_by_hash.clone(),
+            retry_attempts_by_hash: self.retry_attempts_by_hash.clone(),
+            local_backpressure_credits: self.local_backpressure_credits.clone(),
+            retry_budget_quarantine_until: self.retry_budget_quarantine_until.clone(),
+            peer_scores: self.peer_scores.clone(),
+            transport: self.transport.clone(),
+            connections_cell: self.connections_cell.clone(),
+            conf: self.conf.clone(),
+        }
+    }
 }
 
 impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
