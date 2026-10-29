@@ -36,6 +36,7 @@ use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::rust::engine::multi_parent_casper::buffer_resolver::dependencies_are_ready;
+use crate::rust::engine::peer_scoring::Strike;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
     BLOCK_INTEGRITY_REJECTED_METRIC, BLOCK_PROCESSING_STORAGE_TIME_METRIC,
@@ -502,6 +503,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         let authorization = self.dependencies.sender_authorization(block)?;
         if authorization == SenderAuthorization::Unauthorized {
             self.dependencies.discard_pending(block);
+            self.dependencies
+                .strike_block_source(&block.block_hash, Strike::UnauthorizedSender);
             tracing::warn!(
                 "Ignoring block {} because block creator {} has 0 weight in main parent.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),
@@ -509,6 +512,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             );
         }
         Ok(authorization)
+    }
+
+    pub fn strike_block_source(&self, block: &BlockMessage, strike: Strike) {
+        self.dependencies
+            .strike_block_source(&block.block_hash, strike);
+    }
+
+    pub fn forget_block_source(&self, block: &BlockMessage) {
+        self.dependencies.forget_block_source(&block.block_hash);
     }
 
     pub async fn store(
@@ -715,6 +727,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         let status = guard_deferral(status, self.approved_block_number(casper.clone())?);
         metrics::histogram!(BLOCK_VALIDATION_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(validation_start.elapsed().as_secs_f64());
+        match &status {
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender)) => self
+                .dependencies
+                .strike_block_source(&block.block_hash, Strike::InvalidSender),
+            Either::Right(_) | Either::Left(BlockError::Invalid(_)) => {
+                self.dependencies.forget_block_source(&block.block_hash)
+            }
+            Either::Left(_) => {}
+        }
 
         // Record validation outcome
         let _ = match &status {
@@ -887,7 +908,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     }
 
     pub async fn drop_refused(&self, block: &BlockMessage) -> Result<(), CasperError> {
-        if self.dependencies.holds_copy(block)? {
+        if self.dependencies.discard_copy(block)? {
             self.purge_from_buffer_and_ack(block).await?;
         }
         Ok(())
@@ -1204,17 +1225,20 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         })
     }
 
-    /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
-    pub fn holds_copy(&self, block: &BlockMessage) -> Result<bool, CasperError> {
-        Ok(self.block_store.get(&block.block_hash)?.as_ref() == Some(block))
+    pub fn discard_copy(&self, block: &BlockMessage) -> Result<bool, CasperError> {
+        Ok(self.block_store.discard_copy(block)?)
     }
 
-    pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
+    /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
+    pub(crate) async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.block_store.put_block_message(block)?;
         Ok(())
     }
 
-    pub async fn hold_pending(&self, block: &BlockMessage) -> Result<PendingInsert, CasperError> {
+    pub(crate) async fn hold_pending(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<PendingInsert, CasperError> {
         let solicited = self.was_requested_as_dependency(&block.block_hash)?;
         let outcome = self.block_store.put_pending(block, solicited)?;
         self.release_evicted_pending(&outcome.evicted).await?;
@@ -1769,6 +1793,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         self.block_retriever.was_requested_as_dependency(hash)
     }
 
+    pub fn strike_block_source(&self, hash: &BlockHash, strike: Strike) {
+        self.block_retriever.strike_block_source(hash, strike);
+    }
+
+    pub fn forget_block_source(&self, hash: &BlockHash) {
+        self.block_retriever.forget_block_source(hash);
+    }
+
     /// Admit an arriving block as settled history if [`admit_as_settled`]'s
     /// conditions hold: inserted into the DAG hash-checked and unjudged, the
     /// same treatment LFS restore gave every block it downloaded. Returns
@@ -1778,7 +1810,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     /// Insertion cannot touch consensus state: `InsertMode::SettledHistory`
     /// leaves latest messages exactly as they were, and every verdict channel
     /// is untouched because the block never enters validation.
-    pub async fn try_admit_settled(
+    pub(crate) async fn try_admit_settled(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,

@@ -193,7 +193,7 @@ impl TestNode {
     ///
     /// This method:
     /// 1. Checks if block is of interest
-    /// 2. Checks if well-formed and stores
+    /// 2. Stores (IntegrityChecked::check has already checked format, signature, and hash)
     /// 3. Checks dependencies
     /// 4. Validates with effects
     pub async fn process_block_through_pipe(
@@ -225,7 +225,7 @@ impl TestNode {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
         };
 
-        // Check if well-formed and store
+        // Store
         match block_processor.store(checked, store_mode).await? {
             StoreVerdict::Stored => {}
             StoreVerdict::PendingRefused(refusal) => {

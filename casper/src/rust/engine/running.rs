@@ -27,6 +27,7 @@ use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::peer_scoring::Strike;
 use crate::rust::engine::snapshot_chunk_sync::SnapshotChunkSyncDriver;
 use crate::rust::engine::snapshot_chunk_wire::{
     handle_get_snapshot_chunk_request, handle_has_snapshot_request,
@@ -249,6 +250,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
     }
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {
+        let unrequested_block_traffic = match &msg {
+            CasperMessage::BlockHashMessage(_) => true,
+            CasperMessage::BlockMessage(b) => !self.block_retriever.awaits_block(&b.block_hash),
+            CasperMessage::HasBlock(h) => !self.block_retriever.awaits_block(&h.hash),
+            _ => false,
+        };
+        if unrequested_block_traffic && self.block_retriever.should_ignore_peer(&peer) {
+            tracing::debug!("Ignoring block traffic from scored-out peer {}", peer);
+            return Ok(());
+        }
         match msg {
             CasperMessage::BlockHashMessage(h) => {
                 metrics::counter!(BLOCK_HASH_RECEIVED_METRIC, "source" => RUNNING_METRICS_SOURCE)
@@ -257,23 +268,42 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     .await
             }
             CasperMessage::BlockMessage(b) => {
-                if let Some(id) = self.casper.get_validator() {
-                    if b.sender == id.public_key.bytes {
-                        tracing::warn!(
-                            "There is another node {} proposing using the same private key as you. Or did you restart your node?",
-                            peer
-                        );
-                    }
-                }
                 if self.ignore_casper_message(b.block_hash.clone())? {
                     tracing::debug!(
                         "Ignoring BlockMessage {} from {}",
                         PrettyPrinter::build_string_block_message(&b, true),
                         peer.endpoint.host
                     );
-                } else if IntegrityChecked::check(&b, RUNNING_METRICS_SOURCE).is_err() {
-                    return Ok(());
                 } else {
+                    let (b, integrity) = tokio::task::spawn_blocking(move || {
+                        let integrity =
+                            IntegrityChecked::check(&b, RUNNING_METRICS_SOURCE).map(|_| ());
+                        (b, integrity)
+                    })
+                    .await
+                    .map_err(|err| {
+                        CasperError::RuntimeError(format!(
+                            "Block integrity check failed to run: {}",
+                            err
+                        ))
+                    })?;
+                    if let Err(failure) = integrity {
+                        let strike = match failure {
+                            IntegrityFailure::Malformed => Strike::Malformed,
+                            IntegrityFailure::HashMismatch => Strike::HashMismatch,
+                        };
+                        self.block_retriever
+                            .strike_peer(&peer, &b.block_hash, strike);
+                        return Ok(());
+                    }
+                    if let Some(id) = self.casper.get_validator() {
+                        if b.sender == id.public_key.bytes {
+                            tracing::warn!(
+                                "There is another node {} proposing using the same private key as you. Or did you restart your node?",
+                                peer
+                            );
+                        }
+                    }
                     tracing::debug!(
                         "Incoming BlockMessage {} from {}",
                         PrettyPrinter::build_string_block_message(&b, true),
@@ -301,6 +331,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                             return Ok(());
                         }
                     };
+                    self.block_retriever.note_block_source(&block_hash, &peer)?;
                     self.block_processing_queue_tx
                         .send((self.casper.clone(), b, guard))
                         .await
@@ -595,7 +626,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 
 use crate::rust::blocks::block_processor::{
     mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, IntegrityChecked,
-    MAX_BLOCKS_IN_PROCESSING,
+    IntegrityFailure, MAX_BLOCKS_IN_PROCESSING,
 };
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
