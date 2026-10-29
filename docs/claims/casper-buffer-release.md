@@ -12,6 +12,10 @@ artifacts:
   - node/src/rust/instances/release_queue.rs                           # release queue and scheduler (B7, B10, B11)
   - casper/src/rust/casper.rs                                          # buffer_waits_on_dependency trait query (B5)
   - casper/src/rust/engine/block_retriever.rs                          # recovery re-request counter (B4)
+  - casper/src/rust/engine/running.rs                                   # integrity check at ingress, before the in-flight mark (C7)
+  - casper/src/rust/engine/peer_scoring.rs                              # strike for a peer whose block fails the integrity check (C7)
+  - block-storage/src/rust/key_value_block_store.rs                     # compare-and-delete of a refused stored copy (C7)
+  - block-storage/src/rust/pending_blocks.rs                            # pending-area eviction tiers (C8)
 status: pending
 adapter: agentic
 mechanization: none   # planned in the discharge plan below
@@ -56,6 +60,10 @@ TASK-021-18 (stall-loop item A7) extends the claim with C5 and C6. A code readin
 
 **C6. Re-fetch rate limit.** A block can wait in the buffer. A duplicate copy of that block does not reset its re-fetch cooldown, its retry counter, or its quarantine. A duplicate copy of a block that is already in the DAG clears all tracking of the block, as before.
 
+**C7. Integrity before hash-keyed state.** No step reads or changes state keyed by a block hash until the fields, the signature, and the hash of the block are checked against its contents. That state is the in-flight set, the buffer, the pending area, the block store, and the request tracking of the retriever. A message that fails the check from the network changes none of that state for the hash that it claims. A refused body that this node stored is purged and deleted, but only when the stored bytes equal the refused body.
+
+**C8. Fair pending eviction.** The pending area keeps three tiers: unsolicited blocks from an unknown sender, unsolicited blocks from a known sender, and solicited blocks. A known sender has a latest message in the DAG of this node. An insert evicts only entries in its own tier or in a lower tier, oldest entry of the lowest tier first. A flood of blocks from new sender keys therefore never evicts a pending block from a known sender.
+
 ## Seam premises (documented, not proven)
 
 - **Dependency closure.** A block is processed only after all its dependencies are validated. C4 depends on this premise: validation of a block reads only the block and its validated dependencies.
@@ -78,3 +86,10 @@ The status of each item is recorded here as the TDD cycles complete.
 9. C6: a `TestNode` spec buffers a block, sends a recovery request for it, and disposes a duplicate copy of it. A second recovery request inside the cooldown sends nothing, and the retriever keeps tracking the block. The spec fails on the old disposal. **Done 2026-10-16:** `a_duplicate_copy_of_a_buffered_block_keeps_its_refetch_cooldown` (`casper/tests/sync/refetch_cooldown_spec.rs`) failed on the old disposal: the second request sent one more message.
    - After the fix, `dispose_not_of_interest` does not acknowledge a duplicate copy of a block that waits in the buffer. The cleanup that cleared the cooldown also cleared the retry counter and the quarantine, so the fix keeps all three.
    - `cargo test --release --no-fail-fast -p casper -p node -p block-storage` passed 2,385 tests and ignored 14.
+10. C7: tests show that a refused message changes no state keyed by the hash that it claims, and that a refused stored copy is removed. **Done 2026-10-29** on the fix branch of advisory GHSA-6crf-h3q7-4jm7.
+    - `forged_copy_does_not_take_the_in_flight_slot_of_the_honest_block`, `a_body_signed_under_a_foreign_hash_does_not_touch_that_hash`, `a_badly_signed_message_does_not_touch_the_hash_that_it_claims`, `a_refused_body_that_this_node_stored_is_purged`, `discard_copy_removes_only_the_matching_body`, `multi_parent_casper_should_refuse_a_forged_body_under_an_honest_hash`, `engine_should_score_out_a_peer_that_pushes_forged_blocks`, and `a_peer_strike_counts_without_touching_a_tracked_source`.
+    - Mutation controls ran on a copy of the tree. Each of these changes makes at least one of the tests fail: the hash check is disabled, the signature check is disabled, the stored-copy purge is removed, every refused message is treated as a stored copy, the on-disk delete is skipped, and the peer strike is removed.
+11. C8: tests show that an unknown-sender flood cannot displace a known sender's pending block. **Done 2026-10-29** on the same branch.
+    - `a_flood_from_unknown_senders_never_evicts_a_known_sender_block`, `a_known_sender_block_evicts_the_oldest_unknown_sender_block`, `an_unknown_sender_cannot_displace_known_sender_blocks`, `a_reinsert_promotes_an_entry_to_a_higher_tier_only`, and `multi_parent_casper_should_keep_a_known_sender_pending_block_under_an_unknown_sender_flood`.
+    - The review package is in `docs/cbc-evidence/runs/casper-buffer-integrity-20261029-01/`. The claim stays `pending` until the maintainer accepts the evidence.
+    - `running.rs`, `peer_scoring.rs`, `key_value_block_store.rs`, and `pending_blocks.rs` are new artifacts of this claim. As in item 1, the maintainer decides whether each one is `cbc=mandatory`.

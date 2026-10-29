@@ -19,7 +19,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use block_storage::rust::pending_blocks::PendingInsert;
+use block_storage::rust::pending_blocks::{PendingClass, PendingInsert};
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
@@ -1239,8 +1239,19 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         &self,
         block: &BlockMessage,
     ) -> Result<PendingInsert, CasperError> {
-        let solicited = self.was_requested_as_dependency(&block.block_hash)?;
-        let outcome = self.block_store.put_pending(block, solicited)?;
+        let class = if self.was_requested_as_dependency(&block.block_hash)? {
+            PendingClass::Solicited
+        } else if self
+            .block_dag_storage
+            .get_representation()?
+            .latest_message_hash(&block.sender)
+            .is_some()
+        {
+            PendingClass::KnownSender
+        } else {
+            PendingClass::Unsolicited
+        };
+        let outcome = self.block_store.put_pending_as(block, class)?;
         self.release_evicted_pending(&outcome.evicted).await?;
         Ok(outcome.status)
     }
