@@ -55,6 +55,7 @@ pub enum DeployError {
     UnknownSignatureAlgorithm(String),
     SignatureVerificationFailed,
     DuplicateDeploy(DeployId),
+    InvalidFreshness,
     PoolBusy {
         pending_ahead: usize,
         capacity: usize,
@@ -80,6 +81,7 @@ impl Display for DeployError {
         match self {
             DeployError::ParsingError(details) => write!(f, "Parsing error: {}", details),
             DeployError::MissingUser => write!(f, "Missing user"),
+            DeployError::InvalidFreshness => write!(f, "Deploy is outside the admission validity window"),
             DeployError::UnknownSignatureAlgorithm(alg) => {
                 write!(f, "Unknown signature algorithm '{}'", alg)
             }

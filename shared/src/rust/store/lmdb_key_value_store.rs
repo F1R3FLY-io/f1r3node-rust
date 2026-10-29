@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 use heed::types::SerdeBincode;
 use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
@@ -19,6 +19,76 @@ use crate::rust::ByteBuffer;
 pub struct LmdbKeyValueStore {
     pub env: Arc<Env>,
     pub db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
+    revisions: Arc<StoreRevisions>,
+    revision: Option<Arc<RwLock<usize>>>,
+}
+
+#[derive(Default)]
+struct StoreRevisions {
+    named: Mutex<BTreeMap<String, Arc<RwLock<usize>>>>,
+}
+
+fn revisions_for(env: &Arc<Env>) -> Arc<StoreRevisions> {
+    static REGISTRY: OnceLock<Mutex<HashMap<std::path::PathBuf, Weak<StoreRevisions>>>> =
+        OnceLock::new();
+    let mut registry = REGISTRY
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    registry.retain(|_, value| value.strong_count() > 0);
+    registry
+        .entry(env.path().to_path_buf())
+        .or_default()
+        .upgrade()
+        .unwrap_or_else(|| {
+            let revisions = Arc::new(StoreRevisions::default());
+            registry.insert(env.path().to_path_buf(), Arc::downgrade(&revisions));
+            revisions
+        })
+}
+
+fn tracked_transaction<T>(
+    stores: &[&LmdbKeyValueStore],
+    write: impl FnOnce(&mut heed::RwTxn<'_>) -> Result<(T, bool), KvStoreError>,
+) -> Result<T, KvStoreError> {
+    let first = stores[0];
+    let mut writer = first.env.write_txn()?;
+    let registry = first
+        .revisions
+        .named
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let versions: Vec<_> = if stores.iter().any(|store| store.revision.is_none()) {
+        registry.values().cloned().collect()
+    } else {
+        let mut versions: Vec<_> = stores
+            .iter()
+            .filter_map(|store| store.revision.clone())
+            .collect();
+        versions.sort_by_key(Arc::as_ptr);
+        versions.dedup_by(|left, right| Arc::ptr_eq(left, right));
+        versions
+    };
+    let mut guards: Vec<_> = versions
+        .iter()
+        .map(|version| version.write().unwrap_or_else(|e| e.into_inner()))
+        .collect();
+    let (value, changed) = write(&mut writer)?;
+    if changed {
+        let next: Vec<_> = guards
+            .iter()
+            .map(|version| {
+                version.checked_add(1).ok_or_else(|| {
+                    KvStoreError::InvalidArgument("Store revision overflow".to_string())
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        writer.commit()?;
+        for (version, next) in guards.iter_mut().zip(next) {
+            **version = next;
+        }
+    }
+    Ok(value)
 }
 
 fn in_blocking<T>(f: impl FnOnce() -> T) -> T {
@@ -47,30 +117,28 @@ impl KeyValueStore for LmdbKeyValueStore {
 
     fn put(&self, kv_pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
         in_blocking(|| {
-            let mut writer = self.env.write_txn()?;
-            for (key, value) in kv_pairs {
-                self.db.put(&mut writer, &key, &value)?;
-            }
-            writer.commit()?;
-
-            Ok(())
+            tracked_transaction(&[self], |writer| {
+                let changed = !kv_pairs.is_empty();
+                for (key, value) in kv_pairs {
+                    self.db.put(writer, &key, &value)?;
+                }
+                Ok(((), changed))
+            })
         })
     }
 
     fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError> {
         in_blocking(|| {
-            let mut writer = self.env.write_txn()?;
-            match self
-                .db
-                .put_with_flags(&mut writer, PutFlags::NO_OVERWRITE, &key, &value)
-            {
-                Ok(()) => {
-                    writer.commit()?;
-                    Ok(true)
+            tracked_transaction(&[self], |writer| {
+                match self
+                    .db
+                    .put_with_flags(writer, PutFlags::NO_OVERWRITE, &key, &value)
+                {
+                    Ok(()) => Ok((true, true)),
+                    Err(HeedError::Mdb(MdbError::KeyExist)) => Ok((false, false)),
+                    Err(error) => Err(error.into()),
                 }
-                Err(HeedError::Mdb(MdbError::KeyExist)) => Ok(false),
-                Err(error) => Err(error.into()),
-            }
+            })
         })
     }
 
@@ -80,27 +148,27 @@ impl KeyValueStore for LmdbKeyValueStore {
         expected: &ByteBuffer,
     ) -> Result<bool, KvStoreError> {
         in_blocking(|| {
-            let mut writer = self.env.write_txn()?;
-            if self.db.get(&writer, key)?.as_ref() != Some(expected) {
-                return Ok(false);
-            }
-            let removed = self.db.delete(&mut writer, key)?;
-            writer.commit()?;
-            Ok(removed)
+            tracked_transaction(&[self], |writer| {
+                if self.db.get(writer, key)?.as_ref() != Some(expected) {
+                    return Ok((false, false));
+                }
+                let removed = self.db.delete(writer, key)?;
+                Ok((removed, removed))
+            })
         })
     }
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
         in_blocking(|| {
-            let mut writer = self.env.write_txn()?;
-            let mut delete_count = 0;
-            for key in &keys {
-                if self.db.delete(&mut writer, key)? {
-                    delete_count += 1;
+            tracked_transaction(&[self], |writer| {
+                let mut delete_count = 0;
+                for key in &keys {
+                    if self.db.delete(writer, key)? {
+                        delete_count += 1;
+                    }
                 }
-            }
-            writer.commit()?;
-            Ok(delete_count)
+                Ok((delete_count, delete_count > 0))
+            })
         })
     }
 
@@ -219,20 +287,25 @@ pub fn batched_put(writes: Vec<StoreWrite<'_>>) -> Result<(), KvStoreError> {
     };
 
     if let Some(stores) = batchable_stores {
-        let Some((first, _)) = stores.first() else {
+        if stores.is_empty() {
             return Ok(());
-        };
+        }
         if stores.iter().all(|(_, kv_pairs)| kv_pairs.is_empty()) {
             return Ok(());
         }
-        let mut wtxn = first.env.write_txn()?;
-        for (store, kv_pairs) in stores {
-            for (key, value) in kv_pairs.iter() {
-                store.db.put(&mut wtxn, key, value)?;
+        let touched: Vec<_> = stores
+            .iter()
+            .filter(|(_, pairs)| !pairs.is_empty())
+            .map(|(store, _)| *store)
+            .collect();
+        tracked_transaction(&touched, |wtxn| {
+            for (store, kv_pairs) in stores {
+                for (key, value) in kv_pairs.iter() {
+                    store.db.put(wtxn, key, value)?;
+                }
             }
-        }
-        wtxn.commit()?;
-        Ok(())
+            Ok(((), true))
+        })
     } else {
         for (store, kv_pairs) in writes {
             store.put(kv_pairs)?;
@@ -246,7 +319,33 @@ impl LmdbKeyValueStore {
         env: Arc<Env>,
         db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
     ) -> Self {
-        LmdbKeyValueStore { env, db }
+        let revisions = revisions_for(&env);
+        LmdbKeyValueStore {
+            env,
+            db,
+            revisions,
+            revision: None,
+        }
+    }
+
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.revision = Some(
+            self.revisions
+                .named
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(name.to_string())
+                .or_default()
+                .clone(),
+        );
+        self
+    }
+
+    pub fn revision(&self) -> Option<usize> {
+        match &self.revision {
+            Some(version) => version.try_read().ok().map(|value| *value),
+            None => Some(self.env.info().last_txn_id),
+        }
     }
 }
 
@@ -255,6 +354,8 @@ impl Clone for LmdbKeyValueStore {
         Self {
             db: self.db,
             env: self.env.clone(),
+            revisions: self.revisions.clone(),
+            revision: self.revision.clone(),
         }
     }
 }
@@ -436,6 +537,77 @@ mod store_tests {
 
     use super::batched_put_tests::{kv, open_env, open_store};
     use super::*;
+
+    #[test]
+    fn named_revisions_ignore_other_databases_and_share_independent_handles() {
+        let env = open_env();
+        let a = open_store(&env, "a").with_name("a");
+        let other_env = Arc::new(env.as_ref().clone());
+        let other_a = open_store(&other_env, "a").with_name("a");
+        let b = open_store(&env, "b").with_name("b");
+        let before_a = a.revision().unwrap();
+        let before_b = b.revision().unwrap();
+        a.put(kv(&[("key", "one")])).unwrap();
+        assert_eq!(other_a.revision(), Some(before_a + 1));
+        assert_eq!(b.revision(), Some(before_b));
+        assert!(!other_a
+            .put_one_if_absent(b"key".to_vec(), b"two".to_vec())
+            .unwrap());
+        assert_eq!(a.revision(), Some(before_a + 1));
+        assert!(!a
+            .delete_if_value(&b"key".to_vec(), &b"wrong".to_vec())
+            .unwrap());
+        assert_eq!(a.revision(), Some(before_a + 1));
+        assert!(a
+            .delete_if_value(&b"key".to_vec(), &b"one".to_vec())
+            .unwrap());
+        assert_eq!(a.revision(), Some(before_a + 2));
+        assert_eq!(b.revision(), Some(before_b));
+    }
+
+    #[test]
+    fn unnamed_writes_conservatively_invalidate_named_revisions() {
+        let env = open_env();
+        let raw = open_store(&env, "a");
+        let named = raw.clone().with_name("a");
+        let before = named.revision().unwrap();
+        raw.put(kv(&[("key", "value")])).unwrap();
+        assert_eq!(named.revision(), Some(before + 1));
+    }
+
+    #[test]
+    fn batch_revision_changes_only_once_per_touched_database() {
+        let env = open_env();
+        let a = open_store(&env, "a").with_name("a");
+        let b = open_store(&env, "b").with_name("b");
+        let a_before = a.revision().unwrap();
+        let b_before = b.revision().unwrap();
+        batched_put(vec![
+            (&a, kv(&[("k1", "v1")])),
+            (&a, kv(&[("k2", "v2")])),
+            (&b, Vec::new()),
+        ])
+        .unwrap();
+        assert_eq!(a.revision(), Some(a_before + 1));
+        assert_eq!(b.revision(), Some(b_before));
+    }
+
+    #[test]
+    fn revision_is_unavailable_during_commit_and_unchanged_after_rollback() {
+        let env = open_env();
+        let a = open_store(&env, "a").with_name("a");
+        let before = a.revision().unwrap();
+        let result: Result<(), KvStoreError> = tracked_transaction(&[&a], |writer| {
+            assert_eq!(a.revision(), None);
+            a.db.put(writer, &b"key".to_vec(), &b"value".to_vec())?;
+            Err(KvStoreError::InvalidArgument(
+                "Injected write failure".to_string(),
+            ))
+        });
+        assert!(result.is_err());
+        assert_eq!(a.revision(), Some(before));
+        assert_eq!(a.get_one(&b"key".to_vec()).unwrap(), None);
+    }
 
     fn seeded_store() -> LmdbKeyValueStore {
         let store = open_store(&open_env(), "s");

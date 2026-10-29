@@ -255,6 +255,13 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
             return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
         }
+        if let Some(DeployError::InvalidFreshness) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "invalid_deploy_window",
+                cause.to_string(),
+            );
+        }
         if let Some(DeployError::PoolBusy { .. }) = cause.downcast_ref::<DeployError>() {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -800,6 +807,14 @@ mod tests {
             assert_eq!(
                 classify(err),
                 (StatusCode::CONFLICT, "duplicate_deploy".to_string())
+            );
+        }
+
+        #[test]
+        fn invalid_deploy_window_is_a_client_error() {
+            assert_eq!(
+                classify(DeployError::InvalidFreshness),
+                (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
             );
         }
 

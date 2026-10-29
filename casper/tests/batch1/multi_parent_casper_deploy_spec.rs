@@ -239,7 +239,7 @@ async fn future_entries_reserve_capacity_before_ready_work() {
             None,
             None,
             None,
-            Some(1000),
+            Some(1),
             Some(genesis.genesis_block.shard_id.clone()),
         )
         .unwrap();
@@ -265,6 +265,45 @@ async fn future_entries_reserve_capacity_before_ready_work() {
             capacity: 24
         })
     ));
+}
+
+#[tokio::test]
+async fn out_of_window_deploys_are_refused_without_persistence_or_slot_consumption() {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signed::Signed;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    for index in 0..32 {
+        let mut data = queued_deploy(index, &genesis.genesis_block.shard_id).data;
+        if index % 2 == 0 {
+            data.valid_after_block_number = 1_000_000_000_000;
+        } else {
+            data.expiration_timestamp = Some(1);
+        }
+        let candidate = Signed::create(
+            data,
+            Box::new(Secp256k1),
+            construct_deploy::DEFAULT_SEC.clone(),
+        )
+        .unwrap();
+        let signature = candidate.sig.clone();
+        assert!(matches!(
+            node.casper.deploy(candidate).unwrap(),
+            Either::Left(DeployError::InvalidFreshness)
+        ));
+        assert!(!node.deploy_storage.contains_sig(&signature).unwrap());
+    }
+    for index in 100..124 {
+        assert!(matches!(
+            node.casper
+                .deploy(queued_deploy(index, &genesis.genesis_block.shard_id))
+                .unwrap(),
+            Either::Right(_)
+        ));
+    }
 }
 
 #[tokio::test]
@@ -1016,7 +1055,7 @@ mod admission_regressions {
                 None,
                 None,
                 None,
-                Some(1000),
+                Some(1),
                 Some(genesis.genesis_block.shard_id.clone()),
             )
             .unwrap();
@@ -1393,7 +1432,7 @@ mod admission_regressions {
     }
 
     #[tokio::test]
-    async fn unrelated_dag_writes_change_lifecycle_revision_without_changing_deploy_rows() {
+    async fn unrelated_dag_writes_preserve_lifecycle_revision_and_deploy_rows() {
         use block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables;
         use casper::rust::storage::rnode_key_value_store_manager::new_key_value_store_manager;
         use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -1438,10 +1477,12 @@ mod admission_regressions {
             .unwrap();
 
         let revision_after = lifecycle.revision().unwrap();
-        assert!(revision_after.0 > revision_before.0);
-        assert!(revision_after.1 > revision_before.1);
+        assert_eq!(revision_after, revision_before);
         assert_eq!(events.to_map().unwrap(), events_before);
         assert_eq!(terminal.to_map().unwrap(), terminal_before);
+        assert!(lifecycle.open_dropped(&[8; 64], 0).unwrap());
+        assert!(lifecycle.revision().unwrap().0 > revision_after.0);
+        assert_eq!(lifecycle.revision().unwrap().1, revision_after.1);
     }
 
     async fn assert_admission_during_lifecycle_changes(changes: usize, expect_busy: bool) {

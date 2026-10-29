@@ -109,6 +109,22 @@ impl DeployLifecycleTables {
         Ok(true)
     }
 
+    pub fn open_dropped_batch(&self, deploys: &[(ByteString, i64)]) -> Result<(), KvStoreError> {
+        let mut rows = std::collections::BTreeMap::new();
+        for (signature, valid_after) in deploys {
+            if self.get_terminal(signature)?.is_none() && self.get_events(signature)?.is_none() {
+                rows.insert(signature.clone(), LifecycleEvents {
+                    valid_after: Some(*valid_after),
+                    events: Vec::new(),
+                });
+            }
+        }
+        if !rows.is_empty() {
+            self.events.put(rows.into_iter().collect())?;
+        }
+        Ok(())
+    }
+
     pub fn get_events(&self, sig: &[u8]) -> Result<Option<LifecycleEvents>, KvStoreError> {
         let results = self.events.get(&vec![sig.to_vec()])?;
         Ok(results.into_iter().next().flatten())
@@ -243,6 +259,36 @@ impl DeployLifecycleTables {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropped_batch_preserves_rows_and_terminal_outcomes() {
+        let tables = DeployLifecycleTables::in_memory();
+        tables.open_dropped(b"existing", 7).unwrap();
+        tables
+            .put_terminal_if_absent(b"done", TerminalRecord {
+                state: TerminalState::Finalized,
+                rejection_count: 0,
+                latest_height: 9,
+                latest_block_hash: Vec::new(),
+            })
+            .unwrap();
+        tables
+            .open_dropped_batch(&[
+                (b"existing".to_vec(), 99),
+                (b"new".to_vec(), 8),
+                (b"done".to_vec(), 9),
+            ])
+            .unwrap();
+        assert_eq!(
+            tables.get_events(b"existing").unwrap().unwrap().valid_after,
+            Some(7)
+        );
+        assert_eq!(
+            tables.get_events(b"new").unwrap().unwrap().valid_after,
+            Some(8)
+        );
+        assert!(tables.get_events(b"done").unwrap().is_none());
+    }
 
     #[test]
     fn open_dropped_preserves_existing_rows() {

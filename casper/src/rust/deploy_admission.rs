@@ -59,7 +59,7 @@ impl DeployAdmission {
         .record(included as f64);
     }
 
-    pub(crate) fn capacity(&self, shard_cap: usize, pending: usize) -> usize {
+    pub(crate) fn capacity(&self, shard_cap: usize) -> usize {
         if shard_cap == 0 {
             return 0;
         }
@@ -70,14 +70,8 @@ impl DeployAdmission {
                 .saturating_mul(DEPLOY_QUEUE_BLOCKS);
         }
         let total: u128 = samples.inclusions.iter().map(|count| *count as u128).sum();
-        let capacity = (total * DEPLOY_QUEUE_BLOCKS as u128 / samples.inclusions.len() as u128)
-            .min(shard_cap.saturating_mul(DEPLOY_QUEUE_BLOCKS) as u128)
-            as usize;
-        if capacity == 0 && pending == 0 {
-            1
-        } else {
-            capacity
-        }
+        (total * DEPLOY_QUEUE_BLOCKS as u128 / samples.inclusions.len() as u128)
+            .min(shard_cap.saturating_mul(DEPLOY_QUEUE_BLOCKS) as u128) as usize
     }
 }
 
@@ -96,12 +90,14 @@ pub use block_storage::rust::deploy::key_value_deploy_storage::DeployMetadata as
 #[derive(Clone, Copy, Debug)]
 pub struct FreshWindow {
     pub earliest_valid_after: i64,
+    pub latest_valid_after: i64,
     pub now_millis: i64,
 }
 
 impl FreshWindow {
-    fn contains(self, deploy: &PendingDeploy) -> bool {
+    pub(crate) fn contains(self, deploy: &PendingDeploy) -> bool {
         deploy.valid_after_block_number > self.earliest_valid_after
+            && deploy.valid_after_block_number <= self.latest_valid_after
             && deploy
                 .expiration_timestamp
                 .is_none_or(|expires| self.now_millis <= expires)
@@ -131,6 +127,7 @@ pub struct AdmissionReservations {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReserveError {
     Duplicate,
+    NotFresh,
     Full { occupied: usize, capacity: usize },
     NeedsRefresh,
     CounterOverflow,
@@ -221,6 +218,9 @@ impl AdmissionReservations {
         }
         if state.entries.contains_key(&deploy.signature) {
             return Err(ReserveError::Duplicate);
+        }
+        if !window.contains(&deploy) {
+            return Err(ReserveError::NotFresh);
         }
         self.expire_entries(&mut state, window);
         let occupied = self.occupied();
@@ -408,7 +408,7 @@ mod tests {
     fn eight_inclusions_allow_twenty_four_positions() {
         let admission = DeployAdmission::default();
         admission.observe(1, 8, true);
-        let capacity = admission.capacity(128, 24);
+        let capacity = admission.capacity(128);
         assert!(24 <= capacity);
         assert!(25 > capacity);
     }
@@ -416,11 +416,11 @@ mod tests {
     #[test]
     fn cold_start_and_shard_cap_bound_capacity() {
         let admission = DeployAdmission::default();
-        assert_eq!(admission.capacity(128, 0), 24);
-        assert_eq!(admission.capacity(4, 0), 12);
-        assert_eq!(admission.capacity(0, 0), 0);
+        assert_eq!(admission.capacity(128), 24);
+        assert_eq!(admission.capacity(4), 12);
+        assert_eq!(admission.capacity(0), 0);
         admission.observe(1, 128, true);
-        assert_eq!(admission.capacity(4, 100), 12);
+        assert_eq!(admission.capacity(4), 12);
     }
 
     #[test]
@@ -430,23 +430,22 @@ mod tests {
         admission.observe(2, 0, false);
         admission.observe(2, 100, true);
         admission.observe(1, 100, true);
-        assert_eq!(admission.capacity(128, 1), 24);
+        assert_eq!(admission.capacity(128), 24);
         admission.observe(3, 0, true);
-        assert_eq!(admission.capacity(128, 1), 12);
+        assert_eq!(admission.capacity(128), 12);
     }
 
     #[test]
-    fn recent_samples_replace_old_capacity_and_allow_recovery() {
+    fn recent_samples_replace_old_capacity_without_implicitly_enabling_a_probe() {
         let admission = DeployAdmission::default();
         admission.observe(0, 8, true);
         for sequence in 1..=8 {
             admission.observe(sequence, 0, true);
         }
-        assert_eq!(admission.capacity(128, 1), 0);
-        assert_eq!(admission.capacity(128, 0), 1);
-        assert_eq!(admission.capacity(0, 0), 0);
+        assert_eq!(admission.capacity(128), 0);
+        assert_eq!(admission.capacity(0), 0);
         admission.observe(9, 8, true);
-        assert_eq!(admission.capacity(128, 1), 3);
+        assert_eq!(admission.capacity(128), 3);
     }
 
     #[test]
@@ -454,7 +453,7 @@ mod tests {
         let admission = DeployAdmission::default();
         admission.observe(1, 1, true);
         admission.observe(2, 0, true);
-        assert_eq!(admission.capacity(128, 1), 1);
+        assert_eq!(admission.capacity(128), 1);
     }
 
     #[test]
@@ -466,11 +465,11 @@ mod tests {
 
         for sequence in 2..=9 {
             zero_service.observe(sequence, 0, true);
-            assert_eq!(stalled.capacity(128, 24), 24);
+            assert_eq!(stalled.capacity(128), 24);
         }
 
-        assert_eq!(zero_service.capacity(128, 1), 0);
-        assert_eq!(stalled.capacity(128, 24), 24);
+        assert_eq!(zero_service.capacity(128), 0);
+        assert_eq!(stalled.capacity(128), 24);
     }
 }
 
@@ -483,6 +482,7 @@ mod reservation_tests {
     fn window() -> FreshWindow {
         FreshWindow {
             earliest_valid_after: -1,
+            latest_valid_after: 1000,
             now_millis: 100,
         }
     }
@@ -656,7 +656,7 @@ mod reservation_tests {
     }
 
     #[test]
-    fn height_expiry_releases_pending_but_future_entries_keep_their_slot() {
+    fn height_expiry_releases_pending_but_near_future_entries_keep_their_slot() {
         let mut future = deploy(1);
         future.valid_after_block_number = 1000;
         let book = AdmissionReservations::from_fresh([deploy(0), future], window()).unwrap();
@@ -664,14 +664,31 @@ mod reservation_tests {
             earliest_valid_after: 0,
             ..window()
         };
-        let reserved = book.try_reserve(deploy(2), 2, later).unwrap();
+        let mut candidate = deploy(2);
+        candidate.valid_after_block_number = 1;
+        let reserved = book.try_reserve(candidate, 2, later).unwrap();
         assert_eq!(book.occupied(), 2);
         assert!(matches!(
             book.try_reserve(deploy(1), 2, later),
             Err(ReserveError::Duplicate)
         ));
-        assert_eq!(reserved.commit(later), CommitResult::Excluded);
-        assert_eq!(book.occupied(), 1);
+        assert_eq!(reserved.commit(later), CommitResult::Pending);
+        assert_eq!(book.occupied(), 2);
+    }
+
+    #[test]
+    fn out_of_window_arrivals_do_not_reserve_a_slot() {
+        let book = AdmissionReservations::from_fresh([], window()).unwrap();
+        for (height, expires) in [(1001, None), (0, Some(99)), (-1, None)] {
+            let mut candidate = deploy(3);
+            candidate.valid_after_block_number = height;
+            candidate.expiration_timestamp = expires;
+            assert!(matches!(
+                book.try_reserve(candidate, 1, window()),
+                Err(ReserveError::NotFresh)
+            ));
+            assert_eq!(book.occupied(), 0);
+        }
     }
 
     #[test]

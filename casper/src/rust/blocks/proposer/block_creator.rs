@@ -268,14 +268,18 @@ fn trace_retry_gate_deferral(sig: &Bytes, basis: &RetryGateBasis, ctx: &FloorCon
     );
 }
 
-fn record_expired_deploys(
-    dag: &KeyValueDagRepresentation,
-    deploys: &[Signed<DeployData>],
-) -> Result<(), CasperError> {
-    for deploy in deploys {
-        dag.open_dropped_deploy_lifecycle_row(&deploy.sig, deploy.data.valid_after_block_number)?;
+fn record_expired_deploys(dag: &KeyValueDagRepresentation, deploys: &[Signed<DeployData>]) -> bool {
+    let rows: Vec<_> = deploys
+        .iter()
+        .map(|deploy| (deploy.sig.to_vec(), deploy.data.valid_after_block_number))
+        .collect();
+    match dag.open_dropped_deploy_lifecycle_rows(&rows) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(%error, count = rows.len(), "Deferred expired deploy removal after lifecycle write failure");
+            false
+        }
     }
-    Ok(())
 }
 
 fn ordered_user_deploys(deploys: &HashSet<Signed<DeployData>>) -> Vec<Signed<DeployData>> {
@@ -645,7 +649,9 @@ async fn prepare_user_deploys_with_policy(
         })
         .cloned()
         .collect();
-    if !expired_buffered.is_empty() {
+    if !expired_buffered.is_empty()
+        && record_expired_deploys(&casper_snapshot.dag, &expired_buffered)
+    {
         for deploy in &expired_buffered {
             tracing::info!(
                 target: "f1r3fly.casper.deploy_lifecycle",
@@ -663,7 +669,6 @@ async fn prepare_user_deploys_with_policy(
             "Removing {} expired rejected-buffer deploy(s) from storage and rejected-deploy buffer",
             expired_buffered.len()
         );
-        record_expired_deploys(&casper_snapshot.dag, &expired_buffered)?;
         deploy_storage.remove(expired_buffered.clone())?;
         rejected_deploy_buffer
             .lock()?
@@ -1437,8 +1442,9 @@ async fn prepare_user_deploys_with_policy(
         .chain(time_expired_deploys.iter())
         .cloned()
         .collect();
-    if !all_expired.is_empty() {
-        for deploy in &all_expired {
+    let expired_list: Vec<Signed<DeployData>> = all_expired.into_iter().cloned().collect();
+    if !expired_list.is_empty() && record_expired_deploys(&casper_snapshot.dag, &expired_list) {
+        for deploy in &expired_list {
             tracing::info!(
                 target: "f1r3fly.casper.deploy_lifecycle",
                 event = "storage_and_buffer_removed",
@@ -1454,10 +1460,8 @@ async fn prepare_user_deploys_with_policy(
         }
         tracing::info!(
             "Removing {} expired deploy(s) from storage and rejected-deploy buffer",
-            all_expired.len()
+            expired_list.len()
         );
-        let expired_list: Vec<Signed<DeployData>> = all_expired.into_iter().cloned().collect();
-        record_expired_deploys(&casper_snapshot.dag, &expired_list)?;
         deploy_storage.remove(expired_list.clone())?;
 
         // Also purge expired sigs from the rejected-deploy buffer.
@@ -6161,10 +6165,10 @@ mod tests {
         .await;
 
         if fail_recording {
-            assert!(matches!(
-                prepared,
-                Err(CasperError::KvStoreError(KvStoreError::IoError(_)))
-            ));
+            assert!(prepared
+                .expect("bookkeeping failure must not stop a proposal")
+                .deploys
+                .is_empty());
             assert!(deploy_storage.contains_sig(&expired.sig).unwrap());
             assert_eq!(
                 rejected_deploy_buffer

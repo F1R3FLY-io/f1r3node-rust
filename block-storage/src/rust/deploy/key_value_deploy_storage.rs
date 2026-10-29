@@ -46,7 +46,7 @@ pub fn store_revision(store: &Arc<dyn KeyValueStore>) -> Option<usize> {
     store
         .as_any()
         .downcast_ref::<LmdbKeyValueStore>()
-        .map(|store| store.env.info().last_txn_id)
+        .and_then(LmdbKeyValueStore::revision)
 }
 
 #[derive(Clone, Default)]
@@ -719,10 +719,7 @@ mod tests {
                 .create_database(&mut txn, Some("unrelated"))
                 .unwrap();
             txn.commit().unwrap();
-            let unrelated = Arc::new(LmdbKeyValueStore {
-                env: store.env.clone(),
-                db,
-            });
+            let unrelated = Arc::new(LmdbKeyValueStore::new(store.env.clone(), db));
             let writes = Rc::new(Cell::new(0_u64));
             let observed = writes.clone();
             let mutation = unrelated.clone();

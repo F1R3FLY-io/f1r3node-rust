@@ -272,6 +272,13 @@ impl KeyValueDagRepresentation {
         self.lifecycle.write().open_dropped(sig, valid_after)
     }
 
+    pub fn open_dropped_deploy_lifecycle_rows(
+        &self,
+        deploys: &[(Vec<u8>, i64)],
+    ) -> Result<(), KvStoreError> {
+        self.lifecycle.write().open_dropped_batch(deploys)
+    }
+
     /// Repeat-deploy carrier index: the height since which every insert
     /// has recorded carriers on this database. The fast path engages only
     /// for scan windows starting at or above this watermark; `None` means

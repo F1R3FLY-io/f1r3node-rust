@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     DeployId, InsertMode, KeyValueDagRepresentation,
 };
+use block_storage::rust::deploy::key_value_deploy_storage::MetadataSnapshot;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
@@ -23,7 +24,8 @@ use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
 use crate::rust::casper::{Casper, CasperSnapshot, DeployError};
 use crate::rust::deploy_admission::{
-    AdmissionReservations, AdmissionRevision, FreshWindow, PendingDeploy, ReserveError,
+    AdmissionReservations, AdmissionRevision, CommitResult, FreshWindow, PendingDeploy,
+    ReserveError,
 };
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -139,10 +141,8 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
     {
         return Ok(true);
     }
-    this.rejected_deploy_buffer
-        .lock()?
-        .contains_sig(deploy_id)
-        .map_err(Into::into)
+    let rejected = this.rejected_deploy_buffer.lock()?.clone();
+    rejected.contains_sig(deploy_id).map_err(Into::into)
 }
 
 fn reserve_deploy<T: TransportLayer + Send + Sync>(
@@ -163,11 +163,11 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
     let shard_cap = this.casper_shard_conf.max_user_deploys_per_block as usize;
     for changed_component in &mut refresh_changes {
         let deploy_storage = this.deploy_storage.as_ref();
-        let rejected_deploys = this.rejected_deploy_buffer.lock()?;
+        let rejected_deploys = this.rejected_deploy_buffer.lock()?.clone();
         if deploy_storage.contains_sig(&deploy_id)? || rejected_deploys.contains_sig(&deploy_id)? {
             return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
         }
-        let mut capacity = this.deploy_admission.capacity(shard_cap, 1);
+        let mut capacity = this.deploy_admission.capacity(shard_cap);
         let mut cache = this.deploy_admission.reservations.lock();
         let generation = this.block_dag_storage.current_generation();
         let lifecycle = this.block_dag_storage.deploy_status_revision();
@@ -183,8 +183,16 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             queue_bounds(&dag, this.casper_shard_conf.deploy_lifespan)?;
         let window = FreshWindow {
             earliest_valid_after,
+            latest_valid_after: dag
+                .latest_block_number()
+                .saturating_add(1)
+                .saturating_add(this.casper_shard_conf.deploy_lifespan),
             now_millis,
         };
+        let metadata = PendingDeploy::from(&deploy);
+        if !window.contains(&metadata) {
+            return Ok(Either::Left(DeployError::InvalidFreshness));
+        }
         let revision = AdmissionRevision {
             pool: pool.generation,
             rejected: rejected.generation,
@@ -205,15 +213,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
                     && pool.parent_generation == Some(previous.pool)
             });
         let is_fresh = |deploy: &PendingDeploy| -> Result<bool, KvStoreError> {
-            Ok(deploy.valid_after_block_number > earliest_valid_after
-                && deploy
-                    .expiration_timestamp
-                    .is_none_or(|expires| now_millis <= expires)
-                && !rejected.entries.contains_key(&deploy.signature)
-                && dag.deploy_terminal(&deploy.signature)?.is_none()
-                && dag
-                    .deploy_canonical_appearance(&deploy.signature)?
-                    .is_none())
+            deploy_is_fresh(&dag, &rejected, deploy, window)
         };
         let book = if reusable || incremental {
             cache
@@ -273,17 +273,17 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         if capacity == 0 && book.occupied() == 0 && shard_cap > 0 {
             capacity = 1;
         }
-        let metadata = PendingDeploy::from(&deploy);
         let pending_ahead = book.pending_ahead(&metadata);
         metrics::gauge!(DEPLOY_ADMISSION_PENDING_AHEAD_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(pending_ahead as f64);
         metrics::gauge!(DEPLOY_ADMISSION_CAPACITY_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(capacity as f64);
-        let reservation = match book.try_reserve(metadata, capacity, window) {
+        let reservation = match book.try_reserve(metadata.clone(), capacity, window) {
             Ok(reservation) => reservation,
             Err(ReserveError::Duplicate) => {
                 return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)))
             }
+            Err(ReserveError::NotFresh) => return Ok(Either::Left(DeployError::InvalidFreshness)),
             Err(ReserveError::Full { .. }) => {
                 metrics::counter!(DEPLOY_ADMISSION_REFUSED_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
@@ -302,7 +302,17 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         if !deploy_storage.add_if_absent(deploy)? {
             return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
         }
-        reservation.commit(window);
+        let (_, commit_time) = queue_bounds(&dag, this.casper_shard_conf.deploy_lifespan)?;
+        let commit_window = FreshWindow {
+            now_millis: commit_time,
+            ..window
+        };
+        if reservation.commit(commit_window) == CommitResult::Excluded
+            && !commit_window.contains(&metadata)
+        {
+            deploy_storage.remove_by_sig(&deploy_id)?;
+            return Ok(Either::Left(DeployError::InvalidFreshness));
+        }
         if let Ok(updated) = deploy_storage.metadata_snapshot() {
             if updated.parent_generation == Some(revision.pool) {
                 cache.revision = Some(AdmissionRevision {
@@ -345,16 +355,16 @@ fn queue_bounds(
 
 fn deploy_is_fresh(
     dag: &KeyValueDagRepresentation,
-    buffered: &HashSet<Bytes>,
-    deploy: &Signed<DeployData>,
-    earliest: i64,
-    now: i64,
+    buffered: &MetadataSnapshot,
+    deploy: &PendingDeploy,
+    window: FreshWindow,
 ) -> Result<bool, KvStoreError> {
-    Ok(deploy.data.valid_after_block_number > earliest
-        && !deploy.data.is_expired_at(now)
-        && !buffered.contains(&deploy.sig)
-        && dag.deploy_terminal(&deploy.sig)?.is_none()
-        && dag.deploy_canonical_appearance(&deploy.sig)?.is_none())
+    Ok(window.contains(deploy)
+        && !buffered.entries.contains_key(&deploy.signature)
+        && dag.deploy_terminal(&deploy.signature)?.is_none()
+        && dag
+            .deploy_canonical_appearance(&deploy.signature)?
+            .is_none())
 }
 
 fn local_service_sample<T: TransportLayer + Send + Sync>(
@@ -369,31 +379,37 @@ fn local_service_sample<T: TransportLayer + Send + Sync>(
         return Ok(None);
     }
     let storage = this.deploy_storage.as_ref();
-    let rejected = this.rejected_deploy_buffer.lock()?;
+    let rejected = this.rejected_deploy_buffer.lock()?.clone();
     let dag = this.block_dag_storage.get_representation()?;
     if dag.contains(&block.block_hash) {
         return Ok(None);
     }
     let (earliest, now) = queue_bounds(&dag, this.casper_shard_conf.deploy_lifespan)?;
-    let buffered: HashSet<Bytes> = rejected
-        .read_all()?
-        .into_iter()
-        .map(|deploy| deploy.sig)
-        .collect();
+    let window = FreshWindow {
+        earliest_valid_after: earliest,
+        now_millis: now,
+        latest_valid_after: dag
+            .latest_block_number()
+            .saturating_add(1)
+            .saturating_add(this.casper_shard_conf.deploy_lifespan),
+    };
+    let buffered = rejected.metadata_snapshot()?;
+    let pool = storage.metadata_snapshot()?;
     let mut included = HashSet::new();
     for processed in &block.body.deploys {
         let deploy = &processed.deploy;
-        if storage.contains_sig(&deploy.sig)?
-            && deploy_is_fresh(&dag, &buffered, deploy, earliest, now)?
+        if pool.entries.contains_key(deploy.sig.as_ref())
+            && deploy_is_fresh(&dag, &buffered, &PendingDeploy::from(deploy), window)?
         {
             included.insert(deploy.sig.clone());
         }
     }
     let had_demand = !included.is_empty()
-        || storage.any(|deploy| {
-            Ok(
-                deploy.data.valid_after_block_number < block.body.state.block_number
-                    && deploy_is_fresh(&dag, &buffered, deploy, earliest, now)?,
+        || pool.entries.values().try_fold(false, |found, deploy| {
+            Ok::<_, KvStoreError>(
+                found
+                    || (deploy.valid_after_block_number < block.body.state.block_number
+                        && deploy_is_fresh(&dag, &buffered, deploy, window)?),
             )
         })?;
     Ok(Some((included.len(), had_demand)))
@@ -473,7 +489,14 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if let Either::Left(error) = reserve_deploy(this, deploy.clone())? {
+    let reserve = || reserve_deploy(this, deploy.clone());
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(reserve)
+        }
+        _ => reserve(),
+    }?;
+    if let Either::Left(error) = result {
         return Ok(Either::Left(error));
     }
 
