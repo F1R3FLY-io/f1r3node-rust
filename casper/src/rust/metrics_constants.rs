@@ -21,7 +21,6 @@ pub const BLOCK_HASH_RECEIVED_METRIC: &str = "block.hash.received";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
-pub const BLOCK_REQUESTS_RECOVERY_METRIC: &str = "block.requests.recovery";
 pub const BLOCK_INGEST_METRICS_SOURCE: &str = "f1r3fly.casper.block-ingest";
 pub const BLOCK_INGEST_HELD_METRIC: &str = "block.ingest.held";
 pub const BLOCK_INGEST_DISK_ENTRIES_METRIC: &str = "block.ingest.disk-entries";
@@ -69,9 +68,6 @@ pub const CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC: &str = "casper.init.approv
 pub const CASPER_INIT_TRANSITION_TO_RUNNING_METRIC: &str = "casper.init.transition-to-running";
 pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
-pub const CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC: &str = "casper.buffer.release-scan.time";
-pub const CASPER_BUFFER_RELEASE_SCAN_CANDIDATES_METRIC: &str =
-    "casper.buffer.release-scan.candidates";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
 // See: https://github.com/F1R3FLY-io/f1r3node/pull/367
 // pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str = "mergeable.channels.gc.deleted";

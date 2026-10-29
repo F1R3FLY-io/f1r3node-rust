@@ -5,10 +5,10 @@
 //! moment. Anything admitted afterwards — a settled-history straggler the
 //! restore's closure missed — arrives with bytes but no state, and a block
 //! built on it cannot replay. The replay reports the missing root typed
-//! ([`RootError::RootNotFound`] → [`BlockError::AwaitingState`]); the block
-//! defers as a pendant and retries; this module is what makes the retry
-//! eventually succeed: it asks a peer for the root's trie, imports the
-//! content-addressed chunks, and records the root once verification passes.
+//! ([`RootError::RootNotFound`] → [`BlockError::AwaitingState`]); block ingest
+//! holds the block until the root arrives. This module fetches it: it asks a
+//! peer for the root's trie, imports the content-addressed chunks, records the
+//! root once verification passes, and reports each fetch's outcome.
 //!
 //! Trust model, unchanged from the restore-time horizon sync this reuses the
 //! wire protocol of: chunks are radix nodes validated against their own

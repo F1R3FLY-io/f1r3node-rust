@@ -136,9 +136,7 @@ pub(crate) async fn compute_snapshot(
     }
     // Storage errors during snapshot construction must propagate: a
     // silent empty `valid_latest_metas` would feed wrong fork-choice on
-    // the consensus hot path. Bug #17 / T-9.20 hardened this contract
-    // for crash-window drift; same discipline applies to general
-    // storage I/O.
+    // the consensus hot path.
     let mut valid_latest_metas: HashMap<Validator, BlockMetadata> =
         HashMap::with_capacity(valid_latest_msgs.len());
     // A slot that is unheld, or whose held target the validator never signed,

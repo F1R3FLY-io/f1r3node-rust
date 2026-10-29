@@ -148,22 +148,6 @@ impl WalPayloadContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CasperMessageStatus {
-    BlockIsInDag,
-    BlockIsInCasperBuffer,
-    BlockIsReceived,
-    BlockIsWaitingForCasper,
-    BlockIsInProcessing,
-    DoNotIgnore,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IgnoreCasperMessageStatus {
-    pub do_ignore: bool,
-    pub status: CasperMessageStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastFinalizedBlockNotFoundError;
 
 impl std::fmt::Display for LastFinalizedBlockNotFoundError {
@@ -304,8 +288,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 self.handle_block_request(peer, br).await
             }
 
-            // TODO should node say it has block only after it is in DAG, or CasperBuffer is enough? Or even just BlockStore?
-            // https://github.com/rchain/rchain/pull/2943#discussion_r449887701 -- OLD
             CasperMessage::HasBlockRequest(hbr) => {
                 self.handle_has_block_request(peer, hbr, |hash| self.casper.dag_contains(&hash))
                     .await

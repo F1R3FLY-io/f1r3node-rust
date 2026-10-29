@@ -8,10 +8,8 @@
 // verified chunk bytes ready for assembly into the reconstructed
 // snapshot.
 //
-// Mirrors the shape of `BlockRetriever` at
-// `casper/src/rust/engine/block_retriever.rs` but scoped to the
-// per-chunk problem: a snapshot is many chunks, each fetched
-// independently, each verified independently.  Under partial
+// A snapshot is many chunks, each fetched independently, each
+// verified independently.  Under partial
 // success (M of N chunks arrive, one is byzantine) we accept
 // the M and re-request the failing index without discarding
 // progress.
