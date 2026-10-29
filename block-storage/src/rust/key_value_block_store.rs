@@ -270,6 +270,18 @@ impl KeyValueBlockStore {
         self.put(block.block_hash.clone(), block)
     }
 
+    pub fn discard_copy(&self, block: &BlockMessage) -> Result<bool, KvStoreError> {
+        let key = block.block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(false);
+        };
+        let stored = BlockMessage::from_proto(Self::bytes_to_block_proto(&bytes)?).ok();
+        if stored.as_ref() != Some(block) {
+            return Ok(false);
+        }
+        self.store.delete_if_value(&key, &bytes)
+    }
+
     pub fn contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
         match self.get(block_hash) {
             Ok(Some(_)) => Ok(true),
@@ -1207,6 +1219,25 @@ mod tests {
             bs.deploy_sigs(&block.block_hash),
             Err(KvStoreError::SerializationError(_))
         ));
+    }
+
+    #[test]
+    fn discard_copy_removes_only_the_matching_body() {
+        let disk: Arc<dyn KeyValueStore> = Arc::new(
+            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+        );
+        let approved: Arc<dyn KeyValueStore> = Arc::new(
+            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+        );
+        let bs = KeyValueBlockStore::new(disk, approved);
+        let stored = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&stored).unwrap();
+        let mut other = stored.clone();
+        other.seq_num += 1;
+        assert!(!bs.discard_copy(&other).unwrap());
+        assert_eq!(bs.get(&stored.block_hash).unwrap(), Some(stored.clone()));
+        assert!(bs.discard_copy(&stored).unwrap());
+        assert_eq!(bs.get(&stored.block_hash).unwrap(), None);
     }
 }
 

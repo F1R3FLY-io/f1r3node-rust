@@ -257,14 +257,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     .await
             }
             CasperMessage::BlockMessage(b) => {
-                if let Some(id) = self.casper.get_validator() {
-                    if b.sender == id.public_key.bytes {
-                        tracing::warn!(
-                            "There is another node {} proposing using the same private key as you. Or did you restart your node?",
-                            peer
-                        );
-                    }
-                }
                 if self.ignore_casper_message(b.block_hash.clone())? {
                     tracing::debug!(
                         "Ignoring BlockMessage {} from {}",
@@ -272,6 +264,29 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                 } else {
+                    let (b, integrity) = tokio::task::spawn_blocking(move || {
+                        let integrity =
+                            IntegrityChecked::check(&b, RUNNING_METRICS_SOURCE).map(|_| ());
+                        (b, integrity)
+                    })
+                    .await
+                    .map_err(|err| {
+                        CasperError::RuntimeError(format!(
+                            "Block integrity check failed to run: {}",
+                            err
+                        ))
+                    })?;
+                    if integrity.is_err() {
+                        return Ok(());
+                    }
+                    if let Some(id) = self.casper.get_validator() {
+                        if b.sender == id.public_key.bytes {
+                            tracing::warn!(
+                                "There is another node {} proposing using the same private key as you. Or did you restart your node?",
+                                peer
+                            );
+                        }
+                    }
                     tracing::debug!(
                         "Incoming BlockMessage {} from {}",
                         PrettyPrinter::build_string_block_message(&b, true),
@@ -592,7 +607,8 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, IntegrityChecked,
+    MAX_BLOCKS_IN_PROCESSING,
 };
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
