@@ -10,7 +10,9 @@ use models::rust::deploy_parameters::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::rust::api::serde_types::int_string;
 use crate::rust::api::serde_types::system_deploy_info::SingleReportSerde;
+use crate::rust::web::transaction::LEGACY_AMOUNT_OUT_OF_RANGE;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TransferInfoSerde {
@@ -18,7 +20,8 @@ pub struct TransferInfoSerde {
     pub from_addr: String,
     #[serde(rename = "toAddr")]
     pub to_addr: String,
-    pub amount: i64,
+    #[serde(deserialize_with = "int_string::deserialize")]
+    pub amount: String,
     pub success: bool,
     #[serde(rename = "failReason")]
     pub fail_reason: String,
@@ -29,7 +32,11 @@ impl From<TransferInfo> for TransferInfoSerde {
         Self {
             from_addr: t.from_addr,
             to_addr: t.to_addr,
-            amount: t.amount,
+            amount: if t.amount_raw.is_empty() {
+                t.amount.to_string()
+            } else {
+                t.amount_raw
+            },
             success: t.success,
             fail_reason: t.fail_reason,
         }
@@ -41,7 +48,8 @@ impl From<TransferInfoSerde> for TransferInfo {
         TransferInfo {
             from_addr: t.from_addr,
             to_addr: t.to_addr,
-            amount: t.amount,
+            amount: t.amount.parse().unwrap_or(LEGACY_AMOUNT_OUT_OF_RANGE),
+            amount_raw: t.amount,
             success: t.success,
             fail_reason: t.fail_reason,
         }

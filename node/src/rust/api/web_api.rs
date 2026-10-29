@@ -31,6 +31,7 @@ use utoipa::ToSchema;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
+use crate::rust::api::serde_types::int_string;
 use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
 use crate::rust::web::block_info_enricher::extract_transfers_from_report;
 use crate::rust::web::version_info::get_version_info_str;
@@ -925,7 +926,7 @@ impl WebApi for WebApiImpl {
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
 
         let mut validators = Vec::new();
-        let mut total_stake: i64 = 0;
+        let mut total_stake: i128 = 0;
 
         // getBonds returns a Rholang map: {pubkey: stake, ...}
         // ExprMap keys are already String (extracted by extract_key_from_expr)
@@ -941,7 +942,7 @@ impl WebApi for WebApiImpl {
                         ))
                     }
                 };
-                total_stake += stake;
+                total_stake += i128::from(stake);
                 validators.push(ValidatorInfo {
                     public_key: public_key.clone(),
                     stake,
@@ -1142,9 +1143,13 @@ pub enum RhoExpr {
         data: bool,
     },
     ExprInt {
+        #[serde(with = "int_string")]
+        #[schema(value_type = String)]
         data: i64,
     },
     ExprUint64 {
+        #[serde(with = "int_string")]
+        #[schema(value_type = String)]
         data: u64,
     },
     ExprInt32 {
@@ -1544,6 +1549,7 @@ pub enum ViewMode {
 pub struct BalanceResponse {
     pub address: String,
     /// Balance in base units as a decimal string (vault balances are BigInt).
+    #[serde(deserialize_with = "int_string::deserialize")]
     pub balance: String,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
@@ -1567,6 +1573,8 @@ pub struct RegistryResponse {
 pub struct ValidatorInfo {
     #[serde(rename = "publicKey")]
     pub public_key: String,
+    #[serde(with = "int_string")]
+    #[schema(value_type = String)]
     pub stake: i64,
 }
 
@@ -1574,8 +1582,9 @@ pub struct ValidatorInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ValidatorsResponse {
     pub validators: Vec<ValidatorInfo>,
-    #[serde(rename = "totalStake")]
-    pub total_stake: i64,
+    #[serde(rename = "totalStake", with = "int_string")]
+    #[schema(value_type = String)]
+    pub total_stake: i128,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1640,6 +1649,8 @@ pub struct ValidatorStatusResponse {
     pub public_key: String,
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
+    #[serde(default, with = "int_string::option")]
+    #[schema(value_type = Option<String>)]
     pub stake: Option<i64>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
@@ -2761,7 +2772,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             as_json(&not),
-            serde_json::json!({"ExprNot": {"data": {"ExprInt": {"data": 1}}}})
+            serde_json::json!({"ExprNot": {"data": {"ExprInt": {"data": "1"}}}})
         );
 
         let neg = expr_from_expr_proto(Expr {
@@ -2790,8 +2801,8 @@ mod tests {
         assert_eq!(
             as_json(&plus),
             serde_json::json!({"ExprPlus": {
-                "left": {"ExprInt": {"data": 1}},
-                "right": {"ExprInt": {"data": 2}},
+                "left": {"ExprInt": {"data": "1"}},
+                "right": {"ExprInt": {"data": "2"}},
             }})
         );
 
@@ -2913,8 +2924,8 @@ mod tests {
                 json.get(expected_variant).is_some(),
                 "expected {expected_variant}, got {json}"
             );
-            assert_eq!(json[expected_variant]["left"]["ExprInt"]["data"], 1);
-            assert_eq!(json[expected_variant]["right"]["ExprInt"]["data"], 2);
+            assert_eq!(json[expected_variant]["left"]["ExprInt"]["data"], "1");
+            assert_eq!(json[expected_variant]["right"]["ExprInt"]["data"], "2");
         }
     }
 
@@ -2930,8 +2941,8 @@ mod tests {
         })
         .unwrap();
         let json = as_json(&matches_expr);
-        assert_eq!(json["ExprMatches"]["target"]["ExprInt"]["data"], 1);
-        assert_eq!(json["ExprMatches"]["pattern"]["ExprInt"]["data"], 2);
+        assert_eq!(json["ExprMatches"]["target"]["ExprInt"]["data"], "1");
+        assert_eq!(json["ExprMatches"]["pattern"]["ExprInt"]["data"], "2");
 
         let method_expr = expr_from_expr_proto(Expr {
             expr_instance: Some(ExprInstance::EMethodBody(EMethod {

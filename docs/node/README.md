@@ -184,7 +184,7 @@ All query endpoints accept an optional `?block_hash=` parameter to query against
 Returns the vault balance for a wallet address. The address must be a native-token address (Base58-encoded, starts with `1111`). Queries the SystemVault contract at `rho:vault:system`.
 
 ```json
-{"address": "04abc...", "balance": 1000000, "blockNumber": 42, "blockHash": "abc..."}
+{"address": "04abc...", "balance": "1000000", "blockNumber": 42, "blockHash": "abc..."}
 ```
 
 ### `GET /api/registry/{uri}`
@@ -200,7 +200,7 @@ Looks up a registry URI (e.g. `rho:id:...`). Unwraps the `(true, data)` tuple fr
 Returns the active validator set with stake from the PoS contract at `rho:system:pos` (`getBonds`).
 
 ```json
-{"validators": [{"publicKey": "04abc...", "stake": 100}], "totalStake": 300, "blockNumber": 42, "blockHash": "abc..."}
+{"validators": [{"publicKey": "04abc...", "stake": "100"}], "totalStake": "300", "blockNumber": 42, "blockHash": "abc..."}
 ```
 
 ### `GET /api/epoch`
@@ -239,8 +239,8 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 |----------|----------------|-------------|
 | **Primitives** | | |
 | Boolean | `ExprBool` | `{"ExprBool": {"data": true}}` |
-| Integer | `ExprInt` | `{"ExprInt": {"data": 42}}` |
-| Unsigned 64-bit integer | `ExprUint64` | `{"ExprUint64": {"data": 42}}` |
+| Integer | `ExprInt` | `{"ExprInt": {"data": "42"}}` |
+| Unsigned 64-bit integer | `ExprUint64` | `{"ExprUint64": {"data": "42"}}` |
 | Signed 32-bit integer | `ExprInt32` | `{"ExprInt32": {"data": -42}}` |
 | Unsigned 32-bit integer | `ExprUint32` | `{"ExprUint32": {"data": 42}}` |
 | Unsigned 16-bit integer | `ExprUint16` | `{"ExprUint16": {"data": 42}}` |
@@ -283,7 +283,7 @@ API responses from `explore-deploy`, `data-at-name-by-block-hash`, `registry`, a
 - **No silent drops**: every Rholang type has a representation. Unknown future types render as `ExprUnknown` with a type name — never silently disappear from responses.
 - **Map keys**: any RhoExpr can be a map key. Primitives use natural string representation; complex types are serialized to JSON strings.
 - **Sized integer map keys**: a key of type `UInt64`, `Int32`, `UInt32`, `UInt16` or `UInt8` has its type suffix, for example `"5u64"` or `"5u8"`. An `Int` key has no suffix (`"5"`). Keys of different integer types therefore stay separate.
-- **64-bit integers in JSON**: `ExprInt` and `ExprUint64` values are JSON numbers. A JavaScript `Number` holds integers exactly only up to 2^53, so a client in JavaScript must use a parser with 64-bit integer support to read larger values exactly.
+- **64-bit integers in JSON**: `ExprInt` and `ExprUint64` values are decimal strings. A JavaScript `Number` holds integers exactly only up to 2^53. The string form keeps every value exact. The node also reads the earlier JSON number form. See [64-bit integers and token amounts](api-reference.md#64-bit-integers-and-token-amounts).
 - **Extended numerics**: `BigInt`, `BigRat`, and `FixedPoint` are represented as decimal strings (not binary) for client readability. `Float` is IEEE 754 f64.
 - **Process-level constructs** (sends, receives, new bindings) are represented as `ExprUnknown { type_name: "Process" }` rather than full AST serialization. These are rarely returned by data queries.
 - **Deploy not found**: returns HTTP 404 (not 400) so clients can distinguish "not yet in block" from "invalid request."
@@ -321,7 +321,7 @@ The error chain propagates cleanly: `verify_token_metadata_matches_config → Er
 
 ## Transfer Extraction
 
-Transfer data (from/to/amount/success) is extracted from block execution reports and inlined on `DeployInfo` for `get_block` and `last_finalized_block` responses.
+Transfer data (from/to/amount/success) is extracted from block execution reports and inlined on `DeployInfo` for `get_block` and `last_finalized_block` responses. The amount is exact for `Int` and `BigInt` values. HTTP and WebSocket responses give it as a decimal string. For wide gRPC amounts, set `exactTransferAmounts=true` and read `TransferInfo.amountRaw`. Legacy requests receive an explicit range error when a transfer amount does not fit int64. See the [transfer API contract](api-reference.md#64-bit-integers-and-token-amounts).
 
 ### Architecture
 

@@ -48,6 +48,8 @@ Transfer data is not available at block creation or addition time — it require
 2. A background task replays the block via `BlockReportAPI` (or hits cache if already warm)
 3. `transfers-available` fires with per-deploy transfer data
 
+Each `amount` is the exact transfer amount in dust as a decimal string. See [64-bit integers and token amounts](api-reference.md#64-bit-integers-and-token-amounts).
+
 On validator nodes, `transfers-available` is never emitted (block replay requires readonly mode).
 
 The `transfers-available` payload:
@@ -66,7 +68,7 @@ The `transfers-available` payload:
           {
             "from-addr": "1111...",
             "to-addr": "2222...",
-            "amount": 1000000,
+            "amount": "1000000",
             "success": true
           }
         ]

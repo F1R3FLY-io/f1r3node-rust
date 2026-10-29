@@ -257,7 +257,9 @@ impl GrpcDeployService {
     async fn last_finalized_block_impl(&mut self) -> ServiceResult<String> {
         let resp = self
             .client
-            .last_finalized_block(LastFinalizedBlockQuery {})
+            .last_finalized_block(LastFinalizedBlockQuery {
+                exact_transfer_amounts: true,
+            })
             .await
             .map_err(error_to_vec)?;
 

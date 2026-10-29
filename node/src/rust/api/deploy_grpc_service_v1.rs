@@ -213,14 +213,57 @@ impl DeployGrpcServiceV1Impl {
         .into())
     }
 
-    /// Helper function to create a successful BlockResponse
-    fn create_success_block_response(
+    fn validate_legacy_transfer_amounts(
+        block_info: &models::casper::BlockInfo,
+        exact_transfer_amounts: bool,
+    ) -> Result<(), ServiceError> {
+        if !exact_transfer_amounts {
+            for deploy in &block_info.deploys {
+                for transfer in &deploy.transfers {
+                    if !transfer.amount_raw.is_empty()
+                        && transfer.amount_raw.parse::<i64>().is_err()
+                    {
+                        return Err(Self::create_service_error(format!(
+                            "TRANSFER_AMOUNT_OUT_OF_RANGE: transfer amount in deploy {} cannot be represented as int64. Set exactTransferAmounts=true and read amountRaw.",
+                            deploy.sig
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn create_block_response(
         block_info: models::casper::BlockInfo,
+        exact_transfer_amounts: bool,
     ) -> Result<tonic::Response<BlockResponse>, tonic::Status> {
+        if let Err(error) =
+            Self::validate_legacy_transfer_amounts(&block_info, exact_transfer_amounts)
+        {
+            return Self::create_error_block_response(error);
+        }
         Ok(BlockResponse {
             message: Some(models::casper::v1::block_response::Message::BlockInfo(
                 block_info,
             )),
+        }
+        .into())
+    }
+
+    fn create_last_finalized_block_response(
+        block_info: models::casper::BlockInfo,
+        exact_transfer_amounts: bool,
+    ) -> Result<tonic::Response<LastFinalizedBlockResponse>, tonic::Status> {
+        use models::casper::v1::last_finalized_block_response::Message;
+
+        let message =
+            match Self::validate_legacy_transfer_amounts(&block_info, exact_transfer_amounts) {
+                Ok(()) => Message::BlockInfo(block_info),
+                Err(error) => Message::Error(error),
+            };
+        Ok(LastFinalizedBlockResponse {
+            message: Some(message),
         }
         .into())
     }
@@ -302,12 +345,13 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<BlockQuery>,
     ) -> Result<tonic::Response<BlockResponse>, tonic::Status> {
-        match BlockAPI::get_block(&self.engine_cell, &request.into_inner().hash).await {
+        let request = request.into_inner();
+        match BlockAPI::get_block(&self.engine_cell, &request.hash).await {
             Ok(mut block_info) => {
                 // Enrich transfers from BlockReportAPI (uses ReportStore cache).
                 // On readonly: transfers populated. On validators: empty (block report rejected).
                 self.enrich_proto_transfers(&mut block_info).await;
-                Self::create_success_block_response(block_info)
+                Self::create_block_response(block_info, request.exact_transfer_amounts)
             }
             Err(e) => {
                 error!("Deploy service method error get_block: {}", e);
@@ -684,17 +728,14 @@ impl DeployService for DeployGrpcServiceV1Impl {
         &self,
         request: tonic::Request<LastFinalizedBlockQuery>,
     ) -> Result<tonic::Response<LastFinalizedBlockResponse>, tonic::Status> {
-        let _request = request.into_inner();
+        let request = request.into_inner();
         match BlockAPI::last_finalized_block(&self.engine_cell).await {
             Ok(mut block_info) => {
                 self.enrich_proto_transfers(&mut block_info).await;
-                Ok(tonic::Response::new(LastFinalizedBlockResponse {
-                    message: Some(
-                        models::casper::v1::last_finalized_block_response::Message::BlockInfo(
-                            block_info,
-                        ),
-                    ),
-                }))
+                Self::create_last_finalized_block_response(
+                    block_info,
+                    request.exact_transfer_amounts,
+                )
             }
             Err(e) => {
                 error!("Deploy service method error last_finalized_block: {}", e);
@@ -1133,10 +1174,237 @@ mod tests {
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use models::rust::casper::protocol::casper_message::DeployData as DeployDataMessage;
+    use num_bigint::BigInt;
+    use prost::Message;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use tokio_stream::StreamExt;
 
     use super::*;
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyBlockQuery {
+        #[prost(string, tag = "1")]
+        hash: String,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyTransferInfo {
+        #[prost(int64, tag = "3")]
+        amount: i64,
+        #[prost(bool, tag = "4")]
+        success: bool,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyDeployInfo {
+        #[prost(message, repeated, tag = "13")]
+        transfers: Vec<LegacyTransferInfo>,
+        #[prost(bool, tag = "14")]
+        transfers_available: bool,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyBlockInfo {
+        #[prost(message, repeated, tag = "2")]
+        deploys: Vec<LegacyDeployInfo>,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyBlockResponse {
+        #[prost(oneof = "LegacyBlockResult", tags = "1, 2")]
+        message: Option<LegacyBlockResult>,
+    }
+
+    #[derive(Clone, PartialEq, prost::Oneof)]
+    enum LegacyBlockResult {
+        #[prost(message, tag = "1")]
+        Error(ServiceError),
+        #[prost(message, tag = "2")]
+        BlockInfo(LegacyBlockInfo),
+    }
+
+    fn transfer_block(amount: &BigInt, success: bool) -> models::casper::BlockInfo {
+        models::casper::BlockInfo {
+            deploys: vec![models::casper::DeployInfo {
+                sig: "synthetic-deploy".to_string(),
+                transfers_available: true,
+                transfers: vec![
+                    models::casper::TransferInfo {
+                        amount: 7,
+                        amount_raw: "7".to_string(),
+                        success: true,
+                        ..Default::default()
+                    },
+                    models::casper::TransferInfo {
+                        amount: crate::rust::web::transaction::legacy_amount(amount),
+                        amount_raw: amount.to_string(),
+                        success,
+                        fail_reason: if success {
+                            String::new()
+                        } else {
+                            "Transfer amount rejected".to_string()
+                        },
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn block_response_bytes(
+        block: models::casper::BlockInfo,
+        exact_transfer_amounts: bool,
+    ) -> [Vec<u8>; 2] {
+        [
+            DeployGrpcServiceV1Impl::create_block_response(block.clone(), exact_transfer_amounts)
+                .unwrap()
+                .into_inner()
+                .encode_to_vec(),
+            DeployGrpcServiceV1Impl::create_last_finalized_block_response(
+                block,
+                exact_transfer_amounts,
+            )
+            .unwrap()
+            .into_inner()
+            .encode_to_vec(),
+        ]
+    }
+
+    #[test]
+    fn legacy_block_queries_do_not_opt_into_exact_transfer_amounts() {
+        let encoded = LegacyBlockQuery {
+            hash: "aabbccddeeff".to_string(),
+        }
+        .encode_to_vec();
+        let query = BlockQuery::decode(encoded.as_slice()).unwrap();
+        assert_eq!(query.hash, "aabbccddeeff");
+        assert!(!query.exact_transfer_amounts);
+        assert!(
+            !LastFinalizedBlockQuery::decode(&[][..])
+                .unwrap()
+                .exact_transfer_amounts
+        );
+
+        let query = BlockQuery {
+            exact_transfer_amounts: true,
+            ..query
+        };
+        assert!(
+            BlockQuery::decode(query.encode_to_vec().as_slice())
+                .unwrap()
+                .exact_transfer_amounts
+        );
+        let query = LastFinalizedBlockQuery {
+            exact_transfer_amounts: true,
+        };
+        assert!(
+            LastFinalizedBlockQuery::decode(query.encode_to_vec().as_slice())
+                .unwrap()
+                .exact_transfer_amounts
+        );
+    }
+
+    #[test]
+    fn legacy_block_responses_return_range_errors_without_partial_blocks() {
+        let amounts: Vec<(BigInt, bool)> = vec![
+            (BigInt::from(1) << 63, true),
+            (BigInt::from(10_000_000_000_000_000_000u64), true),
+            ((BigInt::from(1) << 256) - 1, true),
+            (BigInt::from(i64::MIN) - 1, false),
+            (BigInt::from(1) << 512, false),
+        ];
+        for (amount, success) in amounts {
+            for encoded in block_response_bytes(transfer_block(&amount, success), false) {
+                let decoded = LegacyBlockResponse::decode(encoded.as_slice()).unwrap();
+                let Some(LegacyBlockResult::Error(error)) = decoded.message else {
+                    panic!("legacy response must reject {amount}");
+                };
+                assert!(error.messages[0].starts_with("TRANSFER_AMOUNT_OUT_OF_RANGE:"));
+                assert!(error.messages[0].contains("exactTransferAmounts=true"));
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_block_responses_preserve_representable_transfer_amounts() {
+        for amount in [i64::MIN, -1, 0, 1, (1 << 53) + 1, i64::MAX] {
+            let success = amount > 0;
+            for encoded in
+                block_response_bytes(transfer_block(&BigInt::from(amount), success), false)
+            {
+                let decoded = LegacyBlockResponse::decode(encoded.as_slice()).unwrap();
+                let Some(LegacyBlockResult::BlockInfo(block)) = decoded.message else {
+                    panic!("legacy response must preserve {amount}");
+                };
+                assert!(block.deploys[0].transfers_available);
+                assert_eq!(block.deploys[0].transfers.len(), 2);
+                assert_eq!(block.deploys[0].transfers[0].amount, 7);
+                assert_eq!(block.deploys[0].transfers[1].amount, amount);
+                assert_eq!(block.deploys[0].transfers[1].success, success);
+            }
+        }
+    }
+
+    #[test]
+    fn exact_block_responses_preserve_transfer_amounts_and_failures() {
+        let amounts: Vec<(BigInt, bool)> = vec![
+            (BigInt::from(1), true),
+            ((BigInt::from(1) << 53) + 1, true),
+            (BigInt::from(i64::MAX), true),
+            (BigInt::from(1) << 63, true),
+            (BigInt::from(10_000_000_000_000_000_000u64), true),
+            (BigInt::from(1) << 128, true),
+            ((BigInt::from(1) << 256) - 1, true),
+            (BigInt::from(1) << 512, false),
+            (BigInt::from(-1) << 1024, false),
+        ];
+        for (amount, success) in amounts {
+            let expected = transfer_block(&amount, success);
+            for encoded in block_response_bytes(expected.clone(), true) {
+                let decoded = BlockResponse::decode(encoded.as_slice()).unwrap();
+                let Some(models::casper::v1::block_response::Message::BlockInfo(block)) =
+                    decoded.message
+                else {
+                    panic!("exact response must preserve {amount}");
+                };
+                assert_eq!(block, expected);
+                let json =
+                    crate::rust::api::serde_types::block_info::BlockInfoSerde::try_from(block)
+                        .unwrap();
+                let json = serde_json::to_value(json).unwrap();
+                assert_eq!(
+                    json["deploys"][0]["transfers"][1]["amount"],
+                    amount.to_string()
+                );
+                assert_eq!(json["deploys"][0]["transfers"][1]["success"], success);
+            }
+        }
+    }
+
+    #[test]
+    fn block_amount_negotiation_preserves_report_availability() {
+        for available in [false, true] {
+            let block = models::casper::BlockInfo {
+                deploys: vec![models::casper::DeployInfo {
+                    transfers_available: available,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            for exact in [false, true] {
+                for encoded in block_response_bytes(block.clone(), exact) {
+                    let decoded = LegacyBlockResponse::decode(encoded.as_slice()).unwrap();
+                    let Some(LegacyBlockResult::BlockInfo(block)) = decoded.message else {
+                        panic!("a report without transfers must not produce a range error");
+                    };
+                    assert_eq!(block.deploys[0].transfers_available, available);
+                    assert!(block.deploys[0].transfers.is_empty());
+                }
+            }
+        }
+    }
 
     struct StubNodeDiscovery;
 
@@ -1222,6 +1490,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn block_rpc_handlers_negotiate_exact_amounts_from_cached_reports() {
+        use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
+        use casper::rust::engine::engine_with_casper::EngineWithCasper;
+        use models::casper::{
+            report_proto, BlockEventInfo, DeployInfoWithEventData, ReportCommProto,
+            ReportConsumeProto, ReportPhase, ReportProduceProto, ReportProto, SingleReport,
+        };
+        use models::rhoapi::{ListParWithRandom, Par};
+        use models::rust::block_metadata::BlockMetadata;
+        use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoString};
+        use rholang::rust::interpreter::util::vault_address::VaultAddress;
+        use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+
+        let mut service = service();
+        let processed =
+            casper::rust::util::construct_deploy::basic_processed_deploy(1, None).unwrap();
+        let from = VaultAddress::from_public_key(&processed.deploy.pk)
+            .unwrap()
+            .to_base58();
+        let deploy_info = processed.clone().to_deploy_info();
+        let mut block = models::rust::block_implicits::get_random_block_default();
+        block.body.deploys = vec![processed];
+        let hash = hex::encode(&block.block_hash);
+        let mut snapshot = TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.last_finalized_block = block.block_hash.clone();
+        snapshot.dag.last_finalized_block_hash = block.block_hash.clone();
+        snapshot.dag.dag_set.insert(block.block_hash.clone());
+        snapshot
+            .dag
+            .finalized_blocks_set
+            .insert(block.block_hash.clone());
+        snapshot
+            .dag
+            .block_metadata_index
+            .write()
+            .add(BlockMetadata::from_block(
+                &block,
+                false,
+                Some(true),
+                Some(true),
+            ))
+            .unwrap();
+        service
+            .engine_cell
+            .set(Arc::new(EngineWithCasper::new(Arc::new(
+                TestCasperWithSnapshot::new(snapshot, block.clone()),
+            ))))
+            .await;
+
+        let amount = BigInt::from(10_000_000_000_000_000_000u64);
+        let channel = RhoString::create_par("synthetic-transfer-channel".to_string());
+        let report = BlockEventInfo {
+            deploys: vec![DeployInfoWithEventData {
+                deploy_info: Some(deploy_info).into(),
+                report: vec![SingleReport {
+                    phase: ReportPhase::User as i32,
+                    events: vec![ReportProto {
+                        report: Some(report_proto::Report::Comm(ReportCommProto {
+                            consume: Some(ReportConsumeProto {
+                                channels: vec![channel.clone()],
+                                ..Default::default()
+                            }),
+                            produces: vec![ReportProduceProto {
+                                data: Some(ListParWithRandom {
+                                    pars: vec![
+                                        RhoString::create_par(from),
+                                        Par::default(),
+                                        RhoString::create_par("synthetic-recipient".to_string()),
+                                        RhoBigInt::create_par(&amount),
+                                        Par::default(),
+                                        Par::default(),
+                                    ],
+                                    ..Default::default()
+                                }),
+                                ..Default::default()
+                            }],
+                        })),
+                    }],
+                }],
+            }],
+            ..Default::default()
+        };
+        let store = ReportStore::new(Arc::new(InMemoryKeyValueStore::new()));
+        store
+            .put(vec![(block.block_hash.to_vec(), report)])
+            .unwrap();
+        service.transfer_unforgeable = channel;
+        service.block_report_api = BlockReportAPI::new(
+            casper::rust::reporting_casper::noop(),
+            store,
+            service.engine_cell.clone(),
+            service.key_value_block_store.clone(),
+            CliqueOracleImpl,
+            false,
+        );
+
+        for exact_transfer_amounts in [false, true] {
+            let get_block = service
+                .get_block(tonic::Request::new(BlockQuery {
+                    hash: hash.clone(),
+                    exact_transfer_amounts,
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            let last_finalized = service
+                .last_finalized_block(tonic::Request::new(LastFinalizedBlockQuery {
+                    exact_transfer_amounts,
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            for encoded in [get_block.encode_to_vec(), last_finalized.encode_to_vec()] {
+                let decoded = BlockResponse::decode(encoded.as_slice()).unwrap();
+                match decoded.message.unwrap() {
+                    models::casper::v1::block_response::Message::BlockInfo(block) => {
+                        assert!(exact_transfer_amounts);
+                        assert!(block.deploys[0].transfers_available);
+                        assert_eq!(block.deploys[0].transfers.len(), 1);
+                        assert_eq!(block.deploys[0].transfers[0].amount_raw, amount.to_string());
+                    }
+                    models::casper::v1::block_response::Message::Error(error) => {
+                        assert!(!exact_transfer_amounts);
+                        assert!(error.messages[0].starts_with("TRANSFER_AMOUNT_OUT_OF_RANGE:"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn status_reports_node_identity_without_casper() {
         let response = service().status(tonic::Request::new(())).await.unwrap();
         match response.into_inner().message.unwrap() {
@@ -1290,6 +1689,7 @@ mod tests {
         let get_block = service
             .get_block(tonic::Request::new(BlockQuery {
                 hash: "aabbccddeeff".to_string(),
+                exact_transfer_amounts: false,
             }))
             .await
             .unwrap();
@@ -1299,7 +1699,7 @@ mod tests {
         ));
 
         let lfb = service
-            .last_finalized_block(tonic::Request::new(LastFinalizedBlockQuery {}))
+            .last_finalized_block(tonic::Request::new(LastFinalizedBlockQuery::default()))
             .await
             .unwrap();
         assert!(matches!(

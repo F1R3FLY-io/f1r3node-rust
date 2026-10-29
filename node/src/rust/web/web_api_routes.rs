@@ -1561,7 +1561,7 @@ mod router_tests {
 
         let (status, json) = get_response("/validators").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["totalStake"], 10);
+        assert_eq!(json["totalStake"], "10");
 
         let (status, json) = get_response("/validator/04aa").await;
         assert_eq!(status, StatusCode::OK);
@@ -1573,7 +1573,7 @@ mod router_tests {
 
         let (status, json) = get_response("/epoch/rewards").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["rewards"]["ExprInt"]["data"], 3);
+        assert_eq!(json["rewards"]["ExprInt"]["data"], "3");
 
         let (status, json) = get_response("/bond-status/04aa").await;
         assert_eq!(status, StatusCode::OK);
