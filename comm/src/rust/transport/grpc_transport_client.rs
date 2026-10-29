@@ -510,14 +510,16 @@ impl GrpcTransportClient {
                     }
                     Ok(Err(error)) => {
                         tracing::debug!(
-                            "Error while streaming packet to {} (timeout: {}ms): {}",
-                            peer.to_address(),
-                            timeout.as_millis(),
-                            error
+                            key = %key,
+                            peer = %peer.to_address(),
+                            timeout_ms = timeout.as_millis(),
+                            error = %error,
+                            "Outgoing stream failed"
                         );
                     }
                     Err(_) => {
-                        tracing::warn!(
+                        tracing::debug!(
+                            key = %key,
                             peer = %peer.to_address(),
                             timeout_ms = timeout.as_millis(),
                             "Outgoing stream timed out"
