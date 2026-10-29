@@ -132,13 +132,27 @@ pub(crate) fn encode_continuation_identity_into<P, K>(
     P: Clone + StableHashSerialize,
     K: Clone + StableHashSerialize,
 {
+    encode_continuation_identity_observed_into(continuation, output, &mut |_| {});
+}
+
+pub(crate) fn encode_continuation_identity_observed_into<P, K>(
+    continuation: &WaitingContinuation<P, K>,
+    output: &mut Vec<u8>,
+    observe: &mut impl FnMut(usize),
+) where
+    P: Clone + StableHashSerialize,
+    K: Clone + StableHashSerialize,
+{
+    let start = output.len();
     let pattern_count = u64::try_from(continuation.patterns.len())
         .expect("continuation pattern count must fit the frozen bincode u64 length");
     output.extend_from_slice(&pattern_count.to_le_bytes());
     for pattern in continuation.patterns.iter() {
         pattern.stable_hash_encode_into(output);
+        observe(output.len() - start);
     }
     continuation.continuation.stable_hash_encode_into(output);
+    observe(output.len() - start);
     output.push(u8::from(continuation.persist));
 
     let peek_count = u64::try_from(continuation.peeks.len())
@@ -147,6 +161,7 @@ pub(crate) fn encode_continuation_identity_into<P, K>(
     for peek in &continuation.peeks {
         output.extend_from_slice(&peek.to_le_bytes());
     }
+    observe(output.len() - start);
 }
 
 pub(crate) fn encode_continuation_identity<P, K>(

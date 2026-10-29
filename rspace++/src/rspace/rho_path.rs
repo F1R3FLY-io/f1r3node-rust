@@ -1094,21 +1094,11 @@ impl RhoPathV1 {
     pub(crate) fn parse_continuation(
         path: &[u8],
     ) -> Result<ContinuationPathView<'_>, RhoPathError> {
-        let mut cursor = parse_collection_header(path, CONTINUATION_KIND)?;
-        let channels_start = cursor;
-        let mut channel_count = 0usize;
-        while path.get(cursor..cursor.saturating_add(GROUP_END.len())) != Some(&GROUP_END) {
-            let _ = take_frame(path, &mut cursor)?;
-            channel_count = channel_count
-                .checked_add(1)
-                .ok_or(RhoPathError::PositionOverflow)?;
-        }
-        u64::try_from(channel_count).map_err(|_| RhoPathError::PositionOverflow)?;
+        let (channels_start, channels_end, channel_count) = take_continuation_channels(path)?;
         if channel_count == 0 {
             return Err(RhoPathError::EmptyChannelGroup);
         }
-        let channels_end = cursor;
-        cursor += GROUP_END.len();
+        let mut cursor = channels_end + GROUP_END.len();
         let continuation_identity = take_frame(path, &mut cursor)?;
         if cursor != path.len() {
             return Err(RhoPathError::TrailingBytes);
@@ -1117,6 +1107,20 @@ impl RhoPathV1 {
             encoded_channels: &path[channels_start..channels_end],
             channel_count,
             encoded_continuation_identity: continuation_identity,
+        })
+    }
+
+    pub(crate) fn parse_continuation_group(
+        prefix: &[u8],
+    ) -> Result<ReceiveChannelGroup<'_>, RhoPathError> {
+        let (channels_start, channels_end, channel_count) = take_continuation_channels(prefix)?;
+        if channels_end + GROUP_END.len() != prefix.len() {
+            return Err(RhoPathError::TrailingBytes);
+        }
+        Ok(ReceiveChannelGroup {
+            profile: ReceiveChannelProfile::LegacyV1,
+            encoded_channels: &prefix[channels_start..channels_end],
+            channel_count,
         })
     }
 
@@ -1277,6 +1281,20 @@ fn parse_collection_header(path: &[u8], expected_kind: u8) -> Result<usize, RhoP
     Ok(MAGIC.len() + 2)
 }
 
+fn take_continuation_channels(path: &[u8]) -> Result<(usize, usize, usize), RhoPathError> {
+    let mut cursor = parse_collection_header(path, CONTINUATION_KIND)?;
+    let channels_start = cursor;
+    let mut channel_count = 0usize;
+    while path.get(cursor..cursor.saturating_add(GROUP_END.len())) != Some(&GROUP_END) {
+        let _ = take_frame(path, &mut cursor)?;
+        channel_count = channel_count
+            .checked_add(1)
+            .ok_or(RhoPathError::PositionOverflow)?;
+    }
+    u64::try_from(channel_count).map_err(|_| RhoPathError::PositionOverflow)?;
+    Ok((channels_start, cursor, channel_count))
+}
+
 pub fn encode_structural_sequence<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {
     let parts = parts.into_iter();
     let (lower, _) = parts.size_hint();
@@ -1361,6 +1379,14 @@ impl<'a> RhoPathV2ContinuationView<'a> {
     ) -> RhoPathChannelPositions<'a, 'q> {
         RhoPathChannelPositions::new(self.encoded_channels, self.channel_count, channel_image)
     }
+
+    pub const fn channel_group(&self) -> ReceiveChannelGroup<'a> {
+        ReceiveChannelGroup {
+            profile: ReceiveChannelProfile::Rci2V2,
+            encoded_channels: self.encoded_channels,
+            channel_count: self.channel_count,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1369,6 +1395,67 @@ pub struct RhoPathReceivePosition(u64);
 
 impl RhoPathReceivePosition {
     pub const fn get(self) -> u64 { self.0 }
+
+    pub fn index(self) -> usize {
+        usize::try_from(self.0).expect("a receive position addresses an in-memory channel group")
+    }
+
+    pub fn signed_peek_key(self) -> Option<i32> { i32::try_from(self.0).ok() }
+
+    pub(crate) fn at_index(index: usize) -> Self {
+        Self(u64::try_from(index).expect("an in-memory channel position fits u64"))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReceiveChannelProfile {
+    LegacyV1,
+    Rci2V2,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReceiveChannelQuery<'q> {
+    LegacyV1(&'q [u8]),
+    Rci2V2(&'q [u8]),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReceiveChannelGroup<'a> {
+    profile: ReceiveChannelProfile,
+    encoded_channels: &'a [u8],
+    channel_count: usize,
+}
+
+impl<'a> ReceiveChannelGroup<'a> {
+    pub const fn profile(&self) -> ReceiveChannelProfile { self.profile }
+
+    pub const fn channel_count(&self) -> usize { self.channel_count }
+
+    pub const fn frames(&self) -> RhoPathV2ChannelFrames<'a> {
+        RhoPathV2ChannelFrames {
+            encoded: self.encoded_channels,
+            cursor: 0,
+            remaining: self.channel_count,
+        }
+    }
+
+    pub fn frame_at(&self, position: RhoPathReceivePosition) -> Option<&'a [u8]> {
+        self.frames().nth(position.index())
+    }
+
+    pub fn channel_positions_for<'q>(
+        &self,
+        query: ReceiveChannelQuery<'q>,
+    ) -> Option<RhoPathChannelPositions<'a, 'q>> {
+        match (self.profile, query) {
+            (ReceiveChannelProfile::LegacyV1, ReceiveChannelQuery::LegacyV1(raw)) |
+            (ReceiveChannelProfile::Rci2V2, ReceiveChannelQuery::Rci2V2(raw)) => {
+                Some(RhoPathChannelPositions::new(self.encoded_channels, self.channel_count, raw))
+            }
+            (ReceiveChannelProfile::LegacyV1, ReceiveChannelQuery::Rci2V2(_)) |
+            (ReceiveChannelProfile::Rci2V2, ReceiveChannelQuery::LegacyV1(_)) => None,
+        }
+    }
 }
 
 pub struct RhoPathChannelPositions<'a, 'q> {
@@ -1409,7 +1496,7 @@ impl Iterator for RhoPathChannelPositions<'_, '_> {
     }
 }
 
-fn frame_equals(frame: &[u8], raw: &[u8]) -> bool {
+pub(crate) fn frame_equals(frame: &[u8], raw: &[u8]) -> bool {
     let mut cursor = 0;
     let mut offset = 0;
     while cursor < frame.len() {
