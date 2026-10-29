@@ -9,7 +9,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::block_processor::{
     BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks, IntegrityChecked,
-    IntegrityFailure, SenderAuthorization, StoreVerdict,
+    IntegrityFailure, StoreVerdict,
 };
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -22,6 +22,7 @@ use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::safety_oracle::CliqueOracleImpl;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -191,9 +192,8 @@ impl TestNode {
     /// Processes a block through the validation pipeline.
     ///
     /// This method:
-    /// 0. Checks format, signature, and hash, the same first step as the node
     /// 1. Checks if block is of interest
-    /// 2. Stores
+    /// 2. Checks if well-formed and stores
     /// 3. Checks dependencies
     /// 4. Validates with effects
     pub async fn process_block_through_pipe(
@@ -201,7 +201,7 @@ impl TestNode {
         block_processor: &BlockProcessor<TransportLayerTestImpl>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
-        let checked = match IntegrityChecked::check(&block) {
+        let checked = match IntegrityChecked::check(&block, BLOCK_PROCESSOR_METRICS_SOURCE) {
             Ok(checked) => checked,
             Err(IntegrityFailure::Malformed) => {
                 return Ok(Either::Left(BlockStatus::invalid_format()))
@@ -218,15 +218,16 @@ impl TestNode {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
-        let authorization = block_processor.check_sender_authorization(checked)?;
-        if authorization == SenderAuthorization::Unauthorized {
+        let Some(store_mode) = block_processor
+            .check_sender_authorization(checked)?
+            .store_mode()
+        else {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
-        }
+        };
 
-        // Store
-        match block_processor.store(checked, authorization).await? {
+        // Check if well-formed and store
+        match block_processor.store(checked, store_mode).await? {
             StoreVerdict::Stored => {}
-            StoreVerdict::Unauthorized => return Ok(Either::Left(BlockStatus::invalid_sender())),
             StoreVerdict::PendingRefused(refusal) => {
                 block_processor
                     .release_refused_pending(&block, refusal)

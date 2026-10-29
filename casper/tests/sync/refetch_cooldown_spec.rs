@@ -5,6 +5,7 @@
 
 use casper::rust::blocks::block_processor::{IntegrityChecked, OfInterestVerdict};
 use casper::rust::casper::Casper;
+use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -58,13 +59,16 @@ async fn a_duplicate_copy_of_a_buffered_block_keeps_its_refetch_cooldown() {
         .block_processor
         .check_if_of_interest(
             nodes[1].casper.clone(),
-            IntegrityChecked::check(&block_b).unwrap(),
+            IntegrityChecked::check(&block_b, BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
         )
         .unwrap();
     assert_eq!(verdict, OfInterestVerdict::AlreadyProcessed);
     nodes[1]
         .block_processor
-        .dispose_not_of_interest(verdict, IntegrityChecked::check(&block_b).unwrap())
+        .dispose_not_of_interest(
+            verdict,
+            IntegrityChecked::check(&block_b, BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+        )
         .await
         .unwrap();
 

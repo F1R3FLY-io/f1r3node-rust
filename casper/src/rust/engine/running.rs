@@ -257,9 +257,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     .await
             }
             CasperMessage::BlockMessage(b) => {
-                if IntegrityChecked::check(&b).is_err() {
-                    return Ok(());
-                }
                 if let Some(id) = self.casper.get_validator() {
                     if b.sender == id.public_key.bytes {
                         tracing::warn!(
@@ -274,6 +271,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         PrettyPrinter::build_string_block_message(&b, true),
                         peer.endpoint.host
                     );
+                } else if IntegrityChecked::check(&b, RUNNING_METRICS_SOURCE).is_err() {
+                    return Ok(());
                 } else {
                     tracing::debug!(
                         "Incoming BlockMessage {} from {}",

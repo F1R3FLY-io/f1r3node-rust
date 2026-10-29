@@ -145,10 +145,25 @@ pub enum SenderAuthorization {
     Unknown,
 }
 
+impl SenderAuthorization {
+    pub fn store_mode(self) -> Option<StoreMode> {
+        match self {
+            SenderAuthorization::Authorized => Some(StoreMode::Block),
+            SenderAuthorization::Unknown => Some(StoreMode::Pending),
+            SenderAuthorization::Unauthorized => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreMode {
+    Block,
+    Pending,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreVerdict {
     Stored,
-    Unauthorized,
     PendingRefused(PendingInsert),
 }
 
@@ -167,35 +182,21 @@ impl IntegrityFailure {
     }
 }
 
-/// A block whose fields, signature, and hash have been checked against its
-/// contents. Every step that reads or changes state keyed by the block hash
-/// takes this proof, so no caller can act on a hash that a message only claims.
 #[derive(Debug, Clone, Copy)]
 pub struct IntegrityChecked<'a>(&'a BlockMessage);
 
 impl<'a> IntegrityChecked<'a> {
-    pub fn check(block: &'a BlockMessage) -> Result<Self, IntegrityFailure> {
+    pub fn check(block: &'a BlockMessage, source: &'static str) -> Result<Self, IntegrityFailure> {
         let failure = if !(Validate::format_of_fields(block) && Validate::block_signature(block)) {
-            Some(IntegrityFailure::Malformed)
+            IntegrityFailure::Malformed
         } else if matches!(Validate::block_hash(block), Either::Left(_)) {
-            Some(IntegrityFailure::HashMismatch)
+            IntegrityFailure::HashMismatch
         } else {
-            None
+            return Ok(Self(block));
         };
-        match failure {
-            None => Ok(Self(block)),
-            Some(failure) => {
-                tracing::warn!(
-                    "Refusing block {} from {}: integrity check failed ({}).",
-                    PrettyPrinter::build_string_bytes(&block.block_hash),
-                    PrettyPrinter::build_string_bytes(&block.sender),
-                    failure.reason()
-                );
-                metrics::counter!(BLOCK_INTEGRITY_REJECTED_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE, "reason" => failure.reason())
-                    .increment(1);
-                Err(failure)
-            }
-        }
+        metrics::counter!(BLOCK_INTEGRITY_REJECTED_METRIC, "source" => source, "reason" => failure.reason())
+            .increment(1);
+        Err(failure)
     }
 
     pub fn block(&self) -> &'a BlockMessage { self.0 }
@@ -510,21 +511,19 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         Ok(authorization)
     }
 
-    /// Store a checked block, or hold it as pending when its sender's
-    /// authorization is not yet known.
     pub async fn store(
         &self,
         checked: IntegrityChecked<'_>,
-        authorization: SenderAuthorization,
+        mode: StoreMode,
     ) -> Result<StoreVerdict, CasperError> {
         let block = checked.block();
         let storage_start = Instant::now();
-        let verdict = match authorization {
-            SenderAuthorization::Authorized => {
+        let verdict = match mode {
+            StoreMode::Block => {
                 self.dependencies.store_block(block).await?;
                 StoreVerdict::Stored
             }
-            SenderAuthorization::Unknown => {
+            StoreMode::Pending => {
                 let held = self.dependencies.hold_pending(block).await?;
                 if held != PendingInsert::Accepted {
                     tracing::warn!(
@@ -540,7 +539,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                     StoreVerdict::PendingRefused(held)
                 }
             }
-            SenderAuthorization::Unauthorized => StoreVerdict::Unauthorized,
         };
         metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(storage_start.elapsed().as_secs_f64());
@@ -888,6 +886,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             .await
     }
 
+    pub async fn drop_refused(&self, block: &BlockMessage) -> Result<(), CasperError> {
+        if self.dependencies.holds_copy(block)? {
+            self.purge_from_buffer_and_ack(block).await?;
+        }
+        Ok(())
+    }
+
     /// Best-effort purge for stale/uninteresting blocks to prevent infinite buffer requeue loops.
     pub async fn purge_from_buffer_and_ack(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.dependencies.remove_from_buffer(block).await?;
@@ -1200,6 +1205,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     }
 
     /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
+    pub fn holds_copy(&self, block: &BlockMessage) -> Result<bool, CasperError> {
+        Ok(self.block_store.get(&block.block_hash)?.as_ref() == Some(block))
+    }
+
     pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.block_store.put_block_message(block)?;
         Ok(())

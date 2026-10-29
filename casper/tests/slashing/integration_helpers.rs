@@ -413,10 +413,9 @@ pub async fn process_block_bypassing_of_interest_filter(
     CasperError,
 > {
     use casper::rust::block_status::BlockStatus;
-    use casper::rust::blocks::block_processor::{
-        IntegrityChecked, IntegrityFailure, SenderAuthorization, StoreVerdict,
-    };
-    let checked = match IntegrityChecked::check(&block) {
+    use casper::rust::blocks::block_processor::{IntegrityChecked, IntegrityFailure, StoreVerdict};
+    use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
+    let checked = match IntegrityChecked::check(&block, BLOCK_PROCESSOR_METRICS_SOURCE) {
         Ok(checked) => checked,
         Err(IntegrityFailure::Malformed) => {
             return Ok(rspace_plus_plus::rspace::history::Either::Left(
@@ -429,13 +428,16 @@ pub async fn process_block_bypassing_of_interest_filter(
             ))
         }
     };
-    let authorization = node.block_processor.check_sender_authorization(checked)?;
-    if authorization == SenderAuthorization::Unauthorized {
+    let Some(store_mode) = node
+        .block_processor
+        .check_sender_authorization(checked)?
+        .store_mode()
+    else {
         return Ok(rspace_plus_plus::rspace::history::Either::Left(
             BlockStatus::invalid_sender(),
         ));
-    }
-    let store_verdict = node.block_processor.store(checked, authorization).await?;
+    };
+    let store_verdict = node.block_processor.store(checked, store_mode).await?;
     if store_verdict != StoreVerdict::Stored {
         return Ok(rspace_plus_plus::rspace::history::Either::Left(
             BlockStatus::invalid_format(),

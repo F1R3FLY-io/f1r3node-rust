@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
     mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark, IntegrityChecked,
-    SenderAuthorization, StoreVerdict, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
+    StoreVerdict, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
 };
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -330,14 +330,11 @@ enum BlockProcessOutcome {
 
 /// Process a block through all validation steps
 ///
-/// This implements the Scala pipeline, with one step added in front:
-/// 0. IntegrityChecked::check (format, signature, and hash against the
-///    contents; a message that fails is dropped before any step reads or
-///    changes state keyed by the hash it claims)
+/// This implements the Scala pipeline:
 /// 1. checkIfOfInterest
 ///    then checkSenderAuthorization (drops a sender unbonded in a validated
 ///    main parent before any store write or dependency request)
-/// 2. store (checkIfWellFormedAndStore without the checks of step 0)
+/// 2. checkIfWellFormedAndStore
 /// 3. checkDependenciesWithEffects
 /// 4. validateWithEffects
 /// 5. Enqueue dependency-free blocks from buffer (in the outer loop)
@@ -348,8 +345,13 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 ) -> Result<BlockProcessOutcome, CasperError> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
-    // Step 0: Check integrity
-    let Ok(checked) = IntegrityChecked::check(&block) else {
+    let Ok(checked) = IntegrityChecked::check(&block, BLOCK_PROCESSOR_METRICS_SOURCE) else {
+        block_processor.drop_refused(&block).await.map_err(|err| {
+            CasperError::RuntimeError(format!(
+                "Refused block {} cleanup failed: {}",
+                block_str, err
+            ))
+        })?;
         return Ok(BlockProcessOutcome::Malformed);
     };
 
@@ -400,7 +402,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         }
     };
 
-    if authorization == SenderAuthorization::Unauthorized {
+    let Some(store_mode) = authorization.store_mode() else {
         block_processor
             .purge_from_buffer_and_ack(&block)
             .await
@@ -411,12 +413,11 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
                 ))
             })?;
         return Ok(BlockProcessOutcome::UnauthorizedSender);
-    }
+    };
 
-    // Step 2: Store
-    // Equivalent to: blockProcessor.checkIfWellFormedAndStore(b), with the
-    // checks already done in step 0
-    let store_verdict = match block_processor.store(checked, authorization).await {
+    // Step 2: Check if well-formed and store
+    // Equivalent to: blockProcessor.checkIfWellFormedAndStore(b)
+    let store_verdict = match block_processor.store(checked, store_mode).await {
         Ok(store_verdict) => store_verdict,
         Err(err) => {
             block_processor
@@ -432,21 +433,17 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         }
     };
 
-    match store_verdict {
-        StoreVerdict::Stored => {}
-        StoreVerdict::Unauthorized => return Ok(BlockProcessOutcome::UnauthorizedSender),
-        StoreVerdict::PendingRefused(refusal) => {
-            block_processor
-                .release_refused_pending(&block, refusal)
-                .await
-                .map_err(|err| {
-                    CasperError::RuntimeError(format!(
-                        "Refused pending block {} cleanup failed: {}",
-                        block_str, err
-                    ))
-                })?;
-            return Ok(BlockProcessOutcome::PendingRefused);
-        }
+    if let StoreVerdict::PendingRefused(refusal) = store_verdict {
+        block_processor
+            .release_refused_pending(&block, refusal)
+            .await
+            .map_err(|err| {
+                CasperError::RuntimeError(format!(
+                    "Refused pending block {} cleanup failed: {}",
+                    block_str, err
+                ))
+            })?;
+        return Ok(BlockProcessOutcome::PendingRefused);
     }
 
     // Step 3: Log started
@@ -943,6 +940,45 @@ mod tests {
     #[tokio::test]
     async fn a_badly_signed_message_does_not_touch_the_hash_that_it_claims() {
         refuse_without_touching_the_claimed_hash(false).await;
+    }
+
+    #[tokio::test]
+    async fn a_refused_body_that_this_node_stored_is_purged() {
+        let fixture = StartupFixture::new().await;
+        let item = fixture.forged_item(true);
+        let claimed = item.1.block_hash.clone();
+        fixture
+            .casper
+            .block_store
+            .put_block_message(&item.1)
+            .unwrap();
+        fixture
+            .retriever
+            .admit_hash(
+                claimed.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await
+            .unwrap();
+
+        let (tx, instance) = fixture.instance();
+        let mut results = instance.create().unwrap();
+        assert!(tx.send(item).await.is_ok());
+        drop(tx);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), results.recv())
+                .await
+                .expect("The refused block must finish processing")
+                .is_none()
+        );
+
+        assert!(!fixture
+            .retriever
+            .was_requested_as_dependency(&claimed)
+            .unwrap());
+        assert!(fixture.casper.processed.lock().unwrap().is_empty());
+        assert!(fixture.in_flight.is_empty());
     }
 
     #[tokio::test]
