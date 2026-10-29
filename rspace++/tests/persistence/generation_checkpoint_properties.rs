@@ -399,7 +399,7 @@ fn dormant_checkpoint_publisher_has_no_runtime_accounting_capability() {
 fn model_property_manifest_is_unique_and_exhaustive() {
     const FAMILIES: &[&str] = &[
         "INV", "DES", "WIR", "WAL", "CAT", "PUB", "SEM", "RES", "NV", "HJ", "JV", "JR", "SI", "IP",
-        "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI",
+        "IR", "CR", "LT", "DC", "CL", "RV", "TS", "TH", "PX", "RI", "SW",
     ];
     let is_property_id = |token: &str| {
         let Some((family, index)) = token.split_once('-') else {
@@ -717,6 +717,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("retention_v2_format_properties.rs"),
         include_str!("shape_summary_properties.rs"),
         include_str!("trusted_history_properties.rs"),
+        include_str!("trusted_scaling_properties.rs"),
         include_str!("trusted_successor_properties.rs"),
         include_str!("wal_codec.rs"),
         include_str!("../hot_store/journal_commit.rs"),

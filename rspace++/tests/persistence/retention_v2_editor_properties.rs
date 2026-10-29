@@ -38,13 +38,13 @@ use crate::rspace::persistence::{
 
 /// The largest node of a 48-byte key image: an inner node with a Node256
 /// child table and a prefix shorter than the key.
-const RADIX_NODE_BYTE_BOUND: u64 = 32 + 8 + KEY_WIDTH as u64 + 1 + 9 + 32 + 40 * 256;
+pub(super) const RADIX_NODE_BYTE_BOUND: u64 = 32 + 8 + KEY_WIDTH as u64 + 1 + 9 + 32 + 40 * 256;
 /// The bytes one insertion or eviction may write: a search path of at most
 /// `KEY_WIDTH + 1` nodes and the one node split off beside it.
-const PATH_LOCAL_BYTE_BOUND: u64 = (KEY_WIDTH as u64 + 2) * RADIX_NODE_BYTE_BOUND;
+pub(super) const PATH_LOCAL_BYTE_BOUND: u64 = (KEY_WIDTH as u64 + 2) * RADIX_NODE_BYTE_BOUND;
 /// Two root events plus the expansions of one metadata step: at most 51
 /// objects enter the closure and 50 leave it.
-const METADATA_STEP_WORK_BOUND: u64 = 2 * KEY_WIDTH as u64 + 7;
+pub(super) const METADATA_STEP_WORK_BOUND: u64 = 2 * KEY_WIDTH as u64 + 7;
 const GROWTH_EXPONENTS: std::ops::RangeInclusive<u32> = 4..=14;
 
 type RadixEdit = ([u8; KEY_WIDTH], EndpointValue, EndpointValue);

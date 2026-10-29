@@ -380,8 +380,8 @@ struct Armed {
 }
 
 #[derive(Default)]
-struct Walk {
-    objects: BTreeMap<ObjectDigest, (ObjectRefV1, Arc<[u8]>)>,
+pub(super) struct Walk {
+    pub(super) objects: BTreeMap<ObjectDigest, (ObjectRefV1, Arc<[u8]>)>,
     shared_nodes: usize,
     content_aliases: usize,
     same_target_siblings: usize,
@@ -856,11 +856,17 @@ fn check_readable(
     Ok(())
 }
 
-fn oracle_object(store: &CanonicalObjectStore, reference: ObjectRefV1) -> Arc<[u8]> {
+pub(super) fn oracle_object<S>(store: &S, reference: ObjectRefV1) -> Arc<[u8]>
+where
+    S: ImmutableObjectStore,
+    S::Error: Debug,
+    S::Object: Into<Arc<[u8]>>,
+{
     store
         .get_bounded(&reference.digest(), reference.encoded_len())
         .expect("an oracle read succeeds")
         .expect("the oracle holds every installed object")
+        .into()
 }
 
 fn source_object(source: &SyntheticCheckpointSource, reference: ObjectRefV1) -> &[u8] {
@@ -932,7 +938,12 @@ fn full_model(base: &ModelState, slots: &Slots) -> ModelState {
     state
 }
 
-fn walk(store: &CanonicalObjectStore, roots: &[ObjectRefV1]) -> Walk {
+pub(super) fn walk<S>(store: &S, roots: &[ObjectRefV1]) -> Walk
+where
+    S: ImmutableObjectStore,
+    S::Error: Debug,
+    S::Object: Into<Arc<[u8]>>,
+{
     let mut stack = Vec::with_capacity(roots.len());
     stack.extend(roots.iter().map(|root| (None, *root)));
     let mut parents = BTreeMap::<ObjectDigest, BTreeSet<(ParentKind, ObjectDigest)>>::new();
@@ -1001,7 +1012,7 @@ fn walk(store: &CanonicalObjectStore, roots: &[ObjectRefV1]) -> Walk {
     result
 }
 
-fn retained_history(core: &Core) -> History {
+pub(super) fn retained_history(core: &Core) -> History {
     match AppointedRetention::parse(core.retention_manifest_bytes(), RetentionReader::Dual)
         .expect("the appointed retention object parses")
     {

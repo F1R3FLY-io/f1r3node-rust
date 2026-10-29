@@ -46,6 +46,8 @@ mod transaction_sealing;
 #[cfg(unix)]
 mod trusted_history_production;
 mod trusted_history_properties;
+#[cfg(unix)]
+mod trusted_scaling_properties;
 mod trusted_successor_production;
 mod trusted_successor_properties;
 mod wal_codec;

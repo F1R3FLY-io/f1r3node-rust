@@ -6163,6 +6163,166 @@ section and the torn reclamation intents section, and they are unchanged too.
 | `rspace++/tests/persistence/durable_rspace_authority.rs` | `6d8d8d64652eeb9e46341a250700d2c1863f39b9e4405f07c940be1df0c3e8cb` |
 | `rspace++/tests/persistence/durable_startup.rs` | `c5f0cceebe61777c783f42462d5733655c41d3f0e4267b95d4a995109db61188` |
 
+### Fixed-delta trusted commit scaling (2026-10-29)
+
+Task 7929 asks whether a trusted commit costs only what it changes. The
+trusted successor path seals a mutation, binds it under an exact trusted
+policy, prepares it and publishes it with no physical recovery and no cold
+admission (the
+[trusted successor publication section](#trusted-successor-publication-and-owner-2026-10-27)).
+Its cost should therefore depend on the keys that a commit changes, not on the
+size of the current state or on the number of retained states. The task's
+first slice writes this section. It states the cost that the code implies, the
+fixture, the oracles and three properties, SW-01 to SW-03. They check, at
+geometrically growing sizes, that each trusted commit's work equals an oracle
+computed independently from the objects that the commit changes. The section
+claims no scaling result: a later slice adds the release-mode harness and the
+preregistered measurement, and records their results here.
+
+**Terms.**
+
+- $`B`$ and $`T`$ are the semantic manifests of a commit's base and target
+  states, and $`\mathrm{cl}(S)`$ is the set of objects reachable from the
+  manifest $`S`$, the manifest included.
+- $`U`$ is the retained union before the commit: the objects reachable from the
+  manifest of any retained state.
+- A radix image is the set of radix nodes that encode the retained history's
+  keys. $`I`$ and $`I'`$ are the radix images before and after the commit, and
+  $`a`$ and $`a'`$ are the old and new retention anchors.
+- $`N`$ is the number of data keys in the current state, $`H`$ the number of
+  historical states, and $`m`$ the number of keys that a commit deletes.
+- $`\mathrm{outdeg}(x)`$ is the number of out-references of the object $`x`$,
+  counted with multiplicity: 3 for a semantic manifest; its children, plus one
+  for a content endpoint, for a DAG node; 0 for a blob; 1, its radix root, for a
+  retention anchor; and its children for a radix node.
+- $`\mathrm{len}(x)`$ is the length of the canonical bytes of $`x`$.
+
+A ledger trial charges one reference for each root that it adds or removes and
+one for each out-reference that it transfers. It expands an object, reading it
+and transferring its out-references, only when the object's count in the
+trial's domain crosses between 0 and 1, and it quotes the object's bytes then.
+The activation phase runs before the deactivation phase
+(`ledger_trial.rs:142-143`).
+
+**Cost implied by the code.** The measurement must confirm each row.
+
+| Step | Work per trusted commit | Source |
+|---|---|---|
+| Current-domain trial | Adds $`T`$ and removes $`B`$, and expands only the objects whose current count crosses between 0 and 1 | `run_domain_trials` (`admission.rs:1345`); the phases at `ledger_trial.rs:142-143` |
+| Retained-domain trial | Adds $`T`$ only, because keep-all retention never removes a retained root | `admission.rs:1345` |
+| Ledger maps | A clone of a PathMap, which copies only its root reference; then one `states` insert per consumed event and one roots insert per root delta | `ledger_trial.rs:135`, `:335`, `:212` and `:221` |
+| V2 metadata | A path-local edit of the radix image, a new anchor, and a metadata trial that deactivates the predecessor anchor | `commit_retention_v2` (`v2_writer.rs:50`); `attach_retention_v2` (`admission.rs:1425`) |
+| V1 metadata, the control | Rewrites the whole manifest: $`96 + 56n`$ bytes for $`n`$ historical entries | `admission.rs:1388` |
+| Object index | A clone of a PathMap plus one record per fresh object | `index.rs:200` |
+| Live packs | One, because the generation publisher admits exactly one live pack and an incremental commit keeps the first live and active packs | `publication.rs:1145` and `:1045-1046` |
+| Cold path | Absent: no physical recovery, no cold admission and no index construction | TS-09 |
+
+**Fixture.** Each key is a datum on its own channel, the channel and datum
+texts are fixed-width hexadecimal (`chan-000000`, `datum-000000` and so on),
+and every key starts with multiplicity 1. The history holds generations 1 to
+$`H`$. Each historical state is a manifest that shares the current roots and
+differs only by its legacy root, and the current state is generation $`H+1`$.
+The V2 twin replaces the V1 manifest by an anchor over the radix image of the
+same history (`migrate_checkpoint_source_to_v2`). A replacement at commit $`c`$,
+counted from 0, gives a key the fresh multiplicity $`2 + c`$, and a deletion
+removes a key. Every key, text and multiplicity is new and retention keeps
+every state, so no object that a commit seals is already stored. The verify
+routine checks this, which makes every sealed object a fresh data record in the
+write-ahead log.
+
+**Oracles.** Neither oracle uses production code. `walk`, which keeps an
+explicit stack, computes closures over an in-memory store, where the test
+installs each target state with the independent canonical rebuild.
+`build_radix` is the test model of the radix image. In each domain $`D`$, one
+of current, retained and metadata, the expected work is
+
+```math
+\begin{aligned}
+X_{\mathrm{current}} &= \mathrm{cl}(T) \mathbin{\triangle} \mathrm{cl}(B), &
+\mathrm{refs}_{\mathrm{current}} &= 2 + \sum_{x \in X_{\mathrm{current}}} \mathrm{outdeg}(x), \\
+X_{\mathrm{retained}} &= \mathrm{cl}(T) \setminus U, &
+\mathrm{refs}_{\mathrm{retained}} &= 1 + \sum_{x \in X_{\mathrm{retained}}} \mathrm{outdeg}(x), \\
+X_{\mathrm{metadata}} &= (I' \mathbin{\triangle} I) \cup \{a, a'\}, &
+\mathrm{refs}_{\mathrm{metadata}} &= 2 + \sum_{x \in X_{\mathrm{metadata}}} \mathrm{outdeg}(x),
+\end{aligned}
+```
+
+with $`\mathrm{expansions}_D = \lvert X_D \rvert`$ and
+$`\mathrm{quoted}_D = \sum_{x \in X_D} \mathrm{len}(x)`$. The constants count
+root events: the current trial adds $`T`$ and removes $`B`$, the retained trial
+adds $`T`$, and the metadata trial adds $`a'`$ and removes $`a`$. The V1 writer
+runs no metadata trial, so its metadata work is zero. Each set holds exactly
+the objects whose count crosses between 0 and 1, because objects are
+content-addressed: a child of an object in $`\mathrm{cl}(B)`$ is itself in
+$`\mathrm{cl}(B)`$, so each object of $`\mathrm{cl}(T) \setminus \mathrm{cl}(B)`$
+is reached only through objects that cross too.
+`IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`
+proves this law for root-delta execution.
+
+**The deactivate-first control.** A current trial that removed $`B`$ before it
+added $`T`$ would expand $`\lvert \mathrm{cl}(B) \rvert + \lvert \mathrm{cl}(T) \rvert`$
+objects, which exceeds $`\lvert X_{\mathrm{current}} \rvert`$ by exactly
+$`2 \lvert \mathrm{cl}(B) \cap \mathrm{cl}(T) \rvert`$. SW-01 runs that order
+with two ledger trials before every commit, checks the excess against the
+trusted commit's measured expansions, and requires the smallest excess to grow
+strictly from each key count to the next. An implementation that deactivated
+first would therefore fail SW-01's work check.
+
+**The verify routine.** SW-01 to SW-03 share one routine. Before each commit it
+checks that the core's retained history and retention object equal the
+model's. Then it checks the following.
+
+1. **Work.** In each domain, the exact trusted policy's references, expansions
+   and quoted bytes equal the oracle. The policy is measured on one seal of the
+   mutation and bound to a second, identical seal.
+2. **Sealed objects.** The bound transaction's objects equal
+   $`X_{\mathrm{retained}}`$ plus the new metadata, byte for byte: for V2, the
+   radix nodes of $`I' \setminus I`$ and the anchor $`a'`$, and for V1 the new
+   manifest. None of them is already stored.
+3. **Metadata step.** For V2, $`2 + \lvert X_{\mathrm{metadata}} \rvert \le 103`$,
+   the new radix nodes total at most 518,500 bytes, and each is at most 10,370
+   bytes; these are the RV bounds. For V1, the manifest is $`96 + 56n`$ bytes.
+4. **Effects.** The publication passes hooks 2 to 14 with no cold admission and
+   no index construction, as TS-09 observes.
+5. **Files.** The active pack and the index generation stay the same. The pack
+   grows by exactly the prepare header, the mutation, a 48-byte record header
+   and the bytes of each fresh object, the 8-byte trailer and the commit
+   record. The index grows by 72 bytes per fresh object, and each file ends at
+   its durable tail.
+6. **Ledger.** The new ledger entries are exactly the fresh digests:
+   $`X_{\mathrm{retained}}`$ and, for V2, the radix nodes of $`I' \setminus I`$
+   and $`a'`$. The zero-count entries grow by exactly the radix nodes of
+   $`I \setminus I'`$ and $`a`$, which stay in the ledger with count zero.
+   Every entry that changes is a root of the commit or a child of an expanded
+   object, at most $`\sum_D \mathrm{refs}_D`$ entries change, and the root
+   multiplicities change only by the commit's root deltas.
+
+The count of logical ledger writes is $`\sum_D \mathrm{refs}_D`$ plus the root
+deltas, 5 for V2 and 3 for V1: one `states` insert per consumed event and one
+roots insert per root delta. It is derived from those lines, not measured.
+
+**Cells.**
+
+| Property | Writer | Sizes | Commits per chain |
+|---|---|---|---|
+| SW-01 | V2 | $`N \in \{2^4, 2^6, 2^8, 2^{10}\}`$ and $`H = 2^4`$ | 3, replacing 1, 4 and 1 keys, in 8 generated schedules per key count |
+| SW-02 | V2, and V1 as the control | $`H \in \{2^4, 2^6, 2^8, 2^{10}\}`$ and $`N = 2^4`$ | 3, each replacing one key |
+| SW-03 | V2 | $`N = 2^8`$ kept keys and 16 reserve groups of $`m \in \{1, 4, 16\}`$ keys at aligned offsets | 3, each deleting one reserve group, in 8 generated schedules per group size |
+
+A generated schedule is an offset and an odd stride. In SW-01 the key replaced
+at position $`p`$, counted across the chain's commits, is
+$`(\mathit{offset} + p \cdot \mathit{stride}) \bmod N`$, so no key is replaced
+twice. In SW-03 the group deleted at commit $`c`$ is
+$`(\mathit{offset} + c \cdot \mathit{stride}) \bmod 16`$.
+
+**The SW rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| SW-01 | Current growth. At each key count every commit passes the verify routine, and the deactivate-first control expands exactly $`\lvert \mathrm{cl}(B) \rvert + \lvert \mathrm{cl}(T) \rvert`$ objects, $`2 \lvert \mathrm{cl}(B) \cap \mathrm{cl}(T) \rvert`$ more than the trusted commit. The smallest excess grows strictly from each key count to the next. | `trusted_commit_work_is_the_changed_frontier_under_geometric_current_growth` |
+| SW-02 | History growth. Every commit passes the verify routine, and each commit's current and retained work is the same at every history size and for both writers. The test prints each commit's metadata bytes for both writers, and from 64 historical states up the V1 manifest is larger than the V2 step at every commit. | `trusted_commit_work_is_unchanged_by_geometric_history_growth` |
+| SW-03 | Last-reference deletion. The deleted closure is the part of $`\mathrm{cl}(B)`$ off the manifest, the namespace roots and every kept key's search path. It is disjoint from $`\mathrm{cl}(T)`$, holds each deleted key's leaf, and has between $`m`$ and $`2m - 1`$ objects. The retained frontier is exactly the new path $`\mathrm{cl}(T) \setminus \mathrm{cl}(B)`$, and after the commit every object of $`\mathrm{cl}(B) \setminus \mathrm{cl}(T)`$ has current count zero and a positive retained count. Every commit passes the verify routine. | `last_reference_deletion_expands_exactly_the_deleted_closure` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -6392,6 +6552,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | NV-12 | `NeverAdmissionExactCleanup` | `exact_resource_boundary_is_accepted` | D | Admission exact-limit progress. |
 | NV-13 | `NeverRepairableIndexRecovery` | `EXEC_ONLY` | D | Expected TLC repair counterexample. |
 | NV-14 | `NeverRejectedDamagedSuccessor` | `raw_slot_recovery_selects_old_complete_new_or_rejects` | D | Expected TLC rejection counterexample. |
+| SW-01 | `TrustedSuccessorHasNoColdEvidence`, `NoPhysicalRecoveryOnTrustedSuccess` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `IncrementalReachability.add_before_remove_agrees_with_cold_ledger`, `RetentionV2Editor.deactivate_first_mutant_expands_the_shared_history` | P | Production refinement at geometric current sizes (task 7929; the fixed-delta trusted commit scaling section). The trusted effects realize the two TLA+ invariants. The work in each domain equals the changed-frontier oracle, which realizes the root-delta theorem in the add-before-remove order that the agreement theorem covers. The committed deactivate-first control realizes the mutant theorem in the current domain. |
+| SW-02 | `EXEC_ONLY` | `RetentionV2Editor.metadata_trial_work_is_the_changed_objects`, `RetentionV2Editor.anchor_step_realizes_the_retention_entry_step`, `RetentionV2Editor.flat_manifest_mutant_rewrites_bytes_proportional_to_history` | P | Production refinement at geometric history sizes (task 7929). The metadata trial's work is the changed radix objects plus the two anchors; the new anchor and radix nodes equal the model's retention entry step byte for byte; and the V1 control's manifest grows by 56 bytes per historical entry, as the flat-manifest mutant states. |
+| SW-03 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedReachability.decrement_changes_unique_inventory` | P | Production refinement of last-reference deletion (task 7929). The current deactivation expands each object of the deleted closure once, and each object that loses its last current reference leaves the current inventory while its retained count stays positive. |
 
 ## Generator discipline
 
@@ -6730,6 +6893,31 @@ These results add evidence only: no production code, persisted byte or outcome
 changed. See the faulted-history production controls and timing section,
 engineering journal J-253 and pgmcp artifact 1154 for caps and evidence
 hashes.
+
+The 2026-10-29 fixed-delta trusted commit scaling properties of task 11988 add
+SW-01, SW-02 and SW-03, so the catalog/derivation/binding registry now
+contains **226** IDs. On an export of the candidate tree, the three tests
+passed in 3.46 s in debug and in 1.76 s in release with
+`PROPTEST_RNG_SEED=20261029`, and they printed the same values in both builds.
+At every commit of every cell, the work of the three domain trials equaled the
+changed-frontier oracle and the rest of the verify routine held. At 16, 64, 256
+and 1,024 keys, the smallest deactivate-first excess was 26, 122, 530 and 2,162
+expansions, while the largest retained frontier of a commit was 6, 10, 10 and
+14 objects. At 16, 64, 256 and 1,024 historical states, the V1 manifest wrote
+exactly $`96 + 56n`$ bytes per commit for $`n`$ historical entries, from 1,048
+to 57,608, while the V2 step wrote between 545 and 3,003 bytes. The V2 step was largest at 64 states. It
+rewrites the radix node that receives the new generation's key, and since the
+key leads with the big-endian generation, that node holds one child for each
+retained generation that shares the new one's high-order bytes: about the
+generation modulo 256, whatever the history size (derived from the key
+layout). The seeded persistence selection passed with 496 tests in debug
+(95.92 s) and in release (44.61 s), and the manifest test passed. The workspace
+gate also passed on the export: `cargo check` of all targets, clippy, all
+4,434 release nextest tests of `models`, `rspace_plus_plus`,
+`rho-pure-eval` and `rholang`, and the release doc tests. These results add
+evidence only: no production code, persisted byte or outcome changed. See the
+fixed-delta trusted commit scaling section and pgmcp artifact 1156 for
+caps and evidence hashes.
 
 ## Caller-authority contract (2026-09-06)
 

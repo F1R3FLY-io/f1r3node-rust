@@ -29,7 +29,7 @@ const TEST_NAME: &str =
     "rspace::persistence::tests::checkpoint_real_io_resource::checkpoint_real_io_cardinality_resource_gate";
 
 #[derive(Clone, Copy, Debug, Default)]
-struct LinuxIo {
+pub(super) struct LinuxIo {
     rchar: u64,
     wchar: u64,
     syscr: u64,
@@ -39,7 +39,7 @@ struct LinuxIo {
 }
 
 impl LinuxIo {
-    fn read() -> Option<Self> {
+    pub(super) fn read() -> Option<Self> {
         let contents = std::fs::read_to_string("/proc/self/io").ok()?;
         let field = |name: &str| -> Option<u64> {
             contents
@@ -59,7 +59,7 @@ impl LinuxIo {
         })
     }
 
-    fn difference(self, before: Self) -> Option<Self> {
+    pub(super) fn difference(self, before: Self) -> Option<Self> {
         Some(Self {
             rchar: self.rchar.checked_sub(before.rchar)?,
             wchar: self.wchar.checked_sub(before.wchar)?,
@@ -71,7 +71,7 @@ impl LinuxIo {
     }
 }
 
-fn linux_status_bytes(field: &str) -> Option<u64> {
+pub(super) fn linux_status_bytes(field: &str) -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     status
         .lines()
@@ -118,7 +118,7 @@ fn linux_resident_stack_span_bytes() -> Option<usize> {
     stack_size.checked_sub(lowest_resident_page * page_size)
 }
 
-fn linux_filesystem_magic(path: &Path) -> u64 {
+pub(super) fn linux_filesystem_magic(path: &Path) -> u64 {
     let path = CString::new(path.as_os_str().as_bytes()).expect("scratch path has no NUL byte");
     let mut filesystem = MaybeUninit::<libc::statfs>::uninit();
     let result = unsafe { libc::statfs(path.as_ptr(), filesystem.as_mut_ptr()) };

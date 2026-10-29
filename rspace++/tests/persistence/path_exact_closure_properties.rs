@@ -128,7 +128,7 @@ pub(super) const fn continuation_slot(group: usize, body: usize) -> usize {
     group * CONTINUATION_BODIES.len() + body
 }
 
-fn datum_key(channel: &str, text: &str) -> Vec<u8> {
+pub(super) fn datum_key(channel: &str, text: &str) -> Vec<u8> {
     RSpaceDataIndex::datum_path(
         &channel.to_owned(),
         &Datum::create(&DATA_HOLDER.to_owned(), text.to_owned(), false),

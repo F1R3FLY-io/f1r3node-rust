@@ -404,20 +404,47 @@ pub(super) fn fixture_with_retained_union_cardinality(
         continuation_map: root.0,
         join_bag: root.0,
     };
-    let current_manifest = encoded(&SemanticStateManifestV1::new(1, PROFILE, roots, None).unwrap());
     let current_generation = u64::try_from(retained_union_objects)
         .unwrap()
         .checked_add(10_000)
         .unwrap();
-    let current_state = StateVersionV1::new(current_generation, current_manifest.0);
-    let current_bytes = root.0.encoded_len() + current_manifest.0.encoded_len();
+    fixture_with_state_and_history(
+        vec![root],
+        roots,
+        current_generation,
+        retained_union_objects - 2,
+    )
+}
 
-    let historical_count = retained_union_objects - 2;
+pub(super) fn fixture_with_state_and_history(
+    state_objects: Vec<(ObjectRefV1, Vec<u8>)>,
+    roots: SemanticRoots,
+    current_generation: u64,
+    historical_count: usize,
+) -> SyntheticCheckpointSource {
+    let current_manifest = encoded(
+        &SemanticStateManifestV1::new(1, PROFILE, roots, None)
+            .expect("the current fixture manifest is valid"),
+    );
+    let current_state = StateVersionV1::new(current_generation, current_manifest.0);
+    let state_bytes = state_objects
+        .iter()
+        .map(|(reference, _)| reference.encoded_len())
+        .sum::<u64>();
+    let current_bytes = state_bytes + current_manifest.0.encoded_len();
+    let current_objects = u64::try_from(state_objects.len())
+        .expect("a fixture state object count fits u64")
+        .checked_add(1)
+        .expect("a fixture state object count has a successor");
+
     let mut historical = Vec::with_capacity(historical_count);
     let mut manifest_objects = Vec::with_capacity(historical_count + 1);
     manifest_objects.push(current_manifest);
     for index in 0..historical_count {
-        let generation = u64::try_from(index).unwrap().checked_add(1).unwrap();
+        let generation = u64::try_from(index)
+            .expect("a fixture history index fits u64")
+            .checked_add(1)
+            .expect("a fixture generation has a successor");
         let mut legacy_root = [0_u8; 32];
         legacy_root[..8].copy_from_slice(&generation.to_be_bytes());
         let manifest = encoded(
@@ -427,32 +454,34 @@ pub(super) fn fixture_with_retained_union_cardinality(
                 roots,
                 Some(LegacyHistoryRoot::from_array(legacy_root)),
             )
-            .unwrap(),
+            .expect("a historical fixture manifest is valid"),
         );
         historical.push(
             RetainedStateV1::new(
                 StateVersionV1::new(generation, manifest.0),
-                root.0.encoded_len() + manifest.0.encoded_len(),
+                state_bytes + manifest.0.encoded_len(),
             )
-            .unwrap(),
+            .expect("a historical fixture state claims its closure bytes"),
         );
         manifest_objects.push(manifest);
     }
     let retention_manifest = encoded(
         &RetentionManifestV1::new(
-            RetainedStateV1::new(current_state, current_bytes).unwrap(),
+            RetainedStateV1::new(current_state, current_bytes)
+                .expect("the current fixture state claims its closure bytes"),
             historical,
         )
-        .unwrap(),
+        .expect("the fixture retention manifest is valid"),
     );
 
-    let retained_bytes = root.0.encoded_len() +
+    let retained_bytes = state_bytes +
         manifest_objects
             .iter()
             .map(|(reference, _)| reference.encoded_len())
             .sum::<u64>();
+    let retained_union_objects = state_objects.len() + manifest_objects.len();
     let mut objects = Vec::with_capacity(retained_union_objects + 1);
-    objects.push(root);
+    objects.extend(state_objects);
     objects.extend(manifest_objects);
     objects.push(retention_manifest);
     objects.sort_unstable_by_key(|(reference, _)| reference.digest());
@@ -462,7 +491,9 @@ pub(super) fn fixture_with_retained_union_cardinality(
         .sum();
     let mut ordered = OrderedObjectInventoryBuilderV1::new(objects.len() as u64, data_bytes);
     for (reference, _) in &objects {
-        ordered.push(*reference).unwrap();
+        ordered
+            .push(*reference)
+            .expect("fixture objects are distinct and digest ordered");
     }
     let retention_reference = objects
         .iter()
@@ -471,25 +502,25 @@ pub(super) fn fixture_with_retained_union_cardinality(
                 .starts_with(b"RSpaceDAG.Retn\0\0")
                 .then_some(*reference)
         })
-        .unwrap();
+        .expect("the fixture carries its retention manifest");
     let inventory = CheckpointObjectInventoryV1::from_test_ordered(
         RetainedUnionClosureReportV1 {
             distinct_objects: retained_union_objects as u64,
             canonical_bytes: retained_bytes,
         },
         retention_reference,
-        ordered.finish().unwrap(),
+        ordered.finish().expect("the fixture inventory is complete"),
     )
-    .unwrap();
+    .expect("the fixture inventory is the retained union plus its manifest");
     let descriptor = GenerationCheckpointDescriptorV1::from_test_inventory(
         PROFILE,
         current_state,
         retention_reference,
-        2,
+        current_objects,
         current_bytes,
         inventory,
     )
-    .unwrap();
+    .expect("the fixture descriptor satisfies the V1 inventory rule");
     SyntheticCheckpointSource::new(descriptor, objects)
 }
 
