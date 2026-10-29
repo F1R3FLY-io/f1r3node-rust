@@ -10,6 +10,7 @@ use casper::rust::engine::peer_scoring::STRIKE_THRESHOLD;
 use casper::rust::errors::CasperError;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
+use casper::rust::validate::Validate;
 use casper::rust::validator_identity::ValidatorIdentity;
 use casper::rust::ValidBlockProcessing;
 use comm::rust::peer_node::{NodeIdentifier, PeerNode};
@@ -508,6 +509,56 @@ async fn multi_parent_casper_should_hold_a_block_with_an_unknown_main_parent_off
 }
 
 #[tokio::test]
+async fn multi_parent_casper_should_refuse_a_forged_body_under_an_honest_hash() {
+    let ctx = TestContext::new().await;
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+
+    let parent_deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
+    let child_deploy =
+        construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone())).unwrap();
+    let parent = nodes[0]
+        .add_block_from_deploys(&[parent_deploy])
+        .await
+        .unwrap();
+    let child = nodes[0]
+        .add_block_from_deploys(&[child_deploy])
+        .await
+        .unwrap();
+
+    let (sk, _pk) = Secp256k1.new_key_pair();
+    let attacker = ValidatorIdentity::new(&sk);
+    let mut forged = attacker.sign_block(&child);
+    forged.seq_num = child.seq_num + 1;
+    forged.block_hash = child.block_hash.clone();
+    forged.sig = attacker.signature(child.block_hash.as_ref()).sig;
+    assert!(Validate::block_signature(&forged));
+
+    let status = nodes[1].process_block(forged.clone()).await.unwrap();
+    assert_eq!(
+        status,
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidBlockHash))
+    );
+    assert!(!nodes[1].block_store.is_pending(&child.block_hash));
+
+    let status = nodes[1].process_block(child.clone()).await.unwrap();
+    assert_eq!(status, Either::Left(BlockError::MissingBlocks));
+    assert!(nodes[1].block_store.is_pending(&child.block_hash));
+    assert_eq!(
+        nodes[1].block_store.get(&child.block_hash).unwrap(),
+        Some(child.clone())
+    );
+
+    let status = nodes[1].process_block(parent.clone()).await.unwrap();
+    assert_eq!(status, Either::Right(Valid));
+    let status = nodes[1].process_block(child.clone()).await.unwrap();
+    assert_eq!(status, Either::Right(Valid));
+    assert!(nodes[1].contains(&child.block_hash));
+}
+
+#[tokio::test]
 async fn multi_parent_casper_should_validate_a_child_that_arrived_before_its_parent() {
     let ctx = TestContext::new().await;
     let mut nodes = TestNode::create_network(ctx.genesis.clone(), 2, None, None, None, None)
@@ -718,6 +769,31 @@ async fn multi_parent_casper_should_request_again_an_evicted_parent_marked_as_re
     assert!(!nodes[1].block_store.is_pending(&evicted));
     let requested = nodes[1].requested_blocks.lock().unwrap();
     assert!(!requested.get(&evicted).unwrap().received);
+}
+
+#[tokio::test]
+async fn multi_parent_casper_should_keep_a_known_sender_pending_block_under_an_unknown_sender_flood(
+) {
+    let ctx = TestContext::new().await;
+    let (mut nodes, chain) = pending_chain(&ctx, 3).await;
+    nodes[1].process_block(chain[0].clone()).await.unwrap();
+    nodes[1].block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 1,
+        max_bytes: usize::MAX,
+        max_per_sender: 2_048,
+    });
+    nodes[1].process_block(chain[2].clone()).await.unwrap();
+    assert!(nodes[1].block_store.is_pending(&chain[2].block_hash));
+
+    for seq in 0..4 {
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let mut junk = chain[2].clone();
+        junk.seq_num += 100 + seq;
+        let junk = ValidatorIdentity::new(&sk).sign_block(&junk);
+        nodes[1].process_block(junk.clone()).await.unwrap();
+        assert!(!nodes[1].block_store.is_pending(&junk.block_hash));
+    }
+    assert!(nodes[1].block_store.is_pending(&chain[2].block_hash));
 }
 
 #[tokio::test]

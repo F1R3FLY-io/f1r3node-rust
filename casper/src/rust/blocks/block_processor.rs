@@ -19,7 +19,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use block_storage::rust::pending_blocks::PendingInsert;
+use block_storage::rust::pending_blocks::{PendingClass, PendingInsert};
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
@@ -39,9 +39,10 @@ use crate::rust::engine::multi_parent_casper::buffer_resolver::dependencies_are_
 use crate::rust::engine::peer_scoring::Strike;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
-    BLOCK_PROCESSOR_METRICS_SOURCE, BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC,
-    BLOCK_VALIDATION_SUCCESS_METRIC, BLOCK_VALIDATION_TIME_METRIC,
+    BLOCK_INTEGRITY_REJECTED_METRIC, BLOCK_PROCESSING_STORAGE_TIME_METRIC,
+    BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
+    BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC, BLOCK_VALIDATION_SUCCESS_METRIC,
+    BLOCK_VALIDATION_TIME_METRIC,
 };
 use crate::rust::util::proto_util;
 use crate::rust::validate::Validate;
@@ -145,11 +146,61 @@ pub enum SenderAuthorization {
     Unknown,
 }
 
+impl SenderAuthorization {
+    pub fn store_mode(self) -> Option<StoreMode> {
+        match self {
+            SenderAuthorization::Authorized => Some(StoreMode::Block),
+            SenderAuthorization::Unknown => Some(StoreMode::Pending),
+            SenderAuthorization::Unauthorized => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreMode {
+    Block,
+    Pending,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreVerdict {
     Stored,
-    Malformed,
     PendingRefused(PendingInsert),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrityFailure {
+    Malformed,
+    HashMismatch,
+}
+
+impl IntegrityFailure {
+    fn reason(self) -> &'static str {
+        match self {
+            IntegrityFailure::Malformed => "malformed",
+            IntegrityFailure::HashMismatch => "hash-mismatch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct IntegrityChecked<'a>(&'a BlockMessage);
+
+impl<'a> IntegrityChecked<'a> {
+    pub fn check(block: &'a BlockMessage, source: &'static str) -> Result<Self, IntegrityFailure> {
+        let failure = if !(Validate::format_of_fields(block) && Validate::block_signature(block)) {
+            IntegrityFailure::Malformed
+        } else if matches!(Validate::block_hash(block), Either::Left(_)) {
+            IntegrityFailure::HashMismatch
+        } else {
+            return Ok(Self(block));
+        };
+        metrics::counter!(BLOCK_INTEGRITY_REJECTED_METRIC, "source" => source, "reason" => failure.reason())
+            .increment(1);
+        Err(failure)
+    }
+
+    pub fn block(&self) -> &'a BlockMessage { self.0 }
 }
 
 fn of_interest_verdict(
@@ -401,8 +452,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub fn check_if_of_interest(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        block: &BlockMessage,
+        checked: IntegrityChecked<'_>,
     ) -> Result<OfInterestVerdict, CasperError> {
+        let block = checked.block();
         // TODO casper.dag_contains does not take into account equivocation tracker
         let already_processed = casper.dag_contains(&block.block_hash)
             || casper.buffer_waits_on_dependency(&block.block_hash);
@@ -445,8 +497,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     /// stored or its dependencies are requested.
     pub fn check_sender_authorization(
         &self,
-        block: &BlockMessage,
+        checked: IntegrityChecked<'_>,
     ) -> Result<SenderAuthorization, CasperError> {
+        let block = checked.block();
         let authorization = self.dependencies.sender_authorization(block)?;
         if authorization == SenderAuthorization::Unauthorized {
             self.dependencies.discard_pending(block);
@@ -470,27 +523,19 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         self.dependencies.forget_block_source(&block.block_hash);
     }
 
-    /// check block format and store if check passed
-    pub async fn check_if_well_formed_and_store(
+    pub async fn store(
         &self,
-        block: &BlockMessage,
-        authorization: SenderAuthorization,
+        checked: IntegrityChecked<'_>,
+        mode: StoreMode,
     ) -> Result<StoreVerdict, CasperError> {
-        let valid_format = Validate::format_of_fields(block);
-        let valid_sig = Validate::block_signature(block);
-        if !(valid_format && valid_sig) {
-            self.dependencies
-                .strike_block_source(&block.block_hash, Strike::Malformed);
-            return Ok(StoreVerdict::Malformed);
-        }
-
+        let block = checked.block();
         let storage_start = Instant::now();
-        let verdict = match authorization {
-            SenderAuthorization::Authorized => {
+        let verdict = match mode {
+            StoreMode::Block => {
                 self.dependencies.store_block(block).await?;
                 StoreVerdict::Stored
             }
-            SenderAuthorization::Unknown => {
+            StoreMode::Pending => {
                 let held = self.dependencies.hold_pending(block).await?;
                 if held != PendingInsert::Accepted {
                     tracing::warn!(
@@ -506,7 +551,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                     StoreVerdict::PendingRefused(held)
                 }
             }
-            SenderAuthorization::Unauthorized => StoreVerdict::Malformed,
         };
         metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(storage_start.elapsed().as_secs_f64());
@@ -825,8 +869,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn dispose_not_of_interest(
         &self,
         verdict: OfInterestVerdict,
-        block: &BlockMessage,
+        checked: IntegrityChecked<'_>,
     ) -> Result<(), CasperError> {
+        let block = checked.block();
         if verdict.purges_buffer() {
             tracing::info!(
                 "Block {} is not of interest. Dropped.",
@@ -860,6 +905,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         self.dependencies
             .release_refused_pending(block, refusal)
             .await
+    }
+
+    pub async fn drop_refused(&self, block: &BlockMessage) -> Result<(), CasperError> {
+        if self.dependencies.discard_copy(block)? {
+            self.purge_from_buffer_and_ack(block).await?;
+        }
+        Ok(())
     }
 
     /// Best-effort purge for stale/uninteresting blocks to prevent infinite buffer requeue loops.
@@ -1173,15 +1225,33 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         })
     }
 
+    pub fn discard_copy(&self, block: &BlockMessage) -> Result<bool, CasperError> {
+        Ok(self.block_store.discard_copy(block)?)
+    }
+
     /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
-    pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
+    pub(crate) async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.block_store.put_block_message(block)?;
         Ok(())
     }
 
-    pub async fn hold_pending(&self, block: &BlockMessage) -> Result<PendingInsert, CasperError> {
-        let solicited = self.was_requested_as_dependency(&block.block_hash)?;
-        let outcome = self.block_store.put_pending(block, solicited)?;
+    pub(crate) async fn hold_pending(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<PendingInsert, CasperError> {
+        let class = if self.was_requested_as_dependency(&block.block_hash)? {
+            PendingClass::Solicited
+        } else if self
+            .block_dag_storage
+            .get_representation()?
+            .latest_message_hash(&block.sender)
+            .is_some()
+        {
+            PendingClass::KnownSender
+        } else {
+            PendingClass::Unsolicited
+        };
+        let outcome = self.block_store.put_pending_as(block, class)?;
         self.release_evicted_pending(&outcome.evicted).await?;
         Ok(outcome.status)
     }
@@ -1751,7 +1821,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     /// Insertion cannot touch consensus state: `InsertMode::SettledHistory`
     /// leaves latest messages exactly as they were, and every verdict channel
     /// is untouched because the block never enters validation.
-    pub async fn try_admit_settled(
+    pub(crate) async fn try_admit_settled(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,

@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-CASPER-BUFFER-001",
+  "statements": [
+    "C7",
+    "C8"
+  ],
+  "scope": "casper-buffer-integrity-20261029-01",
+  "observed_at": "2026-10-29T02:48:35Z",
+  "base_checkpoint": "7524d94559fda10b310f2a0b13d3a0f718678d8f",
+  "note": "The digests identify the tree that ran the checks: the base checkpoint plus the uncommitted C7 and C8 changes. Mutation controls B to G ran on the base checkpoint, which already holds the C7 code. Controls H, I, J, and I+J ran on this tree.",
+  "source_inventory": [
+    {
+      "path": "casper/src/rust/blocks/block_processor.rs",
+      "sha256": "a80f178dcc06462b00de661f27c27da416c0ceac0a93523edd77b236fd94bd7b"
+    },
+    {
+      "path": "casper/src/rust/engine/running.rs",
+      "sha256": "d206029fa6e3cb8fc634b8a3c1832b63d81a956db6d478a3dc490960fe7f6b6f"
+    },
+    {
+      "path": "casper/src/rust/engine/peer_scoring.rs",
+      "sha256": "3f9270547a840fc8e3c0d8935e12caa63b2ffbfbab42339649e60d274bc3204f"
+    },
+    {
+      "path": "casper/src/rust/engine/block_retriever.rs",
+      "sha256": "ccec58fa7f7f95c86e8ecd721dbc707896f33a788e9d9db89a2b11d5c89fc491"
+    },
+    {
+      "path": "node/src/rust/instances/block_processor_instance.rs",
+      "sha256": "60bf712a56874b837e92b2740f86d8b091b11449d6f6a25173f7cfe4daba7481"
+    },
+    {
+      "path": "block-storage/src/rust/key_value_block_store.rs",
+      "sha256": "f2e84615c827faca2a7a058f0f9da09d005229e437713929c283934362a337d5"
+    },
+    {
+      "path": "block-storage/src/rust/pending_blocks.rs",
+      "sha256": "ba79f346ab0b2ca09a43d41d1b1895c85bbee73d4dd7fb9e7400c431a68769ac"
+    },
+    {
+      "path": "casper/tests/engine/running_spec.rs",
+      "sha256": "0e06f53fff22f1f4473d3360a483fa1e9b405d4766e9b048eb14364a57d7c8fc"
+    },
+    {
+      "path": "casper/tests/add_block/multi_parent_casper_add_block_spec.rs",
+      "sha256": "9edc008ef99c5c841d93eb93dd2e51ffc0ca8018c8371421a542d90b3a9c64aa"
+    },
+    {
+      "path": "casper/tests/helper/test_node.rs",
+      "sha256": "bc0a48d98cf2fecbec99b820c4f120febcd6c66ae7de186741d23e6db7fce7f9"
+    },
+    {
+      "path": "casper/tests/slashing/integration_helpers.rs",
+      "sha256": "4a781a8db4091401bb612c84442615040e56804bbc30c4070810e8cdd51c5080"
+    },
+    {
+      "path": "docs/claims/casper-buffer-release.md",
+      "sha256": "082f98d69dad17d7531380cc1f4ede2d571d12b1c4311fd10e1dd36dab92265a"
+    }
+  ],
+  "checks": [
+    {
+      "command": "cargo test --release -p block-storage --lib",
+      "result": "132 passed"
+    },
+    {
+      "command": "cargo test --release -p casper --lib",
+      "result": "702 passed, 1 ignored"
+    },
+    {
+      "command": "cargo test --release -p casper --test mod -- engine:: add_block:: sync:: slashing:: blocks::",
+      "result": "566 passed"
+    },
+    {
+      "command": "cargo test --release -p node --lib",
+      "result": "407 passed"
+    },
+    {
+      "command": "cargo clippy --release -p block-storage -p casper -p node --all-targets -- -D warnings",
+      "result": "clean"
+    }
+  ],
+  "mutation_controls": [
+    {
+      "id": "B",
+      "change": "hash comparison disabled",
+      "result": "killed"
+    },
+    {
+      "id": "C",
+      "change": "signature check disabled",
+      "result": "killed"
+    },
+    {
+      "id": "D",
+      "change": "stored-copy purge removed",
+      "result": "killed"
+    },
+    {
+      "id": "E",
+      "change": "every refused message treated as a stored copy",
+      "result": "killed"
+    },
+    {
+      "id": "F",
+      "change": "on-disk delete skipped",
+      "result": "killed"
+    },
+    {
+      "id": "G",
+      "change": "peer strike removed",
+      "result": "killed"
+    },
+    {
+      "id": "H",
+      "change": "hold_pending never chooses the known-sender tier",
+      "result": "killed"
+    },
+    {
+      "id": "I",
+      "change": "victim filter in oldest removed",
+      "result": "survived: equivalent mutant, because can_fit already refuses an insert that only a higher tier could make room for"
+    },
+    {
+      "id": "J",
+      "change": "can_fit ignores higher tiers",
+      "result": "killed"
+    },
+    {
+      "id": "I+J",
+      "change": "both tier guards removed",
+      "result": "killed"
+    }
+  ],
+  "acceptance": null,
+  "status": "pending"
+}
