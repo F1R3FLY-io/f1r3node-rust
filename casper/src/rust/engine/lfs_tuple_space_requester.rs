@@ -183,28 +183,9 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     ///
     /// **Scala equivalent**: `def getNext(resend: Boolean): (ST[Key], Seq[Key])`
     pub fn get_next(&self, resend: bool) -> (Self, Vec<Key>) {
-        let mut new_d = self.d.clone();
-        let mut requested_keys = Vec::new();
-
-        for (key, status) in &self.d {
-            let should_request = match status {
-                ReqStatus::Init => true,
-                ReqStatus::Requested if resend => true,
-                _ => false,
-            };
-
-            if should_request {
-                new_d.insert(key.clone(), ReqStatus::Requested);
-                requested_keys.push(key.clone());
-            }
-        }
-
-        (Self { d: new_d }, requested_keys)
+        self.get_next_bounded(resend, usize::MAX)
     }
 
-    /// Like [`ST::get_next`], but moves an `Init` key to `Requested` only while
-    /// fewer than `limit` keys are `Requested`. On resend every `Requested` key
-    /// is returned again.
     pub fn get_next_bounded(&self, resend: bool, limit: usize) -> (Self, Vec<Key>) {
         let mut new_d = self.d.clone();
         let mut requested_keys: Vec<Key> = Vec::new();
