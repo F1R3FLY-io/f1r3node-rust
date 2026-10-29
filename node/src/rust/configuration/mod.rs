@@ -231,7 +231,7 @@ pub mod builder {
         // window is the FULL re-request ladder (every backoff interval until
         // the retry budget exhausts), not just the first anchor interval.
         let recovery_span = std::time::Duration::from_millis(
-            casper::rust::engine::block_retriever::total_unresolved_rerequest_span_ms(),
+            casper::rust::blocks::ingest::fetch_scheduler::total_unresolved_rerequest_span_ms(),
         );
         if max_parent_depth != i32::MAX && max_parent_depth > 0 {
             let citability_window = node_conf

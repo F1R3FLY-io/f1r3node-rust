@@ -12,6 +12,9 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use tracing::{debug, info, warn};
 
+use crate::rust::blocks::ingest::fetch_scheduler::{
+    unresolved_rerequest_interval_ms, UNRESOLVED_REREQUEST_ANCHOR_MS,
+};
 use crate::rust::engine::peer_scoring::{PeerScores, Strike, StrikeOutcome, IGNORE_TTL_MS};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -83,36 +86,9 @@ enum AckReceiveResult {
  * In Scala, RequestedBlocks is passed as an implicit parameter (type class constraint).
  * In Rust, we explicitly pass it as a constructor parameter.
  * */
-/// Re-request clock for UNRESOLVED entries; `requested-blocks-timeout` only
-/// evicts received ones. A view frozen on one missing block must recover
-/// well inside the citability window (max-parent-depth heights of cadence)
-/// or a lost delivery becomes a finality stall — startup validation asserts
-/// that relation.
-pub const UNRESOLVED_REREQUEST_ANCHOR_MS: u64 = 500;
-
 /// Retry budget per unresolved hash: attempts past this evict the entry into
 /// the retry-budget quarantine.
 pub const MAX_RETRIES_PER_HASH: u32 = 32;
-
-/// Per-attempt re-request interval: the base for the first attempts, then an
-/// adaptive multiplier so repeatedly unresolved hashes retry less aggressively.
-pub fn unresolved_rerequest_interval_ms(attempts: u32, base_interval_ms: u64) -> u64 {
-    if attempts <= 4 {
-        return base_interval_ms;
-    }
-    let multiplier = 1 + std::cmp::min(((attempts - 4) / 4) as u64, 7);
-    base_interval_ms.saturating_mul(multiplier)
-}
-
-/// Full wall-clock span of the unresolved-re-request ladder: the sum of every
-/// per-attempt interval until the retry budget exhausts. This — not the
-/// anchor — is what a citability window must fit for a lost delivery to
-/// recover before its blocks fall below the parent-depth horizon.
-pub fn total_unresolved_rerequest_span_ms() -> u64 {
-    (0..MAX_RETRIES_PER_HASH)
-        .map(|attempts| unresolved_rerequest_interval_ms(attempts, UNRESOLVED_REREQUEST_ANCHOR_MS))
-        .sum()
-}
 
 #[derive(Debug, Clone)]
 pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
@@ -1745,14 +1721,6 @@ mod tests {
                 udp_port: port as u32,
             },
         }
-    }
-
-    /// The startup citability-window guard compares against this exact span,
-    /// so the pin here is what keeps the guard's inequality meaning what its
-    /// message says when the ladder constants move.
-    #[test]
-    fn the_full_rerequest_span_matches_the_ladder() {
-        assert_eq!(super::total_unresolved_rerequest_span_ms(), 58_000);
     }
 
     /// A drop at this node's own in-flight cap must not spend the per-hash

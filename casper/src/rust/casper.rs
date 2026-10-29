@@ -357,7 +357,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             }
         }
         let recovery_span = std::time::Duration::from_millis(
-            crate::rust::engine::block_retriever::total_unresolved_rerequest_span_ms(),
+            crate::rust::blocks::ingest::fetch_scheduler::total_unresolved_rerequest_span_ms(),
         );
         if citability_window < recovery_span {
             tracing::warn!(
