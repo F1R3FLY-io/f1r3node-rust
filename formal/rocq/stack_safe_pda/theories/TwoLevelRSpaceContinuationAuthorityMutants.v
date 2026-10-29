@@ -2,6 +2,7 @@ From Stdlib Require Import Bool List Arith Lia ZArith.
 From StackSafePDA Require Import
   PathMapCanonicalStreamPublicationBase
   TwoLevelRSpaceAuthority
+  RhoPathV1Datum
   TwoLevelRSpaceContinuationAuthority.
 
 Import ListNotations.
@@ -591,5 +592,250 @@ Proof. vm_compute. split; [reflexivity|discriminate]. Qed.
 Print Assumptions install_replay_reverses_restored_installed_joins.
 
 End InstalledJoinRestorationMutants.
+
+Module OrderedReceiveByteViewMutants.
+Import OrderedReceivePositions.
+Import OrderedReceiveByteView.
+
+Record AdmissionChecks : Type := AdmissionChecksState {
+  count_check : Path -> list nat -> bool;
+  persist_check : nat -> bool;
+  tail_check : Path -> list nat -> bool;
+  peeks_check : list Z -> bool
+}.
+
+Definition admit_with (checks : AdmissionChecks) (record : Path) (ends : list nat)
+    : option ByteView :=
+  if count_check checks record ends then
+    if ends_ordered 8 ends then
+      match nth_error record (body_finish_of ends) with
+      | Some persist =>
+          if persist_check checks persist then
+            if tail_check checks record ends then
+              if peeks_check checks (decode_words (peek_slice record ends)) then
+                if Nat.leb (identity_finish_of ends) (length record) then
+                  Some (ByteViewState record ends (arity_of ends)
+                    (decode_words (peek_slice record ends)))
+                else None
+              else None
+            else None
+          else None
+      | None => None
+      end
+    else None
+  else None.
+
+Definition production_checks : AdmissionChecks :=
+  AdmissionChecksState
+    (fun record ends => Z.eqb (Z.of_nat (length ends)) (header_count record + 2)%Z)
+    (fun persist => Nat.leb persist 1)
+    (fun record ends => tail_is_exact (body_finish_of ends)
+      (tail_count record (body_finish_of ends)) (identity_finish_of ends))
+    strictly_ascending.
+
+Lemma production_checks_are_admit_record : forall record ends,
+  admit_with production_checks record ends = admit_record record ends.
+Proof. intros. reflexivity. Qed.
+
+Definition fixture_prefix (pattern : PatternFields) : Path := concat (pattern_terms pattern).
+Definition fixture_pattern : PatternFields := PatternFieldsState [[5]] None 3%Z.
+
+Definition receive_with_peeks (peeks : list Z) : ReceiveFields :=
+  ReceiveFieldsState [[1]] [fixture_pattern] [7] false peeks [9].
+
+Definition one_receive : ReceiveFields := receive_with_peeks [].
+Definition two_receive : ReceiveFields :=
+  ReceiveFieldsState [[1]; [2]] [fixture_pattern; fixture_pattern] [7] false [] [9].
+Definition empty_receive : ReceiveFields := ReceiveFieldsState [] [] [7] false [] [9].
+Definition three_group : ChannelGroup := ChannelGroupState LegacyV1 [[1]; [2]; [3]].
+
+Definition zip_admit_receive (group : ChannelGroup) (record : Path) (ends : list nat)
+    : option ReceiveView :=
+  match admit_record record ends with
+  | Some view => Some (ReceiveViewState group view)
+  | None => None
+  end.
+
+Example zip_truncating_arity_is_detected :
+  admit_receive three_group (record_image fixture_prefix two_receive)
+    (field_bounds fixture_prefix two_receive) = None /\
+  option_map (fun view => view_bind view 2)
+    (zip_admit_receive three_group (record_image fixture_prefix two_receive)
+      (field_bounds fixture_prefix two_receive)) = Some None.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Definition wrapping_tail_checks : AdmissionChecks :=
+  AdmissionChecksState (count_check production_checks) (persist_check production_checks)
+    (fun record ends =>
+      Z.eqb ((Z.of_nat (body_finish_of ends) + 9 +
+        4 * tail_count record (body_finish_of ends)) mod 18446744073709551616)%Z
+        (Z.of_nat (identity_finish_of ends)) &&
+      Z.leb (Z.of_nat (identity_finish_of ends)) word_max)
+    (peeks_check production_checks).
+
+Definition wrapping_tail_record : Path := le_bytes 8 0%Z ++ 0 :: le_bytes 8 (2 ^ 62)%Z.
+
+Example wrapping_peek_tail_is_detected :
+  tail_count wrapping_tail_record 8 = (2 ^ 62)%Z /\
+  admit_record wrapping_tail_record [8; 17] = None /\
+  option_map (fun view => length (view_peeks view))
+    (admit_with wrapping_tail_checks wrapping_tail_record [8; 17]) = Some 0.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Definition narrowed_count_checks : AdmissionChecks :=
+  AdmissionChecksState
+    (fun record ends =>
+      Z.eqb (Z.of_nat (length ends)) (header_count record mod 4294967296 + 2)%Z)
+    (persist_check production_checks) (tail_check production_checks)
+    (peeks_check production_checks).
+
+Definition narrowed_count_record : Path :=
+  le_bytes 8 4294967297%Z ++ skipn 8 (record_image fixture_prefix one_receive).
+
+Example narrowed_count_alias_is_detected :
+  header_count narrowed_count_record = 4294967297%Z /\
+  admit_record narrowed_count_record (field_bounds fixture_prefix one_receive) = None /\
+  admit_with narrowed_count_checks narrowed_count_record
+    (field_bounds fixture_prefix one_receive) <> None.
+Proof. vm_compute. split; [reflexivity|split; [reflexivity|discriminate]]. Qed.
+
+Definition shifted_first_bound (ends : list nat) : list nat :=
+  match ends with
+  | first :: rest => first - 1 :: rest
+  | [] => []
+  end.
+
+Definition trailing_free_counts (view : ByteView) : list Z :=
+  map (fun bytes => i32_value (trailing_word bytes)) (view_patterns view).
+
+Example shifted_capture_bound_is_detected :
+  option_map view_patterns (admit_record (record_image fixture_prefix one_receive)
+    (field_bounds fixture_prefix one_receive)) =
+    Some (map (pattern_image fixture_prefix) (receive_patterns one_receive)) /\
+  option_map trailing_free_counts (admit_record (record_image fixture_prefix one_receive)
+    (field_bounds fixture_prefix one_receive)) = Some [pattern_free_count fixture_pattern] /\
+  option_map trailing_free_counts (admit_record (record_image fixture_prefix one_receive)
+    (shifted_first_bound (field_bounds fixture_prefix one_receive))) = Some [773%Z].
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Definition source_bearing_identity (view : ByteView) : Path := view_record view.
+
+Example source_bearing_identity_is_detected :
+  view_identity (encoded_view fixture_prefix one_receive) =
+    view_identity (encoded_view fixture_prefix (replace_source one_receive [8])) /\
+  source_bearing_identity (encoded_view fixture_prefix one_receive) <>
+    source_bearing_identity (encoded_view fixture_prefix (replace_source one_receive [8])).
+Proof. vm_compute. split; [reflexivity|discriminate]. Qed.
+
+Definition body_split_source (view : ByteView) : Path :=
+  skipn (body_end view) (view_record view).
+
+Example misplaced_source_split_is_detected :
+  view_source (encoded_view fixture_prefix one_receive) = receive_source one_receive /\
+  body_split_source (encoded_view fixture_prefix one_receive) <> receive_source one_receive.
+Proof. vm_compute. split; [reflexivity|discriminate]. Qed.
+
+Definition normalizing_peek_checks : AdmissionChecks :=
+  AdmissionChecksState (count_check production_checks) (persist_check production_checks)
+    (tail_check production_checks) (fun _ => true).
+
+Example normalized_peek_tail_is_detected :
+  admit_record (record_image fixture_prefix (receive_with_peeks [5; 1]%Z))
+    (field_bounds fixture_prefix (receive_with_peeks [5; 1]%Z)) = None /\
+  admit_record (record_image fixture_prefix (receive_with_peeks [3; 3]%Z))
+    (field_bounds fixture_prefix (receive_with_peeks [3; 3]%Z)) = None /\
+  option_map (fun view => strictly_ascending (view_peeks view))
+    (admit_with normalizing_peek_checks
+      (record_image fixture_prefix (receive_with_peeks [5; 1]%Z))
+      (field_bounds fixture_prefix (receive_with_peeks [5; 1]%Z))) = Some false /\
+  option_map (fun view => strictly_ascending (view_peeks view))
+    (admit_with normalizing_peek_checks
+      (record_image fixture_prefix (receive_with_peeks [3; 3]%Z))
+      (field_bounds fixture_prefix (receive_with_peeks [3; 3]%Z))) = Some false.
+Proof. vm_compute. repeat split; reflexivity. Qed.
+
+Definition wrapping_effective_peek (peeks : list Z) (position : Z) : bool :=
+  existsb (Z.eqb (signed_word (position mod word_modulus))) peeks.
+
+Example wrapping_signed_position_is_detected :
+  view_effective_peek [2%Z] 4294967298%Z = false /\
+  wrapping_effective_peek [2%Z] 4294967298%Z = true.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Definition unframed_channel_at_is (channels : GroupKey) (query : Path) (position : nat)
+    : bool :=
+  match nth_error channels position with
+  | Some image => if path_eq_dec (firstn (length query) image) query then true else false
+  | None => false
+  end.
+
+Definition unframed_positions (channels : GroupKey) (query : Path) : list nat :=
+  filter (unframed_channel_at_is channels query) (seq 0 (length channels)).
+
+Example unframed_prefix_match_is_detected :
+  view_positions (ChannelGroupState LegacyV1 [[1]; [1; 0]]) LegacyV1 [1] = Some [0] /\
+  unframed_positions [[1]; [1; 0]] [1] = [0; 1].
+Proof. vm_compute. split; reflexivity. Qed.
+
+Definition profile_blind_positions (group : ChannelGroup) (profile : ChannelProfile)
+    (query : Path) : option (list nat) :=
+  Some (positions (group_frames group) (RhoPathV1Datum.encode_frame query)).
+
+Example profile_blind_query_is_detected :
+  view_positions (ChannelGroupState Rci2V2 [[1]]) LegacyV1 [1] = None /\
+  profile_blind_positions (ChannelGroupState Rci2V2 [[1]]) LegacyV1 [1] = Some [0].
+Proof. vm_compute. split; reflexivity. Qed.
+
+Definition nonempty_checks : AdmissionChecks :=
+  AdmissionChecksState
+    (fun record ends => count_check production_checks record ends &&
+      Z.ltb 0 (header_count record))
+    (persist_check production_checks) (tail_check production_checks)
+    (peeks_check production_checks).
+
+Example universal_nonempty_rule_is_detected :
+  option_map view_arity (admit_record (record_image fixture_prefix empty_receive)
+    (field_bounds fixture_prefix empty_receive)) = Some 0 /\
+  admit_with nonempty_checks (record_image fixture_prefix empty_receive)
+    (field_bounds fixture_prefix empty_receive) = None.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Definition lenient_persist_checks : AdmissionChecks :=
+  AdmissionChecksState (count_check production_checks) (fun _ => true)
+    (tail_check production_checks) (peeks_check production_checks).
+
+Definition persist_two_record : Path :=
+  firstn (body_finish_at fixture_prefix one_receive) (record_image fixture_prefix one_receive) ++
+  2 :: skipn (S (body_finish_at fixture_prefix one_receive))
+    (record_image fixture_prefix one_receive).
+
+Definition nonzero_persistent (view : ByteView) : bool :=
+  match nth_error (view_record view) (body_end view) with
+  | Some 0 | None => false
+  | Some _ => true
+  end.
+
+Example noncanonical_persist_is_detected :
+  admit_record persist_two_record (field_bounds fixture_prefix one_receive) = None /\
+  option_map nonzero_persistent
+    (admit_with lenient_persist_checks persist_two_record
+      (field_bounds fixture_prefix one_receive)) = Some true.
+Proof. vm_compute. split; reflexivity. Qed.
+
+Print Assumptions production_checks_are_admit_record.
+Print Assumptions zip_truncating_arity_is_detected.
+Print Assumptions wrapping_peek_tail_is_detected.
+Print Assumptions narrowed_count_alias_is_detected.
+Print Assumptions shifted_capture_bound_is_detected.
+Print Assumptions source_bearing_identity_is_detected.
+Print Assumptions misplaced_source_split_is_detected.
+Print Assumptions normalized_peek_tail_is_detected.
+Print Assumptions wrapping_signed_position_is_detected.
+Print Assumptions unframed_prefix_match_is_detected.
+Print Assumptions profile_blind_query_is_detected.
+Print Assumptions universal_nonempty_rule_is_detected.
+Print Assumptions noncanonical_persist_is_detected.
+
+End OrderedReceiveByteViewMutants.
 
 End TwoLevelRSpaceContinuationAuthorityMutants.

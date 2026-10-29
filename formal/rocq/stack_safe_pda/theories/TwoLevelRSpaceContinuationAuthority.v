@@ -1823,6 +1823,1017 @@ Print Assumptions escaped_channel_occurrences_are_exact.
 
 End OrderedReceivePositions.
 
+Module OrderedReceiveByteView.
+Import OrderedReceivePositions.
+Open Scope nat_scope.
+
+Definition word_max : Z := position_max.
+Definition word_modulus : Z := 4294967296%Z.
+
+Fixpoint le_bytes (width : nat) (value : Z) : Path :=
+  match width with
+  | O => []
+  | S rest => Z.to_nat (value mod 256)%Z :: le_bytes rest (value / 256)%Z
+  end.
+
+Fixpoint le_value (bytes : Path) : Z :=
+  match bytes with
+  | [] => 0%Z
+  | byte :: rest => (Z.of_nat byte + 256 * le_value rest)%Z
+  end.
+
+Definition signed_word (raw : Z) : Z :=
+  if Z.leb raw i32_max then raw else (raw - word_modulus)%Z.
+
+Definition i32_bytes (value : Z) : Path := le_bytes 4 (value mod word_modulus)%Z.
+
+Definition i32_value (bytes : Path) : Z := signed_word (le_value bytes mod word_modulus)%Z.
+
+Definition persist_byte (persistent : bool) : Byte := if persistent then 1 else 0.
+
+Definition pattern_image (prefix : PatternFields -> Path) (pattern : PatternFields) : Path :=
+  prefix pattern ++ i32_bytes (pattern_free_count pattern).
+
+Definition pattern_images (prefix : PatternFields -> Path) (receive : ReceiveFields)
+    : list Path :=
+  map (pattern_image prefix) (receive_patterns receive).
+
+Definition peek_image (peeks : list Z) : Path := concat (map i32_bytes peeks).
+
+Definition identity_image (prefix : PatternFields -> Path) (receive : ReceiveFields) : Path :=
+  le_bytes 8 (Z.of_nat (length (receive_patterns receive))) ++
+  concat (pattern_images prefix receive) ++
+  receive_body receive ++
+  persist_byte (receive_persistent receive) ::
+  le_bytes 8 (Z.of_nat (length (receive_peeks receive))) ++
+  peek_image (receive_peeks receive).
+
+Definition record_image (prefix : PatternFields -> Path) (receive : ReceiveFields) : Path :=
+  identity_image prefix receive ++ receive_source receive.
+
+Fixpoint pattern_ends (start : nat) (images : list Path) : list nat :=
+  match images with
+  | [] => []
+  | image :: rest => start + length image :: pattern_ends (start + length image) rest
+  end.
+
+Definition body_finish_at (prefix : PatternFields -> Path) (receive : ReceiveFields) : nat :=
+  8 + length (concat (pattern_images prefix receive)) + length (receive_body receive).
+
+Definition field_bounds (prefix : PatternFields -> Path) (receive : ReceiveFields) : list nat :=
+  pattern_ends 8 (pattern_images prefix receive) ++
+  [body_finish_at prefix receive;
+   body_finish_at prefix receive + 9 + 4 * length (receive_peeks receive)].
+
+Record ByteView : Type := ByteViewState {
+  view_record : Path;
+  view_ends : list nat;
+  view_arity : nat;
+  view_peeks : list Z
+}.
+
+Definition slice (start finish : nat) (bytes : Path) : Path :=
+  firstn (finish - start) (skipn start bytes).
+
+Fixpoint ends_ordered (start : nat) (ends : list nat) : bool :=
+  match ends with
+  | [] => true
+  | finish :: rest => Nat.leb start finish && ends_ordered finish rest
+  end.
+
+Fixpoint decode_words (bytes : Path) : list Z :=
+  match bytes with
+  | first :: second :: third :: fourth :: rest =>
+      i32_value [first; second; third; fourth] :: decode_words rest
+  | _ => []
+  end.
+
+Fixpoint strictly_ascending (values : list Z) : bool :=
+  match values with
+  | [] => true
+  | first :: rest =>
+      match rest with
+      | [] => true
+      | second :: _ => Z.ltb first second && strictly_ascending rest
+      end
+  end.
+
+Definition header_count (record : Path) : Z := le_value (firstn 8 record).
+
+Definition arity_of (ends : list nat) : nat := length ends - 2.
+
+Definition body_finish_of (ends : list nat) : nat := nth (arity_of ends) ends 0.
+
+Definition identity_finish_of (ends : list nat) : nat := nth (S (arity_of ends)) ends 0.
+
+Definition tail_count (record : Path) (body_finish : nat) : Z :=
+  le_value (slice (S body_finish) (body_finish + 9) record).
+
+Definition tail_is_exact (body_finish : nat) (peek_count : Z) (identity_finish : nat) : bool :=
+  Z.eqb (Z.of_nat body_finish + 9 + 4 * peek_count)%Z (Z.of_nat identity_finish) &&
+  Z.leb (Z.of_nat identity_finish) word_max.
+
+Definition peek_slice (record : Path) (ends : list nat) : Path :=
+  slice (body_finish_of ends + 9) (identity_finish_of ends) record.
+
+Definition admit_record (record : Path) (ends : list nat) : option ByteView :=
+  if Z.eqb (Z.of_nat (length ends)) (header_count record + 2)%Z then
+    if ends_ordered 8 ends then
+      match nth_error record (body_finish_of ends) with
+      | Some persist =>
+          if Nat.leb persist 1 then
+            if tail_is_exact (body_finish_of ends) (tail_count record (body_finish_of ends))
+                (identity_finish_of ends) then
+              if strictly_ascending (decode_words (peek_slice record ends)) then
+                if Nat.leb (identity_finish_of ends) (length record) then
+                  Some (ByteViewState record ends (arity_of ends)
+                    (decode_words (peek_slice record ends)))
+                else None
+              else None
+            else None
+          else None
+      | None => None
+      end
+    else None
+  else None.
+
+Definition field_start (view : ByteView) (index : nat) : nat :=
+  nth index (8 :: view_ends view) 0.
+
+Definition body_end (view : ByteView) : nat := nth (view_arity view) (view_ends view) 0.
+
+Definition identity_end (view : ByteView) : nat := nth (S (view_arity view)) (view_ends view) 0.
+
+Fixpoint field_slices (start : nat) (ends : list nat) (record : Path) : list Path :=
+  match ends with
+  | [] => []
+  | finish :: rest => slice start finish record :: field_slices finish rest record
+  end.
+
+Definition view_patterns (view : ByteView) : list Path :=
+  field_slices 8 (firstn (view_arity view) (view_ends view)) (view_record view).
+
+Definition view_body (view : ByteView) : Path :=
+  slice (field_start view (view_arity view)) (body_end view) (view_record view).
+
+Definition view_persistent (view : ByteView) : bool :=
+  match nth_error (view_record view) (body_end view) with
+  | Some 1 => true
+  | _ => false
+  end.
+
+Definition view_identity (view : ByteView) : Path :=
+  firstn (identity_end view) (view_record view).
+
+Definition view_source (view : ByteView) : Path :=
+  skipn (identity_end view) (view_record view).
+
+Inductive ChannelProfile : Type := LegacyV1 | Rci2V2.
+
+Definition profile_eqb (left right : ChannelProfile) : bool :=
+  match left, right with
+  | LegacyV1, LegacyV1 => true
+  | Rci2V2, Rci2V2 => true
+  | _, _ => false
+  end.
+
+Record ChannelGroup : Type := ChannelGroupState {
+  group_profile : ChannelProfile;
+  group_images : GroupKey
+}.
+
+Definition group_frames (group : ChannelGroup) : list Path :=
+  @map Path Path RhoPathV1Datum.encode_frame (group_images group).
+
+Record ReceiveView : Type := ReceiveViewState {
+  receive_view_group : ChannelGroup;
+  receive_view_bytes : ByteView
+}.
+
+Definition admit_receive (group : ChannelGroup) (record : Path) (ends : list nat)
+    : option ReceiveView :=
+  match admit_record record ends with
+  | Some view =>
+      if Nat.eqb (length (group_images group)) (view_arity view)
+      then Some (ReceiveViewState group view) else None
+  | None => None
+  end.
+
+Definition view_positions (group : ChannelGroup) (profile : ChannelProfile) (query : Path)
+    : option (list nat) :=
+  if profile_eqb (group_profile group) profile
+  then Some (positions (group_frames group) (RhoPathV1Datum.encode_frame query))
+  else None.
+
+Definition view_effective_peek (peeks : list Z) (position : Z) : bool :=
+  Z.leb position i32_max && existsb (Z.eqb position) peeks.
+
+Definition view_bind (view : ReceiveView) (index : nat) : option (Path * Path * bool) :=
+  match nth_error (group_frames (receive_view_group view)) index,
+        nth_error (view_patterns (receive_view_bytes view)) index with
+  | Some frame, Some pattern =>
+      Some (frame, pattern,
+        view_effective_peek (view_peeks (receive_view_bytes view)) (Z.of_nat index))
+  | _, _ => None
+  end.
+
+Definition bind_image (prefix : PatternFields -> Path) (bind : BindFields) : Path * Path * bool :=
+  (RhoPathV1Datum.encode_frame (bind_channel bind),
+   pattern_image prefix (bind_pattern bind), bind_peek bind).
+
+Definition encodable (prefix : PatternFields -> Path) (receive : ReceiveFields) : Prop :=
+  canonical_peeks (receive_peeks receive) /\
+  Forall (fun pattern => peek_in_i32_range (pattern_free_count pattern))
+    (receive_patterns receive) /\
+  (Z.of_nat (length (record_image prefix receive)) <= word_max)%Z.
+
+Definition encoded_view (prefix : PatternFields -> Path) (receive : ReceiveFields) : ByteView :=
+  ByteViewState (record_image prefix receive) (field_bounds prefix receive)
+    (length (receive_patterns receive)) (receive_peeks receive).
+
+Definition view_continuation (view : ByteView) : ContinuationRecord :=
+  ContinuationRecordState (view_identity view) (view_source view)
+    (view_persistent view) (view_peeks view).
+
+Definition trailing_word (bytes : Path) : Path := skipn (length bytes - 4) bytes.
+
+Lemma le_bytes_length : forall width value, length (le_bytes width value) = width.
+Proof. induction width as [|width IH]; intro value; simpl; [reflexivity|now rewrite IH]. Qed.
+
+Lemma le_value_nonnegative : forall bytes, (0 <= le_value bytes)%Z.
+Proof. induction bytes as [|byte bytes IH]; cbn [le_value]; lia. Qed.
+
+Lemma le_value_le_bytes : forall width value,
+  (0 <= value < 256 ^ Z.of_nat width)%Z -> le_value (le_bytes width value) = value.
+Proof.
+  induction width as [|width IH]; intros value Hrange.
+  - simpl in Hrange. simpl. lia.
+  - rewrite Nat2Z.inj_succ, Z.pow_succ_r in Hrange by lia.
+    pose proof (Z.mod_pos_bound value 256 ltac:(lia)) as Hmod.
+    pose proof (Z.div_mod value 256 ltac:(lia)) as Hdiv.
+    cbn [le_bytes le_value].
+    rewrite Z2Nat.id by lia.
+    rewrite IH.
+    + lia.
+    + split.
+      * apply Z.div_pos; lia.
+      * apply Z.div_lt_upper_bound; lia.
+Qed.
+
+Lemma firstn_le_bytes : forall width value rest,
+  firstn width (le_bytes width value ++ rest) = le_bytes width value.
+Proof. induction width as [|width IH]; intros; simpl; [reflexivity|now rewrite IH]. Qed.
+
+Lemma i32_bytes_length : forall value, length (i32_bytes value) = 4.
+Proof. intro value. apply le_bytes_length. Qed.
+
+Lemma i32_value_i32_bytes : forall value,
+  peek_in_i32_range value -> i32_value (i32_bytes value) = value.
+Proof.
+  intros value Hrange. unfold peek_in_i32_range, i32_min, i32_max in Hrange.
+  unfold i32_value, i32_bytes, signed_word, i32_max, word_modulus.
+  pose proof (Z.mod_pos_bound value 4294967296 ltac:(lia)) as Hmod.
+  rewrite le_value_le_bytes.
+  2: { change (256 ^ Z.of_nat 4)%Z with 4294967296%Z. lia. }
+  rewrite Z.mod_mod by lia.
+  destruct (Z.leb_spec 0 value) as [Hnonnegative|Hnegative].
+  - rewrite Z.mod_small by lia.
+    destruct (Z.leb_spec value 2147483647); lia.
+  - assert (Hshift : (value mod 4294967296 = value + 4294967296)%Z).
+    { rewrite <- (Z.mod_add value 1 4294967296) by lia.
+      rewrite Z.mod_small by lia. lia. }
+    rewrite Hshift. destruct (Z.leb_spec (value + 4294967296) 2147483647); lia.
+Qed.
+
+Lemma i32_value_in_range : forall bytes, peek_in_i32_range (i32_value bytes).
+Proof.
+  intro bytes. unfold i32_value, signed_word, peek_in_i32_range, i32_min, i32_max,
+    word_modulus.
+  pose proof (Z.mod_pos_bound (le_value bytes) 4294967296 ltac:(lia)) as Hbound.
+  destruct (Z.leb_spec (le_value bytes mod 4294967296) 2147483647); lia.
+Qed.
+
+Lemma decode_words_app_word : forall word rest,
+  length word = 4 -> decode_words (word ++ rest) = i32_value word :: decode_words rest.
+Proof.
+  intros [|first [|second [|third [|fourth [|fifth word]]]]] rest Hlength;
+    simpl in Hlength; try lia. reflexivity.
+Qed.
+
+Lemma decode_words_in_range : forall bytes, Forall peek_in_i32_range (decode_words bytes).
+Proof.
+  fix IH 1. intros [|first [|second [|third [|fourth rest]]]]; try constructor.
+  - apply i32_value_in_range.
+  - apply IH.
+Qed.
+
+Lemma decode_words_length : forall bytes words,
+  length bytes = 4 * words -> length (decode_words bytes) = words.
+Proof.
+  fix IH 1. intros [|first [|second [|third [|fourth rest]]]] words Hlength;
+    simpl in Hlength.
+  - simpl. lia.
+  - lia.
+  - lia.
+  - lia.
+  - destruct words as [|words]; [lia|].
+    simpl. f_equal. apply IH. lia.
+Qed.
+
+Lemma peek_image_cons : forall peek rest,
+  peek_image (peek :: rest) = i32_bytes peek ++ peek_image rest.
+Proof. reflexivity. Qed.
+
+Lemma decode_peek_image : forall peeks,
+  Forall peek_in_i32_range peeks -> decode_words (peek_image peeks) = peeks.
+Proof.
+  induction peeks as [|peek rest IH]; intro Hrange; [reflexivity|].
+  inversion Hrange as [|head tail Hpeek Hrest]; subst.
+  rewrite peek_image_cons, decode_words_app_word by apply i32_bytes_length.
+  rewrite i32_value_i32_bytes by exact Hpeek.
+  f_equal. now apply IH.
+Qed.
+
+Lemma peek_image_length : forall peeks, length (peek_image peeks) = 4 * length peeks.
+Proof.
+  induction peeks as [|peek rest IH]; [reflexivity|].
+  rewrite peek_image_cons, length_app, i32_bytes_length, IH. simpl. lia.
+Qed.
+
+Lemma pattern_image_length : forall prefix pattern,
+  length (pattern_image prefix pattern) = length (prefix pattern) + 4.
+Proof. intros. unfold pattern_image. rewrite length_app, i32_bytes_length. reflexivity. Qed.
+
+Lemma pattern_images_cover_words : forall prefix patterns,
+  4 * length patterns <= length (concat (map (pattern_image prefix) patterns)).
+Proof.
+  induction patterns as [|pattern rest IH]; [simpl; lia|].
+  cbn [map concat length]. rewrite length_app, pattern_image_length. lia.
+Qed.
+
+Lemma strictly_ascending_sorted : forall values,
+  strictly_ascending values = true -> StronglySorted Z.lt values.
+Proof.
+  intros values Hascending. apply Sorted_StronglySorted; [exact Z.lt_trans|].
+  induction values as [|first rest IH]; [constructor|].
+  destruct rest as [|second rest]; [repeat constructor|].
+  change (Z.ltb first second && strictly_ascending (second :: rest) = true) in Hascending.
+  apply andb_true_iff in Hascending as [Hfirst Hrest].
+  apply Z.ltb_lt in Hfirst. constructor.
+  - now apply IH.
+  - now constructor.
+Qed.
+
+Lemma sorted_strictly_ascending : forall values,
+  StronglySorted Z.lt values -> strictly_ascending values = true.
+Proof.
+  intros values Hsorted. induction Hsorted as [|first rest Hrest IH Hfirst]; [reflexivity|].
+  destruct rest as [|second rest]; [reflexivity|].
+  change (Z.ltb first second && strictly_ascending (second :: rest) = true).
+  apply andb_true_iff. split; [|exact IH].
+  apply Z.ltb_lt. now inversion Hfirst.
+Qed.
+
+Lemma skipn_exact_prefix : forall (A : Type) (front back : list A),
+  skipn (length front) (front ++ back) = back.
+Proof. intros A front. induction front as [|value front IH]; intro back; simpl; auto. Qed.
+
+Lemma firstn_exact_prefix : forall (A : Type) (front back : list A),
+  firstn (length front) (front ++ back) = front.
+Proof.
+  intros A front. induction front as [|value front IH]; intro back; simpl;
+    [reflexivity|now rewrite IH].
+Qed.
+
+Lemma nth_after_prefix : forall (A : Type) (front : list A) value rest default,
+  nth (length front) (front ++ value :: rest) default = value.
+Proof. intros A front. induction front as [|head front IH]; intros; simpl; auto. Qed.
+
+Lemma nth_after_prefix_next : forall (A : Type) (front : list A) first second rest default,
+  nth (S (length front)) (front ++ first :: second :: rest) default = second.
+Proof. intros A front. induction front as [|head front IH]; intros; simpl; auto. Qed.
+
+Lemma nth_error_middle : forall (A : Type) (front : list A) value rest position,
+  position = length front -> nth_error (front ++ value :: rest) position = Some value.
+Proof.
+  intros A front value rest position Hposition. subst position.
+  induction front as [|head front IH]; simpl; auto.
+Qed.
+
+Lemma slice_middle : forall (front middle back : Path) start finish,
+  start = length front -> finish = start + length middle ->
+  slice start finish (front ++ middle ++ back) = middle.
+Proof.
+  intros front middle back start finish Hstart Hfinish. subst start finish.
+  unfold slice. rewrite skipn_exact_prefix.
+  replace (length front + length middle - length front) with (length middle) by lia.
+  apply firstn_exact_prefix.
+Qed.
+
+Lemma pattern_ends_length : forall images start,
+  length (pattern_ends start images) = length images.
+Proof. induction images as [|image rest IH]; intro start; simpl; [reflexivity|now rewrite IH]. Qed.
+
+Lemma pattern_ends_last : forall images start,
+  nth (length images) (start :: pattern_ends start images) 0 = start + length (concat images).
+Proof.
+  induction images as [|image images IH]; intro start.
+  - simpl. lia.
+  - change (nth (length images)
+      (start + length image :: pattern_ends (start + length image) images) 0 =
+      start + length (image ++ concat images)).
+    rewrite IH, length_app. lia.
+Qed.
+
+Lemma pattern_ends_ordered : forall images start rest,
+  ends_ordered start (pattern_ends start images ++ rest) =
+  ends_ordered (start + length (concat images)) rest.
+Proof.
+  induction images as [|image images IH]; intros start rest.
+  - simpl. now rewrite Nat.add_0_r.
+  - cbn [pattern_ends concat app ends_ordered].
+    rewrite IH, length_app, Nat.add_assoc.
+    assert (Hstep : Nat.leb start (start + length image) = true)
+      by (apply Nat.leb_le; lia).
+    rewrite Hstep. reflexivity.
+Qed.
+
+Lemma field_slices_concat : forall images front back start,
+  start = length front ->
+  field_slices start (pattern_ends start images) (front ++ concat images ++ back) = images.
+Proof.
+  induction images as [|image images IH]; intros front back start Hstart; [reflexivity|].
+  cbn [pattern_ends field_slices concat]. f_equal.
+  - rewrite <- app_assoc. apply slice_middle; [exact Hstart|reflexivity].
+  - rewrite <- app_assoc, app_assoc. apply IH. rewrite length_app. lia.
+Qed.
+
+Lemma last_nonempty_default : forall rest (head : nat) first second,
+  last (head :: rest) first = last (head :: rest) second.
+Proof.
+  induction rest as [|next rest IH]; intros head first second; [reflexivity|].
+  change (last (next :: rest) first = last (next :: rest) second). apply IH.
+Qed.
+
+Lemma last_cons_default : forall (head : nat) rest default,
+  last (head :: rest) default = last rest head.
+Proof.
+  intros head [|next rest] default; [reflexivity|].
+  change (last (next :: rest) default = last (next :: rest) head).
+  apply last_nonempty_default.
+Qed.
+
+Lemma ends_ordered_last : forall ends start,
+  ends_ordered start ends = true -> start <= last ends start.
+Proof.
+  induction ends as [|finish rest IH]; intros start Hordered; [simpl; lia|].
+  cbn [ends_ordered] in Hordered.
+  apply andb_true_iff in Hordered as [Hstart Hrest]. apply Nat.leb_le in Hstart.
+  rewrite last_cons_default. specialize (IH finish Hrest). lia.
+Qed.
+
+Lemma ends_ordered_bounds : forall ends start,
+  ends_ordered start ends = true ->
+  Forall (fun finish => start <= finish <= last ends start) ends.
+Proof.
+  induction ends as [|finish rest IH]; intros start Hordered; [constructor|].
+  cbn [ends_ordered] in Hordered.
+  apply andb_true_iff in Hordered as [Hstart Hrest]. apply Nat.leb_le in Hstart.
+  rewrite last_cons_default.
+  pose proof (@ends_ordered_last rest finish Hrest) as Hlast.
+  constructor; [cbv beta; lia|].
+  eapply Forall_impl; [|exact (IH finish Hrest)].
+  intros value Hvalue. cbv beta in *. lia.
+Qed.
+
+Lemma last_is_nth : forall (ends : list nat) index first second,
+  length ends = S index -> last ends first = nth index ends second.
+Proof.
+  induction ends as [|finish rest IH]; intros index first second Hlength; [discriminate|].
+  rewrite last_cons_default. destruct index as [|index].
+  - destruct rest as [|next rest]; [reflexivity|discriminate].
+  - simpl. apply IH. simpl in Hlength. lia.
+Qed.
+
+Lemma slice_length : forall start finish bytes,
+  start <= finish -> finish <= length bytes -> length (slice start finish bytes) = finish - start.
+Proof.
+  intros start finish bytes Hordered Hinside. unfold slice.
+  rewrite length_firstn, length_skipn. lia.
+Qed.
+
+Lemma admitted_record_facts : forall record ends view,
+  admit_record record ends = Some view ->
+  view = ByteViewState record ends (arity_of ends) (decode_words (peek_slice record ends)) /\
+  Z.of_nat (length ends) = (header_count record + 2)%Z /\
+  ends_ordered 8 ends = true /\
+  (exists persist, nth_error record (body_finish_of ends) = Some persist /\ persist <= 1) /\
+  tail_is_exact (body_finish_of ends) (tail_count record (body_finish_of ends))
+    (identity_finish_of ends) = true /\
+  strictly_ascending (decode_words (peek_slice record ends)) = true /\
+  identity_finish_of ends <= length record.
+Proof.
+  intros record ends view Hadmit. unfold admit_record in Hadmit.
+  destruct (Z.eqb (Z.of_nat (length ends)) (header_count record + 2)%Z) eqn:Hcount;
+    [|discriminate].
+  destruct (ends_ordered 8 ends) eqn:Hordered; [|discriminate].
+  destruct (nth_error record (body_finish_of ends)) as [persist|] eqn:Hpersist;
+    [|discriminate].
+  destruct (Nat.leb persist 1) eqn:Hboolean; [|discriminate].
+  destruct (tail_is_exact (body_finish_of ends) (tail_count record (body_finish_of ends))
+    (identity_finish_of ends)) eqn:Htail; [|discriminate].
+  destruct (strictly_ascending (decode_words (peek_slice record ends))) eqn:Hascending;
+    [|discriminate].
+  destruct (Nat.leb (identity_finish_of ends) (length record)) eqn:Hinside; [|discriminate].
+  injection Hadmit as Hview. subst view.
+  apply Z.eqb_eq in Hcount. apply Nat.leb_le in Hboolean. apply Nat.leb_le in Hinside.
+  split; [reflexivity|]. split; [exact Hcount|]. split; [reflexivity|].
+  split; [exists persist; split; [reflexivity|exact Hboolean]|].
+  split; [reflexivity|]. split; [reflexivity|exact Hinside].
+Qed.
+
+Lemma record_image_layout : forall prefix receive,
+  record_image prefix receive =
+  le_bytes 8 (Z.of_nat (length (receive_patterns receive))) ++
+  concat (pattern_images prefix receive) ++
+  receive_body receive ++
+  persist_byte (receive_persistent receive) ::
+  le_bytes 8 (Z.of_nat (length (receive_peeks receive))) ++
+  peek_image (receive_peeks receive) ++ receive_source receive.
+Proof.
+  intros. unfold record_image, identity_image.
+  now repeat (rewrite <- app_assoc || rewrite <- app_comm_cons).
+Qed.
+
+Lemma record_header : forall prefix receive,
+  firstn 8 (record_image prefix receive) =
+  le_bytes 8 (Z.of_nat (length (receive_patterns receive))).
+Proof. intros. rewrite record_image_layout. apply firstn_le_bytes. Qed.
+
+Lemma record_image_persist_split : forall prefix receive,
+  record_image prefix receive =
+  (le_bytes 8 (Z.of_nat (length (receive_patterns receive))) ++
+   concat (pattern_images prefix receive) ++ receive_body receive) ++
+  persist_byte (receive_persistent receive) ::
+  le_bytes 8 (Z.of_nat (length (receive_peeks receive))) ++
+  peek_image (receive_peeks receive) ++ receive_source receive.
+Proof. intros. rewrite record_image_layout. now repeat rewrite <- app_assoc. Qed.
+
+Lemma record_image_tail_split : forall prefix receive,
+  record_image prefix receive =
+  (le_bytes 8 (Z.of_nat (length (receive_patterns receive))) ++
+   concat (pattern_images prefix receive) ++ receive_body receive ++
+   [persist_byte (receive_persistent receive)]) ++
+  le_bytes 8 (Z.of_nat (length (receive_peeks receive))) ++
+  peek_image (receive_peeks receive) ++ receive_source receive.
+Proof. intros. rewrite record_image_layout. now repeat rewrite <- app_assoc. Qed.
+
+Lemma record_image_peek_split : forall prefix receive,
+  record_image prefix receive =
+  (le_bytes 8 (Z.of_nat (length (receive_patterns receive))) ++
+   concat (pattern_images prefix receive) ++ receive_body receive ++
+   persist_byte (receive_persistent receive) ::
+   le_bytes 8 (Z.of_nat (length (receive_peeks receive)))) ++
+  peek_image (receive_peeks receive) ++ receive_source receive.
+Proof.
+  intros. rewrite record_image_layout.
+  now repeat (rewrite <- app_assoc || rewrite <- app_comm_cons).
+Qed.
+
+Lemma record_image_body_split : forall prefix receive,
+  record_image prefix receive =
+  (le_bytes 8 (Z.of_nat (length (receive_patterns receive))) ++
+   concat (pattern_images prefix receive)) ++
+  receive_body receive ++
+  persist_byte (receive_persistent receive) ::
+  le_bytes 8 (Z.of_nat (length (receive_peeks receive))) ++
+  peek_image (receive_peeks receive) ++ receive_source receive.
+Proof. intros. rewrite record_image_layout. now repeat rewrite <- app_assoc. Qed.
+
+Lemma identity_image_length : forall prefix receive,
+  length (identity_image prefix receive) =
+  8 + length (concat (pattern_images prefix receive)) +
+    length (receive_body receive) + 9 + 4 * length (receive_peeks receive).
+Proof.
+  intros. unfold identity_image.
+  rewrite !length_app. cbn [length]. rewrite !length_app, !le_bytes_length, peek_image_length.
+  lia.
+Qed.
+
+Lemma field_bounds_shape : forall prefix receive,
+  arity_of (field_bounds prefix receive) = length (receive_patterns receive) /\
+  length (field_bounds prefix receive) = S (S (length (receive_patterns receive))) /\
+  body_finish_of (field_bounds prefix receive) = body_finish_at prefix receive /\
+  identity_finish_of (field_bounds prefix receive) =
+    body_finish_at prefix receive + 9 + 4 * length (receive_peeks receive) /\
+  ends_ordered 8 (field_bounds prefix receive) = true /\
+  firstn (length (receive_patterns receive)) (field_bounds prefix receive) =
+    pattern_ends 8 (pattern_images prefix receive) /\
+  nth (length (receive_patterns receive)) (8 :: field_bounds prefix receive) 0 =
+    8 + length (concat (pattern_images prefix receive)).
+Proof.
+  intros prefix receive.
+  assert (Hcount : length (pattern_ends 8 (pattern_images prefix receive)) =
+    length (receive_patterns receive)).
+  { unfold pattern_images. now rewrite pattern_ends_length, length_map. }
+  assert (Hlength : length (field_bounds prefix receive) =
+    S (S (length (receive_patterns receive)))).
+  { unfold field_bounds. rewrite length_app, Hcount. cbn [length]. lia. }
+  assert (Harity : arity_of (field_bounds prefix receive) = length (receive_patterns receive)).
+  { unfold arity_of. rewrite Hlength. lia. }
+  split; [exact Harity|]. split; [exact Hlength|].
+  unfold body_finish_of, identity_finish_of. rewrite Harity.
+  unfold field_bounds.
+  split; [rewrite <- Hcount; apply nth_after_prefix|].
+  split; [rewrite <- Hcount; apply nth_after_prefix_next|].
+  split.
+  { rewrite pattern_ends_ordered. cbn [ends_ordered].
+    apply andb_true_iff. split; [apply Nat.leb_le; unfold body_finish_at; lia|].
+    apply andb_true_iff. split; [apply Nat.leb_le; lia|reflexivity]. }
+  split; [rewrite <- Hcount; apply firstn_exact_prefix|].
+  rewrite app_comm_cons, app_nth1.
+  - replace (length (receive_patterns receive)) with (length (pattern_images prefix receive))
+      by (unfold pattern_images; rewrite length_map; reflexivity).
+    apply pattern_ends_last.
+  - cbn [length]. rewrite Hcount. lia.
+Qed.
+
+Theorem encoded_record_admits_exact_fields : forall prefix receive,
+  encodable prefix receive ->
+  admit_record (record_image prefix receive) (field_bounds prefix receive) =
+    Some (encoded_view prefix receive) /\
+  view_patterns (encoded_view prefix receive) =
+    map (pattern_image prefix) (receive_patterns receive) /\
+  view_body (encoded_view prefix receive) = receive_body receive /\
+  view_persistent (encoded_view prefix receive) = receive_persistent receive /\
+  view_peeks (encoded_view prefix receive) = receive_peeks receive /\
+  view_identity (encoded_view prefix receive) = identity_image prefix receive /\
+  view_source (encoded_view prefix receive) = receive_source receive.
+Proof.
+  intros prefix receive [Hpeeks [Hcounts Hsize]].
+  destruct (field_bounds_shape prefix receive)
+    as [Harity [Hlength [Hbody [Hidentity [Hordered [Hpatterns Hstart]]]]]].
+  assert (Hbf : body_finish_at prefix receive =
+    8 + length (concat (pattern_images prefix receive)) + length (receive_body receive))
+    by reflexivity.
+  assert (Hrecord_length : length (record_image prefix receive) =
+    body_finish_at prefix receive + 9 + 4 * length (receive_peeks receive) +
+    length (receive_source receive)).
+  { unfold record_image. rewrite length_app, identity_image_length, Hbf. lia. }
+  assert (Hcover : 4 * length (receive_patterns receive) <=
+    length (concat (pattern_images prefix receive))).
+  { unfold pattern_images. apply pattern_images_cover_words. }
+  unfold word_max, position_max in Hsize.
+  assert (Hheader : header_count (record_image prefix receive) =
+    Z.of_nat (length (receive_patterns receive))).
+  { unfold header_count. rewrite record_header. apply le_value_le_bytes.
+    change (256 ^ Z.of_nat 8)%Z with 18446744073709551616%Z. lia. }
+  assert (Hpersist : nth_error (record_image prefix receive) (body_finish_at prefix receive) =
+    Some (persist_byte (receive_persistent receive))).
+  { rewrite record_image_persist_split. apply nth_error_middle.
+    rewrite !length_app, le_bytes_length, Hbf. lia. }
+  assert (Htail_count : tail_count (record_image prefix receive) (body_finish_at prefix receive) =
+    Z.of_nat (length (receive_peeks receive))).
+  { unfold tail_count. rewrite record_image_tail_split, slice_middle.
+    - apply le_value_le_bytes.
+      change (256 ^ Z.of_nat 8)%Z with 18446744073709551616%Z. lia.
+    - rewrite !length_app, le_bytes_length. cbn [length]. rewrite Hbf. lia.
+    - rewrite le_bytes_length. lia. }
+  assert (Hpeek_slice : peek_slice (record_image prefix receive) (field_bounds prefix receive) =
+    peek_image (receive_peeks receive)).
+  { unfold peek_slice. rewrite Hbody, Hidentity, record_image_peek_split. apply slice_middle.
+    - rewrite !length_app. cbn [length]. rewrite !le_bytes_length, Hbf. lia.
+    - rewrite peek_image_length. lia. }
+  assert (Hdecoded : decode_words (peek_image (receive_peeks receive)) = receive_peeks receive)
+    by (apply decode_peek_image; exact (proj2 Hpeeks)).
+  assert (Hadmit : admit_record (record_image prefix receive) (field_bounds prefix receive) =
+    Some (encoded_view prefix receive)).
+  { unfold admit_record.
+    rewrite Hlength, Hheader, Hordered, Hbody, Hpersist.
+    cbv beta iota.
+    assert (Hcount_check : Z.eqb (Z.of_nat (S (S (length (receive_patterns receive)))))
+      (Z.of_nat (length (receive_patterns receive)) + 2)%Z = true) by (apply Z.eqb_eq; lia).
+    assert (Hboolean : Nat.leb (persist_byte (receive_persistent receive)) 1 = true)
+      by (destruct (receive_persistent receive); reflexivity).
+    rewrite Hcount_check, Hboolean, Htail_count, Hidentity.
+    assert (Htail_check : tail_is_exact (body_finish_at prefix receive)
+      (Z.of_nat (length (receive_peeks receive)))
+      (body_finish_at prefix receive + 9 + 4 * length (receive_peeks receive)) = true).
+    { unfold tail_is_exact, word_max, position_max.
+      apply andb_true_iff. split; [apply Z.eqb_eq; lia|apply Z.leb_le; lia]. }
+    rewrite Htail_check, Hpeek_slice, Hdecoded, (sorted_strictly_ascending (proj1 Hpeeks)).
+    assert (Hinside_check : Nat.leb
+      (body_finish_at prefix receive + 9 + 4 * length (receive_peeks receive))
+      (length (record_image prefix receive)) = true) by (apply Nat.leb_le; lia).
+    rewrite Hinside_check, Harity. reflexivity. }
+  split; [exact Hadmit|].
+  assert (Hend : nth (length (receive_patterns receive)) (field_bounds prefix receive) 0 =
+    body_finish_at prefix receive).
+  { unfold body_finish_of in Hbody. rewrite Harity in Hbody. exact Hbody. }
+  assert (Hidentity_end :
+    nth (S (length (receive_patterns receive))) (field_bounds prefix receive) 0 =
+    length (identity_image prefix receive)).
+  { unfold identity_finish_of in Hidentity. rewrite Harity in Hidentity.
+    rewrite Hidentity, identity_image_length, Hbf. lia. }
+  unfold view_patterns, view_body, view_persistent, view_identity, view_source,
+    field_start, body_end, identity_end, encoded_view.
+  cbn [view_record view_ends view_arity view_peeks].
+  rewrite Hend, Hidentity_end, Hpersist, Hstart, Hpatterns.
+  split.
+  { change (map (pattern_image prefix) (receive_patterns receive))
+      with (pattern_images prefix receive).
+    rewrite record_image_layout. apply field_slices_concat. now rewrite le_bytes_length. }
+  split.
+  { rewrite record_image_body_split. apply slice_middle.
+    - rewrite length_app, le_bytes_length. reflexivity.
+    - rewrite Hbf. reflexivity. }
+  split; [destruct (receive_persistent receive); reflexivity|].
+  split; [reflexivity|].
+  unfold record_image. split; [apply firstn_exact_prefix|apply skipn_exact_prefix].
+Qed.
+
+Theorem admitted_receive_refuses_mismatched_arity : forall group record ends view,
+  admit_record record ends = Some view ->
+  length (group_images group) <> view_arity view ->
+  admit_receive group record ends = None.
+Proof.
+  intros group record ends view Hadmit Hmismatch. unfold admit_receive. rewrite Hadmit.
+  cbv beta iota.
+  destruct (Nat.eqb (length (group_images group)) (view_arity view)) eqn:Harity;
+    [apply Nat.eqb_eq in Harity; contradiction|reflexivity].
+Qed.
+
+Theorem admitted_bounds_are_ordered_and_inside_record : forall record ends view,
+  admit_record record ends = Some view ->
+  length ends = S (S (view_arity view)) /\
+  ends_ordered 8 ends = true /\
+  Forall (fun finish => 8 <= finish <= length record) ends.
+Proof.
+  intros record ends view Hadmit.
+  destruct (@admitted_record_facts record ends view Hadmit)
+    as [Hview [Hcount [Hordered [_ [_ [_ Hinside]]]]]].
+  subst view. cbn [view_arity].
+  pose proof (le_value_nonnegative (firstn 8 record)) as Hnonnegative.
+  unfold header_count in Hcount.
+  assert (Hlength : length ends = S (S (arity_of ends))) by (unfold arity_of; lia).
+  split; [exact Hlength|]. split; [exact Hordered|].
+  apply Forall_forall. intros finish Hin.
+  pose proof (proj1 (Forall_forall _ ends) (@ends_ordered_bounds ends 8 Hordered) finish Hin)
+    as Hbounds.
+  cbv beta in Hbounds |- *.
+  rewrite (@last_is_nth ends (S (arity_of ends)) 8 0 Hlength) in Hbounds.
+  unfold identity_finish_of in Hinside. lia.
+Qed.
+
+Theorem admitted_peek_tail_is_checked_exactly : forall record ends view,
+  admit_record record ends = Some view ->
+  (Z.of_nat (body_end view) + 9 + 4 * tail_count record (body_end view) =
+     Z.of_nat (identity_end view))%Z /\
+  (Z.of_nat (identity_end view) <= word_max)%Z /\
+  Z.of_nat (length (view_peeks view)) = tail_count record (body_end view).
+Proof.
+  intros record ends view Hadmit.
+  destruct (@admitted_record_facts record ends view Hadmit)
+    as [Hview [_ [_ [_ [Htail [_ Hinside]]]]]].
+  subst view. unfold body_end, identity_end. cbn [view_arity view_ends view_peeks].
+  unfold tail_is_exact, body_finish_of, identity_finish_of in Htail.
+  unfold identity_finish_of in Hinside.
+  apply andb_true_iff in Htail as [Hequation Hbound].
+  apply Z.eqb_eq in Hequation. apply Z.leb_le in Hbound.
+  split; [exact Hequation|]. split; [exact Hbound|].
+  assert (Hnonnegative : (0 <= tail_count record (nth (arity_of ends) ends 0%nat))%Z)
+    by apply le_value_nonnegative.
+  rewrite (@decode_words_length (peek_slice record ends)
+    (Z.to_nat (tail_count record (nth (arity_of ends) ends 0)))).
+  - lia.
+  - unfold peek_slice, body_finish_of, identity_finish_of.
+    rewrite slice_length by lia. lia.
+Qed.
+
+Theorem admitted_peeks_are_canonical_signed : forall record ends view,
+  admit_record record ends = Some view -> canonical_peeks (view_peeks view).
+Proof.
+  intros record ends view Hadmit.
+  destruct (@admitted_record_facts record ends view Hadmit)
+    as [Hview [_ [_ [_ [_ [Hascending _]]]]]].
+  subst view. cbn [view_peeks]. split.
+  - now apply strictly_ascending_sorted.
+  - apply decode_words_in_range.
+Qed.
+
+Theorem admitted_persist_is_boolean : forall record ends view,
+  admit_record record ends = Some view ->
+  nth_error record (body_end view) = Some (persist_byte (view_persistent view)).
+Proof.
+  intros record ends view Hadmit.
+  destruct (@admitted_record_facts record ends view Hadmit)
+    as [Hview [_ [_ [[persist [Hpersist Hboolean]] _]]]].
+  subst view. unfold view_persistent, body_end. cbn [view_record view_arity view_ends].
+  unfold body_finish_of in Hpersist. rewrite Hpersist.
+  destruct persist as [|[|persist]]; [reflexivity|reflexivity|lia].
+Qed.
+
+Lemma view_effective_peek_refines_effective_peek : forall peeks position,
+  canonical_peeks peeks ->
+  view_effective_peek peeks (Z.of_nat position) = effective_peek peeks position.
+Proof.
+  intros peeks position Hcanonical. unfold view_effective_peek.
+  destruct (Z.leb_spec (Z.of_nat position) i32_max) as [Hnarrow|Hwide].
+  - reflexivity.
+  - symmetry. now apply wide_position_does_not_wrap_to_signed_peek.
+Qed.
+
+Theorem admitted_view_binds_refine_bind_at : forall prefix receive profile,
+  encodable prefix receive -> aligned receive ->
+  admit_receive (ChannelGroupState profile (receive_channels receive))
+    (record_image prefix receive) (field_bounds prefix receive) =
+    Some (ReceiveViewState (ChannelGroupState profile (receive_channels receive))
+      (encoded_view prefix receive)) /\
+  forall index,
+    view_bind (ReceiveViewState (ChannelGroupState profile (receive_channels receive))
+      (encoded_view prefix receive)) index =
+    option_map (bind_image prefix) (bind_at receive index).
+Proof.
+  intros prefix receive profile Hencodable Haligned. unfold aligned in Haligned.
+  destruct (@encoded_record_admits_exact_fields prefix receive Hencodable)
+    as [Hadmit [Hpatterns [_ [_ [Hpeeks _]]]]].
+  split.
+  - unfold admit_receive. rewrite Hadmit. cbn [group_images].
+    change (view_arity (encoded_view prefix receive)) with (length (receive_patterns receive)).
+    rewrite Haligned, Nat.eqb_refl. reflexivity.
+  - intro index. unfold view_bind. cbn [receive_view_group receive_view_bytes].
+    unfold group_frames. cbn [group_images].
+    rewrite Hpatterns, Hpeeks, !nth_error_map.
+    unfold bind_at. rewrite Haligned, Nat.eqb_refl.
+    destruct Hencodable as [Hcanonical _].
+    destruct (nth_error (receive_channels receive) index) as [channel|];
+      destruct (nth_error (receive_patterns receive) index) as [pattern|];
+      cbn [option_map]; try reflexivity.
+    unfold bind_image. cbn [bind_channel bind_pattern bind_peek].
+    now rewrite view_effective_peek_refines_effective_peek.
+Qed.
+
+Lemma framed_channel_at_is : forall images query position,
+  Forall (fun bytes => RhoPathV1Datum.bytes_valid bytes = true) images ->
+  RhoPathV1Datum.bytes_valid query = true ->
+  channel_at_is (map RhoPathV1Datum.encode_frame images)
+    (RhoPathV1Datum.encode_frame query) position =
+  channel_at_is images query position.
+Proof.
+  intros images query position Himages Hquery.
+  apply Bool.eq_true_iff_eq. rewrite !channel_at_is_exact, framed_nth_error.
+  change (@nth_error RhoPathV1Datum.bytes images position)
+    with (@nth_error Path images position).
+  split.
+  - intro Hframed.
+    destruct (@nth_error Path images position) as [image|] eqn:Himage; [|discriminate].
+    cbn [option_map] in Hframed. injection Hframed as Hframes.
+    assert (Hvalid : RhoPathV1Datum.bytes_valid image = true).
+    { rewrite Forall_forall in Himages. apply Himages. eapply nth_error_In. exact Himage. }
+    now rewrite (frame_equality_preserves_channel image query Hvalid Hquery Hframes).
+  - intro Himage. now rewrite Himage.
+Qed.
+
+Lemma profile_eqb_refl : forall profile, profile_eqb profile profile = true.
+Proof. intros [|]; reflexivity. Qed.
+
+Lemma profile_eqb_sound : forall left right, profile_eqb left right = true -> left = right.
+Proof. intros [|] [|] Hequal; solve [reflexivity|discriminate]. Qed.
+
+Theorem view_positions_are_exact_image_positions : forall group query,
+  Forall (fun bytes => RhoPathV1Datum.bytes_valid bytes = true) (group_images group) ->
+  RhoPathV1Datum.bytes_valid query = true ->
+  view_positions group (group_profile group) query =
+    Some (positions (group_images group) query).
+Proof.
+  intros group query Himages Hquery. unfold view_positions.
+  rewrite profile_eqb_refl. cbv beta iota. f_equal.
+  unfold positions, group_frames. rewrite length_map.
+  apply filter_ext. intro position. now apply framed_channel_at_is.
+Qed.
+
+Theorem prefix_related_images_are_not_aliases : forall group query position image,
+  Forall (fun bytes => RhoPathV1Datum.bytes_valid bytes = true) (group_images group) ->
+  RhoPathV1Datum.bytes_valid query = true ->
+  nth_error (group_images group) position = Some image ->
+  image <> query ->
+  exists found, view_positions group (group_profile group) query = Some found /\
+    ~ In position found.
+Proof.
+  intros group query position image Himages Hquery Himage Hdifferent.
+  exists (positions (group_images group) query).
+  split; [now apply view_positions_are_exact_image_positions|].
+  intro Hin. apply positions_exact in Hin. rewrite Himage in Hin.
+  injection Hin as Hsame. contradiction.
+Qed.
+
+Theorem cross_profile_query_is_refused : forall group profile query,
+  profile <> group_profile group -> view_positions group profile query = None.
+Proof.
+  intros group profile query Hdifferent. unfold view_positions.
+  destruct (profile_eqb (group_profile group) profile) eqn:Hprofile; [|reflexivity].
+  apply profile_eqb_sound in Hprofile. symmetry in Hprofile. contradiction.
+Qed.
+
+Theorem empty_aligned_view_has_no_bind_or_position :
+  forall prefix body persistent peeks source profile query,
+  encodable prefix (ReceiveFieldsState [] [] body persistent peeks source) ->
+  exists view,
+    admit_receive (ChannelGroupState profile [])
+      (record_image prefix (ReceiveFieldsState [] [] body persistent peeks source))
+      (field_bounds prefix (ReceiveFieldsState [] [] body persistent peeks source)) =
+      Some view /\
+    (forall index, view_bind view index = None) /\
+    view_positions (ChannelGroupState profile []) profile query = Some [].
+Proof.
+  intros prefix body persistent peeks source profile query Hencodable.
+  destruct (@admitted_view_binds_refine_bind_at prefix
+    (ReceiveFieldsState [] [] body persistent peeks source) profile Hencodable eq_refl)
+    as [Hadmit Hbinds].
+  eexists. split; [exact Hadmit|]. split.
+  - intro index. rewrite Hbinds, empty_aligned_receive_has_no_bind. reflexivity.
+  - unfold view_positions. cbn [group_profile group_frames group_images map].
+    rewrite profile_eqb_refl. reflexivity.
+Qed.
+
+Theorem source_suffix_is_exact_and_identity_is_source_free : forall prefix receive source,
+  encodable prefix (replace_source receive source) ->
+  admit_record (record_image prefix (replace_source receive source))
+    (field_bounds prefix receive) = Some (encoded_view prefix (replace_source receive source)) /\
+  view_identity (encoded_view prefix (replace_source receive source)) =
+    identity_image prefix receive /\
+  view_source (encoded_view prefix (replace_source receive source)) = source.
+Proof.
+  intros prefix receive source Hencodable.
+  destruct (@encoded_record_admits_exact_fields prefix (replace_source receive source)
+    Hencodable) as [Hadmit [_ [_ [_ [_ [Hidentity Hsource]]]]]].
+  split; [exact Hadmit|]. split; [exact Hidentity|exact Hsource].
+Qed.
+
+Theorem first_view_identity_retains_head_source_suffix : forall prefix receive tail aliases,
+  encodable prefix receive ->
+  first_identity (identity_image prefix receive)
+    ((view_continuation (encoded_view prefix receive) :: tail) ++ aliases) =
+    Some (view_continuation (encoded_view prefix receive)) /\
+  continuation_source (view_continuation (encoded_view prefix receive)) =
+    receive_source receive.
+Proof.
+  intros prefix receive tail aliases Hencodable.
+  destruct (@encoded_record_admits_exact_fields prefix receive Hencodable)
+    as [_ [_ [_ [_ [_ [Hidentity Hsource]]]]]].
+  split.
+  - apply appending_aliases_preserves_first_identity.
+    assert (Hhead : continuation_identity (view_continuation (encoded_view prefix receive)) =
+      identity_image prefix receive) by exact Hidentity.
+    rewrite <- Hhead. apply first_identity_retains_head_source.
+  - exact Hsource.
+Qed.
+
+Theorem free_count_is_trailing_signed_word : forall prefix receive position pattern,
+  encodable prefix receive ->
+  nth_error (receive_patterns receive) position = Some pattern ->
+  exists bytes,
+    nth_error (view_patterns (encoded_view prefix receive)) position = Some bytes /\
+    i32_value (trailing_word bytes) = pattern_free_count pattern.
+Proof.
+  intros prefix receive position pattern Hencodable Hpattern.
+  destruct (@encoded_record_admits_exact_fields prefix receive Hencodable)
+    as [_ [Hpatterns _]].
+  exists (pattern_image prefix pattern). split.
+  - rewrite Hpatterns, nth_error_map, Hpattern. reflexivity.
+  - unfold trailing_word, pattern_image.
+    rewrite length_app, i32_bytes_length.
+    replace (length (prefix pattern) + 4 - 4) with (length (prefix pattern)) by lia.
+    rewrite skipn_exact_prefix. apply i32_value_i32_bytes.
+    destruct Hencodable as [_ [Hcounts _]]. rewrite Forall_forall in Hcounts.
+    apply (Hcounts pattern). eapply nth_error_In. exact Hpattern.
+Qed.
+
+Theorem wide_view_position_does_not_wrap : forall peeks position,
+  (i32_max < position)%Z -> view_effective_peek peeks position = false.
+Proof.
+  intros peeks position Hwide. unfold view_effective_peek.
+  destruct (Z.leb_spec position i32_max); [lia|reflexivity].
+Qed.
+
+Print Assumptions encoded_record_admits_exact_fields.
+Print Assumptions admitted_receive_refuses_mismatched_arity.
+Print Assumptions admitted_bounds_are_ordered_and_inside_record.
+Print Assumptions admitted_peek_tail_is_checked_exactly.
+Print Assumptions admitted_peeks_are_canonical_signed.
+Print Assumptions admitted_persist_is_boolean.
+Print Assumptions admitted_view_binds_refine_bind_at.
+Print Assumptions view_positions_are_exact_image_positions.
+Print Assumptions prefix_related_images_are_not_aliases.
+Print Assumptions cross_profile_query_is_refused.
+Print Assumptions empty_aligned_view_has_no_bind_or_position.
+Print Assumptions source_suffix_is_exact_and_identity_is_source_free.
+Print Assumptions first_view_identity_retains_head_source_suffix.
+Print Assumptions free_count_is_trailing_signed_word.
+Print Assumptions wide_view_position_does_not_wrap.
+
+End OrderedReceiveByteView.
+
 (** Installed-join restoration.
 
     The installed joins of a channel live in an ordered group store: each
