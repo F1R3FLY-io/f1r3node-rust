@@ -21,6 +21,13 @@ use super::transport_layer_runtime::{get_free_port, TransportLayerTestRuntime};
 struct SilentPeer {
     requests_seen: Arc<AtomicUsize>,
     request_started: Arc<Notify>,
+    first_request_dropped: Arc<Notify>,
+}
+
+struct FirstRequestGuard(Arc<Notify>);
+
+impl Drop for FirstRequestGuard {
+    fn drop(&mut self) { self.0.notify_one(); }
 }
 
 #[tonic::async_trait]
@@ -33,7 +40,8 @@ impl ServerTransportLayer for SilentPeer {
         &self,
         _: Request<tonic::Streaming<Chunk>>,
     ) -> Result<Response<TlResponse>, Status> {
-        self.requests_seen.fetch_add(1, Ordering::SeqCst);
+        let first_request = self.requests_seen.fetch_add(1, Ordering::SeqCst) == 0;
+        let _guard = first_request.then(|| FirstRequestGuard(self.first_request_dropped.clone()));
         self.request_started.notify_one();
         pending().await
     }
@@ -53,9 +61,11 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
 
     let requests_seen = Arc::new(AtomicUsize::new(0));
     let request_started = Arc::new(Notify::new());
+    let first_request_dropped = Arc::new(Notify::new());
     let peer = SilentPeer {
         requests_seen: requests_seen.clone(),
         request_started: request_started.clone(),
+        first_request_dropped: first_request_dropped.clone(),
     };
     let address = format!("127.0.0.1:{}", remote.port).parse().unwrap();
     let incoming = F1r3flyServer::builder("test".to_string(), &remote.cert, &remote.key, address)
@@ -106,6 +116,9 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
         .await
         .unwrap();
     assert_eq!(requests_seen.load(Ordering::SeqCst), 2);
+    tokio::time::timeout(Duration::from_secs(15), first_request_dropped.notified())
+        .await
+        .unwrap();
 
     client.disconnect(&remote.peer).await.unwrap();
     server.abort();
