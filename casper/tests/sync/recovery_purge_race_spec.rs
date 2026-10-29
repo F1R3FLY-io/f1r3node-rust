@@ -4,8 +4,9 @@
 //! the block is gone for good and finality can freeze behind the affected
 //! validator's stake.
 
-use casper::rust::blocks::block_processor::OfInterestVerdict;
+use casper::rust::blocks::block_processor::{IntegrityChecked, OfInterestVerdict};
 use casper::rust::casper::Casper;
+use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -47,12 +48,18 @@ async fn a_racing_duplicate_must_not_destroy_dependency_recovery() {
     // crossing a fresh receipt) is consumed while B sits in recovery.
     let verdict = nodes[1]
         .block_processor
-        .check_if_of_interest(nodes[1].casper.clone(), &block_b)
+        .check_if_of_interest(
+            nodes[1].casper.clone(),
+            IntegrityChecked::check(&block_b, BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+        )
         .unwrap();
     assert_eq!(verdict, OfInterestVerdict::AlreadyProcessed);
     nodes[1]
         .block_processor
-        .dispose_not_of_interest(verdict, &block_b)
+        .dispose_not_of_interest(
+            verdict,
+            IntegrityChecked::check(&block_b, BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+        )
         .await
         .unwrap();
 

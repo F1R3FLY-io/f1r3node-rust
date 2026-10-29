@@ -17,8 +17,11 @@ use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::peer_scoring::{Strike, STRIKE_THRESHOLD};
 use casper::rust::engine::running::{update_fork_choice_tips_if_stuck, Running};
 use casper::rust::errors::CasperError;
+use casper::rust::validate::Validate;
 use casper::rust::validator_identity::ValidatorIdentity;
 use comm::rust::peer_node::PeerNode;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::casper::ApprovedBlockRequestProto;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::block_hash::BlockHash;
@@ -577,6 +580,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forged_copy_does_not_take_the_in_flight_slot_of_the_honest_block() {
+        let fixture = TestFixture::new().await;
+        let block_message = get_random_block(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        );
+        let honest = fixture.validator_id.sign_block(&block_message);
+
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let attacker = ValidatorIdentity::new(&sk);
+        let mut forged = attacker.sign_block(&honest);
+        forged.seq_num = honest.seq_num + 1;
+        forged.block_hash = honest.block_hash.clone();
+        forged.sig = attacker.signature(honest.block_hash.as_ref()).sig;
+        assert!(Validate::block_signature(&forged));
+
+        for block in [forged, honest.clone()] {
+            fixture
+                .engine
+                .handle(fixture.local.clone(), CasperMessage::BlockMessage(block))
+                .await
+                .unwrap();
+        }
+
+        let mut rx = fixture.block_processing_queue_rx.lock().await;
+        let mut enqueued = Vec::new();
+        while let Ok((_, block, _)) = rx.try_recv() {
+            enqueued.push(block);
+        }
+        assert_eq!(enqueued, vec![honest]);
+    }
+
+    #[tokio::test]
     async fn block_request_for_an_absent_block_sends_no_response() {
         let fixture = TestFixture::new().await;
         let block_request = BlockRequest {
@@ -975,6 +1010,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(drain_queue(&fixture).await, vec![honest.block_hash]);
+    }
+
+    #[tokio::test]
+    async fn engine_should_score_out_a_peer_that_pushes_forged_blocks() {
+        let fixture = TestFixture::new().await;
+        let forger_peer = peer_node("forger", 40400);
+        let honest = signed_random_block(&fixture);
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let forger = ValidatorIdentity::new(&sk);
+        for _ in 0..STRIKE_THRESHOLD {
+            let mut forged = forger.sign_block(&signed_random_block(&fixture));
+            forged.block_hash = honest.block_hash.clone();
+            forged.sig = forger.signature(honest.block_hash.as_ref()).sig;
+            fixture
+                .engine
+                .handle(forger_peer.clone(), CasperMessage::BlockMessage(forged))
+                .await
+                .unwrap();
+        }
+        assert!(drain_queue(&fixture).await.is_empty());
+        assert!(fixture.block_retriever.should_ignore_peer(&forger_peer));
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::BlockMessage(honest.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(drain_queue(&fixture).await, vec![honest.block_hash]);
+        assert!(!fixture.block_retriever.should_ignore_peer(&fixture.local));
     }
 
     #[tokio::test]
