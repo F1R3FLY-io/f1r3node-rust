@@ -214,6 +214,7 @@ Every catalog item maps to a concrete artifact — no "assumed"/"prose-only" row
 | **T-SPLIT** | `combine(fold user, fold system) = fold all` ⟹ the split hides no conflict (S5) | Rocq `EventLogSplit.combine_split_eq`, `conflicts_split_complete`, `event_log_split_sound`; Rust `split_then_recombine_equals_monolithic_for_conflicts` |
 | **T-RECOMPUTE** | validation recomputes the merge and rejects on any `(pre-state \| rejected-set)` mismatch | Rust `interpreter_util.rs:268` (`compute_parents_post_state` recompute), `:309` (pre-state mismatch ⟹ reject/no-replay), `:319` (rejected-set mismatch ⟹ `invalid_rejected_deploy` `:352`); Rust test `validate_block_checkpoint_recompute_rejects_pre_state_and_rejected_deploy_tampering` (honest baseline ⟹ `Right(Some)`; pre-state byte-flip ⟹ `Right(None)` no-replay; bogus `rejected_deploys` sig ⟹ `InvalidRejectedDeploy`) |
 | **T-APPEND** | the fix is append-only over `v0.4.16` ⟹ rolling-upgrade-safe (S6) | `deploy_chain_index.rs:210-228` (the KEPT key-4 comment); `git show origin/master` (4-key `cmp` terminating at `post_state_hash`); commit `c0b7609e` |
+| **T-SIBLING** | the merge rejects each kept sibling that shares a non-mergeable channel with a removed chain, so no effect of a rejected or stale deploy copy reaches the merged state (S8) | Rust `merging::rejected_sibling_chain_spec::a_kept_sibling_chain_does_not_apply_the_datum_of_a_rejected_sibling` (conflict rejection) and `a_kept_sibling_chain_does_not_apply_the_stale_datum_of_a_deduplicated_sibling` (dedup drop). Both fail without `reject_siblings_sharing_channels`. |
 | **capstone** | all of the above, axiom-free | Rocq `MainTheorem.merge_algebra_{keeporder,netting,conflict,split}_correct` |
 
 ---
@@ -311,6 +312,7 @@ Modality companions run by the gate (`scripts/check-merge-algebra-ALL.sh` steps 
   `result_len > 1`) plus Kevin's unit witnesses `single_value_cell_produce_only_is_rejected`,
   `single_value_cell_read_modify_write_is_allowed`, `non_numeric_base_registry_merges_freely`,
   `no_produce_is_allowed`. Wired into the gate at step [3/4].
+- **`casper merging::rejected_sibling_chain_spec`** — R-SIBLING (T-SIBLING). Each test executes real blocks on genesis and runs the real `dag_merger::merge`. In the first test, block B holds 2 independent sends to one channel, and a deploy of a sibling block races one of them. In the second test, a later block re-proposes one of the 2 sends, so dedup drops its stale copy. Without the rule, the shared channel holds the datum of the rejected deploy (`["d1", "d2"]`), or the stale and the fresh datum of the re-proposed deploy (`["d1", "d2@1", "d2@2"]`).
 
 ---
 

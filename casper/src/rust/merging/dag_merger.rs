@@ -392,6 +392,60 @@ fn split_unavailable_resolved_branches(
 /// reconciled by the number-channel fold and must not be rejected here;
 /// registry / TreeHashMap nodes are non-numeric and exempt. The kept writer is
 /// the lowest-ordered `DeployChainIndex`, so the choice is node-deterministic.
+fn shares_unseparable_channel(removed: &DeployChainIndex, kept: &DeployChainIndex) -> bool {
+    removed.state_changes.datums_changes.iter().any(|entry| {
+        kept.state_changes.datums_changes.contains_key(entry.key())
+            && !kept
+                .event_log_index
+                .number_channels_data
+                .contains_key(entry.key())
+    }) || removed
+        .state_changes
+        .cont_changes
+        .iter()
+        .any(|entry| kept.state_changes.cont_changes.contains_key(entry.key()))
+}
+
+#[allow(clippy::mutable_key_type)]
+fn reject_siblings_sharing_channels(
+    resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+    dropped: &[DeployChainIndex],
+    pinned: &HashSet<DeployChainIndex>,
+) -> usize {
+    let mut frontier: Vec<DeployChainIndex> = resolved
+        .rejected
+        .0
+        .iter()
+        .chain(dropped.iter())
+        .cloned()
+        .collect();
+    let mut expanded = 0usize;
+    while let Some(removed) = frontier.pop() {
+        let carries_removed = |chain: &DeployChainIndex| {
+            chain.source_block_hash == removed.source_block_hash
+                && !pinned.contains(chain)
+                && shares_unseparable_channel(&removed, chain)
+        };
+        for branch in resolved.to_merge.iter_mut() {
+            if !branch.0.iter().any(carries_removed) {
+                continue;
+            }
+            let (moved, kept): (HashSet<DeployChainIndex>, HashSet<DeployChainIndex>) =
+                std::mem::take(&mut branch.0)
+                    .into_iter()
+                    .partition(|chain| carries_removed(chain));
+            branch.0 = kept;
+            for chain in moved {
+                expanded += 1;
+                frontier.push(chain.clone());
+                resolved.rejected.0.insert(chain);
+            }
+        }
+    }
+    resolved.to_merge.retain(|branch| !branch.0.is_empty());
+    expanded
+}
+
 // False positive on `pinned`: DeployChainIndex's Hash/Eq use only immutable fields.
 #[allow(clippy::mutable_key_type)]
 fn split_overfilled_single_value_cells(
@@ -957,6 +1011,7 @@ pub fn merge(
     // deploys downstream — added to the rejected-deploy buffer so the
     // recovery path can re-propose them in a subsequent block.
     let mut collateral_lost_pairs: Vec<(Bytes, BlockHash)> = Vec::new();
+    let mut dedup_dropped: Vec<DeployChainIndex> = Vec::new();
 
     // Memoized settled-in-base results, one probe per unique sig per merge.
     let mut settled_checked: HashSet<Bytes> = HashSet::new();
@@ -1135,6 +1190,7 @@ pub fn merge(
                 collateral_lost_pairs.len(),
             );
         }
+        dedup_dropped = dropped;
     }
 
     // Settled-content protection (#341). Under multi-parent finality a
@@ -1803,6 +1859,17 @@ pub fn merge(
             step = "merge.reject_unavailable_floor_consumes",
             rejected_chains = unavailable_rejected_count,
             remaining_branches = resolved.to_merge.len()
+        );
+    }
+
+    let sibling_expanded = reject_siblings_sharing_channels(&mut resolved, &dedup_dropped, &pinned);
+    if sibling_expanded > 0 {
+        tracing::info!(
+            target: "f1r3fly.merge.step",
+            step = "merge.reject_siblings_sharing_channels",
+            expanded_chains = sibling_expanded,
+            remaining_branches = resolved.to_merge.len(),
+            "rejection expanded over sibling chains that carry the removed chain's block diff"
         );
     }
 
