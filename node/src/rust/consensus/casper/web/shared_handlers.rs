@@ -130,7 +130,11 @@ impl IntoResponse for AppError {
             status,
             Json(ApiErrorResponse {
                 error: error_kind.to_string(),
-                message,
+                message: if status == StatusCode::INTERNAL_SERVER_ERROR {
+                    "Internal server error".to_owned()
+                } else {
+                    message
+                },
             }),
         )
             .into_response();
@@ -251,13 +255,7 @@ pub(crate) fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, St
             }
             _ => (StatusCode::INTERNAL_SERVER_ERROR, "consensus_error"),
         };
-        let message = if status == StatusCode::INTERNAL_SERVER_ERROR {
-            tracing::error!(error = %error, "Consensus API request failed");
-            "Internal server error".to_owned()
-        } else {
-            error.to_string()
-        };
-        return (status, kind, message);
+        return (status, kind, error.to_string());
     }
     if let Some(error) =
         err.downcast_ref::<crate::rust::consensus::casper::api_compat::ApiFailure>()
@@ -1123,8 +1121,47 @@ mod consensus_error_tests {
 
     use super::*;
 
-    #[test]
-    fn internal_consensus_details_do_not_reach_clients() {
+    #[tokio::test]
+    async fn internal_errors_are_masked_in_http_responses() {
+        use crate::rust::consensus::casper::api_compat::ApiFailure;
+
+        for (error, kind) in [
+            (
+                eyre::Report::new(CasperError::RuntimeError("private storage path".into())),
+                "runtime_error",
+            ),
+            (
+                eyre::Report::new(CasperError::InterpreterError(
+                    InterpreterError::BugFoundError("private interpreter state".into()),
+                )),
+                "interpreter_internal_error",
+            ),
+            (
+                eyre::Report::new(ApiFailure {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    kind: "runtime_error",
+                    message: "private worker diagnostic".into(),
+                })
+                .wrap_err("private request context"),
+                "runtime_error",
+            ),
+            (eyre::eyre!("private unknown failure"), "unknown_error"),
+        ] {
+            let response = AppError(error).into_response();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                body,
+                json!({"error": kind, "message": "Internal server error"})
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_consensus_details_do_not_reach_clients() {
         for error in [
             ConsensusError::Protocol("private storage path".into()),
             ConsensusError::TaskFailed {
@@ -1133,15 +1170,24 @@ mod consensus_error_tests {
             },
             ConsensusError::CleanupTimeout,
         ] {
-            let (status, kind, message) = classify_error(&eyre::eyre!(error));
-            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-            assert_eq!(kind, "consensus_error");
-            assert_eq!(message, "Internal server error");
+            let response = AppError(eyre::eyre!(error)).into_response();
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                body,
+                json!({
+                    "error": "consensus_error",
+                    "message": "Internal server error"
+                })
+            );
         }
     }
 
-    #[test]
-    fn actionable_consensus_errors_keep_their_public_contract() {
+    #[tokio::test]
+    async fn actionable_consensus_errors_keep_their_public_contract() {
         for (error, expected_status, expected_kind) in [
             (
                 ConsensusError::QueueFull,
@@ -1170,9 +1216,20 @@ mod consensus_error_tests {
             ),
         ] {
             let expected_message = error.to_string();
+            let error = eyre::eyre!(error);
             assert_eq!(
-                classify_error(&eyre::eyre!(error)),
-                (expected_status, expected_kind, expected_message)
+                classify_error(&error),
+                (expected_status, expected_kind, expected_message.clone())
+            );
+            let response = AppError(error).into_response();
+            assert_eq!(response.status(), expected_status);
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                body,
+                json!({"error": expected_kind, "message": expected_message})
             );
         }
     }

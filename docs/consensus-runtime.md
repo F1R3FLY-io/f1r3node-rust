@@ -194,5 +194,5 @@ The proposed version axes, mechanism implementation kind, and manifest extension
 - Rejection of required genesis-task scheduling fails initialization. Rejected optional auto-propose scheduling preserves an already accepted deploy.
 - Owners must await `ConsensusRuntime::shutdown()` for managed cleanup. Dropping the runtime aborts the supervisor without awaiting cleanup.
 - Request admission can report overload at the byte limit before the count limit. API clients retain the existing overload response mapping.
-- Internal consensus failures return a generic HTTP 500 message. Server logs retain diagnostic details.
+- Application errors returned as HTTP 500 use a generic message, including native Casper errors restored across the runtime boundary. Server logs retain diagnostic details.
 - A timed-out write or packet operation can have an unknown outcome after processing starts. A timeout does not establish a safe retry.

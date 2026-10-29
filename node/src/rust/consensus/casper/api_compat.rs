@@ -134,6 +134,33 @@ mod tests {
 
     use super::*;
 
+    #[tokio::test]
+    async fn native_internal_errors_are_masked_after_runtime_round_trip() {
+        use axum::response::IntoResponse;
+
+        use crate::rust::consensus::casper::web::shared_handlers::AppError;
+
+        let error = casper::rust::errors::CasperError::RuntimeError("private storage path".into());
+        let bridged = restore_error(command_error(error.into()));
+        assert!(bridged.to_string().contains("private storage path"));
+        let response = AppError(bridged).into_response();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "runtime_error",
+                "message": "Internal server error"
+            })
+        );
+    }
+
     #[test]
     fn typed_api_errors_survive_the_runtime_boundary() {
         let duplicate = restore_error(command_error(
