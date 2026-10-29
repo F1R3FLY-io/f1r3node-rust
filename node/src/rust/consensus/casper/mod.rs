@@ -374,6 +374,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> ConsensusAdapter
         context.packets.close();
         while context.commands.try_recv().is_ok() {}
         while context.packets.try_recv().is_ok() {}
+        // On execution failure, registered cleanup aborts and joins these scopes instead of draining requests.
         result?;
         tasks.shutdown().await;
         shutdown::drain_requests(&packet_requests).await?;
