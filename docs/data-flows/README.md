@@ -31,10 +31,10 @@
    -> TransportLayer::stream(peer, Blob(BlockMessage))
 
 4. BLOCK PROCESSING (Receiver)
-   BlockProcessorInstance receives block from P2P
+   Block ingest receives block from P2P (docs/casper/BLOCK_INGEST.md)
    -> Check interest (shard, version, not old)
-   -> Format + signature validation
-   -> Dependency resolution (fetch missing parents)
+   -> Format + signature validation, store
+   -> Hold until dependencies are in the DAG (fetch missing ones)
    -> Full validation:
       - Replay all deploys via ReplayRSpace
       - Verify state hash matches

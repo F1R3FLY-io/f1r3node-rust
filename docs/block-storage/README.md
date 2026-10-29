@@ -4,7 +4,7 @@
 
 **Path**: `block-storage/`
 
-Block persistence, DAG state management, casper buffer, and deploy indexing.
+Block persistence, DAG state management, pending blocks, and deploy indexing.
 
 ## Block Store
 
@@ -38,12 +38,14 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
   - `self_justification_map`: BlockHash → justification BlockHash
   - `finalized_block_set`: Bounded HashSet (cap 50k, prunes to 25k) of finalized blocks
 
-## Casper Buffer
+## Pending Blocks
 
-**`CasperBufferKeyValueStorage`** -- Tracks unprocessed block dependencies:
-- Two `DashMap`s: child_to_parent, parent_to_child adjacency lists
-- `BlockDependencyDag` (doubly-linked DAG) rebuilt from persistent store on startup
-- `add_relation(parent, child)`, `put_pendant(block)`, `remove(hash)`, `get_pendants()`
+**`PendingBlocks`** -- Holds blocks in memory until their sender's authorization is known. `KeyValueBlockStore` owns it and reads fall back to it, so `get` and `contains` also see pending blocks.
+- Limits: 8,192 blocks, 256 MiB, and 2,048 blocks for each sender.
+- A requested block is refused only at a limit. Any other block is refused above 90 percent of a limit.
+- The area never evicts. Block ingest decides what leaves. `usage()` reports the totals and the limits.
+
+**`BlockDagKeyValueStorage::set_insert_observer`** reports each block that the DAG inserts. Block ingest uses it to release the blocks that wait on the inserted block.
 
 ## Finality Storage
 
@@ -78,7 +80,7 @@ The two stores share the `deploystorage` LMDB environment with a map size of 1 G
 
 ## Tests
 
-`block_dag_storage_test.rs` (proptest integration), `key_value_block_store.rs` (proptest unit), `casper_buffer_key_value_storage.rs` (tokio async), `doubly_linked_dag_operations.rs` (DAG unit tests).
+`block_dag_storage_test.rs` (proptest integration), `key_value_block_store.rs` (proptest unit), `pending_blocks.rs` (admission class and limits), `doubly_linked_dag_operations.rs` (DAG unit tests).
 
 **See also:** [block-storage/ crate](../../block-storage/)
 
