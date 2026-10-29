@@ -77,7 +77,7 @@ COPY scripts/file-read-service/ ./scripts/file-read-service/
 ARG PROFILING_BUILD=0
 
 RUN xx-cargo --setup-target-triple && \
-    cargo fetch --locked --target "$(xx-cargo --print-target-triple)"
+    cargo fetch --locked
 
 RUN --network=none \
     TARGET_TRIPLE="$(xx-cargo --print-target-triple)" && \
