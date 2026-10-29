@@ -5913,6 +5913,256 @@ decoded there.
 | `formal/tlaplus/stack_safe_pda/RSpaceGcPendingReclaimIntentTornIntentPublishedMutant.cfg` | `695ee2a01ee7020cf4246f760896468a94fa9ca79507710863bf302045e9aa0a` |
 | `scripts/check-rspace-gc-pending-reclaim-intent-model.sh` | `aacc8ca9ef9da433c7889a421e841536802416ee3a6c5c61f3f18a30af1404ff` |
 
+### Faulted-history production controls and timing (2026-10-28)
+
+Task 11969, the last slice of task 7928, adds no test and changes no source.
+It applies the reviewed plan's nine production negative controls, each in an
+export of the candidate tree and never in the working tree; it times the
+persistence selection with a fixed seed against the tree before task 7928; it
+reruns every model that the task changed; and it completes the evidence of the
+[faulted trusted histories section](#faulted-trusted-histories-and-cold-restart-equivalence-2026-10-27)
+and of engineering journal J-253. With it, task 7928 is complete.
+
+**Negative controls.** A script fixed, before any run, each control's
+mutation as exact replacements in one production file, the TH test that must
+kill it, and the message with which that test's production check must fail.
+Each replacement had to occur exactly once in the clean export, and the clean
+export had to pass the killer tests, TS-11 and the persistence selection
+first. Then, for each control, the clean tree was exported again, the control
+was applied, and three runs recorded whether it discriminates: its killer
+test, which had to exit with status 101 and print the predicted message;
+TS-11; and the whole persistence selection. Every run was a debug build on
+one test thread with `PROPTEST_RNG_SEED=20261027`, so each property draws the
+same sequence of cases in every run; a mutated run differs from the clean one
+only by its mutation and by the failing cases saved during the run, which the
+end of this part discusses. The reviewed plan calls C5, C8 and C9
+regression controls, because existing tests were expected, or for C9
+suspected, to kill them too; they ran and are recorded like the others
+(review decision 10).
+
+The failpoint sweep runs its four scenarios in parallel and reports the first
+failing one in a fixed order, and every test stops at its first failing check.
+So the table names the check that reported, and other checks may fail under
+the same control too.
+
+| Control | Mutation | Killed by, with the observed failure | TS-11 | Other tests that fail in the selection |
+|---|---|---|---|---|
+| C1 | The catalog commit maps a failed synchronization of `catalog.v1` to `Io`, which means definitely not published, instead of `CatalogCommitIndeterminate` (`publication.rs`) | TH-03, in the failpoint sweep at the catalog synchronization: "expected Indeterminate, got Io(Io { operation: SyncFile, … })" (`trusted_history_production.rs:1144`) | passes | TH-01 and TH-08, with the same failure |
+| C2 | The re-read after the swap opens the catalog by pathname, through `DurableDirectoryV1::open`, instead of through the lease's pinned directory (`publication.rs`) | TH-07, in a seed history with a decoy at the re-read: the publication fails as `PublishedRecovery(Io(CatalogAuthorityChanged { … }))` where it should succeed | passes | TH-03 |
+| C3 | The base check reads the catalog by pathname (`publication.rs`) | TH-07, in a seed history with a decoy at the base check: the publication runs no hook where all thirteen trusted hooks were expected (`trusted_history_production.rs:2161`) | passes | TH-03 |
+| C4 | Held-lease recovery opens its reader by pathname instead of cloning the lease's reader (`startup.rs`) | TH-07, in a seed history with a decoy before held-lease recovery: "held-lease recovery failed: Startup(Io(Io { operation: OpenFile, … NotFound … }))" | passes | TH-03, and TH-08 with "a reconcile was refused: Recovery(AuthorityChanged)" |
+| C5 | The publication keeps a pack suffix beyond the appointed prefix instead of truncating it (`publication.rs`) | TH-03, in the sweep's retry of the prepared successor: no hook ran where the whole trusted trace was expected (`trusted_history_production.rs:2730`) | fails: "the trusted publication failed: Append(Io(Length { … expected: Exact(1299), actual: 3017 }))" | TH-01, TH-08, five publication tests and three authority tests |
+| C6 | The trusted publication truncates the pack at its entry, before the preflight can refuse, instead of after the preflight (`publication.rs`) | TH-06, in the sweep's stale retry: the refused retry had truncated the pack, "a stale retry changed the store: differing files [(\"pack-00000000000000000001.rsp\", Some(48113), Some(43293))]" (`trusted_history_production.rs:688`) | fails: the crash check's torn-slot case "Torn(1)" (`durable_publication.rs:874`) | TH-01 and TS-07 |
+| C7 | The catalog commit ignores a failed synchronization of `catalog.v1` and adopts the successor (`publication.rs`) | TH-03, in the failpoint sweep at the catalog synchronization: the hook trace runs on to `AfterCatalogSyncBeforeRecovery` where it should end at the failed synchronization (`trusted_history_production.rs:2161`) | passes | TH-01 and TH-08 |
+| C8 | Reclamation deletes a superseded generation's files although a reader still pins them (`io.rs`) | TH-05, in a seed history: "a fresh checkpoint left a mixed reclamation: (false, true)", that is, no reclamation intent while a reader is attached | fails: "read the deferred reclamation intent: … NotFound" (`trusted_successor_production.rs:2857`) | TH-03, RI-01, RI-02, TS-10 and five publication tests |
+| C9 | Held-lease recovery rebuilds the index only when it is shorter than the appointed tail, so it keeps an index suffix (`startup.rs`) | TH-03, in the sweep's rebound retry: the retry stops after `AfterPrepareSync` where the whole trusted trace was expected (`trusted_history_production.rs:2739`) | fails: "the trusted publication failed: Append(Io(Length { … expected: Exact(280), actual: 496 }))" on the index | TH-01, TH-08, five publication tests, three authority tests and three startup tests |
+
+The older tests that fail under C5, C8 and C9, besides TS-11, are these:
+
+- In `rspace++/tests/persistence/durable_publication.rs`:
+  - under C5 and C9:
+    - `borrowed_incremental_publication_recovers_and_retries_every_phase`
+    - `borrowed_incremental_publication_retains_authority_for_every_torn_slot_prefix`
+    - `borrowed_incremental_publication_unwind_keeps_the_outer_owners_capabilities`
+    - `incremental_terminal_capture_precedes_commit_and_survives_callback_unwind`
+  - under C5 only: `borrowed_incremental_publication_trims_only_under_exact_store_authority`
+  - under C9 only: `selected_successor_damage_never_falls_back_and_repairs_safe_index`
+  - under C8:
+    - `checkpoint_reclamation_waits_for_older_epoch_pin_from_independent_open`
+    - `compaction_keeps_transitive_retained_closure_through_old_pack_lease`
+    - `pending_reclamation_retries_partial_deletion_after_restart`
+    - `pending_reclamation_survives_incremental_epoch_and_blocks_second_checkpoint`
+    - `pending_reclamation_waits_for_selected_successor_verification`
+- In `rspace++/tests/persistence/durable_rspace_authority.rs`, under C5 and C9:
+  - `cold_restart_before_acknowledgement_selects_old_or_new_without_delta_replay`
+  - `owner_checkpoint_histories_preserve_multiplicities_across_retry_and_cold_restart`
+  - `owner_uncertain_old_and_new_publications_retain_the_gate_and_original_writer`
+- In `rspace++/tests/persistence/durable_startup.rs`, under C9:
+  - `every_recoverable_index_shape_is_replaced_by_the_same_canonical_bytes`
+  - `postrename_sync_failures_leave_only_a_complete_recoverable_index`
+  - `prepublication_io_failures_leave_the_official_index_byte_identical`
+
+All nine controls were killed. The clean export first passed the two killer
+functions and TS-11, then the whole selection: 493 passed and four ignored.
+Under each control, the killer exited with status 101 after 0.61 to 0.84 s and
+printed the predicted message.
+
+TS-11 is the trusted publication's crash and retry test, whose production half
+task 11946 added. It passes under C1, C2, C3, C4 and C7, and under those five
+controls no test
+outside the TH family fails. Those five faults are therefore caught only by
+the tests that task 7928 added. They are a misclassified catalog
+synchronization, the three reads by pathname, and an adopted catalog that was
+never synchronized.
+
+TS-11 fails under C5, C6, C8 and C9, so older tests catch those four too.
+The reviewed plan had expected C6 to survive the existing tests, but TS-11 and
+TS-07 kill it. The predictions recorded before the run named every test that
+failed under C1, C2, C3, C4, C6 and C7. Under C5, C8 and C9 they missed twenty
+failing tests: seven under C5, four under C8 and nine under C9. The four under
+C8 include RI-01 and RI-02. RI-01 failed 94 of its 188 tear cases, which is
+exactly the number of cases with a reader pinned. Without a pin the mutated
+code behaves like the original, so presumably only the pinned cases failed (an
+inference from the mutation; the test lists only its first three failures, all
+pinned).
+
+Proptest saves each failing case to a regression file, and every property test
+compiled from the same source file replays that file's cases first. Nine cases
+were saved during the run:
+
+- three in the TS-11 runs of C5, C8 and C9;
+- six in the selection runs of C1 and C5 to C9.
+
+Each fresh export restored the one tracked regression file and removed the
+others. Within a control, a saved case could reach a later run only through a
+test that shares its file. Each such test passed, failed first in a fixed seed
+history, is not a property test, or reads another file. So no outcome above
+depends on a replayed case.
+
+**Timing.** The persistence selection, every rspace++ library test under
+`rspace::persistence` plus the kind-1 streaming manifest test, was timed on two
+trees: the baseline, the tree of task 11946's commit `68e61c0f9`, the last
+before task 7928, and the candidate, the tree of commit `7823b8db9`, which this
+slice documents. Each tree's test binaries were built unpinned; each run was
+pinned to one CPU with `taskset -c 8`, used one test thread, the seed
+`PROPTEST_RNG_SEED=20261027` and libtest's per-test times, and ran in the order
+baseline, candidate, candidate, baseline in each profile, so that a linear
+drift of the host cancels between the trees. The seed makes every property
+whose strategy is unchanged draw the same cases on both trees. Write $`B`$ and
+$`A`$ for the sets of tests timed in both runs of the baseline and of the
+candidate, and $`\bar b_t`$ and $`\bar a_t`$ for a test's mean time over its
+two runs on each tree. The change in the summed per-test time then decomposes
+exactly into the common tests' changes, the candidate's new tests and the
+baseline's removed tests:
+
+```math
+\sum_{t \in A} \bar a_t - \sum_{t \in B} \bar b_t
+  = \sum_{t \in A \cap B} \left(\bar a_t - \bar b_t\right)
+  + \sum_{t \in A \setminus B} \bar a_t
+  - \sum_{t \in B \setminus A} \bar b_t .
+```
+
+A common test's spread is the sum of its two within-tree run-to-run
+differences, and the test is flagged when its change exceeds both 0.1 s and
+twice its spread, the rule of task 11946 (J-252).
+
+| Profile | Baseline runs | Candidate runs | Summed per-test means | The 486 common tests (summed spread) | The seven new tests |
+|---|---|---|---|---|---|
+| debug | 78.02 s, 76.45 s | 93.98 s, 92.56 s | 77.18 s to 93.21 s, +16.03 s | −0.66 s (5.45 s) | +16.68 s |
+| release | 35.24 s, 34.69 s | 43.26 s, 43.07 s | 34.92 s to 43.12 s, +8.20 s | −0.49 s (3.20 s) | +8.69 s |
+
+Every run passed: the baseline ran 486 tests with three ignored, the candidate
+493 with four ignored, the fourth being the kill child that the failpoint sweep
+starts. No common test was flagged in either profile. The largest increase,
++0.30 s in debug for
+`incremental_inventory_matches_cold_admission_at_every_history_step`, is
+less than twice its spread of 0.17 s, and in release the same test was 0.29 s
+faster; the largest change in magnitude, −0.33 s in debug, lies within its
+spread of 0.71 s. So the whole rise is the seven test functions that task 7928
+added, and no existing test became measurably slower or faster:
+
+| Test function | Rows | Debug | Release |
+|---|---|---|---|
+| `every_failpoint_recovers_to_the_appointed_prefix_at_later_history_steps` | TH-03, TH-04, TH-06 | 10.98 s | 6.31 s |
+| `faulted_trusted_histories_match_independent_cold_admission_at_every_step` | TH-01, TH-02, TH-05, TH-07 | 3.34 s | 1.37 s |
+| `owner_histories_resolve_ambiguity_acknowledge_once_and_never_replay_the_journal` | TH-08 | 1.47 s | 0.40 s |
+| `every_reclamation_intent_tear_recovers_pre_cas_authority_and_retries` | RI-01 | 0.72 s | 0.50 s |
+| `generated_reclamation_intent_tears_never_publish_a_torn_record` | RI-02 | 0.16 s | 0.11 s |
+| `interrupted_reclamation_intent_write_recovers_pre_cas_authority` | RI-03 | 0.004 s | 0.003 s |
+| `reclamation_intent_publication_never_replaces_an_existing_record` | RI-04 | 0.004 s | 0.003 s |
+
+The failpoint sweep is the one parallel test among them: it runs its four
+scenarios on four threads, then four kill threads that start its thirteen kill
+children at the same time (`trusted_history_production.rs:3330-3447`). Pinned
+to one CPU, they share that CPU, so the pinned time approaches the sweep's
+summed CPU time. Run alone, seeded, in the order unpinned, pinned, pinned,
+unpinned:
+
+| Profile | Unpinned | Pinned to one CPU | Ratio |
+|---|---|---|---|
+| debug | 3.99 s, 3.62 s | 10.93 s, 10.90 s | 2.9 |
+| release | 1.85 s, 1.91 s | 6.27 s, 6.28 s | 3.3 |
+
+The pinned times lie within 1% of the sweep's times inside the selection. The
+unpinned means, 3.80 s and 1.88 s, differ from those at task 11968's commit
+(3.65 s and 1.90 s) by less than the 0.37 s and 0.06 s between their own two
+runs. So neither the selection around the sweep nor bug 11970's fix changed it
+measurably. With the sweep's unpinned means in place of its pinned ones, the
+seven new tests add 9.51 s in debug and 4.26 s in release to an unpinned run
+of the selection (an inference from these runs).
+
+The reviewed plan estimated that the TH tests would add 13 to 27 s in debug
+and 6 to 12 s in release to the single-threaded selection, measured unpinned at
+task 11946. Pinned, the three TH functions take 15.79 s and 8.07 s, inside both
+ranges. With the sweep's unpinned time, the condition of that baseline, they
+take about 8.62 s and 3.65 s, below both (an inference). The four RI
+functions, which bug 11970 added and the estimate did not cover, take another
+0.89 s and 0.62 s.
+
+**Formal reruns.** Every model that task 7928 changed was checked again on
+the export of the candidate tree, with its negative controls and witnesses.
+The three models with their own runner scripts ran through those scripts with
+the integrated runner's TLC settings (one worker, a 512 MiB heap, 768 MiB of
+high memory, 900 s), except for a 4 GiB memory ceiling in place of its 1 GiB.
+A ceiling decides only whether a run completes, never its counts. The
+single-publication model ran a copy of the integrated runner's block for it
+(`scripts/check-stack-safe-pda-proofs.sh:1775-1833`), which checks the same
+configurations against the same invariants, on two workers:
+
+| Model | Result |
+|---|---|
+| `RSpaceTrustedIncrementalHistory.tla`, `scripts/check-rspace-trusted-history-model.sh` | one initial state; 19,420 states generated, **6,841** distinct, depth 46; each of the ten causal mutants violated its named invariant and each of the eight witnesses was reached |
+| `RSpaceJournalPublicationOwner.tla` with the decoy, `scripts/check-rspace-journal-owner-model.sh` | four initial states; 1,716,908 generated, **64,080** distinct, depth 21; the nineteen causal mutants and eleven witnesses passed their designated checks |
+| `RSpaceGcPendingReclaimIntent.tla`, `scripts/check-rspace-gc-pending-reclaim-intent-model.sh` | one initial state; 4,533 generated, **1,700** distinct, depth 28; each of the five mutants violated its named invariant with its actions in order, and both witnesses were reached |
+| `RSpaceTrustedIncrementalPublication.tla`, the integrated runner's block | 64 initial states; 664 generated, **588** distinct, depth 13; each of the eight causal mutants violated its named invariant and each of the six witnesses was reached |
+| `TrustedSuccessorCapability.v` | compiled with its eight-file dependency closure; all **20** capstones print "Closed under the global context", and `coqchk` accepts the module |
+
+Every count equals the one recorded when the model last changed. The
+reclamation-intent model's file and configuration hashes also equal the pins
+of the [torn reclamation intents section](#torn-reclamation-intents-bug-11970-2026-10-28).
+
+**Boundary.**
+
+- With this slice task 7928 is complete. Every TH row checks production code,
+  and nine production faults that the reviewed plan chose are each killed by
+  their named TH test. Five of them only by the TH tests. These nine are the
+  controls the plan chose, not every possible fault.
+- The slice changes no source. Each control existed only in an export and was
+  never committed. No persisted byte, identity, format, wire message or
+  production outcome changes, so the consensus-change register gets no note
+  (review decision 11).
+- Semantic eviction does not exist under keep-all retention; a future one
+  needs the maxima recomputed and the TH family extended.
+- Reset identity and activation remain task 7756, and the substrate stays out
+  of RSpace until task 7931 wires it in.
+- No scaling is claimed (task 7929). Faults are injected in-process and the
+  operating system keeps every write, so no power-loss claim is made.
+- The timing holds for one seed, one host and pinning to one CPU. The
+  unpinned figures are inferences from the sweep's own unpinned runs.
+
+The evidence in J-253 was taken at these sources, which this slice leaves
+unchanged. The models' files are those pinned in the faulted trusted histories
+section and the torn reclamation intents section, and they are unchanged too.
+
+| Pinned source | SHA-256 |
+|---|---|
+| `rspace++/src/rspace/persistence/durable/publication.rs` | `801348d8e8a547db88596136103bf45dab03d645208c2e0658445b5e49c30de6` |
+| `rspace++/src/rspace/persistence/durable/startup.rs` | `e1a2c065e7d32f7293820eb312b236b225651304a853c216b5a1fdcdc04d2641` |
+| `rspace++/src/rspace/persistence/durable/io.rs` | `9debf4b1f1c84e4c566db9436c9d453a0865121236276f0b5fc0109ac265063c` |
+| `rspace++/src/rspace/persistence/durable/mod.rs` | `833060b7173fdc8140b900cb26b94c2768cd220ee32bde80e98236bf4c084e54` |
+| `rspace++/src/rspace/persistence/retention.rs` | `e5971ed87b6973bdbc09fd02609507c2a8dc8af4459f8bb973df59e2782529de` |
+| `rspace++/tests/persistence/mod.rs` | `217c64ad3bf68e72acbcf87848fda631cc126899a63e3ff0ab8e55ab069b33e4` |
+| `rspace++/tests/persistence/property_support.rs` | `aa22b29ad05a5d9b0807fa64b97d510c3c34c164b8ecadbd31ee2d125b598ebf` |
+| `rspace++/tests/persistence/generation_checkpoint_properties.rs` | `75c3194a426c1a463dec7e9b0a08ee5946976b450ac6be15895a666dd7c63d51` |
+| `rspace++/tests/persistence/trusted_history_properties.rs` | `986fd173fa171ba90c95a5702bbe8322d9443a77e3aa568f373bfc0b4c2f3f74` |
+| `rspace++/tests/persistence/trusted_history_production.rs` | `61cb02a4c26bd4868bbf464df9b9a202d9119604184018626f37536ada9df82e` |
+| `rspace++/tests/persistence/owner_history_production.rs` | `b9047bdfee02e99f91fbb2d2e14e2f6d7cd6901e1562a6457e0b4230bfb99b69` |
+| `rspace++/tests/persistence/trusted_successor_properties.rs` | `d7647265b2bd05d10fd1d7c58e6af0dcd88d9a7c95002f3d5cfc0648c039f2b6` |
+| `rspace++/tests/persistence/trusted_successor_production.rs` | `57557ac33cd057613cde2d683290d78b7fd95bc1226662ef55f9fb7ae58ca9c2` |
+| `rspace++/tests/persistence/durable_publication.rs` | `e34bfa801b8341caac780f6bde1208cbacb0c8da3faaa1c4b7ff8460a51f3524` |
+| `rspace++/tests/persistence/durable_rspace_authority.rs` | `6d8d8d64652eeb9e46341a250700d2c1863f39b9e4405f07c940be1df0c3e8cb` |
+| `rspace++/tests/persistence/durable_startup.rs` | `c5f0cceebe61777c783f42462d5733655c41d3f0e4267b95d4a995109db61188` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -6456,6 +6706,30 @@ bytes, and a corrupt complete record still fails closed; the consensus-change
 register's CBR-053 living continuation of 2026-10-28 records the changed
 outcomes of the dormant store. See engineering journal J-253 and pgmcp artifact
 1150 for caps and evidence hashes.
+
+The 2026-10-28 production controls and timing of task 11969 add no ID, so the
+catalog/derivation/binding registry still contains **223** IDs, and they
+change no source or model. On exports of the candidate tree, each of the nine
+production negative controls was killed by its named TH test, and TS-11, the
+trusted publication's crash and retry test, survived five of them, which only
+the TH tests kill. Seeded and pinned to one CPU, the persistence selection's
+summed per-test time rose by 16.03 s in debug and 8.20 s in release against
+the tree before task 7928, all of it in the seven test functions that task
+7928 added. No existing test changed measurably, so the release rise of
+5.06 s that the 2026-10-27 faulted-history models paragraph above leaves
+unattributed was not a lasting change in the existing tests (an inference:
+that rise was measured unseeded and unpinned, at an intermediate tree). The
+history, journal owner, reclamation-intent and single-publication models
+reproduced their recorded state counts with every negative control and
+witness, and `TrustedSuccessorCapability.v` again closed its **20** capstones
+and passed the kernel check. The workspace gate also passed on the export of
+the candidate with this task's documentation in draft: `cargo check` of all
+targets, clippy, all 4,431 release nextest tests of `models`,
+`rspace_plus_plus`, `rho-pure-eval` and `rholang`, and the release doc tests.
+These results add evidence only: no production code, persisted byte or outcome
+changed. See the faulted-history production controls and timing section,
+engineering journal J-253 and pgmcp artifact 1154 for caps and evidence
+hashes.
 
 ## Caller-authority contract (2026-09-06)
 

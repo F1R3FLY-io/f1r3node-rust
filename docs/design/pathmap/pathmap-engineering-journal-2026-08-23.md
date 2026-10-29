@@ -20597,6 +20597,7 @@ stays open until the last; each later slice appends its row and its evidence.
 | The production halves of TH-01 to TH-07 on real files: generated faulted histories against cold admission of byte copies, the later-step failpoint sweep and kill children at the thirteen trusted hooks | 11967 | the commit that appends this row |
 | The production half of TH-08 through the journal owner: generated owner histories under faults, cancellation, retries, decoys and restarts on real files, judged by cold admission of byte copies, and a retry after an unwind past the acknowledgement | 11968 | the commit that appends this row |
 | The fix of bug 11970: the reclamation intent published through a synchronized temporary and a no-replace rename, recovery's removal of a leftover temporary, and the RI rows | 11970 | the commit that appends this row |
+| The production negative controls C1 to C9 in exports of the candidate, the timing of the persistence selection with a fixed seed against the tree before task 7928, the reruns of every model that the task changed, and the completion of this entry | 11969 | the commit that appends this row |
 
 The production halves of TH-01 to TH-07 on real files are task 11967, the
 production half of TH-08 through the journal owner is task 11968, and the
@@ -21274,6 +21275,223 @@ required.
   diagram uses the suffix form.
 - The production negative controls, the timing and the completion of this
   entry remain task 11969, and the entry stays open until then.
+
+**TASK 11969: THE PRODUCTION CONTROLS, THE TIMING AND THE COMPLETION.** The
+fourth slice adds no test and changes no source. It applies the reviewed plan's
+nine production negative controls (its section 5, required by review decision
+10), each to an export of the candidate tree and never to the working tree,
+and records for each whether its named TH test, TS-11 and the whole
+persistence selection kill it. It times the persistence selection with a
+fixed seed on the tree before task 7928 and on the candidate, two runs per
+tree and profile in the order baseline, candidate, candidate, baseline, and
+attributes the change test by test, as J-252 did. It reruns every model that task 7928 changed, with their negative
+controls and witnesses. The
+[faulted-history production controls and timing section](generation-checkpoint-invariant-catalog-2026-08-28.md#faulted-history-production-controls-and-timing-2026-10-28)
+of the invariant catalog states the controls, the timing and the reruns; this
+entry records the decisions, the hypotheses, the measurements and the
+evidence. With this slice task 7928 is complete.
+
+**TASK 11969 DECISIONS.**
+
+1. *The timing baseline.* The baseline is the tree of task 11946's commit
+   `68e61c0f9`, the last commit before task 7928, so the comparison covers the
+   whole task, bug 11970's fix included. The candidate is the tree of commit
+   `7823b8db9`; this slice changes only documents.
+2. *The timing method.* Each run is pinned to one CPU with `taskset -c 8`,
+   seeded with `PROPTEST_RNG_SEED=20261027` and timed per test, in the order
+   baseline, candidate, candidate, baseline per profile. This meets the
+   reviewed plan's two runs per tree, and the order cancels a linear drift of
+   the host. The governor was left as the hardware specification records it,
+   `performance` under `amd-pstate-epp`.
+3. *The control sites.* The plan's line numbers were taken at HEAD
+   `68e61c0f9`. Bug 11970 moved the held-lease reader in `startup.rs` down one
+   line and the reclamation code in `io.rs` to lines 1359 to 1435, so a
+   read-only design agent re-derived every mutation, killer test and expected
+   message on the candidate tree, and the design was checked against the code
+   before any run.
+4. *A surviving control.* A control that its killer does not kill is
+   diagnosed before anything else: either the test lacks the check the row
+   claims, which is a test defect, or the mutation does not reach production,
+   which is a design defect. Neither is waived, because review decision 10
+   requires every control to be killed by its named test.
+5. *No consensus note.* No production source, persisted byte, identity or wire
+   message changes in this slice, so the consensus-change register gets no
+   note (review decision 11).
+
+**TASK 11969 HYPOTHESES.** Each hypothesis and its prediction were recorded in
+the task's pgmcp progress notes before the run that tests it.
+
+- *H19 (the controls are killed).* Each of the nine controls makes its
+  named killer fail at the named production check, exiting with status 101 and
+  printing the predicted message. The failpoint sweep (TH-03) kills C1, C5, C6,
+  C7 and C9. The faulted-history test (TH-01) kills C2, C3, C4 and C8.
+- *H20 (discrimination).* TS-11 survives C1, C2, C3, C4 and C7, and no test
+  outside the TH family fails under them, so only the TH tests kill these
+  five. TS-11 kills C5, C6, C8 and C9, so older tests catch those four too.
+  TS-11 killing C6 corrects the reviewed plan, which expected C6 to survive the
+  existing tests. For each control the prediction also named the tests
+  expected to fail in the whole persistence selection. Some were named only as
+  likely: TH-01 under C1 and C7, TH-08 under C4, C5 and C9, TS-10 and two
+  publication tests under C8, and one publication test under C9. TS-07 and
+  TH-08 under C6 were named only as possible. For C5, C6, C8 and C9 the named
+  tests were the ones expected to fail; the prediction made no claim about the
+  remaining tests.
+- *H21 (timing).* The seeded, pinned runs pass with 486 tests and three
+  ignored on the baseline and 493 and four on the candidate (P1). The tests
+  only the candidate has are exactly the three TH and the four RI functions,
+  adding about 9.6 s in debug (7 to 13 s) and 4.5 s in release (3 to 7 s),
+  from their earlier seeded runs (P2). A common test is flagged only if
+  task 7928 touched its path: the outcome table PUB-16, tests that publish
+  fresh generation checkpoints, the TS model tests or the registry test (P3).
+  The flagged and new tests explain the whole rise within the summed spread
+  (P4).
+- *H21b (pinning), after P2's magnitude failed.* The failpoint sweep runs four
+  sweep threads and then thirteen concurrent kill children, so pinning to one
+  CPU stretches it toward its summed CPU time, while the earlier runs were
+  unpinned; the other new tests are serial. Run alone on the candidate, the
+  sweep takes about 3.7 s in debug and 1.9 s in release unpinned, within 25%
+  of task 11968's times, and about 11.0 s and 6.3 s pinned, within 15% of its
+  times inside the selection.
+- *H22 (formal reruns).* The three runners and the TS block reproduce the
+  state counts recorded when each model last changed, and every mutant and
+  witness passes its designated check: the history model 19,420 generated and
+  6,841 distinct states to depth 46; the journal owner model 1,716,908 and
+  64,080 to depth 21; the reclamation-intent model 4,533 and 1,700 to depth 28
+  with one worker; the single-publication model 664 and 588 to depth 13; and
+  `TrustedSuccessorCapability.v` 20 closed capstones that pass the kernel
+  check.
+
+**TASK 11969 MEASURED.** Most predictions held. H19, the firm parts of H20,
+P1, P3 and P4 of H21, H21b and H22 held. Two parts did not. P2's magnitude
+failed, and H21b explains why. H20's lists of the tests failing under C5, C8
+and C9 were incomplete, which changes no conclusion.
+
+The controls ran on exports of tree `0c1b8878`, in debug, on one test thread
+with `PROPTEST_RNG_SEED=20261027`. The timing ran on exports of trees
+`409a1b69` and `0c1b8878`, and the formal reruns on the export of `0c1b8878`.
+
+| Claim | Command or artifact | Result | Uncertainty | Decision |
+|---|---|---|---|---|
+| H19 | `run.sh` with the nine mutants frozen in `mutants.py`: a preflight, the clean killers with TS-11, the clean selection, then for each control a fresh export, the mutation, its killer, TS-11 and the selection | each replacement occurred once; the clean runs passed, 3 tests and then 493 with four ignored; each killer exited with status 101 after 0.61 to 0.84 s and printed its predicted message once, at the checks that the catalog section's table names | one seed; a test stops at its first failing check, so later checks are not observed under the control | H19 holds |
+| H20, TS-11 | the TS-11 run of each control | passed under C1, C2, C3, C4 and C7; failed under C5 and C9 at the append's length check on the pack and on the index, under C6 at the crash check's torn slot ("Torn(1)", `durable_publication.rs:874`), and under C8 reading the deferred reclamation intent (`trusted_successor_production.rs:2857`) | none for the outcomes, which the seed fixes | holds exactly |
+| H20, the selection | the selection run of each control, its failing tests compared with the prediction note | C1 to C4 and C7 failed only TH tests: TH-01 and TH-03 under each, and TH-08 under C1, C4 and C7, so every likely failure occurred; C6 failed TH-01, TH-03, TS-07 and TS-11, and TH-08, a possible failure, passed; C5, C8 and C9 failed every named test and seven, four and nine more, which the catalog section lists | proptest saved nine failing cases during the run, and a test replays its file's saved cases first; each later test that shared a file passed, failed first in a fixed seed history, is no property test or reads another file, so no outcome depends on a replayed case | the discrimination holds; the lists for C5, C8 and C9 were incomplete, and TS-11 alone already shows that older tests kill those four |
+| H21, P1 | the persistence selection with libtest's per-test times, seeded, pinned with `taskset -c 8`, on one test thread, in the order baseline, candidate, candidate, baseline in each profile; the baseline is tree `409a1b69` (commit `68e61c0f9`) and the candidate tree `0c1b8878` (commit `7823b8db9`) | every run passed: the baseline 486 tests with three ignored in all four runs, the candidate 493 with four ignored in all four | none for the counts, which the trees fix | P1 holds |
+| H21, P2 | the attribution of the summed per-test time, extending J-252's script to the tests that only one tree has | the tests only the candidate has are exactly the three TH and the four RI functions, as predicted; they add 16.68 s in debug and 8.69 s in release, against the predicted 7 to 13 s and 3 to 7 s | the prediction took the failpoint sweep's time from task 11968's unpinned runs | the identity holds and the magnitude was mispredicted; H21b was derived before any further run |
+| H21, P3 | the same attribution, with J-252's rule: flagged when the change exceeds both 0.1 s and twice the test's spread | no common test was flagged in either profile; the largest increase, +0.30 s in debug for `incremental_inventory_matches_cold_admission_at_every_history_step`, is less than twice its spread of 0.17 s, and the same test was 0.29 s faster in release; the largest change in magnitude, −0.33 s in debug, lies within its spread of 0.71 s | two runs per tree; a change smaller than its spread is not resolved | P3 holds: no existing test changed measurably |
+| H21, P4 | the exact decomposition of the summed change | debug: the 486 common tests −0.66 s (summed spread 5.45 s) and the seven new tests +16.68 s, total +16.03 s; release: −0.49 s (3.20 s) and +8.69 s, total +8.20 s | the common tests' change lies inside their summed spread | P4 holds: the new tests explain the whole rise |
+| H21b | the failpoint sweep alone on the candidate, seeded, in the order unpinned, pinned, pinned, unpinned in each profile | debug 3.99 s and 3.62 s unpinned and 10.93 s and 10.90 s pinned; release 1.85 s and 1.91 s unpinned and 6.27 s and 6.28 s pinned; the unpinned means are within 25% of task 11968's 3.65 s and 1.90 s, and the pinned means within 15% of the sweep's 10.98 s and 6.31 s inside the selection | the sweep's own thread counts are read from its code (`trusted_history_production.rs:3330-3447`), not traced | H21b holds: P2's miss is the measurement's pinning, not a regression |
+| H22 | the three model runners, the single-publication block and the Rocq check on the export of the candidate | history 19,420 and 6,841 to depth 46; journal owner 1,716,908 and 64,080 to depth 21; reclamation intent 4,533 and 1,700 to depth 28 with one worker; single publication 664 and 588 to depth 13; every mutant and witness passed its check; `TrustedSuccessorCapability.v` 20 closed capstones and the kernel check passed | the three runners ran with one worker and a ceiling of 4 GiB in place of the integrated runner's 1 GiB, which decides only whether a run completes; the single-publication block ran from a copy of the integrated runner's block, on two workers | H22 holds |
+
+**TASK 11969 VERIFICATION BOUNDARY.** The controls, the formal reruns and the
+candidate's timing runs ran on exports of tree `0c1b8878`, the tree of commit
+`7823b8db9`; the baseline's timing runs ran on exports of tree `409a1b69`, the
+tree of commit `68e61c0f9`. Each export was built in a temporary index and
+written to `target/scratch/idx`, never taken from the working tree. The commit
+that appends this evidence differs from tree `0c1b8878` only in documentation:
+the catalog's faulted-history production controls and timing section, its
+verification record and this entry. One heavy job ran at a time, each in a
+user scope with zero swap:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| the control runner, `run.sh` with the frozen `mutants.py`: the preflight, the clean runs, and each control's killer, TS-11 and selection runs, in debug on one test thread with `PROPTEST_RNG_SEED=20261027` | 32 GiB, one scope for the whole run | every replacement occurred exactly once; both clean runs passed; each killer exited with status 101 and printed its predicted message once; TS-11 and the selection as the MEASURED table states | `target/perf/logs/c35/11969-negctl-summary-20261029T011852Z.txt` | `6127622490d89af727dbc4442f1b36689ba759ba2a31d490147aa36f015ff59d` |
+| the clean killers with TS-11 | as above | 3 passed, 0 failed, in 10.26 s | `target/perf/logs/c35/11969-negctl-clean-killers-20261029T011852Z.log` | `5ace4bd989a96c948c476416296b019603481b07f17b3a73f32665742dd4f7fc` |
+| the clean persistence selection | as above | 493 passed, 0 failed, 4 ignored, in 93.18 s | `target/perf/logs/c35/11969-negctl-clean-suite-20261029T011852Z.log` | `33afb5929b49fa15e67ce1844dba3efd6baff8eefe80371451d420d00f86494d` |
+| the runner's 29 run logs, two clean and 27 under the controls, read by `collect.py` | a read of the logs | each run's exit status, result line and SHA-256, and each failing test's panic sites and messages | `target/perf/logs/c35/11969-negctl-collect-20261029T011852Z.txt` | `5c3e2b24c80240931e30f2b9f18680f29bb83c6ba8aa9da598764b574671cd54` |
+| the timing script `time_abba.sh`: each tree's debug and release test binaries built unpinned, then the eight pinned runs | 32 GiB, one scope for the whole run | every build and every run exited 0 | `target/perf/logs/c35/11969-time-summary-20261028T235638Z.txt` | `e924042981b7a3be2a340186bba46e6a8d5a0eff3494a64f2c3f1d6118414a40` |
+| the baseline, debug, first run | as above | 486 passed, 0 failed, 3 ignored, in 78.02 s | `target/perf/logs/c35/11969-time-baseline-debug-run1-20261028T235638Z.log` | `dac36dae349fdcc9d8b00bf3ab0d7591df0827162903a17e5031e74fc8e17dd9` |
+| the baseline, release, first run | as above | 486 passed, 0 failed, 3 ignored, in 35.24 s | `target/perf/logs/c35/11969-time-baseline-release-run1-20261028T235638Z.log` | `3048008e7a0a760264617c4544a726b5e9249697a7be972991c2874f63566249` |
+| the candidate, debug, first run | as above | 493 passed, 0 failed, 4 ignored, in 93.98 s | `target/perf/logs/c35/11969-time-candidate-debug-run1-20261028T235638Z.log` | `9eec0da87fa8a59e1eb069adafa22d1ccf887f50dbb73e4f00c14fa9b807c8eb` |
+| the candidate, release, first run | as above | 493 passed, 0 failed, 4 ignored, in 43.26 s | `target/perf/logs/c35/11969-time-candidate-release-run1-20261028T235638Z.log` | `db9d3e0f810ce8683aad966f5b66de3c1d8bf2cbc9563c2bc969c8fdf554cb2c` |
+| the candidate, debug, second run | as above | 493 passed, 0 failed, 4 ignored, in 92.56 s | `target/perf/logs/c35/11969-time-candidate-debug-run2-20261028T235638Z.log` | `445f084d4230cbe27d5d1d062baa1968c77ca5841976c6a161d67993fdd354e5` |
+| the candidate, release, second run | as above | 493 passed, 0 failed, 4 ignored, in 43.07 s | `target/perf/logs/c35/11969-time-candidate-release-run2-20261028T235638Z.log` | `4716d908a492818faa97e212beb5b2ce99e4048c98f3c76919d3a7bcd47b7fe0` |
+| the baseline, debug, second run | as above | 486 passed, 0 failed, 3 ignored, in 76.45 s | `target/perf/logs/c35/11969-time-baseline-debug-run2-20261028T235638Z.log` | `b5494f19812a2dd69ad9f3b1193927d273a37b8083ffcf04f59a3a4e4373acdc` |
+| the baseline, release, second run | as above | 486 passed, 0 failed, 3 ignored, in 34.69 s | `target/perf/logs/c35/11969-time-baseline-release-run2-20261028T235638Z.log` | `86e3a7ce66fec6352a142f17924c487aeec8a102ad205ece08886897597d3cf3` |
+| the attribution of the four debug runs, by `attribute_11969.py` | a read of the logs | the decomposition, the seven new tests' times and no flagged common test, as the MEASURED table states | `target/perf/logs/c35/11969-attribution-debug.txt` | `3a74bfd8544019db4ac1cdb182974398a387496c8d35a106d91edc5126b95a5a` |
+| the same, of the four release runs | a read of the logs | as above | `target/perf/logs/c35/11969-attribution-release.txt` | `147545f42531d8086b508583fbf03af9f85e70693ef5c18deb119ad3ce71cc7d` |
+| the pinning script `pinning_11969.sh`: the failpoint sweep alone, in the order unpinned, pinned, pinned, unpinned in each profile | 24 GiB, one scope for the whole run | all eight runs passed, at the times the MEASURED table states | `target/perf/logs/c35/11969-pinning-summary-20261029T001257Z.txt` | `e642ae6462f5a9460addd0203dbf5236db3779c7cdf0004041840842779e8eef` |
+| the formal script `formal_11969.sh`: the three runners and the Rocq check through the export gate, then the single-publication block | 8 GiB, one scope for the whole run | every step exited 0; the runners took 28 s, 58 s and 10 s, and the Rocq check 51 s | `target/perf/logs/c35/11969-formal-summary-20261029T001405Z.txt` | `5cca025a4da7d4118fc2106b9b8bf4f2556d9c23954ff7307edbbb6aef5ec7bd` |
+| `scripts/check-rspace-trusted-history-model.sh` in the export | as above, with the TLC settings that the catalog section states | control, ten causal mutants and eight reachability witnesses passed | `target/perf/logs/phase0/11969-gate-tlc-check-rspace-trusted-history-model-20261029T001405Z.log` | `89ab5f32c01a889b7981b7acfcf915324e10e6c23cfc6277eb7b8d1908056281` |
+| `scripts/check-rspace-journal-owner-model.sh` in the export | as above | control, nineteen causal mutants and eleven reachability witnesses passed | `target/perf/logs/phase0/11969-gate-tlc-check-rspace-journal-owner-model-20261029T001405Z.log` | `149f48e723c4ebeea0b534ab883e73969faaf7e22df85e8bda41ad2ec96e13ca` |
+| `scripts/check-rspace-gc-pending-reclaim-intent-model.sh` in the export | as above | the baseline, five mutants and two witnesses passed; the model and configuration hashes that it printed equal the catalog's pins | `target/perf/logs/phase0/11969-gate-tlc-check-rspace-gc-pending-reclaim-intent-model-20261029T001405Z.log` | `173e4e0951a2096142809085eaf7d86550f36be88e4e9d3e1f67654a0a2dce9b` |
+| that runner's baseline TLC log, copied from the export | as above | no error; 4,533 generated, 1,700 distinct, depth 28 with one worker | `target/perf/logs/c35/11969-gc-intent-runner/baseline.log` | `5ff49d036d445d17c18bf320e19373188f592eda402e781f0490417b69e21688` |
+| `TrustedSuccessorCapability.v` with its eight-file dependency closure, then `coqchk` | as above | 20 of the 20 expected capstones closed under the global context; "Modules were successfully checked" | `target/perf/logs/phase0/11969-rocq-20261029T001541Z.log` | `bd935582439e7f8c3ae87c418df332ba920f7d3f9a64c4a7c341a4bfc67cdb43` |
+| the Rocq step's record in the export gate | as above | exit 0, 20 closed of 20 expected, the kernel check passed | `target/perf/logs/phase0/11969-gate-rocq-20261029T001405Z.log` | `6062ed44f61d5feb4003776b6655f892ed808a0c5a68c45c7ae1abce1191d41e` |
+| the export gate's summary of these four steps | as above | the four steps exited 0 | `target/perf/logs/phase0/11969-gate-summary-20261029T001405Z.txt` | `9d8e70fa245480925bd6959b205ea4edee5438ecedec0c10dd2ca7fc46b74575` |
+| the single-publication block: `RSpaceTrustedIncrementalPublication.tla` with its fourteen controls | as above, on two workers | control, eight causal mutants and six reachability witnesses passed | `target/perf/logs/c35/11969-ts-block-20261029T001405Z.log` | `95b2b98413d823900a051a488edf29acca0252a78e12c04bb009b568a21e278b` |
+
+The final checks ran on the export of tree `1471a767`, which is tree
+`0c1b8878` with the catalog's new section, its new verification-record
+paragraph and this entry as they stood before this table and the artifact
+number were filled in:
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| obligation registries | 8 GiB, in the export | all sixteen current, and nothing staged into the gate tree's index; every self-test passed | `target/perf/logs/c35/registries-gate-11969-20261029T020504Z.log` | `ded2fcda831d247957c86c7783dcb79b9be92912c4991d4532692c60e4ae6515` |
+| `cargo fmt --all -- --check` | 8 GiB, in the export | exit 0, no difference | `target/perf/logs/c35/fmt-gate-11969-20261029T020521Z.log` | `72ffd753c4ae51aa0f890d561070563e707e5281dff1ba93cfff67cf8a29d7e7` |
+| `scripts/check-fmt.sh`, the pre-commit hook's check | 8 GiB, in the export | clean, 0 differences | `target/perf/logs/c35/check-fmt-gate-11969-20261029T020521Z.log` | `06172097f5230e90f9e04a2b49caf27aa823f4866f3f02117c2b98d082abb382` |
+| `cargo check --locked --workspace --all-targets` | 48 GiB, one scope for this and the next three steps | exit 0; the same eight warnings as task 11968's and bug 11970's gates | `target/perf/logs/phase0/11969-gate-check-20261029T020606Z.log` | `b1ceb177a357ae00c31c550a4299c6a801a51895b2a1ee6c59f399c5dd8936e8` |
+| `cargo clippy --locked --workspace` | as above | exit 0; one warning, also in their gates: `active_obligation` (`models/src/rust/rholang/canonical_path_admission.rs:1518`) is never used | `target/perf/logs/phase0/11969-gate-clippy-json-20261029T020606Z.log` | `f5328b67da97a6d8d1822a69c7497c8643c7c57f02ded5fd74d1f2538ed39102` |
+| `cargo nextest run --locked --release --no-fail-fast` of `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang` | as above | 4,431 passed, 0 failed, 46 skipped, in 809.01 s | `target/perf/logs/phase0/11969-gate-nextest-20261029T020606Z.log` | `ada8a81745b90990d00c90fe775243ebddf3bfea8b846f66ae963ac71e45350a` |
+| `cargo test --locked --release --doc` of `models` and `rholang` | as above | 4 passed, 0 failed, 3 ignored | `target/perf/logs/phase0/11969-gate-doc-20261029T020606Z.log` | `6c2cb971cbcb340ff73145ada4534b7fbaa37a288a66842ff43f19d37f1fb3eb` |
+| the workspace gate's summary | as above | the four steps above exited 0 in 45 s, 46 s, 901 s and 44 s | `target/perf/logs/phase0/11969-gate-summary-20261029T020606Z.txt` | `3b84088793e7d8cefb6eb5003a7bd7bf410df9a7862b452d2c54db07e66f30f2` |
+
+The control runner wrote one log per run, and `collect.py` records the SHA-256
+of each of the 29. The TS-11 logs of C3 and C7 are byte-identical: both runs
+passed in 3.20 s, and their logs hold no other text that differs between runs.
+The timing script exported each tree twice and wrote the second build's log
+over the first under the same name, so the four build logs hold the second
+builds; the timing summary records all eight builds' exit statuses. The
+reclamation-intent runner's log is byte-identical to bug 11970's, because it
+prints only the hashes of the model's files and its verdict. The registry and
+formatting logs of the final checks are byte-identical to bug 11970's, because
+they print no tree-specific text; the registry check ran on the gate tree's own
+index and staged nothing, and the formatting script checked that the export
+held tree `1471a767`. The one compiler warning in the control and timing runs,
+an unused import in `tests/persistence/object_store_collision.rs`, is one of
+the eight that the final `cargo check` reports, all of them bug 11963's. The
+gate tree held this task's text in draft. Before this table and the artifact
+number were filled in, five corrections were made to the drafts: the origin of
+TS-11 (the catalog now says that task 11946 added its production half), the
+timing comparison's largest increase and largest change in magnitude (in the
+catalog and in the H21, P3 row), the count of run logs (29, two of them clean),
+the order of the timing runs (written out instead of abbreviated), and the
+catalog record's description of the tree the workspace gate ran on; this
+paragraph's account of the evidence was also extended. None of these edits
+touches code, tests or registries. The registry check, the manifest test (the
+one test that reads the catalog) and the two formatting checks ran again on the
+export of the committed tree; the task's pgmcp progress note records that run.
+pgmcp artifact 1154 holds the SHA-256 of every log behind these tables,
+among them the 27 control logs, the eight pinning logs, the four build logs and
+the reclamation-intent runner's eight TLC logs that the tables do not list,
+with the nine control mutations, and it names the companion artifact that
+holds the scripts that produced them. These are agent-run results; independent
+review and the approved pgmcp verification recipe remain required.
+
+**TASK 11969 BOUNDARY.**
+
+- With this slice task 7928 is complete, and this entry closes. Every TH row
+  checks production code, and each of the nine production faults that the
+  reviewed plan chose is killed by its named TH test, five of them only by TH
+  tests. These nine are the plan's controls, not every possible fault.
+- The slice changes no source: each control existed only in an export and was
+  never committed. No persisted byte, identity, format, wire message or
+  production outcome changes, so the consensus-change register gets no note
+  (decision 5).
+- Semantic root eviction does not exist under the approved keep-all retention.
+  A future eviction needs the trusted retained-state maxima recomputed by cold
+  admission and the TH family extended (review decision 2).
+- Reset identity and activation remain task 7756, and the substrate stays out
+  of RSpace until task 7931 wires it in.
+- No scaling is claimed; fixed-delta scaling is task 7929.
+- Faults are injected in-process, and the operating system keeps every write,
+  so no power-loss claim is made.
+- The timing holds for one seed, one host and pinning to one CPU. The unpinned
+  figures are inferences from the sweep's own unpinned runs.
+- A side finding, not acted on: proptest 1.11 honours
+  `PROPTEST_DISABLE_FAILURE_PERSISTENCE` in the default configuration that
+  every persistence test runner extends, so a future control run can avoid
+  saving failing cases at all.
 
 ## Upstream PathMap integration request register
 
