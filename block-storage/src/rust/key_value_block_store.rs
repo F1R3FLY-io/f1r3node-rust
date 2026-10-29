@@ -291,13 +291,33 @@ impl KeyValueBlockStore {
         block: &BlockMessage,
         solicited: bool,
     ) -> Result<PendingOutcome, KvStoreError> {
+        self.put_pending_inner(block, solicited, None)
+    }
+
+    pub fn put_pending_replacing(
+        &self,
+        block: &BlockMessage,
+        victim: &BlockHash,
+    ) -> Result<PendingOutcome, KvStoreError> {
+        self.put_pending_inner(block, true, Some(victim))
+    }
+
+    fn put_pending_inner(
+        &self,
+        block: &BlockMessage,
+        solicited: bool,
+        replacement: Option<&BlockHash>,
+    ) -> Result<PendingOutcome, KvStoreError> {
         if self.disk_contains(&block.block_hash)? {
             return Ok(PendingOutcome {
                 status: PendingInsert::Accepted,
                 evicted: Vec::new(),
             });
         }
-        let outcome = self.pending.insert(block, solicited);
+        let outcome = match replacement {
+            Some(victim) => self.pending.insert_replacing(block, victim),
+            None => self.pending.insert(block, solicited),
+        };
         if self.disk_contains(&block.block_hash)? {
             self.pending.remove(&block.block_hash);
         }
