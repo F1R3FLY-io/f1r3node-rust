@@ -926,6 +926,43 @@ impl BlockDagKeyValueStorage {
         })
     }
 
+    pub fn contains(&self, hash: &BlockHash) -> bool { self.block_metadata_index.read().contains(hash) }
+
+    /// A block that depends on `hash` need not wait for it: the block is in
+    /// the DAG, or it was detected as an equivocation.
+    pub fn is_dependency_satisfied(&self, hash: &BlockHash) -> Result<bool, KvStoreError> {
+        if self.contains(hash) {
+            return Ok(true);
+        }
+        self.access_equivocations_tracker(|tracker| {
+            Ok(tracker
+                .data()?
+                .iter()
+                .any(|record| record.equivocation_detected_block_hashes.contains(hash)))
+        })
+    }
+
+    pub fn lookup(&self, hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
+        self.block_metadata_index.read().get(hash)
+    }
+
+    pub fn latest_message_hash(&self, validator: &Validator) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(self
+            .latest_messages_index
+            .get_one(&ValidatorSerde(validator.clone()))?
+            .map(BlockHash::from))
+    }
+
+    /// `None` until the approved block is inserted.
+    pub fn last_finalized_block(&self) -> Option<BlockHash> {
+        let guard = self.block_metadata_index.read();
+        let dag_state = guard.dag_state().read();
+        dag_state
+            .last_finalized_block
+            .as_ref()
+            .map(|(hash, _)| hash.clone())
+    }
+
     /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
     /// (same shared lifecycle tables), for callers holding the storage rather
     /// than a representation. Lock order: `block_metadata_index` before

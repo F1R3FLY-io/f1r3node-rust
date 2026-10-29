@@ -40,10 +40,11 @@ pub enum PendingInsert {
     TooLarge,
 }
 
-/// What the area holds: blocks, encoded bytes, and blocks per sender (only
-/// senders with a block in the area).
+/// What the area holds against its limits: blocks, encoded bytes, and blocks
+/// per sender (only senders with a block in the area).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PendingUsage {
+    pub limits: PendingBlockLimits,
     pub blocks: usize,
     pub bytes: usize,
     pub by_sender: HashMap<Bytes, usize>,
@@ -169,6 +170,7 @@ impl PendingBlocks {
     pub fn usage(&self) -> PendingUsage {
         let inner = self.lock();
         PendingUsage {
+            limits: inner.limits,
             blocks: inner.entries.len(),
             bytes: inner.bytes,
             by_sender: inner.per_sender.clone(),

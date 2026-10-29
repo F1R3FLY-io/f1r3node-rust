@@ -1,3 +1,4 @@
+pub mod allocator;
 pub mod bonds_parser;
 pub mod clique;
 pub mod comm;

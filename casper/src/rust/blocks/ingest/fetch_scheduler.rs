@@ -5,6 +5,14 @@ use comm::rust::peer_node::PeerNode;
 use models::rust::block_hash::BlockHash;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
+use super::ingest_view::IngestView;
+// The retriever's source label is part of the exported names that the
+// monitoring rules and dashboards read.
+use crate::rust::metrics_constants::{
+    BLOCK_REQUESTS_RETRIES_METRIC, BLOCK_REQUESTS_TOTAL_METRIC,
+    BLOCK_RETRIEVER_METRICS_SOURCE as REQUEST_METRICS_SOURCE,
+};
+
 /// First re-request interval. A view frozen on one missing block must recover
 /// well inside the citability window (max-parent-depth heights of cadence) or
 /// a lost delivery becomes a finality stall; startup validation asserts that
@@ -100,6 +108,7 @@ struct BlockNeed {
     requery_cursor: usize,
     attempts: u32,
     next_due_ms: u64,
+    first_requested_ms: Option<u64>,
     pushed_by: Option<PeerNode>,
     seq: u64,
 }
@@ -171,15 +180,19 @@ pub struct RemovedNeed {
     pub facts: NeedFacts,
     pub origin: NeedOrigin,
     pub pushed_by: Option<PeerNode>,
+    /// When the network was first asked for the block.
+    pub first_requested_ms: Option<u64>,
 }
 
 /// Blocks and state roots the node needs and does not hold, the peers known
 /// to have each block, and when each is next asked for. Re-requests are paced
 /// by `unresolved_rerequest_interval_ms`; pacing never ends a need, which
 /// leaves only through `remove_block` / `remove_root` or, for a need nothing
-/// cites, the `MAX_UNCITED_NEEDS` bound.
-#[derive(Debug, Default)]
+/// cites, the `MAX_UNCITED_NEEDS` bound. Publishes which blocks are needed,
+/// and which of them are solicited, to the view.
+#[derive(Debug)]
 pub struct FetchScheduler {
+    view: IngestView,
     blocks: HashMap<BlockHash, BlockNeed>,
     uncited: BTreeMap<u64, BlockHash>,
     roots: HashMap<Blake2b256Hash, RootNeed>,
@@ -187,18 +200,19 @@ pub struct FetchScheduler {
 }
 
 impl FetchScheduler {
-    pub fn new() -> Self { Self::default() }
+    pub fn new(view: IngestView) -> Self {
+        Self {
+            view,
+            blocks: HashMap::new(),
+            uncited: BTreeMap::new(),
+            roots: HashMap::new(),
+            next_seq: 0,
+        }
+    }
 
     /// Need `hash` for `origin`. An existing need keeps its peers and pacing
-    /// and is promoted from `Announced`. Returns the hashes of uncited needs
-    /// dropped to stay within `MAX_UNCITED_NEEDS`.
-    pub fn need_block(
-        &mut self,
-        hash: &BlockHash,
-        origin: NeedOrigin,
-        facts: NeedFacts,
-        now_ms: u64,
-    ) -> Vec<BlockHash> {
+    /// and is promoted from `Announced`.
+    pub fn need_block(&mut self, hash: &BlockHash, origin: NeedOrigin, facts: NeedFacts, now_ms: u64) {
         if let Some(need) = self.blocks.get_mut(hash) {
             need.facts.merge(&facts);
             if need.origin != NeedOrigin::Cited && origin != NeedOrigin::Announced {
@@ -210,8 +224,9 @@ impl FetchScheduler {
                 if was_uncited == NeedOrigin::Announced && origin == NeedOrigin::Requested {
                     need.next_due_ms = need.next_due_ms.min(now_ms);
                 }
+                self.view.set_needed(hash, true, true);
             }
-            return Vec::new();
+            return;
         }
         let seq = self.next_seq;
         self.next_seq += 1;
@@ -225,20 +240,22 @@ impl FetchScheduler {
             requery_cursor: 0,
             attempts: 0,
             next_due_ms: now_ms,
+            first_requested_ms: None,
             pushed_by: None,
             seq,
         });
-        if origin == NeedOrigin::Cited {
-            return Vec::new();
+        self.view
+            .set_needed(hash, true, origin != NeedOrigin::Announced);
+        if origin != NeedOrigin::Cited {
+            self.uncited.insert(seq, hash.clone());
+            self.enforce_uncited_bound();
         }
-        self.uncited.insert(seq, hash.clone());
-        self.enforce_uncited_bound()
     }
 
     /// `peer` announced it holds `hash`: it is asked next, even if it was
     /// asked before.
-    pub fn announce(&mut self, hash: &BlockHash, peer: &PeerNode, now_ms: u64) -> Vec<BlockHash> {
-        let dropped = self.need_block(hash, NeedOrigin::Announced, NeedFacts::default(), now_ms);
+    pub fn announce(&mut self, hash: &BlockHash, peer: &PeerNode, now_ms: u64) {
+        self.need_block(hash, NeedOrigin::Announced, NeedFacts::default(), now_ms);
         if let Some(need) = self.blocks.get_mut(hash) {
             need.announced = true;
             need.add_candidate(peer.clone());
@@ -246,7 +263,15 @@ impl FetchScheduler {
                 need.next_due_ms = need.next_due_ms.min(now_ms);
             }
         }
-        dropped
+    }
+
+    /// The local lookup for `hash` could not be issued; issue it again.
+    pub fn defer_local_lookup(&mut self, hash: &BlockHash) {
+        if let Some(need) = self.blocks.get_mut(hash) {
+            if need.stage == (Stage::LocalLookup { issued: true }) {
+                need.stage = Stage::LocalLookup { issued: false };
+            }
+        }
     }
 
     /// The local block store does not hold `hash`; ask the network.
@@ -278,28 +303,33 @@ impl FetchScheduler {
     pub fn remove_block(&mut self, hash: &BlockHash) -> Option<RemovedNeed> {
         let need = self.blocks.remove(hash)?;
         self.uncited.remove(&need.seq);
+        self.view.set_needed(hash, false, false);
         Some(RemovedNeed {
             facts: need.facts,
             origin: need.origin,
             pushed_by: need.pushed_by,
+            first_requested_ms: need.first_requested_ms,
         })
     }
 
     /// A cited need whose last citer left. It stays, as an uncited need, only
     /// if a peer announced it.
-    pub fn uncite(&mut self, hash: &BlockHash) -> Option<RemovedNeed> {
-        let need = self.blocks.get_mut(hash)?;
+    pub fn uncite(&mut self, hash: &BlockHash) {
+        let Some(need) = self.blocks.get_mut(hash) else {
+            return;
+        };
         if need.origin != NeedOrigin::Cited {
-            return None;
+            return;
         }
         if !need.announced {
-            return self.remove_block(hash);
+            self.remove_block(hash);
+            return;
         }
         need.origin = NeedOrigin::Announced;
         let seq = need.seq;
         self.uncited.insert(seq, hash.clone());
+        self.view.set_needed(hash, true, false);
         self.enforce_uncited_bound();
-        None
     }
 
     pub fn need_root(&mut self, root: &Blake2b256Hash, now_ms: u64) {
@@ -317,18 +347,13 @@ impl FetchScheduler {
         }
     }
 
-    pub fn remove_root(&mut self, root: &Blake2b256Hash) -> bool {
-        self.roots.remove(root).is_some()
-    }
+    pub fn remove_root(&mut self, root: &Blake2b256Hash) { self.roots.remove(root); }
 
     pub fn is_needed(&self, hash: &BlockHash) -> bool { self.blocks.contains_key(hash) }
 
+    #[cfg(test)]
     pub fn origin(&self, hash: &BlockHash) -> Option<NeedOrigin> {
         self.blocks.get(hash).map(|need| need.origin)
-    }
-
-    pub fn facts(&self, hash: &BlockHash) -> Option<&NeedFacts> {
-        self.blocks.get(hash).map(|need| &need.facts)
     }
 
     pub fn block_needs(&self) -> usize { self.blocks.len() }
@@ -404,6 +429,12 @@ impl FetchScheduler {
                 .blocks
                 .get_mut(&hash)
                 .expect("the hash was collected from the needs map above");
+            let metric = match need.attempts {
+                0 => BLOCK_REQUESTS_TOTAL_METRIC,
+                _ => BLOCK_REQUESTS_RETRIES_METRIC,
+            };
+            metrics::counter!(metric, "source" => REQUEST_METRICS_SOURCE).increment(1);
+            need.first_requested_ms.get_or_insert(now_ms);
             actions.extend(need.next_attempt(&hash, connected));
             need.next_due_ms = now_ms
                 + unresolved_rerequest_interval_ms(need.attempts, UNRESOLVED_REREQUEST_ANCHOR_MS);
@@ -413,8 +444,7 @@ impl FetchScheduler {
         actions
     }
 
-    fn enforce_uncited_bound(&mut self) -> Vec<BlockHash> {
-        let mut dropped = Vec::new();
+    fn enforce_uncited_bound(&mut self) {
         while self.uncited.len() > MAX_UNCITED_NEEDS {
             let announced = self.uncited.iter().find_map(|(seq, hash)| {
                 (self.blocks.get(hash).map(|need| need.origin) == Some(NeedOrigin::Announced))
@@ -430,12 +460,11 @@ impl FetchScheduler {
             };
             let hash = self
                 .uncited
-                .remove(&seq)
+                .get(&seq)
+                .cloned()
                 .expect("the sequence number was read from the map");
-            self.blocks.remove(&hash);
-            dropped.push(hash);
+            self.remove_block(&hash);
         }
-        dropped
     }
 }
 
@@ -449,6 +478,8 @@ mod tests {
     fn hash(i: u32) -> BlockHash { Bytes::copy_from_slice(&i.to_be_bytes()) }
 
     fn peers(n: usize) -> Vec<PeerNode> { (0..n).map(|i| peer(&format!("p{i}"))).collect() }
+
+    fn scheduler() -> FetchScheduler { FetchScheduler::new(IngestView::new()) }
 
     fn cited(height: i64, trusted: bool) -> NeedFacts {
         NeedFacts {
@@ -476,7 +507,7 @@ mod tests {
 
     #[test]
     fn a_need_is_looked_up_locally_before_the_network() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let h = hash(1);
         s.need_block(&h, NeedOrigin::Cited, cited(5, true), 0);
         assert_eq!(s.due(0, &peers(4), usize::MAX), vec![
@@ -492,7 +523,7 @@ mod tests {
 
     #[test]
     fn seed_peers_are_asked_in_turn_then_the_need_is_broadcast() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let h = hash(1);
         let connected = peers(6);
         s.need_block(&h, NeedOrigin::Cited, cited(5, true), 0);
@@ -516,7 +547,7 @@ mod tests {
 
     #[test]
     fn retries_slow_to_the_slowest_interval_and_never_end() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let h = hash(1);
         s.need_block(&h, NeedOrigin::Cited, cited(5, true), 0);
         to_network(&mut s, &h, 0);
@@ -532,7 +563,7 @@ mod tests {
 
     #[test]
     fn a_need_is_not_asked_again_before_its_interval() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let h = hash(1);
         s.need_block(&h, NeedOrigin::Cited, cited(5, true), 0);
         to_network(&mut s, &h, 0);
@@ -547,7 +578,7 @@ mod tests {
 
     #[test]
     fn a_peer_asked_before_that_announces_the_block_is_asked_at_once() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let h = hash(1);
         let connected = peers(1);
         s.need_block(&h, NeedOrigin::Cited, cited(5, true), 0);
@@ -569,7 +600,7 @@ mod tests {
 
     #[test]
     fn trusted_and_lowest_needs_take_the_window_first() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let total = MAX_OUTSTANDING_FETCHES as u32 + 10;
         for i in 0..total {
             let h = hash(i);
@@ -606,21 +637,39 @@ mod tests {
 
     #[test]
     fn uncited_needs_stay_within_their_bound_dropping_announcements_first() {
-        let mut s = FetchScheduler::new();
+        let view = IngestView::new();
+        let mut s = FetchScheduler::new(view.clone());
         let requested = hash(u32::MAX);
         s.need_block(&requested, NeedOrigin::Requested, NeedFacts::default(), 0);
-        let mut dropped = Vec::new();
         for i in 0..(MAX_UNCITED_NEEDS as u32 + 5) {
-            dropped.extend(s.announce(&hash(i), &peer("gossip"), 0));
+            s.announce(&hash(i), &peer("gossip"), 0);
         }
         assert_eq!(s.uncited_needs(), MAX_UNCITED_NEEDS);
-        assert_eq!(dropped, (0..6).map(hash).collect::<Vec<_>>());
-        assert!(s.is_needed(&requested));
+        for i in 0..6 {
+            assert!(!s.is_needed(&hash(i)) && !view.is_awaited(&hash(i)));
+        }
+        assert!(s.is_needed(&hash(6)) && view.is_awaited(&hash(6)));
+        assert!(s.is_needed(&requested) && view.is_solicited(&requested));
+    }
+
+    #[test]
+    fn the_view_mirrors_needs_and_their_solicitation() {
+        let view = IngestView::new();
+        let mut s = FetchScheduler::new(view.clone());
+        let h = hash(1);
+        s.announce(&h, &peer("p"), 0);
+        assert!(view.is_awaited(&h) && !view.is_solicited(&h));
+        s.need_block(&h, NeedOrigin::Cited, cited(3, true), 0);
+        assert!(view.is_solicited(&h));
+        s.uncite(&h);
+        assert!(view.is_awaited(&h) && !view.is_solicited(&h));
+        s.remove_block(&h);
+        assert!(!view.is_awaited(&h));
     }
 
     #[test]
     fn a_cited_need_is_outside_the_uncited_bound() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let h = hash(1);
         s.announce(&h, &peer("gossip"), 0);
         s.need_block(&h, NeedOrigin::Cited, cited(3, true), 0);
@@ -633,21 +682,21 @@ mod tests {
 
     #[test]
     fn an_uncited_need_with_no_peer_is_dropped_and_one_with_a_peer_kept() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let quiet = hash(1);
         let announced = hash(2);
         s.need_block(&quiet, NeedOrigin::Cited, cited(3, true), 0);
         s.need_block(&announced, NeedOrigin::Cited, cited(3, true), 0);
         s.announce(&announced, &peer("p"), 0);
-        assert!(s.uncite(&quiet).is_some());
+        s.uncite(&quiet);
         assert!(!s.is_needed(&quiet));
-        assert!(s.uncite(&announced).is_none());
+        s.uncite(&announced);
         assert_eq!(s.origin(&announced), Some(NeedOrigin::Announced));
     }
 
     #[test]
     fn a_failed_peer_is_skipped_and_the_next_asked_at_once() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let h = hash(1);
         let connected = peers(4);
         s.need_block(&h, NeedOrigin::Cited, cited(5, true), 0);
@@ -664,7 +713,7 @@ mod tests {
 
     #[test]
     fn a_state_root_is_fetched_again_on_its_pacing_after_a_drop() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let root = Blake2b256Hash::new(b"root");
         s.need_root(&root, 0);
         assert_eq!(s.due(0, &[], 0), vec![FetchAction::FetchStateRoot(
@@ -676,12 +725,13 @@ mod tests {
         assert_eq!(s.due(UNRESOLVED_REREQUEST_ANCHOR_MS, &[], 0), vec![
             FetchAction::FetchStateRoot(root.clone())
         ]);
-        assert!(s.remove_root(&root));
+        s.remove_root(&root);
+        assert_eq!(s.root_needs(), 0);
     }
 
     #[test]
     fn the_pusher_survives_until_the_need_is_removed() {
-        let mut s = FetchScheduler::new();
+        let mut s = scheduler();
         let h = hash(1);
         s.need_block(&h, NeedOrigin::Cited, cited(5, true), 0);
         s.carry_pusher(&h, peer("pusher"));

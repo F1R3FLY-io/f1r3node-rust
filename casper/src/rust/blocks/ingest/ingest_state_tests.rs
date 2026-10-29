@@ -22,18 +22,35 @@ const LIMITS: PendingBlockLimits = PendingBlockLimits {
     max_per_sender: 40,
 };
 
-fn config() -> IngestConfig { IngestConfig::new(0, LIMITS) }
-
 #[derive(Default)]
-struct Dag(HashSet<BlockHash>);
-
-impl Dependencies for Dag {
-    fn in_dag(&self, hash: &BlockHash) -> bool { self.0.contains(hash) }
-
-    fn is_satisfied(&self, hash: &BlockHash) -> bool { self.0.contains(hash) }
+struct Dag {
+    blocks: HashSet<BlockHash>,
+    area: PendingUsage,
 }
 
-fn dag_with(hashes: &[u32]) -> Dag { Dag(hashes.iter().copied().map(hash).collect()) }
+impl StoreReads for Dag {
+    fn in_dag(&self, hash: &BlockHash) -> bool { self.blocks.contains(hash) }
+
+    fn is_satisfied(&self, hash: &BlockHash) -> bool { self.blocks.contains(hash) }
+
+    fn pending_usage(&self) -> PendingUsage { self.area.clone() }
+}
+
+fn dag_with(hashes: &[u32]) -> Dag {
+    Dag {
+        blocks: hashes.iter().copied().map(hash).collect(),
+        area: usage(0, HashMap::new()),
+    }
+}
+
+fn usage(blocks: usize, by_sender: HashMap<Bytes, usize>) -> PendingUsage {
+    PendingUsage {
+        limits: LIMITS,
+        blocks,
+        bytes: 0,
+        by_sender,
+    }
+}
 
 fn meta(i: u32, height: i64, deps: &[u32]) -> HeldMeta {
     HeldMeta {
@@ -63,9 +80,23 @@ fn pending(
     m
 }
 
-fn received(meta: HeldMeta) -> IngestInput { IngestInput::Received { meta, area: None } }
+fn received(meta: HeldMeta) -> IngestInput { IngestInput::Received(meta) }
 
-fn state() -> IngestState { IngestState::new(config(), IngestView::new()) }
+fn refused(i: u32, from: &str, solicited: bool, sender: &'static [u8], reason: Refusal) -> IngestInput {
+    IngestInput::IntakeRefused(Refused {
+        hash: hash(i),
+        from: Some(peer(from)),
+        unsolicited: !solicited,
+        size: 10,
+        sender: Bytes::from_static(sender),
+        reason,
+    })
+}
+
+fn state() -> (IngestState, IngestView) {
+    let view = IngestView::new();
+    (IngestState::new(view.clone()), view)
+}
 
 fn fetches(effects: &[Effect]) -> Vec<FetchAction> {
     effects
@@ -81,7 +112,6 @@ fn tick(s: &mut IngestState, now_ms: u64, connected: &[PeerNode], dag: &Dag) -> 
     s.handle(
         IngestInput::Tick {
             connected: connected.to_vec(),
-            area: PendingUsage::default(),
         },
         now_ms,
         dag,
@@ -92,38 +122,51 @@ fn tick(s: &mut IngestState, now_ms: u64, connected: &[PeerNode], dag: &Dag) -> 
 
 #[test]
 fn a_block_with_missing_parents_waits_and_its_parents_become_solicited_needs() {
-    let mut s = state();
+    let (mut s, view) = state();
     let dag = dag_with(&[0]);
     s.handle(received(meta(10, 5, &[0, 7, 8])), 0, &dag);
-    assert!(s.is_held(&hash(10)) && s.view().is_held(&hash(10)));
+    assert!(s.is_held(&hash(10)) && view.is_held(&hash(10)));
     assert!(s.next_dispatch().is_none());
     for parent in [7, 8] {
         assert!(s.is_needed(&hash(parent)));
-        assert!(s.view().is_solicited(&hash(parent)));
-        assert!(s.view().is_awaited(&hash(parent)));
-        assert!(s.view().has_waiters(&hash(parent)));
+        assert!(view.is_solicited(&hash(parent)));
+        assert!(view.is_awaited(&hash(parent)));
+        assert!(view.has_waiters(&hash(parent)));
     }
     assert!(!s.is_needed(&hash(0)));
 }
 
 #[test]
 fn a_block_is_dispatched_once_its_parents_are_inserted() {
-    let mut s = state();
+    let (mut s, view) = state();
     let mut dag = dag_with(&[0]);
     s.handle(received(meta(10, 2, &[7])), 0, &dag);
     s.handle(received(meta(7, 1, &[0])), 0, &dag);
     assert!(!s.is_needed(&hash(7)));
     assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
-    dag.0.insert(hash(7));
+    dag.blocks.insert(hash(7));
     s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
-    assert!(!s.is_held(&hash(7)) && !s.view().has_waiters(&hash(7)));
+    assert!(!s.is_held(&hash(7)) && !view.has_waiters(&hash(7)));
     assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
 }
 
 #[test]
-fn a_cited_block_at_or_below_the_anchor_is_admitted_as_settled_history() {
-    let mut s = IngestState::new(IngestConfig::new(50, LIMITS), IngestView::new());
+fn a_block_received_twice_is_held_and_dispatched_once() {
+    let (mut s, _) = state();
     let dag = dag_with(&[0]);
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    assert_eq!(s.held(), 1);
+    assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), None, "a block being validated is not dispatched again");
+}
+
+#[test]
+fn a_cited_block_at_or_below_the_anchor_is_admitted_as_settled_history() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(IngestInput::Attached { anchor_height: 50 }, 0, &dag);
     s.handle(received(meta(10, 41, &[9])), 0, &dag);
     s.handle(received(meta(9, 40, &[3])), 0, &dag);
     assert_eq!(s.next_dispatch(), Some((hash(9), Work::AdmitSettled)));
@@ -142,8 +185,17 @@ fn a_cited_block_at_or_below_the_anchor_is_admitted_as_settled_history() {
 }
 
 #[test]
+fn no_block_is_admitted_as_settled_history_before_casper_is_attached() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(10, 41, &[9])), 0, &dag);
+    s.handle(received(meta(9, 40, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(9), Work::Validate)));
+}
+
+#[test]
 fn an_announced_hash_is_awaited_but_not_solicited() {
-    let mut s = state();
+    let (mut s, view) = state();
     let dag = dag_with(&[0]);
     s.handle(
         IngestInput::Announced {
@@ -153,8 +205,8 @@ fn an_announced_hash_is_awaited_but_not_solicited() {
         0,
         &dag,
     );
-    assert!(s.view().is_awaited(&hash(5)));
-    assert!(!s.view().is_solicited(&hash(5)));
+    assert!(view.is_awaited(&hash(5)));
+    assert!(!view.is_solicited(&hash(5)));
     s.handle(
         IngestInput::Announced {
             hash: hash(0),
@@ -168,52 +220,33 @@ fn an_announced_hash_is_awaited_but_not_solicited() {
 
 #[test]
 fn an_unsolicited_malformed_block_strikes_its_pusher_and_a_solicited_one_does_not() {
-    let mut s = state();
+    let (mut s, _) = state();
     let dag = dag_with(&[0]);
-    let refused = |solicited: bool| IngestInput::IntakeRefused {
-        hash: hash(1),
-        from: Some(peer("p")),
-        unsolicited: !solicited,
-        size: 10,
-        sender: Bytes::from_static(b"v0"),
-        reason: Refusal::Malformed,
-        area: None,
-    };
-    let effects = s.handle(refused(false), 0, &dag);
+    let effects = s.handle(refused(1, "p", false, b"v0", Refusal::Malformed), 0, &dag);
     assert_eq!(effects, vec![Effect::Struck {
         peer: peer("p"),
         strike: Strike::Malformed,
         outcome: StrikeOutcome::Counted
     }]);
-    assert!(s.handle(refused(true), 0, &dag).is_empty());
+    assert!(s
+        .handle(refused(1, "p", true, b"v0", Refusal::Malformed), 0, &dag)
+        .is_empty());
 }
 
 #[test]
 fn the_sixteenth_strike_ignores_the_peer_in_the_view() {
-    let mut s = state();
+    let (mut s, view) = state();
     let dag = dag_with(&[0]);
     for i in 0..STRIKE_THRESHOLD as u32 {
-        s.handle(
-            IngestInput::IntakeRefused {
-                hash: hash(i),
-                from: Some(peer("bad")),
-                unsolicited: true,
-                size: 10,
-                sender: Bytes::from_static(b"v0"),
-                reason: Refusal::Unauthorized,
-                area: None,
-            },
-            0,
-            &dag,
-        );
+        s.handle(refused(i, "bad", false, b"v0", Refusal::Unauthorized), 0, &dag);
     }
-    assert!(s.view().is_ignored(&peer("bad"), 0));
-    assert!(!s.view().is_ignored(&peer("good"), 0));
+    assert!(view.is_ignored_at(&peer("bad"), 0));
+    assert!(!view.is_ignored_at(&peer("good"), 0));
 }
 
 #[test]
 fn a_rejected_block_drops_what_waits_on_it_and_strikes_an_unsolicited_pusher() {
-    let mut s = state();
+    let (mut s, _) = state();
     let dag = dag_with(&[0]);
     s.handle(
         received(pending(
@@ -254,7 +287,7 @@ fn a_rejected_block_drops_what_waits_on_it_and_strikes_an_unsolicited_pusher() {
 
 #[test]
 fn a_requested_block_rejected_for_an_invalid_sender_strikes_nobody() {
-    let mut s = state();
+    let (mut s, _) = state();
     let dag = dag_with(&[0]);
     s.handle(IngestInput::Need { hash: hash(1) }, 0, &dag);
     s.handle(
@@ -278,8 +311,8 @@ fn a_requested_block_rejected_for_an_invalid_sender_strikes_nobody() {
 
 #[test]
 fn an_evicted_block_keeps_its_pusher_through_redelivery() {
-    let mut s = state();
-    let dag = dag_with(&[0]);
+    let (mut s, view) = state();
+    let mut dag = dag_with(&[0]);
     s.handle(
         received(pending(
             meta(1, 1, &[9]),
@@ -291,21 +324,11 @@ fn an_evicted_block_keeps_its_pusher_through_redelivery() {
         &dag,
     );
     s.handle(received(meta(2, 2, &[1])), 0, &dag);
-    let full = PendingUsage {
-        blocks: LIMITS.max_blocks,
-        bytes: 0,
-        by_sender: HashMap::new(),
-    };
-    let effects = s.handle(
-        IngestInput::Tick {
-            connected: vec![],
-            area: full,
-        },
-        0,
-        &dag,
-    );
+    dag.area = usage(LIMITS.max_blocks, HashMap::new());
+    let effects = tick(&mut s, 0, &[], &dag);
+    dag.area = usage(0, HashMap::new());
     assert!(effects.contains(&Effect::DiscardPending(hash(1))));
-    assert!(s.is_needed(&hash(1)) && s.view().is_solicited(&hash(1)));
+    assert!(s.is_needed(&hash(1)) && view.is_solicited(&hash(1)));
     s.handle(
         received(pending(meta(1, 1, &[0]), b"v1", true, None)),
         0,
@@ -326,16 +349,14 @@ fn an_evicted_block_keeps_its_pusher_through_redelivery() {
     assert!(
         effects
             .iter()
-            .any(|e| matches!(e, Effect::Struck { peer, .. } if *peer == peer_named("pusher"))),
+            .any(|e| matches!(e, Effect::Struck { peer: struck, .. } if *struck == peer("pusher"))),
         "the original pusher is struck: {effects:?}"
     );
 }
 
-fn peer_named(name: &str) -> PeerNode { peer(name) }
-
 #[test]
 fn a_block_awaiting_a_state_root_is_released_when_it_is_imported() {
-    let mut s = state();
+    let (mut s, _) = state();
     let dag = dag_with(&[0]);
     let root = Blake2b256Hash::new(b"root");
     s.handle(received(meta(1, 1, &[0])), 0, &dag);
@@ -376,7 +397,7 @@ fn a_block_awaiting_a_state_root_is_released_when_it_is_imported() {
 
 #[test]
 fn an_exhausted_state_root_budget_drops_the_blocks_awaiting_it() {
-    let mut s = state();
+    let (mut s, _) = state();
     let dag = dag_with(&[0]);
     let root = Blake2b256Hash::new(b"root");
     s.handle(received(meta(1, 1, &[0])), 0, &dag);
@@ -404,7 +425,7 @@ fn an_exhausted_state_root_budget_drops_the_blocks_awaiting_it() {
 
 #[test]
 fn a_block_that_keeps_failing_is_dropped_and_quarantined() {
-    let mut s = state();
+    let (mut s, _) = state();
     let dag = dag_with(&[0]);
     s.handle(received(meta(1, 1, &[0])), 0, &dag);
     for _ in 0..super::dependency_tracker::MAX_VALIDATION_FAILURES {
@@ -431,7 +452,7 @@ fn a_block_that_keeps_failing_is_dropped_and_quarantined() {
 
 #[test]
 fn a_need_with_a_waiter_is_asked_for_until_a_peer_serves_it() {
-    let mut s = state();
+    let (mut s, _) = state();
     let dag = dag_with(&[0]);
     let connected = vec![peer("a"), peer("b")];
     s.handle(received(meta(10, 2, &[1])), 0, &dag);
@@ -463,8 +484,8 @@ fn a_need_with_a_waiter_is_asked_for_until_a_peer_serves_it() {
 
 #[test]
 fn proactive_passes_evict_only_unsolicited_blocks() {
-    let mut s = state();
-    let dag = dag_with(&[0]);
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
     for i in 1..=5 {
         s.handle(
             received(pending(meta(i, 1, &[99]), b"v1", true, None)),
@@ -479,19 +500,8 @@ fn proactive_passes_evict_only_unsolicited_blocks() {
             &dag,
         );
     }
-    let effects = s.handle(
-        IngestInput::Tick {
-            connected: vec![],
-            area: PendingUsage {
-                blocks: LIMITS.max_blocks,
-                bytes: 0,
-                by_sender: HashMap::new(),
-            },
-        },
-        0,
-        &dag,
-    );
-    let discarded: HashSet<BlockHash> = effects
+    dag.area = usage(LIMITS.max_blocks, HashMap::new());
+    let discarded: HashSet<BlockHash> = tick(&mut s, 0, &[], &dag)
         .iter()
         .filter_map(|e| match e {
             Effect::DiscardPending(h) => Some(h.clone()),
@@ -503,8 +513,8 @@ fn proactive_passes_evict_only_unsolicited_blocks() {
 
 #[test]
 fn a_refused_requested_block_evicts_unsolicited_before_requested_blocks() {
-    let mut s = state();
-    let dag = dag_with(&[0]);
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
     s.handle(
         received(pending(meta(1, 1, &[99]), b"v1", true, None)),
         0,
@@ -515,31 +525,20 @@ fn a_refused_requested_block_evicts_unsolicited_before_requested_blocks() {
         0,
         &dag,
     );
-    let refused = |blocks: usize| IngestInput::IntakeRefused {
-        hash: hash(50),
-        from: Some(peer("q")),
-        unsolicited: false,
-        size: 10,
-        sender: Bytes::from_static(b"v2"),
-        reason: Refusal::Pending(PendingRefusal::AreaFull),
-        area: Some(PendingUsage {
-            blocks,
-            bytes: 0,
-            by_sender: HashMap::new(),
-        }),
-    };
-    assert_eq!(s.handle(refused(LIMITS.max_blocks), 0, &dag), vec![
-        Effect::DiscardPending(hash(2))
-    ]);
-    assert_eq!(s.handle(refused(LIMITS.max_blocks), 0, &dag), vec![
-        Effect::DiscardPending(hash(1))
-    ]);
+    dag.area = usage(LIMITS.max_blocks, HashMap::new());
+    let area_full = || refused(50, "q", true, b"v2", Refusal::Pending(PendingRefusal::AreaFull));
+    assert_eq!(s.handle(area_full(), 0, &dag), vec![Effect::DiscardPending(
+        hash(2)
+    )]);
+    assert_eq!(s.handle(area_full(), 0, &dag), vec![Effect::DiscardPending(
+        hash(1)
+    )]);
 }
 
 #[test]
 fn a_sender_at_its_quota_loses_only_its_own_unsolicited_blocks() {
-    let mut s = state();
-    let dag = dag_with(&[0]);
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
     s.handle(
         received(pending(meta(1, 1, &[99]), b"v1", false, Some(peer("p")))),
         0,
@@ -555,20 +554,15 @@ fn a_sender_at_its_quota_loses_only_its_own_unsolicited_blocks() {
         0,
         &dag,
     );
+    dag.area = usage(3, [(Bytes::from_static(b"v1"), LIMITS.max_per_sender)].into());
     let effects = s.handle(
-        IngestInput::IntakeRefused {
-            hash: hash(50),
-            from: Some(peer("q")),
-            unsolicited: false,
-            size: 10,
-            sender: Bytes::from_static(b"v1"),
-            reason: Refusal::Pending(PendingRefusal::SenderLimitReached),
-            area: Some(PendingUsage {
-                blocks: 3,
-                bytes: 0,
-                by_sender: [(Bytes::from_static(b"v1"), LIMITS.max_per_sender)].into(),
-            }),
-        },
+        refused(
+            50,
+            "q",
+            true,
+            b"v1",
+            Refusal::Pending(PendingRefusal::SenderLimitReached),
+        ),
         0,
         &dag,
     );
@@ -577,23 +571,16 @@ fn a_sender_at_its_quota_loses_only_its_own_unsolicited_blocks() {
 
 #[test]
 fn a_block_too_large_for_the_area_expires_its_need_and_its_waiters() {
-    let mut s = state();
+    let (mut s, view) = state();
     let dag = dag_with(&[0]);
     s.handle(received(meta(10, 2, &[1])), 0, &dag);
     s.handle(
-        IngestInput::IntakeRefused {
-            hash: hash(1),
-            from: Some(peer("q")),
-            unsolicited: false,
-            size: LIMITS.max_bytes + 1,
-            sender: Bytes::from_static(b"v1"),
-            reason: Refusal::Pending(PendingRefusal::TooLarge),
-            area: None,
-        },
+        refused(1, "q", true, b"v1", Refusal::Pending(PendingRefusal::TooLarge)),
         0,
         &dag,
     );
     assert!(!s.is_needed(&hash(1)) && !s.is_held(&hash(10)));
+    assert!(!view.is_awaited(&hash(1)) && !view.has_waiters(&hash(1)));
 }
 
 // ── Simulation ──────────────────────────────────────────────────────────────
@@ -664,10 +651,32 @@ fn scenarios() -> impl Strategy<Value = Scenario> {
     })
 }
 
+/// The node's stores as the simulation sees them: the DAG and the pending area.
+struct SimStores<'a> {
+    dag: &'a HashSet<BlockHash>,
+    area: &'a BTreeMap<BlockHash, bool>,
+}
+
+impl StoreReads for SimStores<'_> {
+    fn in_dag(&self, hash: &BlockHash) -> bool { self.dag.contains(hash) }
+
+    fn is_satisfied(&self, hash: &BlockHash) -> bool { self.dag.contains(hash) }
+
+    fn pending_usage(&self) -> PendingUsage {
+        PendingUsage {
+            limits: LIMITS,
+            blocks: self.area.len(),
+            bytes: self.area.len() * 1_000,
+            by_sender: HashMap::new(),
+        }
+    }
+}
+
 struct Sim<'a> {
     chain: &'a Chain,
     state: IngestState,
-    dag: Dag,
+    view: IngestView,
+    dag: HashSet<BlockHash>,
     disk: HashSet<BlockHash>,
     area: BTreeMap<BlockHash, bool>,
     inbox: VecDeque<(BlockHash, Option<PeerNode>, bool)>,
@@ -682,10 +691,12 @@ const WORKERS: usize = 3;
 
 impl<'a> Sim<'a> {
     fn new(chain: &'a Chain, drop_every: u32) -> Self {
+        let (state, view) = state();
         Self {
             chain,
-            state: state(),
-            dag: dag_with(&[0]),
+            state,
+            view,
+            dag: [hash(0)].into(),
             disk: HashSet::new(),
             area: BTreeMap::new(),
             inbox: VecDeque::new(),
@@ -701,43 +712,39 @@ impl<'a> Sim<'a> {
         u32::from_be_bytes(hash[..].try_into().expect("four bytes"))
     }
 
-    fn usage(&self) -> PendingUsage {
-        PendingUsage {
-            blocks: self.area.len(),
-            bytes: self.area.len() * 1_000,
-            by_sender: HashMap::new(),
-        }
+    fn handle(&mut self, input: IngestInput) {
+        let stores = SimStores {
+            dag: &self.dag,
+            area: &self.area,
+        };
+        let effects = self.state.handle(input, self.now, &stores);
+        self.apply(effects);
     }
 
     fn intake(&mut self, h: BlockHash, from: Option<PeerNode>, from_disk: bool) {
-        if self.dag.in_dag(&h) || self.state.view().is_held(&h) {
+        if self.dag.contains(&h) || self.view.is_held(&h) {
             return;
         }
         let i = Self::index(&h);
         let deps = self.chain.parents_of(i).to_vec();
         let mut m = meta(i, self.chain.height(i), &deps);
-        let authorized = self.dag.in_dag(&hash(deps[0]));
+        let authorized = self.dag.contains(&hash(deps[0]));
         m.body = if from_disk || authorized {
             BodyAt::Disk
         } else {
             BodyAt::Pending
         };
-        m.solicited = self.state.view().is_solicited(&h);
+        m.solicited = self.view.is_solicited(&h);
         m.pushed_by = if m.solicited { None } else { from };
-        let area = match m.body {
+        match m.body {
             BodyAt::Disk => {
                 self.disk.insert(h.clone());
-                None
             }
             BodyAt::Pending => {
                 self.area.insert(h.clone(), m.solicited);
-                Some(self.usage())
             }
-        };
-        let effects =
-            self.state
-                .handle(IngestInput::Received { meta: m, area }, self.now, &self.dag);
-        self.apply(effects);
+        }
+        self.handle(IngestInput::Received(m));
     }
 
     fn apply(&mut self, effects: Vec<Effect>) {
@@ -750,12 +757,7 @@ impl<'a> Sim<'a> {
                     if self.disk.contains(&h) {
                         self.inbox.push_back((h, None, true));
                     } else {
-                        let effects = self.state.handle(
-                            IngestInput::LocalMiss { hash: h },
-                            self.now,
-                            &self.dag,
-                        );
-                        self.apply(effects);
+                        self.handle(IngestInput::LocalMiss { hash: h });
                     }
                 }
                 Effect::Fetch(FetchAction::RequestBlock { hash: h, peer }) => {
@@ -766,15 +768,8 @@ impl<'a> Sim<'a> {
                 }
                 Effect::Fetch(FetchAction::BroadcastHasBlockRequest(h)) => {
                     if self.served(&h) {
-                        let effects = self.state.handle(
-                            IngestInput::Announced {
-                                hash: h,
-                                peer: self.peers[1].clone(),
-                            },
-                            self.now,
-                            &self.dag,
-                        );
-                        self.apply(effects);
+                        let peer = self.peers[1].clone();
+                        self.handle(IngestInput::Announced { hash: h, peer });
                     }
                 }
                 Effect::Fetch(FetchAction::FetchStateRoot(_)) | Effect::Struck { .. } => {}
@@ -797,28 +792,25 @@ impl<'a> Sim<'a> {
             let i = Self::index(&h);
             for parent in self.chain.parents_of(i) {
                 assert!(
-                    self.dag.in_dag(&hash(*parent)),
+                    self.dag.contains(&hash(*parent)),
                     "block {i} was dispatched before its parent {parent} was in the DAG"
                 );
             }
-            self.dag.0.insert(h.clone());
+            self.dag.insert(h.clone());
             self.disk.insert(h.clone());
             self.area.remove(&h);
-            for input in [
-                IngestInput::Inserted { hash: h.clone() },
-                IngestInput::Outcome {
-                    hash: h,
-                    outcome: WorkOutcome::Settled,
-                },
-            ] {
-                let effects = self.state.handle(input, self.now, &self.dag);
-                self.apply(effects);
-            }
+            self.handle(IngestInput::Inserted { hash: h.clone() });
+            self.handle(IngestInput::Outcome {
+                hash: h,
+                outcome: WorkOutcome::Settled,
+            });
         }
     }
 
     fn restart(&mut self) {
-        self.state = state();
+        let (state, view) = state();
+        self.state = state;
+        self.view = view;
         self.area.clear();
         self.inbox.clear();
         let tips: Vec<u32> = (1..=self.chain.blocks())
@@ -827,28 +819,17 @@ impl<'a> Sim<'a> {
             })
             .collect();
         for tip in tips {
-            let effects = self.state.handle(
-                IngestInput::Announced {
-                    hash: hash(tip),
-                    peer: self.peers[0].clone(),
-                },
-                self.now,
-                &self.dag,
-            );
-            self.apply(effects);
+            let peer = self.peers[0].clone();
+            self.handle(IngestInput::Announced {
+                hash: hash(tip),
+                peer,
+            });
         }
     }
 
     fn step(&mut self) {
-        let effects = self.state.handle(
-            IngestInput::Tick {
-                connected: self.peers.clone(),
-                area: self.usage(),
-            },
-            self.now,
-            &self.dag,
-        );
-        self.apply(effects);
+        let connected = self.peers.clone();
+        self.handle(IngestInput::Tick { connected });
         while let Some((h, from, from_disk)) = self.inbox.pop_front() {
             self.intake(h, from, from_disk);
         }
@@ -862,16 +843,16 @@ impl<'a> Sim<'a> {
             let h = hash(i);
             assert_eq!(
                 self.state.is_held(&h),
-                self.state.view().is_held(&h),
+                self.view.is_held(&h),
                 "view held for {i}"
             );
             assert_eq!(
                 self.state.is_needed(&h),
-                self.state.view().is_awaited(&h),
+                self.view.is_awaited(&h),
                 "view needed for {i}"
             );
             assert!(
-                !(self.state.is_held(&h) && self.dag.in_dag(&h)),
+                !(self.state.is_held(&h) && self.dag.contains(&h)),
                 "{i} is held and in the DAG"
             );
             let held_pending = self
@@ -886,22 +867,15 @@ impl<'a> Sim<'a> {
         }
     }
 
-    fn converged(&self) -> bool { (1..=self.chain.blocks()).all(|i| self.dag.in_dag(&hash(i))) }
+    fn converged(&self) -> bool { (1..=self.chain.blocks()).all(|i| self.dag.contains(&hash(i))) }
 }
 
 fn all_tips_announced(sim: &mut Sim) {
     let n = sim.chain.blocks();
     for i in 1..=n {
         if !(1..=n).any(|child| sim.chain.parents_of(child).contains(&i)) {
-            let effects = sim.state.handle(
-                IngestInput::Announced {
-                    hash: hash(i),
-                    peer: sim.peers[2].clone(),
-                },
-                sim.now,
-                &sim.dag,
-            );
-            sim.apply(effects);
+            let peer = sim.peers[2].clone();
+            sim.handle(IngestInput::Announced { hash: hash(i), peer });
         }
     }
 }

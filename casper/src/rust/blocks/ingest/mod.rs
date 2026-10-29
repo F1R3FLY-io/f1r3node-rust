@@ -10,11 +10,15 @@
 
 #![warn(clippy::all)]
 
+pub mod block_ingest;
 pub mod dependency_tracker;
 pub mod fetch_scheduler;
 pub mod ingest_state;
+pub mod ingest_step;
 pub mod ingest_view;
+pub mod intake_worker;
 pub mod peer_reputation;
+pub mod validation_worker;
 
 #[cfg(test)]
 mod ingest_state_tests;

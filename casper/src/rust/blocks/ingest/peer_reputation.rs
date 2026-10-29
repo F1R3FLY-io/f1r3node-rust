@@ -2,6 +2,8 @@ use std::collections::{HashMap, VecDeque};
 
 use comm::rust::peer_node::PeerNode;
 
+use super::ingest_view::IngestView;
+
 pub const MAX_TRACKED_PEERS: usize = 1_024;
 
 pub const STRIKE_WINDOW_MS: u64 = 10 * 60 * 1000;
@@ -35,15 +37,23 @@ pub enum StrikeOutcome {
 
 /// Strikes against peers that pushed unsolicited blocks with a striking
 /// outcome, and the peers ignored for reaching the threshold inside the
-/// window. Both tables stay within `MAX_TRACKED_PEERS`.
-#[derive(Debug, Default)]
+/// window. Both tables stay within `MAX_TRACKED_PEERS`. Publishes the ignore
+/// list to the view.
+#[derive(Debug)]
 pub struct PeerReputation {
+    view: IngestView,
     strikes: HashMap<PeerNode, VecDeque<u64>>,
     ignored_until: HashMap<PeerNode, u64>,
 }
 
 impl PeerReputation {
-    pub fn new() -> Self { Self::default() }
+    pub fn new(view: IngestView) -> Self {
+        Self {
+            view,
+            strikes: HashMap::new(),
+            ignored_until: HashMap::new(),
+        }
+    }
 
     pub fn strike(&mut self, peer: &PeerNode, now_ms: u64) -> StrikeOutcome {
         if self.is_ignored(peer, now_ms) {
@@ -70,6 +80,7 @@ impl PeerReputation {
         }
         let until_ms = now_ms.saturating_add(IGNORE_TTL_MS);
         self.ignored_until.insert(peer.clone(), until_ms);
+        self.view.set_ignored_until(peer, Some(until_ms));
         StrikeOutcome::Ignored { until_ms }
     }
 
@@ -86,16 +97,18 @@ impl PeerReputation {
             .count()
     }
 
+    #[cfg(test)]
     pub fn tracked_strikers(&self) -> usize { self.strikes.len() }
 
-    pub fn ignored(&self) -> impl Iterator<Item = (&PeerNode, u64)> {
-        self.ignored_until
-            .iter()
-            .map(|(peer, until)| (peer, *until))
-    }
-
     fn sweep(&mut self, now_ms: u64) {
-        self.ignored_until.retain(|_, until| now_ms < *until);
+        let view = &self.view;
+        self.ignored_until.retain(|peer, until| {
+            let kept = now_ms < *until;
+            if !kept {
+                view.set_ignored_until(peer, None);
+            }
+            kept
+        });
         self.strikes.retain(|_, times| {
             drop_strikes_outside_window(times, now_ms);
             !times.is_empty()
@@ -121,6 +134,7 @@ impl PeerReputation {
             .map(|(peer, _)| peer.clone());
         if let Some(peer) = earliest {
             self.ignored_until.remove(&peer);
+            self.view.set_ignored_until(&peer, None);
         }
     }
 }
@@ -169,7 +183,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_threshold_strike_ignores_the_peer() {
-        let mut reputation = PeerReputation::new();
+        let mut reputation = PeerReputation::new(IngestView::new());
         let bad = peer("bad");
         let below = strike_n(&mut reputation, &bad, STRIKE_THRESHOLD - 1, 1_000);
         assert_eq!(below, StrikeOutcome::Counted);
@@ -183,7 +197,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_strike_while_ignored_does_not_extend_the_ignore() {
-        let mut reputation = PeerReputation::new();
+        let mut reputation = PeerReputation::new(IngestView::new());
         let bad = peer("bad");
         strike_n(&mut reputation, &bad, STRIKE_THRESHOLD, 0);
         assert_eq!(reputation.strike(&bad, 1_000), StrikeOutcome::Counted);
@@ -192,7 +206,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_ignore_expires_after_its_ttl() {
-        let mut reputation = PeerReputation::new();
+        let mut reputation = PeerReputation::new(IngestView::new());
         let bad = peer("bad");
         strike_n(&mut reputation, &bad, STRIKE_THRESHOLD, 0);
         assert!(reputation.is_ignored(&bad, IGNORE_TTL_MS - 1));
@@ -202,7 +216,7 @@ pub(crate) mod tests {
 
     #[test]
     fn strikes_older_than_the_window_do_not_count() {
-        let mut reputation = PeerReputation::new();
+        let mut reputation = PeerReputation::new(IngestView::new());
         let p = peer("slow");
         strike_n(&mut reputation, &p, STRIKE_THRESHOLD - 1, 0);
         assert_eq!(
@@ -214,7 +228,7 @@ pub(crate) mod tests {
 
     #[test]
     fn many_identities_stay_inside_the_peer_bound() {
-        let mut reputation = PeerReputation::new();
+        let mut reputation = PeerReputation::new(IngestView::new());
         for i in 0..MAX_TRACKED_PEERS + 10 {
             reputation.strike(&peer(&format!("id{i}")), 0);
         }
@@ -223,7 +237,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_flooder_is_ignored_when_throwaway_identities_fill_the_strike_table() {
-        let mut reputation = PeerReputation::new();
+        let mut reputation = PeerReputation::new(IngestView::new());
         for i in 0..MAX_TRACKED_PEERS {
             reputation.strike(&peer(&format!("id{i}")), 0);
         }
@@ -236,7 +250,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_new_flooder_is_ignored_when_the_ignore_table_is_full() {
-        let mut reputation = PeerReputation::new();
+        let mut reputation = PeerReputation::new(IngestView::new());
         for i in 0..MAX_TRACKED_PEERS {
             strike_n(
                 &mut reputation,
@@ -259,5 +273,18 @@ pub(crate) mod tests {
         assert!(matches!(last, StrikeOutcome::Ignored { .. }));
         assert!(reputation.is_ignored(&bad, MAX_TRACKED_PEERS as u64));
         assert!(!reputation.is_ignored(&peer("id0"), MAX_TRACKED_PEERS as u64));
+    }
+
+    #[test]
+    fn the_view_mirrors_the_ignore_list() {
+        let view = IngestView::new();
+        let mut reputation = PeerReputation::new(view.clone());
+        for i in 0..MAX_TRACKED_PEERS {
+            strike_n(&mut reputation, &peer(&format!("id{i}")), STRIKE_THRESHOLD, i as u64);
+        }
+        assert!(view.is_ignored_at(&peer("id0"), MAX_TRACKED_PEERS as u64));
+        strike_n(&mut reputation, &peer("bad"), STRIKE_THRESHOLD, MAX_TRACKED_PEERS as u64);
+        assert!(view.is_ignored_at(&peer("bad"), MAX_TRACKED_PEERS as u64));
+        assert!(!view.is_ignored_at(&peer("id0"), MAX_TRACKED_PEERS as u64));
     }
 }

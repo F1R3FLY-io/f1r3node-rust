@@ -2431,3 +2431,26 @@ async fn the_insert_observer_hears_each_inserted_block_once_in_every_mode() {
         settled.block_hash.clone()
     ]);
 }
+
+#[tokio::test]
+async fn the_latest_message_read_agrees_with_the_representation() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    let block = chain_block(1, vec![genesis.block_hash.clone()]);
+    dag_storage.insert(&block, InsertMode::Normal).unwrap();
+
+    let representation = dag_storage.get_representation().unwrap();
+    let unknown = prost::bytes::Bytes::from_static(b"no such validator");
+    for validator in [&genesis.sender, &block.sender, &unknown] {
+        assert_eq!(
+            dag_storage.latest_message_hash(validator).unwrap(),
+            representation.latest_message_hash(validator)
+        );
+    }
+    assert_eq!(
+        dag_storage.latest_message_hash(&block.sender).unwrap(),
+        Some(block.block_hash.clone())
+    );
+}

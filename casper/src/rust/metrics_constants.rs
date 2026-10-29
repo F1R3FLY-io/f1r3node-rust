@@ -38,6 +38,21 @@ pub const PEER_SCORING_STRIKES_METRIC: &str = "block.retriever.peer-scoring.stri
 pub const PEER_SCORING_IGNORED_PEERS_METRIC: &str = "block.retriever.peer-scoring.ignored-peers";
 pub const PEER_SCORING_DROPPED_MESSAGES_METRIC: &str =
     "block.retriever.peer-scoring.dropped-messages";
+pub const BLOCK_INGEST_METRICS_SOURCE: &str = "f1r3fly.casper.block-ingest";
+pub const BLOCK_INGEST_HELD_METRIC: &str = "block.ingest.held";
+pub const BLOCK_INGEST_DISK_ENTRIES_METRIC: &str = "block.ingest.disk-entries";
+pub const BLOCK_INGEST_NEEDS_METRIC: &str = "block.ingest.needs";
+pub const BLOCK_INGEST_UNCITED_NEEDS_METRIC: &str = "block.ingest.uncited-needs";
+pub const BLOCK_INGEST_ROOT_NEEDS_METRIC: &str = "block.ingest.root-needs";
+pub const BLOCK_INGEST_VALIDATING_METRIC: &str = "block.ingest.validating";
+pub const BLOCK_INGEST_INSERTS_PENDING_METRIC: &str = "block.ingest.inserts-pending";
+pub const BLOCK_INGEST_LANE_DROPS_METRIC: &str = "block.ingest.lane-drops";
+pub const BLOCK_INGEST_OUTBOUND_DROPS_METRIC: &str = "block.ingest.outbound-drops";
+pub const BLOCK_INGEST_PEER_REPUTATION_STRIKES_METRIC: &str = "block.ingest.peer-reputation.strikes";
+pub const BLOCK_INGEST_PEER_REPUTATION_IGNORED_PEERS_METRIC: &str =
+    "block.ingest.peer-reputation.ignored-peers";
+pub const BLOCK_INGEST_PEER_REPUTATION_DROPPED_MESSAGES_METRIC: &str =
+    "block.ingest.peer-reputation.dropped-messages";
 pub const ACTIVE_VALIDATORS_CACHE_SIZE_METRIC: &str = "active-validators-cache.size";
 pub const DEPLOYS_IN_SCOPE_SIZE_METRIC: &str = "deploys-in-scope.size";
 pub const DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC: &str = "deploys-in-scope.sig-bytes-estimate";

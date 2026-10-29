@@ -6,6 +6,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 
+use super::ingest_view::IngestView;
+
 pub const MAX_DISK_ENTRIES: usize = 65_536;
 
 pub const MAX_VALIDATION_FAILURES: u32 = 32;
@@ -95,9 +97,11 @@ pub enum VictimClass {
 
 /// Held blocks, what each waits on, and the blocks ready to dispatch, lowest
 /// height first. A held block waits on missing blocks and at most one state
-/// root; it becomes ready when the last of them arrives.
-#[derive(Debug, Default)]
+/// root; it becomes ready when the last of them arrives. Publishes which
+/// blocks are held and which are waited on to the view.
+#[derive(Debug)]
 pub struct DependencyTracker {
+    view: IngestView,
     held: HashMap<BlockHash, Held>,
     waiters: HashMap<BlockHash, HashSet<BlockHash>>,
     root_waiters: HashMap<Blake2b256Hash, HashSet<BlockHash>>,
@@ -109,11 +113,22 @@ pub struct DependencyTracker {
 }
 
 impl DependencyTracker {
-    pub fn new() -> Self { Self::default() }
+    pub fn new(view: IngestView) -> Self {
+        Self {
+            view,
+            held: HashMap::new(),
+            waiters: HashMap::new(),
+            root_waiters: HashMap::new(),
+            ready: BTreeSet::new(),
+            failures: HashMap::new(),
+            quarantined_until: HashMap::new(),
+            disk_entries: 0,
+            next_seq: 0,
+        }
+    }
 
-    /// Hold a block that waits on `missing`. Returns the dependencies that
-    /// this entry made waited-on for the first time.
-    pub fn hold(&mut self, meta: HeldMeta, work: Work, missing: Vec<BlockHash>) -> Vec<BlockHash> {
+    /// Hold a block that waits on `missing`.
+    pub fn hold(&mut self, meta: HeldMeta, work: Work, missing: Vec<BlockHash>) {
         let hash = meta.hash.clone();
         assert!(
             !self.held.contains_key(&hash),
@@ -122,16 +137,12 @@ impl DependencyTracker {
         if meta.body == BodyAt::Disk {
             self.disk_entries += 1;
         }
+        self.view.set_held(&hash, true, meta.solicited);
         let seq = self.next_seq;
         self.next_seq += 1;
         let missing: HashSet<BlockHash> = missing.into_iter().collect();
-        let mut first_waited = Vec::new();
         for dependency in &missing {
-            let waiters = self.waiters.entry(dependency.clone()).or_default();
-            if waiters.is_empty() {
-                first_waited.push(dependency.clone());
-            }
-            waiters.insert(hash.clone());
+            self.add_waiter(dependency, &hash);
         }
         let held = Held {
             meta,
@@ -149,7 +160,6 @@ impl DependencyTracker {
             self.ready.insert(held.ready_key());
         }
         self.held.insert(hash, held);
-        first_waited
     }
 
     pub fn contains(&self, hash: &BlockHash) -> bool { self.held.contains_key(hash) }
@@ -160,6 +170,7 @@ impl DependencyTracker {
 
     pub fn is_waited_on(&self, hash: &BlockHash) -> bool { self.waiters.contains_key(hash) }
 
+    #[cfg(test)]
     pub fn is_root_awaited(&self, root: &Blake2b256Hash) -> bool {
         self.root_waiters.contains_key(root)
     }
@@ -202,6 +213,7 @@ impl DependencyTracker {
             false => Departure::default(),
         };
         if let Some(waiters) = self.waiters.remove(hash) {
+            self.view.set_waited_on(hash, false);
             for waiter in waiters {
                 let held = self
                     .held
@@ -226,47 +238,36 @@ impl DependencyTracker {
         }
     }
 
-    /// Validation of `hash` named a block it still needs. Returns whether that
-    /// block is now waited on for the first time.
-    pub fn wait_on_block(&mut self, hash: &BlockHash, missing: &BlockHash) -> bool {
+    /// Validation of `hash` named a block it still needs.
+    pub fn wait_on_block(&mut self, hash: &BlockHash, missing: &BlockHash) {
         let held = self.working(hash);
         held.stage = Stage::Waiting;
         held.missing.insert(missing.clone());
-        let waiters = self.waiters.entry(missing.clone()).or_default();
-        let first = waiters.is_empty();
-        waiters.insert(hash.clone());
-        first
+        self.add_waiter(missing, hash);
     }
 
-    /// Validation of `hash` needs a state root the node lacks. Returns whether
-    /// that root is now awaited for the first time.
-    pub fn wait_on_root(&mut self, hash: &BlockHash, root: &Blake2b256Hash) -> bool {
+    /// Validation of `hash` needs a state root the node lacks.
+    pub fn wait_on_root(&mut self, hash: &BlockHash, root: &Blake2b256Hash) {
         let held = self.working(hash);
         held.stage = Stage::Waiting;
         held.awaiting_root = Some(root.clone());
-        let waiters = self.root_waiters.entry(root.clone()).or_default();
-        let first = waiters.is_empty();
-        waiters.insert(hash.clone());
-        first
+        self.root_waiters
+            .entry(root.clone())
+            .or_default()
+            .insert(hash.clone());
     }
 
     /// A settled-history admission declined `hash`; it waits on `missing` and
     /// is validated like any other block.
-    pub fn reclassify(&mut self, hash: &BlockHash, missing: Vec<BlockHash>) -> Vec<BlockHash> {
+    pub fn reclassify(&mut self, hash: &BlockHash, missing: Vec<BlockHash>) {
         let held = self.working(hash);
         held.work = Work::Validate;
         held.stage = Stage::Waiting;
         held.missing.extend(missing.iter().cloned());
-        let mut first_waited = Vec::new();
-        for dependency in missing {
-            let waiters = self.waiters.entry(dependency.clone()).or_default();
-            if waiters.is_empty() {
-                first_waited.push(dependency);
-            }
-            waiters.insert(hash.clone());
+        for dependency in &missing {
+            self.add_waiter(dependency, hash);
         }
         self.promote_if_ready(hash);
-        first_waited
     }
 
     /// A validation attempt of `hash` failed without a verdict.
@@ -312,7 +313,9 @@ impl DependencyTracker {
             departure.unwaited.append(&mut taken.unwaited);
             departure.unawaited_roots.append(&mut taken.unawaited_roots);
         }
-        self.waiters.remove(hash);
+        if self.waiters.remove(hash).is_some() {
+            self.view.set_waited_on(hash, false);
+        }
         departure
             .unwaited
             .retain(|h| !seen.contains(h) && !self.waiters.contains_key(h));
@@ -382,8 +385,17 @@ impl DependencyTracker {
         }
     }
 
+    fn add_waiter(&mut self, dependency: &BlockHash, waiter: &BlockHash) {
+        let waiters = self.waiters.entry(dependency.clone()).or_default();
+        if waiters.is_empty() {
+            self.view.set_waited_on(dependency, true);
+        }
+        waiters.insert(waiter.clone());
+    }
+
     fn take(&mut self, hash: &BlockHash) -> Departure {
         let held = self.held.remove(hash).expect("only held entries are taken");
+        self.view.set_held(hash, false, false);
         if held.meta.body == BodyAt::Disk {
             self.disk_entries -= 1;
         }
@@ -399,6 +411,7 @@ impl DependencyTracker {
             waiters.remove(hash);
             if waiters.is_empty() {
                 self.waiters.remove(dependency);
+                self.view.set_waited_on(dependency, false);
                 unwaited.push(dependency.clone());
             }
         }
@@ -445,7 +458,9 @@ pub(crate) mod tests {
         }
     }
 
-    fn hold(t: &mut DependencyTracker, i: u32, height: i64, missing: &[u32]) -> Vec<BlockHash> {
+    fn tracker() -> DependencyTracker { DependencyTracker::new(IngestView::new()) }
+
+    fn hold(t: &mut DependencyTracker, i: u32, height: i64, missing: &[u32]) {
         t.hold(
             meta(i, height, missing),
             Work::Validate,
@@ -455,7 +470,7 @@ pub(crate) mod tests {
 
     #[test]
     fn ready_blocks_are_dispatched_lowest_height_first() {
-        let mut t = DependencyTracker::new();
+        let mut t = tracker();
         hold(&mut t, 1, 9, &[]);
         hold(&mut t, 2, 3, &[]);
         hold(&mut t, 3, 5, &[]);
@@ -467,12 +482,10 @@ pub(crate) mod tests {
 
     #[test]
     fn a_block_is_ready_once_its_last_dependency_is_inserted() {
-        let mut t = DependencyTracker::new();
-        assert_eq!(
-            as_set(hold(&mut t, 10, 5, &[1, 2])),
-            as_set(vec![hash(1), hash(2)])
-        );
-        assert!(hold(&mut t, 11, 5, &[1]).is_empty());
+        let mut t = tracker();
+        hold(&mut t, 10, 5, &[1, 2]);
+        hold(&mut t, 11, 5, &[1]);
+        assert!(t.is_waited_on(&hash(1)) && t.is_waited_on(&hash(2)));
         assert!(t.next_ready().is_none());
         t.inserted(&hash(1));
         assert_eq!(t.next_ready(), Some((hash(11), Work::Validate)));
@@ -482,8 +495,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_view_mirrors_held_and_waited_on_blocks() {
+        let view = IngestView::new();
+        let mut t = DependencyTracker::new(view.clone());
+        let mut solicited = meta(1, 1, &[9]);
+        solicited.solicited = true;
+        t.hold(solicited, Work::Validate, vec![hash(9)]);
+        hold(&mut t, 2, 2, &[1]);
+        assert!(view.is_held(&hash(1)) && view.is_solicited(&hash(1)));
+        assert!(view.is_held(&hash(2)) && !view.is_solicited(&hash(2)));
+        assert!(view.has_waiters(&hash(9)) && view.has_waiters(&hash(1)));
+        t.evict(&hash(1));
+        assert!(!view.is_held(&hash(1)) && !view.is_solicited(&hash(1)));
+        assert!(!view.has_waiters(&hash(9)) && view.has_waiters(&hash(1)));
+        t.drop_with_dependents(&hash(1));
+        assert!(!view.is_held(&hash(2)) && !view.has_waiters(&hash(1)));
+    }
+
+    #[test]
     fn an_inserted_held_block_leaves_and_releases_its_waiters() {
-        let mut t = DependencyTracker::new();
+        let mut t = tracker();
         hold(&mut t, 1, 1, &[]);
         hold(&mut t, 2, 2, &[1]);
         assert_eq!(t.next_ready(), Some((hash(1), Work::Validate)));
@@ -495,11 +526,12 @@ pub(crate) mod tests {
 
     #[test]
     fn a_block_waiting_on_a_state_root_is_ready_when_the_root_is_imported() {
-        let mut t = DependencyTracker::new();
+        let mut t = tracker();
         let root = Blake2b256Hash::new(b"root");
         hold(&mut t, 1, 1, &[]);
         t.next_ready();
-        assert!(t.wait_on_root(&hash(1), &root));
+        t.wait_on_root(&hash(1), &root);
+        assert!(t.is_root_awaited(&root));
         assert!(t.next_ready().is_none());
         t.root_imported(&root);
         assert_eq!(t.next_ready(), Some((hash(1), Work::Validate)));
@@ -508,7 +540,7 @@ pub(crate) mod tests {
 
     #[test]
     fn dropping_a_block_drops_everything_that_waits_on_it() {
-        let mut t = DependencyTracker::new();
+        let mut t = tracker();
         hold(&mut t, 1, 1, &[]);
         hold(&mut t, 2, 2, &[1, 7]);
         hold(&mut t, 3, 3, &[2]);
@@ -527,7 +559,7 @@ pub(crate) mod tests {
 
     #[test]
     fn an_evicted_block_stays_waited_on_by_its_waiters() {
-        let mut t = DependencyTracker::new();
+        let mut t = tracker();
         hold(&mut t, 1, 1, &[9]);
         hold(&mut t, 2, 2, &[1]);
         let departure = t.evict(&hash(1));
@@ -539,7 +571,7 @@ pub(crate) mod tests {
 
     #[test]
     fn victims_are_untrusted_first_then_highest_first_and_never_in_work() {
-        let mut t = DependencyTracker::new();
+        let mut t = tracker();
         let mut entry = |i: u32, height: i64, trusted: bool| {
             let mut m = meta(i, height, &[]);
             m.trusted = trusted;
@@ -566,7 +598,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_failing_block_is_retried_then_quarantined() {
-        let mut t = DependencyTracker::new();
+        let mut t = tracker();
         hold(&mut t, 1, 1, &[]);
         for _ in 1..MAX_VALIDATION_FAILURES {
             assert!(t.next_ready().is_some());
@@ -579,11 +611,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_insert_clears_the_failure_count() {
+        let mut t = tracker();
+        hold(&mut t, 1, 1, &[]);
+        for _ in 1..MAX_VALIDATION_FAILURES {
+            t.next_ready();
+            assert_eq!(t.failed(&hash(1), 0), FailureVerdict::Retry);
+        }
+        t.inserted(&hash(1));
+        hold(&mut t, 1, 1, &[]);
+        for _ in 1..MAX_VALIDATION_FAILURES {
+            t.next_ready();
+            assert_eq!(t.failed(&hash(1), 0), FailureVerdict::Retry);
+        }
+    }
+
+    #[test]
     fn a_declined_settled_admission_waits_and_is_validated() {
-        let mut t = DependencyTracker::new();
+        let mut t = tracker();
         t.hold(meta(1, 1, &[2]), Work::AdmitSettled, vec![]);
         assert_eq!(t.next_ready(), Some((hash(1), Work::AdmitSettled)));
-        assert_eq!(t.reclassify(&hash(1), vec![hash(2)]), vec![hash(2)]);
+        t.reclassify(&hash(1), vec![hash(2)]);
+        assert!(t.is_waited_on(&hash(2)));
         assert!(t.next_ready().is_none());
         t.inserted(&hash(2));
         assert_eq!(t.next_ready(), Some((hash(1), Work::Validate)));
@@ -591,7 +640,7 @@ pub(crate) mod tests {
 
     #[test]
     fn disk_entries_are_counted_as_they_come_and_go() {
-        let mut t = DependencyTracker::new();
+        let mut t = tracker();
         hold(&mut t, 1, 1, &[5]);
         let mut pending = meta(2, 1, &[5]);
         pending.body = BodyAt::Pending;
