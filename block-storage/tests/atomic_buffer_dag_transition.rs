@@ -18,9 +18,10 @@ use std::collections::HashSet;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, InsertMode};
 use block_storage::rust::dag::buffer_dag_transition::{
-    atomic_commit_dependencies, atomic_insert_then_buffer, reconcile_buffer_against_dag,
-    BufferTransition,
+    atomic_commit_dependencies, atomic_insert_then_buffer, purge_buffered_blocks_without_body,
+    reconcile_buffer_against_dag, BufferTransition,
 };
+use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHashSerde;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::BlockMessage;
@@ -385,4 +386,45 @@ async fn a_child_committed_after_its_parent_enters_the_dag_keeps_no_stale_relati
         buffer.is_pendant(&child_hash),
         "with no unmet dependency left, the child waits as a pendant for the next release scan"
     );
+}
+
+#[tokio::test]
+async fn a_restart_purges_a_buffered_block_whose_body_was_pending() {
+    let mut kvm = InMemoryStoreManager::new();
+    let stored_child = make_block();
+    let pending_parent = make_block();
+    let missing = BlockHashSerde(make_block().block_hash);
+    let parent_hash = BlockHashSerde(pending_parent.block_hash.clone());
+    let child_hash = BlockHashSerde(stored_child.block_hash.clone());
+    {
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut kvm)
+            .await
+            .unwrap();
+        block_store.put_block_message(&stored_child).unwrap();
+        block_store.put_pending(&pending_parent, false).unwrap();
+        buffer
+            .add_relation(missing.clone(), parent_hash.clone())
+            .unwrap();
+        buffer
+            .add_relation(parent_hash.clone(), child_hash.clone())
+            .unwrap();
+        assert_eq!(
+            purge_buffered_blocks_without_body(&buffer, &block_store).unwrap(),
+            0
+        );
+    }
+
+    let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+    let buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut kvm)
+        .await
+        .unwrap();
+    assert!(buffer.contains(&parent_hash));
+
+    let purged = purge_buffered_blocks_without_body(&buffer, &block_store).unwrap();
+
+    assert_eq!(purged, 1);
+    assert!(!buffer.contains(&parent_hash));
+    assert!(!buffer.contains(&child_hash));
+    assert!(buffer.is_pendant(&child_hash));
 }
