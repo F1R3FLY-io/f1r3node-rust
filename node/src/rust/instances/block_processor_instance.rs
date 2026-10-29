@@ -814,15 +814,23 @@ mod tests {
 
         fn item(&self, byte: u8) -> BlockQueueItem { self.queue(self.signed(byte)) }
 
-        fn forged_item(&self, byte: u8, signed_hash: bool) -> BlockQueueItem {
+        fn forged_item(&self, foreign_hash: bool) -> BlockQueueItem {
             let (sk, _pk) = Secp256k1.new_key_pair();
             let attacker = ValidatorIdentity::new(&sk);
             let mut block = attacker.sign_block(&self.casper.approved);
-            block.block_hash = vec![byte; 32].into();
-            if signed_hash {
+            if foreign_hash {
+                block.block_hash = vec![31; 32].into();
                 block.sig = attacker.signature(block.block_hash.as_ref()).sig;
+            } else {
+                let mut sig = block.sig.to_vec();
+                sig[4] ^= 0xff;
+                block.sig = sig.into();
             }
-            assert_eq!(Validate::block_signature(&block), signed_hash);
+            assert_eq!(Validate::block_signature(&block), foreign_hash);
+            assert_eq!(
+                matches!(Validate::block_hash(&block), Either::Right(_)),
+                !foreign_hash
+            );
             self.queue(block)
         }
 
@@ -890,9 +898,10 @@ mod tests {
             .is_empty());
     }
 
-    async fn refuse_without_touching_the_claimed_hash(signed_hash: bool) {
+    async fn refuse_without_touching_the_claimed_hash(foreign_hash: bool) {
         let fixture = StartupFixture::new().await;
-        let claimed: BlockHash = vec![31; 32].into();
+        let item = fixture.forged_item(foreign_hash);
+        let claimed = item.1.block_hash.clone();
         fixture
             .retriever
             .admit_hash(
@@ -909,7 +918,7 @@ mod tests {
 
         let (tx, instance) = fixture.instance();
         let mut results = instance.create().unwrap();
-        assert!(tx.send(fixture.forged_item(31, signed_hash)).await.is_ok());
+        assert!(tx.send(item).await.is_ok());
         drop(tx);
         assert!(
             tokio::time::timeout(Duration::from_secs(10), results.recv())
