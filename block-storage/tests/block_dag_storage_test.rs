@@ -2492,6 +2492,39 @@ async fn an_unpublished_commit_survives_a_restart_with_its_epoch() {
 }
 
 #[tokio::test]
+async fn commit_lfb_refuses_a_block_not_in_the_dag() {
+    use block_storage::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
+    let mut kvm = InMemoryStoreManager::new();
+    let (dag_storage, genesis, _b1, _b2, _b3) = chain_of_three(&mut kvm).await;
+
+    // A fabricated hash never inserted into the dag. commit_lfb must short-
+    // circuit with NotInDag before invoking the validate closure.
+    let orphan: BlockHash = BlockHash::from(vec![0xAAu8; 32]);
+    let mut validate_called = false;
+    let outcome = dag_storage
+        .commit_lfb(orphan.clone(), 0.5, |_| {
+            validate_called = true;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(outcome, CommitOutcome::Refused(CommitRefusal::NotInDag));
+    assert!(
+        !validate_called,
+        "a candidate missing from the dag must be refused before validation runs",
+    );
+    let dag = dag_storage.get_representation().unwrap();
+    assert_eq!(
+        dag.last_finalized_block(),
+        genesis.block_hash,
+        "a refused commit must leave the LFB unchanged",
+    );
+    assert!(
+        dag_storage.lfb_pointer().unwrap().is_none(),
+        "a refused commit must not install an LFB pointer",
+    );
+}
+
+#[tokio::test]
 async fn the_lfb_pointer_never_moves_down() {
     use block_storage::rust::dag::finalization_commit::CommitOutcome;
     let mut kvm = InMemoryStoreManager::new();
