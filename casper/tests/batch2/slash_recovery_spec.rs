@@ -14,12 +14,13 @@ use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::casper::Casper;
 use casper::rust::merging::rejected_slash::RejectedSlash;
 use casper::rust::slashing_authorization::checked_base_seq;
-use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::ParentsPostStateCacheKey;
+use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::equivocation_record::EquivocationRecord;
+use rholang::rust::interpreter::system_processes::BlockData;
 
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
@@ -784,4 +785,102 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
          the strength of recovered_rejected_slashes alone.",
         succeeded_slash_for_invalid_block
     );
+}
+
+// LFS rebuilds mergeable entries by replaying each block. The slash deploy
+// produces the whole invalid-blocks map into a COMM event, so the replay must
+// use the block's own slash targets. The DAG invalid set of the replaying node
+// can contain other blocks.
+#[tokio::test]
+async fn slash_block_replays_with_its_own_slash_targets() {
+    let ctx = TestContext::new().await;
+
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("create_network(3)");
+
+    let deploy_data = construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone()))
+        .expect("build deploy");
+    nodes[0]
+        .casper
+        .deploy(deploy_data)
+        .expect("validator 0 deploy");
+    let signed_block = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("validator 0 creates signed_block");
+    let invalid_block = {
+        let mut b = signed_block.clone();
+        b.seq_num = 47;
+        b
+    };
+    observe_slashable_evidence(&nodes[1], &invalid_block);
+    observe_slashable_evidence(&nodes[2], &invalid_block);
+
+    let deploy_data_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone()))
+        .expect("build deploy a");
+    nodes[1]
+        .casper
+        .deploy(deploy_data_a)
+        .expect("validator 1 deploy");
+    let slash_block = nodes[1]
+        .create_block_unsafe(&[])
+        .await
+        .expect("validator 1 creates slash_block");
+
+    let unrelated_invalid = {
+        let mut b = invalid_block.clone();
+        b.block_hash = vec![7; 32].into();
+        b.sender = ctx.genesis.validator_pks()[3].bytes.clone();
+        b
+    };
+    nodes[2]
+        .block_dag_storage
+        .insert(&unrelated_invalid, InsertMode::Invalid)
+        .expect("record unrelated invalid block");
+
+    let dag = nodes[2]
+        .block_dag_storage
+        .get_representation()
+        .expect("dag");
+    let own_targets =
+        proto_util::block_slash_invalid_blocks(&dag, &slash_block).expect("own slash targets");
+    let dag_invalid_set = dag.invalid_blocks_map().expect("dag invalid set");
+    assert_eq!(own_targets.keys().collect::<Vec<_>>(), vec![
+        &invalid_block.block_hash
+    ]);
+    assert!(dag_invalid_set.contains_key(&unrelated_invalid.block_hash));
+
+    let pre_state = &slash_block.body.state.pre_state_hash;
+    let post_state = &slash_block.body.state.post_state_hash;
+    let block_data = BlockData::from_block(&slash_block);
+    let with_dag_set = nodes[2]
+        .runtime_manager
+        .replay_compute_state(
+            pre_state,
+            proto_util::deploys(&slash_block),
+            proto_util::system_deploys(&slash_block),
+            &block_data,
+            Some(dag_invalid_set),
+            false,
+        )
+        .await;
+    assert!(
+        with_dag_set.map_or(true, |hash| hash != *post_state),
+        "the extra invalid block must change the slash replay"
+    );
+
+    let with_own_targets = nodes[2]
+        .runtime_manager
+        .replay_compute_state(
+            pre_state,
+            proto_util::deploys(&slash_block),
+            proto_util::system_deploys(&slash_block),
+            &block_data,
+            Some(own_targets),
+            false,
+        )
+        .await
+        .expect("replay with the block's own slash targets");
+    assert_eq!(with_own_targets, *post_state);
 }

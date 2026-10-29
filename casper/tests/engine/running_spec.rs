@@ -912,7 +912,7 @@ mod tests {
         let mut rx = fixture.block_processing_queue_rx.lock().await;
         let mut hashes = Vec::new();
         while let Ok((_, block, _guard)) = rx.try_recv() {
-            hashes.push(block.block_hash);
+            hashes.push(block.into_block().block_hash);
         }
         hashes
     }

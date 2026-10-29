@@ -43,6 +43,9 @@ impl ValidatorIdentity {
         let mut new_block = block.clone();
         new_block.sig_algorithm = self.signature_algorithm.clone();
         new_block.sender = self.public_key.bytes.clone();
+        new_block
+            .justifications
+            .sort_by(|a, b| a.validator.cmp(&b.validator));
 
         let block_hash = proto_util::hash_block(&new_block);
         let sig = self.signature(block_hash.as_ref());
@@ -67,6 +70,9 @@ impl ValidatorIdentity {
         let mut new_block = block.clone();
         new_block.sig_algorithm = self.signature_algorithm.clone();
         new_block.sender = self.public_key.bytes.clone();
+        new_block
+            .justifications
+            .sort_by(|a, b| a.validator.cmp(&b.validator));
 
         let block_hash = proto_util::hash_block_with_leaves(&new_block, leaves);
         let sig = self.signature(block_hash.as_ref());

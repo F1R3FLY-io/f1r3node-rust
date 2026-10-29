@@ -156,16 +156,31 @@ Finally: `create_checkpoint()` produces the post-state hash.
 
 - Header: version, timestamp, sender, block number (max parent + 1), sequence number
 - Body: pre-state hash, post-state hash, processed deploys, rejected deploys, system deploys
-- Justifications: One per bonded validator
+- Justifications: One per bonded validator, in strictly ascending validator order
 - Bonds cache: Current validator set with stakes
-- Hash the block via Blake2b256
-- Sign with validator's Secp256k1 key
+- Hash the block with the Merkle block hash, scheme version 1 (`proto_util::hash_block`). The top hash combines a header leaf and a Merkle root of the processed and system deploys. The header leaf includes Merkle roots of the bonds, the justifications, the rejected deploys, and the applied-from-scope signatures. The hash covers every field except `blockHash` and `sig`.
+- Sign the block hash with validator's Secp256k1 key
 
 **Timestamp hardening**: If current time < max parent timestamp (clock skew), the timestamp is clamped to the parent's timestamp. This prevents `InvalidTimestamp` validation errors.
 
 ### Step 6: Self-Validate
 
 The proposer validates its own block before broadcasting. If pre/post-state hashes don't match expectations, the block is rejected as `BlockException` (not panicked).
+
+### Block Hash Compatibility
+
+The fix for issue #679 changed the block hash rule. The old rule and the new rule give different hashes for the same block, so builds before and after the fix are not compatible:
+
+- A node of the new build refuses blocks, approved blocks, and genesis blocks that an older build hashed.
+- A node of an older build refuses blocks of the new build as `InvalidBlockHash`.
+- A node of the new build does not start on a data directory that an older build created. It stops with an error that names the stored approved block.
+
+There is no compatibility setting. To upgrade a network to the new build:
+
+1. Stop all nodes.
+2. Remove the data directory of each node.
+3. Install the new build on all nodes.
+4. Start a new network from a new genesis ceremony.
 
 ---
 
@@ -185,16 +200,20 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 
 ## 4. Block Validation
 
-`BlockProcessor` runs an 8-step pipeline on received blocks:
+`BlockProcessor` runs an 8-step pipeline on received blocks.
+
+Before a block enters the pipeline, the node recomputes the block hash and verifies the signature. This check runs when the block message arrives, before the node marks the block hash as in flight. If the hash or the signature does not match, the node drops the copy. The node does not change the in-flight markers, the buffer, or the request state for that block hash, so the original block can still arrive.
+
+The node limits these checks. It runs at most 2 checks at a time, and one at a time for each peer. It keeps at most 512 blocks in this stage, and at most 16 blocks from one peer. If a limit is full, the node drops the block. The block hash is not verified yet, so the drop does not change the retry budget of that hash.
 
 ### Step 1: Interest Check
 - Already in DAG or casper buffer? Skip.
 - Shard ID and version match the approved block? Required.
 - Block number >= approved block number? Required (no ancient blocks).
 
-### Step 2: Format & Signature
-- Verify cryptographic signature (Secp256k1, Schnorr, or FROST)
+### Step 2: Format
 - Check field validity: hash length, timestamp within ±15s of local time, required fields present
+- Require justifications in strictly ascending validator order. This also refuses a duplicate validator.
 
 ### Step 3: Dependency Resolution
 - All parent blocks must be in the DAG
@@ -206,6 +225,7 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 - This ensures validation uses the same state the proposer had
 
 ### Step 5: Block Summary
+- Recompute the block hash again
 - Structural consistency: block number progression, sender weight, justification format
 
 ### Step 6: Checkpoint Validation (Deploy Replay)

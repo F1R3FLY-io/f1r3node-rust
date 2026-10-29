@@ -414,6 +414,14 @@ pub async fn process_block_bypassing_of_interest_filter(
 > {
     use casper::rust::block_status::BlockStatus;
     use casper::rust::blocks::block_processor::{SenderAuthorization, StoreVerdict};
+    let block = match casper::rust::blocks::block_processor::VerifiedBlock::verify(block) {
+        Ok(verified) => verified,
+        Err(invalid) => {
+            return Ok(rspace_plus_plus::rspace::history::Either::Left(
+                casper::rust::block_status::BlockError::Invalid(invalid),
+            ));
+        }
+    };
     let authorization = node.block_processor.check_sender_authorization(&block)?;
     if authorization == SenderAuthorization::Unauthorized {
         return Ok(rspace_plus_plus::rspace::history::Either::Left(

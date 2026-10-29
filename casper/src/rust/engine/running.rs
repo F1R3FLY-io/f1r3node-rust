@@ -282,12 +282,36 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                 } else {
+                    let block_hash = b.block_hash.clone();
+                    let b = match ReceiptVerifier::shared().verify(&peer.id.key, b).await {
+                        Ok(verified) => verified,
+                        Err(ReceiptRefusal::Overloaded) => {
+                            metrics::counter!(
+                                crate::rust::metrics_constants::BLOCK_INFLIGHT_CAP_DROP_METRIC,
+                                "site" => "running-verification"
+                            )
+                            .increment(1);
+                            tracing::debug!(
+                                "Dropping BlockMessage {} from {}: block verification is at capacity",
+                                PrettyPrinter::build_string_bytes(&block_hash),
+                                peer.endpoint.host
+                            );
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::Invalid(_)) => {
+                            tracing::debug!(
+                                "Dropping BlockMessage {} from {}: it does not match its hash or signature",
+                                PrettyPrinter::build_string_bytes(&block_hash),
+                                peer.endpoint.host
+                            );
+                            return Ok(());
+                        }
+                    };
                     tracing::debug!(
                         "Incoming BlockMessage {} from {}",
                         PrettyPrinter::build_string_block_message(&b, true),
                         peer.endpoint.host
                     );
-                    let block_hash = b.block_hash.clone();
                     let guard = match mark_in_flight(&self.blocks_in_processing, block_hash.clone())
                     {
                         InFlightMark::Marked(guard) => guard,
@@ -603,7 +627,8 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, ReceiptRefusal, ReceiptVerifier,
+    MAX_BLOCKS_IN_PROCESSING,
 };
 
 impl<T: TransportLayer + Send + Sync> Running<T> {

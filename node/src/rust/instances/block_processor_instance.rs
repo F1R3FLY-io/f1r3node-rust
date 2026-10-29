@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
     mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark,
-    SenderAuthorization, StoreVerdict, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
+    SenderAuthorization, StoreVerdict, ValidationFailureDisposition, VerifiedBlock,
+    MAX_BLOCKS_IN_PROCESSING,
 };
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -270,11 +271,26 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                                 }
                                 match mark_in_flight(&blocks_in_processing, pendant_hash.clone()) {
                                     InFlightMark::Marked(guard) => {
-                                        tracing::info!(
-                                            "Enqueued dependency-free pendant {}",
-                                            PrettyPrinter::build_string_bytes(&pendant.block_hash)
-                                        );
-                                        released.push((casper.clone(), pendant.clone(), guard));
+                                        let block = pendant.clone();
+                                        match tokio::task::spawn_blocking(move || {
+                                            VerifiedBlock::verify(block)
+                                        })
+                                        .await
+                                        {
+                                            Ok(Ok(verified)) => {
+                                                tracing::info!(
+                                                    "Enqueued dependency-free pendant {}",
+                                                    PrettyPrinter::build_string_bytes(
+                                                        &pendant.block_hash
+                                                    )
+                                                );
+                                                released.push((casper.clone(), verified, guard));
+                                            }
+                                            _ => tracing::warn!(
+                                                "Dependency-free pendant {} does not match its hash or signature. Skipped.",
+                                                PrettyPrinter::build_string_bytes(&pendant.block_hash)
+                                            ),
+                                        }
                                     }
                                     InFlightMark::CapReached => {
                                         block_processor.note_local_backpressure_drop(
@@ -343,7 +359,7 @@ enum BlockProcessOutcome {
 async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     block_processor: Arc<BlockProcessor<T>>,
     casper: Arc<dyn MultiParentCasper + Send + Sync + 'static>,
-    block: BlockMessage,
+    block: VerifiedBlock,
 ) -> Result<BlockProcessOutcome, CasperError> {
     let block_str = PrettyPrinter::build_string_bytes(&block.block_hash);
 
@@ -471,7 +487,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     {
         Ok(true) => {
             return Ok(BlockProcessOutcome::Processed(
-                block,
+                block.into_block(),
                 rspace_plus_plus::rspace::history::Either::Left(
                     casper::rust::block_status::BlockError::AdmittedSettled,
                 ),
@@ -544,7 +560,10 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 
     tracing::info!("Block {} validated {:?}.", block_str, validation_result);
 
-    Ok(BlockProcessOutcome::Processed(block, validation_result))
+    Ok(BlockProcessOutcome::Processed(
+        block.into_block(),
+        validation_result,
+    ))
 }
 
 #[cfg(test)]
@@ -563,7 +582,7 @@ mod tests {
     use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
     use casper::rust::blocks::block_processor::{
         mark_in_flight, BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
-        InFlightMark,
+        InFlightMark, VerifiedBlock,
     };
     use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
     use casper::rust::casper::{
@@ -807,8 +826,15 @@ mod tests {
         }
 
         fn item(&self, byte: u8) -> BlockQueueItem {
+            use crypto::rust::signatures::secp256k1::Secp256k1;
+            use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
             let mut block = self.casper.approved.clone();
-            block.block_hash = vec![byte; 32].into();
+            block.seq_num = i32::from(byte);
+            let (secret_key, _) = Secp256k1.new_key_pair();
+            let block =
+                VerifiedBlock::verify(ValidatorIdentity::new(&secret_key).sign_block(&block))
+                    .expect("Test block must be signed");
             let InFlightMark::Marked(guard) =
                 mark_in_flight(&self.in_flight, block.block_hash.clone())
             else {
@@ -842,8 +868,11 @@ mod tests {
         let fixture = StartupFixture::new().await;
         let (tx, instance) = fixture.instance();
         let mut results = instance.create().unwrap();
+        let mut expected = Vec::new();
         for byte in 21..=23 {
-            assert!(tx.send(fixture.item(byte)).await.is_ok());
+            let item = fixture.item(byte);
+            expected.push(item.1.block_hash.clone());
+            assert!(tx.send(item).await.is_ok());
         }
         drop(tx);
         assert!(
@@ -854,7 +883,7 @@ mod tests {
         );
         let mut processed = fixture.casper.processed.lock().unwrap().clone();
         processed.sort();
-        let expected: Vec<BlockHash> = (21..=23).map(|byte| vec![byte; 32].into()).collect();
+        expected.sort();
         assert_eq!(processed, expected);
         assert!(fixture.in_flight.is_empty());
         assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);

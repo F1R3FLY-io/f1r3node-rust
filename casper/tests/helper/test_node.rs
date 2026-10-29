@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::block_status::BlockStatus;
+use casper::rust::block_status::{BlockError, BlockStatus};
 use casper::rust::blocks::block_processor::{
     BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
-    SenderAuthorization, StoreVerdict,
+    SenderAuthorization, StoreVerdict, VerifiedBlock,
 };
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -206,6 +206,11 @@ impl TestNode {
         if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
+
+        let block = match VerifiedBlock::verify(block) {
+            Ok(verified) => verified,
+            Err(invalid) => return Ok(Either::Left(BlockError::Invalid(invalid))),
+        };
 
         let authorization = block_processor.check_sender_authorization(&block)?;
         if authorization == SenderAuthorization::Unauthorized {

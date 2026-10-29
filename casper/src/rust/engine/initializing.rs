@@ -25,7 +25,6 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, MergeableEntryRequest,
     MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
 };
-use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
@@ -33,7 +32,6 @@ use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::rust::block_status::ValidBlock;
 use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
@@ -1060,13 +1058,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // stored post-state so `RuntimeManager::load_mergeable_channels`
         // succeeds during validation.
         //
-        // Merge of dev (EPOCH-004): dev's `lfs_block_requester::stream` now
-        // routes `MergeableEntryResponse` messages through
-        // `mergeable_message_rx` to populate the cache during sync, which
-        // covers most of the same ground. This explicit replay is the
-        // defensive companion path — it catches any block whose mergeable
-        // entry was missed by the streaming response (e.g. a peer that
-        // didn't ship one), and is a no-op when the cache is already warm.
+        // The sync does not import mergeable entries from peers: nothing can
+        // verify a remote entry. This replay builds every missing entry
+        // locally and checks each block against its recorded post-state.
         // Bounded by the state floor, not the block floor: the replay executes
         // blocks, so it must not walk below the history the horizon sync just
         // imported, and a block below the parent reach is never merged on.
@@ -1082,18 +1076,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         Ok(())
     }
 
-    fn validate_block(&self, block: &BlockMessage) -> bool {
-        let block_number = proto_util::block_number(block);
-        if block_number == 0 {
-            // TODO: validate genesis (zero) block correctly - OLD
-            true
-        } else {
-            match Validate::block_hash(block) {
-                Either::Right(ValidBlock::Valid) => true,
-                _ => false,
-            }
-        }
-    }
+    fn validate_block(&self, block: &BlockMessage) -> bool { Validate::historical_block(block) }
 
     /// Receive finality for the restored window instead of re-deriving it.
     ///
@@ -1334,13 +1317,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// channel data from parent blocks to compute merged state.
     ///
     /// The LFS sync transfers the RSpace trie but not the mergeable channel store,
-    /// so we must regenerate any entries the streaming `MergeableEntryRequest`/
-    /// `MergeableEntryResponse` exchange in `lfs_block_requester` didn't already
-    /// fill in (see its `process_mergeable_entry`). That streaming path covers
-    /// every block downloaded during sync when the responding peer has an
-    /// entry, so this function is expected to find most (often all) blocks
-    /// already cached — it exists to catch the remainder (peer soft-misses,
-    /// blocks the node already had locally before this sync, etc).
+    /// and it does not import entries from peers, because nothing can verify a
+    /// remote entry. So this function builds every entry that this node did not
+    /// compute itself.
     ///
     /// Before this fix, this loop replayed EVERY block from `min_block_number`
     /// to the LFB unconditionally, regardless of whether its cache entry was
@@ -1399,8 +1378,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         );
 
         // Replay each block to populate mergeable channels, skipping any block
-        // whose entry is already cached (typically filled in by the streaming
-        // MergeableEntryResponse exchange during block download above).
+        // whose entry this node already computed.
         let mut skipped = 0usize;
         let mut replayed = 0usize;
         for block_hash in blocks_to_replay {
@@ -1523,9 +1501,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
         let is_genesis = parents.is_empty();
 
-        // Get invalid blocks map for replay
+        // The same invalid-blocks map that block creation and validation used:
+        // the block's own slash targets, not this node's DAG invalid set.
         let dag = self.block_dag_storage.get_representation()?;
-        let invalid_blocks_map = dag.invalid_blocks_map()?;
+        let invalid_blocks_map = proto_util::block_slash_invalid_blocks(&dag, block)?;
 
         tracing::debug!(
             "Replaying block #{} ({}) with {} deploys, {} parents",

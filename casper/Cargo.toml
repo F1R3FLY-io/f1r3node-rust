@@ -51,6 +51,7 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 casper = { path = ".", features = ["test-utils"] }
+tokio = { workspace = true, features = ["test-util"] }
 comm = { path = "../comm", features = ["test-utils"] }
 # P2-16: enable block-storage's test-only RMW bypass helpers for
 # detector-totality / record-lifecycle integration tests. Production
