@@ -774,6 +774,31 @@ async fn multi_parent_casper_should_request_again_an_evicted_parent_marked_as_re
 }
 
 #[tokio::test]
+async fn multi_parent_casper_should_keep_a_known_sender_pending_block_under_an_unknown_sender_flood(
+) {
+    let ctx = TestContext::new().await;
+    let (mut nodes, chain) = pending_chain(&ctx, 3).await;
+    nodes[1].process_block(chain[0].clone()).await.unwrap();
+    nodes[1].block_store.set_pending_limits(PendingBlockLimits {
+        max_blocks: 1,
+        max_bytes: usize::MAX,
+        max_per_sender: 2_048,
+    });
+    nodes[1].process_block(chain[2].clone()).await.unwrap();
+    assert!(nodes[1].block_store.is_pending(&chain[2].block_hash));
+
+    for seq in 0..4 {
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let mut junk = chain[2].clone();
+        junk.seq_num += 100 + seq;
+        let junk = ValidatorIdentity::new(&sk).sign_block(&junk);
+        nodes[1].process_block(junk.clone()).await.unwrap();
+        assert!(!nodes[1].block_store.is_pending(&junk.block_hash));
+    }
+    assert!(nodes[1].block_store.is_pending(&chain[2].block_hash));
+}
+
+#[tokio::test]
 async fn multi_parent_casper_should_release_a_block_evicted_before_it_entered_the_buffer() {
     let ctx = TestContext::new().await;
     let (nodes, chain) = pending_chain(&ctx, 2).await;

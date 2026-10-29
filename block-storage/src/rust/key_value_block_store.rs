@@ -14,7 +14,7 @@ use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::soak_snapshot::SnapshotError;
 
 use crate::rust::pending_blocks::{
-    PendingBlockLimits, PendingBlocks, PendingInsert, PendingOutcome,
+    PendingBlockLimits, PendingBlocks, PendingClass, PendingInsert, PendingOutcome,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,13 +291,26 @@ impl KeyValueBlockStore {
         block: &BlockMessage,
         solicited: bool,
     ) -> Result<PendingOutcome, KvStoreError> {
+        let class = if solicited {
+            PendingClass::Solicited
+        } else {
+            PendingClass::Unsolicited
+        };
+        self.put_pending_as(block, class)
+    }
+
+    pub fn put_pending_as(
+        &self,
+        block: &BlockMessage,
+        class: PendingClass,
+    ) -> Result<PendingOutcome, KvStoreError> {
         if self.disk_contains(&block.block_hash)? {
             return Ok(PendingOutcome {
                 status: PendingInsert::Accepted,
                 evicted: Vec::new(),
             });
         }
-        let outcome = self.pending.insert(block, solicited);
+        let outcome = self.pending.insert_as(block, class);
         if self.disk_contains(&block.block_hash)? {
             self.pending.remove(&block.block_hash);
         }
