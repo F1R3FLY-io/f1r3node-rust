@@ -337,7 +337,7 @@ enum BlockProcessOutcome {
 /// 1. checkIfOfInterest
 ///    then checkSenderAuthorization (drops a sender unbonded in a validated
 ///    main parent before any store write or dependency request)
-/// 2. checkIfWellFormedAndStore
+/// 2. store (CheckedBlock::check has already checked format, signature, and hash)
 /// 3. checkDependenciesWithEffects
 /// 4. validateWithEffects
 /// 5. Enqueue dependency-free blocks from buffer (in the outer loop)
@@ -427,8 +427,8 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         return Ok(BlockProcessOutcome::UnauthorizedSender);
     };
 
-    // Step 2: Check if well-formed and store
-    // Equivalent to: blockProcessor.checkIfWellFormedAndStore(b)
+    // Step 2: Store
+    // Equivalent to the store half of: blockProcessor.checkIfWellFormedAndStore(b)
     let store_verdict = match block_processor.store(&checked, store_mode).await {
         Ok(store_verdict) => store_verdict,
         Err(err) => {
@@ -999,6 +999,7 @@ mod tests {
             .unwrap());
         assert!(fixture.casper.processed.lock().unwrap().is_empty());
         assert!(fixture.in_flight.is_empty());
+        assert_eq!(fixture.casper.block_store.get(&claimed).unwrap(), None);
     }
 
     #[tokio::test]

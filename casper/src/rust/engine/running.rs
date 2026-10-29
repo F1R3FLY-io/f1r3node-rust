@@ -268,14 +268,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     .await
             }
             CasperMessage::BlockMessage(b) => {
-                if let Some(id) = self.casper.get_validator() {
-                    if b.sender == id.public_key.bytes {
-                        tracing::warn!(
-                            "There is another node {} proposing using the same private key as you. Or did you restart your node?",
-                            peer
-                        );
-                    }
-                }
                 if self.ignore_casper_message(b.block_hash.clone())? {
                     tracing::debug!(
                         "Ignoring BlockMessage {} from {}",
@@ -283,7 +275,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                 } else {
-                    let checked = match CheckedBlock::check(b, RUNNING_METRICS_SOURCE) {
+                    let checked = match tokio::task::spawn_blocking(move || {
+                        CheckedBlock::check(b, RUNNING_METRICS_SOURCE)
+                    })
+                    .await
+                    .map_err(|err| {
+                        CasperError::RuntimeError(format!(
+                            "Block integrity check failed to run: {}",
+                            err
+                        ))
+                    })? {
                         Ok(checked) => checked,
                         Err((refused, failure)) => {
                             let strike = match failure {
@@ -295,6 +296,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                             return Ok(());
                         }
                     };
+                    if let Some(id) = self.casper.get_validator() {
+                        if checked.block().sender == id.public_key.bytes {
+                            tracing::warn!(
+                                "There is another node {} proposing using the same private key as you. Or did you restart your node?",
+                                peer
+                            );
+                        }
+                    }
                     tracing::debug!(
                         "Incoming BlockMessage {} from {}",
                         PrettyPrinter::build_string_block_message(checked.block(), true),

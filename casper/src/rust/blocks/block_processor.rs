@@ -933,7 +933,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     }
 
     pub async fn drop_refused(&self, block: &BlockMessage) -> Result<(), CasperError> {
-        if self.dependencies.holds_copy(block)? {
+        if self.dependencies.discard_copy(block)? {
             self.purge_from_buffer_and_ack(block).await?;
         }
         Ok(())
@@ -1250,17 +1250,20 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         })
     }
 
-    /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
-    pub fn holds_copy(&self, block: &BlockMessage) -> Result<bool, CasperError> {
-        Ok(self.block_store.get(&block.block_hash)?.as_ref() == Some(block))
+    pub fn discard_copy(&self, block: &BlockMessage) -> Result<bool, CasperError> {
+        Ok(self.block_store.discard_copy(block)?)
     }
 
-    pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
+    /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
+    pub(crate) async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.block_store.put_block_message(block)?;
         Ok(())
     }
 
-    pub async fn hold_pending(&self, block: &BlockMessage) -> Result<PendingInsert, CasperError> {
+    pub(crate) async fn hold_pending(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<PendingInsert, CasperError> {
         let solicited = self.was_requested_as_dependency(&block.block_hash)?;
         let outcome = self.block_store.put_pending(block, solicited)?;
         self.release_evicted_pending(&outcome.evicted).await?;
@@ -1832,7 +1835,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     /// Insertion cannot touch consensus state: `InsertMode::SettledHistory`
     /// leaves latest messages exactly as they were, and every verdict channel
     /// is untouched because the block never enters validation.
-    pub async fn try_admit_settled(
+    pub(crate) async fn try_admit_settled(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,

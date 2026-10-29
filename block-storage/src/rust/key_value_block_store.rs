@@ -316,6 +316,19 @@ impl KeyValueBlockStore {
         self.pending.remove(block_hash)
     }
 
+    pub fn discard_copy(&self, block: &BlockMessage) -> Result<bool, KvStoreError> {
+        let key = block.block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(self.pending.get(&block.block_hash).as_ref() == Some(block)
+                && self.pending.remove(&block.block_hash));
+        };
+        let stored = BlockMessage::from_proto(Self::bytes_to_block_proto(&bytes)?).ok();
+        if stored.as_ref() != Some(block) {
+            return Ok(false);
+        }
+        self.store.delete_if_value(&key, &bytes)
+    }
+
     pub fn is_pending(&self, block_hash: &BlockHash) -> bool { self.pending.contains(block_hash) }
 
     pub fn pending_blocks(&self) -> &PendingBlocks { &self.pending }
@@ -1363,6 +1376,24 @@ mod tests {
             PendingInsert::Accepted
         );
         assert!(!bs.is_pending(&block.block_hash));
+    }
+
+    #[test]
+    fn discard_copy_removes_only_the_matching_body() {
+        let (bs, _disk) = in_mem_store();
+        let stored = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&stored).unwrap();
+        let mut other = stored.clone();
+        other.seq_num += 1;
+        assert!(!bs.discard_copy(&other).unwrap());
+        assert_eq!(bs.get(&stored.block_hash).unwrap(), Some(stored.clone()));
+        assert!(bs.discard_copy(&stored).unwrap());
+        assert_eq!(bs.get(&stored.block_hash).unwrap(), None);
+
+        let pending = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&pending, false).unwrap();
+        assert!(bs.discard_copy(&pending).unwrap());
+        assert!(!bs.is_pending(&pending.block_hash));
     }
 }
 
