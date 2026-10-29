@@ -210,6 +210,52 @@ mod tests {
     use crate::rust::api::serde_types::block_info::BlockInfoSerde;
     use crate::rust::web::web_api_docs::{AdminApi, PublicApi};
 
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyTransferInfo {
+        #[prost(int64, tag = "3")]
+        amount: i64,
+    }
+
+    #[test]
+    fn old_protobuf_transfer_amounts_survive_http_conversion() {
+        for amount in [i64::MIN, -1, 0, 1, (1 << 53) + 1, i64::MAX] {
+            let encoded = LegacyTransferInfo { amount }.encode_to_vec();
+            let proto = TransferInfo::decode(encoded.as_slice()).unwrap();
+            assert!(proto.amount_raw.is_empty());
+            let json = serde_json::to_value(TransferInfoSerde::from(proto)).unwrap();
+            assert_eq!(json["amount"], amount.to_string());
+            let decoded: TransferInfoSerde = serde_json::from_value(json).unwrap();
+            let restored = TransferInfo::from(decoded);
+            assert_eq!(restored.amount, amount);
+            assert_eq!(restored.amount_raw, amount.to_string());
+        }
+    }
+
+    #[test]
+    fn exact_transfer_amount_takes_precedence_and_accepts_only_canonical_strings() {
+        for amount in ["0", "10000000000000000000"] {
+            let proto = TransferInfo {
+                amount: -1,
+                amount_raw: amount.to_string(),
+                ..Default::default()
+            };
+            assert_eq!(TransferInfoSerde::from(proto).amount, amount);
+        }
+        for amount in [
+            json!("00"),
+            json!("-0"),
+            json!("+7"),
+            json!("1e3"),
+            json!(1.5),
+        ] {
+            let json = json!({
+                "fromAddr": "sender", "toAddr": "recipient", "amount": amount,
+                "success": false, "failReason": "rejected"
+            });
+            assert!(serde_json::from_value::<TransferInfoSerde>(json).is_err());
+        }
+    }
+
     fn deploy_info(parameters: Vec<DeployParameter>) -> DeployInfo {
         let deploy = DeployData {
             term: "Nil".into(),

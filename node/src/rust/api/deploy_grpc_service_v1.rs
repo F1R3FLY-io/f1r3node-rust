@@ -1490,7 +1490,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn block_rpc_handlers_negotiate_exact_amounts_from_cached_reports() {
+    async fn block_rpc_and_http_handlers_preserve_exact_amounts_from_cached_reports() {
         use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
         use casper::rust::engine::engine_with_casper::EngineWithCasper;
         use models::casper::{
@@ -1501,7 +1501,14 @@ mod tests {
         use models::rust::block_metadata::BlockMetadata;
         use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoString};
         use rholang::rust::interpreter::util::vault_address::VaultAddress;
+        use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
         use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+        use tower::ServiceExt;
+
+        use crate::rust::api::admin_web_api::AdminWebApiImpl;
+        use crate::rust::api::web_api::WebApiImpl;
+        use crate::rust::web::shared_handlers::AppState;
+        use crate::rust::web::web_api_routes::WebApiRoutes;
 
         let mut service = service();
         let processed =
@@ -1539,35 +1546,48 @@ mod tests {
             ))))
             .await;
 
-        let amount = BigInt::from(10_000_000_000_000_000_000u64);
+        let amounts: Vec<BigInt> = vec![
+            BigInt::from(1),
+            (BigInt::from(1) << 53) + 1,
+            BigInt::from(i64::MAX),
+            BigInt::from(1) << 63,
+            BigInt::from(10_000_000_000_000_000_000u64),
+            BigInt::from(1) << 128,
+            (BigInt::from(1) << 256) - 1,
+        ];
         let channel = RhoString::create_par("synthetic-transfer-channel".to_string());
         let report = BlockEventInfo {
             deploys: vec![DeployInfoWithEventData {
                 deploy_info: Some(deploy_info).into(),
                 report: vec![SingleReport {
                     phase: ReportPhase::User as i32,
-                    events: vec![ReportProto {
-                        report: Some(report_proto::Report::Comm(ReportCommProto {
-                            consume: Some(ReportConsumeProto {
-                                channels: vec![channel.clone()],
-                                ..Default::default()
-                            }),
-                            produces: vec![ReportProduceProto {
-                                data: Some(ListParWithRandom {
-                                    pars: vec![
-                                        RhoString::create_par(from),
-                                        Par::default(),
-                                        RhoString::create_par("synthetic-recipient".to_string()),
-                                        RhoBigInt::create_par(&amount),
-                                        Par::default(),
-                                        Par::default(),
-                                    ],
+                    events: amounts
+                        .iter()
+                        .map(|amount| ReportProto {
+                            report: Some(report_proto::Report::Comm(ReportCommProto {
+                                consume: Some(ReportConsumeProto {
+                                    channels: vec![channel.clone()],
                                     ..Default::default()
                                 }),
-                                ..Default::default()
-                            }],
-                        })),
-                    }],
+                                produces: vec![ReportProduceProto {
+                                    data: Some(ListParWithRandom {
+                                        pars: vec![
+                                            RhoString::create_par(from.clone()),
+                                            Par::default(),
+                                            RhoString::create_par(
+                                                "synthetic-recipient".to_string(),
+                                            ),
+                                            RhoBigInt::create_par(amount),
+                                            Par::default(),
+                                            Par::default(),
+                                        ],
+                                        ..Default::default()
+                                    }),
+                                    ..Default::default()
+                                }],
+                            })),
+                        })
+                        .collect(),
                 }],
             }],
             ..Default::default()
@@ -1608,8 +1628,11 @@ mod tests {
                     models::casper::v1::block_response::Message::BlockInfo(block) => {
                         assert!(exact_transfer_amounts);
                         assert!(block.deploys[0].transfers_available);
-                        assert_eq!(block.deploys[0].transfers.len(), 1);
-                        assert_eq!(block.deploys[0].transfers[0].amount_raw, amount.to_string());
+                        assert_eq!(block.deploys[0].transfers.len(), amounts.len());
+                        for (transfer, amount) in block.deploys[0].transfers.iter().zip(&amounts) {
+                            assert_eq!(transfer.amount_raw, amount.to_string());
+                            assert!(transfer.success);
+                        }
                     }
                     models::casper::v1::block_response::Message::Error(error) => {
                         assert!(!exact_transfer_amounts);
@@ -1617,6 +1640,89 @@ mod tests {
                     }
                 }
             }
+        }
+
+        for decimals in [8, 18] {
+            let engine = Arc::new(service.engine_cell.clone());
+            let web_api = WebApiImpl::new(
+                10,
+                false,
+                "testnet".to_string(),
+                "root".to_string(),
+                1,
+                "F1R3".to_string(),
+                "F1R3".to_string(),
+                decimals,
+                false,
+                true,
+                service.block_report_api.clone(),
+                service.transfer_unforgeable.clone(),
+                engine.clone(),
+                service.rp_conf_cell.clone(),
+                service.connections_cell.clone(),
+                service.node_discovery.clone(),
+                None,
+                100,
+                50,
+                service.is_ready.clone(),
+            );
+            let events = F1r3flyEvents::new();
+            let app = WebApiRoutes::create_router().with_state(AppState::new(
+                Arc::new(AdminWebApiImpl::new(None, None, engine)),
+                Arc::new(web_api),
+                Arc::new(service.block_report_api.clone()),
+                service.rp_conf_cell.clone(),
+                Arc::new(service.connections_cell.clone()),
+                service.node_discovery.clone(),
+                Arc::new(events.consume()),
+                events.startup_buffer(),
+            ));
+            for path in [
+                format!("/block/{hash}?view=full"),
+                "/last-finalized-block?view=full".to_string(),
+            ] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri(path)
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), axum::http::StatusCode::OK);
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let transfers = json["deploys"][0]["transfers"].as_array().unwrap();
+                assert_eq!(transfers.len(), amounts.len());
+                for (transfer, amount) in transfers.iter().zip(&amounts) {
+                    assert_eq!(
+                        transfer["amount"],
+                        amount.to_string(),
+                        "decimals={decimals}"
+                    );
+                    assert_eq!(transfer["fromAddr"], from);
+                    assert_eq!(transfer["success"], true);
+                }
+            }
+            let response = app
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/block/{hash}?view=summary"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(json.get("deploys").is_none());
         }
     }
 

@@ -1429,7 +1429,11 @@ fn build_deploy_transfers(
                 .map(|t| TransferEvent {
                     from_addr: t.from_addr,
                     to_addr: t.to_addr,
-                    amount: t.amount_raw,
+                    amount: if t.amount_raw.is_empty() {
+                        t.amount.to_string()
+                    } else {
+                        t.amount_raw
+                    },
                     success: t.success,
                 })
                 .collect(),
@@ -1505,6 +1509,31 @@ mod tests {
         assert_eq!(out[0].transfers.len(), 2);
         assert_eq!(out[0].transfers[0].amount, "1");
         assert_eq!(out[0].transfers[1].amount, "2");
+    }
+
+    #[test]
+    fn websocket_transfers_preserve_exact_and_legacy_protobuf_amounts() {
+        for (legacy, raw, expected) in [
+            (i64::MIN, "", i64::MIN.to_string()),
+            (0, "", "0".to_string()),
+            (i64::MAX, "", i64::MAX.to_string()),
+            (
+                -1,
+                "10000000000000000000",
+                "10000000000000000000".to_string(),
+            ),
+        ] {
+            let mut transfer = transfer("sender", "recipient", legacy);
+            transfer.amount_raw = raw.to_string();
+            transfer.success = false;
+            let out = build_deploy_transfers(std::collections::HashMap::from([(
+                "deploy".to_string(),
+                vec![transfer],
+            )]));
+            let json = serde_json::to_value(&out[0].transfers[0]).unwrap();
+            assert_eq!(json["amount"], expected);
+            assert_eq!(json["success"], false);
+        }
     }
 
     // ---------- register_consensus_bundle_roots_core ----------

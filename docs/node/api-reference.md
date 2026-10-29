@@ -65,7 +65,8 @@ Route these requests to a read-only node (typically port 40453). `GET /api/statu
 
 ## 64-bit integers and token amounts
 
-A JavaScript `Number` holds integers exactly only up to 2^53. The JSON API therefore gives these values as decimal strings:
+A JavaScript `Number` guarantees exact integer representation only within `-(2^53-1)..2^53-1`.
+The JSON API therefore gives these values as decimal strings:
 
 | Value | Fields |
 |-------|--------|
@@ -74,12 +75,15 @@ A JavaScript `Number` holds integers exactly only up to 2^53. The JSON API there
 | Validator stake | `stake` and `totalStake` in `GET /api/validators`, `stake` in `GET /api/validator/{pubkey}`, `bonds[].stake` in block info |
 | Transfer amount | `transfers[].amount` in block and deploy responses, `amount` in the `transfers-available` WebSocket event |
 
-- The value is a base-10 integer in dust, without an exponent, a decimal point, or leading zeros. A negative value starts with `-`.
+- Integer strings use base 10, without an exponent, a decimal point, or leading zeros. A negative value starts with `-`.
+- Monetary values use base units (dust). Other Rholang integers retain their original meaning.
 - The type is always a string. The type does not change with the size of the value.
 - Phlo quantities (`cost`, `phloLimit`) and the phlo price (`phloPrice`, `minPhloPrice`) stay JSON numbers.
+- Phlo price string serialization remains pending under [issue 808](https://github.com/F1R3FLY-io/f1r3node-rust/issues/808).
 - Deploy `parameters` keep the JSON format of the deploy request. An `int` value there stays a JSON number.
 - The trace report (`GET /reporting/trace`) gives raw Rholang terms in protobuf JSON form. Integers in these terms stay JSON numbers.
 - The Rust HTTP response types in the `node` crate also read the earlier JSON number form.
+- Integer strings must use the canonical form. Leading zeros, negative zero, fractions, and exponents are rejected.
 
 **Transfer amounts.** The node reads a transfer amount from a Rholang `Int` or `BigInt` without loss. The vault accepts a transfer only when the amount is in `1..2^256−1`. A failed transfer retains its requested amount and failure details. Its amount can be zero, negative, or above `2^256−1`. The report extractor does not impose a separate bit limit or omit a failed attempt because of its amount.
 
@@ -105,7 +109,7 @@ Exact responses preserve report availability and never omit a transfer because i
 
 When a new client reads an old protobuf response, `amountRaw` is empty.
 In that case, convert the legacy int64 field directly to a decimal string without a floating-point conversion.
-The node's HTTP adapter applies this fallback.
+The node's HTTP and WebSocket adapters apply this fallback.
 When `amountRaw` is present, it takes precedence over the legacy field.
 An old node can still omit BigInt transfers, so this fallback cannot replace the node upgrade.
 
@@ -121,7 +125,8 @@ Accept legacy JSON numbers only when exact parsing or a safe-integer check prove
 
 The built-in CLI requests exact gRPC responses.
 Individual validator stakes remain int64.
-The HTTP `totalStake` accumulator uses int128 to prevent aggregate overflow, without changing consensus stake types.
+The HTTP `totalStake` field uses an int128 Rust type to preserve sums above the int64 range.
+The API serializes this aggregate as a decimal string.
 
 A map key that is a tuple, list, or map contains the JSON text of the key value.
 Integers in that text are now strings, for example `{"ExprInt":{"data":"1"}}`.

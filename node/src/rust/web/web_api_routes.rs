@@ -1070,12 +1070,22 @@ mod router_tests {
     }
 
     fn light_block() -> LightBlockInfoSerde {
-        LightBlockInfoSerde::from(models::casper::LightBlockInfo::default())
+        LightBlockInfoSerde::from(models::casper::LightBlockInfo {
+            bonds: vec![models::casper::BondInfo {
+                validator: "validator".to_string(),
+                stake: i64::MAX,
+            }],
+            ..Default::default()
+        })
     }
 
     fn rho_data_response() -> RhoDataResponse {
         RhoDataResponse {
-            expr: vec![RhoExpr::ExprInt { data: 11 }],
+            expr: vec![RhoExpr::ExprInt { data: 11 }, RhoExpr::ExprList {
+                data: vec![RhoExpr::ExprInt { data: i64::MIN }, RhoExpr::ExprUint64 {
+                    data: u64::MAX,
+                }],
+            }],
             block: light_block(),
             cost: 7,
         }
@@ -1209,7 +1219,7 @@ mod router_tests {
             }
             Ok(BalanceResponse {
                 address,
-                balance: "1000".to_string(),
+                balance: "10000000000000000000".to_string(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1234,9 +1244,9 @@ mod router_tests {
             Ok(ValidatorsResponse {
                 validators: vec![ValidatorInfo {
                     public_key: "vk".to_string(),
-                    stake: 10,
+                    stake: i64::MAX,
                 }],
-                total_stake: 10,
+                total_stake: i128::from(i64::MAX),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1287,7 +1297,7 @@ mod router_tests {
             Ok(ValidatorStatusResponse {
                 public_key: pubkey,
                 is_bonded: true,
-                stake: Some(10),
+                stake: Some(i64::MAX),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1495,6 +1505,16 @@ mod router_tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["cost"], 7);
+        assert_eq!(json["expr"][0]["ExprInt"]["data"], "11");
+        assert_eq!(
+            json["expr"][1]["ExprList"]["data"][0]["ExprInt"]["data"],
+            "-9223372036854775808"
+        );
+        assert_eq!(
+            json["expr"][1]["ExprList"]["data"][1]["ExprUint64"]["data"],
+            "18446744073709551615"
+        );
+        assert_eq!(json["block"]["bonds"][0]["stake"], "9223372036854775807");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1553,7 +1573,7 @@ mod router_tests {
     async fn query_routes_answer() {
         let (status, json) = get_response("/balance/wallet-address").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["balance"], "1000");
+        assert_eq!(json["balance"], "10000000000000000000");
 
         let (status, json) = get_response("/registry/rho:id:abc").await;
         assert_eq!(status, StatusCode::OK);
@@ -1561,11 +1581,13 @@ mod router_tests {
 
         let (status, json) = get_response("/validators").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["totalStake"], "10");
+        assert_eq!(json["totalStake"], "9223372036854775807");
+        assert_eq!(json["validators"][0]["stake"], "9223372036854775807");
 
         let (status, json) = get_response("/validator/04aa").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["isBonded"], true);
+        assert_eq!(json["stake"], "9223372036854775807");
 
         let (status, json) = get_response("/epoch").await;
         assert_eq!(status, StatusCode::OK);
