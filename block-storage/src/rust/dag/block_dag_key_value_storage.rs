@@ -1652,7 +1652,8 @@ impl BlockDagKeyValueStorage {
                 return Ok(CommitOutcome::Refused(refusal));
             }
 
-            let mut indirectly = dag.held_ancestors(directly.clone(), |hash| !dag.is_finalized(hash))?;
+            let mut indirectly =
+                dag.held_ancestors(directly.clone(), |hash| !dag.is_finalized(hash))?;
             indirectly.remove(&directly);
             let mut indirect_sorted: Vec<(i64, BlockHash)> = indirectly
                 .iter()
@@ -1660,7 +1661,9 @@ impl BlockDagKeyValueStorage {
                 .collect::<Result<_, KvStoreError>>()?;
             indirect_sorted.sort();
 
-            let previous_pointer = self.lfb_pointer_index.get_one(&LFB_POINTER_KEY.to_string())?;
+            let previous_pointer = self
+                .lfb_pointer_index
+                .get_one(&LFB_POINTER_KEY.to_string())?;
             let commit_epoch = previous_pointer
                 .as_ref()
                 .map_or(1, |pointer| pointer.commit_epoch + 1);
@@ -1745,6 +1748,15 @@ impl BlockDagKeyValueStorage {
     ) -> Result<Option<crate::rust::dag::finalization_commit::LfbPointer>, KvStoreError> {
         self.lfb_pointer_index
             .get_one(&crate::rust::dag::finalization_commit::LFB_POINTER_KEY.to_string())
+    }
+
+    pub fn commit_lfb_is_transactional(&self) -> bool {
+        let metadata = self.block_metadata_index.read();
+        shared::rust::store::lmdb_key_value_store::shares_one_lmdb_env(&[
+            metadata.raw_store().as_ref(),
+            self.commit_marker_index.raw_store().as_ref(),
+            self.lfb_pointer_index.raw_store().as_ref(),
+        ])
     }
 
     fn propagate_ft_to_finalized_blocks(&self, ft_value: f32) -> Result<(), KvStoreError> {

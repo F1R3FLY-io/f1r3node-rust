@@ -5,6 +5,14 @@ use prost::bytes::Bytes;
 use tempfile::TempDir;
 
 #[tokio::test]
+async fn commit_lfb_stores_share_one_lmdb_env_in_the_node_mapping() {
+    let dir = TempDir::new().unwrap();
+    let mut kvm = new_key_value_store_manager(dir.path().to_path_buf(), None);
+    let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+    assert!(dag_storage.commit_lfb_is_transactional());
+}
+
+#[tokio::test]
 async fn rnode_store_manager_initializes_block_dag_storage_on_fresh_lmdb_dir() {
     let dir = TempDir::new().unwrap();
     let mut kvm = new_key_value_store_manager(dir.path().to_path_buf(), None);
