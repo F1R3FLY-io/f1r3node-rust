@@ -8,7 +8,7 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks, IntegrityChecked,
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, CheckedBlock, InFlightBlocks,
     IntegrityFailure, StoreVerdict,
 };
 use casper::rust::blocks::proposer::block_creator;
@@ -201,32 +201,32 @@ impl TestNode {
         block_processor: &BlockProcessor<TransportLayerTestImpl>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
-        let checked = match IntegrityChecked::check(&block, BLOCK_PROCESSOR_METRICS_SOURCE) {
+        let checked = match CheckedBlock::check(block.clone(), BLOCK_PROCESSOR_METRICS_SOURCE) {
             Ok(checked) => checked,
-            Err(IntegrityFailure::Malformed) => {
+            Err((_, IntegrityFailure::Malformed)) => {
                 return Ok(Either::Left(BlockStatus::invalid_format()))
             }
-            Err(IntegrityFailure::HashMismatch) => {
+            Err((_, IntegrityFailure::HashMismatch)) => {
                 return Ok(Either::Left(BlockStatus::invalid_block_hash()))
             }
         };
 
         // Check if block is of interest
-        let verdict = block_processor.check_if_of_interest(casper.clone(), checked)?;
+        let verdict = block_processor.check_if_of_interest(casper.clone(), &checked)?;
 
         if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
         let Some(store_mode) = block_processor
-            .check_sender_authorization(checked)?
+            .check_sender_authorization(&checked)?
             .store_mode()
         else {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
         };
 
         // Check if well-formed and store
-        match block_processor.store(checked, store_mode).await? {
+        match block_processor.store(&checked, store_mode).await? {
             StoreVerdict::Stored => {}
             StoreVerdict::PendingRefused(refusal) => {
                 block_processor
@@ -238,7 +238,7 @@ impl TestNode {
 
         // Check dependencies
         let dependencies_ready = block_processor
-            .check_dependencies_with_effects(casper.clone(), &block)
+            .check_dependencies_with_effects(casper.clone(), &checked)
             .await?;
 
         if !dependencies_ready {
@@ -247,7 +247,7 @@ impl TestNode {
 
         // Validate with effects
         block_processor
-            .validate_with_effects(casper.clone(), &block, None)
+            .validate_with_effects(casper.clone(), &checked, None)
             .await
     }
 

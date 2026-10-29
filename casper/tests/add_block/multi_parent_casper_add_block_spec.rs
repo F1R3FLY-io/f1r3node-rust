@@ -3,10 +3,12 @@
 use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
 use block_storage::rust::pending_blocks::PendingBlockLimits;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::blocks::block_processor::CheckedBlock;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
 use casper::rust::engine::block_retriever::AdmitHashReason;
 use casper::rust::errors::CasperError;
+use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
 use casper::rust::validate::Validate;
@@ -703,7 +705,10 @@ async fn multi_parent_casper_should_release_a_block_evicted_before_it_entered_th
 
     let ready = nodes[1]
         .block_processor
-        .check_dependencies_with_effects(nodes[1].casper.clone(), block)
+        .check_dependencies_with_effects(
+            nodes[1].casper.clone(),
+            &CheckedBlock::check(block.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+        )
         .await
         .unwrap();
 

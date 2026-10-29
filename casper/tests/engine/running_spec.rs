@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::blocks::block_processor::QueuedBlock;
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
@@ -566,7 +567,7 @@ mod tests {
         let mut rx = fixture.block_processing_queue_rx.lock().await;
         let mut enqueued = 0usize;
         while let Ok((_, block, _)) = rx.try_recv() {
-            if block.block_hash == signed_block.block_hash {
+            if block.block().block_hash == signed_block.block_hash {
                 enqueued += 1;
             }
         }
@@ -603,7 +604,8 @@ mod tests {
         let mut rx = fixture.block_processing_queue_rx.lock().await;
         let mut enqueued = Vec::new();
         while let Ok((_, block, _)) = rx.try_recv() {
-            enqueued.push(block);
+            assert!(matches!(block, QueuedBlock::Network(_)));
+            enqueued.push(block.block().clone());
         }
         assert_eq!(enqueued, vec![honest]);
     }

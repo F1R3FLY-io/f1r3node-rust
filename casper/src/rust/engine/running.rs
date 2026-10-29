@@ -271,15 +271,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         PrettyPrinter::build_string_block_message(&b, true),
                         peer.endpoint.host
                     );
-                } else if IntegrityChecked::check(&b, RUNNING_METRICS_SOURCE).is_err() {
-                    return Ok(());
                 } else {
+                    let Ok(checked) = CheckedBlock::check(b, RUNNING_METRICS_SOURCE) else {
+                        return Ok(());
+                    };
                     tracing::debug!(
                         "Incoming BlockMessage {} from {}",
-                        PrettyPrinter::build_string_block_message(&b, true),
+                        PrettyPrinter::build_string_block_message(checked.block(), true),
                         peer.endpoint.host
                     );
-                    let block_hash = b.block_hash.clone();
+                    let block_hash = checked.block().block_hash.clone();
                     let guard = match mark_in_flight(&self.blocks_in_processing, block_hash.clone())
                     {
                         InFlightMark::Marked(guard) => guard,
@@ -302,7 +303,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         }
                     };
                     self.block_processing_queue_tx
-                        .send((self.casper.clone(), b, guard))
+                        .send((self.casper.clone(), QueuedBlock::Network(checked), guard))
                         .await
                         .map_err(|e| {
                             CasperError::RuntimeError(format!(
@@ -594,7 +595,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, IntegrityChecked,
+    mark_in_flight, BlockQueueItem, CheckedBlock, InFlightBlocks, InFlightMark, QueuedBlock,
     MAX_BLOCKS_IN_PROCESSING,
 };
 

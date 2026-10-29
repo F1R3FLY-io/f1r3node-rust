@@ -23,10 +23,11 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::blocks::block_processor::{new_block_processor, BlockProcessor};
+use casper::rust::blocks::block_processor::{new_block_processor, BlockProcessor, CheckedBlock};
 use casper::rust::casper::{Casper, CasperSnapshot, DeployError};
 use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::errors::CasperError;
+use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
 use crypto::rust::signatures::signed::Signed;
@@ -257,7 +258,10 @@ impl Fixture {
         );
         let ready = self
             .processor
-            .check_dependencies_with_effects(self.casper.clone(), &citer)
+            .check_dependencies_with_effects(
+                self.casper.clone(),
+                &CheckedBlock::check(citer.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+            )
             .await
             .unwrap();
         assert!(!ready, "citer must be missing its solicited dependency");
@@ -292,7 +296,10 @@ async fn settled_admission_never_advances_a_latest_message() {
 
     fixture
         .processor
-        .try_admit_settled(fixture.casper.clone(), &foreign)
+        .try_admit_settled(
+            fixture.casper.clone(),
+            &CheckedBlock::check(foreign.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+        )
         .await
         .unwrap();
 
@@ -336,7 +343,10 @@ async fn settled_admission_admits_an_unbonded_historic_author() {
 
     let admitted = fixture
         .processor
-        .try_admit_settled(fixture.casper.clone(), &historic)
+        .try_admit_settled(
+            fixture.casper.clone(),
+            &CheckedBlock::check(historic.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+        )
         .await
         .unwrap();
 
@@ -374,7 +384,10 @@ async fn settled_admission_still_admits_a_genuine_straggler() {
 
     let admitted = fixture
         .processor
-        .try_admit_settled(fixture.casper.clone(), &straggler)
+        .try_admit_settled(
+            fixture.casper.clone(),
+            &CheckedBlock::check(straggler.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+        )
         .await
         .unwrap();
 
@@ -414,7 +427,10 @@ async fn settled_admission_persists_a_pending_block() {
 
     let admitted = fixture
         .processor
-        .try_admit_settled(fixture.casper.clone(), &straggler)
+        .try_admit_settled(
+            fixture.casper.clone(),
+            &CheckedBlock::check(straggler.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+        )
         .await
         .unwrap();
 

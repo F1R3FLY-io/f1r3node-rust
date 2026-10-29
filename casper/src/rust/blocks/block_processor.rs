@@ -182,24 +182,45 @@ impl IntegrityFailure {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct IntegrityChecked<'a>(&'a BlockMessage);
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedBlock(BlockMessage);
 
-impl<'a> IntegrityChecked<'a> {
-    pub fn check(block: &'a BlockMessage, source: &'static str) -> Result<Self, IntegrityFailure> {
-        let failure = if !(Validate::format_of_fields(block) && Validate::block_signature(block)) {
+impl CheckedBlock {
+    pub fn check(
+        block: BlockMessage,
+        source: &'static str,
+    ) -> Result<Self, (Box<BlockMessage>, IntegrityFailure)> {
+        let failure = if !(Validate::format_of_fields(&block) && Validate::block_signature(&block))
+        {
             IntegrityFailure::Malformed
-        } else if matches!(Validate::block_hash(block), Either::Left(_)) {
+        } else if matches!(Validate::block_hash(&block), Either::Left(_)) {
             IntegrityFailure::HashMismatch
         } else {
             return Ok(Self(block));
         };
         metrics::counter!(BLOCK_INTEGRITY_REJECTED_METRIC, "source" => source, "reason" => failure.reason())
             .increment(1);
-        Err(failure)
+        Err((Box::new(block), failure))
     }
 
-    pub fn block(&self) -> &'a BlockMessage { self.0 }
+    pub fn block(&self) -> &BlockMessage { &self.0 }
+
+    pub fn into_block(self) -> BlockMessage { self.0 }
+}
+
+#[derive(Debug, Clone)]
+pub enum QueuedBlock {
+    Network(CheckedBlock),
+    Stored(BlockMessage),
+}
+
+impl QueuedBlock {
+    pub fn block(&self) -> &BlockMessage {
+        match self {
+            QueuedBlock::Network(checked) => checked.block(),
+            QueuedBlock::Stored(block) => block,
+        }
+    }
 }
 
 fn of_interest_verdict(
@@ -403,7 +424,7 @@ pub fn mark_in_flight(blocks: &Arc<InFlightBlocks>, hash: BlockHash) -> InFlight
 /// in-flight marker while the item exists.
 pub type BlockQueueItem = (
     Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
-    BlockMessage,
+    QueuedBlock,
     InFlightBlockGuard,
 );
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -451,7 +472,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub fn check_if_of_interest(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        checked: IntegrityChecked<'_>,
+        checked: &CheckedBlock,
     ) -> Result<OfInterestVerdict, CasperError> {
         let block = checked.block();
         // TODO casper.dag_contains does not take into account equivocation tracker
@@ -496,7 +517,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     /// stored or its dependencies are requested.
     pub fn check_sender_authorization(
         &self,
-        checked: IntegrityChecked<'_>,
+        checked: &CheckedBlock,
     ) -> Result<SenderAuthorization, CasperError> {
         let block = checked.block();
         let authorization = self.dependencies.sender_authorization(block)?;
@@ -513,7 +534,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
 
     pub async fn store(
         &self,
-        checked: IntegrityChecked<'_>,
+        checked: &CheckedBlock,
         mode: StoreMode,
     ) -> Result<StoreVerdict, CasperError> {
         let block = checked.block();
@@ -550,8 +571,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn check_dependencies_with_effects(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        block: &BlockMessage,
+        checked: &CheckedBlock,
     ) -> Result<bool, CasperError> {
+        let block = checked.block();
         self.dependencies.prune_casper_buffer_if_needed()?;
         self.dependencies
             .sweep_expired_missing_dependency_quarantine()?;
@@ -641,11 +663,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn validate_with_effects(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        block: &BlockMessage,
+        checked: &CheckedBlock,
         // this option is required for tests, as sometimes block without parents available are added, so
         // CasperSnapshot cannot be constructed
         snapshot_opt: Option<CasperSnapshot>,
     ) -> Result<ValidBlockProcessing, CasperError> {
+        let block = checked.block();
         // Record block size
         let block_size = block.to_proto().encode_to_vec().len();
         metrics::histogram!(BLOCK_SIZE_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
@@ -831,9 +854,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn try_admit_settled(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        block: &BlockMessage,
+        checked: &CheckedBlock,
     ) -> Result<bool, CasperError> {
-        self.dependencies.try_admit_settled(casper, block).await
+        self.dependencies
+            .try_admit_settled(casper, checked.block())
+            .await
     }
 
     /// Remove block hash from CasperBuffer dependency graph.
@@ -848,7 +873,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn dispose_not_of_interest(
         &self,
         verdict: OfInterestVerdict,
-        checked: IntegrityChecked<'_>,
+        checked: &CheckedBlock,
     ) -> Result<(), CasperError> {
         let block = checked.block();
         if verdict.purges_buffer() {
