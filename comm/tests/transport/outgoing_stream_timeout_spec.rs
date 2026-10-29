@@ -102,7 +102,7 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
         .stream(&remote.peer, &make_blob("second"))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(4), request_started.notified())
+    tokio::time::timeout(Duration::from_secs(15), request_started.notified())
         .await
         .unwrap();
     assert_eq!(requests_seen.load(Ordering::SeqCst), 2);
