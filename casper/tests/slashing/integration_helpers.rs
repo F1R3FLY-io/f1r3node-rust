@@ -413,22 +413,31 @@ pub async fn process_block_bypassing_of_interest_filter(
     CasperError,
 > {
     use casper::rust::block_status::BlockStatus;
-    use casper::rust::blocks::block_processor::SenderAuthorization;
-    if node.block_processor.check_sender_authorization(&block)? == SenderAuthorization::Unauthorized
+    use casper::rust::blocks::block_processor::{
+        IntegrityChecked, IntegrityFailure, SenderAuthorization,
+    };
+    use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
+    let checked = match IntegrityChecked::check(&block, BLOCK_PROCESSOR_METRICS_SOURCE) {
+        Ok(checked) => checked,
+        Err(IntegrityFailure::Malformed) => {
+            return Ok(rspace_plus_plus::rspace::history::Either::Left(
+                BlockStatus::invalid_format(),
+            ))
+        }
+        Err(IntegrityFailure::HashMismatch) => {
+            return Ok(rspace_plus_plus::rspace::history::Either::Left(
+                BlockStatus::invalid_block_hash(),
+            ))
+        }
+    };
+    if node.block_processor.check_sender_authorization(checked)?
+        == SenderAuthorization::Unauthorized
     {
         return Ok(rspace_plus_plus::rspace::history::Either::Left(
             BlockStatus::invalid_sender(),
         ));
     }
-    let is_well_formed = node
-        .block_processor
-        .check_if_well_formed_and_store(&block)
-        .await?;
-    if !is_well_formed {
-        return Ok(rspace_plus_plus::rspace::history::Either::Left(
-            BlockStatus::invalid_format(),
-        ));
-    }
+    node.block_processor.store(checked).await?;
     let dependencies_ready = node
         .block_processor
         .check_dependencies_with_effects(node.casper.clone(), &block)

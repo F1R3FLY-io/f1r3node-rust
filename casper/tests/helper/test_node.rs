@@ -8,7 +8,8 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks, SenderAuthorization,
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks, IntegrityChecked,
+    IntegrityFailure, SenderAuthorization,
 };
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -21,6 +22,7 @@ use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::safety_oracle::CliqueOracleImpl;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -191,7 +193,7 @@ impl TestNode {
     ///
     /// This method:
     /// 1. Checks if block is of interest
-    /// 2. Checks if well-formed and stores
+    /// 2. Stores (IntegrityChecked::check has already checked format, signature, and hash)
     /// 3. Checks dependencies
     /// 4. Validates with effects
     pub async fn process_block_through_pipe(
@@ -199,26 +201,30 @@ impl TestNode {
         block_processor: &BlockProcessor<TransportLayerTestImpl>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
+        let checked = match IntegrityChecked::check(&block, BLOCK_PROCESSOR_METRICS_SOURCE) {
+            Ok(checked) => checked,
+            Err(IntegrityFailure::Malformed) => {
+                return Ok(Either::Left(BlockStatus::invalid_format()))
+            }
+            Err(IntegrityFailure::HashMismatch) => {
+                return Ok(Either::Left(BlockStatus::invalid_block_hash()))
+            }
+        };
+
         // Check if block is of interest
-        let verdict = block_processor.check_if_of_interest(casper.clone(), &block)?;
+        let verdict = block_processor.check_if_of_interest(casper.clone(), checked)?;
 
         if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
-        if block_processor.check_sender_authorization(&block)? == SenderAuthorization::Unauthorized
+        if block_processor.check_sender_authorization(checked)? == SenderAuthorization::Unauthorized
         {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
         }
 
-        // Check if well-formed and store
-        let is_well_formed = block_processor
-            .check_if_well_formed_and_store(&block)
-            .await?;
-
-        if !is_well_formed {
-            return Ok(Either::Left(BlockStatus::invalid_format()));
-        }
+        // Store
+        block_processor.store(checked).await?;
 
         // Check dependencies
         let dependencies_ready = block_processor
