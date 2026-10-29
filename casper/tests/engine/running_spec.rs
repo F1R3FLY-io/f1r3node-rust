@@ -11,11 +11,14 @@ use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
+use casper::rust::engine::block_retriever::AdmitHashReason;
 use casper::rust::engine::engine::Engine;
 use casper::rust::engine::engine_cell::EngineCell;
+use casper::rust::engine::peer_scoring::{Strike, STRIKE_THRESHOLD};
 use casper::rust::engine::running::{update_fork_choice_tips_if_stuck, Running};
 use casper::rust::errors::CasperError;
 use casper::rust::validator_identity::ValidatorIdentity;
+use comm::rust::peer_node::PeerNode;
 use models::casper::ApprovedBlockRequestProto;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::block_hash::BlockHash;
@@ -29,7 +32,7 @@ use prost::Message;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 
-use crate::engine::setup::{to_casper_message, TestFixture};
+use crate::engine::setup::{peer_node, to_casper_message, TestFixture};
 
 #[cfg(test)]
 mod tests {
@@ -903,5 +906,162 @@ mod tests {
         .unwrap();
 
         assert_eq!(fixture.transport_layer.request_count(), 0);
+    }
+
+    async fn drain_queue(fixture: &TestFixture) -> Vec<BlockHash> {
+        let mut rx = fixture.block_processing_queue_rx.lock().await;
+        let mut hashes = Vec::new();
+        while let Ok((_, block, _guard)) = rx.try_recv() {
+            hashes.push(block.block_hash);
+        }
+        hashes
+    }
+
+    fn signed_random_block(fixture: &TestFixture) -> BlockMessage {
+        fixture.validator_id.sign_block(&get_random_block(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        ))
+    }
+
+    async fn push_struck_blocks(fixture: &TestFixture, peer: &PeerNode, count: usize) {
+        for _ in 0..count {
+            let block = signed_random_block(fixture);
+            fixture
+                .engine
+                .handle(peer.clone(), CasperMessage::BlockMessage(block.clone()))
+                .await
+                .unwrap();
+            assert_eq!(drain_queue(fixture).await, vec![block.block_hash.clone()]);
+            fixture
+                .block_retriever
+                .strike_block_source(&block.block_hash, Strike::UnauthorizedSender);
+        }
+    }
+
+    #[tokio::test]
+    async fn engine_should_ignore_block_traffic_from_a_peer_with_too_many_invalid_pushes() {
+        let fixture = TestFixture::new().await;
+        let attacker = peer_node("attacker", 40400);
+        push_struck_blocks(&fixture, &attacker, STRIKE_THRESHOLD).await;
+
+        let dropped = signed_random_block(&fixture);
+        fixture
+            .engine
+            .handle(attacker.clone(), CasperMessage::BlockMessage(dropped))
+            .await
+            .unwrap();
+        assert!(drain_queue(&fixture).await.is_empty());
+
+        let requests_before = fixture.transport_layer.request_count();
+        fixture
+            .engine
+            .handle(
+                attacker.clone(),
+                CasperMessage::HasBlock(HasBlock {
+                    hash: Bytes::from(vec![7u8; 32]),
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fixture.transport_layer.request_count(), requests_before);
+
+        let honest = signed_random_block(&fixture);
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::BlockMessage(honest.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(drain_queue(&fixture).await, vec![honest.block_hash]);
+    }
+
+    #[tokio::test]
+    async fn engine_should_not_strike_a_peer_for_a_block_requested_as_a_dependency() {
+        let fixture = TestFixture::new().await;
+        let server = peer_node("server", 40400);
+        for _ in 0..STRIKE_THRESHOLD {
+            let block = signed_random_block(&fixture);
+            fixture
+                .block_retriever
+                .admit_hash(
+                    block.block_hash.clone(),
+                    None,
+                    AdmitHashReason::MissingDependencyRequested,
+                )
+                .await
+                .unwrap();
+            fixture
+                .engine
+                .handle(server.clone(), CasperMessage::BlockMessage(block.clone()))
+                .await
+                .unwrap();
+            assert_eq!(drain_queue(&fixture).await, vec![block.block_hash.clone()]);
+            fixture
+                .block_retriever
+                .strike_block_source(&block.block_hash, Strike::InvalidSender);
+        }
+
+        let next = signed_random_block(&fixture);
+        fixture
+            .engine
+            .handle(server, CasperMessage::BlockMessage(next.clone()))
+            .await
+            .unwrap();
+        assert_eq!(drain_queue(&fixture).await, vec![next.block_hash]);
+    }
+
+    #[tokio::test]
+    async fn engine_should_accept_a_requested_block_from_an_ignored_peer() {
+        let fixture = TestFixture::new().await;
+        let peer = peer_node("only-holder", 40400);
+        push_struck_blocks(&fixture, &peer, STRIKE_THRESHOLD).await;
+        assert!(fixture.block_retriever.should_ignore_peer(&peer));
+
+        let announced = Bytes::from(vec![9u8; 32]);
+        fixture
+            .block_retriever
+            .admit_hash(
+                announced.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await
+            .unwrap();
+        fixture
+            .engine
+            .handle(
+                peer.clone(),
+                CasperMessage::HasBlock(HasBlock {
+                    hash: announced.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+        let state = fixture
+            .block_retriever
+            .get_request_state_for_test(&announced)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.waiting_list.contains(&peer) || state.peers.contains(&peer));
+
+        let requested = signed_random_block(&fixture);
+        fixture
+            .block_retriever
+            .admit_hash(
+                requested.block_hash.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await
+            .unwrap();
+        fixture
+            .engine
+            .handle(peer, CasperMessage::BlockMessage(requested.clone()))
+            .await
+            .unwrap();
+        assert_eq!(drain_queue(&fixture).await, vec![requested.block_hash]);
     }
 }

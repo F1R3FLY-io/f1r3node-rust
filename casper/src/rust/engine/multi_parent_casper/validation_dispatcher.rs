@@ -531,6 +531,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         // buffer state_lock B) and the on-resume reconciliation
         // closes any crash-window drift. See
         // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+        this.block_store.persist_block(block)?;
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
         let updated_dag =
             block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
@@ -620,6 +621,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         _ => {
             let block_hash_serde = BlockHashSerde(block.block_hash.clone());
             this.casper_buffer_storage.remove(block_hash_serde)?;
+            this.block_store.discard_pending(&block.block_hash);
             tracing::warn!(
                 "Recording invalid block {} for {:?}.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),
