@@ -641,7 +641,7 @@ fn two_pack_image(fault: SecondPackFault) -> TwoPackImage {
 
 pub(super) fn valid_two_pack_image() -> TwoPackImage { two_pack_image(SecondPackFault::None) }
 
-fn limit_config() -> DurableLimitConfig {
+pub(super) fn limit_config() -> DurableLimitConfig {
     DurableLimitConfig {
         max_live_packs: 8,
         max_pack_bytes: 16 * 1024 * 1024,

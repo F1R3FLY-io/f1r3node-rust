@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use proptest::prelude::*;
@@ -16,7 +17,7 @@ use super::retention_v2_format_properties::{
     History, ObjectSet, RadixImage, build_radix, load_radix_node, migrate_checkpoint_source_to_v2,
     model_anchor_bytes, model_key, reference_of, v1_manifest_entries,
 };
-use super::support::{PersistenceTrialDir, TestSemanticProfile, encode, trial_scratch};
+use super::support::{TestSemanticProfile, encode, trial_scratch};
 use super::trusted_history_production::{
     active_pack_name, failure, file_length, index_name, retained_history, walk,
 };
@@ -30,15 +31,16 @@ use crate::rspace::persistence::durable::{
     publish_trusted_incremental_v1,
 };
 use crate::rspace::persistence::retention::v2_format::{RetentionFormat, RetentionReader};
+use crate::rspace::persistence::rewrite::DagRewriteReport;
 use crate::rspace::persistence::{
-    CanonicalObjectStore, CanonicalObjectView, DagTransactionLimits, EndpointValue,
+    CanonicalObjectStore, CanonicalObjectView, DagTransactionLimits, DurableLimits, EndpointValue,
     INDEX_RECORD_LEN_V1, LogPackDecodeLimits, MutationBatchViewV1, OBJECT_RECORD_HEADER_LEN_V1,
     ObjectDigest, ObjectRefV1, OpenDagTransaction, RSpaceMutationBatchV1, RetainedStateV1,
     RetentionManifestV1, SemanticRoots, StateVersionV1, TRANSACTION_COMMIT_RECORD_LEN_V1,
     TRANSACTION_PREPARE_HEADER_LEN_V1,
 };
 
-type Closure = BTreeMap<ObjectDigest, (ObjectRefV1, Arc<[u8]>)>;
+pub(super) type Closure = BTreeMap<ObjectDigest, (ObjectRefV1, Arc<[u8]>)>;
 type Counts = BTreeMap<ObjectDigest, [u64; 3]>;
 
 const CASES: u32 = 8;
@@ -49,16 +51,44 @@ const METADATA_ROOT_DELTAS: u64 = 2;
 const DOMAIN_NAMES: [&str; 3] = ["current", "retained", "metadata"];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Work {
-    references: u64,
-    expansions: u64,
-    quoted_bytes: u64,
+pub(super) struct Work {
+    pub(super) references: u64,
+    pub(super) expansions: u64,
+    pub(super) quoted_bytes: u64,
 }
 
-struct CommitRecord {
-    work: [Work; 3],
-    metadata_bytes: u64,
-    logical_writes: u64,
+pub(super) struct CommitRecord {
+    pub(super) target: ObjectRefV1,
+    pub(super) work: [Work; 3],
+    pub(super) metadata_bytes: u64,
+    pub(super) logical_writes: u64,
+    pub(super) fresh_objects: u64,
+    pub(super) fresh_bytes: u64,
+    pub(super) pack_delta: u64,
+    pub(super) index_delta: u64,
+    pub(super) live_packs: u64,
+    pub(super) old_path: u64,
+    pub(super) new_path: u64,
+    pub(super) deleted_objects: u64,
+    pub(super) rewrite: DagRewriteReport,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Phase {
+    Seal,
+    Bind,
+    Prepare,
+    Publish,
+}
+
+pub(super) trait CommitProbe {
+    fn phase<T>(&mut self, phase: Phase, operation: impl FnOnce() -> T) -> T;
+}
+
+struct Unprobed;
+
+impl CommitProbe for Unprobed {
+    fn phase<T>(&mut self, _: Phase, operation: impl FnOnce() -> T) -> T { operation() }
 }
 
 struct MetadataStep {
@@ -71,39 +101,39 @@ struct MetadataStep {
     anchors: Option<(ObjectDigest, ObjectDigest)>,
 }
 
-struct ScalingFixture {
-    writer: RetentionFormat,
-    oracle: CanonicalObjectStore,
-    image: CheckpointPackImage,
-    keys: Vec<Vec<u8>>,
-    model: ModelState,
-    state: StateVersionV1,
-    closure: Closure,
-    current: RetainedStateV1,
-    historical: Vec<RetainedStateV1>,
-    union: BTreeSet<ObjectDigest>,
-    stored: BTreeSet<ObjectDigest>,
+pub(super) struct ScalingFixture {
+    pub(super) writer: RetentionFormat,
+    pub(super) oracle: CanonicalObjectStore,
+    pub(super) image: CheckpointPackImage,
+    pub(super) keys: Vec<Vec<u8>>,
+    pub(super) model: ModelState,
+    pub(super) state: StateVersionV1,
+    pub(super) closure: Closure,
+    pub(super) current: RetainedStateV1,
+    pub(super) historical: Vec<RetainedStateV1>,
+    pub(super) union: BTreeSet<ObjectDigest>,
+    pub(super) stored: BTreeSet<ObjectDigest>,
 }
 
-struct ScalingChain<'fixture> {
-    directory: PersistenceTrialDir,
-    lease: DurableWriterLeaseV1,
-    core: DurableAuthorityCoreV1<TestSemanticProfile>,
-    fixture: &'fixture ScalingFixture,
-    model: ModelState,
-    state: StateVersionV1,
-    closure: Closure,
-    current: RetainedStateV1,
-    historical: Vec<RetainedStateV1>,
-    union: BTreeSet<ObjectDigest>,
-    stored: BTreeSet<ObjectDigest>,
+pub(super) struct ScalingChain<'fixture> {
+    pub(super) root: PathBuf,
+    pub(super) lease: DurableWriterLeaseV1,
+    pub(super) core: DurableAuthorityCoreV1<TestSemanticProfile>,
+    pub(super) fixture: &'fixture ScalingFixture,
+    pub(super) model: ModelState,
+    pub(super) state: StateVersionV1,
+    pub(super) closure: Closure,
+    pub(super) current: RetainedStateV1,
+    pub(super) historical: Vec<RetainedStateV1>,
+    pub(super) union: BTreeSet<ObjectDigest>,
+    pub(super) stored: BTreeSet<ObjectDigest>,
 }
 
-struct Planned {
-    model: ModelState,
-    batch: Vec<u8>,
-    target: ObjectRefV1,
-    closure: Closure,
+pub(super) struct Planned {
+    pub(super) model: ModelState,
+    pub(super) batch: Vec<u8>,
+    pub(super) target: ObjectRefV1,
+    pub(super) closure: Closure,
 }
 
 fn scaling_runner(cases: u32) -> TestRunner {
@@ -116,8 +146,23 @@ fn scaling_runner(cases: u32) -> TestRunner {
 
 fn count(length: usize) -> u64 { u64::try_from(length).expect("a test collection length fits u64") }
 
-fn scaling_key(index: usize) -> Vec<u8> {
+pub(super) fn scaling_key(index: usize) -> Vec<u8> {
     datum_key(&format!("chan-{index:06x}"), &format!("datum-{index:06x}"))
+}
+
+pub(super) fn mutation_batch(
+    state: StateVersionV1,
+    transitions: &mut [(&[u8], u64, u64)],
+) -> Vec<u8> {
+    transitions.sort_unstable_by_key(|(key, _, _)| *key);
+    let mut batch =
+        RSpaceMutationBatchV1::new(state).expect("the scaling base has a successor generation");
+    for &(key, before, after) in transitions.iter() {
+        batch
+            .record_data(key, before, after)
+            .expect("a scheduled datum transition is a valid mutation");
+    }
+    encode(&batch.plan().expect("a nonempty scaling batch plans"))
 }
 
 fn scheduled_mutation(
@@ -136,15 +181,26 @@ fn scheduled_mutation(
         .expect("a scheduled key holds a datum");
         transitions.push((key.as_slice(), before, after));
     }
-    transitions.sort_unstable_by_key(|(key, _, _)| *key);
-    let mut batch =
-        RSpaceMutationBatchV1::new(state).expect("the scaling base has a successor generation");
-    for (key, before, after) in transitions {
-        batch
-            .record_data(key, before, after)
-            .expect("a scheduled datum transition is a valid mutation");
-    }
-    encode(&batch.plan().expect("a nonempty scaling batch plans"))
+    mutation_batch(state, &mut transitions)
+}
+
+pub(super) fn admit_scaling_directory(
+    root: &Path,
+    writer: RetentionFormat,
+    limits: DurableLimits,
+) -> (DurableWriterLeaseV1, DurableAuthorityCoreV1<TestSemanticProfile>) {
+    let (lease, source) = DurableDirectoryV1::open(root)
+        .expect("open the scaling trial directory")
+        .with_retention_reader_for_test(RetentionReader::Dual)
+        .with_retention_writer_for_test(writer)
+        .recover_and_admit_v1::<TestSemanticProfile>(
+            limits,
+            LogPackDecodeLimits::UNBOUNDED,
+            DurableAdmissionLimitsV1::UNBOUNDED,
+        )
+        .expect("cold admission of the scaling fixture")
+        .into_parts();
+    (lease, source.into_core())
 }
 
 fn closure_bytes(closure: &Closure) -> u64 {
@@ -383,7 +439,7 @@ impl MetadataStep {
 }
 
 impl ScalingFixture {
-    fn build(writer: RetentionFormat, key_count: usize, history: usize) -> Self {
+    pub(super) fn build(writer: RetentionFormat, key_count: usize, history: usize) -> Self {
         let keys = (0..key_count).map(scaling_key).collect::<Vec<_>>();
         let mut model = ModelState::default();
         model.data.extend(keys.iter().map(|key| (key.clone(), 1)));
@@ -471,24 +527,15 @@ impl ScalingFixture {
 }
 
 impl<'fixture> ScalingChain<'fixture> {
-    fn open(fixture: &'fixture ScalingFixture, prefix: &str) -> Self {
-        let directory = trial_scratch(prefix);
-        install_checkpoint_image(directory.path(), &fixture.image);
-        let (lease, source) = DurableDirectoryV1::open(directory.path())
-            .expect("open the scaling trial directory")
-            .with_retention_reader_for_test(RetentionReader::Dual)
-            .with_retention_writer_for_test(fixture.writer)
-            .recover_and_admit_v1::<TestSemanticProfile>(
-                limits(),
-                LogPackDecodeLimits::UNBOUNDED,
-                DurableAdmissionLimitsV1::UNBOUNDED,
-            )
-            .expect("cold admission of the scaling fixture")
-            .into_parts();
-        let core = source.into_core();
+    pub(super) fn new(
+        fixture: &'fixture ScalingFixture,
+        root: PathBuf,
+        lease: DurableWriterLeaseV1,
+        core: DurableAuthorityCoreV1<TestSemanticProfile>,
+    ) -> Self {
         assert_eq!(core.authority().slot().state(), fixture.state);
         Self {
-            directory,
+            root,
             lease,
             core,
             fixture,
@@ -502,7 +549,13 @@ impl<'fixture> ScalingChain<'fixture> {
         }
     }
 
-    fn plan(&self, edits: &[(usize, u64)]) -> Planned {
+    fn open(fixture: &'fixture ScalingFixture, root: PathBuf, limits: DurableLimits) -> Self {
+        install_checkpoint_image(&root, &fixture.image);
+        let (lease, core) = admit_scaling_directory(&root, fixture.writer, limits);
+        Self::new(fixture, root, lease, core)
+    }
+
+    pub(super) fn plan(&self, edits: &[(usize, u64)]) -> Planned {
         let mut model = self.model.clone();
         let batch = scheduled_mutation(&mut model, self.state, &self.fixture.keys, edits);
         let target = install(&self.fixture.oracle, &model);
@@ -537,7 +590,11 @@ impl<'fixture> ScalingChain<'fixture> {
         removed.usage.expansions + added.usage.expansions
     }
 
-    fn commit(&mut self, planned: Planned) -> Result<CommitRecord, TestCaseError> {
+    pub(super) fn commit(
+        &mut self,
+        planned: Planned,
+        probe: &mut impl CommitProbe,
+    ) -> Result<CommitRecord, TestCaseError> {
         let writer = self.fixture.writer;
         let base = self.state.manifest();
         let target = planned.target;
@@ -559,6 +616,32 @@ impl<'fixture> ScalingChain<'fixture> {
             .filter(|(digest, _)| !self.union.contains(*digest))
             .map(|(digest, entry)| (*digest, entry.clone()))
             .collect::<Closure>();
+        let new_path = count(
+            planned
+                .closure
+                .keys()
+                .filter(|digest| !self.closure.contains_key(*digest))
+                .count(),
+        );
+        let departed = count(current_frontier.len())
+            .checked_sub(new_path)
+            .ok_or_else(|| TestCaseError::fail("the new path exceeds the changed frontier"))?;
+        let deleted_objects = if planned.model.data.len() == self.model.data.len() {
+            0
+        } else {
+            let deleted =
+                deleted_closure(&self.closure, base, planned.model.data.keys().map(Vec::as_slice));
+            prop_assert!(
+                deleted
+                    .iter()
+                    .all(|digest| !planned.closure.contains_key(digest)),
+                "a deleted object stays in the target closure"
+            );
+            count(deleted.len())
+        };
+        let old_path = departed.checked_sub(deleted_objects).ok_or_else(|| {
+            TestCaseError::fail("the deleted closure exceeds the departed objects")
+        })?;
         let current = RetainedStateV1::new(successor, closure_bytes(&planned.closure))
             .expect("the successor claims its closure bytes");
         let mut historical = Vec::with_capacity(self.historical.len() + 1);
@@ -601,9 +684,13 @@ impl<'fixture> ScalingChain<'fixture> {
         let before = self.core.authority().slot();
         let counts_before = ledger_counts(self.core.retained_closure());
         let roots_before = ledger_roots(self.core.retained_closure());
-        let bound = self
-            .core
-            .bind_trusted_transaction(&self.lease, seal(), policy)
+        let transaction = probe.phase(Phase::Seal, seal);
+        let rewrite = transaction.diagnostics().rewrite;
+        let bound = probe
+            .phase(Phase::Bind, || {
+                self.core
+                    .bind_trusted_transaction(&self.lease, transaction, policy)
+            })
             .map_err(|error| failure("the exact-policy bind refused", error))?;
         prop_assert_eq!(bound.receipt().base(), self.state);
         prop_assert_eq!(bound.receipt().target(), successor);
@@ -671,12 +758,26 @@ impl<'fixture> ScalingChain<'fixture> {
             .commit_sequence()
             .successor()
             .expect("the published commit sequence has a successor");
-        let prepared = self
-            .core
-            .prepare_transaction(&self.lease, &bound, sequence, LogPackDecodeLimits::UNBOUNDED)
+        let prepared = probe
+            .phase(Phase::Prepare, || {
+                self.core.prepare_transaction(
+                    &self.lease,
+                    &bound,
+                    sequence,
+                    LogPackDecodeLimits::UNBOUNDED,
+                )
+            })
             .expect("prepare the trusted-bound scaling commit");
         let (published, effects) = observed_effects(|| {
-            publish_trusted_incremental_v1(&mut self.lease, &self.core, &prepared, policy, |_| {})
+            probe.phase(Phase::Publish, || {
+                publish_trusted_incremental_v1(
+                    &mut self.lease,
+                    &self.core,
+                    &prepared,
+                    policy,
+                    |_| {},
+                )
+            })
         });
         let core = published.map_err(|error| failure("the trusted publication failed", error))?;
         prop_assert_eq!(effects, PublicationEffects::trusted());
@@ -687,33 +788,38 @@ impl<'fixture> ScalingChain<'fixture> {
         prop_assert_eq!(after.pack().index_generation(), before.pack().index_generation());
         let fresh_objects = count(fresh.len());
         let fresh_bytes = fresh.values().map(|bytes| count(bytes.len())).sum::<u64>();
+        let pack_delta = after
+            .durable_pack_tail()
+            .checked_sub(before.durable_pack_tail())
+            .ok_or_else(|| TestCaseError::fail("the durable pack tail moved backwards"))?;
+        let index_delta = after
+            .durable_index_tail()
+            .checked_sub(before.durable_index_tail())
+            .ok_or_else(|| TestCaseError::fail("the durable index tail moved backwards"))?;
         prop_assert_eq!(
-            after
-                .durable_pack_tail()
-                .checked_sub(before.durable_pack_tail()),
-            Some(
-                TRANSACTION_PREPARE_HEADER_LEN_V1 +
-                    count(planned.batch.len()) +
-                    fresh_objects * OBJECT_RECORD_HEADER_LEN_V1 +
-                    fresh_bytes +
-                    CHECKSUM_LEN +
-                    TRANSACTION_COMMIT_RECORD_LEN_V1
-            )
+            pack_delta,
+            TRANSACTION_PREPARE_HEADER_LEN_V1 +
+                count(planned.batch.len()) +
+                fresh_objects * OBJECT_RECORD_HEADER_LEN_V1 +
+                fresh_bytes +
+                CHECKSUM_LEN +
+                TRANSACTION_COMMIT_RECORD_LEN_V1
         );
+        prop_assert_eq!(index_delta, fresh_objects * INDEX_RECORD_LEN_V1);
         prop_assert_eq!(
-            after
-                .durable_index_tail()
-                .checked_sub(before.durable_index_tail()),
-            Some(fresh_objects * INDEX_RECORD_LEN_V1)
-        );
-        prop_assert_eq!(
-            file_length(&self.directory.path().join(active_pack_name(after))),
+            file_length(&self.root.join(active_pack_name(after))),
             after.durable_pack_tail()
         );
         prop_assert_eq!(
-            file_length(&self.directory.path().join(index_name(after))),
+            file_length(&self.root.join(index_name(after))),
             after.durable_index_tail()
         );
+        let live_packs = after
+            .pack()
+            .active_pack()
+            .checked_sub(after.pack().first_live_pack())
+            .and_then(|span| span.checked_add(1))
+            .ok_or_else(|| TestCaseError::fail("the first live pack follows the active pack"))?;
 
         let counts_after = ledger_counts(core.retained_closure());
         let roots_after = ledger_roots(core.retained_closure());
@@ -802,9 +908,19 @@ impl<'fixture> ScalingChain<'fixture> {
         self.state = successor;
         self.model = planned.model;
         Ok(CommitRecord {
+            target,
             work: expected,
             metadata_bytes: count(metadata.object.len()) + staged_bytes,
             logical_writes: references + root_deltas,
+            fresh_objects,
+            fresh_bytes,
+            pack_delta,
+            index_delta,
+            live_packs,
+            old_path,
+            new_path,
+            deleted_objects,
+            rewrite,
         })
     }
 }
@@ -821,7 +937,9 @@ fn trusted_commit_work_is_the_changed_frontier_under_geometric_current_growth() 
         scaling_runner(CASES)
             .run(&(0..key_count, 0..key_count / 2), |(offset, half)| {
                 let stride = 2 * half + 1;
-                let mut chain = ScalingChain::open(&fixture, "trusted-scaling-frontier-");
+                let directory = trial_scratch("trusted-scaling-frontier-");
+                let mut chain =
+                    ScalingChain::open(&fixture, directory.path().to_path_buf(), limits());
                 let mut position = 0;
                 for (commit, width) in WIDTHS.into_iter().enumerate() {
                     let multiplicity = 2 + count(commit);
@@ -839,7 +957,7 @@ fn trusted_commit_work_is_the_changed_frontier_under_geometric_current_growth() 
                             .filter(|digest| chain.closure.contains_key(*digest))
                             .count(),
                     );
-                    let record = chain.commit(planned)?;
+                    let record = chain.commit(planned, &mut Unprobed)?;
                     let excess =
                         control
                             .checked_sub(record.work[0].expansions)
@@ -888,13 +1006,16 @@ fn trusted_commit_work_is_unchanged_by_geometric_history_growth() {
     for (writer, bytes) in writers.into_iter().zip(&mut written) {
         for history in HISTORIES {
             let fixture = ScalingFixture::build(writer, KEY_COUNT, history);
-            let mut chain = ScalingChain::open(&fixture, "trusted-scaling-history-");
+            let directory = trial_scratch("trusted-scaling-history-");
+            let mut chain = ScalingChain::open(&fixture, directory.path().to_path_buf(), limits());
             let records = (0..COMMITS)
                 .map(|commit| {
                     let planned = chain.plan(&[(commit, 2 + count(commit))]);
-                    chain.commit(planned).unwrap_or_else(|failure| {
-                        panic!("{writer:?} history {history} commit {commit}: {failure}")
-                    })
+                    chain
+                        .commit(planned, &mut Unprobed)
+                        .unwrap_or_else(|failure| {
+                            panic!("{writer:?} history {history} commit {commit}: {failure}")
+                        })
                 })
                 .collect::<Vec<_>>();
             semantic.push(
@@ -939,7 +1060,9 @@ fn last_reference_deletion_expands_exactly_the_deleted_closure() {
         scaling_runner(CASES)
             .run(&(0..GROUPS, 0..GROUPS / 2), |(offset, half)| {
                 let stride = 2 * half + 1;
-                let mut chain = ScalingChain::open(&fixture, "trusted-scaling-deletion-");
+                let directory = trial_scratch("trusted-scaling-deletion-");
+                let mut chain =
+                    ScalingChain::open(&fixture, directory.path().to_path_buf(), limits());
                 for commit in 0..COMMITS {
                     let group = (offset + commit * stride) % GROUPS;
                     let first = KEY_COUNT + group * width;
@@ -999,7 +1122,7 @@ fn last_reference_deletion_expands_exactly_the_deleted_closure() {
                         .filter(|digest| !planned.closure.contains_key(*digest))
                         .copied()
                         .collect::<Vec<_>>();
-                    chain.commit(planned)?;
+                    chain.commit(planned, &mut Unprobed)?;
                     let ledger = chain.core.retained_closure();
                     for digest in departed {
                         prop_assert_eq!(ledger.count(ClosureDomainV1::Current, digest), 0);

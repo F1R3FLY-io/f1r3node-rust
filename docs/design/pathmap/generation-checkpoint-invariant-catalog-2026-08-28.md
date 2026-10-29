@@ -6175,9 +6175,11 @@ size of the current state or on the number of retained states. The task's
 first slice writes this section. It states the cost that the code implies, the
 fixture, the oracles and three properties, SW-01 to SW-03. They check, at
 geometrically growing sizes, that each trusted commit's work equals an oracle
-computed independently from the objects that the commit changes. The section
-claims no scaling result: a later slice adds the release-mode harness and the
-preregistered measurement, and records their results here.
+computed independently from the objects that the commit changes. The second
+slice adds the release-mode harness, its driver and SW-04, which checks the
+harness itself (the harness subsection below). The section still claims no
+scaling result: the preregistered measurement, a later slice, records its
+results here.
 
 **Terms.**
 
@@ -6308,12 +6310,239 @@ roots insert per root delta. It is derived from those lines, not measured.
 | SW-01 | V2 | $`N \in \{2^4, 2^6, 2^8, 2^{10}\}`$ and $`H = 2^4`$ | 3, replacing 1, 4 and 1 keys, in 8 generated schedules per key count |
 | SW-02 | V2, and V1 as the control | $`H \in \{2^4, 2^6, 2^8, 2^{10}\}`$ and $`N = 2^4`$ | 3, each replacing one key |
 | SW-03 | V2 | $`N = 2^8`$ kept keys and 16 reserve groups of $`m \in \{1, 4, 16\}`$ keys at aligned offsets | 3, each deleting one reserve group, in 8 generated schedules per group size |
+| SW-04 | V2 | $`N = 2^4`$ and $`H = 2^4`$; the L cell adds 16 reserve keys in groups of $`m = 2`$ | U: 2 warm-up and 4 timed replacements of one key. E: 2 warm-up, an eviction checkpoint, 2 deferred, 1 reclaim and 2 timed replacements. L: 2 warm-up and 4 timed deletions of one group. Each cell runs one build, two verify and one time child |
 
 A generated schedule is an offset and an odd stride. In SW-01 the key replaced
 at position $`p`$, counted across the chain's commits, is
 $`(\mathit{offset} + p \cdot \mathit{stride}) \bmod N`$, so no key is replaced
 twice. In SW-03 the group deleted at commit $`c`$ is
 $`(\mathit{offset} + c \cdot \mathit{stride}) \bmod 16`$.
+
+**The harness (task 11989).** SW-01 to SW-03 check exact work at small sizes
+in the ordinary test build. The measurement needs larger cells, release builds,
+clocks and resource counters, and a fresh process per cell, so a harness runs
+each cell in child processes of the test binary. The scale child is the ignored
+test `scale_child` in `trusted_scaling_resource.rs`. The driver,
+`scripts/bench/rspace-fixed-delta-scaling.py`, starts it as
+`<test binary> --exact rspace::persistence::tests::trusted_scaling_resource::scale_child --ignored --nocapture --quiet --test-threads=1`
+with the environment variables `RSPACE_SCALE_CELL`, `RSPACE_SCALE_MODE`,
+`RSPACE_SCALE_FIXTURE` and, except in build mode, `RSPACE_SCALE_SCRATCH`.
+`--quiet` selects libtest's terse formatter, which prints nothing when a test
+starts, so every record begins its own line. A line is a record exactly when it
+starts with `SCALE_`.
+
+A cell is twelve comma-separated `key=value` pairs, in this order and no other.
+Every integer is canonical decimal, with no sign and no leading zero, so each
+cell has one spelling.
+
+| Key | Meaning | Constraint |
+|---|---|---|
+| `axis` | U, R, D, L or E; a label that the driver groups strata by | one of the five letters |
+| `keys` | $`N`$, the kept data keys | $`N \ge 1`$ |
+| `reserve` | reserve keys that only deletions remove | a multiple of $`m`$ when $`m > 0`$, else 0 |
+| `history` | $`H`$, the historical states | $`H \ge 1`$ |
+| `delta` | $`d`$, the keys that a commit replaces | exactly one of $`d`$ and $`m`$ is positive |
+| `deletion` | $`m`$, the keys that a commit deletes | |
+| `writer` | `v2` or `v1` | |
+| `case` | `ordinary` or `evict` | $`K > 0`$ exactly for `evict` |
+| `warmup` | $`W`$, the warm-up commits | |
+| `deferred` | $`K`$, the commits between the eviction checkpoint and the reclaim commit | |
+| `timed` | $`T`$, the timed commits | $`T \ge 1`$ |
+| `seed` | the schedule seed, a `u64` | |
+
+A process runs $`C`$ commits, counted from 0: $`W`$ labeled `warmup`; for
+`evict`, a generation checkpoint with a reader pin, $`K`$ labeled `deferred`
+and one labeled `reclaim`, run after the pin is dropped; then $`T`$ labeled
+`timed`. So $`C = W + K + T`$, plus one for `evict`. The schedule draws an
+offset and a stride from a SplitMix64 stream seeded with `seed`, over a range of
+length $`n`$: $`\mathit{offset} = s_1 \bmod n`$ and
+$`\mathit{stride} = (s_2 \bmod n) \mathbin{|} 1`$, where $`s_1`$ and $`s_2`$
+are the first two outputs and $`\mathbin{|}`$ is bitwise or, and then the
+stride grows by 2 until it is coprime with $`n`$. The map
+$`p \mapsto (\mathit{offset} + p \cdot \mathit{stride}) \bmod n`$ is then a
+bijection on $`\{0, \dots, n - 1\}`$. A replacement cell uses $`n = N`$, and
+commit $`c`$ replaces the keys at positions $`c d`$ to $`(c + 1) d - 1`$, from
+multiplicity 1 to $`2 + c`$. A deletion cell uses the $`G = \mathit{reserve} / m`$
+reserve groups, $`n = G`$, and commit $`c`$ deletes the $`m`$ keys of group
+$`(\mathit{offset} + c \cdot \mathit{stride}) \bmod G`$, from multiplicity 1
+to 0. The parser refuses $`C d > N`$ and $`C > G`$, so no key is edited twice.
+
+The child runs one of three modes.
+
+- **Build** builds the fixture with $`N + \mathit{reserve}`$ keys and $`H`$
+  historical states, installs its catalog, pack and index in the empty fixture
+  directory, and prints the fixture record.
+- **Verify** rebuilds the fixture in memory and refuses a fixture directory
+  that does not hold exactly those three files, byte for byte. It installs the
+  fixture in the empty scratch directory, admits it cold under the scale
+  limits, and runs every commit through the verify routine. A probe wraps the
+  routine's four phases: the second seal, the bind, the prepare and the
+  publication. Around each phase it reads `/proc/self/io`, and inside it counts
+  allocations with the test build's thread-local counting allocator. A commit's
+  record is printed only after the whole routine passed, so a failed check
+  leaves its record missing.
+- **Time** copies the fixture files into the empty scratch directory and admits
+  them cold on a worker thread with an 8 MiB stack, behind a ready and start
+  handshake. The commits run with no oracle, no allocation counting and no
+  `/proc/self/io` read, each bound under the unbounded trusted policy. Six
+  readings of the thread CPU, process CPU and monotonic wall clocks bound five
+  phases: seal, bind, prepare, publish, and release, which drops the prepared
+  and bound transactions and the predecessor core. The samples wait in a
+  preallocated buffer and are printed after the window.
+
+In the evict case, after the warm-up commits the child pins the current
+generation with a bare generation lease, which suffices because lease
+registries are process-global per directory identity (`retention.rs:575-598`).
+It then publishes a generation checkpoint from the trusted core, by the
+cold-checked acquire and the generation publisher, as the trusted history tests
+do. The $`K`$ deferred commits run with the pin held, then the pin is dropped
+and the reclaim commit runs. In verify mode each record carries the names of
+the files that the commit unlinked. Only the reclaim commit may unlink files,
+and it must unlink exactly the superseded generation's packs, its index and
+`reclaim.v1`, the three kinds that reclamation removes (`io.rs:1390-1429`).
+
+The window is every post-warm-up commit. It opens just before the first of
+them, after the eviction checkpoint and pin, by writing 5 to
+`/proc/self/clear_refs`, which resets VmHWM to VmRSS.
+
+**Records.** A record is tab-separated: the tag, the version `v1`, then
+`key=value` fields in a fixed order. The driver refuses an unknown tag, a wrong
+version, a missing, extra or reordered key, a non-canonical integer and a
+duplicate commit index.
+
+| Record | Printed | Fields, in order |
+|---|---|---|
+| `SCALE_HEADER` | first, by every child | `mode`, `cell` |
+| `SCALE_FIXTURE` | once, by build | `keys_total`, `state_objects`, `state_bytes`, `history`, `union_objects`, `pack_bytes`, `index_bytes`, `records`, `build_ns` |
+| `SCALE_VERIFY` | once per commit, by verify | `commit`, `label`, `target`; references, expansions and quoted bytes of the current, retained and metadata trials; `logical_writes`, `metadata_bytes`, `fresh_objects`, `fresh_bytes`, `pack_delta`, `index_delta`, `live_packs`, `old_path`, `new_path`, `deleted_objects`; the rewrite's loaded, edited and emitted nodes and exact path chunks; for each of seal, bind, prepare and publish, the allocation count, bytes, peak live bytes and largest allocation and the `syscr`, `syscw`, `rchar` and `wchar` deltas; `unlinked` |
+| `SCALE_SAMPLE` | once per commit, by time | `commit`, `label`, `target`; thread, process and wall nanoseconds of each of seal, bind, prepare, publish and release; `rss_after` |
+| `SCALE_PROCESS` | last, by verify and time | `mode`, `commits`, `admission_ns`, `rss_start`, `rss_end`, `hwm_window`, `hwm_reset`, `swap`, `live_packs`, `filesystem`, then the six probe calibrations |
+
+`target` is the target manifest's digest in lowercase hexadecimal. In a verify
+record $`\mathit{old\_path} + \mathit{deleted\_objects} = \lvert \mathrm{cl}(B) \setminus \mathrm{cl}(T) \rvert`$
+and $`\mathit{new\_path} = \lvert \mathrm{cl}(T) \setminus \mathrm{cl}(B) \rvert`$,
+so the current expansions equal their sum. `deleted_objects` is SW-03's deleted
+closure, computed only when a commit removes keys, and 0 for a replacement.
+`unlinked` is the sorted, semicolon-joined list of file names present before
+the commit and absent after it, or `-`. `hwm_reset` is 1 when the reset brought
+VmHWM within one page of VmRSS; when it is 0, `hwm_window` is the whole
+process's peak.
+
+**Calibrations.** `probe_syscr`, `probe_syscw`, `probe_rchar` and
+`probe_wchar` are the cost of one `/proc/self/io` read, the difference of two
+back-to-back reads. A phase's delta includes exactly one such read, the one
+before the phase, so the driver subtracts the calibration once per phase. The
+read's own `rchar` is the length of the file, which grows by one byte each time
+a counter gains a digit, so a net `rchar` can exceed the phase's true reads by
+the digits gained since the calibration, a few bytes, and never falls below
+them. `probe_alloc_count` and `probe_alloc_bytes` are the allocations of the
+effects observer's trace buffer, which grows inside the publication in verify
+mode: 13 hook points pushed onto an empty vector of one-byte values, 2
+allocations and 24 bytes. The child replays the same pushes under the same
+counter before its first commit, and the driver subtracts them once per
+commit. Time mode runs no observer and reads no `/proc/self/io`, so it reports
+six zeros.
+
+**Probes fail closed.** A probe that cannot measure stops the child; it never
+reports a zero.
+
+| Probe | Source | Refused |
+|---|---|---|
+| I/O | `LinuxIo::parse` of `/proc/self/io`, read whole into a 512-byte stack buffer | a missing counter, or a read that fills the buffer |
+| Memory | `status_bytes` of `VmRSS`, `VmHWM` and `VmSwap` in `/proc/self/status`, read whole into an 8 KiB stack buffer | a missing field, or a read that fills the buffer |
+| Clocks | `clock_gettime` of `CLOCK_THREAD_CPUTIME_ID` and `CLOCK_PROCESS_CPUTIME_ID`, and `Instant` for wall time | a failed call, or a phase whose reading does not advance |
+| Allocations | the counting allocator's thread-local measurement | a probed phase that counts no allocation |
+| Scratch | the `statfs` magic of the fixture and scratch directories | tmpfs or ramfs |
+
+The `/proc` readers allocate nothing when they succeed, so a probe never
+perturbs the allocation counts that it brackets.
+
+**Scale limits.** Cold admission, the cold-checked acquire and the generation
+publisher's preflight are the only checks of the durable limits; a trusted
+commit checks none. Let $`P`$ and $`I`$ be the fixture's pack and index bytes,
+$`R = \lfloor I / 72 \rfloor`$, which is at least its record count,
+$`k = \max(d, m)`$, and $`c = C + 1`$, counting the eviction checkpoint as one
+more whole-state write. One commit writes at most $`R + 104`$ records and
+$`b = 4P + 518{,}500 + 2^{23} + 4096k`$ pack bytes: $`4P`$ covers a
+shape-preserving rewrite of every state object, each at most twice its size,
+and a V1 manifest of at most $`P + 56(c + 1)`$ bytes; 518,500 is the V2
+path-local bound; $`2^{23}`$ covers anchors, record headers and the prepare and
+commit records; and $`4096k`$ covers the mutation, whose keys are under 64
+bytes each. The scale limits are $`R + c(R + 104)`$ records and index records,
+$`I + 72c(R + 104)`$ index bytes, $`P + cb`$ pack and comparison bytes, scan
+and physical reads of the pack bound plus the index bound, $`c + 1`$
+transactions and 8 live packs, each raised to at least the test default. Limits
+are refusal caps that allocate nothing, and a refusal still fails the child.
+
+**The driver.** `scripts/bench/rspace-fixed-delta-scaling.py` collects one
+population into a new directory and then analyzes it: the decision population,
+a pilot (`--pilot`), or one negative control (`--controls NAME`). It refuses to
+collect unless `SCALE_CAPPED=1` says that it runs inside the prescribed
+`systemd-run` memory envelope and, except for a pilot, unless the measured
+CPU's governor reads `performance`. It also refuses an output directory on
+tmpfs or ramfs.
+
+- **Children.** Before each child the driver takes one-second `mpstat`
+  snapshots, at most 30, until the measured core's SMT siblings are each at
+  least 90% idle and at least three physical cores have every sibling more than
+  half idle. A host that stays busy stops the collection. Each child runs under
+  `taskset` on the measured CPU with a per-child timeout. The driver creates the
+  fixture and scratch directories with mode 0700, because the durable directory
+  refuses a root that the group or others can write, and it removes each
+  scratch directory when its child exits.
+- **Order.** One build per cell, then the verify runs, then the time processes:
+  3 warm-up rounds and 31 decision rounds, each visiting every cell in an order
+  shuffled with seed 7929. Decision data use two verify runs; a pilot or a
+  control uses one.
+- **Failures.** A nonzero exit, a timeout, a SIGKILL (reported as an
+  out-of-memory kill) and a record set other than exactly the one the contract
+  prescribes for the mode and cell are each kept in `failures.tsv`, and any of
+  them makes the population unqualified.
+- **Summaries.** `fixtures.tsv`, `verify.tsv` (each verify record beside its
+  process record), `samples.tsv`, `process-summary.tsv` and `failures.tsv`,
+  with `metadata.json` (host facts, the sha256 of the binary and the sources,
+  and the frozen protocol) and `manifest.json` (the sha256 of every file). A
+  time process's statistic for a clock is the median, over its $`T`$ timed
+  commits, of the five phases' per-commit sum.
+
+The analysis reads only `metadata.json`, `fixtures.tsv`, `verify.tsv` and
+`process-summary.tsv`, so `--analyze-only` and `--check` reproduce it from the
+committed summaries. `--check` also verifies the manifest's digests and that
+the recomputed analysis equals `analysis.json`. Every exponent is the
+stratified log-log slope of `paired_benchmark_statistics.py`, with 10,000
+resamples and seed 7929, against the axis's stratum: $`N`$ on U, $`H`$ on R,
+$`d`$ on D and $`m`$ on L. A net value below zero fails its gate; it is never
+clamped.
+
+| Gate | Samples | Passes when |
+|---|---|---|
+| H1 | per decision time process, the thread CPU statistic | the exponent's upper 95% bound is at most 0.25 on U and on R |
+| G1 | every verify record | each run has one record per commit, in order and labeled as scheduled, with $`\mathit{cur\_exp} = \mathit{old\_path} + \mathit{new\_path} + \mathit{deleted\_objects}`$ and no deleted closure in a replacement |
+| G2 | the verify records and the time processes | the verify runs agree in every field except the per-phase allocation and I/O counters, and each time process's chain of targets equals the verify run's |
+| G3 | per decision time process, the wall statistic | as H1 |
+| G4 | per verify run, the $`T`$ timed commits' allocation count and bytes, net of the trace calibration once per commit | the upper 95% bound is at most 0.25 on U and on R, in every run |
+| G5 | the same for `syscr`, `syscw`, `rchar` and `wchar`, summed over the four phases, each net of one I/O calibration | as G4, and every verify run is complete, because check 5 of the verify routine asserts the pack and index growth |
+| G6 | per decision time process, `rss_end` minus `rss_start` | a two-sample bootstrap of the largest stratum's median minus the smallest's (10,000 resamples, seed 7929) has an upper 97.5% bound of at most 1 MiB on U and on R; no child reports swap and none is killed |
+| G7 | every verify record's `metadata_bytes` | V2 commits write at most 518,500 bytes with $`2 + \mathit{meta\_exp} \le 103`$, a V1 commit $`c`$ writes exactly $`96 + 56(H + c + 1)`$ bytes, and every verify run is complete, because check 2 asserts the writer model's bytes |
+| G8 | the thread CPU statistic on D and L, and the L verify records | the exponent's upper 95% bound is at most 1.25 against $`d`$ and against $`m`$, and every L commit deletes a nonempty closure equal to its excess current expansions |
+| G9 | the E cells | each verify run has one reclaim commit, only it unlinks files, they are superseded packs, one index and `reclaim.v1`, and every verify run is complete, because check 4 asserts the trusted effects; each process's deferred median and reclaim commit, minus its timed median, are reported with 95% bootstrap intervals and no threshold |
+| G10 | a control population | the control's expected signal is detected |
+
+A decision population is accepted when it is qualified and H1 and G1 to G9
+pass. A control population is accepted when G10 detects it, and a pilot is
+never accepted. Descriptively, the analysis reports each cell's per-phase
+medians with 95% bootstrap intervals, the sealing counters and admission time,
+and $`c^*`$: the smallest $`c`$ on the grid $`2^{j/4}`$,
+$`j \in \{-40, \dots, 80\}`$, such that adding $`c \cdot x`$ to every process
+statistic at stratum $`x`$ lifts H1's bound above 0.25 (0 when the bound
+already exceeds it).
+
+`--self-test` checks the parser against 27 malformed records and 21 incomplete
+record sets, the cells and guards, idle admission, the bootstraps, the
+monotonicity of $`c^*`$, the net-value rules and 22 faulted children. Synthetic
+collections at exponents 0, 0.1 and 1 recover each exponent exactly; an
+incomplete verify run fails G5, G7 and G9; and a scratch directory that the
+group or others can open fails the synthetic child.
 
 **The SW rows.**
 
@@ -6322,6 +6551,7 @@ $`(\mathit{offset} + c \cdot \mathit{stride}) \bmod 16`$.
 | SW-01 | Current growth. At each key count every commit passes the verify routine, and the deactivate-first control expands exactly $`\lvert \mathrm{cl}(B) \rvert + \lvert \mathrm{cl}(T) \rvert`$ objects, $`2 \lvert \mathrm{cl}(B) \cap \mathrm{cl}(T) \rvert`$ more than the trusted commit. The smallest excess grows strictly from each key count to the next. | `trusted_commit_work_is_the_changed_frontier_under_geometric_current_growth` |
 | SW-02 | History growth. Every commit passes the verify routine, and each commit's current and retained work is the same at every history size and for both writers. The test prints each commit's metadata bytes for both writers, and from 64 historical states up the V1 manifest is larger than the V2 step at every commit. | `trusted_commit_work_is_unchanged_by_geometric_history_growth` |
 | SW-03 | Last-reference deletion. The deleted closure is the part of $`\mathrm{cl}(B)`$ off the manifest, the namespace roots and every kept key's search path. It is disjoint from $`\mathrm{cl}(T)`$, holds each deleted key's leaf, and has between $`m`$ and $`2m - 1`$ objects. The retained frontier is exactly the new path $`\mathrm{cl}(T) \setminus \mathrm{cl}(B)`$, and after the commit every object of $`\mathrm{cl}(B) \setminus \mathrm{cl}(T)`$ has current count zero and a positive retained count. Every commit passes the verify routine. | `last_reference_deletion_expands_exactly_the_deleted_closure` |
+| SW-04 | Harness determinism and fail-closed probes. A `/proc/self/io` copy that lacks any of `rchar`, `wchar`, `syscr`, `syscw`, `read_bytes` and `write_bytes`, or is truncated anywhere before the last of those values, is refused, as is a status copy that lacks `VmRSS`, `VmHWM` or `VmSwap`, and a `/proc` read that fills its buffer. Equal or decreasing clock readings, a zero allocation count, and tmpfs and ramfs are refused. 27 malformed cells are refused, and the schedule permutation is a bijection for every length up to 64 under four seeds. For each of the U, E and L cells, a build child prints a header and a fixture record; two verify children print the same records except the 32 per-phase probe fields and the process record; and a time child prints one sample per commit, with the labels in order, every nanosecond field positive, zero probes and the verify children's target chain. In E only the reclaim commit unlinks files, and they include `reclaim.v1`. | `scaling_harness_is_deterministic_and_fails_closed` |
 
 ## Formal-to-executable derivation matrix
 
@@ -6555,6 +6785,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | SW-01 | `TrustedSuccessorHasNoColdEvidence`, `NoPhysicalRecoveryOnTrustedSuccess` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `IncrementalReachability.add_before_remove_agrees_with_cold_ledger`, `RetentionV2Editor.deactivate_first_mutant_expands_the_shared_history` | P | Production refinement at geometric current sizes (task 7929; the fixed-delta trusted commit scaling section). The trusted effects realize the two TLA+ invariants. The work in each domain equals the changed-frontier oracle, which realizes the root-delta theorem in the add-before-remove order that the agreement theorem covers. The committed deactivate-first control realizes the mutant theorem in the current domain. |
 | SW-02 | `EXEC_ONLY` | `RetentionV2Editor.metadata_trial_work_is_the_changed_objects`, `RetentionV2Editor.anchor_step_realizes_the_retention_entry_step`, `RetentionV2Editor.flat_manifest_mutant_rewrites_bytes_proportional_to_history` | P | Production refinement at geometric history sizes (task 7929). The metadata trial's work is the changed radix objects plus the two anchors; the new anchor and radix nodes equal the model's retention entry step byte for byte; and the V1 control's manifest grows by 56 bytes per historical entry, as the flat-manifest mutant states. |
 | SW-03 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedReachability.decrement_changes_unique_inventory` | P | Production refinement of last-reference deletion (task 7929). The current deactivation expands each object of the deleted closure once, and each object that loses its last current reference leaves the current inventory while its retained count stays positive. |
+| SW-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 11989): the measurement harness's record contract, schedule and fail-closed probes. No model states a property of the harness; the trusted commit's work that it measures is SW-01 to SW-03's. |
 
 ## Generator discipline
 
@@ -6918,6 +7149,31 @@ gate also passed on the export: `cargo check` of all targets, clippy, all
 evidence only: no production code, persisted byte or outcome changed. See the
 fixed-delta trusted commit scaling section and pgmcp artifact 1156 for
 caps and evidence hashes.
+
+The 2026-10-29 fixed-delta scaling harness and driver of task 11989 add SW-04,
+so the catalog/derivation/binding registry now contains **227** IDs. On an
+export of the candidate tree, SW-01 to SW-04 passed in 3.90 s in debug and in
+1.52 s in release with `PROPTEST_RNG_SEED=20261029`, and SW-01 to SW-03
+printed the same values as under task 11988 in both builds. The seeded
+persistence selection passed with 497 tests in debug (98.99 s) and in release
+(44.67 s), and the manifest test passed. `scale_child` is ignored by design,
+like the three unwind children and the trusted-history kill child, because
+only a parent process runs it. The driver's self-test passed in 15.9 s and
+refused two mutants of the driver: one that creates a scratch directory with
+mode 0777, and one whose child-asserted gate conditions pass on an incomplete
+verify run. A hand run of the E cell followed the record contract: the verify
+child printed seven records labeled in schedule order, only the reclaim commit
+unlinked files (the superseded pack and index and `reclaim.v1`), the I/O
+calibration was 2 read calls and 105 bytes, and the time child's chain of
+targets equaled the verify child's. A V1 child with $`H = 16`$ historical
+states wrote exactly $`96 + 56(H + c + 1)`$ metadata bytes at each commit
+$`c`$ from 0 to 5, from 1,048 to 1,328. The workspace gate also passed on the
+export: `cargo check` of all targets, clippy, all 4,435 release
+nextest tests of `models`, `rspace_plus_plus`, `rho-pure-eval` and `rholang`,
+and the release doc tests. These results add tooling and evidence only: no
+production code, persisted byte or outcome changed, and the section still
+claims no scaling result. See the fixed-delta trusted commit scaling section
+and pgmcp artifact 1158 for caps and evidence hashes.
 
 ## Caller-authority contract (2026-09-06)
 

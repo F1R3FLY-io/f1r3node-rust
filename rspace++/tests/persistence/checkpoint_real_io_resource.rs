@@ -30,17 +30,20 @@ const TEST_NAME: &str =
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct LinuxIo {
-    rchar: u64,
-    wchar: u64,
-    syscr: u64,
-    syscw: u64,
-    read_bytes: u64,
-    write_bytes: u64,
+    pub(super) rchar: u64,
+    pub(super) wchar: u64,
+    pub(super) syscr: u64,
+    pub(super) syscw: u64,
+    pub(super) read_bytes: u64,
+    pub(super) write_bytes: u64,
 }
 
 impl LinuxIo {
     pub(super) fn read() -> Option<Self> {
-        let contents = std::fs::read_to_string("/proc/self/io").ok()?;
+        Self::parse(&std::fs::read_to_string("/proc/self/io").ok()?)
+    }
+
+    pub(super) fn parse(contents: &str) -> Option<Self> {
         let field = |name: &str| -> Option<u64> {
             contents
                 .lines()
@@ -72,7 +75,10 @@ impl LinuxIo {
 }
 
 pub(super) fn linux_status_bytes(field: &str) -> Option<u64> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status_bytes(&std::fs::read_to_string("/proc/self/status").ok()?, field)
+}
+
+pub(super) fn status_bytes(status: &str, field: &str) -> Option<u64> {
     status
         .lines()
         .find_map(|line| line.strip_prefix(field))?

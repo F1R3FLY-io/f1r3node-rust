@@ -718,6 +718,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("shape_summary_properties.rs"),
         include_str!("trusted_history_properties.rs"),
         include_str!("trusted_scaling_properties.rs"),
+        include_str!("trusted_scaling_resource.rs"),
         include_str!("trusted_successor_properties.rs"),
         include_str!("wal_codec.rs"),
         include_str!("../hot_store/journal_commit.rs"),

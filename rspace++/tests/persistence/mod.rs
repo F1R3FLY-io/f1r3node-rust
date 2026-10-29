@@ -48,6 +48,8 @@ mod trusted_history_production;
 mod trusted_history_properties;
 #[cfg(unix)]
 mod trusted_scaling_properties;
+#[cfg(target_os = "linux")]
+mod trusted_scaling_resource;
 mod trusted_successor_production;
 mod trusted_successor_properties;
 mod wal_codec;
