@@ -80,7 +80,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::Level;
-use tracing_subscriber::filter::Targets;
+use tracing_subscriber::filter::{EnvFilter, FilterExt, Targets};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Layer;
 
@@ -98,17 +98,22 @@ const REQUESTED_BLOCKS_TIMEOUT: Duration = Duration::from_secs(240);
 const SEED_PEERS: usize = 4;
 const REPORT_TARGET: &str = "block_queue_livelock";
 
+/// Logs at `RUST_LOG` when it is set, else warnings plus this test's reports.
 fn init_tracing() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
+        let filter = match std::env::var(EnvFilter::DEFAULT_ENV) {
+            Ok(directives) => FilterExt::boxed(EnvFilter::new(directives)),
+            Err(_) => FilterExt::boxed(
+                Targets::new()
+                    .with_target(REPORT_TARGET, Level::INFO)
+                    .with_default(Level::WARN),
+            ),
+        };
         let subscriber = tracing_subscriber::registry().with(
             tracing_subscriber::fmt::layer()
                 .with_test_writer()
-                .with_filter(
-                    Targets::new()
-                        .with_target(REPORT_TARGET, Level::INFO)
-                        .with_default(Level::WARN),
-                ),
+                .with_filter(filter),
         );
         tracing::subscriber::set_global_default(subscriber)
             .expect("this test binary installs the only global subscriber");
@@ -1086,6 +1091,9 @@ async fn a_restarted_node_validates_a_ready_block_while_stored_blocks_wait_on_lo
 
 /// The casper buffer prunes a root waiting this long, with its subtree.
 const BUFFER_STALE_ROOT_AGE: Duration = Duration::from_secs(180);
+/// How long the node gets once the ancestor is served: longer than the
+/// retriever's cycle of a full retry budget plus its quarantine.
+const AFTER_SERVED: Duration = Duration::from_secs(90);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
@@ -1099,7 +1107,8 @@ async fn a_chain_waiting_on_a_long_withheld_ancestor_is_validated_once_it_is_ser
     let child = validators.sign(0, &[&ancestor]);
     let grandchild = validators.sign(2, &[&child]);
 
-    let served_from = Instant::now() + BUFFER_STALE_ROOT_AGE + Duration::from_secs(10);
+    let withheld_for = BUFFER_STALE_ROOT_AGE + Duration::from_secs(10);
+    let served_from = Instant::now() + withheld_for;
     let ancestor_hash = ancestor.block_hash.clone();
     let node = Node::start(&mut stores, NodeSetup {
         peers: 4,
@@ -1113,19 +1122,23 @@ async fn a_chain_waiting_on_a_long_withheld_ancestor_is_validated_once_it_is_ser
     node.gossip(0, &child).await;
     node.gossip(0, &grandchild).await;
 
+    // The shard keeps producing while the ancestor is withheld: one unrelated
+    // ready block a second.
     let chain = [ancestor, child, grandchild];
-    let outcome = wait_until(BUFFER_STALE_ROOT_AGE + Duration::from_secs(60), || {
-        node.count_in_dag(&chain) == chain.len()
-    })
-    .await;
-    assert!(
-        outcome.is_ok(),
-        "{} of {} blocks of a chain whose root ancestor was withheld for {:?} were validated \
-         after {:?} (each chain block was gossiped once)",
+    let deadline = served_from + AFTER_SERVED;
+    let mut traffic = 0usize;
+    while node.count_in_dag(&chain) < chain.len() && Instant::now() < deadline {
+        node.gossip(1 + traffic % 3, &validators.sign(traffic % 3, &[&genesis]))
+            .await;
+        traffic += 1;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(
         node.count_in_dag(&chain),
         chain.len(),
-        BUFFER_STALE_ROOT_AGE + Duration::from_secs(10),
-        outcome.unwrap_err(),
+        "a chain whose root ancestor was withheld for {withheld_for:?} was not validated within \
+         {AFTER_SERVED:?} of the ancestor being served (each chain block was gossiped once; \
+         {traffic} unrelated blocks arrived meanwhile)",
     );
 }
 
