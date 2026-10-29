@@ -22,18 +22,17 @@ use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_slice};
 use super::history::cold_store::{CanonicalCollectionKind, PERSISTED_DATA_HEADER_LEN};
 use super::internal::WaitingContinuation;
-use super::rho_path::{RhoPathEncode, RhoPathV1};
-use super::serializers::serializers::{
-    encode_continuation_identity, encode_continuation_source_into, encode_join_record,
+use super::ordered_receive::{
+    ContinuationFieldBounds, OrderedReceiveError, OrderedReceiveView, PreparedContinuationRecord,
+    RestingReceiveVisit,
 };
+use super::rho_path::{RhoPathEncode, RhoPathV1};
+use super::serializers::serializers::encode_join_record;
 use crate::rspace::persistence::{
     CanonicalBlob, CanonicalBlobKind, CanonicalEncode, ContentTransition, ObjectRefV1,
 };
 
-fn continuation_source(identity: &[u8], canonical: &[u8]) -> (ObjectRefV1, Arc<[u8]>) {
-    let source = canonical
-        .get(identity.len()..)
-        .expect("a continuation record contains its complete identity prefix");
+fn continuation_source(source: &[u8]) -> (ObjectRefV1, Arc<[u8]>) {
     let blob = CanonicalBlob::new(CanonicalBlobKind::ContinuationSourceV1, source.to_vec())
         .expect("a continuation source payload is a valid canonical blob");
     let reference = blob.object_ref();
@@ -370,6 +369,7 @@ pub(crate) struct StoredRecord<R> {
     canonical_len: usize,
     orders: Arc<[u64]>,
     source_ref: Option<ObjectRefV1>,
+    field_bounds: Option<ContinuationFieldBounds>,
 }
 
 struct PendingRecord<R> {
@@ -379,6 +379,7 @@ struct PendingRecord<R> {
     canonical_len: usize,
     orders: Vec<u64>,
     source_ref: Option<ObjectRefV1>,
+    field_bounds: Option<ContinuationFieldBounds>,
 }
 
 impl<R> StoredRecord<R> {
@@ -399,6 +400,13 @@ impl<R> StoredRecord<R> {
     )]
     pub(crate) fn canonical_bytes(&self) -> &[u8] {
         &self.path[self.prefix_len..self.prefix_len + self.canonical_len]
+    }
+
+    pub(crate) fn receive_view(
+        &self,
+    ) -> Option<Result<OrderedReceiveView<'_>, OrderedReceiveError>> {
+        let bounds = self.field_bounds.as_ref()?;
+        Some(OrderedReceiveView::admit_legacy_v1(&self.path, self.prefix_len, bounds))
     }
 }
 
@@ -497,7 +505,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
             key,
             records
                 .into_iter()
-                .map(|(identity, canonical, value)| (identity, canonical, value, None))
+                .map(|(identity, canonical, value)| (identity, canonical, value, None, None))
                 .collect(),
             preserve_duplicates,
         )
@@ -507,7 +515,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         &mut self,
         prefix: &[u8],
         key: Arc<[G]>,
-        records: Vec<(Vec<u8>, Vec<u8>, R, Option<ObjectRefV1>)>,
+        records: Vec<(Vec<u8>, Vec<u8>, R, Option<ObjectRefV1>, Option<ContinuationFieldBounds>)>,
         preserve_duplicates: bool,
     ) -> Result<(), RecordIndexError> {
         let mut replacement = self.clone();
@@ -529,7 +537,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
             .map_err(|_| RecordIndexError::AllocationFailure(total))?;
         let mut pending_records = PathMap::<usize>::new();
         let mut pending_identities = PathMap::<usize>::new();
-        for (index, (identity, canonical_bytes, value, source_ref)) in
+        for (index, (identity, canonical_bytes, value, source_ref, field_bounds)) in
             records.into_iter().enumerate()
         {
             let framed_len = (u64::BITS / 8) as u128 + canonical_bytes.len() as u128;
@@ -577,6 +585,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
                 canonical_len: canonical_bytes.len(),
                 orders: vec![order],
                 source_ref,
+                field_bounds,
             });
             stored = stored
                 .checked_add(1)
@@ -594,6 +603,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
                 canonical_len: record.canonical_len,
                 orders: record.orders.into(),
                 source_ref: record.source_ref,
+                field_bounds: record.field_bounds,
             }));
         }
         replacement.groups.insert(
@@ -739,6 +749,28 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         value: R,
         source_ref: Option<ObjectRefV1>,
     ) -> Result<bool, RecordIndexError> {
+        self.insert_with_field_bounds(
+            prefix,
+            key,
+            identity,
+            canonical_bytes,
+            value,
+            source_ref,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_with_field_bounds(
+        &mut self,
+        prefix: &[u8],
+        key: Arc<[G]>,
+        identity: &[u8],
+        canonical_bytes: Vec<u8>,
+        value: R,
+        source_ref: Option<ObjectRefV1>,
+        field_bounds: Option<ContinuationFieldBounds>,
+    ) -> Result<bool, RecordIndexError> {
         let mut replacement = self.clone();
         if !replacement.insert_in_place(
             prefix,
@@ -747,6 +779,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
             canonical_bytes,
             value,
             source_ref,
+            field_bounds,
         )? {
             return Ok(false);
         }
@@ -756,6 +789,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_in_place(
         &mut self,
         prefix: &[u8],
@@ -764,6 +798,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
         canonical_bytes: Vec<u8>,
         value: R,
         source_ref: Option<ObjectRefV1>,
+        field_bounds: Option<ContinuationFieldBounds>,
     ) -> Result<bool, RecordIndexError> {
         if !self.is_loaded(prefix) {
             self.groups.insert(
@@ -816,6 +851,7 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
             canonical_len: canonical_bytes.len(),
             orders: Arc::from([group.next_order]),
             source_ref,
+            field_bounds,
         };
         self.publish_record(Arc::new(record));
 
@@ -1058,6 +1094,8 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
     fn assert_coherent(&self) {
         use std::collections::BTreeSet;
 
+        use super::ordered_receive::ContinuationRecordView;
+
         let group_entries = self.groups.iter().collect::<Vec<_>>();
         assert_eq!(self.group_count, group_entries.len());
 
@@ -1096,6 +1134,14 @@ impl<G: Clone + Send + Sync, R: Clone + Send + Sync, const SEPARATE_IDENTITY: bo
                     assert!(Arc::ptr_eq(identity_record, record));
                 } else {
                     assert!(record.identity_path.is_none());
+                }
+                if let Some(bounds) = &record.field_bounds {
+                    let admitted = ContinuationRecordView::admit_record(suffix, bounds)
+                        .expect("a bounded record admits its field bounds");
+                    assert_eq!(
+                        record.identity_path.as_deref(),
+                        Some(Self::identity_path(&prefix, admitted.identity()).as_ref())
+                    );
                 }
             });
             assert_eq!(group.len, group_records);
@@ -1185,11 +1231,12 @@ where
         let records = continuations
             .into_iter()
             .map(|continuation| {
-                let identity = encode_continuation_identity(&continuation);
-                let mut canonical = identity.clone();
-                encode_continuation_source_into(&continuation, &mut canonical);
-                let (source_ref, _) = continuation_source(&identity, &canonical);
-                (identity, canonical, continuation, Some(source_ref))
+                let prepared = PreparedContinuationRecord::encode_waiting(&continuation);
+                let view = prepared.record_view();
+                let identity = view.identity().to_vec();
+                let (source_ref, _) = continuation_source(view.source_suffix());
+                let (canonical, field_bounds) = prepared.into_parts();
+                (identity, canonical, continuation, Some(source_ref), Some(field_bounds))
             })
             .collect();
         self.resting
@@ -1201,26 +1248,31 @@ where
         &mut self,
         channels: &[C],
         continuation: WaitingContinuation<P, K>,
-        identity: Vec<u8>,
-        canonical: Vec<u8>,
+        prepared: PreparedContinuationRecord,
     ) -> bool {
         let prefix = RhoPathV1::continuation_prefix(channels);
         // The live primary trie and its multiplicity delta are keyed by the
         // complete canonical record bytes. The semantic ContinuationMap
         // content journal uses the separate framed, source-free identity path.
-        let mut primary_record_path = prefix.clone();
-        primary_record_path.extend_from_slice(&canonical);
+        let view = prepared.record_view();
+        let mut primary_record_path =
+            Vec::with_capacity(prefix.len().saturating_add(prepared.canonical().len()));
+        primary_record_path.extend_from_slice(&prefix);
+        primary_record_path.extend_from_slice(prepared.canonical());
+        let identity = view.identity().to_vec();
         let identity_path = RhoPathV1::collection_record_path(&prefix, &identity);
-        let (source_ref, source_bytes) = continuation_source(&identity, &canonical);
+        let (source_ref, source_bytes) = continuation_source(view.source_suffix());
+        let (canonical, field_bounds) = prepared.into_parts();
         let inserted = self
             .resting
-            .insert(
+            .insert_with_field_bounds(
                 &prefix,
                 Arc::from(channels),
                 &identity,
                 canonical,
                 continuation,
                 Some(source_ref),
+                Some(field_bounds),
             )
             .expect("typed continuation records must have an injective frozen encoding");
         if inserted {
@@ -1250,6 +1302,28 @@ where
         self.resting
             .is_loaded(&prefix)
             .then(|| self.resting.ordered_records(&prefix))
+    }
+
+    pub(crate) fn visit_resting_receive_records(
+        &self,
+        channels: &[C],
+        visitor: &mut dyn FnMut(&[u64], Result<OrderedReceiveView<'_>, OrderedReceiveError>),
+    ) -> RestingReceiveVisit {
+        let prefix = RhoPathV1::continuation_prefix(channels);
+        if !self.resting.is_loaded(&prefix) {
+            return RestingReceiveVisit::Unloaded;
+        }
+        let mut visited = 0usize;
+        self.resting.visit_group_records(&prefix, |_, record| {
+            let admission = record
+                .receive_view()
+                .expect("a resting continuation record carries its field bounds");
+            visitor(&record.orders, admission);
+            visited = visited
+                .checked_add(1)
+                .expect("a loaded continuation group count fits usize");
+        });
+        RestingReceiveVisit::Visited(visited)
     }
 
     pub(crate) fn resting_values(&self, channels: &[C]) -> Option<Vec<WaitingContinuation<P, K>>> {
@@ -1674,7 +1748,10 @@ mod tests {
     use super::*;
     use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use crate::rspace::history::cold_store::{ContinuationsLeaf, JoinsLeaf, PersistedData};
-    use crate::rspace::serializers::serializers::{encode_continuations, encode_joins};
+    use crate::rspace::serializers::serializers::{
+        encode_continuation_identity, encode_continuation_source_into, encode_continuations,
+        encode_joins,
+    };
     use crate::rspace::trace::event::Consume;
 
     fn continuation(source: u8, name: &str) -> WaitingContinuation<String, String> {
@@ -1741,16 +1818,17 @@ mod tests {
         let channels = vec!["channel".to_owned()];
         let value = continuation(7, "continuation");
         let identity = encode_continuation_identity(&value);
-        let mut canonical = identity.clone();
-        encode_continuation_source_into(&value, &mut canonical);
-        let expected_canonical = canonical.clone();
+        let mut expected_canonical = identity.clone();
+        encode_continuation_source_into(&value, &mut expected_canonical);
+        let prepared = PreparedContinuationRecord::encode_waiting(&value);
+        assert_eq!(prepared.canonical(), expected_canonical.as_slice());
         let prefix = RhoPathV1::continuation_prefix(&channels);
         let path = RhoPathV1::collection_record_path(&prefix, &identity);
         let mut primary_path = prefix.clone();
         primary_path.extend_from_slice(&expected_canonical);
         let mut store = RSpaceContinuationStore::new();
 
-        assert!(store.put_prepared(&channels, value, identity, canonical));
+        assert!(store.put_prepared(&channels, value, prepared));
         assert_eq!(store.pending_delta().additions().count(&primary_path), 1);
         assert!(store.pending_delta().removals().is_empty());
         let transition = store
@@ -1791,9 +1869,9 @@ mod tests {
         encode_continuation_source_into(&first, &mut first_canonical);
         let mut replacement_canonical = identity.clone();
         encode_continuation_source_into(&replacement, &mut replacement_canonical);
-        let (first_ref, _) = continuation_source(&identity, &first_canonical);
+        let (first_ref, _) = continuation_source(&first_canonical[identity.len()..]);
         let (replacement_ref, replacement_bytes) =
-            continuation_source(&identity, &replacement_canonical);
+            continuation_source(&replacement_canonical[identity.len()..]);
         assert_ne!(first_ref, replacement_ref);
 
         let mut store = RSpaceContinuationStore::new();
@@ -1801,8 +1879,7 @@ mod tests {
         assert!(!store.put_prepared(
             &channels,
             replacement.clone(),
-            identity.clone(),
-            replacement_canonical.clone(),
+            PreparedContinuationRecord::encode_waiting(&replacement),
         ));
         assert!(store.pending_content().is_empty());
         assert!(store.pending_source_bytes().is_empty());
@@ -1826,12 +1903,9 @@ mod tests {
         assert_eq!(removed.after(), None);
         assert!(store.pending_source_bytes().is_empty());
 
-        assert!(store.put_prepared(
-            &channels,
-            replacement,
-            identity.clone(),
-            replacement_canonical,
-        ));
+        let replacement_prepared = PreparedContinuationRecord::encode_waiting(&replacement);
+        assert_eq!(replacement_prepared.canonical(), replacement_canonical.as_slice());
+        assert!(store.put_prepared(&channels, replacement, replacement_prepared));
         let replaced = store
             .pending_content()
             .get(&identity_path)

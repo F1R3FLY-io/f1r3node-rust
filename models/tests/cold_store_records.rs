@@ -38,14 +38,23 @@
 
 use std::collections::BTreeSet;
 
+use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation, Var,
+    BindPattern, EList, Expr, ListParWithRandom, Par, ParWithRandom, TaggedContinuation, Var,
 };
+use models::rust::channel_image::ChannelImageV2;
+use models::rust::rspace_path::rho_path_v2_continuation_key;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
+use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
+use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+use rspace_plus_plus::rspace::ordered_receive::{
+    OrderedReceiveError, OrderedReceiveView, PreparedContinuationRecord, RestingReceiveVisit,
+};
+use rspace_plus_plus::rspace::rho_path::{ReceiveChannelProfile, ReceiveChannelQuery};
 use rspace_plus_plus::rspace::serializers::serializers::{
     decode_continuations, decode_datum, decode_datums, encode_continuations, encode_datum,
     encode_datums,
@@ -409,54 +418,271 @@ fn positional_continuation(
     cont
 }
 
-fn assert_ordered_receive_correspondence(fields: &[(u8, i32, bool)], peeks: BTreeSet<i32>) {
-    use rspace_plus_plus::rspace::rho_path::RhoPathV2;
+struct EmptyHistory;
 
-    let original = positional_continuation(fields, peeks);
-    let decoded = assert_continuation_round_trip("ordered receive", &original);
-    let channels = fields
+impl HistoryReaderBase<Par, BindPattern, ListParWithRandom, TaggedContinuation> for EmptyHistory {
+    fn get_data_canonical(&self, _channel: &Par) -> Vec<Datum<ListParWithRandom>> { Vec::new() }
+
+    fn get_continuations_canonical(
+        &self,
+        _channels: &[Par],
+    ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
+        Vec::new()
+    }
+
+    fn get_joins_canonical(&self, _channel: &Par) -> Vec<Vec<Par>> { Vec::new() }
+}
+
+type ParHotStore = Box<dyn HotStore<Par, BindPattern, ListParWithRandom, TaggedContinuation>>;
+
+fn empty_par_hot_store() -> ParHotStore {
+    HotStoreInstances::create_from_hs_and_hr(HotStoreState::default(), Box::new(EmptyHistory))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReceiveViewObservation {
+    identity: Vec<u8>,
+    source_suffix: Vec<u8>,
+    patterns: Vec<Vec<u8>>,
+    free_counts: Vec<Option<i32>>,
+    body: Vec<u8>,
+    persist: bool,
+    raw_peeks: Vec<i32>,
+    coarse_peek: bool,
+    effective_peeks: Vec<bool>,
+    query_positions: Vec<Vec<u64>>,
+}
+
+impl ReceiveViewObservation {
+    fn from_view(view: &OrderedReceiveView<'_>, query_images: &[Vec<u8>]) -> Self {
+        let record = view.record();
+        let mut patterns = Vec::with_capacity(record.arity());
+        let mut free_counts = Vec::with_capacity(record.arity());
+        let mut effective_peeks = Vec::with_capacity(record.arity());
+        for bind in view.binds() {
+            patterns.push(bind.pattern().to_vec());
+            free_counts.push(bind.free_count::<BindPattern>());
+            effective_peeks.push(bind.effective_peek());
+        }
+        Self {
+            identity: record.identity().to_vec(),
+            source_suffix: record.source_suffix().to_vec(),
+            patterns,
+            free_counts,
+            body: record.body().to_vec(),
+            persist: record.persist(),
+            raw_peeks: record.raw_peeks().collect(),
+            coarse_peek: record.coarse_peek(),
+            effective_peeks,
+            query_positions: query_images
+                .iter()
+                .map(|image| profile_positions(view, image))
+                .collect(),
+        }
+    }
+}
+
+fn positional_channels(fields: &[(u8, i32, bool)]) -> Vec<Par> {
+    fields
         .iter()
-        .map(|(channel, _, _)| bincode::serialize(&corpus::gint(i64::from(*channel))).unwrap())
-        .collect::<Vec<_>>();
-    let refs = channels.iter().map(Vec::as_slice).collect::<Vec<_>>();
-    let identity = frozen_identity(&original);
-    let path = RhoPathV2::continuation_key(&refs, &identity).unwrap();
-    let view = RhoPathV2::parse_continuation(&path).unwrap();
-    assert_eq!(view.channel_count(), fields.len());
-    assert_eq!(view.encoded_identity_frame(), framed_bytes(&identity));
-    assert_eq!(view.channel_count(), decoded.patterns.len());
-    for (position, frame) in view.channel_frames().enumerate() {
-        assert_eq!(frame, framed_bytes(&channels[position]));
-        assert_eq!(decoded.patterns[position], original.patterns[position]);
-        assert_eq!(decoded.patterns[position].free_count, fields[position].1);
+        .map(|(channel, _, _)| corpus::gint(i64::from(*channel)))
+        .collect()
+}
+
+fn legacy_identities(channels: &[Par]) -> Vec<Vec<u8>> {
+    channels.iter().map(Par::stable_hash_bytes).collect()
+}
+
+fn rci2_images(channels: &[Par]) -> Vec<Vec<u8>> {
+    let mut images = Vec::with_capacity(channels.len());
+    for channel in channels {
+        let image = ChannelImageV2::from_par(channel).expect("an RCI2 channel image");
+        images.push(image.as_bytes().to_vec());
+    }
+    images
+}
+
+fn profile_query(profile: ReceiveChannelProfile, image: &[u8]) -> ReceiveChannelQuery<'_> {
+    match profile {
+        ReceiveChannelProfile::LegacyV1 => ReceiveChannelQuery::LegacyV1(image),
+        ReceiveChannelProfile::Rci2V2 => ReceiveChannelQuery::Rci2V2(image),
+    }
+}
+
+fn foreign_profile_query(profile: ReceiveChannelProfile, image: &[u8]) -> ReceiveChannelQuery<'_> {
+    match profile {
+        ReceiveChannelProfile::LegacyV1 => ReceiveChannelQuery::Rci2V2(image),
+        ReceiveChannelProfile::Rci2V2 => ReceiveChannelQuery::LegacyV1(image),
+    }
+}
+
+fn profile_positions(view: &OrderedReceiveView<'_>, image: &[u8]) -> Vec<u64> {
+    view.positions(profile_query(view.profile(), image))
+        .expect("a query in the view's own profile reads it")
+        .map(|position| position.get())
+        .collect()
+}
+
+fn matching_positions<T: PartialEq>(members: &[T], query: &T) -> Vec<u64> {
+    members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| *member == query)
+        .map(|(position, _)| u64::try_from(position).expect("a position fits u64"))
+        .collect()
+}
+
+fn nested_locally_free_list(locally_free: Vec<u8>) -> Par {
+    Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EListBody(EList {
+            ps: vec![corpus::gint(1)],
+            locally_free,
+            connective_used: false,
+            remainder: None,
+        })),
+    }])
+}
+
+fn assert_prepared_record(
+    label: &str,
+    continuation: &WaitingContinuation<BindPattern, TaggedContinuation>,
+    prepared: &PreparedContinuationRecord,
+) {
+    let leaf = encode_continuations(&vec![continuation.clone()]);
+    let encoded: Vec<Vec<u8>> = bincode::deserialize(&leaf).expect("the leaf decodes");
+    assert_eq!(encoded, [prepared.canonical()], "{label}: canonical");
+    let record = prepared.record_view();
+    let arity = continuation.patterns.len();
+    let field_count = arity.checked_add(2).expect("a field count fits usize");
+    let bounds = prepared.field_bounds().ends();
+    assert_eq!(bounds.len(), field_count, "{label}: bounds");
+    assert_eq!(record.arity(), arity, "{label}: arity");
+    assert_eq!(record.pattern_at(arity), None, "{label}: past the arity");
+    let body = continuation.continuation.stable_hash_bytes();
+    assert_eq!(record.body(), body, "{label}: body");
+    assert_eq!(record.persist(), continuation.persist, "{label}: persist");
+    let raw_peeks: Vec<i32> = record.raw_peeks().collect();
+    let expected_peeks: Vec<i32> = continuation.peeks.iter().copied().collect();
+    assert_eq!(raw_peeks, expected_peeks, "{label}: raw peeks");
+    assert_eq!(
+        record.coarse_peek(),
+        !continuation.peeks.is_empty(),
+        "{label}: coarse peek"
+    );
+    let source = bincode::serialize(&continuation.source).expect("a source serializes");
+    assert_eq!(record.source_suffix(), source, "{label}: source suffix");
+}
+
+fn assert_view_alignment(
+    label: &str,
+    view: &OrderedReceiveView<'_>,
+    continuation: &WaitingContinuation<BindPattern, TaggedContinuation>,
+    prepared: &PreparedContinuationRecord,
+    channel_images: &[Vec<u8>],
+) {
+    let record = view.record();
+    assert_eq!(record, prepared.record_view(), "{label}: record");
+    assert_eq!(view.binds().len(), channel_images.len(), "{label}: arity");
+    let binds = view
+        .binds()
+        .zip(continuation.patterns.iter())
+        .zip(channel_images);
+    for (index, ((bind, pattern), image)) in binds.enumerate() {
+        let position = u64::try_from(index).expect("a bind index fits u64");
+        let pattern_bytes = pattern.stable_hash_bytes();
+        let peek = i32::try_from(index).is_ok_and(|key| continuation.peeks.contains(&key));
+        assert_eq!(bind.position().get(), position, "{label}: bind position");
+        assert_eq!(view.bind_at(bind.position()), Some(bind), "{label}: bind");
+        assert_eq!(bind.channel_frame(), framed_bytes(image), "{label}: frame");
+        assert!(bind.channel_matches(image), "{label}: channel image");
+        assert_eq!(bind.pattern(), pattern_bytes, "{label}: pattern");
         assert_eq!(
-            decoded.peeks.contains(&i32::try_from(position).unwrap()),
-            original.peeks.contains(&i32::try_from(position).unwrap()),
+            bind.free_count::<BindPattern>(),
+            Some(pattern.free_count),
+            "{label}: free count"
+        );
+        assert_eq!(bind.effective_peek(), peek, "{label}: effective peek");
+    }
+    for image in channel_images {
+        let foreign = view.positions(foreign_profile_query(view.profile(), image));
+        assert_eq!(
+            foreign.err(),
+            Some(OrderedReceiveError::ProfileMismatch),
+            "{label}: foreign profile"
         );
     }
-    assert_eq!(!decoded.peeks.is_empty(), !original.peeks.is_empty());
-    for query in 0..=4_u8 {
-        let query_frame =
-            framed_bytes(&bincode::serialize(&corpus::gint(i64::from(query))).unwrap());
-        let actual = view
-            .channel_frames()
-            .enumerate()
-            .filter_map(|(position, frame)| {
-                (frame == query_frame).then(|| u64::try_from(position).unwrap())
-            })
-            .collect::<Vec<_>>();
-        let expected = fields
-            .iter()
-            .enumerate()
-            .filter_map(|(position, (channel, _, _))| {
-                (*channel == query).then(|| u64::try_from(position).unwrap())
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected);
-        assert!(actual.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(actual
-            .iter()
-            .all(|&position| position < u64::try_from(fields.len()).unwrap()));
+}
+
+fn observe_legacy_store_view(
+    label: &str,
+    continuation: &WaitingContinuation<BindPattern, TaggedContinuation>,
+    channels: &[Par],
+    query_identities: &[Vec<u8>],
+) -> ReceiveViewObservation {
+    let prepared = PreparedContinuationRecord::encode_waiting(continuation);
+    let identities = legacy_identities(channels);
+    let hot_store = empty_par_hot_store();
+    let inserted = hot_store.put_continuation(channels, continuation.clone());
+    assert_eq!(inserted, Some(true), "{label}: fresh insertion");
+    let mut observed = None;
+    let visit = hot_store.try_visit_resting_receive_views(channels, &mut |orders, admission| {
+        let view = admission.expect("a stored continuation admits its legacy view");
+        assert_eq!(view.profile(), ReceiveChannelProfile::LegacyV1);
+        assert_eq!(orders.len(), 1, "{label}: one historical order");
+        assert_view_alignment(label, &view, continuation, &prepared, &identities);
+        observed = Some(ReceiveViewObservation::from_view(&view, query_identities));
+    });
+    assert_eq!(visit, RestingReceiveVisit::Visited(1), "{label}: visit");
+    observed.expect("the visitor observed the stored continuation")
+}
+
+fn observe_receive_views(
+    label: &str,
+    continuation: &WaitingContinuation<BindPattern, TaggedContinuation>,
+    channels: &[Par],
+    queries: &[Par],
+) -> ReceiveViewObservation {
+    let prepared = PreparedContinuationRecord::encode_waiting(continuation);
+    assert_prepared_record(label, continuation, &prepared);
+    let images = rci2_images(channels);
+    let key = rho_path_v2_continuation_key(channels, prepared.record_view().identity())
+        .expect("a non-empty Par channel group has an RCI2 continuation key");
+    let view =
+        OrderedReceiveView::admit_rci2_v2(&key, prepared.canonical(), prepared.field_bounds())
+            .expect("a prepared record admits under its own RCI2 key");
+    assert_eq!(view.profile(), ReceiveChannelProfile::Rci2V2);
+    assert_view_alignment(label, &view, continuation, &prepared, &images);
+    let rci2 = ReceiveViewObservation::from_view(&view, &rci2_images(queries));
+    let query_identities = legacy_identities(queries);
+    let legacy = observe_legacy_store_view(label, continuation, channels, &query_identities);
+    assert_eq!(legacy, rci2, "{label}: legacy and RCI2 observations");
+    rci2
+}
+
+fn assert_ordered_receive_correspondence(fields: &[(u8, i32, bool)], peeks: BTreeSet<i32>) {
+    let original = positional_continuation(fields, peeks);
+    let decoded = assert_continuation_round_trip("ordered receive", &original);
+    let channels = positional_channels(fields);
+    let queries: Vec<Par> = (0..=4_u8)
+        .map(|query| corpus::gint(i64::from(query)))
+        .collect();
+    let observation = observe_receive_views("ordered receive", &original, &channels, &queries);
+    assert_eq!(observation.identity, frozen_identity(&original));
+    assert_eq!(observation.patterns.len(), fields.len());
+    for (position, (_, free_count, _)) in fields.iter().enumerate() {
+        let peek_key = i32::try_from(position).expect("a fixture position fits i32");
+        assert_eq!(observation.free_counts[position], Some(*free_count));
+        assert_eq!(decoded.patterns[position].free_count, *free_count);
+        assert_eq!(
+            observation.effective_peeks[position],
+            decoded.peeks.contains(&peek_key)
+        );
+    }
+    assert_eq!(observation.coarse_peek, !decoded.peeks.is_empty());
+    assert_eq!(observation.query_positions.len(), queries.len());
+    let channel_ids: Vec<u8> = fields.iter().map(|(channel, _, _)| *channel).collect();
+    for (query, positions) in (0..=4_u8).zip(&observation.query_positions) {
+        assert_eq!(*positions, matching_positions(&channel_ids, &query));
     }
 }
 
@@ -485,26 +711,32 @@ proptest::proptest! {
 #[test]
 fn ordered_receive_raw_peeks_and_source_suffix_are_not_erased() {
     let fields = [(0, i32::MIN, true), (1, 0, false), (0, i32::MAX, true)];
+    let channels = positional_channels(&fields);
+    let queries = [corpus::gint(0), corpus::gint(1)];
     let original = positional_continuation(&fields, BTreeSet::from([-1, 7]));
-    let decoded = assert_continuation_round_trip("invalid-only raw peeks", &original);
-    assert!(!decoded.peeks.is_empty());
-    assert!((0..3_i32).all(|position| !decoded.peeks.contains(&position)));
+    assert_continuation_round_trip("invalid-only raw peeks", &original);
+    let observed = observe_receive_views("raw peeks", &original, &channels, &queries);
+    assert_eq!(observed.raw_peeks, [-1, 7]);
+    assert!(observed.coarse_peek);
+    assert_eq!(observed.effective_peeks, [false, false, false]);
+    assert_eq!(observed.query_positions, [vec![0_u64, 2], vec![1]]);
+
     let mut erased = original.clone();
     erased.peeks.clear();
-    assert_ne!(frozen_identity(&erased), frozen_identity(&original));
+    let observed_erased = observe_receive_views("erased peeks", &erased, &channels, &queries);
+    assert!(observed_erased.raw_peeks.is_empty());
+    assert!(!observed_erased.coarse_peek);
+    assert_ne!(observed_erased.identity, observed.identity);
 
     let mut alias = original.clone();
     alias.source.hash = Blake2b256Hash::new(&[99]);
-    assert_eq!(frozen_identity(&alias), frozen_identity(&original));
-    for record in [&original, &alias] {
-        let leaf = encode_continuations(&vec![record.clone()]);
-        let encoded: Vec<Vec<u8>> = bincode::deserialize(&leaf).unwrap();
-        let identity = frozen_identity(record);
-        assert_eq!(&encoded[0][..identity.len()], identity);
-        assert_eq!(
-            &encoded[0][identity.len()..],
-            bincode::serialize(&record.source).unwrap(),
-        );
+    let observed_alias = observe_receive_views("source alias", &alias, &channels, &queries);
+    assert_eq!(observed_alias.identity, observed.identity);
+    assert_ne!(observed_alias.source_suffix, observed.source_suffix);
+    for (record, observation) in [(&original, &observed), (&alias, &observed_alias)] {
+        let source = bincode::serialize(&record.source).expect("a consume source serializes");
+        assert_eq!(observation.source_suffix, source);
+        assert_eq!(observation.identity, frozen_identity(record));
         assert_continuation_round_trip("source alias", record);
     }
     assert_ne!(
@@ -516,34 +748,215 @@ fn ordered_receive_raw_peeks_and_source_suffix_are_not_erased() {
 #[test]
 fn ordered_receive_fixture_detects_erased_and_shifted_fields() {
     let fields = [(0, i32::MIN, true), (1, 0, false), (0, i32::MAX, true)];
+    let channels = positional_channels(&fields);
+    let queries = [corpus::gint(0), corpus::gint(1)];
     let original = positional_continuation(&fields, BTreeSet::from([-1, 2, 7]));
-    let mut mutants = Vec::new();
+    let baseline = observe_receive_views("baseline", &original, &channels, &queries);
+    let free_counts = [Some(i32::MIN), Some(0), Some(i32::MAX)];
+    assert_eq!(baseline.free_counts, free_counts);
+    assert_eq!(baseline.raw_peeks, [-1, 2, 7]);
+    assert_eq!(baseline.effective_peeks, [false, false, true]);
     for mutation in 0..7 {
         let mut mutant = original.clone();
+        let mut expected = baseline.clone();
         match mutation {
-            0 => std::sync::Arc::make_mut(&mut mutant.patterns).swap(0, 2),
-            1 => std::sync::Arc::make_mut(&mut mutant.patterns)[0]
-                .patterns
-                .clear(),
-            2 => std::sync::Arc::make_mut(&mut mutant.patterns)[0].remainder = None,
-            3 => std::sync::Arc::make_mut(&mut mutant.patterns)[0].free_count = 0,
+            0 => {
+                std::sync::Arc::make_mut(&mut mutant.patterns).swap(0, 2);
+                expected.patterns.swap(0, 2);
+                expected.free_counts.swap(0, 2);
+            }
+            1 => {
+                std::sync::Arc::make_mut(&mut mutant.patterns)[0]
+                    .patterns
+                    .clear();
+                expected.patterns[0] = mutant.patterns[0].stable_hash_bytes();
+            }
+            2 => {
+                std::sync::Arc::make_mut(&mut mutant.patterns)[0].remainder = None;
+                expected.patterns[0] = mutant.patterns[0].stable_hash_bytes();
+            }
+            3 => {
+                std::sync::Arc::make_mut(&mut mutant.patterns)[0].free_count = 0;
+                expected.patterns[0] = mutant.patterns[0].stable_hash_bytes();
+                expected.free_counts[0] = Some(0);
+            }
             4 => {
                 mutant.peeks.remove(&2);
                 mutant.peeks.insert(0);
+                expected.raw_peeks = vec![-1, 0, 7];
+                expected.effective_peeks = vec![true, false, false];
             }
-            5 => mutant.persist = false,
-            6 => std::sync::Arc::make_mut(&mut mutant.continuation).guard = None,
+            5 => {
+                mutant.persist = false;
+                expected.persist = false;
+            }
+            6 => {
+                std::sync::Arc::make_mut(&mut mutant.continuation).guard = None;
+                expected.body = mutant.continuation.stable_hash_bytes();
+            }
             _ => unreachable!(),
         }
-        mutants.push(mutant);
+        expected.identity = frozen_identity(&mutant);
+        let observed = observe_receive_views("field mutation", &mutant, &channels, &queries);
+        assert_eq!(observed, expected, "mutation {mutation}");
+        assert_ne!(observed.identity, baseline.identity, "mutation {mutation}");
+        assert_continuation_round_trip("field mutation", &mutant);
     }
-    for (mutation, mutant) in mutants.iter().enumerate() {
-        assert_ne!(
-            frozen_identity(mutant),
-            frozen_identity(&original),
-            "mutation {mutation}"
-        );
-        assert_continuation_round_trip("field mutation", mutant);
+}
+
+fn corpus_receive_patterns() -> Vec<(String, BindPattern)> {
+    let corpus_patterns = corpus::bind_pattern_corpus();
+    let fixtures = continuation_fixtures();
+    let capacity = fixtures
+        .iter()
+        .map(|(_, continuation)| continuation.patterns.len())
+        .try_fold(corpus_patterns.len(), usize::checked_add)
+        .expect("the receive pattern count fits usize");
+    let mut patterns = Vec::with_capacity(capacity);
+    for (name, pattern) in corpus_patterns {
+        patterns.push((format!("corpus::{name}"), pattern));
+    }
+    for (fixture, continuation) in &fixtures {
+        for (index, pattern) in continuation.patterns.iter().enumerate() {
+            patterns.push((format!("fixture::{fixture}::{index}"), pattern.clone()));
+        }
+    }
+    patterns
+}
+
+fn corpus_receive_bodies() -> Vec<(String, TaggedContinuation)> {
+    let corpus_bodies = corpus::tagged_continuation_corpus();
+    let fixtures = continuation_fixtures();
+    let capacity = corpus_bodies
+        .len()
+        .checked_add(1)
+        .and_then(|count| count.checked_add(fixtures.len()))
+        .expect("the receive body count fits usize");
+    let mut bodies = Vec::with_capacity(capacity);
+    for (name, body) in corpus_bodies {
+        bodies.push((format!("corpus::{name}"), body));
+    }
+    let cost_annotated_name = String::from("corpus::cost_annotated_tagged_continuation");
+    let cost_annotated = corpus::cost_annotated_tagged_continuation();
+    bodies.push((cost_annotated_name, cost_annotated));
+    for (fixture, continuation) in fixtures {
+        let body = continuation.continuation.as_ref().clone();
+        bodies.push((format!("fixture::{fixture}"), body));
+    }
+    bodies
+}
+
+#[test]
+fn ordered_receive_view_admits_every_corpus_pattern_and_continuation() {
+    const PATTERN_COUNT: usize = 8;
+    const BODY_COUNT: usize = 7;
+    const COVERED_NAME_COUNT: usize = 56;
+    const LEGACY_ORACLE_NAME_COUNT: usize = 48;
+
+    let patterns = corpus_receive_patterns();
+    let bodies = corpus_receive_bodies();
+    assert_eq!(patterns.len(), PATTERN_COUNT);
+    assert_eq!(bodies.len(), BODY_COUNT);
+    let product = patterns
+        .len()
+        .checked_mul(bodies.len())
+        .expect("the corpus product fits usize");
+    assert_eq!(product, COVERED_NAME_COUNT);
+    let channels = vec![corpus::gint(1), corpus::gint(2), corpus::gint(1)];
+    let queries = [corpus::gint(1), corpus::gint(2), corpus::gint(3)];
+    let peeks = BTreeSet::from([-1, 1, 7]);
+    let expected_positions = [vec![0_u64, 2], vec![1], vec![]];
+    let mut covered = Vec::with_capacity(product);
+    let mut legacy_oracle_names = Vec::with_capacity(product);
+    for (pattern_name, pattern) in &patterns {
+        let receive_patterns = vec![pattern.clone(); channels.len()];
+        let free_counts = vec![Some(pattern.free_count); channels.len()];
+        for (body_name, body) in &bodies {
+            let name = format!("{pattern_name} with {body_name}");
+            let continuation = WaitingContinuation::create(
+                &channels,
+                &receive_patterns,
+                body,
+                covered.len().is_multiple_of(2),
+                peeks.clone(),
+            );
+            let observed = observe_receive_views(&name, &continuation, &channels, &queries);
+            assert_eq!(observed.free_counts, free_counts, "{name}");
+            assert_eq!(observed.effective_peeks, [false, true, false], "{name}");
+            assert_eq!(observed.query_positions, expected_positions, "{name}");
+            match (&body.cost_region, body.clause_regions.as_slice()) {
+                (None, []) => {
+                    assert_continuation_round_trip(&name, &continuation);
+                    legacy_oracle_names.push(name.clone());
+                }
+                (Some(_), _) | (None, [_, ..]) => {
+                    let leaf = encode_continuations(&vec![continuation.clone()]);
+                    let decoded = decode_continuations::<BindPattern, TaggedContinuation>(&leaf)
+                        .expect("a cost-annotated continuation decodes");
+                    assert_eq!(decoded, [continuation], "{name}");
+                }
+            }
+            println!("  covered {name}");
+            covered.push(name);
+        }
+    }
+    let distinct: BTreeSet<&String> = covered.iter().collect();
+    assert_eq!(distinct.len(), covered.len(), "covered names are distinct");
+    assert_eq!(covered.len(), COVERED_NAME_COUNT);
+    assert_eq!(legacy_oracle_names.len(), LEGACY_ORACLE_NAME_COUNT);
+    let covered_count = covered.len();
+    let legacy_count = legacy_oracle_names.len();
+    println!("  receive corpus: {covered_count} names, {legacy_count} legacy-oracle names");
+}
+
+#[test]
+fn ordered_receive_legacy_store_views_match_typed_par_positions() {
+    let five = corpus::gint(5);
+    let mut rooted_five = five.clone();
+    rooted_five.replace_locally_free(vec![9]);
+    let nested_one = nested_locally_free_list(vec![1]);
+    let nested_two = nested_locally_free_list(vec![2]);
+    assert_eq!(rooted_five, five, "typed root locally_free");
+    assert_eq!(
+        rooted_five.stable_hash_bytes(),
+        five.stable_hash_bytes(),
+        "V1 root locally_free"
+    );
+    assert_ne!(nested_one, nested_two, "typed nested locally_free");
+    assert_ne!(
+        nested_one.stable_hash_bytes(),
+        nested_two.stable_hash_bytes(),
+        "V1 nested locally_free"
+    );
+    let channels = [
+        five.clone(),
+        corpus::tagged(3),
+        rooted_five,
+        nested_one.clone(),
+        corpus::nil(),
+        nested_two,
+        five,
+        nested_one,
+    ];
+    let absent_query = corpus::gint(6);
+    let queries: Vec<Par> = channels.iter().chain([&absent_query]).cloned().collect();
+    let fields = vec![(0_u8, 1, true); channels.len()];
+    let continuation = positional_continuation(&fields, BTreeSet::from([1, 4]));
+    let query_identities = legacy_identities(&queries);
+    let label = "typed positions";
+    let observed = observe_legacy_store_view(label, &continuation, &channels, &query_identities);
+    assert_eq!(observed.query_positions.len(), queries.len());
+    let identities = legacy_identities(&channels);
+    let per_query = queries
+        .iter()
+        .zip(&query_identities)
+        .zip(&observed.query_positions);
+    for (index, ((query, query_identity), view_positions)) in per_query.enumerate() {
+        let byte_positions = matching_positions(&identities, query_identity);
+        let typed_positions = matching_positions(&channels, query);
+        assert_eq!(*view_positions, byte_positions, "query {index}");
+        assert_eq!(typed_positions, byte_positions, "query {index}");
+        println!("  query {index}: view {view_positions:?}, typed {typed_positions:?}");
     }
 }
 

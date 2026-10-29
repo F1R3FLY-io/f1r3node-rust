@@ -108,6 +108,10 @@ impl PreparedContinuationRecord {
         ContinuationRecordView::admit_record(&self.canonical, &self.field_bounds)
             .expect("production encoder bounds admit their own record")
     }
+
+    pub(crate) fn into_parts(self) -> (Vec<u8>, ContinuationFieldBounds) {
+        (self.canonical, self.field_bounds)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

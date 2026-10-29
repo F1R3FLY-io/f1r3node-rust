@@ -1,14 +1,22 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use proptest::prelude::*;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
-use rspace_plus_plus::rspace::internal::WaitingContinuation;
+use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
+use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
+use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::ordered_receive::{
     ContinuationFieldBounds, ContinuationRecordView, OrderedReceiveError, OrderedReceiveView,
-    PreparedContinuationRecord, ReceivePatternLayout,
+    PreparedContinuationRecord, ReceivePatternLayout, RestingReceiveVisit,
 };
 use rspace_plus_plus::rspace::rho_path::{
-    ReceiveChannelProfile, ReceiveChannelQuery, RhoPathError, RhoPathV2,
+    ReceiveChannelProfile, ReceiveChannelQuery, RhoPathEncode, RhoPathError, RhoPathV2,
+};
+use rspace_plus_plus::rspace::serializers::cold_store_decode::{
+    ColdStoreDecode, ColdStoreDecodeError,
 };
 use rspace_plus_plus::rspace::serializers::serializers::{
     CandidateOrderingBytes, encode_continuations,
@@ -52,6 +60,96 @@ fn string_continuation(
         persist,
         peeks,
     )
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+struct RawChannel(Vec<u8>);
+
+impl StableHashSerialize for RawChannel {}
+
+impl RhoPathEncode for RawChannel {
+    fn rho_path_structure(&self) -> Vec<u8> { self.0.clone() }
+
+    fn rho_path_identity(&self) -> Vec<u8> { self.0.clone() }
+}
+
+impl ColdStoreDecode for RawChannel {
+    fn cold_decode_prefix(bytes: &[u8]) -> Result<(Self, usize), ColdStoreDecodeError> {
+        let (raw, consumed) = Vec::<u8>::cold_decode_prefix(bytes)?;
+        Ok((RawChannel(raw), consumed))
+    }
+}
+
+type StringContinuation = WaitingContinuation<String, String>;
+
+#[derive(Clone, Default)]
+struct StubHistory {
+    continuations: Arc<Mutex<HashMap<Vec<RawChannel>, Vec<StringContinuation>>>>,
+    continuation_reads: Arc<AtomicUsize>,
+}
+
+impl StubHistory {
+    fn put_continuations(&self, channels: Vec<RawChannel>, continuations: Vec<StringContinuation>) {
+        self.continuations
+            .lock()
+            .expect("stub history lock")
+            .insert(channels, continuations);
+    }
+
+    fn continuation_reads(&self) -> usize { self.continuation_reads.load(Ordering::SeqCst) }
+}
+
+impl HistoryReaderBase<RawChannel, String, String, String> for StubHistory {
+    fn get_data_canonical(&self, _channel: &RawChannel) -> Vec<Datum<String>> { Vec::new() }
+
+    fn get_continuations_canonical(&self, channels: &[RawChannel]) -> Vec<StringContinuation> {
+        self.continuation_reads.fetch_add(1, Ordering::SeqCst);
+        self.continuations
+            .lock()
+            .expect("stub history lock")
+            .get(channels)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn get_joins_canonical(&self, _channel: &RawChannel) -> Vec<Vec<RawChannel>> { Vec::new() }
+}
+
+fn raw_hot_store() -> (StubHistory, Box<dyn HotStore<RawChannel, String, String, String>>) {
+    let history = StubHistory::default();
+    let hot_store = HotStoreInstances::create_from_hs_and_hr(
+        HotStoreState::default(),
+        Box::new(history.clone()),
+    );
+    (history, hot_store)
+}
+
+fn raw_channels(images: &[&[u8]]) -> Vec<RawChannel> {
+    images
+        .iter()
+        .map(|image| RawChannel(image.to_vec()))
+        .collect()
+}
+
+fn numbered_continuation(arity: usize, number: usize) -> StringContinuation {
+    let channels: Vec<Vec<u8>> = (0..arity)
+        .map(|index| index.to_le_bytes().to_vec())
+        .collect();
+    let patterns: Vec<String> = (0..arity).map(|index| format!("pattern-{index}")).collect();
+    WaitingContinuation::create(
+        &channels,
+        &patterns,
+        &format!("continuation body {number}"),
+        false,
+        BTreeSet::new(),
+    )
+}
+
+fn prepared_identity(continuation: &StringContinuation) -> Vec<u8> {
+    PreparedContinuationRecord::encode_waiting(continuation)
+        .record_view()
+        .identity()
+        .to_vec()
 }
 
 fn frame_into(output: &mut Vec<u8>, raw: &[u8]) {
@@ -475,6 +573,215 @@ fn profile_queries_are_explicit() {
             Err(OrderedReceiveError::ProfileMismatch)
         ));
     }
+}
+
+#[test]
+fn legacy_store_views_return_exact_ordered_positions_for_repeated_and_prefix_related_channels() {
+    let (_, hot_store) = raw_hot_store();
+    let mut groups = 0usize;
+    for (first_index, first) in IMAGES.iter().copied().enumerate() {
+        for second in IMAGES.iter().copied().skip(first_index + 1) {
+            for group in [[first, second, first], [first, first, second]] {
+                let channels = raw_channels(&group);
+                let continuation = numbered_continuation(3, groups);
+                assert_eq!(hot_store.put_continuation(&channels, continuation), Some(true));
+                let mut admitted = 0usize;
+                let visit = hot_store.try_visit_resting_receive_views(
+                    &channels,
+                    &mut |orders, admission| {
+                        let view = admission.expect("a stored record admits its legacy view");
+                        assert_eq!(view.profile(), ReceiveChannelProfile::LegacyV1);
+                        assert_eq!(orders.len(), 1);
+                        assert_eq!(view.binds().len(), 3);
+                        for query in IMAGES.iter().copied().chain([ABSENT_IMAGE]) {
+                            let positions: Vec<u64> = view
+                                .positions(ReceiveChannelQuery::LegacyV1(query))
+                                .expect("a legacy query reads a legacy view")
+                                .map(|position| position.get())
+                                .collect();
+                            assert_eq!(
+                                positions,
+                                oracle_positions(&group, query),
+                                "group {group:?} query {query:?}"
+                            );
+                        }
+                        let rci2 = view.positions(ReceiveChannelQuery::Rci2V2(first));
+                        assert_eq!(rci2.err(), Some(OrderedReceiveError::ProfileMismatch));
+                        admitted += 1;
+                    },
+                );
+                assert_eq!(visit, RestingReceiveVisit::Visited(1));
+                assert_eq!(admitted, 1);
+                groups += 1;
+            }
+        }
+    }
+    assert_eq!(groups, 20);
+}
+
+#[test]
+fn admission_refuses_mismatched_arity_before_any_position() {
+    let (history, hot_store) = raw_hot_store();
+    let channels = raw_channels(&[&[0x01], &[0x02]]);
+    let wide = string_continuation(3, BTreeSet::new(), false);
+    assert_eq!(hot_store.put_continuation(&channels, wide), Some(true));
+    let mut put_admissions = Vec::new();
+    let visit = hot_store.try_visit_resting_receive_views(&channels, &mut |_, admission| {
+        put_admissions.push(admission.map(|_| ()));
+    });
+    assert_eq!(visit, RestingReceiveVisit::Visited(1));
+    assert_eq!(put_admissions, vec![Err(OrderedReceiveError::ArityMismatch {
+        channels: 2,
+        patterns: 3,
+    })]);
+
+    let hydrated_channels = raw_channels(&[&[0x03]]);
+    history.put_continuations(hydrated_channels.clone(), vec![string_continuation(
+        2,
+        BTreeSet::new(),
+        true,
+    )]);
+    assert_eq!(hot_store.get_continuations(&hydrated_channels).len(), 1);
+    let mut hydrated_admissions = Vec::new();
+    let visit =
+        hot_store.try_visit_resting_receive_views(&hydrated_channels, &mut |_, admission| {
+            hydrated_admissions.push(admission.map(|_| ()));
+        });
+    assert_eq!(visit, RestingReceiveVisit::Visited(1));
+    assert_eq!(hydrated_admissions, vec![Err(OrderedReceiveError::ArityMismatch {
+        channels: 1,
+        patterns: 2,
+    })]);
+}
+
+#[test]
+fn first_representative_and_exact_source_suffix_are_retained() {
+    let (_, hot_store) = raw_hot_store();
+    let channels = raw_channels(&[&[0x01], &[0x01, 0x00]]);
+    let first = string_continuation(2, BTreeSet::from([1]), false);
+    let mut alias = first.clone();
+    alias.source.hash = Blake2b256Hash::from_bytes(vec![0x5A; 32]);
+    let first_prepared = PreparedContinuationRecord::encode_waiting(&first);
+    let alias_prepared = PreparedContinuationRecord::encode_waiting(&alias);
+    assert_eq!(first_prepared.record_view().identity(), alias_prepared.record_view().identity());
+    assert_ne!(
+        first_prepared.record_view().source_suffix(),
+        alias_prepared.record_view().source_suffix()
+    );
+
+    assert_eq!(hot_store.put_continuation(&channels, first.clone()), Some(true));
+    assert_eq!(hot_store.put_continuation(&channels, alias), Some(false));
+    let mut retained = Vec::new();
+    let visit = hot_store.try_visit_resting_receive_views(&channels, &mut |_, admission| {
+        let view = admission.expect("a stored record admits its legacy view");
+        retained.push((view.record().identity().to_vec(), view.record().source_suffix().to_vec()));
+    });
+    assert_eq!(visit, RestingReceiveVisit::Visited(1));
+    let frozen_source = bincode::serialize(&first.source).expect("a consume source serializes");
+    assert_eq!(retained, vec![(first_prepared.record_view().identity().to_vec(), frozen_source)]);
+    assert_eq!(hot_store.get_continuations(&channels), vec![first]);
+}
+
+#[test]
+fn installed_continuations_are_not_visited_as_resting_records() {
+    let (_, hot_store) = raw_hot_store();
+    let channels = raw_channels(&[&[0x01], &[0x02], &[0x01]]);
+    let record = string_continuation(3, BTreeSet::from([-1, 2]), true);
+    assert_eq!(hot_store.install_continuation(&channels, record.clone()), Some(()));
+    let unloaded = hot_store.try_visit_resting_receive_views(&channels, &mut |_, _| {
+        panic!("an installed continuation is not a resting record")
+    });
+    assert_eq!(unloaded, RestingReceiveVisit::Unloaded);
+
+    assert_eq!(hot_store.get_continuations(&channels), vec![record.clone()]);
+    let empty = hot_store.try_visit_resting_receive_views(&channels, &mut |_, _| {
+        panic!("an installed continuation is not a resting record")
+    });
+    assert_eq!(empty, RestingReceiveVisit::Visited(0));
+
+    assert_eq!(hot_store.put_continuation(&channels, record.clone()), Some(true));
+    let mut identities = Vec::new();
+    let visit = hot_store.try_visit_resting_receive_views(&channels, &mut |_, admission| {
+        identities.push(
+            admission
+                .expect("a stored record admits its legacy view")
+                .record()
+                .identity()
+                .to_vec(),
+        );
+    });
+    assert_eq!(visit, RestingReceiveVisit::Visited(1));
+    assert_eq!(identities, vec![prepared_identity(&record)]);
+    assert_eq!(hot_store.get_continuations(&channels), vec![record.clone(), record]);
+}
+
+#[test]
+fn visit_order_reconstructs_historical_order_and_unloaded_groups_are_not_hydrated() {
+    let (history, hot_store) = raw_hot_store();
+    let channels = raw_channels(&[&[0x01, 0x00], &[0x01]]);
+    let continuations: Vec<StringContinuation> = (0..12)
+        .map(|number| numbered_continuation(2, number))
+        .collect();
+    for continuation in &continuations {
+        assert_eq!(hot_store.put_continuation(&channels, continuation.clone()), Some(true));
+    }
+    let mut visited: Vec<(u64, Vec<u8>, Vec<u8>)> = Vec::with_capacity(continuations.len());
+    let visit = hot_store.try_visit_resting_receive_views(&channels, &mut |orders, admission| {
+        let view = admission.expect("a stored record admits its legacy view");
+        let [order] = orders else {
+            panic!("a continuation record carries exactly one order, got {orders:?}");
+        };
+        let mut record = view.record().identity().to_vec();
+        record.extend_from_slice(view.record().source_suffix());
+        visited.push((*order, view.record().identity().to_vec(), record));
+    });
+    assert_eq!(visit, RestingReceiveVisit::Visited(continuations.len()));
+    assert!(
+        visited.windows(2).all(|pair| pair[0].2 < pair[1].2),
+        "the visit follows strictly ascending canonical record bytes"
+    );
+    visited.sort_by_key(|(order, _, _)| std::cmp::Reverse(*order));
+    let historical: Vec<Vec<u8>> = visited
+        .into_iter()
+        .map(|(_, identity, _)| identity)
+        .collect();
+    let expected: Vec<Vec<u8>> = hot_store
+        .get_continuations(&channels)
+        .iter()
+        .map(prepared_identity)
+        .collect();
+    assert_eq!(historical, expected);
+    let newest_first: Vec<Vec<u8>> = continuations.iter().rev().map(prepared_identity).collect();
+    assert_eq!(expected, newest_first);
+
+    let reads_before = history.continuation_reads();
+    let unloaded_channels = raw_channels(&[&[0x07]]);
+    history.put_continuations(unloaded_channels.clone(), vec![
+        numbered_continuation(1, 0),
+        numbered_continuation(1, 1),
+    ]);
+    let unloaded = hot_store.try_visit_resting_receive_views(&unloaded_channels, &mut |_, _| {
+        panic!("an unloaded group is never hydrated by a visit")
+    });
+    assert_eq!(unloaded, RestingReceiveVisit::Unloaded);
+    assert_eq!(history.continuation_reads(), reads_before);
+    assert!(
+        !hot_store
+            .snapshot()
+            .continuations
+            .contains_key(&unloaded_channels)
+    );
+
+    assert_eq!(hot_store.get_continuations(&unloaded_channels).len(), 2);
+    assert_eq!(history.continuation_reads(), reads_before + 1);
+    let mut hydrated = 0usize;
+    let visit =
+        hot_store.try_visit_resting_receive_views(&unloaded_channels, &mut |_, admission| {
+            admission.expect("a hydrated record admits its legacy view");
+            hydrated += 1;
+        });
+    assert_eq!(visit, RestingReceiveVisit::Visited(2));
+    assert_eq!(hydrated, 2);
 }
 
 proptest! {

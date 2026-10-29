@@ -1,10 +1,14 @@
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
+use rspace_plus_plus::rspace::ordered_receive::ReceivePatternLayout;
 use rspace_plus_plus::rspace::rho_path::{RhoPathEncode, RhoPathV2, StructuralSequenceEncoder};
 
 use super::canonical_path::encode_trie_path;
 use super::channel_image::{ChannelImageError, ChannelImageV2};
 use super::rholang::match_path::encode_par_match_atom;
-use crate::rhoapi::{ListParWithRandom, Par};
+use crate::rhoapi::{BindPattern, ListParWithRandom, Par};
+
+const BIND_PATTERN_FREE_COUNT_WIDTH: usize = 4;
+const BIND_PATTERN_MINIMUM_HEAD_WIDTH: usize = 9;
 
 /// V2 datum adapter: the first envelope field is the canonical RCI2 image,
 /// followed by caller-supplied canonical RMP2 structure and datum identity.
@@ -83,4 +87,14 @@ impl RhoPathEncode for ListParWithRandom {
     }
 
     fn rho_path_identity(&self) -> Vec<u8> { self.stable_hash_bytes() }
+}
+
+impl ReceivePatternLayout for BindPattern {
+    fn trailing_free_count(pattern: &[u8]) -> Option<i32> {
+        let (head, free_count) = pattern.split_last_chunk::<BIND_PATTERN_FREE_COUNT_WIDTH>()?;
+        match head.len() {
+            0..BIND_PATTERN_MINIMUM_HEAD_WIDTH => None,
+            _ => Some(i32::from_le_bytes(*free_count)),
+        }
+    }
 }

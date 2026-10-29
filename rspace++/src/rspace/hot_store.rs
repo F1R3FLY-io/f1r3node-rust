@@ -47,6 +47,9 @@ use crate::rspace::metrics_constants::{
     HOT_STORE_STATE_INSTALLED_JOINS_ITEMS_METRIC, HOT_STORE_STATE_INSTALLED_JOINS_SIZE_METRIC,
     HOT_STORE_STATE_JOINS_ITEMS_METRIC, HOT_STORE_STATE_JOINS_SIZE_METRIC, RSPACE_METRICS_SOURCE,
 };
+use crate::rspace::ordered_receive::{
+    OrderedReceiveError, OrderedReceiveView, PreparedContinuationRecord, RestingReceiveVisit,
+};
 use crate::rspace::persistence::{
     CanonicalFormatError, CatalogSlotV1, ContentTransition, DagTransactionError,
     DurableAuthorityViewV1, DurableObjectReadErrorV1, GenerationLeaseRegistryV1,
@@ -56,9 +59,6 @@ use crate::rspace::persistence::{
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
-use crate::rspace::serializers::serializers::{
-    encode_continuation_identity, encode_continuation_source_into,
-};
 use crate::rspace::trace::event::Consume;
 
 const MAX_HISTORY_STORE_CACHE_ENTRIES: usize = 512;
@@ -310,6 +310,11 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn put_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<bool>;
     fn install_continuation(&self, channels: &[C], wc: WaitingContinuation<P, K>) -> Option<()>;
     fn remove_continuation(&self, channels: &[C], index: i32) -> Option<()>;
+    fn try_visit_resting_receive_views(
+        &self,
+        channels: &[C],
+        visitor: &mut dyn FnMut(&[u64], Result<OrderedReceiveView<'_>, OrderedReceiveError>),
+    ) -> RestingReceiveVisit;
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
     fn get_candidate_pool(&self, channel: &C) -> CandidatePool<A>;
@@ -1019,15 +1024,11 @@ where
             .increment(existing_count);
 
         let __ident_build_start = std::time::Instant::now();
-        let wc_identity = encode_continuation_identity(&wc);
-        let mut canonical = wc_identity.clone();
-        encode_continuation_source_into(&wc, &mut canonical);
+        let prepared = PreparedContinuationRecord::encode_waiting(&wc);
         metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_BUILD_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__ident_build_start.elapsed().as_nanos() as u64);
         let __cmp_start = std::time::Instant::now();
-        let inserted = state
-            .continuations
-            .put_prepared(channels, wc, wc_identity, canonical);
+        let inserted = state.continuations.put_prepared(channels, wc, prepared);
         metrics::counter!(HOT_STORE_PUT_CONT_IDENTITY_COMPARE_NS_METRIC, "source" => RSPACE_METRICS_SOURCE)
             .increment(__cmp_start.elapsed().as_nanos() as u64);
         if inserted {
@@ -1084,6 +1085,17 @@ where
             state.bump_continuation_revision(channels);
         }
         removed
+    }
+
+    fn try_visit_resting_receive_views(
+        &self,
+        channels: &[C],
+        visitor: &mut dyn FnMut(&[u64], Result<OrderedReceiveView<'_>, OrderedReceiveError>),
+    ) -> RestingReceiveVisit {
+        let state = self.state.read().expect("hot store state read lock");
+        state
+            .continuations
+            .visit_resting_receive_records(channels, visitor)
     }
 
     // Data

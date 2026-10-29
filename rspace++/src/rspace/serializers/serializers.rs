@@ -164,6 +164,14 @@ pub(crate) fn encode_continuation_identity_observed_into<P, K>(
     observe(output.len() - start);
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "unit tests keep this frozen encoder as an identity oracle; production derives \
+                  identities from PreparedContinuationRecord since task 11986"
+    )
+)]
 pub(crate) fn encode_continuation_identity<P, K>(
     continuation: &WaitingContinuation<P, K>,
 ) -> Vec<u8>
