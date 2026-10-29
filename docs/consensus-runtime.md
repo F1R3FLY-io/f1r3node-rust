@@ -33,6 +33,8 @@ The host binds these routes to its listeners. It does not inspect a protocol enu
 
 Casper owns its existing deploy, proposal, block-query, and reporting APIs. Deploy and proposal writes enter the bounded consensus handle.
 Native query services remain inside the Casper adapter. Streaming queries belong to their response streams, so request cancellation releases the query future.
+Native DAG queries still return a complete result vector. The response stream converts each item when polled, without allocating a second response vector.
+Dropping the stream releases unconsumed native results without converting them.
 
 The packet bridge preserves the peer identity, packet kind, and payload bytes. Only the selected adapter decodes the native payload.
 

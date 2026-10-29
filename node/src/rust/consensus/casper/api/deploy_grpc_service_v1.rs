@@ -340,50 +340,41 @@ impl DeployService for DeployGrpcServiceV1Impl {
         let engine_cell = self.engine_cell.clone();
         let key_value_block_store = self.key_value_block_store.clone();
 
-        let stream = query_stream(async move {
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            let ser: Arc<dyn GraphSerializer> = Arc::new(ListSerializer::new(sender));
+        let stream = query_stream(
+            async move {
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                let ser: Arc<dyn GraphSerializer> = Arc::new(ListSerializer::new(sender));
 
-            match BlockAPI::visualize_dag(
-                &engine_cell,
-                depth,
-                start_block_number,
-                |ts, lfb| {
-                    let ser = ser.clone();
-                    let key_value_block_store = key_value_block_store.clone();
-                    async move {
-                        let _: graphz::Graphz = GraphzGenerator::dag_as_cluster(
-                            ts,
-                            lfb,
-                            config,
-                            ser,
-                            &key_value_block_store,
-                        )
-                        .await?;
-                        Ok(())
-                    }
-                },
-                receiver,
-            )
-            .await
-            {
-                Ok(content) => {
-                    let mut responses = Vec::with_capacity(content.len());
-                    for content_string in content {
-                        let response = VisualizeBlocksResponse {
-                            message: Some(
-                                models::casper::v1::visualize_blocks_response::Message::Content(
-                                    content_string,
-                                ),
-                            ),
-                        };
-                        responses.push(response);
-                    }
-                    Ok(responses)
-                }
-                Err(e) => Err(tonic::Status::internal(e.to_string())),
-            }
-        });
+                BlockAPI::visualize_dag(
+                    &engine_cell,
+                    depth,
+                    start_block_number,
+                    |ts, lfb| {
+                        let ser = ser.clone();
+                        let key_value_block_store = key_value_block_store.clone();
+                        async move {
+                            let _: graphz::Graphz = GraphzGenerator::dag_as_cluster(
+                                ts,
+                                lfb,
+                                config,
+                                ser,
+                                &key_value_block_store,
+                            )
+                            .await?;
+                            Ok(())
+                        }
+                    },
+                    receiver,
+                )
+                .await
+                .map_err(|e| tonic::Status::internal(e.to_string()))
+            },
+            |content| VisualizeBlocksResponse {
+                message: Some(
+                    models::casper::v1::visualize_blocks_response::Message::Content(content),
+                ),
+            },
+        );
 
         Ok(tonic::Response::new(stream))
     }
@@ -426,21 +417,20 @@ impl DeployService for DeployGrpcServiceV1Impl {
         let engine_cell = self.engine_cell.clone();
 
         let api_max_blocks_limit = self.api_max_blocks_limit;
-        let stream = query_stream(async move {
-            let blocks =
-                BlockAPI::show_main_chain(&engine_cell, request.depth, api_max_blocks_limit).await;
+        let stream = query_stream(
+            async move {
+                let blocks =
+                    BlockAPI::show_main_chain(&engine_cell, request.depth, api_max_blocks_limit)
+                        .await;
 
-            let mut responses = Vec::with_capacity(blocks.len());
-            for block_info in blocks {
-                let response = BlockInfoResponse {
-                    message: Some(models::casper::v1::block_info_response::Message::BlockInfo(
-                        block_info,
-                    )),
-                };
-                responses.push(response);
-            }
-            Ok(responses)
-        });
+                Ok(blocks)
+            },
+            |block_info| BlockInfoResponse {
+                message: Some(models::casper::v1::block_info_response::Message::BlockInfo(
+                    block_info,
+                )),
+            },
+        );
 
         Ok(tonic::Response::new(stream))
     }
@@ -454,28 +444,23 @@ impl DeployService for DeployGrpcServiceV1Impl {
         let engine_cell = self.engine_cell.clone();
         let api_max_blocks_limit = self.api_max_blocks_limit;
 
-        let stream = query_stream(async move {
-            match BlockAPI::get_blocks(&engine_cell, request.depth, api_max_blocks_limit).await {
-                Ok(blocks) => {
-                    let mut responses = Vec::with_capacity(blocks.len());
-                    for block_info in blocks {
-                        let response = BlockInfoResponse {
-                            message: Some(
-                                models::casper::v1::block_info_response::Message::BlockInfo(
-                                    block_info,
-                                ),
-                            ),
-                        };
-                        responses.push(response);
+        let stream = query_stream(
+            async move {
+                match BlockAPI::get_blocks(&engine_cell, request.depth, api_max_blocks_limit).await
+                {
+                    Ok(blocks) => Ok(blocks),
+                    Err(e) => {
+                        error!("Deploy service method error get_blocks: {}", e);
+                        Err(tonic::Status::internal(e.to_string()))
                     }
-                    Ok(responses)
                 }
-                Err(e) => {
-                    error!("Deploy service method error get_blocks: {}", e);
-                    Err(tonic::Status::internal(e.to_string()))
-                }
-            }
-        });
+            },
+            |block_info| BlockInfoResponse {
+                message: Some(models::casper::v1::block_info_response::Message::BlockInfo(
+                    block_info,
+                )),
+            },
+        );
 
         Ok(tonic::Response::new(stream))
     }
@@ -966,35 +951,29 @@ impl DeployService for DeployGrpcServiceV1Impl {
         let engine_cell = self.engine_cell.clone();
         let api_max_blocks_limit = self.api_max_blocks_limit;
 
-        let stream = query_stream(async move {
-            match BlockAPI::get_blocks_by_heights(
-                &engine_cell,
-                request.start_block_number,
-                request.end_block_number,
-                api_max_blocks_limit,
-            )
-            .await
-            {
-                Ok(blocks) => {
-                    let mut responses = Vec::with_capacity(blocks.len());
-                    for block_info in blocks {
-                        let response = BlockInfoResponse {
-                            message: Some(
-                                models::casper::v1::block_info_response::Message::BlockInfo(
-                                    block_info,
-                                ),
-                            ),
-                        };
-                        responses.push(response);
+        let stream = query_stream(
+            async move {
+                match BlockAPI::get_blocks_by_heights(
+                    &engine_cell,
+                    request.start_block_number,
+                    request.end_block_number,
+                    api_max_blocks_limit,
+                )
+                .await
+                {
+                    Ok(blocks) => Ok(blocks),
+                    Err(e) => {
+                        error!("Deploy service method error get_blocks_by_heights: {}", e);
+                        Err(tonic::Status::internal(e.to_string()))
                     }
-                    Ok(responses)
                 }
-                Err(e) => {
-                    error!("Deploy service method error get_blocks_by_heights: {}", e);
-                    Err(tonic::Status::internal(e.to_string()))
-                }
-            }
-        });
+            },
+            |block_info| BlockInfoResponse {
+                message: Some(models::casper::v1::block_info_response::Message::BlockInfo(
+                    block_info,
+                )),
+            },
+        );
 
         Ok(tonic::Response::new(stream))
     }
