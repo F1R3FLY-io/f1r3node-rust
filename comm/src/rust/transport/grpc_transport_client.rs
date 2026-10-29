@@ -96,6 +96,14 @@ const MAX_CHANNEL_MAP_ENTRIES: usize = 1024;
 const STREAM_TIMEOUT_MICROS_PER_BYTE: u64 = 5;
 const CHANNEL_LIVENESS_CHECK_TIMEOUT: Duration = Duration::from_millis(50);
 
+fn stream_timeout(packet_size: usize, default_send_timeout: Duration) -> Duration {
+    let packet_based_timeout =
+        Duration::from_micros((packet_size as u64).saturating_mul(STREAM_TIMEOUT_MICROS_PER_BYTE));
+    packet_based_timeout
+        .max(default_send_timeout)
+        .min(super::GRPC_REQUEST_TIMEOUT)
+}
+
 impl GrpcTransportClient {
     /// Create a new GrpcTransportClient
     pub fn new(
@@ -463,16 +471,10 @@ impl GrpcTransportClient {
             >,
         >,
     ) -> Result<(), CommError> {
-        let calculate_timeout = |packet: &models::routing::Packet| -> Duration {
-            let packet_based_timeout =
-                Duration::from_micros(packet.content.len() as u64 * STREAM_TIMEOUT_MICROS_PER_BYTE);
-            std::cmp::max(packet_based_timeout, default_send_timeout)
-        };
-
         // Restore packet from cache
         match PacketOps::restore(key, cache) {
             Ok(packet) => {
-                let timeout = calculate_timeout(&packet);
+                let timeout = stream_timeout(packet.content.len(), default_send_timeout);
 
                 tracing::debug!(
                     "Attempting to stream packet to {} with timeout: {}ms",
@@ -672,6 +674,22 @@ mod tests {
     fn new_accepts_normal_and_too_low_timeouts() {
         client(Duration::from_secs(5));
         client(Duration::from_millis(1));
+    }
+
+    #[test]
+    fn stream_timeout_preserves_small_packet_budget_and_caps_large_packets() {
+        assert_eq!(
+            stream_timeout(1, Duration::from_secs(5)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            stream_timeout(10_000_000, Duration::from_secs(5)),
+            super::super::GRPC_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            stream_timeout(1, Duration::from_secs(60)),
+            super::super::GRPC_REQUEST_TIMEOUT
+        );
     }
 
     #[tokio::test]
