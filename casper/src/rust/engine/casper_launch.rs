@@ -261,129 +261,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             Ok(())
         }
 
-        async fn send_buffer_pendants_to_casper<T: TransportLayer + Send + Sync + Clone>(
-            casper: Arc<dyn MultiParentCasper + Send + Sync>,
-            casper_buffer_storage: &CasperBufferKeyValueStorage,
-            block_store: &KeyValueBlockStore,
-            block_retriever: &BlockRetriever<T>,
-            blocks_in_processing: &Arc<InFlightBlocks>,
-            block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
-        ) -> Result<(), CasperError> {
-            let purged = purge_buffered_blocks_without_body(casper_buffer_storage, block_store)?;
-            if purged > 0 {
-                tracing::warn!(
-                    "Purged {} CasperBuffer entries whose block body is not stored.",
-                    purged
-                );
-            }
-            let pendants = casper_buffer_storage.get_pendants();
-
-            // Filter pendants to only those that exist in BlockStore
-            let mut pendants_stored = Vec::new();
-            for hash_serde in pendants.iter() {
-                // Convert BlockHashSerde wrapper to BlockHash (Bytes)
-                let hash: BlockHash = hash_serde.0.clone();
-
-                // Check if this hash exists in BlockStore
-                let contains = block_store.contains(&hash)?;
-
-                // If block exists, add hash to filtered list
-                if contains {
-                    pendants_stored.push(hash);
-                }
-            }
-
-            tracing::info!(
-                "Checking pendant hashes: {} items in CasperBuffer.",
-                pendants_stored.len()
-            );
-
-            // Process each pendant hash and send block to Casper for processing
-            for hash in pendants_stored {
-                // Retrieve block from BlockStore (returns Option)
-                let block = block_store.get(&hash)?;
-
-                if let Some(block) = block {
-                    tracing::info!(
-                        "Pendant {} is available in BlockStore, sending to Casper.",
-                        PrettyPrinter::build_string(
-                            CasperMessage::BlockMessage(block.clone()),
-                            true
-                        )
-                    );
-
-                    // Check if block already exists in DAG
-                    let dag_contains = casper.dag_contains(&hash);
-
-                    // Resume-time reconciliation closing the (c) drift
-                    // state from Bug #17 / T-9.20. The same purge logic
-                    // is provided as a documented helper at
-                    // `block_storage::rust::dag::buffer_dag_transition::
-                    //  reconcile_buffer_against_dag` — kept inline here
-                    // because we additionally clean up the BlockRetriever's
-                    // hash-tracking state (a launch-specific concern that
-                    // the generic recon helper doesn't know about).
-                    // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
-                    if dag_contains {
-                        tracing::warn!(
-                            "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",
-                            PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
-                        );
-                        let hash_serde = BlockHashSerde(hash.clone());
-                        if let Err(err) = casper_buffer_storage.remove(hash_serde) {
-                            tracing::warn!(
-                                "Failed to purge stale pendant {} from CasperBuffer: {}",
-                                PrettyPrinter::build_string_bytes(&hash),
-                                err
-                            );
-                        }
-                        if let Err(err) = block_retriever.forget_hash_tracking(&hash) {
-                            tracing::warn!(
-                                "Failed to forget stale pendant {} in BlockRetriever: {}",
-                                PrettyPrinter::build_string_bytes(&hash),
-                                err
-                            );
-                        }
-                        continue;
-                    }
-
-                    // Send block to processing queue for validation and addition to DAG
-                    let block_hash = block.block_hash.clone();
-                    let guard = match mark_in_flight(blocks_in_processing, block_hash.clone()) {
-                        InFlightMark::Marked(guard) => guard,
-                        InFlightMark::AlreadyInFlight => {
-                            tracing::debug!(
-                                "Skipping pendant {} enqueue because it is already queued/in-processing",
-                                PrettyPrinter::build_string_bytes(&block_hash)
-                            );
-                            continue;
-                        }
-                        InFlightMark::CapReached => {
-                            block_retriever
-                                .note_local_backpressure_drop(&block_hash, "launch-pendant");
-                            tracing::warn!(
-                                "Skipping pendant {} enqueue because in-flight block cap {} is reached",
-                                PrettyPrinter::build_string_bytes(&block_hash),
-                                MAX_BLOCKS_IN_PROCESSING
-                            );
-                            continue;
-                        }
-                    };
-                    block_processing_queue_tx
-                        .send((casper.clone(), block, guard))
-                        .await
-                        .map_err(|e| {
-                            CasperError::Other(format!("Failed to send block to queue: {}", e))
-                        })?;
-                    // Acknowledge only after successful enqueue so dropped blocks do not
-                    // accumulate as `received=true,in_casper_buffer=false` forever.
-                    block_retriever.ack_receive(hash).await?;
-                }
-            }
-
-            Ok(())
-        }
-
         let validator_id = ValidatorIdentity::from_private_key_with_logging(
             self.conf.validator_private_key.as_deref(),
         );
@@ -901,6 +778,123 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
 
         Ok(())
     }
+}
+
+pub async fn send_buffer_pendants_to_casper<T: TransportLayer + Send + Sync + Clone>(
+    casper: Arc<dyn MultiParentCasper + Send + Sync>,
+    casper_buffer_storage: &CasperBufferKeyValueStorage,
+    block_store: &KeyValueBlockStore,
+    block_retriever: &BlockRetriever<T>,
+    blocks_in_processing: &Arc<InFlightBlocks>,
+    block_processing_queue_tx: &mpsc::Sender<BlockQueueItem>,
+) -> Result<(), CasperError> {
+    let purged = purge_buffered_blocks_without_body(casper_buffer_storage, block_store)?;
+    if purged > 0 {
+        tracing::warn!(
+            "Purged {} CasperBuffer entries whose block body is not stored.",
+            purged
+        );
+    }
+    let pendants = casper_buffer_storage.get_pendants();
+
+    // Filter pendants to only those that exist in BlockStore
+    let mut pendants_stored = Vec::new();
+    for hash_serde in pendants.iter() {
+        // Convert BlockHashSerde wrapper to BlockHash (Bytes)
+        let hash: BlockHash = hash_serde.0.clone();
+
+        // Check if this hash exists in BlockStore
+        let contains = block_store.contains(&hash)?;
+
+        // If block exists, add hash to filtered list
+        if contains {
+            pendants_stored.push(hash);
+        }
+    }
+
+    tracing::info!(
+        "Checking pendant hashes: {} items in CasperBuffer.",
+        pendants_stored.len()
+    );
+
+    // Process each pendant hash and send block to Casper for processing
+    for hash in pendants_stored {
+        // Retrieve block from BlockStore (returns Option)
+        let block = block_store.get(&hash)?;
+
+        if let Some(block) = block {
+            tracing::info!(
+                "Pendant {} is available in BlockStore, sending to Casper.",
+                PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
+            );
+
+            // Check if block already exists in DAG
+            let dag_contains = casper.dag_contains(&hash);
+
+            // Resume-time reconciliation closing the (c) drift
+            // state from Bug #17 / T-9.20. The same purge logic
+            // is provided as a documented helper at
+            // `block_storage::rust::dag::buffer_dag_transition::
+            //  reconcile_buffer_against_dag` — kept inline here
+            // because we additionally clean up the BlockRetriever's
+            // hash-tracking state (a launch-specific concern that
+            // the generic recon helper doesn't know about).
+            // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
+            if dag_contains {
+                tracing::warn!(
+                    "Pendant {} is already in DAG; purging stale CasperBuffer entry to prevent requeue loops.",
+                    PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
+                );
+                let hash_serde = BlockHashSerde(hash.clone());
+                if let Err(err) = casper_buffer_storage.remove(hash_serde) {
+                    tracing::warn!(
+                        "Failed to purge stale pendant {} from CasperBuffer: {}",
+                        PrettyPrinter::build_string_bytes(&hash),
+                        err
+                    );
+                }
+                if let Err(err) = block_retriever.forget_hash_tracking(&hash) {
+                    tracing::warn!(
+                        "Failed to forget stale pendant {} in BlockRetriever: {}",
+                        PrettyPrinter::build_string_bytes(&hash),
+                        err
+                    );
+                }
+                continue;
+            }
+
+            // Send block to processing queue for validation and addition to DAG
+            let block_hash = block.block_hash.clone();
+            let guard = match mark_in_flight(blocks_in_processing, block_hash.clone()) {
+                InFlightMark::Marked(guard) => guard,
+                InFlightMark::AlreadyInFlight => {
+                    tracing::debug!(
+                        "Skipping pendant {} enqueue because it is already queued/in-processing",
+                        PrettyPrinter::build_string_bytes(&block_hash)
+                    );
+                    continue;
+                }
+                InFlightMark::CapReached => {
+                    block_retriever.note_local_backpressure_drop(&block_hash, "launch-pendant");
+                    tracing::warn!(
+                        "Skipping pendant {} enqueue because in-flight block cap {} is reached",
+                        PrettyPrinter::build_string_bytes(&block_hash),
+                        MAX_BLOCKS_IN_PROCESSING
+                    );
+                    continue;
+                }
+            };
+            block_processing_queue_tx
+                .send((casper.clone(), block, guard))
+                .await
+                .map_err(|e| CasperError::Other(format!("Failed to send block to queue: {}", e)))?;
+            // Acknowledge only after successful enqueue so dropped blocks do not
+            // accumulate as `received=true,in_casper_buffer=false` forever.
+            block_retriever.ack_receive(hash).await?;
+        }
+    }
+
+    Ok(())
 }
 
 #[async_trait]
