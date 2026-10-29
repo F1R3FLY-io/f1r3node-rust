@@ -595,11 +595,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                     .await?;
             }
             self.dependencies.ack_processed(block).await?;
-            if !self.dependencies.holds_body(&block.block_hash)? {
-                self.dependencies
-                    .release_evicted_pending(std::slice::from_ref(&block.block_hash))
-                    .await?;
-            }
         }
 
         Ok(is_ready)
@@ -1181,27 +1176,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
 
     pub async fn hold_pending(&self, block: &BlockMessage) -> Result<PendingInsert, CasperError> {
         let solicited = self.was_requested_as_dependency(&block.block_hash)?;
-        let outcome = self.block_store.put_pending(block, solicited)?;
-        self.release_evicted_pending(&outcome.evicted).await?;
-        Ok(outcome.status)
-    }
-
-    pub async fn release_evicted_pending(&self, evicted: &[BlockHash]) -> Result<(), CasperError> {
-        for hash in evicted {
-            let has_dependents = self.has_buffered_dependents(hash);
-            self.casper_buffer.remove(BlockHashSerde(hash.clone()))?;
-            if has_dependents {
-                self.block_retriever
-                    .recover_dependency(hash.clone())
-                    .await?;
-            }
-            tracing::debug!(
-                "Pending block {} evicted; dependents waiting: {}.",
-                PrettyPrinter::build_string_bytes(hash),
-                has_dependents
-            );
-        }
-        Ok(())
+        Ok(self.block_store.put_pending(block, solicited)?)
     }
 
     pub async fn release_refused_pending(
@@ -1222,10 +1197,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         self.casper_buffer
             .get_children(&BlockHashSerde(hash.clone()))
             .is_some_and(|children| !children.is_empty())
-    }
-
-    pub fn holds_body(&self, hash: &BlockHash) -> Result<bool, CasperError> {
-        Ok(self.block_store.contains_key(hash)?)
     }
 
     pub fn discard_pending(&self, block: &BlockMessage) -> bool {

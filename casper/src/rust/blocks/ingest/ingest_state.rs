@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+use block_storage::rust::pending_blocks::{PendingBlockLimits, PendingUsage};
 use comm::rust::peer_node::PeerNode;
 use models::rust::block_hash::BlockHash;
 use models::rust::validator::Validator;
@@ -13,42 +12,19 @@ use super::fetch_scheduler::{FetchAction, FetchScheduler, NeedFacts, NeedOrigin}
 use super::ingest_view::IngestView;
 use super::peer_reputation::{PeerReputation, Strike, StrikeOutcome};
 
-/// Unsolicited blocks are admitted to the pending area only below this share
-/// of each of its limits; the rest is reserved for requested blocks.
-pub const PENDING_LOW_WATER_PERCENT: usize = 90;
-
 pub const LOCAL_LOOKUPS_PER_TICK: usize = 256;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AreaLimits {
-    pub max_blocks: usize,
-    pub max_bytes: usize,
-    pub max_per_sender: usize,
-}
-
-impl AreaLimits {
-    fn low_water(limit: usize) -> usize { limit * PENDING_LOW_WATER_PERCENT / 100 }
-}
-
-/// The pending area's totals, read by the owner when it decides evictions.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AreaUsage {
-    pub blocks: usize,
-    pub bytes: usize,
-    pub by_sender: HashMap<Validator, usize>,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngestConfig {
     /// Height of the approved block: blocks at or below it may be admitted
     /// as settled history.
     pub anchor_height: i64,
-    pub area: AreaLimits,
+    pub area: PendingBlockLimits,
     pub max_disk_entries: usize,
 }
 
 impl IngestConfig {
-    pub fn new(anchor_height: i64, area: AreaLimits) -> Self {
+    pub fn new(anchor_height: i64, area: PendingBlockLimits) -> Self {
         Self {
             anchor_height,
             area,
@@ -109,7 +85,7 @@ pub enum IngestInput {
     /// pending area's usage after a pending store.
     Received {
         meta: HeldMeta,
-        area: Option<AreaUsage>,
+        area: Option<PendingUsage>,
     },
     Announced {
         hash: BlockHash,
@@ -125,7 +101,7 @@ pub enum IngestInput {
         size: usize,
         sender: Validator,
         reason: Refusal,
-        area: Option<AreaUsage>,
+        area: Option<PendingUsage>,
     },
     LocalMiss {
         hash: BlockHash,
@@ -143,7 +119,7 @@ pub enum IngestInput {
     },
     Tick {
         connected: Vec<PeerNode>,
-        area: AreaUsage,
+        area: PendingUsage,
     },
 }
 
@@ -298,7 +274,7 @@ impl IngestState {
     fn received(
         &mut self,
         mut meta: HeldMeta,
-        area: Option<AreaUsage>,
+        area: Option<PendingUsage>,
         now_ms: u64,
         dag: &dyn Dependencies,
         effects: &mut Vec<Effect>,
@@ -359,7 +335,7 @@ impl IngestState {
         size: usize,
         sender: &Validator,
         reason: Refusal,
-        area: Option<AreaUsage>,
+        area: Option<PendingUsage>,
         now_ms: u64,
         effects: &mut Vec<Effect>,
     ) {
@@ -613,12 +589,12 @@ impl IngestState {
 
     /// Bring the pending area back to its low-water mark, globally and per
     /// sender, by evicting unsolicited blocks only.
-    fn proactive_pass(&mut self, area: &AreaUsage, now_ms: u64, effects: &mut Vec<Effect>) {
+    fn proactive_pass(&mut self, area: &PendingUsage, now_ms: u64, effects: &mut Vec<Effect>) {
         let limits = self.config.area;
         let mut blocks = area.blocks;
         let mut bytes = area.bytes;
-        let block_target = AreaLimits::low_water(limits.max_blocks);
-        let byte_target = AreaLimits::low_water(limits.max_bytes);
+        let block_target = PendingBlockLimits::low_water(limits.max_blocks);
+        let byte_target = PendingBlockLimits::low_water(limits.max_bytes);
         if blocks > block_target || bytes > byte_target {
             for (victim, size) in
                 self.tracker
@@ -632,7 +608,7 @@ impl IngestState {
                 bytes = bytes.saturating_sub(size);
             }
         }
-        let sender_target = AreaLimits::low_water(limits.max_per_sender);
+        let sender_target = PendingBlockLimits::low_water(limits.max_per_sender);
         let mut over: Vec<(&Validator, usize)> = area
             .by_sender
             .iter()
@@ -657,7 +633,7 @@ impl IngestState {
     /// requested ones only once no unsolicited block remains, until it fits.
     fn reactive_pass(
         &mut self,
-        area: &AreaUsage,
+        area: &PendingUsage,
         size: usize,
         now_ms: u64,
         effects: &mut Vec<Effect>,

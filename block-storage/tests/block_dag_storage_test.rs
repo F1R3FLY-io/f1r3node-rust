@@ -2395,3 +2395,39 @@ async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_h
         "the anchor is the seed every derived floor descends from"
     );
 }
+
+#[tokio::test]
+async fn the_insert_observer_hears_each_inserted_block_once_in_every_mode() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+
+    let genesis = genesis_block();
+    let dag_storage = create_dag_storage(&genesis).await;
+    let (observer, mut inserted) = tokio::sync::mpsc::unbounded_channel();
+    dag_storage.set_insert_observer(observer).unwrap();
+    let (second_observer, _) = tokio::sync::mpsc::unbounded_channel();
+    assert!(dag_storage.set_insert_observer(second_observer).is_err());
+
+    let valid = chain_block(1, vec![genesis.block_hash.clone()]);
+    let invalid = chain_block(1, vec![genesis.block_hash.clone()]);
+    let settled = chain_block(1, vec![genesis.block_hash.clone()]);
+    dag_storage.insert(&valid, InsertMode::Normal).unwrap();
+    dag_storage.insert(&invalid, InsertMode::Invalid).unwrap();
+    dag_storage
+        .insert(&settled, InsertMode::SettledHistory)
+        .unwrap();
+    dag_storage.insert(&valid, InsertMode::Normal).unwrap();
+    dag_storage
+        .clone()
+        .insert(&genesis, InsertMode::Normal)
+        .unwrap();
+
+    let mut heard = Vec::new();
+    while let Ok(hash) = inserted.try_recv() {
+        heard.push(hash);
+    }
+    assert_eq!(heard, vec![
+        valid.block_hash.clone(),
+        invalid.block_hash.clone(),
+        settled.block_hash.clone()
+    ]);
+}

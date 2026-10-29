@@ -13,9 +13,7 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::soak_snapshot::SnapshotError;
 
-use crate::rust::pending_blocks::{
-    PendingBlockLimits, PendingBlocks, PendingInsert, PendingOutcome,
-};
+use crate::rust::pending_blocks::{PendingBlockLimits, PendingBlocks, PendingInsert, PendingUsage};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockDecodeLimits {
@@ -290,12 +288,9 @@ impl KeyValueBlockStore {
         &self,
         block: &BlockMessage,
         solicited: bool,
-    ) -> Result<PendingOutcome, KvStoreError> {
+    ) -> Result<PendingInsert, KvStoreError> {
         if self.disk_contains(&block.block_hash)? {
-            return Ok(PendingOutcome {
-                status: PendingInsert::Accepted,
-                evicted: Vec::new(),
-            });
+            return Ok(PendingInsert::Accepted);
         }
         let outcome = self.pending.insert(block, solicited);
         if self.disk_contains(&block.block_hash)? {
@@ -320,9 +315,9 @@ impl KeyValueBlockStore {
 
     pub fn pending_blocks(&self) -> &PendingBlocks { &self.pending }
 
-    pub fn set_pending_limits(&self, limits: PendingBlockLimits) -> Vec<BlockHash> {
-        self.pending.set_limits(limits)
-    }
+    pub fn set_pending_limits(&self, limits: PendingBlockLimits) { self.pending.set_limits(limits) }
+
+    pub fn pending_usage(&self) -> PendingUsage { self.pending.usage() }
 
     fn disk_contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
         Ok(self
@@ -1284,7 +1279,7 @@ mod tests {
         let hash = block.block_hash.clone();
 
         assert_eq!(
-            bs.put_pending(&block, false).unwrap().status,
+            bs.put_pending(&block, false).unwrap(),
             PendingInsert::Accepted
         );
 
@@ -1313,28 +1308,31 @@ mod tests {
     }
 
     #[test]
-    fn persist_block_writes_a_block_that_the_pending_area_evicted() {
+    fn persist_block_writes_a_block_that_the_pending_area_no_longer_holds() {
         let (bs, disk) = in_mem_store();
-        bs.set_pending_limits(PendingBlockLimits {
-            max_blocks: 1,
-            max_bytes: usize::MAX,
-            max_per_sender: 10,
-        });
-        let evicted = models::rust::block_implicits::get_random_block_default();
-        let mut newer = evicted.clone();
-        newer.block_hash = prost::bytes::Bytes::from(vec![9u8; 32]);
-        bs.put_pending(&evicted, false).unwrap();
-        let outcome = bs.put_pending(&newer, false).unwrap();
-        assert_eq!(outcome.evicted, vec![evicted.block_hash.clone()]);
-        assert!(bs.get(&evicted.block_hash).unwrap().is_none());
+        let discarded = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&discarded, false).unwrap();
+        assert!(bs.discard_pending(&discarded.block_hash));
+        assert!(bs.get(&discarded.block_hash).unwrap().is_none());
 
-        bs.persist_block(&evicted).unwrap();
+        bs.persist_block(&discarded).unwrap();
 
         assert!(disk
-            .get_one(&evicted.block_hash.to_vec())
+            .get_one(&discarded.block_hash.to_vec())
             .unwrap()
             .is_some());
-        assert_eq!(bs.get(&evicted.block_hash).unwrap(), Some(evicted));
+        assert_eq!(bs.get(&discarded.block_hash).unwrap(), Some(discarded));
+    }
+
+    #[test]
+    fn pending_usage_reports_the_area_totals() {
+        let (bs, _disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&block, false).unwrap();
+        let usage = bs.pending_usage();
+        assert_eq!(usage.blocks, 1);
+        assert_eq!(usage.bytes, bs.pending_blocks().bytes());
+        assert_eq!(usage.by_sender.get(&block.sender), Some(&1));
     }
 
     #[test]
@@ -1359,7 +1357,7 @@ mod tests {
         let block = models::rust::block_implicits::get_random_block_default();
         bs.put_block_message(&block).unwrap();
         assert_eq!(
-            bs.put_pending(&block, false).unwrap().status,
+            bs.put_pending(&block, false).unwrap(),
             PendingInsert::Accepted
         );
         assert!(!bs.is_pending(&block.block_hash));

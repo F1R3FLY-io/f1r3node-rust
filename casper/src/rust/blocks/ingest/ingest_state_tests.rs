@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
+use block_storage::rust::pending_blocks::{PendingBlockLimits, PendingUsage};
 use comm::rust::peer_node::PeerNode;
 use models::rust::block_hash::BlockHash;
 use proptest::prelude::*;
@@ -15,7 +16,7 @@ use super::peer_reputation::{Strike, StrikeOutcome, STRIKE_THRESHOLD};
 
 fn hash(i: u32) -> BlockHash { Bytes::copy_from_slice(&i.to_be_bytes()) }
 
-const LIMITS: AreaLimits = AreaLimits {
+const LIMITS: PendingBlockLimits = PendingBlockLimits {
     max_blocks: 100,
     max_bytes: 100_000,
     max_per_sender: 40,
@@ -80,7 +81,7 @@ fn tick(s: &mut IngestState, now_ms: u64, connected: &[PeerNode], dag: &Dag) -> 
     s.handle(
         IngestInput::Tick {
             connected: connected.to_vec(),
-            area: AreaUsage::default(),
+            area: PendingUsage::default(),
         },
         now_ms,
         dag,
@@ -290,7 +291,7 @@ fn an_evicted_block_keeps_its_pusher_through_redelivery() {
         &dag,
     );
     s.handle(received(meta(2, 2, &[1])), 0, &dag);
-    let full = AreaUsage {
+    let full = PendingUsage {
         blocks: LIMITS.max_blocks,
         bytes: 0,
         by_sender: HashMap::new(),
@@ -481,7 +482,7 @@ fn proactive_passes_evict_only_unsolicited_blocks() {
     let effects = s.handle(
         IngestInput::Tick {
             connected: vec![],
-            area: AreaUsage {
+            area: PendingUsage {
                 blocks: LIMITS.max_blocks,
                 bytes: 0,
                 by_sender: HashMap::new(),
@@ -521,7 +522,7 @@ fn a_refused_requested_block_evicts_unsolicited_before_requested_blocks() {
         size: 10,
         sender: Bytes::from_static(b"v2"),
         reason: Refusal::Pending(PendingRefusal::AreaFull),
-        area: Some(AreaUsage {
+        area: Some(PendingUsage {
             blocks,
             bytes: 0,
             by_sender: HashMap::new(),
@@ -562,7 +563,7 @@ fn a_sender_at_its_quota_loses_only_its_own_unsolicited_blocks() {
             size: 10,
             sender: Bytes::from_static(b"v1"),
             reason: Refusal::Pending(PendingRefusal::SenderLimitReached),
-            area: Some(AreaUsage {
+            area: Some(PendingUsage {
                 blocks: 3,
                 bytes: 0,
                 by_sender: [(Bytes::from_static(b"v1"), LIMITS.max_per_sender)].into(),
@@ -700,8 +701,8 @@ impl<'a> Sim<'a> {
         u32::from_be_bytes(hash[..].try_into().expect("four bytes"))
     }
 
-    fn usage(&self) -> AreaUsage {
-        AreaUsage {
+    fn usage(&self) -> PendingUsage {
+        PendingUsage {
             blocks: self.area.len(),
             bytes: self.area.len() * 1_000,
             by_sender: HashMap::new(),
