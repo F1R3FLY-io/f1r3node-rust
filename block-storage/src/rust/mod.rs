@@ -1,4 +1,3 @@
-pub mod casperbuffer;
 pub mod dag;
 pub mod deploy;
 pub mod finality;

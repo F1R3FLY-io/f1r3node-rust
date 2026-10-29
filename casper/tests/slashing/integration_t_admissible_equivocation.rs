@@ -6,29 +6,25 @@
 // design/09-bug-fixes-and-rationale.md §9.1.
 // Plan-agent designed Track 2 / equivocation-construction recipe.
 //
-// AdmissibleEquivocation differs from IgnorableEquivocation by
-// the value of `casper_buffer_storage.requested_as_dependency(b1p)`:
-//   * Ignorable: false (no other block has cited b1p as a dependency)
-//   * Admissible: true (b1p has been requested as a dependency
-//     of some other block, so it MUST be added to the DAG even
-//     though it's an equivocation — see equivocation_detector.rs:38-41)
+// AdmissibleEquivocation differs from IgnorableEquivocation by whether a
+// block the node holds waits on the equivocation (block ingest's
+// `has_waiters(b1p)`):
+//   * Ignorable: no held block cites b1p
+//   * Admissible: a held block cites b1p, so it MUST be added to the DAG
+//     even though it's an equivocation — see equivocation_detector.rs:38-41
 //
 // Recipe:
 //   1. Same setup as Ignorable: build b1, build b1p via
 //      `equivocate_block(nodes[0], &b1, vec![d2])`.
-//   2. Before processing b1p on nodes[1], seed the casper buffer:
-//      `nodes[1].casper.casper_buffer_storage.add_relation(b1p, dummy_child)`.
-//      This puts b1p into `parent_to_child_adjacency_list`,
-//      causing `requested_as_dependency(b1p) == true`
-//      (casper_buffer_key_value_storage.rs:195-202).
-//   3. nodes[1].process_block(b1) → Right(Valid).
-//   4. nodes[1].process_block(b1p) → Left(Invalid(AdmissibleEquivocation)).
-//   5. SlashingProductionAdapter snapshot confirms post-fix #1+#3
+//   2. nodes[2] sees only b1p (valid there) and builds c2 on it.
+//   3. nodes[1] receives c2 first: c2 waits on b1p.
+//   4. nodes[1].process_block(b1) → Right(Valid).
+//   5. nodes[1].process_block(b1p) → Left(Invalid(AdmissibleEquivocation)).
+//   6. SlashingProductionAdapter snapshot confirms post-fix #1+#3
 //      record-mint at the production tier.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::util::construct_deploy;
-use models::rust::block_hash::BlockHashSerde;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::integration_helpers::{
@@ -67,26 +63,31 @@ async fn integration_t_admissible_equivocation() {
         .await
         .expect("equivocate_block");
 
-    // Seed nodes[1]'s casper buffer to mark b1p as a requested
-    // dependency. This is the structural difference between
-    // Admissible and Ignorable arms — the dispatcher reads this
-    // flag in equivocation_detector.rs:38.
-    let dummy_child = BlockHashSerde(prost::bytes::Bytes::from_static(
-        b"dummy-child-of-equivocation-test",
-    ));
-    nodes[1]
-        .casper
-        .casper_buffer_storage
-        .add_relation(BlockHashSerde(b1p.block_hash.clone()), dummy_child)
-        .expect("seed casper buffer with b1p as dependency");
-
-    // Sanity: confirm the buffer reports b1p as requested.
+    // nodes[2] sees only b1p and builds on it; nodes[1] receives that
+    // child first, so a held block waits on b1p. This is the structural
+    // difference between the Admissible and Ignorable arms — the
+    // dispatcher reads it in equivocation_detector.rs:38.
+    let s0 = nodes[2]
+        .process_block(b1p.clone())
+        .await
+        .expect("nodes[2] process b1p");
+    assert!(matches!(s0, Either::Right(_)), "b1p valid on nodes[2], got: {:?}", s0);
+    let d3 = construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone())).expect("d3");
+    let c2 = nodes[2]
+        .add_block_from_deploys(&[d3])
+        .await
+        .expect("nodes[2] builds on b1p");
     assert!(
-        nodes[1]
-            .casper
-            .casper_buffer_storage
-            .requested_as_dependency(&BlockHashSerde(b1p.block_hash.clone())),
-        "casper buffer should report b1p as a requested dependency"
+        c2.header.parents_hash_list.contains(&b1p.block_hash),
+        "c2 must cite b1p"
+    );
+    nodes[1]
+        .process_block(c2)
+        .await
+        .expect("nodes[1] holds c2");
+    assert!(
+        nodes[1].ingest_view.has_waiters(&b1p.block_hash),
+        "a held block must wait on b1p"
     );
 
     // Process b1 on nodes[1] — must classify Valid.
@@ -97,7 +98,7 @@ async fn integration_t_admissible_equivocation() {
     assert!(matches!(s1, Either::Right(_)), "b1 valid, got: {:?}", s1);
 
     // Process b1p on nodes[1] — must classify AdmissibleEquivocation
-    // because b1p is in the buffer's dependency adjacency list.
+    // because a held block waits on it.
     let s2 = nodes[1]
         .process_block(b1p.clone())
         .await

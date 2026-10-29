@@ -5,7 +5,6 @@ use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use casper::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use casper::rust::blocks::proposer::proposer::ProposerResult;
 use casper::rust::errors::CasperError;
 use comm::rust::peer_node::NodeIdentifier;
@@ -172,27 +171,7 @@ impl NodeRuntime {
         // Wrap RPConf in RPConfCell for shared mutable access (allows dynamic IP updates)
         let rp_conf_cell = comm::rust::rp::rp_conf::RPConfCell::new(rp_conf.clone());
 
-        // Create requested blocks tracking
-        let requested_blocks = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
-            models::rust::block_hash::BlockHash,
-            casper::rust::engine::block_retriever::RequestState,
-        >::new()));
-
         info!("RP connections and configuration initialized");
-
-        // Create BlockRetriever
-        let block_retriever = {
-            use casper::rust::engine::block_retriever::BlockRetriever;
-
-            BlockRetriever::new(
-                requested_blocks.clone(),
-                Arc::new(transport.clone()),
-                rp_connections.clone(), // ConnectionsCell is Clone and already wraps Arc
-                rp_conf.clone(),        // BlockRetriever uses RPConf by value
-            )
-        };
-
-        info!("BlockRetriever initialized");
 
         // Create KademliaRPC
         let kademlia_rpc = {
@@ -261,7 +240,6 @@ impl NodeRuntime {
             rp_connections.clone(),
             rp_conf_cell.clone(),
             Arc::new(transport.clone()),
-            block_retriever,
             self.node_conf.clone(),
             event_bus.clone(),
             node_discovery.clone(),
@@ -287,11 +265,7 @@ impl NodeRuntime {
             proposer_queue_pending,
             proposer_queue_max_pending,
             proposer_state_ref_opt,
-            block_processor,
-            pipeline_width,
-            block_processor_state,
-            block_processor_queue_tx,
-            block_processor_queue_rx,
+            ingest_tasks,
             trigger_propose_f,
             block_report_api,
             _block_store, // Kept in scope to ensure LMDB cleanup happens on drop
@@ -329,11 +303,7 @@ impl NodeRuntime {
             proposer_queue_max_pending,
             trigger_propose_f,
             proposer_state_ref_opt,
-            block_processor,
-            pipeline_width,
-            block_processor_state,
-            block_processor_queue_tx,
-            block_processor_queue_rx,
+            ingest_tasks,
             transport,
             rp_conf_cell,
             rp_connections,
@@ -384,11 +354,7 @@ impl NodeRuntime {
         proposer_state_ref_opt: Option<
             Arc<tokio::sync::RwLock<casper::rust::state::instances::ProposerState>>,
         >,
-        block_processor: casper::rust::blocks::block_processor::BlockProcessor<T>,
-        pipeline_width: usize,
-        block_processor_state: Arc<InFlightBlocks>,
-        block_processor_queue_tx: tokio::sync::mpsc::Sender<BlockQueueItem>,
-        block_processor_queue_rx: tokio::sync::mpsc::Receiver<BlockQueueItem>,
+        mut ingest_tasks: JoinSet<()>,
         transport: comm::rust::transport::grpc_transport_client::GrpcTransportClient,
         rp_conf_cell: comm::rust::rp::rp_conf::RPConfCell,
         rp_connections: comm::rust::rp::connect::ConnectionsCell,
@@ -629,43 +595,16 @@ impl NodeRuntime {
             );
         }
 
-        // Block processor instance (Tier 2: Critical)
+        // Block ingest (Tier 2: Critical): its tasks run for the node's
+        // lifetime, so any of them ending is fatal.
         let trigger_propose_for_heartbeat = trigger_propose_f;
 
-        let bpi_block_queue_tx = block_processor_queue_tx.clone();
-
-        spawn_named_task(
-            &mut critical_tasks,
-            "Block Processor Instance",
-            async move {
-                use crate::rust::instances::block_processor_instance::BlockProcessorInstance;
-
-                info!("Starting block processor instance...");
-
-                let instance = BlockProcessorInstance::new(
-                    (block_processor_queue_rx, bpi_block_queue_tx),
-                    Arc::new(block_processor),
-                    block_processor_state,
-                    pipeline_width,
-                );
-
-                // BlockProcessorInstance::create spawns the processing task and returns a result receiver
-                match instance.create() {
-                    Ok(mut result_rx) => {
-                        // Drain results (we're just logging for now)
-                        while let Some(_result) = result_rx.recv().await {
-                            // Results are logged inside block_processor_instance
-                        }
-                        info!("Block processor instance completed");
-                        Ok(())
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "block processor instance failed");
-                        Err(eyre::eyre!("Block processor failed: {}", e))
-                    }
-                }
-            },
-        );
+        spawn_named_task(&mut critical_tasks, "Block Ingest", async move {
+            match ingest_tasks.join_next().await {
+                Some(Err(error)) => Err(eyre::eyre!("block ingest task failed: {error}")),
+                Some(Ok(())) | None => Err(eyre::eyre!("block ingest task stopped")),
+            }
+        });
 
         // Proposer instance (Tier 2: Critical - if configured as validator)
         if let (Some(proposer), Some(proposer_state_ref)) = (proposer_opt, proposer_state_ref_opt) {

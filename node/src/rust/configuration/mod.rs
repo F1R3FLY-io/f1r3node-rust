@@ -226,10 +226,10 @@ pub mod builder {
             }
         }
 
-        // A dropped delivery freezes the receiver's view until the retriever
-        // recovers it, and the recovery that must fit inside the citability
-        // window is the FULL re-request ladder (every backoff interval until
-        // the retry budget exhausts), not just the first anchor interval.
+        // A dropped delivery freezes the receiver's view until block ingest
+        // asks for it again; the recovery that must fit inside the
+        // citability window is the re-request ladder up to its slowest
+        // interval, not just the first one.
         let recovery_span = std::time::Duration::from_millis(
             casper::rust::blocks::ingest::fetch_scheduler::total_unresolved_rerequest_span_ms(),
         );
@@ -243,7 +243,7 @@ pub mod builder {
                 warnings.push(format!(
                     "the citability window (max-parent-depth {} x heartbeat.check-interval \
                     {:?} = {:?}) is smaller than the full dependency-recovery re-request \
-                    span ({:?} across the whole retry budget): a lost block delivery \
+                    span ({:?} until re-requests reach their slowest interval): a lost block delivery \
                     cannot finish recovering before its blocks fall below the parent-depth \
                     horizon, converting a dropped packet into a finality stall. Raise \
                     max-parent-depth or slow the cadence.",

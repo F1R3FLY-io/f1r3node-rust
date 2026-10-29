@@ -5,8 +5,7 @@ use block_storage::rust::pending_blocks::PendingBlockLimits;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
-use casper::rust::engine::block_retriever::AdmitHashReason;
-use casper::rust::engine::peer_scoring::STRIKE_THRESHOLD;
+use casper::rust::blocks::ingest::peer_reputation::STRIKE_THRESHOLD;
 use casper::rust::errors::CasperError;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};
@@ -323,11 +322,7 @@ async fn multi_parent_casper_should_drop_unbonded_sender_at_admission() {
     );
     assert!(!node.contains(&forged.block_hash));
     assert!(node.block_store.get(&forged.block_hash).unwrap().is_none());
-    assert!(!node
-        .requested_blocks
-        .lock()
-        .unwrap()
-        .contains_key(&unknown_hash));
+    assert!(!node.ingest_view.is_awaited(&unknown_hash));
 }
 
 #[tokio::test]
@@ -350,14 +345,11 @@ async fn multi_parent_casper_should_ignore_a_peer_that_pushes_unauthorized_block
     let forger = ValidatorIdentity::new(&sk);
 
     for i in 0..STRIKE_THRESHOLD {
-        assert!(!node.block_retriever.should_ignore_peer(&attacker));
+        assert!(!node.ingest_view.is_ignored(&attacker));
         block.header.timestamp += 1;
         let forged = forger.sign_block(&block);
-        node.block_retriever
-            .note_block_source(&forged.block_hash, &attacker)
-            .unwrap();
 
-        let status = node.process_block(forged).await.unwrap();
+        let status = node.receive_block(forged, attacker.clone()).await.unwrap();
 
         assert_eq!(
             status,
@@ -366,8 +358,8 @@ async fn multi_parent_casper_should_ignore_a_peer_that_pushes_unauthorized_block
         );
     }
 
-    assert!(node.block_retriever.should_ignore_peer(&attacker));
-    assert!(!node.block_retriever.should_ignore_peer(&node.local));
+    assert!(node.ingest_view.is_ignored(&attacker));
+    assert!(!node.ingest_view.is_ignored(&node.local));
 }
 
 #[tokio::test]
@@ -396,11 +388,8 @@ async fn multi_parent_casper_should_not_ignore_a_peer_that_relays_blocks_above_t
         let mut ahead = template.clone();
         ahead.header.parents_hash_list = vec![Bytes::from(vec![i; 32])];
         let ahead = resign_block(&ahead, &key);
-        node.block_retriever
-            .note_block_source(&ahead.block_hash, &relay)
-            .unwrap();
 
-        let status = node.process_block(ahead).await.unwrap();
+        let status = node.receive_block(ahead, relay.clone()).await.unwrap();
 
         assert_eq!(
             status,
@@ -410,7 +399,7 @@ async fn multi_parent_casper_should_not_ignore_a_peer_that_relays_blocks_above_t
     }
 
     assert_eq!(node.block_store.pending_blocks().len(), 1);
-    assert!(!node.block_retriever.should_ignore_peer(&relay));
+    assert!(!node.ingest_view.is_ignored(&relay));
 }
 
 /// A parentless block that is not the genesis has no bonds to be judged
@@ -535,13 +524,9 @@ async fn multi_parent_casper_should_validate_a_child_that_arrived_before_its_par
     assert_eq!(status, Either::Left(BlockError::MissingBlocks));
     assert!(nodes[1].block_store.is_pending(&child.block_hash));
 
+    // The parent's insert releases the waiting child, which is validated
+    // before the parent's processing returns.
     let status = nodes[1].process_block(parent.clone()).await.unwrap();
-    assert_eq!(status, Either::Right(Valid));
-
-    let ready = nodes[1].casper.get_dependency_free_from_buffer().unwrap();
-    assert!(ready.iter().any(|b| b.block_hash == child.block_hash));
-
-    let status = nodes[1].process_block(child.clone()).await.unwrap();
     assert_eq!(status, Either::Right(Valid));
     assert!(!nodes[1].block_store.is_pending(&child.block_hash));
     assert!(nodes[1].contains(&child.block_hash));
@@ -567,28 +552,30 @@ async fn multi_parent_casper_should_recover_a_pending_chain_longer_than_the_area
         max_per_sender: 2_048,
     });
 
+    // The tip arrives unsolicited; each ancestor arrives requested, as the
+    // block above it cites it.
     for block in chain[1..].iter().rev() {
         let status = nodes[1].process_block(block.clone()).await.unwrap();
         assert_eq!(status, Either::Left(BlockError::MissingBlocks));
     }
+    // The area keeps its top share for requested blocks: once the requested
+    // chain[2] filled it, the unsolicited tip, which nothing waits on, was
+    // discarded, so the requested chain[1] was admitted.
+    let tip = &chain[3];
+    assert!(!nodes[1].block_store.is_pending(&tip.block_hash));
+    assert!(nodes[1].block_store.is_pending(&chain[2].block_hash));
+    assert!(nodes[1].block_store.is_pending(&chain[1].block_hash));
     assert_eq!(nodes[1].block_store.pending_blocks().len(), 2);
-    let refused = &chain[1];
-    assert!(!nodes[1].block_store.is_pending(&refused.block_hash));
 
     let status = nodes[1].process_block(chain[0].clone()).await.unwrap();
     assert_eq!(status, Either::Right(Valid));
-    let status = nodes[1].process_block(refused.clone()).await.unwrap();
+    assert!(
+        nodes[1].contains(&chain[1].block_hash) && nodes[1].contains(&chain[2].block_hash),
+        "the waiting requested chain is released"
+    );
+
+    let status = nodes[1].process_block(tip.clone()).await.unwrap();
     assert_eq!(status, Either::Right(Valid));
-    loop {
-        let ready = nodes[1].casper.get_dependency_free_from_buffer().unwrap();
-        if ready.is_empty() {
-            break;
-        }
-        for block in ready {
-            let status = nodes[1].process_block(block).await.unwrap();
-            assert_eq!(status, Either::Right(Valid));
-        }
-    }
     for block in &chain {
         assert!(nodes[1].contains(&block.block_hash));
     }
@@ -644,12 +631,8 @@ async fn multi_parent_casper_should_keep_a_refused_dependency_requested() {
         max_per_sender: 1,
     });
     nodes[1]
-        .block_retriever
-        .admit_hash(
-            chain[2].block_hash.clone(),
-            None,
-            AdmitHashReason::MissingDependencyRequested,
-        )
+        .casper
+        .request_block_from_peers(chain[2].block_hash.clone())
         .await
         .unwrap();
     nodes[1].process_block(chain[2].clone()).await.unwrap();
@@ -658,26 +641,8 @@ async fn multi_parent_casper_should_keep_a_refused_dependency_requested() {
 
     assert_eq!(status, Either::Left(BlockError::MissingBlocks));
     assert!(!nodes[1].block_store.is_pending(&chain[1].block_hash));
-    assert!(nodes[1].casper.buffer_contains(&chain[2].block_hash));
-    let requested = nodes[1].requested_blocks.lock().unwrap();
-    assert!(!requested.get(&chain[1].block_hash).unwrap().received);
-}
-
-#[tokio::test]
-async fn multi_parent_casper_should_discard_a_pending_block_that_it_purges() {
-    let ctx = TestContext::new().await;
-    let (nodes, chain) = pending_chain(&ctx, 2).await;
-    let block = &chain[1];
-    nodes[1].block_store.put_pending(block, false).unwrap();
-
-    nodes[1]
-        .block_processor
-        .purge_from_buffer_and_ack(block)
-        .await
-        .unwrap();
-
-    assert!(!nodes[1].block_store.is_pending(&block.block_hash));
-    assert!(nodes[1].block_store.pending_blocks().is_empty());
+    assert!(nodes[1].ingest_view.is_held(&chain[2].block_hash));
+    assert!(nodes[1].ingest_view.is_awaited(&chain[1].block_hash));
 }
 
 #[tokio::test]
@@ -769,10 +734,7 @@ async fn multi_parent_casper_should_add_a_valid_block_from_peer() {
         .get(&signed_block_1_prime.block_hash)
         .unwrap();
 
-    let no_more_requested_blocks = {
-        let requested_blocks = nodes[1].requested_blocks.lock().unwrap();
-        !requested_blocks.values().any(|state| !state.received)
-    };
+    let no_more_requested_blocks = nodes[1].block_needs().await == 0;
 
     assert_eq!(
         maybe_hash,
@@ -1135,15 +1097,15 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         .unwrap();
     let expected_fault = 1.0f32 / (1.0f32 + 3.0f32 + 5.0f32 + 7.0f32);
 
-    eprintln!(
+    tracing::info!(
         "PROBE5c n1.contains(b1)={} n1.contains(b1p)={} n1.contains(b4)={} | fault={} expected={} | n0.contains(b1)={} n0.contains(b1p)={} | n1.store(b2)={} n1.store(b4)={} n2.store(b3)={} n2.store(b1p)={}",
         nodes[1].contains(&signed_block1.block_hash),
         nodes[1].contains(&signed_block1_prime.block_hash),
         nodes[1].contains(&signed_block4.block_hash),
         normalized_fault,
         expected_fault,
-        nodes[0].casper.contains(&signed_block1.block_hash),
-        nodes[0].casper.contains(&signed_block1_prime.block_hash),
+        nodes[0].contains(&signed_block1.block_hash),
+        nodes[0].contains(&signed_block1_prime.block_hash),
         nodes[1].block_store.get(&signed_block2.block_hash).unwrap().is_some(),
         nodes[1].block_store.get(&signed_block4.block_hash).unwrap().is_some(),
         nodes[2].block_store.get(&signed_block3.block_hash).unwrap().is_some(),

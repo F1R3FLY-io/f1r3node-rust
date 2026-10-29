@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
@@ -18,13 +17,11 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage, CasperMessage};
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use tokio::sync::mpsc;
 use tokio::time::sleep;
 
-use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
+use crate::rust::blocks::ingest::block_ingest::IngestHandle;
 use crate::rust::casper::{hash_set_casper, CasperShardConf, MultiParentCasper};
 use crate::rust::engine::approve_block_protocol::ApproveBlockProtocolImpl;
-use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
     insert_into_block_and_dag_store, log_no_approved_block_available,
     record_direct_to_running_init_metrics, send_no_approved_block_available, transition_to_running,
@@ -68,18 +65,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
         connections_cell: ConnectionsCell,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_publisher: &F1r3flyEvents,
-        block_retriever: BlockRetriever<T>,
         engine_cell: Arc<EngineCell>,
         mut block_store: KeyValueBlockStore,
         mut block_dag_storage: BlockDagKeyValueStorage,
         deploy_storage: KeyValueDeployStorage,
         rejected_deploy_buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-        casper_buffer_storage: CasperBufferKeyValueStorage,
         runtime_manager: Arc<RuntimeManager>,
         estimator: Estimator,
-        // Explicit parameters from Scala (in same order as Scala signature)
-        block_processing_queue_tx: mpsc::Sender<BlockQueueItem>,
-        blocks_in_processing: Arc<InFlightBlocks>,
+        ingest: IngestHandle,
         casper_shard_conf: CasperShardConf,
         validator_id: Option<ValidatorIdentity>,
         disable_state_exporter: bool,
@@ -97,17 +90,14 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     connections_cell,
                     last_approved_block,
                     event_publisher,
-                    block_retriever,
                     engine_cell,
                     block_store,
                     block_dag_storage,
                     deploy_storage,
                     rejected_deploy_buffer,
-                    casper_buffer_storage,
                     runtime_manager,
                     estimator,
-                    block_processing_queue_tx,
-                    blocks_in_processing,
+                    ingest,
                     casper_shard_conf,
                     validator_id,
                     disable_state_exporter,
@@ -135,11 +125,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                     &block_dag_storage,
                     &deploy_storage,
                     &rejected_deploy_buffer,
-                    &casper_buffer_storage,
                     validator_id.clone(),
                     &casper_shard_conf,
                     ab,
-                    &block_retriever,
+                    &ingest,
                     &heartbeat_signal_ref,
                 )
                 .await?;
@@ -154,15 +143,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
                 record_direct_to_running_init_metrics();
 
                 transition_to_running(
-                    block_processing_queue_tx.clone(),
-                    blocks_in_processing.clone(),
+                    ingest.clone(),
                     Arc::new(casper),
                     approved_block.clone(),
                     the_init,
                     disable_state_exporter,
                     transport_layer.clone(),
                     rp_conf_ask.clone(),
-                    block_retriever.clone(),
                     // Phase 7b-1: ceremony-master path is genesis-rooted.
                     // Snapshot chunk fetch has nothing to anchor against
                     // (no prior snapshot exists), so passing `None` is
@@ -202,18 +189,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
         block_dag_storage: &BlockDagKeyValueStorage,
         deploy_storage: &KeyValueDeployStorage,
         rejected_deploy_buffer: &Arc<Mutex<KeyValueRejectedDeployBuffer>>,
-        casper_buffer_storage: &CasperBufferKeyValueStorage,
         validator_id: Option<ValidatorIdentity>,
         casper_shard_conf: &CasperShardConf,
         ab: BlockMessage,
-        block_retriever: &BlockRetriever<T>,
+        ingest: &IngestHandle,
         heartbeat_signal_ref: &crate::rust::heartbeat_signal::HeartbeatSignalRef,
-    ) -> Result<crate::rust::engine::multi_parent_casper::MultiParentCasperImpl<T>, CasperError>
-    {
+    ) -> Result<crate::rust::engine::multi_parent_casper::MultiParentCasperImpl, CasperError> {
         let runtime_manager_for_casper = runtime_manager.clone();
 
         hash_set_casper(
-            block_retriever.clone(),
+            ingest.clone(),
             event_publisher.clone(),
             runtime_manager_for_casper,
             estimator.clone(),
@@ -221,7 +206,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
             block_dag_storage.clone(),
             deploy_storage.clone(),
             rejected_deploy_buffer.clone(),
-            casper_buffer_storage.clone(),
             validator_id,
             casper_shard_conf.clone(),
             ab,

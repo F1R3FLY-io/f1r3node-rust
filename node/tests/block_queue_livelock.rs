@@ -2,12 +2,10 @@
 //! on ancestors it does not have.
 //!
 //! Each test drives a node built from the production receipt path
-//! (`Running`), processing queue and scheduler (`BlockProcessorInstance`),
-//! `BlockProcessor`, block store, pending area, casper buffer, DAG store,
-//! block retriever and casper maintenance loop. Only block execution is
+//! (`Running`) and block ingest as the node spawns it: intake, the owner of
+//! what is held and needed, validation workers and the request sender, over
+//! the block store, pending area and DAG store. Only block execution is
 //! stubbed: `StubCasper::validate` accepts every block and can be held shut.
-//! Its membership, buffer and dependency answers reproduce
-//! `MultiParentCasperImpl`'s over the node's own stores.
 //!
 //! Peers are simulated by `PeerTransport`: it records what the node sends and
 //! a network task answers block requests from the blocks each peer holds.
@@ -22,24 +20,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, InsertMode, KeyValueDagRepresentation,
 };
-use block_storage::rust::dag::buffer_dag_transition::{
-    atomic_insert_then_buffer, BufferTransition,
-};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
-};
+use casper::rust::blocks::ingest::block_ingest::{self, IngestHandle, IngestSetup};
+use casper::rust::blocks::ingest::fetch_scheduler::SEED_PEERS;
 use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
-use casper::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
-use casper::rust::engine::casper_launch::send_buffer_pendants_to_casper;
 use casper::rust::engine::engine::Engine;
 use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
@@ -47,7 +38,6 @@ use casper::rust::genesis::genesis::Genesis;
 use casper::rust::protocol::{
     extract_packet_from_protocol, to_casper_message_proto, CasperMessageProto, PacketParseResult,
 };
-use casper::rust::util::proto_util;
 use casper::rust::util::rholang::runtime_manager::{
     ExploratoryDeployConfig, ReplayLock, RuntimeManager,
 };
@@ -61,14 +51,13 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::routing::Protocol;
-use models::rust::block_hash::{BlockHash, BlockHashSerde};
+use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, ApprovedBlockCandidate, BlockMessage, Bond, CasperMessage, DeployData, HasBlock,
     Justification,
 };
 use models::rust::validator::Validator;
-use node::rust::instances::block_processor_instance::BlockProcessorInstance;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rspace_plus_plus::rspace::history::Either;
@@ -76,9 +65,8 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use serial_test::serial;
-use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::Level;
 use tracing_subscriber::filter::{EnvFilter, FilterExt, Targets};
 use tracing_subscriber::layer::SubscriberExt;
@@ -87,15 +75,7 @@ use tracing_subscriber::Layer;
 const SHARD: &str = "root";
 const VERSION: i64 = 1;
 /// The width the node derives on a four-core host.
-const PIPELINE_WIDTH: usize = 3;
-/// The production capacity of the channel feeding the processor.
-const QUEUE_CHANNEL_CAPACITY: usize = 2_048;
-/// `casper-loop-interval` and `requested-blocks-timeout` in `defaults.conf`.
-const CASPER_LOOP_INTERVAL: Duration = Duration::from_millis(750);
-const REQUESTED_BLOCKS_TIMEOUT: Duration = Duration::from_secs(240);
-/// The retriever asks this many connected peers, in connection order, for a
-/// missing dependency before it falls back to broadcasting.
-const SEED_PEERS: usize = 4;
+const VALIDATION_WIDTH: usize = 3;
 const REPORT_TARGET: &str = "block_queue_livelock";
 
 /// Logs at `RUST_LOG` when it is set, else warnings plus this test's reports.
@@ -238,11 +218,14 @@ fn peer(index: usize) -> PeerNode {
     )
 }
 
+/// Whether peer `index` holds a block.
+type Holds = dyn Fn(usize, &BlockHash) -> bool + Send + Sync;
+
 /// Which peer holds which block, and the tips peers report.
 #[derive(Clone)]
 struct PeerBehaviour {
     blocks: Arc<HashMap<BlockHash, BlockMessage>>,
-    holds: Arc<dyn Fn(usize, &BlockHash) -> bool + Send + Sync>,
+    holds: Arc<Holds>,
     tips: Arc<Vec<BlockHash>>,
 }
 
@@ -432,15 +415,12 @@ struct StubCasper {
     approved: BlockMessage,
     snapshot: CasperSnapshot,
     dag: BlockDagKeyValueStorage,
-    buffer: CasperBufferKeyValueStorage,
     blocks: KeyValueBlockStore,
-    retriever: BlockRetriever<PeerTransport>,
+    ingest: IngestHandle,
     runtime_manager: Arc<RuntimeManager>,
     validation: Gate,
     validation_started: Mutex<HashSet<BlockHash>>,
 }
-
-const RELEASE_FULL_SCAN_EVERY: u64 = 32;
 
 impl StubCasper {
     fn validation_started(&self, hash: &BlockHash) -> bool {
@@ -448,17 +428,6 @@ impl StubCasper {
             .lock()
             .expect("validation_started lock")
             .contains(hash)
-    }
-
-    fn equivocation_hashes(&self) -> Result<HashSet<BlockHash>, CasperError> {
-        Ok(self.dag.access_equivocations_tracker(|tracker| {
-            Ok(tracker
-                .data()?
-                .iter()
-                .flat_map(|record| record.equivocation_detected_block_hashes.iter())
-                .cloned()
-                .collect())
-        })?)
     }
 }
 
@@ -469,36 +438,10 @@ impl Casper for StubCasper {
     }
 
     async fn request_block_from_peers(&self, hash: BlockHash) -> Result<(), CasperError> {
-        self.retriever
-            .admit_hash(hash, None, AdmitHashReason::MissingDependencyRequested)
-            .await
-            .map(|_| ())
+        self.ingest.need(hash).await
     }
 
-    fn contains(&self, hash: &BlockHash) -> bool {
-        self.buffer_contains(hash) || self.dag_contains(hash)
-    }
-
-    fn dag_contains(&self, hash: &BlockHash) -> bool {
-        self.dag
-            .get_representation()
-            .expect("the DAG holds genesis from the node's start")
-            .contains(hash)
-    }
-
-    fn buffer_contains(&self, hash: &BlockHash) -> bool {
-        self.buffer.contains(&BlockHashSerde(hash.clone()))
-    }
-
-    fn buffer_waits_on_dependency(&self, hash: &BlockHash) -> bool {
-        self.buffer
-            .get_parents(&BlockHashSerde(hash.clone()))
-            .is_some_and(|parents| {
-                parents
-                    .iter()
-                    .any(|parent| !self.dag_contains(&BlockHash::from(parent.0.clone())))
-            })
-    }
+    fn dag_contains(&self, hash: &BlockHash) -> bool { self.dag.contains(hash) }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.approved) }
 
@@ -546,13 +489,7 @@ impl Casper for StubCasper {
         block: &BlockMessage,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         self.blocks.persist_block(block)?;
-        Ok(atomic_insert_then_buffer(
-            &self.dag,
-            block,
-            InsertMode::Normal,
-            &self.buffer,
-            BufferTransition::RemoveFromBuffer(BlockHashSerde(block.block_hash.clone())),
-        )?)
+        Ok(self.dag.insert(block, InsertMode::Normal)?)
     }
 
     fn handle_invalid_block(
@@ -563,100 +500,10 @@ impl Casper for StubCasper {
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         unreachable!("every block in these tests is valid")
     }
-
-    fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        let equivocations = self.equivocation_hashes()?;
-        let invalid: HashSet<BlockHash> = self
-            .dag
-            .get_representation()?
-            .invalid_blocks_map()?
-            .into_keys()
-            .collect();
-
-        let released = self.buffer.take_released();
-        let full_scan = self
-            .buffer
-            .count_release_scan()
-            .is_multiple_of(RELEASE_FULL_SCAN_EVERY);
-        let mut candidates: HashSet<BlockHash> = HashSet::new();
-        if full_scan {
-            for pendant in self.buffer.get_pendants() {
-                candidates.insert(BlockHash::from(pendant.0.clone()));
-            }
-            for child in self
-                .buffer
-                .to_doubly_linked_dag()
-                .child_to_parent_adjacency_list
-                .keys()
-            {
-                candidates.insert(BlockHash::from(child.0.clone()));
-            }
-        } else {
-            for hash in released {
-                if self.buffer.is_pendant(&hash) || self.buffer.contains(&hash) {
-                    candidates.insert(BlockHash::from(hash.0.clone()));
-                }
-            }
-        }
-
-        let mut ready = Vec::new();
-        for hash in candidates {
-            let Some(block) = self.blocks.get(&hash)? else {
-                continue;
-            };
-            let dependencies_ready =
-                proto_util::dependencies_hashes_of(&block)
-                    .iter()
-                    .all(|dependency| {
-                        self.dag_contains(dependency)
-                            || equivocations.contains(dependency)
-                            || invalid.contains(dependency)
-                    });
-            if dependencies_ready {
-                ready.push(block);
-            }
-        }
-        Ok(ready)
-    }
-
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        let mut blocks = Vec::new();
-        for hash in self
-            .buffer
-            .to_doubly_linked_dag()
-            .child_to_parent_adjacency_list
-            .keys()
-        {
-            if let Some(block) = self.blocks.get(&BlockHash::from(hash.clone()))? {
-                blocks.push(block);
-            }
-        }
-        Ok(blocks)
-    }
 }
 
 #[async_trait]
 impl MultiParentCasper for StubCasper {
-    async fn fetch_dependencies(&self) -> Result<(), CasperError> {
-        let mut unseen = Vec::new();
-        for pendant in self.buffer.get_pendants() {
-            let hash = BlockHash::from(pendant.0.clone());
-            if self.blocks.get(&hash)?.is_none() {
-                unseen.push(hash);
-            }
-        }
-        for dependency in unseen {
-            self.retriever
-                .admit_hash(
-                    dependency,
-                    None,
-                    AdmitHashReason::MissingDependencyRequested,
-                )
-                .await?;
-        }
-        Ok(())
-    }
-
     fn normalized_initial_fault(
         &self,
         _weights: HashMap<Validator, u64>,
@@ -720,31 +567,27 @@ struct NodeSetup {
 struct Node {
     engine: Arc<Running<PeerTransport>>,
     casper: Arc<StubCasper>,
-    in_flight: Arc<InFlightBlocks>,
+    ingest: IngestHandle,
     peers: Vec<PeerNode>,
     sent: Arc<SentRequests>,
     tasks: Vec<JoinHandle<()>>,
+    ingest_tasks: JoinSet<()>,
 }
 
 impl Node {
     /// Start the node over `stores` and run its startup: the fork-choice tip
-    /// request and the re-enqueue of stored buffer pendants.
+    /// request.
     async fn start(stores: &mut Stores, setup: NodeSetup) -> Self {
         let manager = &mut stores.manager;
         let blocks = KeyValueBlockStore::create_from_kvm(manager).await.unwrap();
         let dag = BlockDagKeyValueStorage::new(manager).await.unwrap();
-        let buffer = CasperBufferKeyValueStorage::new_from_kv_store(KeyValueTypedStoreImpl::new(
-            manager.store("parents-map".to_string()).await.unwrap(),
-        ))
-        .await
-        .unwrap();
         let (runtime_manager, _) = RuntimeManager::create_with_history_config(
             manager.r_space_stores().await.unwrap(),
             RuntimeManager::mergeable_store(manager).await.unwrap(),
             Genesis::default_mergeable_tags_arc(),
             ExternalServices::noop(),
             ExploratoryDeployConfig::for_tests(),
-            Arc::new(ReplayLock::with_permits(PIPELINE_WIDTH + 2)),
+            Arc::new(ReplayLock::with_permits(VALIDATION_WIDTH + 2)),
         );
 
         let peers: Vec<PeerNode> = (0..setup.peers).map(peer).collect();
@@ -761,82 +604,53 @@ impl Node {
         });
         let sent = transport.sent.clone();
         let conf = create_rp_conf_ask(peer(99), None, None);
-        let retriever = BlockRetriever::new(
-            Arc::new(Mutex::new(HashMap::new())),
-            transport.clone(),
-            connections.clone(),
-            conf.clone(),
-        );
+
+        let (ingest, ingest_tasks) = block_ingest::spawn(IngestSetup {
+            block_store: blocks.clone(),
+            dag: dag.clone(),
+            transport: transport.clone(),
+            connections: connections.clone(),
+            conf: conf.clone(),
+            validation_width: VALIDATION_WIDTH,
+            state_root_fetch_tx: None,
+            state_root_results: None,
+        })
+        .expect("block ingest starts");
 
         let casper = Arc::new(StubCasper {
             approved: stores.genesis.clone(),
             snapshot: TestCasperWithSnapshot::create_empty_snapshot(),
-            dag: dag.clone(),
-            buffer: buffer.clone(),
-            blocks: blocks.clone(),
-            retriever: retriever.clone(),
+            dag,
+            blocks,
+            ingest: ingest.clone(),
             runtime_manager: Arc::new(runtime_manager),
             validation: setup.validation,
             validation_started: Mutex::new(HashSet::new()),
         });
-        let processor = Arc::new(BlockProcessor::new(BlockProcessorDependencies::new(
-            blocks.clone(),
-            buffer.clone(),
-            dag,
-            retriever.clone(),
-            transport.clone(),
-            connections.clone(),
-            conf.clone(),
-            None,
-        )));
-
-        let in_flight = Arc::new(InFlightBlocks::new());
-        let (queue_tx, queue_rx) = mpsc::channel::<BlockQueueItem>(QUEUE_CHANNEL_CAPACITY);
-        let mut results = BlockProcessorInstance::new(
-            (queue_rx, queue_tx.clone()),
-            processor,
-            in_flight.clone(),
-            PIPELINE_WIDTH,
-        )
-        .create()
-        .unwrap();
-        let mut tasks = vec![tokio::spawn(async move {
-            while results.recv().await.is_some() {}
-        })];
+        ingest
+            .attach_casper(casper.clone())
+            .await
+            .expect("block ingest attaches to casper");
 
         let the_init = {
             let transport = transport.clone();
             let connections = connections.clone();
             let conf = conf.clone();
-            let casper = casper.clone();
-            let retriever = retriever.clone();
-            let in_flight = in_flight.clone();
-            let queue_tx = queue_tx.clone();
             Arc::new(move || {
                 let transport = transport.clone();
                 let connections = connections.clone();
                 let conf = conf.clone();
-                let casper = casper.clone();
-                let retriever = retriever.clone();
-                let in_flight = in_flight.clone();
-                let queue_tx = queue_tx.clone();
                 Box::pin(async move {
                     transport
                         .send_fork_choice_tip_request(&connections, &conf)
-                        .await?;
-                    let buffer = casper.buffer.clone();
-                    let blocks = casper.blocks.clone();
-                    send_buffer_pendants_to_casper(
-                        casper, &buffer, &blocks, &retriever, &in_flight, &queue_tx,
-                    )
-                    .await
+                        .await
+                        .map_err(CasperError::from)
                 }) as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
             })
         };
 
         let engine = Arc::new(Running::new(
-            queue_tx,
-            in_flight.clone(),
+            ingest.clone(),
             casper.clone(),
             ApprovedBlock {
                 candidate: ApprovedBlockCandidate {
@@ -850,50 +664,34 @@ impl Node {
             false,
             transport,
             conf,
-            retriever.clone(),
             None,
         ));
 
-        tasks.push(tokio::spawn(answer_requests(
+        let tasks = vec![tokio::spawn(answer_requests(
             outbound_rx,
             engine.clone(),
             peers.clone(),
             setup.behaviour,
-        )));
-        {
-            let casper = casper.clone();
-            tasks.push(tokio::spawn(async move {
-                loop {
-                    if let Err(err) = casper.fetch_dependencies().await {
-                        tracing::warn!(target: REPORT_TARGET, "fetch_dependencies failed: {err}");
-                    }
-                    if let Err(err) = retriever.request_all(REQUESTED_BLOCKS_TIMEOUT).await {
-                        tracing::warn!(target: REPORT_TARGET, "request_all failed: {err}");
-                    }
-                    tokio::time::sleep(CASPER_LOOP_INTERVAL).await;
-                }
-            }));
-        }
+        ))];
 
         engine.init().await.expect("node startup");
         Self {
             engine,
             casper,
-            in_flight,
+            ingest,
             peers,
             sent,
             tasks,
+            ingest_tasks,
         }
     }
 
-    /// Stop the node once nothing is queued or processing.
-    async fn stop(self) {
-        wait_until(Duration::from_secs(30), || self.in_flight.len() == 0)
-            .await
-            .expect("the node goes idle before it stops");
+    /// Stop the node: its peers and block ingest's tasks end.
+    async fn stop(mut self) {
         for task in &self.tasks {
             task.abort();
         }
+        self.ingest_tasks.shutdown().await;
     }
 
     async fn gossip(&self, from: usize, b: &BlockMessage) {
@@ -904,6 +702,19 @@ impl Node {
             )
             .await
             .unwrap();
+    }
+
+    /// Gossip `b` and wait until block ingest has taken it in.
+    async fn gossip_and_settle(&self, from: usize, b: &BlockMessage) {
+        self.gossip(from, b).await;
+        wait_until(Duration::from_secs(30), || self.knows(b))
+            .await
+            .expect("block ingest takes in a gossiped block");
+    }
+
+    /// Block ingest holds `b`, or it is in the DAG.
+    fn knows(&self, b: &BlockMessage) -> bool {
+        self.ingest.view().is_held(&b.block_hash) || self.in_dag(b)
     }
 
     fn in_dag(&self, b: &BlockMessage) -> bool { self.casper.dag_contains(&b.block_hash) }
@@ -945,7 +756,7 @@ async fn a_ready_block_is_validated_while_blocks_missing_parents_wait_on_slow_re
     })
     .await;
 
-    let missing_parent_count = 2 * PIPELINE_WIDTH;
+    let missing_parent_count = 2 * VALIDATION_WIDTH;
     for i in 0..missing_parent_count {
         let unheld_parent = validators.sign(1 + i % 3, &[&genesis]);
         let waiting = validators.sign(i % 4, &[&unheld_parent]);
@@ -962,10 +773,8 @@ async fn a_ready_block_is_validated_while_blocks_missing_parents_wait_on_slow_re
     assert!(
         outcome.is_ok(),
         "a block whose parents are all validated did not start validation within {:?} while \
-         {missing_parent_count} blocks missing a parent waited on requests for their parents \
-         ({} blocks queued or processing)",
+         {missing_parent_count} blocks missing a parent waited on requests for their parents",
         outcome.unwrap_err(),
-        node.in_flight.len(),
     );
 }
 
@@ -1021,7 +830,7 @@ async fn a_restarted_node_validates_a_ready_block_while_stored_blocks_wait_on_lo
     // Each waiting block is stored (its main parent, genesis, is validated)
     // and cites a second parent the node can only hold in the pending area,
     // because that parent's own main parent is withheld.
-    let waiting_count = 2 * PIPELINE_WIDTH + 2;
+    let waiting_count = 2 * VALIDATION_WIDTH + 2;
     let mut withheld = Vec::new();
     let mut pending = Vec::new();
     let mut waiting = Vec::new();
@@ -1042,8 +851,8 @@ async fn a_restarted_node_validates_a_ready_block_while_stored_blocks_wait_on_lo
     })
     .await;
     for (p, s) in pending.iter().zip(&waiting) {
-        before_restart.gossip(0, p).await;
-        before_restart.gossip(0, s).await;
+        before_restart.gossip_and_settle(0, p).await;
+        before_restart.gossip_and_settle(0, s).await;
     }
     before_restart.stop().await;
 
@@ -1069,9 +878,8 @@ async fn a_restarted_node_validates_a_ready_block_while_stored_blocks_wait_on_lo
         ready_outcome.is_ok(),
         "after a restart, a block whose parents are all validated did not start validation \
          within {:?} while {waiting_count} stored blocks waited on parents lost with the \
-         pending area ({} blocks queued or processing)",
+         pending area",
         ready_outcome.unwrap_err(),
-        node.in_flight.len(),
     );
 
     let converged = wait_until(Duration::from_secs(60), || {
@@ -1089,10 +897,10 @@ async fn a_restarted_node_validates_a_ready_block_while_stored_blocks_wait_on_lo
 
 // ── R4 (2d): a long-withheld ancestor must not lose its waiting chain ──────
 
-/// The casper buffer prunes a root waiting this long, with its subtree.
-const BUFFER_STALE_ROOT_AGE: Duration = Duration::from_secs(180);
-/// How long the node gets once the ancestor is served: longer than the
-/// retriever's cycle of a full retry budget plus its quarantine.
+/// Long past the time re-requests take to reach their slowest interval.
+const WITHHELD_FOR: Duration = Duration::from_secs(190);
+/// How long the node gets once the ancestor is served: many times the
+/// slowest re-request interval.
 const AFTER_SERVED: Duration = Duration::from_secs(90);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1107,7 +915,7 @@ async fn a_chain_waiting_on_a_long_withheld_ancestor_is_validated_once_it_is_ser
     let child = validators.sign(0, &[&ancestor]);
     let grandchild = validators.sign(2, &[&child]);
 
-    let withheld_for = BUFFER_STALE_ROOT_AGE + Duration::from_secs(10);
+    let withheld_for = WITHHELD_FOR;
     let served_from = Instant::now() + withheld_for;
     let ancestor_hash = ancestor.block_hash.clone();
     let node = Node::start(&mut stores, NodeSetup {
@@ -1171,12 +979,10 @@ async fn missing_parents_held_beyond_the_seed_peers(
     })
     .await;
 
-    // Delivery is paced below the in-flight cap so no block is dropped there.
+    // Each waiting block is taken in before the next arrives, so no
+    // unsolicited lane overflows: nothing would ask for a dropped tip again.
     for (i, w) in waiting.iter().enumerate() {
-        wait_until(Duration::from_secs(60), || node.in_flight.len() < 256)
-            .await
-            .expect("the node drains its queue");
-        node.gossip(SEED_PEERS + i % 6, w).await;
+        node.gossip_and_settle(SEED_PEERS + i % 6, w).await;
     }
 
     let outcome = wait_until(Duration::from_secs(90), || {

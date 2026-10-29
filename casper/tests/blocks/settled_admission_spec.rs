@@ -13,19 +13,17 @@
 //   (shard1 joiner2, own-history #4 at anchor #4): a straggler seq-below the
 //   sender's latest message is admitted, and the latest message stays put.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, InsertMode, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::blocks::block_processor::{new_block_processor, BlockProcessor};
+use casper::rust::blocks::ingest::ingest_state::WorkOutcome;
+use casper::rust::blocks::ingest::validation_worker::Validation;
 use casper::rust::casper::{Casper, CasperSnapshot, DeployError};
-use casper::rust::engine::block_retriever::BlockRetriever;
 use casper::rust::errors::CasperError;
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
@@ -37,8 +35,6 @@ use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
 use crate::engine::setup;
 use crate::helper::block_dag_storage_fixture::with_storage;
@@ -54,11 +50,7 @@ impl Casper for AnchorCasper {
         unimplemented!("not exercised by settled-admission tests")
     }
 
-    fn contains(&self, _hash: &BlockHash) -> bool { false }
-
     fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
-
-    fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.anchor) }
 
@@ -111,16 +103,10 @@ impl Casper for AnchorCasper {
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         unimplemented!("not exercised by settled-admission tests")
     }
-
-    fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        Ok(Vec::new())
-    }
-
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
 }
 
 struct Fixture {
-    processor: BlockProcessor<TransportLayerStub>,
+    validation: Validation<TransportLayerStub>,
     block_store: KeyValueBlockStore,
     dag_reader: BlockDagKeyValueStorage,
     casper: Arc<dyn Casper + Send + Sync + 'static>,
@@ -128,7 +114,6 @@ struct Fixture {
     live_head: BlockMessage,
     genesis: BlockMessage,
     bonds: Vec<Bond>,
-    citer_sender: Validator,
 }
 
 fn lean_block(
@@ -164,44 +149,18 @@ impl Fixture {
         };
         let rp_conf = create_rp_conf_ask(local_peer.clone(), None, None);
         let transport = Arc::new(TransportLayerStub::new());
-        let retriever_connections = ConnectionsCell {
-            peers: Arc::new(Mutex::new(Connections::from_vec(vec![local_peer.clone()]))),
-        };
-        let block_retriever = BlockRetriever::new(
-            Arc::new(Mutex::new(HashMap::new())),
-            transport.clone(),
-            retriever_connections,
-            rp_conf.clone(),
-        );
 
-        let (block_store, _indexed_dag_storage, casper_buffer) =
-            with_storage(|bs, ids| async move {
-                let mut kvm = InMemoryStoreManager::new();
-                let store = kvm.store("parents-map".to_string()).await.unwrap();
-                let typed_store = KeyValueTypedStoreImpl::new(store);
-                let cb = CasperBufferKeyValueStorage::new_from_kv_store(typed_store)
-                    .await
-                    .unwrap();
-                (bs, ids, cb)
-            })
-            .await;
+        let block_store = with_storage(|bs, _ids| async move { bs }).await;
 
         let mut dag_kvm = InMemoryStoreManager::new();
         let dag_storage = BlockDagKeyValueStorage::new(&mut dag_kvm).await.unwrap();
         let dag_reader = dag_storage.clone();
 
         let sender = generate_validator(Some("SharedKeyValidator"));
-        let citer_sender = generate_validator(Some("AnchorBondedCiter"));
-        let bonds = vec![
-            Bond {
-                validator: sender.clone(),
-                stake: 100,
-            },
-            Bond {
-                validator: citer_sender.clone(),
-                stake: 100,
-            },
-        ];
+        let bonds = vec![Bond {
+            validator: sender.clone(),
+            stake: 100,
+        }];
 
         let genesis = lean_block(0, 0, None, vec![], vec![]);
         dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
@@ -220,12 +179,9 @@ impl Fixture {
         let anchor = lean_block(40, 9, None, vec![genesis.block_hash.clone()], bonds.clone());
         let casper: Arc<dyn Casper + Send + Sync + 'static> = Arc::new(AnchorCasper { anchor });
 
-        let fixture_block_store = block_store.clone();
-        let processor = new_block_processor(
-            block_store,
-            casper_buffer,
+        let validation = Validation::new(
+            block_store.clone(),
             dag_storage,
-            block_retriever,
             transport,
             connections_cell,
             rp_conf,
@@ -233,34 +189,24 @@ impl Fixture {
         );
 
         Self {
-            processor,
-            block_store: fixture_block_store,
+            validation,
+            block_store,
             dag_reader,
             casper,
             sender,
             live_head,
             genesis,
             bonds,
-            citer_sender,
         }
     }
 
-    /// Deliver a bonded citer naming `dep` as a missing dependency, which
-    /// records the settled solicitation the door consumes on arrival.
-    async fn solicit(&self, dep: &BlockHash) {
-        let citer = lean_block(
-            41,
-            1,
-            Some(self.citer_sender.clone()),
-            vec![dep.clone()],
-            self.bonds.clone(),
-        );
-        let ready = self
-            .processor
-            .check_dependencies_with_effects(self.casper.clone(), &citer)
+    /// Run the settled-history door on `block`, as block ingest dispatches
+    /// it for a block a bonded validator cites at or below the anchor.
+    async fn admit_settled(&self, block: &BlockMessage) -> bool {
+        self.validation
+            .admit_settled(self.casper.clone(), block)
             .await
-            .unwrap();
-        assert!(!ready, "citer must be missing its solicited dependency");
+            == WorkOutcome::Settled
     }
 
     fn latest_message_of_sender(&self) -> Option<BlockHash> {
@@ -288,13 +234,7 @@ async fn settled_admission_never_advances_a_latest_message() {
         vec![fixture.genesis.block_hash.clone()],
         fixture.bonds.clone(),
     );
-    fixture.solicit(&foreign.block_hash).await;
-
-    fixture
-        .processor
-        .try_admit_settled(fixture.casper.clone(), &foreign)
-        .await
-        .unwrap();
+    fixture.admit_settled(&foreign).await;
 
     assert_eq!(
         fixture.latest_message_of_sender(),
@@ -332,13 +272,7 @@ async fn settled_admission_admits_an_unbonded_historic_author() {
         vec![fixture.genesis.block_hash.clone()],
         fixture.bonds.clone(),
     );
-    fixture.solicit(&historic.block_hash).await;
-
-    let admitted = fixture
-        .processor
-        .try_admit_settled(fixture.casper.clone(), &historic)
-        .await
-        .unwrap();
+    let admitted = fixture.admit_settled(&historic).await;
 
     assert!(
         admitted,
@@ -370,13 +304,7 @@ async fn settled_admission_still_admits_a_genuine_straggler() {
         vec![fixture.genesis.block_hash.clone()],
         fixture.bonds.clone(),
     );
-    fixture.solicit(&straggler.block_hash).await;
-
-    let admitted = fixture
-        .processor
-        .try_admit_settled(fixture.casper.clone(), &straggler)
-        .await
-        .unwrap();
+    let admitted = fixture.admit_settled(&straggler).await;
 
     assert!(
         admitted,
@@ -410,13 +338,8 @@ async fn settled_admission_persists_a_pending_block() {
     );
     fixture.block_store.put_pending(&straggler, true).unwrap();
     assert!(fixture.block_store.is_pending(&straggler.block_hash));
-    fixture.solicit(&straggler.block_hash).await;
 
-    let admitted = fixture
-        .processor
-        .try_admit_settled(fixture.casper.clone(), &straggler)
-        .await
-        .unwrap();
+    let admitted = fixture.admit_settled(&straggler).await;
 
     assert!(admitted);
     assert!(!fixture.block_store.is_pending(&straggler.block_hash));

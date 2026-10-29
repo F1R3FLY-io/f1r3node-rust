@@ -18,26 +18,10 @@ pub const REPORTING_RUNTIME_METRICS_SOURCE: &str = "f1r3fly.rholang.reportingRun
 
 // Casper counter metrics
 pub const BLOCK_HASH_RECEIVED_METRIC: &str = "block.hash.received";
-pub const BLOCK_INFLIGHT_CAP_DROP_METRIC: &str = "block.inflight-cap.drops";
 pub const BLOCK_REQUEST_RECEIVED_METRIC: &str = "block.request.received";
 pub const BLOCK_REQUESTS_TOTAL_METRIC: &str = "block.requests.total";
 pub const BLOCK_REQUESTS_RETRIES_METRIC: &str = "block.requests.retries";
 pub const BLOCK_REQUESTS_RECOVERY_METRIC: &str = "block.requests.recovery";
-pub const BLOCK_REQUESTS_RETRY_ACTION_METRIC: &str = "block.requests.retry.action";
-pub const BLOCK_REQUESTS_STALE_EVICTIONS_METRIC: &str = "block.requests.stale-evictions";
-pub const BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC: &str =
-    "block.retriever.dep-recovery-tracking.size";
-pub const BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC: &str =
-    "block.retriever.broadcast-tracking.size";
-pub const BLOCK_RETRIEVER_REQUESTED_BLOCKS_SIZE_METRIC: &str =
-    "block.retriever.requested-blocks.size";
-pub const BLOCK_RETRIEVER_WAITING_LIST_TOTAL_SIZE_METRIC: &str =
-    "block.retriever.waiting-list.total.size";
-pub const BLOCK_RETRIEVER_PEERS_TOTAL_SIZE_METRIC: &str = "block.retriever.peers.total.size";
-pub const PEER_SCORING_STRIKES_METRIC: &str = "block.retriever.peer-scoring.strikes";
-pub const PEER_SCORING_IGNORED_PEERS_METRIC: &str = "block.retriever.peer-scoring.ignored-peers";
-pub const PEER_SCORING_DROPPED_MESSAGES_METRIC: &str =
-    "block.retriever.peer-scoring.dropped-messages";
 pub const BLOCK_INGEST_METRICS_SOURCE: &str = "f1r3fly.casper.block-ingest";
 pub const BLOCK_INGEST_HELD_METRIC: &str = "block.ingest.held";
 pub const BLOCK_INGEST_DISK_ENTRIES_METRIC: &str = "block.ingest.disk-entries";
@@ -84,15 +68,10 @@ pub const CASPER_INIT_RETRY_NO_APPROVED_BLOCK_METRIC: &str = "casper.init.retry.
 pub const CASPER_INIT_APPROVED_BLOCK_RECEIVED_METRIC: &str = "casper.init.approved-block.received";
 pub const CASPER_INIT_TRANSITION_TO_RUNNING_METRIC: &str = "casper.init.transition-to-running";
 pub const ALLOCATOR_TRIM_TOTAL_METRIC: &str = "allocator.trim.total";
-pub const BLOCK_PROCESSING_ACTIVE_METRIC: &str = "block-processing.active";
 pub const BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC: &str = "block-processing.parallel-limit";
-pub const BLOCK_PROCESSING_QUEUE_PENDING_METRIC: &str = "block-processing.queue.pending";
 pub const CASPER_BUFFER_RELEASE_SCAN_TIME_METRIC: &str = "casper.buffer.release-scan.time";
 pub const CASPER_BUFFER_RELEASE_SCAN_CANDIDATES_METRIC: &str =
     "casper.buffer.release-scan.candidates";
-pub const BLOCK_PROCESSING_IN_FLIGHT_METRIC: &str = "block-processing.in-flight";
-pub const BLOCK_PROCESSING_IN_FLIGHT_OLDEST_AGE_METRIC: &str =
-    "block-processing.in-flight.oldest-age-seconds";
 // TODO: Port MergeableChannelsGC metric when PR #367 is merged
 // See: https://github.com/F1R3FLY-io/f1r3node/pull/367
 // pub const MERGEABLE_CHANNELS_GC_DELETED_METRIC: &str = "mergeable.channels.gc.deleted";

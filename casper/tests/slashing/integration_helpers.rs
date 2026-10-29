@@ -387,59 +387,20 @@ pub async fn propose_with_explicit_justifications(
     Ok(signed)
 }
 
-/// Process a block bypassing `check_if_of_interest` (the upstream
-/// shard / version / age filter on
-/// `BlockProcessor::check_if_of_interest`). Used for UC-32
-/// InvalidShardId where the upstream filter would otherwise reject
-/// the block as `NotOfInterest` BEFORE reaching the
-/// `Validate::shard_identifier` validator inside `block_summary`.
-///
-/// The deeper-layer `InvalidShardId` is defence-in-depth — the same
-/// check at a different layer of the pipeline. The dispatcher's
-/// catch-all routes it through `is_slashable()` (block_status.rs:181)
-/// so we still want to verify the catch-all minted a record when
-/// it fires; we just have to bypass the upstream early-rejection.
-///
-/// Reference: `casper/tests/helper/test_node.rs::process_block_through_pipe`
-/// for the full pipeline.
+/// Process a block past intake's of-interest filter (shard, version, age).
+/// Used for UC-32 InvalidShardId, which that filter would otherwise reject
+/// as `NotOfInterest` before `Validate::shard_identifier` inside
+/// `block_summary` sees it. The deeper check is defence in depth, and the
+/// dispatcher's catch-all routes it through `is_slashable()`, so the test
+/// verifies the catch-all minted a record when it fires.
 pub async fn process_block_bypassing_of_interest_filter(
     node: &mut TestNode,
     block: models::rust::casper::protocol::casper_message::BlockMessage,
-) -> Result<
-    rspace_plus_plus::rspace::history::Either<
-        casper::rust::block_status::BlockError,
-        casper::rust::block_status::ValidBlock,
-    >,
-    CasperError,
-> {
-    use casper::rust::block_status::BlockStatus;
-    use casper::rust::blocks::block_processor::{SenderAuthorization, StoreVerdict};
-    let authorization = node.block_processor.check_sender_authorization(&block)?;
-    if authorization == SenderAuthorization::Unauthorized {
-        return Ok(rspace_plus_plus::rspace::history::Either::Left(
-            BlockStatus::invalid_sender(),
-        ));
-    }
-    let store_verdict = node
-        .block_processor
-        .check_if_well_formed_and_store(&block, authorization)
-        .await?;
-    if store_verdict != StoreVerdict::Stored {
-        return Ok(rspace_plus_plus::rspace::history::Either::Left(
-            BlockStatus::invalid_format(),
-        ));
-    }
-    let dependencies_ready = node
-        .block_processor
-        .check_dependencies_with_effects(node.casper.clone(), &block)
-        .await?;
-    if !dependencies_ready {
-        return Ok(rspace_plus_plus::rspace::history::Either::Left(
-            BlockStatus::missing_blocks(),
-        ));
-    }
-    node.block_processor
-        .validate_with_effects(node.casper.clone(), &block, None)
+) -> Result<casper::rust::ValidBlockProcessing, CasperError> {
+    node.ingest
+        .lock()
+        .await
+        .validate_past_interest_filter(node.casper.clone(), block)
         .await
 }
 
