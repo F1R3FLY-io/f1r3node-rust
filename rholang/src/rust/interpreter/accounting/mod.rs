@@ -8,6 +8,7 @@ use super::errors::InterpreterError;
 pub mod comm_ledger;
 pub mod cost_accounting;
 pub mod costs;
+pub mod delta_sigma;
 pub mod has_cost;
 pub mod noop;
 pub mod rev_stack;
