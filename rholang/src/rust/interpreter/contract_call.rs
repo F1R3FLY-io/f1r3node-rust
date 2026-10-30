@@ -2,6 +2,7 @@ use std::pin::Pin;
 
 use models::rhoapi::{ListParWithRandom, Par};
 use prost::Message;
+use rspace_plus_plus::rspace::util::unpack_tuple_with_peek;
 
 use super::dispatch::{DispatchType, RhoDispatch};
 use super::errors::InterpreterError;
@@ -78,22 +79,59 @@ impl ContractCall {
 
                     let dispatch_result = match produce_result {
                         Some((cont, channels, produce)) => {
-                            dispatcher
-                                .dispatch(
-                                    cont.continuation,
-                                    channels.iter().map(|c| c.matched_datum.clone()).collect(),
-                                    is_replay,
-                                    produce
-                                        .output_value
-                                        .iter()
-                                        .map(|p| {
-                                            Par::decode(&p[..]).map_err(|e| {
-                                                InterpreterError::DecodeError(e.to_string())
+                            let (continuation, data_list, peek) =
+                                unpack_tuple_with_peek((cont, channels));
+                            let matched_data = data_list
+                                .iter()
+                                .map(|(_, matched, _, _)| matched.clone())
+                                .collect();
+                            let dispatch = async {
+                                dispatcher
+                                    .dispatch(
+                                        continuation,
+                                        matched_data,
+                                        is_replay,
+                                        produce
+                                            .output_value
+                                            .iter()
+                                            .map(|p| {
+                                                Par::decode(&p[..]).map_err(|e| {
+                                                    InterpreterError::DecodeError(e.to_string())
+                                                })
                                             })
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?,
-                                )
-                                .await
+                                            .collect::<Result<Vec<_>, _>>()?,
+                                    )
+                                    .await
+                            };
+                            if peek {
+                                let reducer = dispatcher
+                                    .reducer
+                                    .get()
+                                    .and_then(|weak| weak.upgrade())
+                                    .ok_or_else(|| {
+                                        InterpreterError::BugFoundError(
+                                            "Reducer not initialized".to_string(),
+                                        )
+                                    })?;
+                                let (result, restored) = futures::join!(
+                                    dispatch,
+                                    reducer.restore_peeked_data(data_list)
+                                );
+                                match (result, restored) {
+                                    (result, Ok(())) => result,
+                                    (
+                                        Ok(DispatchType::FailedNonDeterministicCall(
+                                            dispatch_error,
+                                        )),
+                                        Err(error),
+                                    )
+                                    | (Err(dispatch_error), Err(error)) => reducer
+                                        .aggregate_evaluator_errors(vec![dispatch_error, error]),
+                                    (Ok(_), Err(error)) => Err(error),
+                                }
+                            } else {
+                                dispatch.await
+                            }
                         }
 
                         None => Ok(DispatchType::Skip),
