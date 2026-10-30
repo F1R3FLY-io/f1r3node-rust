@@ -869,6 +869,14 @@ mod tests {
                 synchrony_finalized_baseline_enabled: true,
                 synchrony_finalized_baseline_max_distance: 2048,
                 max_user_deploys_per_block: 128,
+                finalizer_oracle_cache_justifications:
+                    casper::rust::casper_conf::default_finalizer_oracle_cache_justifications(),
+                finalizer_oracle_cache_self_justifications:
+                    casper::rust::casper_conf::default_finalizer_oracle_cache_self_justifications(),
+                finalizer_oracle_cache_ancestors:
+                    casper::rust::casper_conf::default_finalizer_oracle_cache_ancestors(),
+                finalizer_timeout_reruns:
+                    casper::rust::casper_conf::default_finalizer_timeout_reruns(),
             },
             metrics: crate::rust::configuration::model::Metrics {
                 prometheus: false,

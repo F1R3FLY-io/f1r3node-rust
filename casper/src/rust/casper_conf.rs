@@ -135,6 +135,30 @@ pub struct CasperConf {
         default = "default_mergeable_channels_gc_depth_buffer"
     )]
     pub mergeable_channels_gc_depth_buffer: i32,
+
+    #[serde(
+        rename = "finalizer-oracle-cache-justifications",
+        default = "default_finalizer_oracle_cache_justifications"
+    )]
+    pub finalizer_oracle_cache_justifications: usize,
+
+    #[serde(
+        rename = "finalizer-oracle-cache-self-justifications",
+        default = "default_finalizer_oracle_cache_self_justifications"
+    )]
+    pub finalizer_oracle_cache_self_justifications: usize,
+
+    #[serde(
+        rename = "finalizer-oracle-cache-ancestors",
+        default = "default_finalizer_oracle_cache_ancestors"
+    )]
+    pub finalizer_oracle_cache_ancestors: usize,
+
+    #[serde(
+        rename = "finalizer-timeout-reruns",
+        default = "default_finalizer_timeout_reruns"
+    )]
+    pub finalizer_timeout_reruns: u32,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -163,6 +187,22 @@ fn default_mergeable_channels_gc_interval() -> Duration {
 }
 
 fn default_mergeable_channels_gc_depth_buffer() -> i32 { 10 }
+
+pub fn default_finalizer_oracle_cache_justifications() -> usize {
+    crate::rust::casper::FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT.latest_justifications
+}
+
+pub fn default_finalizer_oracle_cache_self_justifications() -> usize {
+    crate::rust::casper::FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT.self_justification
+}
+
+pub fn default_finalizer_oracle_cache_ancestors() -> usize {
+    crate::rust::casper::FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT.ancestor
+}
+
+pub fn default_finalizer_timeout_reruns() -> u32 {
+    crate::rust::casper::FINALIZER_TIMEOUT_RERUNS_DEFAULT
+}
 
 /// Round robin dispatcher configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
