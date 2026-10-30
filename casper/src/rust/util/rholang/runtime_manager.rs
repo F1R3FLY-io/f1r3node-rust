@@ -51,6 +51,7 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
+use crate::rust::util::rholang::interpreter_util::MAX_PARENT_MERGE_SCOPE_BLOCKS;
 use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
 };
@@ -422,7 +423,8 @@ pub struct MergedPreState {
 pub type ParentsPostStateCacheVal = MergedPreState;
 
 impl RuntimeManager {
-    const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;
+    /// One full merge scope, so a merge never evicts the indexes it is reading.
+    pub const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = MAX_PARENT_MERGE_SCOPE_BLOCKS;
     const MAX_PARENTS_POST_STATE_CACHE_ENTRIES: usize = 64;
     const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 256;
     const MAX_BONDS_CACHE_ENTRIES: usize = 64;
@@ -1306,6 +1308,10 @@ impl RuntimeManager {
         self.history_repo
             .contains_root(root)
             .map_err(|e| CasperError::RuntimeError(format!("has_root lookup failed: {:?}", e)))
+    }
+
+    pub fn cached_block_index(&self, block_hash: &BlockHash) -> Option<BlockIndex> {
+        Self::get_cached_value(&self.block_index_cache, &self.block_index_cache_order, block_hash)
     }
 
     /// Get or compute BlockIndex with caching
