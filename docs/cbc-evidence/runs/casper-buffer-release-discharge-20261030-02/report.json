@@ -1,0 +1,158 @@
+{
+  "schema_version": 1,
+  "claim_id": "CLAIM-CASPER-BUFFER-001",
+  "statements": [
+    "C1",
+    "C2",
+    "C3",
+    "C4"
+  ],
+  "discharge_items": [
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "scope": "casper-buffer-release-discharge-20261030-02",
+  "observed_at": "2026-10-30T14:01:34Z",
+  "base_checkpoint": "cf94b4200909ff9721e8701f1acfa1b345abf600",
+  "note": "This package repeats the checks of package 01 on the merge of dev at cf94b4200. That merge brought the GHSA-6crf changes to block_processor.rs and block_processor_instance.rs, and renamed IntegrityChecked to CheckedBlock in stale_buffer_link_spec.rs. The digests identify the committed tree that ran the checks. The mutation results come from package 01. The mutated files (buffer_resolver.rs, block_admission.rs, buffer_dag_transition.rs, release_queue.rs) did not change between the two bases. Item 7, the comparison soak, is not part of this package.",
+  "source_inventory": [
+    {
+      "path": "casper/tests/sync/stale_buffer_link_spec.rs",
+      "sha256": "775cc488715b9fcd9b1507cfaf6aa937798d3ad6762eb0839853a0aa34a97a1e"
+    },
+    {
+      "path": "block-storage/tests/atomic_buffer_dag_transition.rs",
+      "sha256": "2267eed893719676e84249887c630d4c78731ed19a5971895b70bedf5424af5a"
+    },
+    {
+      "path": "casper/tests/sync/incremental_release_scan_spec.rs",
+      "sha256": "c2dbd1f1c0002c2c056e234e667e4ad36d6f691266428bec352838ac2e9f3acb"
+    },
+    {
+      "path": "node/tests/release_queue.rs",
+      "sha256": "eec6d447c3b29a408577a57d8eed67825b84dea435f84f977c6336218f2b4873"
+    },
+    {
+      "path": "casper/tests/sync/release_order_invariance_spec.rs",
+      "sha256": "9ecd400e5dd5d839d305197ca9006d71280f3093efba4cafe90346d457578f5f"
+    },
+    {
+      "path": "casper/src/rust/engine/multi_parent_casper/block_admission.rs",
+      "sha256": "ac83e41a7b3e91289bbf15fe728c8743f1c2f9f03c11288231302631183609c2"
+    },
+    {
+      "path": "block-storage/src/rust/dag/buffer_dag_transition.rs",
+      "sha256": "cbc7c4ebda4233d70297c4f9c977f09089807e5c5835482ee16e252931c1d7fe"
+    },
+    {
+      "path": "casper/src/rust/engine/multi_parent_casper/buffer_resolver.rs",
+      "sha256": "cc19b593d7b96bd340c0fc57afe6a84b9cd8a71dec585548f4a2bf61f0cd24d8"
+    },
+    {
+      "path": "node/src/rust/instances/release_queue.rs",
+      "sha256": "a3337c9d4b9dfa8b6400d9fcb290c756f8ad02f699c58267e10791c483efd499"
+    },
+    {
+      "path": "casper/src/rust/blocks/block_processor.rs",
+      "sha256": "fa736779f522150257540855a061a006a10364edfa7bbc45f63230a2e9bb2f44"
+    },
+    {
+      "path": "node/src/rust/instances/block_processor_instance.rs",
+      "sha256": "edb1cb33a1212cc81cfd5ee0d09d89644d14cea4e0532a9679b063a894a5aafb"
+    }
+  ],
+  "evidence": [
+    {
+      "item": 2,
+      "statement": "C2",
+      "plan": "B5",
+      "test": "casper/tests/sync/stale_buffer_link_spec.rs::a_released_block_with_a_stale_parent_link_is_processed",
+      "mutation": {
+        "change": "the buffer wait counts any parent relation, also one to a validated parent",
+        "result": "killed"
+      }
+    },
+    {
+      "item": 2,
+      "statement": "C2",
+      "plan": "B6",
+      "test": "block-storage/tests/atomic_buffer_dag_transition.rs::a_child_committed_after_its_parent_enters_the_dag_keeps_no_stale_relation",
+      "mutation": {
+        "change": "the dependency commit keeps relations to parents already in the DAG",
+        "result": "killed"
+      }
+    },
+    {
+      "item": 3,
+      "statement": "C1",
+      "plan": "B5",
+      "test": "casper/tests/sync/incremental_release_scan_spec.rs::after_a_block_is_processed_only_the_blocks_it_released_are_examined"
+    },
+    {
+      "item": 3,
+      "statement": "C1",
+      "plan": "B8",
+      "test": "casper/tests/sync/incremental_release_scan_spec.rs::a_chain_of_missing_ancestors_releases_one_level_per_validation",
+      "new": true,
+      "mutations": [
+        {
+          "change": "dependencies_are_ready always true",
+          "result": "killed"
+        },
+        {
+          "change": "dependencies_are_ready always false",
+          "result": "killed"
+        }
+      ]
+    },
+    {
+      "item": 4,
+      "statement": "C3",
+      "plan": "B7",
+      "tests": [
+        "node/tests/release_queue.rs::a_released_block_is_processed_before_later_gossip_and_gossip_still_progresses",
+        "node/tests/release_queue.rs::a_block_released_while_gossip_waits_is_processed_before_that_gossip"
+      ],
+      "mutation": {
+        "change": "the release queue always serves gossip first",
+        "result": "killed (both tests)"
+      },
+      "note": "The pipeline-order test drives run_scheduler, the scheduler of the block processing pipeline, and asserts the order in which the pipeline processes blocks."
+    },
+    {
+      "item": 5,
+      "statement": "C4",
+      "test": "casper/tests/sync/release_order_invariance_spec.rs::ready_blocks_reach_the_same_dag_and_verdicts_in_every_processing_order",
+      "new": true,
+      "note": "Three ready blocks from three validators, processed in all six orders by a fresh node. Verdicts, DAG membership, and latest messages equal the FIFO order. Scope limit: the ready set holds valid, independent blocks only. It does not hold equivocations or invalid blocks. No mutation control: an order-dependent defect would have to be invented."
+    },
+    {
+      "item": 6,
+      "note": "scripts/cbc.sh claim-set declared CLAIM-CASPER-BUFFER-001 on the nine cbc=mandatory artifacts of the claim. Their ledger state stays none: no artifact is discharged or waived."
+    }
+  ],
+  "checks": [
+    {
+      "command": "cargo test --release -p casper --test mod -- sync:: add_block:: engine::",
+      "result": "199 passed"
+    },
+    {
+      "command": "cargo test --release -p block-storage --test atomic_buffer_dag_transition",
+      "result": "11 passed"
+    },
+    {
+      "command": "cargo test --release -p node --test release_queue",
+      "result": "4 passed"
+    },
+    {
+      "command": "cargo clippy --release -p casper --all-targets -- -D warnings",
+      "result": "clean"
+    }
+  ],
+  "acceptance": null,
+  "status": "pending",
+  "supersedes": "casper-buffer-release-discharge-20261030-01"
+}

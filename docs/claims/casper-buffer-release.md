@@ -90,7 +90,7 @@ The status of each item is recorded here as the TDD cycles complete.
    - Scope limit: the ready set holds valid, independent blocks only, not equivocations or invalid blocks.
 6. Record the evidence in `docs/casper/cbc-evidence/` for each `cbc=mandatory` artifact and cite this claim id. **Done 2026-10-30.**
    - `scripts/cbc.sh claim-set` declared this claim on the nine `cbc=mandatory` artifacts (`docs/cbc-evidence/*.claims.json`). No artifact is discharged or waived yet.
-   - The review package for items 2 to 6 is in `docs/cbc-evidence/runs/casper-buffer-release-discharge-20261030-01/`.
+   - The review package for items 2 to 6 is in `docs/cbc-evidence/runs/casper-buffer-release-discharge-20261030-02/`. It repeats the checks of package `-01` on the merge of `dev` at `cf94b4200`, which changed `block_processor.rs` and `block_processor_instance.rs`.
 7. Compare a soak of `dev` after PR #653 with the issue #24 baseline before PR #653. The comparison reports park time, release queue wait, sustained finalization p95, and the `test_load` failure count. PR #653 merged on 2026-10-07, so a soak pair on one base is not available. **Evidence recorded 2026-10-30. Maintainer acceptance is open.**
    - Baseline before PR #653: issue #24 measured 56% of received blocks parked, for 7.1 s median and 39.6 s p90. Run 37469364217 on `dev` `778cc6754` had 8 of 49 `test_load` failures.
    - After PR #653: the scheduled soak run 40806861759 tested `dev` `252a86d1d` for 72,469 s with 146 iterations and 0 failures. The aggregates use the node metrics of the 73 Docker iterations.
