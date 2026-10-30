@@ -39,10 +39,27 @@ pub struct PendingOutcome {
     pub evicted: Vec<BlockHash>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PendingClass {
+    Unsolicited,
+    KnownSender,
+    Solicited,
+}
+
+impl PendingClass {
+    const ALL: [PendingClass; 3] = [
+        PendingClass::Unsolicited,
+        PendingClass::KnownSender,
+        PendingClass::Solicited,
+    ];
+
+    fn index(self) -> usize { self as usize }
+}
+
 struct Entry {
     encoded: Bytes,
     sender: Bytes,
-    solicited: bool,
+    class: PendingClass,
     seq: u64,
 }
 
@@ -55,23 +72,19 @@ fn decode(encoded: &Bytes) -> Option<BlockMessage> {
 struct Inner {
     limits: PendingBlockLimits,
     entries: HashMap<BlockHash, Entry>,
-    unsolicited: BTreeMap<u64, BlockHash>,
-    solicited: BTreeMap<u64, BlockHash>,
+    tiers: [BTreeMap<u64, BlockHash>; 3],
+    tier_bytes: [usize; 3],
     per_sender: HashMap<Bytes, usize>,
     bytes: usize,
-    unsolicited_bytes: usize,
     next_seq: u64,
 }
 
 impl Inner {
     fn remove(&mut self, hash: &BlockHash) -> Option<Entry> {
         let entry = self.entries.remove(hash)?;
-        if entry.solicited {
-            self.solicited.remove(&entry.seq);
-        } else {
-            self.unsolicited.remove(&entry.seq);
-            self.unsolicited_bytes -= entry.encoded.len();
-        }
+        let tier = entry.class.index();
+        self.tiers[tier].remove(&entry.seq);
+        self.tier_bytes[tier] -= entry.encoded.len();
         self.bytes -= entry.encoded.len();
         if let Some(count) = self.per_sender.get_mut(&entry.sender) {
             *count -= 1;
@@ -82,36 +95,54 @@ impl Inner {
         Some(entry)
     }
 
-    fn oldest(&self, include_solicited: bool) -> Option<BlockHash> {
-        self.unsolicited
-            .values()
-            .next()
-            .or_else(|| {
-                include_solicited
-                    .then(|| self.solicited.values().next())
-                    .flatten()
-            })
+    fn oldest(&self, up_to: PendingClass) -> Option<BlockHash> {
+        PendingClass::ALL
+            .into_iter()
+            .filter(|class| *class <= up_to)
+            .find_map(|class| self.tiers[class.index()].values().next())
             .cloned()
     }
 
     fn oldest_unsolicited_from(&self, sender: &Bytes) -> Option<BlockHash> {
-        self.unsolicited
-            .values()
-            .find(|hash| {
-                self.entries
-                    .get(*hash)
-                    .is_some_and(|entry| entry.sender == *sender)
+        [PendingClass::Unsolicited, PendingClass::KnownSender]
+            .into_iter()
+            .filter_map(|class| {
+                self.tiers[class.index()].iter().find(|(_, hash)| {
+                    self.entries
+                        .get(*hash)
+                        .is_some_and(|entry| entry.sender == *sender)
+                })
             })
-            .cloned()
+            .min_by_key(|(seq, _)| **seq)
+            .map(|(_, hash)| hash.clone())
     }
 
-    fn can_fit(&self, bytes: usize, solicited: bool) -> bool {
-        let (kept_blocks, kept_bytes) = if solicited {
-            (0, 0)
-        } else {
-            (self.solicited.len(), self.bytes - self.unsolicited_bytes)
-        };
+    fn can_fit(&self, bytes: usize, class: PendingClass) -> bool {
+        let (kept_blocks, kept_bytes) = PendingClass::ALL
+            .into_iter()
+            .filter(|kept| *kept > class)
+            .fold((0, 0), |(blocks, size), kept| {
+                (
+                    blocks + self.tiers[kept.index()].len(),
+                    size + self.tier_bytes[kept.index()],
+                )
+            });
         kept_blocks < self.limits.max_blocks && kept_bytes + bytes <= self.limits.max_bytes
+    }
+
+    fn promote(&mut self, hash: &BlockHash, class: PendingClass) {
+        let Some(entry) = self.entries.get_mut(hash) else {
+            return;
+        };
+        if class <= entry.class {
+            return;
+        }
+        let (old, seq, size) = (entry.class.index(), entry.seq, entry.encoded.len());
+        entry.class = class;
+        self.tiers[old].remove(&seq);
+        self.tier_bytes[old] -= size;
+        self.tiers[class.index()].insert(seq, hash.clone());
+        self.tier_bytes[class.index()] += size;
     }
 }
 
@@ -147,11 +178,10 @@ impl PendingBlocks {
             inner: Mutex::new(Inner {
                 limits,
                 entries: HashMap::new(),
-                unsolicited: BTreeMap::new(),
-                solicited: BTreeMap::new(),
+                tiers: [BTreeMap::new(), BTreeMap::new(), BTreeMap::new()],
+                tier_bytes: [0; 3],
                 per_sender: HashMap::new(),
                 bytes: 0,
-                unsolicited_bytes: 0,
                 next_seq: 0,
             }),
         }
@@ -166,7 +196,7 @@ impl PendingBlocks {
         inner.limits = limits;
         let mut evicted = Vec::new();
         while inner.entries.len() > limits.max_blocks || inner.bytes > limits.max_bytes {
-            match inner.oldest(true) {
+            match inner.oldest(PendingClass::Solicited) {
                 Some(victim) => {
                     inner.remove(&victim);
                     evicted.push(victim);
@@ -181,17 +211,26 @@ impl PendingBlocks {
     }
 
     pub fn insert(&self, block: &BlockMessage, solicited: bool) -> PendingOutcome {
-        self.insert_inner(block, solicited, None)
+        let class = if solicited {
+            PendingClass::Solicited
+        } else {
+            PendingClass::Unsolicited
+        };
+        self.insert_inner(block, class, None)
     }
 
     pub fn insert_replacing(&self, block: &BlockMessage, victim: &BlockHash) -> PendingOutcome {
-        self.insert_inner(block, true, Some(victim))
+        self.insert_inner(block, PendingClass::Solicited, Some(victim))
+    }
+
+    pub fn insert_as(&self, block: &BlockMessage, class: PendingClass) -> PendingOutcome {
+        self.insert_inner(block, class, None)
     }
 
     fn insert_inner(
         &self,
         block: &BlockMessage,
-        solicited: bool,
+        class: PendingClass,
         replacement: Option<&BlockHash>,
     ) -> PendingOutcome {
         let encoded = Bytes::from(block.to_proto().encode_to_vec());
@@ -203,18 +242,8 @@ impl PendingBlocks {
             evicted: Vec::new(),
         };
 
-        if let Some(existing) = inner.entries.get(&block.block_hash) {
-            if solicited && !existing.solicited {
-                let seq = existing.seq;
-                let size = existing.encoded.len();
-                let hash = block.block_hash.clone();
-                inner.unsolicited.remove(&seq);
-                inner.unsolicited_bytes -= size;
-                inner.solicited.insert(seq, hash.clone());
-                if let Some(entry) = inner.entries.get_mut(&hash) {
-                    entry.solicited = true;
-                }
-            }
+        if inner.entries.contains_key(&block.block_hash) {
+            inner.promote(&block.block_hash, class);
             return outcome(PendingInsert::Accepted);
         }
         if bytes > limits.max_bytes {
@@ -236,7 +265,7 @@ impl PendingBlocks {
             })
             .cloned();
         let sender_victim = if sender_full {
-            match solicited
+            match (class == PendingClass::Solicited)
                 .then(|| inner.oldest_unsolicited_from(&block.sender))
                 .flatten()
                 .or(replacement)
@@ -249,7 +278,7 @@ impl PendingBlocks {
         } else {
             None
         };
-        if !inner.can_fit(bytes, solicited) {
+        if !inner.can_fit(bytes, class) {
             return outcome(PendingInsert::AreaFull);
         }
 
@@ -260,7 +289,7 @@ impl PendingBlocks {
         }
         while inner.entries.len() + 1 > limits.max_blocks || inner.bytes + bytes > limits.max_bytes
         {
-            match inner.oldest(solicited) {
+            match inner.oldest(class) {
                 Some(victim) => {
                     inner.remove(&victim);
                     evicted.push(victim);
@@ -279,16 +308,12 @@ impl PendingBlocks {
         let hash = block.block_hash.clone();
         *inner.per_sender.entry(block.sender.clone()).or_insert(0) += 1;
         inner.bytes += bytes;
-        if solicited {
-            inner.solicited.insert(seq, hash.clone());
-        } else {
-            inner.unsolicited.insert(seq, hash.clone());
-            inner.unsolicited_bytes += bytes;
-        }
+        inner.tiers[class.index()].insert(seq, hash.clone());
+        inner.tier_bytes[class.index()] += bytes;
         inner.entries.insert(hash, Entry {
             encoded,
             sender: block.sender.clone(),
-            solicited,
+            class,
             seq,
         });
         drop(inner);
@@ -407,6 +432,55 @@ mod tests {
         assert!(area.contains(&block(3, 3).block_hash));
         assert!(area.contains(&block(4, 4).block_hash));
         assert_eq!(area.len(), 3);
+    }
+
+    #[test]
+    fn a_flood_from_unknown_senders_never_evicts_a_known_sender_block() {
+        let area = PendingBlocks::new(limits(3, usize::MAX, 10));
+        let known = block(1, 1);
+        area.insert_as(&known, PendingClass::KnownSender);
+        for i in 10..60 {
+            let outcome = area.insert_as(&block(i, i), PendingClass::Unsolicited);
+            assert!(!outcome.evicted.contains(&known.block_hash));
+        }
+        assert!(area.contains(&known.block_hash));
+        assert_eq!(area.len(), 3);
+    }
+
+    #[test]
+    fn a_known_sender_block_evicts_the_oldest_unknown_sender_block() {
+        let area = PendingBlocks::new(limits(2, usize::MAX, 10));
+        area.insert_as(&block(1, 1), PendingClass::Unsolicited);
+        area.insert_as(&block(2, 2), PendingClass::Unsolicited);
+        let outcome = area.insert_as(&block(3, 3), PendingClass::KnownSender);
+        assert_eq!(outcome.status, PendingInsert::Accepted);
+        assert_eq!(outcome.evicted, vec![block(1, 1).block_hash]);
+        assert!(area.contains(&block(2, 2).block_hash));
+        assert!(area.contains(&block(3, 3).block_hash));
+    }
+
+    #[test]
+    fn an_unknown_sender_cannot_displace_known_sender_blocks() {
+        let area = PendingBlocks::new(limits(2, usize::MAX, 10));
+        area.insert_as(&block(1, 1), PendingClass::KnownSender);
+        area.insert_as(&block(2, 2), PendingClass::KnownSender);
+        let outcome = area.insert_as(&block(3, 3), PendingClass::Unsolicited);
+        assert_eq!(outcome.status, PendingInsert::AreaFull);
+        assert!(outcome.evicted.is_empty());
+        assert_eq!(area.len(), 2);
+    }
+
+    #[test]
+    fn a_reinsert_promotes_an_entry_to_a_higher_tier_only() {
+        let area = PendingBlocks::new(limits(2, usize::MAX, 10));
+        area.insert_as(&block(1, 1), PendingClass::Unsolicited);
+        area.insert_as(&block(1, 1), PendingClass::KnownSender);
+        area.insert_as(&block(2, 2), PendingClass::Solicited);
+        area.insert_as(&block(2, 2), PendingClass::Unsolicited);
+        let outcome = area.insert_as(&block(3, 3), PendingClass::Unsolicited);
+        assert_eq!(outcome.status, PendingInsert::AreaFull);
+        assert!(area.contains(&block(1, 1).block_hash));
+        assert!(area.contains(&block(2, 2).block_hash));
     }
 
     #[test]
