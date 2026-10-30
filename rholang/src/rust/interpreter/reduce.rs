@@ -1403,10 +1403,7 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         fn add_to_env(env: &Env<Par>, free_map: BTreeMap<i32, Par>, free_count: i32) -> Env<Par> {
-            (0..free_count).fold(env.clone(), |acc, e| {
-                let value = free_map.get(&e).unwrap_or(&Par::default()).clone();
-                acc.put(value)
-            })
+            env.extended((0..free_count).map(|e| free_map.get(&e).cloned().unwrap_or_default()))
         }
 
         self.cost.charge(match_eval_cost())?;
@@ -1424,9 +1421,7 @@ impl DebruijnInterpreter {
             let pattern =
                 self.substitute
                     .substitute_and_charge(unwrap_option_safe(case.pattern)?, 1, env)?;
-            let Some(free_map) =
-                SpatialMatcherContext::new().into_match_result(target.clone(), pattern)
-            else {
+            let Some(free_map) = SpatialMatcherContext::new().match_result(&target, pattern) else {
                 continue;
             };
             let case_env = add_to_env(env, free_map, case.free_count);
@@ -1536,17 +1531,13 @@ impl DebruijnInterpreter {
         }
 
         let mut alloc = |count: usize, urns: Vec<String>| {
-            let simple_news =
-                (0..(count - urns.len()))
-                    .into_iter()
-                    .fold(env.clone(), |_env: Env<Par>, _| {
-                        let addr: Par = Par::default().with_unforgeables(vec![GUnforgeable {
-                            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
-                                id: rand.next().iter().map(|&x| x as u8).collect::<Vec<u8>>(),
-                            })),
-                        }]);
-                        _env.put(addr)
-                    });
+            let simple_news = env.extended((0..(count - urns.len())).map(|_| {
+                Par::default().with_unforgeables(vec![GUnforgeable {
+                    unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+                        id: rand.next().iter().map(|&x| x as u8).collect::<Vec<u8>>(),
+                    })),
+                }])
+            }));
 
             let add_urn = |new_env: Env<Par>, urn: String| {
                 if !self.urn_map.contains_key(&urn) {
