@@ -350,3 +350,85 @@ async fn a_block_record_carries_the_gate_and_replays_it() {
     .unwrap();
     assert!(executor.replay(&forged, &b).await.is_err());
 }
+
+#[tokio::test]
+async fn the_record_gives_the_block_s_rev_transfers() {
+    use casper::rust::v6::backend::ExecutionBackend;
+    use casper::rust::v6::block_record::BlockRecord;
+    use casper::rust::v6::executor::BlockExecutor;
+    use casper::rust::v6::history::{transfers, wallet_history, TransferKind};
+    use casper::rust::v6::record::ExecutionRecord;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, F1r3flyState, Header, ProcessedDeploy,
+    };
+    use prost::bytes::Bytes;
+    use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
+
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let b = BlockMessage {
+        block_hash: Bytes::from_static(b"v6-history-block"),
+        header: Header {
+            parents_hash_list: vec![],
+            timestamp: 1,
+            version: 1,
+            extra_bytes: Bytes::new(),
+        },
+        body: Body {
+            state: F1r3flyState {
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+                bonds: vec![],
+                block_number: 1,
+            },
+            deploys: vec![
+                ProcessedDeploy::empty(envelope(TWO_COMMS, 1, &alice, 1_000, 3)),
+                ProcessedDeploy::empty(envelope(ONE_COMM, 2, &bob, 1_000, 2)),
+            ],
+            rejected_deploys: vec![],
+            system_deploys: vec![],
+            extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
+        },
+        justifications: vec![],
+        sender: proposer.pk.bytes.clone(),
+        seq_num: 1,
+        sig: Bytes::new(),
+        sig_algorithm: String::new(),
+        shard_id: "root".to_string(),
+        extra_bytes: Bytes::new(),
+    };
+    let record = executor.execute(&pre, &b).await.unwrap();
+    let record = BlockRecord::decode(&record.encode()).unwrap();
+
+    let all = transfers(&record);
+    let settlement = record.settlement().unwrap();
+    let moved: u64 = all.iter().map(|t| t.amount).sum();
+    assert_eq!(moved, settlement.debited());
+    let to_proposer: u64 = all
+        .iter()
+        .filter(|t| t.kind == TransferKind::CommCharge)
+        .map(|t| t.amount)
+        .sum();
+    assert_eq!(to_proposer, settlement.proposer_credit);
+    assert_eq!(to_proposer, 2 * 3 + 2);
+    let compute = rholang::rust::interpreter::accounting::rev_stack::wallet_channel_id(
+        &compute_wallet_owner(),
+    );
+    assert!(all
+        .iter()
+        .filter(|t| t.kind == TransferKind::ComputeCharge)
+        .all(|t| t.to == compute));
+
+    let alices = wallet_history([&record], &wallet(&alice));
+    assert!(alices.iter().all(|t| t.from == wallet(&alice)));
+    assert_eq!(
+        alices.iter().map(|t| t.amount).sum::<u64>(),
+        settlement.debits[&wallet(&alice)]
+    );
+    let proposers = wallet_history([&record], &wallet(&proposer));
+    assert_eq!(proposers.len(), 2);
+    assert!(balance(&rm, record.post_root(), &proposer).await >= to_proposer);
+}

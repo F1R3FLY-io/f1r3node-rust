@@ -7,6 +7,7 @@ pub mod executor;
 pub mod gate;
 pub mod genesis_policy;
 pub mod genesis_wallets;
+pub mod history;
 pub mod hooks;
 pub mod linearizer;
 pub mod merge;
