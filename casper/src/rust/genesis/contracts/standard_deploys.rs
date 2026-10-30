@@ -211,6 +211,15 @@ pub fn system_vault(shard_id: &str) -> Signed<DeployData> {
     )
 }
 
+pub fn system_vault_v6(shard_id: &str) -> Signed<DeployData> {
+    to_deploy(
+        embedded_source("SystemVaultV6.rho", embedded_rho::SYSTEM_VAULT_V6),
+        SYSTEM_VAULT_PK,
+        SYSTEM_VAULT_TIMESTAMP,
+        shard_id,
+    )
+}
+
 pub fn multi_sig_system_vault(shard_id: &str) -> Signed<DeployData> {
     to_deploy(
         embedded_source(
@@ -319,6 +328,29 @@ pub fn token_metadata_with_policy(
     )
 }
 
+pub fn pos_v6_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
+    assert!(pos.minimum_bond <= pos.maximum_bond);
+    assert!(!pos.validators.is_empty());
+
+    to_deploy(
+        CompiledRholangTemplate::new("PoSV6.rhox", embedded_rho::POS_V6, HashMap::new(), &[
+            ("minimumBond", &pos.minimum_bond.to_string()),
+            ("maximumBond", &pos.maximum_bond.to_string()),
+            ("initialBonds", &ProofOfStake::initial_bonds(&pos.validators)),
+            ("epochLength", &pos.epoch_length.to_string()),
+            ("quarantineLength", &pos.quarantine_length.to_string()),
+            ("numberOfActiveValidators", &pos.number_of_active_validators.to_string()),
+            ("faultToleranceThresholdPpm", &pos.fault_tolerance_threshold_ppm.to_string()),
+            ("maxParentDepth", &pos.max_parent_depth.to_string()),
+            ("deployLifespan", &pos.deploy_lifespan.to_string()),
+            ("minPhloPrice", &pos.min_phlo_price.to_string()),
+        ]),
+        POS_GENERATOR_PK,
+        POS_GENERATOR_TIMESTAMP,
+        shard_id,
+    )
+}
+
 pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
     assert!(pos.minimum_bond <= pos.maximum_bond);
     assert!(!pos.validators.is_empty());
@@ -403,9 +435,20 @@ pub fn rev_stacks_generator(
     )
 }
 
-pub fn rev_bonds_generator(bonds: u64, timestamp: i64, shard_id: &str) -> Signed<DeployData> {
+pub fn rev_bonds_generator(
+    validators: &[super::validator::Validator],
+    timestamp: i64,
+    shard_id: &str,
+) -> Signed<DeployData> {
+    let mut sorted = validators.to_vec();
+    sorted.sort_by(|a, b| a.pk.bytes.cmp(&b.pk.bytes));
+    let list = sorted
+        .iter()
+        .map(|v| format!("(\"{}\".hexToBytes(), {})", hex::encode(&v.pk.bytes), v.stake))
+        .collect::<Vec<_>>()
+        .join(", ");
     let code = format!(
-        "new revGenesis(`rho:rev:genesis`), ret in {{ revGenesis!(\"bonds\", {bonds}, *ret) }}"
+        "new revGenesis(`rho:rev:genesis`), ret in {{ revGenesis!(\"bonds\", [{list}], *ret) }}"
     );
     to_deploy(
         CompiledRholangSource::new(code, HashMap::new(), "<synthetic rev bonds generator>".to_string())

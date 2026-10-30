@@ -19,7 +19,7 @@ use super::contracts::vault::Vault;
 use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
-use crate::rust::v6::genesis_wallets::{bonds_total, genesis_lines, genesis_supply_of};
+use crate::rust::v6::genesis_wallets::{genesis_lines, genesis_supply_of};
 use crate::rust::v6::hooks::{authority_addresses, genesis_authority};
 use crate::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 
@@ -141,15 +141,8 @@ impl Genesis {
                 shard_id,
             ));
             vault_deploys.push(standard_deploys::rev_bonds_generator(
-                bonds_total(pos_params).expect("the genesis bonds are checked before genesis"),
+                &pos_params.validators,
                 timestamp + batches.len() as i64 + 1,
-                shard_id,
-            ));
-            vault_deploys.push(standard_deploys::vaults_generator(
-                Vec::new(),
-                supply,
-                timestamp + batches.len() as i64 + 2,
-                true,
                 shard_id,
             ));
         } else if !vaults.is_empty() {
@@ -183,8 +176,14 @@ impl Genesis {
         let non_negative_number = standard_deploys::non_negative_number(shard_id);
         let make_mint = standard_deploys::make_mint(shard_id);
         let auth_key = standard_deploys::auth_key(shard_id);
-        let system_vault = standard_deploys::system_vault(shard_id);
-        let multi_sig_system_vault = standard_deploys::multi_sig_system_vault(shard_id);
+        let v6 = resource_policy.is_some();
+        let system_vault = if v6 {
+            standard_deploys::system_vault_v6(shard_id)
+        } else {
+            standard_deploys::system_vault(shard_id)
+        };
+        let multi_sig_system_vault =
+            (!v6).then(|| standard_deploys::multi_sig_system_vault(shard_id));
         let stack = standard_deploys::stack(shard_id);
         let token_metadata = standard_deploys::token_metadata_with_policy(
             native_token_name,
@@ -193,7 +192,11 @@ impl Genesis {
             shard_id,
             resource_policy,
         );
-        let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
+        let pos_generator = if v6 {
+            standard_deploys::pos_v6_generator(pos_params, shard_id)
+        } else {
+            standard_deploys::pos_generator(pos_params, shard_id)
+        };
         // File I/O FIP MVP: shared-Fs model with empty static bundle +
         // no snapshot cadence.  Config-driven bundle / cadence
         // threading (fs_bundle / consensus_fs_snapshot_cadence on
@@ -220,7 +223,7 @@ impl Genesis {
         all_deploys.push(make_mint);
         all_deploys.push(auth_key);
         all_deploys.push(system_vault);
-        all_deploys.push(multi_sig_system_vault);
+        all_deploys.extend(multi_sig_system_vault);
         all_deploys.push(stack);
         all_deploys.push(token_metadata);
         all_deploys.extend(vault_deploys);

@@ -2,8 +2,8 @@ use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::v6::genesis_wallets::{
-    bonds_total, genesis_supply_of, read_genesis_supply, read_legacy_bonds, read_wallet_balance,
-    wallets_supply,
+    bonds_total, genesis_supply_of, read_bond_balance, read_genesis_supply, read_legacy_bonds,
+    read_wallet_balance, wallets_supply,
 };
 use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 use crypto::rust::signatures::secp256k1::Secp256k1;
@@ -84,6 +84,34 @@ async fn legacy_vault_balance(
         .unwrap_or_else(|| panic!("not a number: {result:?}"))
 }
 
+const FACADE_BALANCE_QUERY: &str = r#"
+new ret, rl(`rho:registry:lookup`), svCh in {
+  rl!(`rho:vault:system`, *svCh) |
+  for (@(_, SystemVault) <- svCh) { @SystemVault!("balance", "__ADDRESS__", *ret) }
+}
+"#;
+
+async fn facade_balance(
+    rm: &RuntimeManager,
+    state: &models::rust::block::state_hash::StateHash,
+    address: &str,
+) -> i64 {
+    let (result, _) = rm
+        .play_exploratory_deploy(
+            FACADE_BALANCE_QUERY.replace("__ADDRESS__", address),
+            state,
+            None,
+        )
+        .await
+        .expect("the facade balance query runs");
+    let (ok, value) = rholang::rust::interpreter::rho_type::RhoTuple2::unapply(&result[0]).unwrap();
+    assert_eq!(
+        rholang::rust::interpreter::rho_type::RhoBoolean::unapply(&ok),
+        Some(true)
+    );
+    RhoNumber::unapply(&value).expect("a balance")
+}
+
 #[tokio::test]
 async fn a_v6_genesis_holds_wallets_txt_on_native_stacks() {
     let rm = runtime_manager().await;
@@ -115,7 +143,13 @@ async fn a_v6_genesis_holds_wallets_txt_on_native_stacks() {
         read_genesis_supply(&rm, post).await.unwrap(),
         expected + bonds
     );
-    assert_eq!(read_legacy_bonds(&rm, post).await.unwrap(), bonds);
+    assert_eq!(read_legacy_bonds(&rm, post).await.unwrap(), 0);
+    for v in &genesis.proof_of_stake.validators {
+        assert_eq!(
+            read_bond_balance(&rm, post, &v.pk.bytes).await.unwrap(),
+            v.stake as u64
+        );
+    }
 
     let owner = |v: &Vault| WalletOwner::from_vault_address(v.vault_address.clone());
     assert_eq!(
@@ -140,10 +174,10 @@ async fn a_v6_genesis_holds_wallets_txt_on_native_stacks() {
     }
     assert_eq!(held + 1_005 + 250, expected);
 
-    for v in [&alice, &bob] {
+    for (v, held) in [(&alice, 1_005), (&bob, 250)] {
         assert_eq!(
-            legacy_vault_balance(&rm, post, &v.vault_address.to_base58()).await,
-            "0"
+            facade_balance(&rm, post, &v.vault_address.to_base58()).await,
+            held
         );
     }
 

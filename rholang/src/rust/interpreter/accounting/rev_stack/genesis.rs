@@ -7,12 +7,15 @@ use models::rhoapi::{GPrivate, GUnforgeable, ListParWithRandom, Par};
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
+use super::bond::bond_owner;
 use super::hooks::{install_genesis_hooks, HookAuthority};
 use super::native::RhoHotStore;
 use super::ops::{CellStore, HotStoreCells, RevStacks};
 use super::owner::WalletOwner;
 use super::{RevAmount, RevStackError, MAX_AMOUNT};
-use crate::rust::interpreter::rho_type::{RhoBoolean, RhoList, RhoNumber, RhoString, RhoTuple2};
+use crate::rust::interpreter::rho_type::{
+    RhoBoolean, RhoByteArray, RhoList, RhoNumber, RhoString, RhoTuple2,
+};
 
 pub const REV_GENESIS_URN: &str = "rho:rev:genesis";
 
@@ -66,18 +69,29 @@ pub fn legacy_bonds(store: &dyn CellStore) -> Result<RevAmount, RevStackError> {
     }
 }
 
-pub fn record_bonds(store: &dyn CellStore, bonds: RevAmount) -> Result<RevAmount, RevStackError> {
-    if bonds > MAX_AMOUNT {
-        return Err(RevStackError::InvalidAmount(bonds));
+pub fn mint_bonds(
+    store: Arc<dyn CellStore>,
+    bonds: &[(Vec<u8>, RevAmount)],
+) -> Result<RevAmount, RevStackError> {
+    let stacks = RevStacks::new(store.clone());
+    let mut total: RevAmount = 0;
+    for (pk, stake) in bonds {
+        if *stake == 0 || *stake > MAX_AMOUNT {
+            return Err(RevStackError::InvalidAmount(*stake));
+        }
+        if stacks.balance(&bond_owner(pk))? > 0 {
+            return Err(RevStackError::CorruptWallet(
+                "a genesis bond is already minted".into(),
+            ));
+        }
+        total = add(total, *stake)?;
     }
-    if !store.get_data(&legacy_bonds_channel()).is_empty() {
-        return Err(RevStackError::CorruptWallet(
-            "the genesis bonds are already recorded".into(),
-        ));
+    let after = add(genesis_supply(store.as_ref())?, total)?;
+    for (pk, stake) in bonds {
+        stacks.deposit(&bond_owner(pk), *stake)?;
+        stacks.combine(&bond_owner(pk))?;
     }
-    let after = add(genesis_supply(store)?, bonds)?;
-    replace_amount(store, &supply_channel(), after)?;
-    replace_amount(store, &legacy_bonds_channel(), bonds)?;
+    replace_amount(store.as_ref(), &supply_channel(), after)?;
     Ok(after)
 }
 
@@ -138,15 +152,13 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
                 .map(|supply| RhoNumber::create_par(supply as i64))
                 .map_err(|e| e.to_string())
         }),
-        "bonds" => RhoNumber::unapply(arg)
-            .and_then(|b| RevAmount::try_from(b).ok())
-            .ok_or_else(|| "bonds expects a non-negative amount".to_string())
-            .and_then(|bonds| {
-                let store = store.ok_or_else(|| "native REV layer unavailable".to_string())?;
-                record_bonds(&HotStoreCells(store), bonds)
-                    .map(|supply| RhoNumber::create_par(supply as i64))
-                    .map_err(|e| e.to_string())
-            }),
+        "bonds" => bonds_args(arg).and_then(|bonds| {
+            let store = store.ok_or_else(|| "native REV layer unavailable".to_string())?;
+            let cells: Arc<dyn CellStore> = Arc::new(HotStoreCells(store));
+            mint_bonds(cells, &bonds)
+                .map(|supply| RhoNumber::create_par(supply as i64))
+                .map_err(|e| e.to_string())
+        }),
         "hooks" => hooks_args(arg).and_then(|authority| {
             let store = store.ok_or_else(|| "native REV layer unavailable".to_string())?;
             install_genesis_hooks(&HotStoreCells(store), &authority)
@@ -177,6 +189,22 @@ fn mint_args(arg: &Par) -> Result<Vec<(WalletOwner, RevAmount)>, String> {
                 .filter(|a| *a > 0)
                 .ok_or_else(|| "a genesis amount must be positive".to_string())?;
             Ok((owner, amount as RevAmount))
+        })
+        .collect()
+}
+
+fn bonds_args(arg: &Par) -> Result<Vec<(Vec<u8>, RevAmount)>, String> {
+    let usage = "bonds expects a list of (validatorPublicKey, stake)";
+    RhoList::unapply(arg)
+        .ok_or_else(|| usage.to_string())?
+        .iter()
+        .map(|item| {
+            let (pk, stake) = RhoTuple2::unapply(item).ok_or_else(|| usage.to_string())?;
+            let pk = RhoByteArray::unapply(&pk).ok_or_else(|| usage.to_string())?;
+            let stake = RhoNumber::unapply(&stake)
+                .filter(|s| *s > 0)
+                .ok_or_else(|| "a genesis stake must be positive".to_string())?;
+            Ok((pk, stake as RevAmount))
         })
         .collect()
 }

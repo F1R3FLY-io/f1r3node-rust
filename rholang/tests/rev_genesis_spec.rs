@@ -156,21 +156,29 @@ async fn a_malformed_line_mints_nothing() {
 }
 
 #[tokio::test]
-async fn genesis_records_the_bond_total_once() {
+async fn genesis_mints_the_bonds_onto_native_bond_stacks_once() {
+    use rholang::rust::interpreter::accounting::rev_stack::bond::bond_balance;
     use rholang::rust::interpreter::accounting::rev_stack::genesis::legacy_bonds;
     let runtime = runtime().await;
     runtime.disable_fs_native_urn_filter();
-    let (genesis, alice) = (key(), key());
+    let (genesis, alice, v1, v2) = (key(), key(), key(), key());
     assert!(
         eval_as(&runtime, &genesis, &mint_term(&[(&alice.address, 100)]))
             .await
             .is_empty()
     );
-    let bonds = r#"new g(`rho:rev:genesis`) in { g!("bonds", 40, "out") }"#;
-    assert!(eval_as(&runtime, &genesis, bonds).await.is_empty());
+    let bonds = format!(
+        r#"new g(`rho:rev:genesis`) in {{ g!("bonds", [("{}".hexToBytes(), 30), ("{}".hexToBytes(), 10)], "out") }}"#,
+        hex::encode(&v1.pk.bytes),
+        hex::encode(&v2.pk.bytes)
+    );
+    assert!(eval_as(&runtime, &genesis, &bonds).await.is_empty());
     let cells = HotStoreCells(runtime.reducer.space.hot_store().unwrap());
     assert_eq!(supply(&runtime), 140);
-    assert_eq!(legacy_bonds(&cells).unwrap(), 40);
-    assert!(eval_as(&runtime, &genesis, bonds).await.is_empty());
+    assert_eq!(legacy_bonds(&cells).unwrap(), 0);
+    let store = std::sync::Arc::new(cells);
+    assert_eq!(bond_balance(store.clone(), &v1.pk.bytes).unwrap(), 30);
+    assert_eq!(bond_balance(store, &v2.pk.bytes).unwrap(), 10);
+    assert!(eval_as(&runtime, &genesis, &bonds).await.is_empty());
     assert_eq!(supply(&runtime), 140);
 }

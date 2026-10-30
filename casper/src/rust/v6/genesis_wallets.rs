@@ -110,3 +110,16 @@ pub async fn read_legacy_bonds(
     rholang::rust::interpreter::accounting::rev_stack::genesis::legacy_bonds(&cells)
         .map_err(|e| CasperError::RuntimeError(e.to_string()))
 }
+
+pub async fn read_bond_balance(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+    validator_pk: &[u8],
+) -> Result<RevAmount, CasperError> {
+    let cells = cells_at(runtime_manager, state_hash).await?;
+    rholang::rust::interpreter::accounting::rev_stack::bond::bond_balance(
+        std::sync::Arc::new(cells),
+        validator_pk,
+    )
+    .map_err(|e| CasperError::RuntimeError(e.to_string()))
+}

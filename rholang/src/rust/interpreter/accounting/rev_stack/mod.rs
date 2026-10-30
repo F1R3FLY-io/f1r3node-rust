@@ -1,3 +1,4 @@
+pub mod bond;
 pub mod cell;
 pub mod channel;
 pub mod compute;

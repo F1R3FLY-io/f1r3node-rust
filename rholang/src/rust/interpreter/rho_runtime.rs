@@ -30,6 +30,7 @@ use super::accounting::_cost;
 use super::accounting::cost_accounting::CostAccounting;
 use super::accounting::costs::Cost;
 use super::accounting::has_cost::HasCost;
+use super::accounting::rev_stack::bond::REV_BOND_URN;
 use super::accounting::rev_stack::genesis::REV_GENESIS_URN;
 use super::accounting::rev_stack::native::REV_WALLET_URN;
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
@@ -881,6 +882,19 @@ fn std_system_processes() -> Vec<Definition> {
                 Box::new(move |args| {
                     let ctx = ctx.clone();
                     Box::pin(async move { ctx.system_processes.clone().rev_wallet(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: REV_BOND_URN.to_string(),
+            fixed_channel: FixedChannels::rev_bond(),
+            arity: 3,
+            body_ref: BodyRefs::REV_BOND,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().rev_bond(args).await })
                 })
             }),
             remainder: None,

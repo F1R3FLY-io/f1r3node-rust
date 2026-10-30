@@ -285,18 +285,27 @@ async fn settlement_releases_unspent_commitments_and_conserves_the_supply() {
     assert_eq!(settlement.released[&b], 500);
     assert!(!settlement.debits.contains_key(&b) || settlement.debits[&b] == 0);
 
-    let wallets = [
+    let (_, _, params) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    let validators = &params.proof_of_stake.validators;
+    let bonds: u128 = validators.iter().map(|v| v.stake as u128).sum();
+    let mut wallets = vec![
         alice.owner.clone(),
         bob.owner.clone(),
         proposer.owner.clone(),
     ];
+    wallets.extend(
+        validators.iter().map(|v| {
+            rholang::rust::interpreter::accounting::rev_stack::bond::bond_owner(&v.pk.bytes)
+        }),
+    );
     for root in [&pre, &settled] {
         let cells = casper::rust::v6::genesis_wallets::cells_at(&rm, root)
             .await
             .unwrap();
         let audit = audit(std::sync::Arc::new(cells), &wallets).unwrap();
-        assert!(audit.legacy_bonds > 0);
-        assert_eq!(audit.supply as u128, 200_000 + audit.legacy_bonds as u128);
+        assert_eq!(audit.legacy_bonds, 0);
+        assert!(bonds > 0);
+        assert_eq!(audit.supply as u128, 200_000 + bonds);
         assert!(audit.conserved(), "{audit:?}");
     }
 }
