@@ -92,7 +92,8 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, QueuedBlock,
+    MAX_BLOCKS_IN_PROCESSING,
 };
 
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
@@ -380,7 +381,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                         }
                     };
                     block_processing_queue_tx
-                        .send((casper.clone(), block, guard))
+                        .send((casper.clone(), QueuedBlock::Stored(block), guard))
                         .await
                         .map_err(|e| {
                             CasperError::Other(format!("Failed to send block to queue: {}", e))

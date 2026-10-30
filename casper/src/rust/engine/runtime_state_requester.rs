@@ -21,7 +21,7 @@
 //! [`RootError::RootNotFound`]: rspace_plus_plus::rspace::errors::RootError::RootNotFound
 //! [`BlockError::AwaitingState`]: crate::rust::block_status::BlockError::AwaitingState
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,7 +32,9 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
 
-use crate::rust::engine::lfs_horizon_requester::{HasRootFn, HorizonRequesterOps};
+use crate::rust::engine::lfs_horizon_requester::{
+    HasRootFn, HorizonRequesterOps, MAX_IN_FLIGHT_REQUESTS,
+};
 use crate::rust::engine::lfs_tuple_space_requester::{
     validate_store_items, StatePartPath, StoreItems, ValidChunk, PAGE_SIZE,
 };
@@ -60,6 +62,8 @@ struct PendingRoot {
     /// Chunk paths currently outstanding for this root's pagination walk.
     outstanding: HashSet<StatePartPath>,
     chunks_imported: usize,
+    sent_at: Instant,
+    resend_after: Duration,
 }
 
 /// The requester's decision core: pure state transitions in, chunk paths to
@@ -67,6 +71,7 @@ struct PendingRoot {
 /// lives here where a test can drive it deterministically.
 struct Core {
     pending: HashMap<Blake2b256Hash, PendingRoot>,
+    queued: VecDeque<Blake2b256Hash>,
     path_to_root: HashMap<StatePartPath, Blake2b256Hash>,
     fetched_total: u64,
     importer: Arc<dyn RSpaceImporter>,
@@ -77,6 +82,7 @@ impl Core {
     fn new(importer: Arc<dyn RSpaceImporter>, has_root: HasRootFn) -> Self {
         Self {
             pending: HashMap::new(),
+            queued: VecDeque::new(),
             path_to_root: HashMap::new(),
             fetched_total: 0,
             importer,
@@ -88,7 +94,7 @@ impl Core {
     /// `None` when nothing should be sent (already present, already in
     /// flight, or budget exhausted).
     fn on_fetch(&mut self, root: Blake2b256Hash) -> Option<StatePartPath> {
-        if self.pending.contains_key(&root) {
+        if self.pending.contains_key(&root) || self.queued.contains(&root) {
             return None;
         }
         if (self.has_root)(&root).unwrap_or(false) {
@@ -112,14 +118,40 @@ impl Core {
                  investigate what keeps missing state"
             );
         }
+        if self.pending.len() < MAX_IN_FLIGHT_REQUESTS {
+            Some(self.activate(root))
+        } else {
+            self.queued.push_back(root);
+            None
+        }
+    }
+
+    fn activate(&mut self, root: Blake2b256Hash) -> StatePartPath {
         let path: StatePartPath = vec![(root.clone(), None)];
+        let now = Instant::now();
         self.pending.insert(root.clone(), PendingRoot {
-            started: Instant::now(),
+            started: now,
             outstanding: HashSet::from([path.clone()]),
             chunks_imported: 0,
+            sent_at: now,
+            resend_after: RESEND_INTERVAL,
         });
         self.path_to_root.insert(path.clone(), root);
-        Some(path)
+        path
+    }
+
+    fn fill_window(&mut self) -> Vec<StatePartPath> {
+        let mut paths = Vec::new();
+        while self.pending.len() < MAX_IN_FLIGHT_REQUESTS {
+            let Some(root) = self.queued.pop_front() else {
+                break;
+            };
+            if (self.has_root)(&root).unwrap_or(false) {
+                continue;
+            }
+            paths.push(self.activate(root));
+        }
+        paths
     }
 
     /// A chunk arrived. Imports its items and returns the continuation path to
@@ -190,6 +222,7 @@ impl Core {
                     "state requester: rejected an invalid chunk; asking for it again"
                 );
                 pending.outstanding.insert(start_path.clone());
+                pending.sent_at = Instant::now();
                 self.path_to_root.insert(start_path.clone(), root);
                 return Some(start_path);
             }
@@ -221,6 +254,8 @@ impl Core {
             None
         } else {
             pending.outstanding.insert(last_path.clone());
+            pending.sent_at = Instant::now();
+            pending.resend_after = RESEND_INTERVAL;
             self.path_to_root.insert(last_path.clone(), root);
             Some(last_path)
         }
@@ -243,9 +278,15 @@ impl Core {
             );
             self.drop_root(&root);
         }
+        let now = Instant::now();
         self.pending
-            .values()
-            .flat_map(|p| p.outstanding.iter().cloned())
+            .values_mut()
+            .filter(|p| now.duration_since(p.sent_at) >= p.resend_after)
+            .flat_map(|p| {
+                p.sent_at = now;
+                p.resend_after = p.resend_after.saturating_mul(2).min(ROOT_DEADLINE);
+                p.outstanding.iter().cloned().collect::<Vec<_>>()
+            })
             .collect()
     }
 
@@ -322,7 +363,7 @@ pub fn prepare<T: TransportLayer + Send + Sync + 'static>(
         let mut resend = tokio::time::interval(RESEND_INTERVAL);
         resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            let to_request: Vec<StatePartPath> = tokio::select! {
+            let mut to_request: Vec<StatePartPath> = tokio::select! {
                 biased;
                 Some(message) = items_rx.recv() => match core.accept(message) {
                     Some((chunk, history_items, data_items)) => {
@@ -343,6 +384,7 @@ pub fn prepare<T: TransportLayer + Send + Sync + 'static>(
                 _ = resend.tick() => core.on_tick(),
                 else => break,
             };
+            to_request.extend(core.fill_window());
             for path in to_request {
                 if let Err(e) = sender.request_for_horizon_chunk(&path, PAGE_SIZE).await {
                     tracing::warn!(error = %e, "state requester: chunk request failed; the resend tick will retry");
@@ -478,11 +520,57 @@ mod tests {
             !recorded.lock().unwrap().contains(&r),
             "a root was recorded from a chunk that failed validation"
         );
+        core.pending.get_mut(&r).unwrap().sent_at -= RESEND_INTERVAL;
         assert_eq!(core.on_tick(), vec![path.clone()]);
         assert!(
             core.on_fetch(r).is_none(),
             "the fetch is still in flight, not dropped"
         );
+    }
+
+    #[test]
+    fn at_most_max_in_flight_roots_are_requested_and_the_rest_wait() {
+        let (mut core, _) = core_with_store();
+        let roots: Vec<Blake2b256Hash> = (1..=MAX_IN_FLIGHT_REQUESTS as u8 + 2).map(root).collect();
+
+        let started: Vec<StatePartPath> = roots
+            .iter()
+            .filter_map(|r| core.on_fetch(r.clone()))
+            .collect();
+        assert_eq!(started.len(), MAX_IN_FLIGHT_REQUESTS);
+        assert!(core.fill_window().is_empty());
+        assert!(core
+            .on_fetch(roots[MAX_IN_FLIGHT_REQUESTS].clone())
+            .is_none());
+
+        let first = started[0].clone();
+        assert!(deliver(&mut core, chunk(first.clone(), first, 1), true).is_none());
+        assert_eq!(core.fill_window(), vec![vec![(
+            roots[MAX_IN_FLIGHT_REQUESTS].clone(),
+            None
+        )]]);
+        assert_eq!(core.pending.len(), MAX_IN_FLIGHT_REQUESTS);
+    }
+
+    #[test]
+    fn resends_of_an_unanswered_root_back_off() {
+        let (mut core, _) = core_with_store();
+        let r = root(0x4F);
+        let path = core.on_fetch(r.clone()).expect("fetch starts");
+
+        assert!(
+            core.on_tick().is_empty(),
+            "nothing is due before the interval"
+        );
+        core.pending.get_mut(&r).unwrap().sent_at -= RESEND_INTERVAL;
+        assert_eq!(core.on_tick(), vec![path.clone()]);
+        core.pending.get_mut(&r).unwrap().sent_at -= RESEND_INTERVAL;
+        assert!(
+            core.on_tick().is_empty(),
+            "the second resend waits twice as long"
+        );
+        core.pending.get_mut(&r).unwrap().sent_at -= RESEND_INTERVAL;
+        assert_eq!(core.on_tick(), vec![path]);
     }
 
     /// A peer that answers "terminal, empty" on the first chunk does not have
