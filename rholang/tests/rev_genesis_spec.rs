@@ -154,3 +154,23 @@ async fn a_malformed_line_mints_nothing() {
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 0);
     assert_eq!(supply(&runtime), 0);
 }
+
+#[tokio::test]
+async fn genesis_records_the_bond_total_once() {
+    use rholang::rust::interpreter::accounting::rev_stack::genesis::legacy_bonds;
+    let runtime = runtime().await;
+    runtime.disable_fs_native_urn_filter();
+    let (genesis, alice) = (key(), key());
+    assert!(
+        eval_as(&runtime, &genesis, &mint_term(&[(&alice.address, 100)]))
+            .await
+            .is_empty()
+    );
+    let bonds = r#"new g(`rho:rev:genesis`) in { g!("bonds", 40, "out") }"#;
+    assert!(eval_as(&runtime, &genesis, bonds).await.is_empty());
+    let cells = HotStoreCells(runtime.reducer.space.hot_store().unwrap());
+    assert_eq!(supply(&runtime), 140);
+    assert_eq!(legacy_bonds(&cells).unwrap(), 40);
+    assert!(eval_as(&runtime, &genesis, bonds).await.is_empty());
+    assert_eq!(supply(&runtime), 140);
+}

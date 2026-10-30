@@ -75,3 +75,38 @@ pub async fn cells_at(
     })?;
     Ok(HotStoreCells(store))
 }
+
+pub fn bonds_total(
+    pos: &crate::rust::genesis::contracts::proof_of_stake::ProofOfStake,
+) -> Result<RevAmount, CasperError> {
+    pos.validators.iter().try_fold(0 as RevAmount, |total, v| {
+        RevAmount::try_from(v.stake)
+            .ok()
+            .and_then(|s| total.checked_add(s))
+            .filter(|t| *t <= MAX_AMOUNT)
+            .ok_or_else(|| {
+                CasperError::RuntimeError("the genesis bonds exceed the largest REV amount".into())
+            })
+    })
+}
+
+pub fn genesis_supply_of(
+    vaults: &[Vault],
+    pos: &crate::rust::genesis::contracts::proof_of_stake::ProofOfStake,
+) -> Result<RevAmount, CasperError> {
+    wallets_supply(vaults)?
+        .checked_add(bonds_total(pos)?)
+        .filter(|t| *t <= MAX_AMOUNT)
+        .ok_or_else(|| {
+            CasperError::RuntimeError("the genesis supply exceeds the largest REV amount".into())
+        })
+}
+
+pub async fn read_legacy_bonds(
+    runtime_manager: &RuntimeManager,
+    state_hash: &StateHash,
+) -> Result<RevAmount, CasperError> {
+    let cells = cells_at(runtime_manager, state_hash).await?;
+    rholang::rust::interpreter::accounting::rev_stack::genesis::legacy_bonds(&cells)
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))
+}

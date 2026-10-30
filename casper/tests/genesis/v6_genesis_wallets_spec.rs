@@ -1,7 +1,10 @@
 use casper::rust::genesis::contracts::vault::Vault;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use casper::rust::v6::genesis_wallets::{read_genesis_supply, read_wallet_balance, wallets_supply};
+use casper::rust::v6::genesis_wallets::{
+    bonds_total, genesis_supply_of, read_genesis_supply, read_legacy_bonds, read_wallet_balance,
+    wallets_supply,
+};
 use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
@@ -101,7 +104,17 @@ async fn a_v6_genesis_holds_wallets_txt_on_native_stacks() {
 
     let expected: u64 = vaults.iter().map(|v| v.initial_balance as u64).sum();
     assert_eq!(wallets_supply(&vaults).unwrap(), expected);
-    assert_eq!(read_genesis_supply(&rm, post).await.unwrap(), expected);
+    let bonds = bonds_total(&genesis.proof_of_stake).unwrap();
+    assert!(bonds > 0);
+    assert_eq!(
+        genesis_supply_of(&vaults, &genesis.proof_of_stake).unwrap(),
+        expected + bonds
+    );
+    assert_eq!(
+        read_genesis_supply(&rm, post).await.unwrap(),
+        expected + bonds
+    );
+    assert_eq!(read_legacy_bonds(&rm, post).await.unwrap(), bonds);
 
     let owner = |v: &Vault| WalletOwner::from_vault_address(v.vault_address.clone());
     assert_eq!(

@@ -403,6 +403,19 @@ pub fn rev_stacks_generator(
     )
 }
 
+pub fn rev_bonds_generator(bonds: u64, timestamp: i64, shard_id: &str) -> Signed<DeployData> {
+    let code = format!(
+        "new revGenesis(`rho:rev:genesis`), ret in {{ revGenesis!(\"bonds\", {bonds}, *ret) }}"
+    );
+    to_deploy(
+        CompiledRholangSource::new(code, HashMap::new(), "<synthetic rev bonds generator>".to_string())
+            .expect("Failed to compile the REV bonds generator"),
+        VAULTS_GENERATOR_PK,
+        timestamp,
+        shard_id,
+    )
+}
+
 pub fn rev_hooks_generator(
     threshold: u32,
     addresses: &[String],

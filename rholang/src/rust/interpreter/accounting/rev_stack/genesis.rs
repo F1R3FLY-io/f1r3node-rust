@@ -43,6 +43,61 @@ pub fn genesis_supply(store: &dyn CellStore) -> Result<RevAmount, RevStackError>
     }
 }
 
+pub const LEGACY_BONDS_CHANNEL_DOMAIN: &[u8] = b"f1r3fly/rev-stack/legacy-bonds/v1";
+
+pub fn legacy_bonds_channel() -> Par {
+    Par::default().with_unforgeables(vec![GUnforgeable {
+        unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
+            id: Blake2b256::hash(LEGACY_BONDS_CHANNEL_DOMAIN.to_vec()),
+        })),
+    }])
+}
+
+pub fn legacy_bonds(store: &dyn CellStore) -> Result<RevAmount, RevStackError> {
+    let data = store.get_data(&legacy_bonds_channel());
+    match data.as_slice() {
+        [] => Ok(0),
+        [datum] => supply_amount(datum).ok_or_else(|| {
+            RevStackError::CorruptWallet("the legacy bond datum is malformed".into())
+        }),
+        _ => Err(RevStackError::CorruptWallet(
+            "more than one legacy bond datum".into(),
+        )),
+    }
+}
+
+pub fn record_bonds(store: &dyn CellStore, bonds: RevAmount) -> Result<RevAmount, RevStackError> {
+    if bonds > MAX_AMOUNT {
+        return Err(RevStackError::InvalidAmount(bonds));
+    }
+    if !store.get_data(&legacy_bonds_channel()).is_empty() {
+        return Err(RevStackError::CorruptWallet(
+            "the genesis bonds are already recorded".into(),
+        ));
+    }
+    let after = add(genesis_supply(store)?, bonds)?;
+    replace_amount(store, &supply_channel(), after)?;
+    replace_amount(store, &legacy_bonds_channel(), bonds)?;
+    Ok(after)
+}
+
+pub fn set_legacy_bonds(store: &dyn CellStore, bonds: RevAmount) -> Result<(), RevStackError> {
+    replace_amount(store, &legacy_bonds_channel(), bonds)
+}
+
+fn replace_amount(
+    store: &dyn CellStore,
+    channel: &Par,
+    amount: RevAmount,
+) -> Result<(), RevStackError> {
+    let existing = store.get_data(channel).len();
+    for index in (0..existing).rev() {
+        store.remove_datum(channel, index as i32)?;
+    }
+    store.put_datum(channel, make_supply_datum(channel, amount));
+    Ok(())
+}
+
 pub fn mint(
     store: Arc<dyn CellStore>,
     lines: &[(WalletOwner, RevAmount)],
@@ -70,12 +125,7 @@ pub fn mint(
         stacks.deposit(owner, *amount)?;
         stacks.combine(owner)?;
     }
-    let channel = supply_channel();
-    let existing = store.get_data(&channel).len();
-    for index in (0..existing).rev() {
-        store.remove_datum(&channel, index as i32)?;
-    }
-    store.put_datum(&channel, make_supply_datum(&channel, after));
+    replace_amount(store.as_ref(), &supply_channel(), after)?;
     Ok(after)
 }
 
@@ -88,6 +138,15 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
                 .map(|supply| RhoNumber::create_par(supply as i64))
                 .map_err(|e| e.to_string())
         }),
+        "bonds" => RhoNumber::unapply(arg)
+            .and_then(|b| RevAmount::try_from(b).ok())
+            .ok_or_else(|| "bonds expects a non-negative amount".to_string())
+            .and_then(|bonds| {
+                let store = store.ok_or_else(|| "native REV layer unavailable".to_string())?;
+                record_bonds(&HotStoreCells(store), bonds)
+                    .map(|supply| RhoNumber::create_par(supply as i64))
+                    .map_err(|e| e.to_string())
+            }),
         "hooks" => hooks_args(arg).and_then(|authority| {
             let store = store.ok_or_else(|| "native REV layer unavailable".to_string())?;
             install_genesis_hooks(&HotStoreCells(store), &authority)
