@@ -500,6 +500,7 @@ dependencies = [
  "imbl",
  "indexmap",
  "itertools",
+ "k256",
  "lazy_static",
  "lz4_flex",
  "metrics",

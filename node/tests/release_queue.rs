@@ -1,4 +1,6 @@
-use node::rust::instances::release_queue::ReleaseQueue;
+#![cfg(feature = "cbc-casper")]
+
+use node::rust::consensus::casper::instances::release_queue::ReleaseQueue;
 
 #[tokio::test]
 async fn a_released_block_is_processed_before_later_gossip_and_gossip_still_progresses() {
@@ -39,7 +41,7 @@ async fn a_released_block_is_processed_before_later_gossip_and_gossip_still_prog
 #[test]
 fn a_released_block_records_its_wait_from_release_to_processing() {
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
-    use node::rust::instances::release_queue::RELEASE_QUEUE_WAIT_METRIC;
+    use node::rust::consensus::casper::instances::release_queue::RELEASE_QUEUE_WAIT_METRIC;
 
     let recorder = DebuggingRecorder::new();
     let snapshotter = recorder.snapshotter();
@@ -75,7 +77,7 @@ async fn a_block_released_while_gossip_waits_is_processed_before_that_gossip() {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use node::rust::instances::release_queue::run_scheduler;
+    use node::rust::consensus::casper::instances::release_queue::run_scheduler;
 
     let queue = Arc::new(ReleaseQueue::new(3, 16));
     for gossip in ["gossip-1", "gossip-2", "gossip-3"] {
@@ -126,7 +128,7 @@ async fn the_processing_slot_is_free_while_a_processed_block_scans_for_released_
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use node::rust::instances::release_queue::run_scheduler;
+    use node::rust::consensus::casper::instances::release_queue::run_scheduler;
     use tokio::sync::Notify;
 
     let queue = Arc::new(ReleaseQueue::new(3, 16));
