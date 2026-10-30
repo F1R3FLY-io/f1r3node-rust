@@ -1,8 +1,9 @@
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+use block_storage::rust::pending_blocks::PendingBlockLimits;
 use comm::rust::peer_node::{NodeIdentifier, PeerNode};
 use comm::rust::rp::connect::Connections;
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
-use models::rust::block_implicits::get_random_block;
+use models::rust::block_implicits::{get_random_block, get_random_block_default};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
@@ -184,6 +185,92 @@ impl Fixture {
             .casper_buffer
             .contains(&BlockHashSerde(self.child.clone())));
     }
+}
+
+#[tokio::test]
+async fn deferred_dependency_free_block_is_requested_after_parent_validation() {
+    let fixture = Fixture::new().await;
+    fixture
+        .dependencies
+        .casper_buffer
+        .remove(BlockHashSerde(fixture.parent.clone()))
+        .unwrap();
+    assert!(fixture
+        .dependencies
+        .casper_buffer
+        .is_pendant(&BlockHashSerde(fixture.child.clone())));
+
+    let mut child = get_random_block_default();
+    child.block_hash = fixture.child.clone();
+    fixture.dependencies.defer_pending(&child);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .dependencies
+            .block_retriever
+            .was_requested_as_dependency(&fixture.child)
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(fixture.dependencies.transport.request_count() > 0);
+}
+
+#[tokio::test]
+async fn refused_dependency_keeps_its_request_tracking() {
+    let fixture = Fixture::new().await;
+    fixture.request_parent().await;
+    fixture
+        .dependencies
+        .block_retriever
+        .ack_receive(fixture.parent.clone())
+        .await
+        .unwrap();
+    fixture
+        .dependencies
+        .block_retriever
+        .set_retry_attempts_for_test(&fixture.parent, 3)
+        .unwrap();
+    fixture
+        .dependencies
+        .block_store
+        .set_pending_limits(PendingBlockLimits {
+            max_blocks: 0,
+            max_bytes: usize::MAX,
+            max_per_sender: 0,
+        });
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+
+    fixture
+        .dependencies
+        .release_refused_pending(&parent, PendingInsert::SenderLimitReached)
+        .await
+        .unwrap();
+
+    assert!(fixture
+        .dependencies
+        .block_retriever
+        .was_requested_as_dependency(&fixture.parent)
+        .unwrap());
+    assert!(fixture
+        .dependencies
+        .block_retriever
+        .get_request_state_for_test(&fixture.parent)
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        fixture
+            .dependencies
+            .block_retriever
+            .retry_attempts_for_test(&fixture.parent)
+            .unwrap(),
+        3
+    );
 }
 
 #[tokio::test]
