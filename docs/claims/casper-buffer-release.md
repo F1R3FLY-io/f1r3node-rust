@@ -85,13 +85,19 @@ The status of each item is recorded here as the TDD cycles complete.
    - `a_released_block_is_processed_before_later_gossip_and_gossip_still_progresses` checks release-first order and the bounded gossip share at the queue.
    - `a_block_released_while_gossip_waits_is_processed_before_that_gossip` drives `run_scheduler`, the scheduler of the processing pipeline, and asserts the processing order.
    - Both tests fail when the queue always serves gossip first.
-5. C4: a bounded model or a property test processes one set of ready blocks in every order or in generated orders. It compares the resulting DAG and verdicts with the FIFO order. **Done 2026-10-30.**
+5. C4: a bounded model or a property test processes one set of ready blocks in every order or in generated orders. It compares the resulting DAG and verdicts with the FIFO order. **Done 2026-10-30 for independent ready blocks.** Order invariance for released blocks is open.
    - `ready_blocks_reach_the_same_dag_and_verdicts_in_every_processing_order` (new, `casper/tests/sync/release_order_invariance_spec.rs`): a fresh node processes three ready blocks from three validators in all six orders. The verdicts, the DAG membership, and the latest messages equal the FIFO order.
    - Scope limit: the ready set holds valid, independent blocks only, not equivocations or invalid blocks.
-6. Record the evidence in `docs/casper/cbc-evidence/` for each `cbc=mandatory` artifact and cite this claim id. **Done 2026-10-30.**
+   - Scope limit: the test gives each block directly to `process_block`. Each block has only genesis as parent, so no block parks and the release queue does not run.
+   - A test that sends parked blocks through the buffer and the scheduler would close the open part.
+6. Record the evidence in `docs/cbc-evidence/` for each `cbc=mandatory` artifact and cite this claim id. **Done 2026-10-30.**
    - `scripts/cbc.sh claim-set` declared this claim on the nine `cbc=mandatory` artifacts (`docs/cbc-evidence/*.claims.json`). No artifact is discharged or waived yet.
    - The review package for items 2 to 6 is in `docs/cbc-evidence/runs/casper-buffer-release-discharge-20261030-02/`. It repeats the checks of package `-01` on the merge of `dev` at `cf94b4200`, which changed `block_processor.rs` and `block_processor_instance.rs`.
-7. Compare a soak of `dev` after PR #653 with the issue #24 baseline before PR #653. The comparison reports park time, release queue wait, sustained finalization p95, and the `test_load` failure count. PR #653 merged on 2026-10-07, so a soak pair on one base is not available. **Evidence recorded 2026-10-30. Maintainer acceptance is open.**
+7. Run a comparison soak of the branch against a `dev` soak on the same base. The soak reports park time, release queue wait, sustained finalization p95, and the `test_load` failure count. The maintainer accepts the evidence before PR #653 leaves draft. **Open.**
+   - PR #653 merged on 2026-10-07 without this evidence. A comparison on one base is still possible: a `dev` soak against a `dev` soak with PR #653 reverted.
+   - Proposed substitute evidence (2026-10-30): the soaks below compare `dev` and `master` after PR #653 with the issue #24 baseline before PR #653. The bases are different, so the soaks do not isolate the effect of PR #653.
+   - The substitute replaces the requirement only after a maintainer approves it.
+   - Each sustained finalization sample below is the finalization p95 of one validator in one sustained phase.
    - Baseline before PR #653: issue #24 measured 56% of received blocks parked, for 7.1 s median and 39.6 s p90. Run 37469364217 on `dev` `778cc6754` had 8 of 49 `test_load` failures.
    - After PR #653: the scheduled soak run 40806861759 tested `dev` `252a86d1d` for 72,469 s with 146 iterations and 0 failures. The aggregates use the node metrics of the 73 Docker iterations.
    - Park time: 230 of 148,605 replayed blocks parked (0.15%). The median is at most 0.1 s, the p90 is from 1 s to 2.5 s, and the maximum is at most 5 s. The mean is 0.28 s.
@@ -104,7 +110,7 @@ The status of each item is recorded here as the TDD cycles complete.
      - Release queue wait: 3,339 released blocks. Each one waited less than 5 ms. The mean is 46 µs.
      - Sustained finalization p95: the median across the 1,400 sustained-phase samples is 23.2 s, the 95th percentile is 29.5 s, and the maximum is 34.5 s. No block stayed unfinalized. The last-finalized-block spread is 0 in all 350 samples.
      - `test_load`: the 350 completed sessions had 0 failures, 175 on Docker and 175 on subprocess. The segment deadline stopped 6 sessions (exit 124), 3 on each provider. All 86 benchmark segments passed.
-     - This soak has more than 100 sessions on each provider, so it meets the session count of issue #24.
+     - This soak has more than 100 sessions on each provider, so it meets the session count of issue #24. Its target is `master`, and issue #764 measures the gate on `dev` first.
 8. C5: a unit test adds two dependency-free entries at different times and runs the overflow prune with a limit of one node. The older entry is removed and the newer entry stays. The test fails on the old order. **Done 2026-10-16:** `the_overflow_prune_removes_the_oldest_dependency_free_entry_first` failed on the old order and passed after the fix. The prune now sorts oldest first and tries each hash once.
    - After the PR #752 review, the prune builds the list again when it uses up the first list. It then also finds the entries that a removal freed. `the_overflow_prune_also_removes_an_entry_that_a_removal_freed` failed on the single-list prune and passed after the change.
 9. C6: a `TestNode` spec buffers a block, sends a recovery request for it, and disposes a duplicate copy of it. A second recovery request inside the cooldown sends nothing, and the retriever keeps tracking the block. The spec fails on the old disposal. **Done 2026-10-16:** `a_duplicate_copy_of_a_buffered_block_keeps_its_refetch_cooldown` (`casper/tests/sync/refetch_cooldown_spec.rs`) failed on the old disposal: the second request sent one more message.

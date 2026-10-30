@@ -62,6 +62,18 @@
     {
       "path": "node/src/rust/instances/block_processor_instance.rs",
       "sha256": "edb1cb33a1212cc81cfd5ee0d09d89644d14cea4e0532a9679b063a894a5aafb"
+    },
+    {
+      "path": "casper/src/rust/casper.rs",
+      "sha256": "376626d51f9beb432351aa398e5d1e287572a52aa94497d06cf97bddadc2b0cf"
+    },
+    {
+      "path": "casper/src/rust/engine/block_retriever.rs",
+      "sha256": "ccec58fa7f7f95c86e8ecd721dbc707896f33a788e9d9db89a2b11d5c89fc491"
+    },
+    {
+      "path": "block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs",
+      "sha256": "fd28f51e8be0fde6d4becafcbc42d45df4eece8322dfb0b862cdfb67fafe3e07"
     }
   ],
   "evidence": [
