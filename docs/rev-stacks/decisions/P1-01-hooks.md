@@ -38,3 +38,4 @@ Each entry gives the decision, the alternatives, the reason and whether it is re
 
 - `casper --lib`: 743 tests pass, including the v6 module tests. The one failure is the WAL test that also fails in debug builds on dev.
 - Clippy (`--all-targets`, `casper`) gives no warning in a file that this round changes.
+- `casper --test mod` with the flag off: 95 tests pass in `add_block`, `blocks`, `multi_parent_casper_finalization_spec`, `multi_parent_casper_deploy_spec` and `last_finalized_api_test`.
