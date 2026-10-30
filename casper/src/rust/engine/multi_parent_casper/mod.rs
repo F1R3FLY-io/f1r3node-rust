@@ -18,8 +18,8 @@
 //!   `get_approved_block`, `deploy`, `handle_valid_block`, `add_deploy`.
 //! * [`buffer_resolver`] — `get_dependency_free_from_buffer`,
 //!   `get_all_from_buffer`.
-//! * [`finalization_runner`] — `Finalizer`, `compute_last_finalized_block`,
-//!   `update_last_finalized_block`.
+//! * [`finalization_runner`] — `Finalizer`, `derive_last_finalized_block`,
+//!   `adopt_derived`, `update_last_finalized_block`.
 //! * [`events`] — `block_event`, `created_event`, `added_event`,
 //!   `finalised_event`, `pending_deploy_is_future_for_next_block`.
 //!
