@@ -250,3 +250,53 @@ async fn compute_is_paid_to_the_compute_wallet_and_the_charge_never_passes_delta
     }
     assert_eq!(roots[0], roots[1]);
 }
+
+#[tokio::test]
+async fn settlement_releases_unspent_commitments_and_conserves_the_supply() {
+    use casper::rust::v6::settle::audit;
+    use rholang::rust::interpreter::accounting::rev_stack::wallet_channel_id;
+
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let inputs = vec![
+        input(&alice, 1, 1_000, 3),
+        input(&alice, 2, 100, 2),
+        input(&bob, 3, 500, 1),
+    ];
+    let runs = vec![metered(4, 96), metered(50, 90), metered(0, 0)];
+    let reader = StoreReader::at(&rm, &pre).await.unwrap();
+    let gate = gate_block(&reader, &PhloLimitDemand, &inputs).unwrap();
+    let (settlement, settled) = settle_block(
+        &rm,
+        &pre,
+        &inputs,
+        &gate.entries,
+        &runs,
+        &proposer.owner,
+        Boxcar::unbounded(),
+    )
+    .await
+    .unwrap();
+
+    let a = wallet_channel_id(&alice.owner);
+    let b = wallet_channel_id(&bob.owner);
+    assert_eq!(settlement.debits[&a], 300 + 200);
+    assert_eq!(settlement.released[&a], 3_000 + 200 - 500);
+    assert_eq!(settlement.released[&b], 500);
+    assert!(!settlement.debits.contains_key(&b) || settlement.debits[&b] == 0);
+
+    let wallets = [
+        alice.owner.clone(),
+        bob.owner.clone(),
+        proposer.owner.clone(),
+    ];
+    for root in [&pre, &settled] {
+        let cells = casper::rust::v6::genesis_wallets::cells_at(&rm, root)
+            .await
+            .unwrap();
+        let audit = audit(std::sync::Arc::new(cells), &wallets).unwrap();
+        assert!(audit.legacy_bonds > 0);
+        assert_eq!(audit.supply as u128, 200_000 + audit.legacy_bonds as u128);
+        assert!(audit.conserved(), "{audit:?}");
+    }
+}

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use models::rust::block::state_hash::StateHash;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
+use rholang::rust::interpreter::accounting::rev_stack::genesis::{genesis_supply, legacy_bonds};
 use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id, CellStore, HotStoreCells, RevAmount, RevStacks, WalletOwner,
 };
@@ -13,6 +14,7 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use serde::{Deserialize, Serialize};
 
 use super::gate::{GateEntry, GateInput, WalletId};
+use super::hooks::{after_settlement, HookCall};
 use super::run::EnvelopeRun;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -60,6 +62,7 @@ pub struct Settlement {
     pub proposer: WalletId,
     pub proposer_credit: RevAmount,
     pub compute_credit: RevAmount,
+    pub released: BTreeMap<WalletId, RevAmount>,
 }
 
 impl Settlement {
@@ -133,6 +136,7 @@ pub fn charges(
         proposer: wallet_channel_id(proposer),
         proposer_credit: credit,
         compute_credit,
+        released: BTreeMap::new(),
     })
 }
 
@@ -192,10 +196,8 @@ pub async fn settle_block(
     proposer: &WalletOwner,
     boxcar: Boxcar,
 ) -> Result<(Settlement, StateHash), CasperError> {
-    let settlement = charges(inputs, entries, runs, proposer)?;
-    if settlement.debited() == 0 {
-        return Ok((settlement, mid_root.clone()));
-    }
+    let mut settlement = charges(inputs, entries, runs, proposer)?;
+    settlement.released = released(entries, &settlement)?;
     let owners: BTreeMap<WalletId, WalletOwner> = inputs
         .iter()
         .flat_map(GateInput::paying_wallets)
@@ -209,15 +211,98 @@ pub async fn settle_block(
     let store = runtime.reducer.space.hot_store().ok_or_else(|| {
         CasperError::RuntimeError("the runtime's space has no native REV layer".into())
     })?;
-    apply(
-        Arc::new(HotStoreCells(store)),
-        &settlement,
-        &owners,
-        proposer,
-        boxcar,
-    )?;
+    let cells: Arc<dyn CellStore> = Arc::new(HotStoreCells(store));
+    let mut touched: Vec<WalletOwner> = owners.values().cloned().collect();
+    touched.push(proposer.clone());
+    touched.push(compute_wallet_owner());
+    let before = held_by(cells.clone(), &touched)?;
+    if settlement.debited() > 0 {
+        apply(cells.clone(), &settlement, &owners, proposer, boxcar)?;
+    }
+    match after_settlement(cells.as_ref())? {
+        HookCall::Noop => {}
+        HookCall::Contract(_) => {
+            return Err(CasperError::RuntimeError(
+                "a contract REV hook cannot run yet: only the no-op hook is supported".into(),
+            ))
+        }
+    }
+    let after = held_by(cells, &touched)?;
+    if before != after {
+        return Err(CasperError::RuntimeError(format!(
+            "settlement broke conservation: the settled wallets held {before} and now hold {after}"
+        )));
+    }
+    if settlement.debited() == 0 {
+        return Ok((settlement, mid_root.clone()));
+    }
     let settled_root = runtime.create_checkpoint().await.root.to_bytes_prost();
     Ok((settlement, settled_root))
+}
+
+fn released(
+    entries: &[GateEntry],
+    settlement: &Settlement,
+) -> Result<BTreeMap<WalletId, RevAmount>, CasperError> {
+    let mut committed: BTreeMap<WalletId, RevAmount> = BTreeMap::new();
+    for entry in entries.iter().filter(|e| e.admitted()) {
+        for c in &entry.commitments {
+            let total = committed.entry(c.wallet.clone()).or_insert(0);
+            *total = total.checked_add(c.amount).ok_or_else(overflow)?;
+        }
+    }
+    committed
+        .into_iter()
+        .map(|(wallet, amount)| {
+            let spent = settlement.debits.get(&wallet).copied().unwrap_or(0);
+            amount
+                .checked_sub(spent)
+                .map(|left| (wallet, left))
+                .ok_or_else(|| {
+                    CasperError::RuntimeError("a wallet paid more than it committed".into())
+                })
+        })
+        .collect()
+}
+
+fn held_by(store: Arc<dyn CellStore>, owners: &[WalletOwner]) -> Result<u128, CasperError> {
+    let stacks = RevStacks::new(store);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total: u128 = 0;
+    for owner in owners {
+        if seen.insert(owner.canonical_bytes()) {
+            let b = stacks
+                .balance(owner)
+                .map_err(|e| CasperError::RuntimeError(format!("settlement: {e}")))?;
+            total += b as u128;
+        }
+    }
+    Ok(total)
+}
+
+pub fn audit(store: Arc<dyn CellStore>, wallets: &[WalletOwner]) -> Result<Audit, CasperError> {
+    let mut all = wallets.to_vec();
+    all.push(compute_wallet_owner());
+    let held = held_by(store.clone(), &all)?;
+    let native = |e: rholang::rust::interpreter::accounting::rev_stack::RevStackError| {
+        CasperError::RuntimeError(format!("audit: {e}"))
+    };
+    Ok(Audit {
+        held,
+        legacy_bonds: legacy_bonds(store.as_ref()).map_err(native)?,
+        supply: genesis_supply(store.as_ref()).map_err(native)?,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Audit {
+    pub held: u128,
+    pub legacy_bonds: RevAmount,
+    pub supply: RevAmount,
+}
+
+impl Audit {
+    pub fn conserved(&self) -> bool { self.held + self.legacy_bonds as u128 == self.supply as u128 }
 }
 
 #[cfg(test)]
