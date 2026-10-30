@@ -212,6 +212,12 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             native_token_decimals: conf.genesis_block_data.native_token_decimals,
             active_validators_cache_max_entries:
                 crate::rust::casper::ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
+            finalizer_oracle_cache_bounds: crate::rust::safety::clique_oracle::OracleCacheBounds {
+                latest_justifications: conf.finalizer_oracle_cache_justifications,
+                self_justification: conf.finalizer_oracle_cache_self_justifications,
+                ancestor: conf.finalizer_oracle_cache_ancestors,
+            },
+            finalizer_timeout_reruns: conf.finalizer_timeout_reruns,
         };
 
         Self {

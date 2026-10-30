@@ -226,7 +226,7 @@ impl FinalizationContext {
 /// compute exceeding this is a stall to surface, not pace.
 const FINALIZER_COMPUTE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-type CycleFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+type CycleFuture = std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>;
 type Cycle = Box<dyn Fn() -> CycleFuture + Send>;
 
 /// The one finalizer task of a casper instance. Its cycles run one at a time,
@@ -244,9 +244,12 @@ pub struct Finalizer {
 
 impl Finalizer {
     /// Starts the finalizer task of the casper instance `ctx` belongs to.
-    pub fn start(ctx: FinalizationContext) -> Self { Self::spawn(finalizer_cycle(ctx)) }
+    pub fn start(ctx: FinalizationContext) -> Self {
+        let max_timeout_reruns = ctx.shard_conf.finalizer_timeout_reruns;
+        Self::spawn(finalizer_cycle(ctx), max_timeout_reruns)
+    }
 
-    fn spawn(cycle: Cycle) -> Self {
+    fn spawn(cycle: Cycle, max_timeout_reruns: u32) -> Self {
         let wake = Arc::new(tokio::sync::Notify::new());
         let requested = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let in_cycle = Arc::new(AtomicBool::new(false));
@@ -254,6 +257,7 @@ impl Finalizer {
         let (stop, stopped) = tokio::sync::oneshot::channel();
         tokio::spawn(finalizer_loop(
             cycle,
+            max_timeout_reruns,
             wake.clone(),
             requested.clone(),
             in_cycle.clone(),
@@ -300,6 +304,7 @@ impl Finalizer {
 /// value at or above a caller's ticket started after that caller asked.
 async fn finalizer_loop(
     cycle: Cycle,
+    max_timeout_reruns: u32,
     wake: Arc<tokio::sync::Notify>,
     requested: Arc<std::sync::atomic::AtomicU64>,
     in_cycle: Arc<AtomicBool>,
@@ -307,23 +312,44 @@ async fn finalizer_loop(
     mut stopped: tokio::sync::oneshot::Receiver<()>,
 ) {
     use crate::rust::metrics_constants::{CASPER_METRICS_SOURCE, FINALIZER_RUN_RERUNS_METRIC};
+    let mut timeout_reruns = 0u32;
+    let mut resume = false;
     loop {
-        tokio::select! {
-            _ = wake.notified() => {}
-            _ = &mut stopped => return,
+        if resume {
+            if !matches!(
+                stopped.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ) {
+                return;
+            }
+        } else {
+            tokio::select! {
+                _ = wake.notified() => {}
+                _ = &mut stopped => return,
+            }
         }
         let started_with = requested.load(Ordering::SeqCst);
         in_cycle.store(true, Ordering::SeqCst);
         // A subtask, so a panicking cycle costs that cycle, not finality.
-        if let Err(join_err) = tokio::spawn(cycle()).await {
-            tracing::error!(
-                target: "f1r3fly.casper",
-                "finalizer cycle terminated abnormally: {}",
-                join_err
-            );
-        }
+        let timed_out = match tokio::spawn(cycle()).await {
+            Ok(timed_out) => timed_out,
+            Err(join_err) => {
+                tracing::error!(
+                    target: "f1r3fly.casper",
+                    "finalizer cycle terminated abnormally: {}",
+                    join_err
+                );
+                false
+            }
+        };
         in_cycle.store(false, Ordering::SeqCst);
-        if requested.load(Ordering::SeqCst) > started_with {
+        resume = timed_out && timeout_reruns < max_timeout_reruns;
+        if resume {
+            timeout_reruns += 1;
+        } else if !timed_out {
+            timeout_reruns = 0;
+        }
+        if resume || requested.load(Ordering::SeqCst) > started_with {
             metrics::counter!(FINALIZER_RUN_RERUNS_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
         }
@@ -333,13 +359,17 @@ async fn finalizer_loop(
 
 fn finalizer_cycle(ctx: FinalizationContext) -> Cycle {
     let memo = Arc::new(parking_lot::Mutex::new(LineageMemo::default()));
+    let oracle_cache = crate::rust::safety::clique_oracle::CliqueOracle::new_shared_cache(
+        ctx.shard_conf.finalizer_oracle_cache_bounds,
+    );
     Box::new(move || {
         let ctx = ctx.clone();
         let memo = memo.clone();
+        let oracle_cache = oracle_cache.clone();
         Box::pin(async move {
             run_cycle(
                 FINALIZER_COMPUTE_TIMEOUT,
-                || compute_last_finalized_block(&ctx),
+                || compute_last_finalized_block(&ctx, &oracle_cache),
                 |advanced| settle_after_cycle(ctx.clone(), memo, advanced),
             )
             .await
@@ -355,7 +385,8 @@ pub(crate) async fn run_cycle<E, F, Fut, A, AFut>(
     timeout: std::time::Duration,
     compute: F,
     after: A,
-) where
+) -> bool
+where
     E: std::fmt::Debug,
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<bool, E>>,
@@ -370,6 +401,7 @@ pub(crate) async fn run_cycle<E, F, Fut, A, AFut>(
     let outcome = tokio::time::timeout(timeout, compute()).await;
     metrics::histogram!(FINALIZER_RUN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
         .record(cycle_started.elapsed().as_secs_f64());
+    let timed_out = outcome.is_err();
     let advanced = match outcome {
         Ok(Ok(advanced)) => advanced,
         Ok(Err(err)) => {
@@ -382,13 +414,14 @@ pub(crate) async fn run_cycle<E, F, Fut, A, AFut>(
             metrics::counter!(FINALIZER_RUN_TIMEOUTS_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
             tracing::warn!(
-                "finalizer-run timed out after {:?}; skipping this cycle to avoid blocking propose",
+                "finalizer-run timed out after {:?}; its oracle facts are kept for the rerun",
                 timeout
             );
             false
         }
     };
     after(advanced).await;
+    timed_out
 }
 
 /// The work after one cycle that reads the persisted LFB, on the blocking
@@ -476,8 +509,10 @@ fn settle_blocking(
 /// missing settled content.
 pub(crate) async fn compute_last_finalized_block(
     ctx: &FinalizationContext,
+    oracle_cache: &Arc<crate::rust::safety::clique_oracle::SharedOracleCache>,
 ) -> Result<bool, CasperError> {
-    use crate::rust::finality::floor::{floor_of_view, Floor};
+    use crate::rust::finality::floor::{floor_of_view_metered, Floor};
+    use crate::rust::safety::clique_oracle::OracleCacheMeter;
 
     let started = std::time::Instant::now();
     let observer = ctx.observer.get().cloned();
@@ -490,7 +525,9 @@ pub(crate) async fn compute_last_finalized_block(
         hash: current_hash,
     };
 
-    let derivation = floor_of_view(&dag, &ctx.block_store, &current, ctx.ftt()).await;
+    let meter = OracleCacheMeter::new(oracle_cache.clone());
+    let derivation =
+        floor_of_view_metered(&meter, &dag, &ctx.block_store, &current, ctx.ftt()).await;
     if let Some((observer, operation)) = observed {
         emit_derivation(observer, operation, &derivation);
     }
@@ -959,6 +996,7 @@ mod finalizer_run_metric_tests {
                     started.notify_one();
                     gate.acquire().await.expect("gate open").forget();
                     assert!(!panic_on.contains(&run), "cycle {run} panics");
+                    false
                 })
             })
         }
@@ -978,7 +1016,7 @@ mod finalizer_run_metric_tests {
         let snapshotter = recorder.snapshotter();
         let _guard = metrics::set_default_local_recorder(&recorder);
         let probe = Probe::new(&[]);
-        let finalizer = Finalizer::spawn(probe.cycle());
+        let finalizer = Finalizer::spawn(probe.cycle(), 3);
 
         finalizer.trigger();
         probe.started.notified().await;
@@ -1001,7 +1039,7 @@ mod finalizer_run_metric_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn finalize_waits_for_a_cycle_that_started_after_the_call() {
         let probe = Probe::new(&[]);
-        let finalizer = Finalizer::spawn(probe.cycle());
+        let finalizer = Finalizer::spawn(probe.cycle(), 3);
 
         finalizer.trigger();
         probe.started.notified().await;
@@ -1029,7 +1067,7 @@ mod finalizer_run_metric_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_panicking_cycle_does_not_stop_the_loop() {
         let probe = Probe::new(&[1]);
-        let finalizer = Finalizer::spawn(probe.cycle());
+        let finalizer = Finalizer::spawn(probe.cycle(), 3);
         probe.gate.add_permits(2);
 
         finalizer.trigger();
@@ -1041,11 +1079,80 @@ mod finalizer_run_metric_tests {
         assert_eq!(probe.runs(), 2);
     }
 
+    fn scripted_cycle(timeouts: &'static [bool], runs: Arc<AtomicU32>) -> Cycle {
+        Box::new(move || {
+            let runs = runs.clone();
+            Box::pin(async move {
+                let run = runs.fetch_add(1, Ordering::SeqCst) as usize;
+                timeouts.get(run).copied().unwrap_or(false)
+            })
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_timed_out_cycle_reruns_without_a_trigger_up_to_the_cap() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let runs = Arc::new(AtomicU32::new(0));
+        let finalizer = Finalizer::spawn(scripted_cycle(&[true; 8], runs.clone()), 3);
+
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(runs.load(Ordering::SeqCst), 4, "one cycle and three reruns");
+        assert_eq!(
+            Recorded::take(&snapshotter).counter(FINALIZER_RUN_RERUNS_METRIC),
+            3
+        );
+
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            5,
+            "the cap holds until a cycle finishes"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_cycle_that_finishes_resets_the_rerun_count() {
+        let runs = Arc::new(AtomicU32::new(0));
+        let finalizer = Finalizer::spawn(
+            scripted_cycle(&[true, false, true, true, true, true, true], runs.clone()),
+            3,
+        );
+
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            2,
+            "the rerun finishes and no cycle follows"
+        );
+
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            6,
+            "a new timeout gets the full cap again"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_zero_cap_never_reruns() {
+        let runs = Arc::new(AtomicU32::new(0));
+        let finalizer = Finalizer::spawn(scripted_cycle(&[true; 4], runs.clone()), 0);
+        finalizer.trigger();
+        settle_task().await;
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn the_task_ends_when_the_finalizer_is_dropped() {
         let probe = Probe::new(&[]);
         probe.gate.add_permits(1);
-        let finalizer = Finalizer::spawn(probe.cycle());
+        let finalizer = Finalizer::spawn(probe.cycle(), 3);
         finalizer.run().await.expect("first cycle");
         assert!(
             Arc::strong_count(&probe.runs) > 1,

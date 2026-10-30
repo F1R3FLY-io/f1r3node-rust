@@ -99,13 +99,41 @@ pub fn ft_decides_exact(agreeing: i64, q: i64, s: i64, num: i64, den: i64, stric
 }
 
 pub struct CliqueOracleRunCache {
-    latest_justifications_cache: BTreeMap<V, BTreeMap<V, M>>,
+    latest_justifications_cache: BTreeMap<M, BTreeMap<V, M>>,
     self_justification_cache: BTreeMap<M, Option<M>>,
     ancestor_cache: BTreeMap<(M, M), bool>,
     yield_check_interval: usize,
     yield_timeslice: Duration,
+    max_latest_justifications_cache_entries: usize,
     max_self_justification_cache_entries: usize,
     max_ancestor_cache_entries: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OracleCacheBounds {
+    pub latest_justifications: usize,
+    pub self_justification: usize,
+    pub ancestor: usize,
+}
+
+pub type SharedOracleCache = tokio::sync::Mutex<CliqueOracleRunCache>;
+
+pub struct OracleCacheMeter {
+    cache: std::sync::Arc<SharedOracleCache>,
+}
+
+impl OracleCacheMeter {
+    pub fn new(cache: std::sync::Arc<SharedOracleCache>) -> Self { OracleCacheMeter { cache } }
+}
+
+impl WorkMeter for OracleCacheMeter {
+    const ENABLED: bool = false;
+
+    fn charge(&self, _: WorkKind, _: u64, _: u64) -> Result<(), KvStoreError> { Ok(()) }
+
+    fn expand(&self, _: usize) -> Result<(), KvStoreError> { Ok(()) }
+
+    fn oracle_cache(&self) -> Option<&(dyn std::any::Any + Send + Sync)> { Some(&*self.cache) }
 }
 
 impl CliqueOracle {
@@ -116,9 +144,18 @@ impl CliqueOracle {
             ancestor_cache: BTreeMap::new(),
             yield_check_interval: COOPERATIVE_YIELD_CHECK_INTERVAL,
             yield_timeslice: Duration::from_millis(COOPERATIVE_YIELD_TIMESLICE_MS),
+            max_latest_justifications_cache_entries: MAX_SELF_JUSTIFICATION_CACHE_ENTRIES,
             max_self_justification_cache_entries: MAX_SELF_JUSTIFICATION_CACHE_ENTRIES,
             max_ancestor_cache_entries: MAX_ANCESTOR_CACHE_ENTRIES,
         }
+    }
+
+    pub fn new_shared_cache(bounds: OracleCacheBounds) -> std::sync::Arc<SharedOracleCache> {
+        let mut cache = Self::new_run_cache();
+        cache.max_latest_justifications_cache_entries = bounds.latest_justifications;
+        cache.max_self_justification_cache_entries = bounds.self_justification;
+        cache.max_ancestor_cache_entries = bounds.ancestor;
+        std::sync::Arc::new(tokio::sync::Mutex::new(cache))
     }
 
     fn bounded_cache_insert<K: Ord + Clone, V>(
@@ -477,7 +514,7 @@ impl CliqueOracle {
                 pairwise_latest_messages.insert(validator.clone(), latest.clone());
 
                 let all_justifications =
-                    if let Some(cached) = run_cache.latest_justifications_cache.get(validator) {
+                    if let Some(cached) = run_cache.latest_justifications_cache.get(&latest) {
                         cached.clone()
                     } else {
                         let metadata = dag.lookup_unsafe_metered(meter, &latest)?;
@@ -489,9 +526,13 @@ impl CliqueOracle {
                                 justification.latest_block_hash.clone(),
                             );
                         }
-                        run_cache
-                            .latest_justifications_cache
-                            .insert(validator.clone(), all.clone());
+                        let max_entries = run_cache.max_latest_justifications_cache_entries;
+                        CliqueOracle::bounded_cache_insert(
+                            &mut run_cache.latest_justifications_cache,
+                            latest.clone(),
+                            all.clone(),
+                            max_entries,
+                        );
                         all
                     };
 
@@ -790,16 +831,35 @@ impl CliqueOracle {
                 early_return: Some("no_strict_majority"),
             });
         }
-        let mut run_cache = Self::new_run_cache();
-        let max_clique_weight = CliqueOracle::compute_max_clique_weight_metered(
-            meter,
-            target_msg,
-            &agreeing_weight_map,
-            dag,
-            &mut run_cache,
-            latest_messages,
-        )
-        .await?;
+        let shared = meter
+            .oracle_cache()
+            .and_then(|cache| cache.downcast_ref::<SharedOracleCache>());
+        let max_clique_weight = match shared {
+            Some(cache) => {
+                let mut run_cache = cache.lock().await;
+                CliqueOracle::compute_max_clique_weight_metered(
+                    meter,
+                    target_msg,
+                    &agreeing_weight_map,
+                    dag,
+                    &mut run_cache,
+                    latest_messages,
+                )
+                .await?
+            }
+            None => {
+                let mut run_cache = Self::new_run_cache();
+                CliqueOracle::compute_max_clique_weight_metered(
+                    meter,
+                    target_msg,
+                    &agreeing_weight_map,
+                    dag,
+                    &mut run_cache,
+                    latest_messages,
+                )
+                .await?
+            }
+        };
         let decision = ft_decides_exact(
             agreeing,
             max_clique_weight,
