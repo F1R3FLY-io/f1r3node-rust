@@ -62,6 +62,7 @@ pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
     anchor: (BlockHash, i64),
     wake: tokio::sync::Notify,
     started: AtomicBool,
+    held: parking_lot::Mutex<Option<BlockHash>>,
 }
 
 impl V6Engine<BlockRecord> {
@@ -162,6 +163,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             anchor: (genesis.block_hash.clone(), genesis.body.state.block_number),
             wake: tokio::sync::Notify::new(),
             started: AtomicBool::new(false),
+            held: parking_lot::Mutex::new(None),
         })
     }
 
@@ -314,6 +316,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
         let dag = self.dag_storage.get_representation()?;
         let lfb = dag.last_finalized_block();
         let advance = self.linearizer.lock().advance(&dag, &lfb)?;
+        let holding = matches!(advance, Advance::Hold { .. });
         let mut progressed = false;
         match advance {
             Advance::Emitted(blocks) => {
@@ -340,14 +343,26 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 }
             }
             Advance::Hold { previous, proposed } => {
-                tracing::warn!(
-                    target: "f1r3fly.v6",
-                    previous = %hex::encode(&previous),
-                    proposed = %hex::encode(&proposed),
-                    "new LFB is not on the main chain of the previous LFB; holding the linearizer"
-                );
+                let mut held = self.held.lock();
+                if held.as_ref() != Some(&proposed) {
+                    metrics::counter!(
+                        crate::rust::metrics_constants::V6_LINEARIZER_ALIN_HOLDS_METRIC,
+                        "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE
+                    )
+                    .increment(1);
+                    tracing::error!(
+                        target: "f1r3fly.v6",
+                        previous = %hex::encode(&previous),
+                        proposed = %hex::encode(&proposed),
+                        "A-LIN violation: the new LFB is not on the main chain of the previous LFB; holding the linearizer"
+                    );
+                    *held = Some(proposed);
+                }
             }
             Advance::Unchanged => {}
+        }
+        if !holding {
+            *self.held.lock() = None;
         }
         if self.core.lock().diverged() {
             tracing::warn!(

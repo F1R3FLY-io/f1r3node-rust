@@ -2639,7 +2639,7 @@ mod frontier_determinism_tests {
             sigma,
             &candidate,
             thr,
-            ALinPolicy::Halt,
+            ALinPolicy::for_protocol(crate::rust::v6::resource_policy::PROTOCOL_V6),
         );
         assert!(
             matches!(halted, Err(CommitRefusal::ALinViolation(_))),
@@ -2652,9 +2652,21 @@ mod frontier_determinism_tests {
             sigma,
             &candidate,
             thr,
-            ALinPolicy::Alarm,
+            ALinPolicy::for_protocol(crate::rust::casper::CASPER_PROTOCOL_VERSION),
         );
         assert_eq!(alarmed, Ok(()));
+    }
+
+    #[test]
+    fn the_alin_policy_halts_on_protocol_6_and_alarms_elsewhere() {
+        use crate::rust::engine::multi_parent_casper::finalization_runner::ALinPolicy;
+        assert_eq!(
+            ALinPolicy::for_protocol(crate::rust::v6::resource_policy::PROTOCOL_V6),
+            ALinPolicy::Halt
+        );
+        for legacy in [0, crate::rust::casper::CASPER_PROTOCOL_VERSION, 2, 5, 7] {
+            assert_eq!(ALinPolicy::for_protocol(legacy), ALinPolicy::Alarm);
+        }
     }
 
     #[test]

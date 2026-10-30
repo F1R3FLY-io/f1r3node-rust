@@ -208,6 +208,8 @@ pub struct FinalizationContext {
 }
 
 impl FinalizationContext {
+    fn alin(&self) -> ALinPolicy { ALinPolicy::for_protocol(self.shard_conf.casper_version) }
+
     /// The exact threshold, never the `f32` display field: it decides finality.
     fn ftt(&self) -> crate::rust::safety::clique_oracle::FtThreshold {
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
@@ -772,6 +774,7 @@ async fn adopt(
     emit(EventKind::EffectAttempt, None);
     let effect_started = std::time::Instant::now();
     let ftt = ctx.ftt();
+    let alin = ctx.alin();
     let outcome = ctx
         .block_dag_storage
         .commit_lfb(new_lfb.hash.clone(), ft_value, |dag_now| {
@@ -782,7 +785,7 @@ async fn adopt(
                 sigma,
                 new_lfb,
                 ftt,
-                ALIN_POLICY,
+                alin,
             )
         });
     let persisted: Result<bool, KvStoreError> = match outcome {
@@ -830,7 +833,15 @@ pub enum ALinPolicy {
     Alarm,
 }
 
-pub(crate) const ALIN_POLICY: ALinPolicy = ALinPolicy::Alarm;
+impl ALinPolicy {
+    pub fn for_protocol(casper_version: i64) -> Self {
+        if casper_version == crate::rust::v6::resource_policy::PROTOCOL_V6 {
+            ALinPolicy::Halt
+        } else {
+            ALinPolicy::Alarm
+        }
+    }
+}
 
 pub fn validate_commit(
     dag_now: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
