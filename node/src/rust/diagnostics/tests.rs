@@ -79,6 +79,9 @@ mod tests {
             enable_mergeable_channel_gc: false,
             mergeable_channels_gc_interval: Duration::from_secs(5 * 60),
             mergeable_channels_gc_depth_buffer: 10,
+            rejection_search_cap_from_height: None,
+            rejection_search_group_branch_cap:
+                casper::rust::casper_conf::default_rejection_search_group_branch_cap(),
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),
             synchrony_recovery_max_bypasses: 2,

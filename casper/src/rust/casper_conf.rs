@@ -197,6 +197,15 @@ pub struct CasperConf {
         default = "default_deploy_verified_encodings_cap"
     )]
     pub deploy_verified_encodings_cap: usize,
+
+    #[serde(rename = "rejection-search-cap-from-height", default)]
+    pub rejection_search_cap_from_height: Option<i64>,
+
+    #[serde(
+        rename = "rejection-search-group-branch-cap",
+        default = "default_rejection_search_group_branch_cap"
+    )]
+    pub rejection_search_group_branch_cap: usize,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -260,6 +269,10 @@ pub fn default_deploy_pool_blocks_of_backlog() -> usize {
 
 pub fn default_proposal_pacing_floor_distance() -> i64 {
     crate::rust::casper::PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT
+}
+
+pub fn default_rejection_search_group_branch_cap() -> usize {
+    crate::rust::casper::REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT
 }
 
 pub fn default_deploy_verified_encodings_cap() -> usize {
