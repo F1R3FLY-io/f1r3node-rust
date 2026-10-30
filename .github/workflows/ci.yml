@@ -309,7 +309,7 @@ jobs:
           git fetch origin --tags --force
 
           # Version from latest matching tag (falls back to short SHA if no tag yet)
-          VERSION="$(git describe --tags --always)"
+          VERSION="$(git describe --tags --always --exclude '*/*')"
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
           # Derive BRANCH for image tag suffix logic downstream
