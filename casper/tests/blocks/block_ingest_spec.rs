@@ -1,7 +1,5 @@
-// Block ingest's owner never waits on the network: with every outbound send
-// stuck and the outbound queue full, received blocks are still classified,
-// ready blocks validated, and waiting children released when their parent
-// is inserted.
+// Block ingest against the network: the owner never waits on a send, and
+// requests go out only for blocks the node still needs.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,12 +12,17 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::blocks::ingest::block_ingest::{self, IngestSetup, OUTBOUND_CAPACITY};
+use casper::rust::blocks::ingest::block_ingest::{
+    self, IngestHandle, IngestSetup, OUTBOUND_CAPACITY, OUTBOUND_CONCURRENCY,
+};
 use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
 };
 use casper::rust::errors::CasperError;
+use casper::rust::protocol::{
+    extract_packet_from_protocol, to_casper_message_proto, CasperMessageProto, PacketParseResult,
+};
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::validator_identity::ValidatorIdentity;
 use comm::rust::errors::CommError;
@@ -41,6 +44,7 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
+use tokio::task::JoinSet;
 
 use crate::engine::setup;
 
@@ -57,6 +61,54 @@ impl TransportLayer for StuckTransport {
     async fn send(&self, _peer: &PeerNode, _msg: &Protocol) -> Result<(), CommError> {
         self.started.fetch_add(1, Ordering::SeqCst);
         futures::future::pending::<()>().await;
+        Ok(())
+    }
+
+    async fn broadcast(&self, peers: &[PeerNode], msg: &Protocol) -> Result<(), CommError> {
+        for peer in peers {
+            self.send(peer, msg).await?;
+        }
+        Ok(())
+    }
+
+    async fn stream(&self, _peer: &PeerNode, _blob: &Blob) -> Result<(), CommError> { Ok(()) }
+
+    async fn stream_mult(&self, _peers: &[PeerNode], _blob: &Blob) -> Result<(), CommError> {
+        Ok(())
+    }
+
+    async fn disconnect(&self, _peer: &PeerNode) -> Result<(), CommError> { Ok(()) }
+
+    async fn get_channeled_peers(&self) -> Result<HashSet<PeerNode>, CommError> {
+        Ok(HashSet::new())
+    }
+}
+
+/// A transport whose every send takes `per_send`, counting the block requests
+/// (`BlockRequest` and `HasBlockRequest`) it sends.
+struct SlowTransport {
+    per_send: Duration,
+    requests_sent: AtomicUsize,
+}
+
+fn is_block_request(msg: &Protocol) -> bool {
+    extract_packet_from_protocol(msg).is_ok_and(|packet| {
+        matches!(
+            to_casper_message_proto(&packet),
+            PacketParseResult::Success(
+                CasperMessageProto::BlockRequest(_) | CasperMessageProto::HasBlockRequest(_)
+            )
+        )
+    })
+}
+
+#[async_trait]
+impl TransportLayer for SlowTransport {
+    async fn send(&self, _peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
+        tokio::time::sleep(self.per_send).await;
+        if is_block_request(msg) {
+            self.requests_sent.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -212,97 +264,172 @@ async fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
     true
 }
 
+/// One node's block ingest over in-memory stores holding genesis, with one
+/// connected peer and a validator that signs the test's blocks.
+struct Node<T> {
+    ingest: IngestHandle,
+    _tasks: JoinSet<()>,
+    dag: BlockDagKeyValueStorage,
+    genesis: BlockMessage,
+    peer: PeerNode,
+    transport: Arc<T>,
+    validator: ValidatorIdentity,
+    bonds: Vec<Bond>,
+    seq: i32,
+}
+
+impl<T: TransportLayer + Send + Sync + 'static> Node<T> {
+    async fn start(transport: T) -> Self {
+        let validator = ValidatorIdentity::new(&Secp256k1.new_key_pair().0);
+        let bonds = vec![Bond {
+            validator: validator.public_key.bytes.clone(),
+            stake: 100,
+        }];
+        let genesis = block(0, 0, None, &[], &bonds);
+        let mut manager = InMemoryStoreManager::new();
+        let blocks = KeyValueBlockStore::create_from_kvm(&mut manager).await.unwrap();
+        let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        blocks.put_block_message(&genesis).unwrap();
+        dag.insert(&genesis, InsertMode::Approved).unwrap();
+
+        let peer = setup::peer_node("remote-peer", 40400);
+        let transport = Arc::new(transport);
+        let (ingest, tasks) = block_ingest::spawn(IngestSetup {
+            block_store: blocks.clone(),
+            dag: dag.clone(),
+            transport: transport.clone(),
+            connections: ConnectionsCell {
+                peers: Arc::new(std::sync::Mutex::new(Connections::from_vec(vec![peer.clone()]))),
+            },
+            conf: create_rp_conf_ask(setup::peer_node("ingest-local", 40401), None, None),
+            validation_width: 3,
+            state_root_fetch_tx: None,
+            state_root_results: None,
+        })
+        .unwrap();
+        ingest
+            .attach_casper(Arc::new(AcceptingCasper {
+                approved: genesis.clone(),
+                snapshot: TestCasperWithSnapshot::create_empty_snapshot(),
+                dag: dag.clone(),
+                blocks,
+            }))
+            .await
+            .unwrap();
+        Self {
+            ingest,
+            _tasks: tasks,
+            dag,
+            genesis,
+            peer,
+            transport,
+            validator,
+            bonds,
+            seq: 0,
+        }
+    }
+
+    fn sign(&mut self, parents: &[&BlockMessage]) -> BlockMessage {
+        self.seq += 1;
+        let number = parents.iter().map(|p| p.body.state.block_number).max().unwrap_or(0) + 1;
+        self.validator.sign_block(&block(
+            number,
+            self.seq,
+            Some(self.validator.public_key.bytes.clone()),
+            parents,
+            &self.bonds,
+        ))
+    }
+
+    /// `count` blocks missing their parents, delivered and held: their
+    /// parents are needed. Returns the parents.
+    async fn hold_children_of_unheld_parents(&mut self, count: usize) -> Vec<BlockMessage> {
+        let genesis = self.genesis.clone();
+        let unheld: Vec<BlockMessage> = (0..count).map(|_| self.sign(&[&genesis])).collect();
+        let waiting: Vec<BlockMessage> = unheld.iter().map(|parent| self.sign(&[parent])).collect();
+        for block in &waiting {
+            self.ingest.deliver(block.clone(), self.peer.clone());
+            assert!(
+                wait_until(Duration::from_secs(10), || self.ingest.view().is_held(&block.block_hash)).await,
+                "a block missing its parent is classified and held"
+            );
+        }
+        assert!(
+            unheld.iter().all(|parent| self.ingest.view().is_awaited(&parent.block_hash)),
+            "every missing parent is needed"
+        );
+        unheld
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn blocks_are_classified_validated_and_released_while_every_send_is_stuck() {
-    let validator = ValidatorIdentity::new(&Secp256k1.new_key_pair().0);
-    let bonds = vec![Bond {
-        validator: validator.public_key.bytes.clone(),
-        stake: 100,
-    }];
-    let mut seq = 0;
-    let mut sign = |parents: &[&BlockMessage]| {
-        seq += 1;
-        let number = parents.iter().map(|p| p.body.state.block_number).max().unwrap_or(0) + 1;
-        validator.sign_block(&block(
-            number,
-            seq,
-            Some(validator.public_key.bytes.clone()),
-            parents,
-            &bonds,
-        ))
-    };
-
-    let genesis = block(0, 0, None, &[], &bonds);
-    let mut manager = InMemoryStoreManager::new();
-    let blocks = KeyValueBlockStore::create_from_kvm(&mut manager).await.unwrap();
-    let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
-    blocks.put_block_message(&genesis).unwrap();
-    dag.insert(&genesis, InsertMode::Approved).unwrap();
-
-    let peer = setup::peer_node("stuck-peer", 40400);
-    let transport = Arc::new(StuckTransport {
+    let mut node = Node::start(StuckTransport {
         started: AtomicUsize::new(0),
-    });
-    let (ingest, _tasks) = block_ingest::spawn(IngestSetup {
-        block_store: blocks.clone(),
-        dag: dag.clone(),
-        transport: transport.clone(),
-        connections: ConnectionsCell {
-            peers: Arc::new(std::sync::Mutex::new(Connections::from_vec(vec![peer.clone()]))),
-        },
-        conf: create_rp_conf_ask(setup::peer_node("ingest-local", 40401), None, None),
-        validation_width: 3,
-        state_root_fetch_tx: None,
-        state_root_results: None,
     })
-    .unwrap();
-    ingest
-        .attach_casper(Arc::new(AcceptingCasper {
-            approved: genesis.clone(),
-            snapshot: TestCasperWithSnapshot::create_empty_snapshot(),
-            dag: dag.clone(),
-            blocks: blocks.clone(),
-        }))
-        .await
-        .unwrap();
+    .await;
+    let transport = node.transport.clone();
 
     // More needs than the outbound queue holds, each asked of a peer whose
     // sends never return.
-    let unheld: Vec<BlockMessage> = (0..OUTBOUND_CAPACITY + 200).map(|_| sign(&[&genesis])).collect();
-    let waiting: Vec<BlockMessage> = unheld.iter().map(|parent| sign(&[parent])).collect();
-    for block in &waiting {
-        ingest.deliver(block.clone(), peer.clone());
-        assert!(
-            wait_until(Duration::from_secs(10), || ingest.view().is_held(&block.block_hash)).await,
-            "a block missing its parent is classified and held"
-        );
-    }
+    node.hold_children_of_unheld_parents(OUTBOUND_CAPACITY + 200).await;
     assert!(
-        unheld.iter().all(|parent| ingest.view().is_awaited(&parent.block_hash)),
-        "every missing parent is needed"
-    );
-    assert!(
-        wait_until(Duration::from_secs(10), || transport.started.load(Ordering::SeqCst) >= 1).await,
+        wait_until(Duration::from_secs(10), || {
+            transport.started.load(Ordering::SeqCst) >= OUTBOUND_CONCURRENCY
+        })
+        .await,
         "the request sender reached the stuck transport"
     );
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
         transport.started.load(Ordering::SeqCst),
-        1,
-        "the request sender is stuck on its first send"
+        OUTBOUND_CONCURRENCY,
+        "every concurrent send is stuck and no more are started"
     );
 
     // A child arrives before its parent; both validate once the parent does.
-    let parent = sign(&[&genesis]);
-    let child = sign(&[&parent]);
-    ingest.deliver(child.clone(), peer.clone());
-    assert!(wait_until(Duration::from_secs(10), || ingest.view().is_held(&child.block_hash)).await);
-    ingest.deliver(parent.clone(), peer.clone());
+    let genesis = node.genesis.clone();
+    let parent = node.sign(&[&genesis]);
+    let child = node.sign(&[&parent]);
+    node.ingest.deliver(child.clone(), node.peer.clone());
+    assert!(wait_until(Duration::from_secs(10), || node.ingest.view().is_held(&child.block_hash)).await);
+    node.ingest.deliver(parent.clone(), node.peer.clone());
 
     assert!(
-        wait_until(Duration::from_secs(30), || dag.contains(&parent.block_hash)
-            && dag.contains(&child.block_hash))
+        wait_until(Duration::from_secs(30), || node.dag.contains(&parent.block_hash)
+            && node.dag.contains(&child.block_hash))
         .await,
         "a ready block is validated and its waiting child released while every send is stuck"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_request_is_sent_once_every_needed_block_has_arrived() {
+    let mut node = Node::start(SlowTransport {
+        per_send: Duration::from_millis(20),
+        requests_sent: AtomicUsize::new(0),
+    })
+    .await;
+    let transport = node.transport.clone();
+
+    let parents = node.hold_children_of_unheld_parents(300).await;
+    for parent in &parents {
+        node.ingest.deliver(parent.clone(), node.peer.clone());
+    }
+    assert!(
+        wait_until(Duration::from_secs(30), || parents
+            .iter()
+            .all(|parent| node.dag.contains(&parent.block_hash)))
+        .await,
+        "every needed block is delivered and validated"
+    );
+    assert!(parents.iter().all(|parent| !node.ingest.view().is_awaited(&parent.block_hash)));
+
+    let sent_when_nothing_was_needed = transport.requests_sent.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        transport.requests_sent.load(Ordering::SeqCst) - sent_when_nothing_was_needed,
+        0,
+        "requests kept going out for blocks the node already holds"
     );
 }

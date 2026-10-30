@@ -65,12 +65,12 @@ A need exists while a held block waits on it. A need also exists when the propos
 - Next, it asks a peer that announced the block. Without such a peer, it asks the first four connected peers in turn and then broadcasts a `HasBlockRequest`.
 - At most 256 requests are outstanding. Needs that trusted blocks cite go first, then the lowest height.
 - Re-requests start at 500 ms. The interval grows until the 32nd attempt and then stays at 4 s. Pacing never ends a need.
-- A peer that announces a needed block is asked next, also if the node asked it before.
+- A peer that announces a needed block is asked next, also if the node asked it before. Announcements never make the node ask for a block sooner than 500 ms after its last request for that block.
 - At most 4,096 needs that no held block cites are kept. Announced-only needs leave first.
 
 A need ends early only when waiting cannot help. A block that is too large for the pending area ends its need. A state root ends its need when the state requester exhausts its budget. The blocks that waited on it then leave.
 
-A separate task sends the requests. Its queue holds 1,024 requests. When the queue is full, the request is dropped and the pacing sends it again later.
+A separate task sends the requests, 16 at a time. Its queue holds 1,024 requests. The task skips a request for a block that the node no longer needs. When the queue is full, the request is dropped and the pacing sends it again later.
 
 ## Pending area
 
@@ -130,7 +130,7 @@ Block ingest adds gauges and counters with the source `f1r3fly.casper.block-inge
 
 - `ingest_state_tests.rs` tests each transition. Property tests check convergence under any delivery order, drops, duplicates and restarts.
 - `node/tests/block_queue_livelock.rs` runs a node with real ingest tasks and stubbed execution. It checks that blocks that wait on missing ancestors never stop the node from admitting other blocks.
-- `casper/tests/blocks/block_ingest_spec.rs` checks that ingest continues while every outbound send is stuck.
+- `casper/tests/blocks/block_ingest_spec.rs` checks that ingest continues while every outbound send is stuck, and that no request goes out once every needed block has arrived.
 - Casper integration tests run ingest inline through `casper/tests/helper/inline_ingest.rs`.
 
 [← Back to Casper docs](./README.md)

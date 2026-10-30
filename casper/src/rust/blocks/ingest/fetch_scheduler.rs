@@ -109,6 +109,7 @@ struct BlockNeed {
     attempts: u32,
     next_due_ms: u64,
     first_requested_ms: Option<u64>,
+    last_requested_ms: Option<u64>,
     pushed_by: Option<PeerNode>,
     seq: u64,
 }
@@ -134,6 +135,15 @@ impl BlockNeed {
 
     fn is_outstanding(&self, now_ms: u64) -> bool {
         self.stage == Stage::Network && self.attempts > 0 && now_ms < self.next_due_ms
+    }
+
+    /// Ask again as soon as one base interval has passed since the last
+    /// request, if that is sooner than the pacing allows.
+    fn hasten(&mut self, now_ms: u64) {
+        let earliest = self
+            .last_requested_ms
+            .map_or(now_ms, |last| now_ms.max(last + UNRESOLVED_REREQUEST_ANCHOR_MS));
+        self.next_due_ms = self.next_due_ms.min(earliest);
     }
 
     fn next_attempt(&mut self, hash: &BlockHash, connected: &[PeerNode]) -> Vec<FetchAction> {
@@ -241,6 +251,7 @@ impl FetchScheduler {
             attempts: 0,
             next_due_ms: now_ms,
             first_requested_ms: None,
+            last_requested_ms: None,
             pushed_by: None,
             seq,
         });
@@ -253,14 +264,15 @@ impl FetchScheduler {
     }
 
     /// `peer` announced it holds `hash`: it is asked next, even if it was
-    /// asked before.
+    /// asked before, but no sooner than one base interval after the last
+    /// request, however many peers announce.
     pub fn announce(&mut self, hash: &BlockHash, peer: &PeerNode, now_ms: u64) {
         self.need_block(hash, NeedOrigin::Announced, NeedFacts::default(), now_ms);
         if let Some(need) = self.blocks.get_mut(hash) {
             need.announced = true;
             need.add_candidate(peer.clone());
             if need.stage == Stage::Network {
-                need.next_due_ms = need.next_due_ms.min(now_ms);
+                need.hasten(now_ms);
             }
         }
     }
@@ -435,6 +447,7 @@ impl FetchScheduler {
             };
             metrics::counter!(metric, "source" => REQUEST_METRICS_SOURCE).increment(1);
             need.first_requested_ms.get_or_insert(now_ms);
+            need.last_requested_ms = Some(now_ms);
             actions.extend(need.next_attempt(&hash, connected));
             need.next_due_ms = now_ms
                 + unresolved_rerequest_interval_ms(need.attempts, UNRESOLVED_REREQUEST_ANCHOR_MS);
@@ -596,6 +609,27 @@ mod tests {
             },
             FetchAction::BroadcastHasBlockRequest(h.clone()),
         ]);
+    }
+
+    #[test]
+    fn announcements_do_not_ask_for_a_need_faster_than_the_base_interval() {
+        let mut s = scheduler();
+        let h = hash(1);
+        let announcers = peers(15);
+        s.need_block(&h, NeedOrigin::Cited, cited(5, true), 0);
+        to_network(&mut s, &h, 0);
+        assert!(!s.due(0, &announcers, usize::MAX).is_empty());
+        let mut asked_again = Vec::new();
+        for (i, peer) in announcers.iter().enumerate() {
+            let now = 10 * (i as u64 + 1);
+            s.announce(&h, peer, now);
+            asked_again.extend(s.due(now, &announcers, usize::MAX));
+        }
+        assert_eq!(
+            asked_again,
+            vec![],
+            "fifteen announcements inside one base interval asked for the block again"
+        );
     }
 
     #[test]

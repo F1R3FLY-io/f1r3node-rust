@@ -12,8 +12,10 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use futures::StreamExt;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinSet;
+use tokio_stream::wrappers::ReceiverStream;
 
 use super::dependency_tracker::Work;
 use super::fetch_scheduler::FetchAction;
@@ -44,6 +46,8 @@ pub const UNSOLICITED_LANE_CAPACITY: usize = 1_024;
 pub const LOCAL_LANE_CAPACITY: usize = 256;
 pub const INPUT_CAPACITY: usize = 4_096;
 pub const OUTBOUND_CAPACITY: usize = 1_024;
+/// Block requests in flight at once.
+pub const OUTBOUND_CONCURRENCY: usize = 16;
 pub const INTAKE_TASKS: usize = 4;
 pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -270,6 +274,7 @@ pub fn spawn<T: TransportLayer + Send + Sync + 'static>(
         setup.transport.clone(),
         setup.connections.clone(),
         setup.conf.clone(),
+        handle.view.clone(),
     ));
 
     let owner = Owner {
@@ -417,33 +422,43 @@ async fn run_validation<T: TransportLayer + Send + Sync + 'static>(
     }
 }
 
+/// Send queued requests, `OUTBOUND_CONCURRENCY` at a time, skipping any for a
+/// block no longer needed by the time its turn comes.
 async fn run_outbound<T: TransportLayer + Send + Sync>(
-    mut outbound: mpsc::Receiver<Outbound>,
+    outbound: mpsc::Receiver<Outbound>,
     transport: Arc<T>,
     connections: ConnectionsCell,
     conf: RPConf,
+    view: IngestView,
 ) {
-    while let Some(request) = outbound.recv().await {
-        let (hash, result) = match request {
-            Outbound::Request { hash, peer } => {
-                let result = transport.request_for_block(&conf, &peer, hash.clone()).await;
-                (hash, result)
+    ReceiverStream::new(outbound)
+        .for_each_concurrent(OUTBOUND_CONCURRENCY, |request| {
+            let (transport, connections, conf, view) = (&transport, &connections, &conf, &view);
+            async move {
+                let hash = match &request {
+                    Outbound::Request { hash, .. } | Outbound::Broadcast(hash) => hash.clone(),
+                };
+                if !view.is_awaited(&hash) {
+                    return;
+                }
+                let result = match request {
+                    Outbound::Request { hash, peer } => transport.request_for_block(conf, &peer, hash).await,
+                    Outbound::Broadcast(hash) => {
+                        transport
+                            .broadcast_has_block_request(connections, conf, &hash)
+                            .await
+                    }
+                };
+                if let Err(error) = result {
+                    tracing::debug!(
+                        hash = %PrettyPrinter::build_string_bytes(&hash),
+                        %error,
+                        "block request send failed; the request is retried on its pacing"
+                    );
+                }
             }
-            Outbound::Broadcast(hash) => {
-                let result = transport
-                    .broadcast_has_block_request(&connections, &conf, &hash)
-                    .await;
-                (hash, result)
-            }
-        };
-        if let Err(error) = result {
-            tracing::debug!(
-                hash = %PrettyPrinter::build_string_bytes(&hash),
-                %error,
-                "block request send failed; the request is retried on its pacing"
-            );
-        }
-    }
+        })
+        .await;
 }
 
 struct Owner {
