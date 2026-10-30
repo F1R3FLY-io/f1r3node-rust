@@ -147,7 +147,7 @@ jobs:
         shell: bash -ex {0}
         run: |
           docker context use default
-          VERSION="$(git describe --tags --always)"
+          VERSION="$(git describe --tags --always --exclude '*/*')"
           docker buildx build \
             --platform ${{ matrix.platform }} \
             --file node/Dockerfile \
