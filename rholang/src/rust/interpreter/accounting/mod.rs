@@ -9,6 +9,7 @@ pub mod cost_accounting;
 pub mod costs;
 pub mod has_cost;
 pub mod noop;
+pub mod rev_stack;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/package.scala
 #[allow(non_camel_case_types)]
