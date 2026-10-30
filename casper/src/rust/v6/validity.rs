@@ -4,23 +4,26 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 
 use super::body::V6Body;
+use super::record::ExecutionRecord;
 
 #[derive(Clone, Debug)]
 pub struct Limits {
     pub demand_cap: i64,
     pub max_envelopes: usize,
     pub max_records: usize,
+    pub max_record_bytes: usize,
+    pub ordered_only: bool,
 }
 
 impl Default for Limits {
     fn default() -> Self { super::resource_policy::ShardResourcePolicy::default().limits() }
 }
 
-pub fn check_structure(
+pub fn check_structure<R: ExecutionRecord>(
     block: &BlockMessage,
     limits: &Limits,
     block_number_of: &dyn Fn(&BlockHash) -> Option<i64>,
-) -> Result<V6Body, String> {
+) -> Result<(V6Body, Vec<R>), String> {
     let body = &block.body;
     let number = body.state.block_number;
     let ext = V6Body::decode(&body.extra_bytes)?
@@ -78,36 +81,40 @@ pub fn check_structure(
     if ext.records.len() > limits.max_records {
         return Err("too many records".to_string());
     }
+    if ext.record_bytes() > limits.max_record_bytes {
+        return Err(format!(
+            "record bytes {} exceed the cap {}",
+            ext.record_bytes(),
+            limits.max_record_bytes
+        ));
+    }
+    let records: Vec<R> = ext.decode_records()?;
     let mut seen = HashSet::new();
-    for record in &ext.records {
-        if record.target == block.block_hash {
+    for record in &records {
+        if *record.target() == block.block_hash {
             return Err("a block cannot carry its own record".to_string());
         }
-        if !seen.insert((record.target.clone(), record.pre_root.clone())) {
+        if !seen.insert((record.target().clone(), record.pre_root().clone())) {
             return Err("duplicate record".to_string());
         }
-        match block_number_of(&record.target) {
+        match block_number_of(record.target()) {
             Some(n) if n < number => {}
             _ => return Err("a record must name an earlier block in the dag".to_string()),
         }
     }
-    Ok(ext)
+    Ok((ext, records))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::rust::v6::body::{Attestation, Record};
-    use crate::rust::v6::resource_policy::ShardResourcePolicy;
-    use models::rhoapi::PCost;
-    use models::rust::casper::protocol::casper_message::{
-        Body, F1r3flyState, Header, ProcessedDeploy,
-    };
+    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
     use prost::bytes::Bytes;
 
-    fn h(s: &str) -> Bytes {
-        Bytes::copy_from_slice(s.as_bytes())
-    }
+    use super::*;
+    use crate::rust::v6::block_record::BlockRecord;
+    use crate::rust::v6::body::Attestation;
+
+    fn h(s: &str) -> Bytes { Bytes::copy_from_slice(s.as_bytes()) }
 
     fn block(ext: &V6Body, pre: &str, post: &str) -> BlockMessage {
         BlockMessage {
@@ -150,21 +157,148 @@ mod tests {
         }
     }
 
-    fn ext(records: Vec<Record>) -> V6Body {
-        V6Body {
-            attestation: Some(Attestation {
+    fn ext(records: Vec<BlockRecord>) -> V6Body {
+        V6Body::with_records(
+            Attestation {
                 block_hash: h("E"),
                 root: h("r"),
-            }),
-            records,
-        }
+            },
+            &records,
+        )
     }
 
-    fn record(target: &str) -> Record {
-        Record::empty(h(target), h("p"), h("q"))
+    fn check(b: &BlockMessage, limits: &Limits) -> Result<(V6Body, Vec<BlockRecord>), String> {
+        check_structure::<BlockRecord>(b, limits, &known)
     }
 
-    fn envelope(ts: i64, phlo_limit: i64) -> ProcessedDeploy {
+    fn record(target: &str) -> BlockRecord { BlockRecord::empty(h(target), h("p"), h("q")) }
+
+    #[test]
+    fn a_well_formed_block_passes() {
+        assert!(check(
+            &block(&ext(vec![record("t")]), "r", "r"),
+            &Limits::default()
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn state_hashes_must_be_the_attested_root() {
+        assert!(check(&block(&ext(vec![]), "r", "other"), &Limits::default()).is_err());
+    }
+
+    #[test]
+    fn records_must_name_known_earlier_blocks() {
+        assert!(check(
+            &block(&ext(vec![record("zz")]), "r", "r"),
+            &Limits::default()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn duplicate_records_are_rejected() {
+        let e = ext(vec![record("t"), record("t")]);
+        assert!(check(&block(&e, "r", "r"), &Limits::default()).is_err());
+    }
+
+    #[test]
+    fn the_merge_base_must_be_the_main_parent() {
+        let mut b = block(&ext(vec![]), "r", "r");
+        b.header.parents_hash_list = vec![h("E")];
+        assert!(check(&b, &Limits::default()).is_err());
+        b.body.merge_base = h("E");
+        assert!(check(&b, &Limits::default()).is_ok());
+    }
+
+    #[test]
+    fn legacy_blocks_are_not_v6_blocks() {
+        let mut b = block(&ext(vec![]), "r", "r");
+        b.body.extra_bytes = Bytes::new();
+        assert!(check(&b, &Limits::default()).is_err());
+    }
+
+    fn fresh_envelope() -> models::rust::casper::protocol::casper_message::ProcessedDeploy {
+        crate::rust::util::construct_deploy::basic_processed_deploy(1, None)
+            .expect("basic envelope")
+    }
+
+    #[test]
+    fn an_envelope_with_nonzero_cost_is_rejected() {
+        let mut b = block(&ext(vec![]), "r", "r");
+        let mut pd = fresh_envelope();
+        pd.cost.cost = 1;
+        b.body.deploys = vec![pd];
+        let err = check(&b, &Limits::default()).expect_err("a priced envelope must be rejected");
+        assert!(
+            err.contains("unexecuted"),
+            "unexpected error wording: {err}",
+        );
+    }
+
+    #[test]
+    fn an_envelope_with_a_log_is_rejected() {
+        let mut b = block(&ext(vec![]), "r", "r");
+        let mut pd = fresh_envelope();
+        pd.deploy_log.push(
+            models::rust::casper::protocol::casper_message::Event::Consume(
+                models::rust::casper::protocol::casper_message::ConsumeEvent {
+                    channels_hashes: vec![],
+                    hash: Bytes::new(),
+                    persistent: false,
+                },
+            ),
+        );
+        b.body.deploys = vec![pd];
+        let err = check(&b, &Limits::default())
+            .expect_err("an envelope carrying log entries must be rejected");
+        assert!(
+            err.contains("unexecuted"),
+            "unexpected error wording: {err}",
+        );
+    }
+
+    #[test]
+    fn an_envelope_marked_failed_is_rejected() {
+        let mut b = block(&ext(vec![]), "r", "r");
+        let mut pd = fresh_envelope();
+        pd.is_failed = true;
+        b.body.deploys = vec![pd];
+        let err = check(&b, &Limits::default()).expect_err("a failed envelope must be rejected");
+        assert!(
+            err.contains("unexecuted"),
+            "unexpected error wording: {err}",
+        );
+    }
+
+    #[test]
+    fn records_over_the_byte_cap_are_rejected() {
+        let e = ext(vec![record("t")]);
+        let b = block(&e, "r", "r");
+        let fits = Limits {
+            max_record_bytes: e.record_bytes(),
+            ..Limits::default()
+        };
+        assert!(check(&b, &fits).is_ok());
+        let tight = Limits {
+            max_record_bytes: e.record_bytes() - 1,
+            ..Limits::default()
+        };
+        let err = check(&b, &tight).expect_err("the record bytes exceed the cap");
+        assert!(err.contains("record bytes"), "{err}");
+    }
+
+    #[test]
+    fn an_unreadable_record_is_rejected() {
+        let mut e = ext(vec![]);
+        e.records.push(h("not a record"));
+        assert!(check(&block(&e, "r", "r"), &Limits::default()).is_err());
+    }
+
+    fn envelope(
+        ts: i64,
+        phlo_limit: i64,
+    ) -> models::rust::casper::protocol::casper_message::ProcessedDeploy {
         let signed = crate::rust::util::construct_deploy::source_deploy(
             format!("@{ts}!({ts})"),
             ts,
@@ -175,10 +309,12 @@ mod tests {
             Some("root".to_string()),
         )
         .unwrap();
-        ProcessedDeploy::empty(signed)
+        models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(signed)
     }
 
-    fn ordered_block(envelopes: Vec<ProcessedDeploy>) -> BlockMessage {
+    fn ordered_block(
+        envelopes: Vec<models::rust::casper::protocol::casper_message::ProcessedDeploy>,
+    ) -> BlockMessage {
         let mut b = block(&ext(vec![record("t")]), "r", "r");
         b.body.deploys = envelopes;
         b
@@ -189,85 +325,24 @@ mod tests {
         let b = ordered_block(vec![envelope(1, 100), envelope(2, 200)]);
         let decoded = BlockMessage::from_proto(b.to_proto()).unwrap();
         assert_eq!(decoded, b);
-        let body = check_structure(&decoded, &Limits::default(), &known).unwrap();
+        let (body, records) = check(&decoded, &Limits::default()).unwrap();
         assert_eq!(body, ext(vec![record("t")]));
-    }
-
-    #[test]
-    fn an_executed_envelope_is_not_an_ordered_envelope() {
-        let mut ran = envelope(1, 100);
-        ran.cost = PCost { cost: 5 };
-        assert!(check_structure(&ordered_block(vec![ran]), &Limits::default(), &known).is_err());
-        let mut failed = envelope(1, 100);
-        failed.is_failed = true;
-        assert!(check_structure(&ordered_block(vec![failed]), &Limits::default(), &known).is_err());
+        assert_eq!(records, vec![record("t")]);
     }
 
     #[test]
     fn the_policy_bounds_envelopes_and_demand() {
-        let limits = ShardResourcePolicy {
+        let limits = crate::rust::v6::resource_policy::ShardResourcePolicy {
             max_envelopes: 2,
             demand_cap: 250,
-            ..ShardResourcePolicy::default()
+            ..Default::default()
         }
         .limits();
         let fits = ordered_block(vec![envelope(1, 100), envelope(2, 150)]);
-        assert!(check_structure(&fits, &limits, &known).is_ok());
+        assert!(check(&fits, &limits).is_ok());
         let too_many = ordered_block(vec![envelope(1, 10), envelope(2, 10), envelope(3, 10)]);
-        assert!(check_structure(&too_many, &limits, &known).is_err());
+        assert!(check(&too_many, &limits).is_err());
         let over_cap = ordered_block(vec![envelope(1, 100), envelope(2, 151)]);
-        assert!(check_structure(&over_cap, &limits, &known).is_err());
-    }
-
-    #[test]
-    fn a_well_formed_block_passes() {
-        assert!(check_structure(
-            &block(&ext(vec![record("t")]), "r", "r"),
-            &Limits::default(),
-            &known
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn state_hashes_must_be_the_attested_root() {
-        assert!(check_structure(
-            &block(&ext(vec![]), "r", "other"),
-            &Limits::default(),
-            &known
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn records_must_name_known_earlier_blocks() {
-        assert!(check_structure(
-            &block(&ext(vec![record("zz")]), "r", "r"),
-            &Limits::default(),
-            &known
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn duplicate_records_are_rejected() {
-        let e = ext(vec![record("t"), record("t")]);
-        assert!(check_structure(&block(&e, "r", "r"), &Limits::default(), &known).is_err());
-    }
-
-    #[test]
-    fn the_merge_base_must_be_the_main_parent() {
-        let mut b = block(&ext(vec![]), "r", "r");
-        b.header.parents_hash_list = vec![h("E")];
-        assert!(check_structure(&b, &Limits::default(), &known).is_err());
-        b.body.merge_base = h("E");
-        assert!(check_structure(&b, &Limits::default(), &known).is_ok());
-    }
-
-    #[test]
-    fn legacy_blocks_are_not_v6_blocks() {
-        let mut b = block(&ext(vec![]), "r", "r");
-        b.body.extra_bytes = Bytes::new();
-        assert!(check_structure(&b, &Limits::default(), &known).is_err());
+        assert!(check(&over_cap, &limits).is_err());
     }
 }

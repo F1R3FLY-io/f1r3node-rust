@@ -88,6 +88,7 @@ mod tests {
             demand_cap: 250,
             max_envelopes: 10,
             max_records: 1,
+            ..Limits::default()
         };
         let none = |_: &Bytes| false;
         let picked = select_envelopes(
