@@ -1,6 +1,7 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/ChargingRSpace.scala
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -8,6 +9,7 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hot_store::HotStore;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
@@ -142,6 +144,14 @@ impl ChargingRSpace {
 
             async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
                 self.space.get_data(channel).await
+            }
+
+            fn hot_store(
+                &self,
+            ) -> Option<
+                Arc<Box<dyn HotStore<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
+            > {
+                self.space.hot_store()
             }
 
             async fn get_data_at(

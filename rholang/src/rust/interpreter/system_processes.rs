@@ -23,6 +23,7 @@ use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token
 use prost::Message;
 use shared::rust::{BitSet, Byte};
 
+use super::accounting::rev_stack;
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
@@ -199,6 +200,8 @@ impl FixedChannels {
     pub fn vault_address() -> Par { byte_name(12) }
 
     pub fn deployer_id_ops() -> Par { byte_name(13) }
+
+    pub fn rev_wallet() -> Par { byte_name(69) }
 
     pub fn reg_lookup() -> Par { byte_name(14) }
 
@@ -479,6 +482,7 @@ impl BodyRefs {
     pub const GET_INVALID_BLOCKS: i64 = 12;
     pub const VAULT_ADDRESS: i64 = 13;
     pub const DEPLOYER_ID_OPS: i64 = 14;
+    pub const REV_WALLET: i64 = 69;
     pub const REG_OPS: i64 = 15;
     pub const SYS_AUTHTOKEN_OPS: i64 = 16;
     pub const REG_OPS_V1: i64 = 17;
@@ -1112,6 +1116,31 @@ impl SystemProcesses {
         let response = RhoDeployerId::unapply(second_par)
             .map(RhoByteArray::create_par)
             .unwrap_or_default();
+
+        produce(&[response], ack).await
+    }
+
+    pub async fn rev_wallet(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("rev_wallet"));
+        };
+
+        let [first_par, second_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("rev_wallet"));
+        };
+
+        let Some(command) = RhoString::unapply(first_par) else {
+            return Err(illegal_argument_error("rev_wallet"));
+        };
+
+        let Some(response) =
+            rev_stack::native::handle(self.space.hot_store(), &command, second_par)
+        else {
+            return Err(illegal_argument_error("rev_wallet"));
+        };
 
         produce(&[response], ack).await
     }

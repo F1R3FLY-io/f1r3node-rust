@@ -190,6 +190,8 @@ where
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> { self.get_store().get_data(channel) }
 
+    fn hot_store(&self) -> Option<Arc<Box<dyn HotStore<C, P, A, K>>>> { Some(self.get_store()) }
+
     async fn get_data_at(
         &self,
         checkpoint: &SoftCheckpoint<C, P, A, K>,

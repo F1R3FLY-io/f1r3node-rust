@@ -1,0 +1,20 @@
+new
+  SystemVault, rs(`rho:registry:insertSigned:secp256k1`), uriOut,
+  RevWallet(`rho:rev:wallet`)
+in {
+  contract SystemVault(@"find", @owner, ret) = {
+    RevWallet!("find", owner, *ret)
+  } |
+  contract SystemVault(@"balance", @owner, ret) = {
+    RevWallet!("balance", owner, *ret)
+  } |
+  contract SystemVault(@"transfer", @to, @amount, deployerId, ret) = {
+    RevWallet!("transfer", (*deployerId, to, amount), *ret)
+  } |
+  rs!(
+    "040f035630a5d2199184890b4b6b83440c842da0b6becca539f788f7b35d6e873561f673cd6ebe2e32236398a86f29dad992e8fba32534734300fcc5104bcfea0e".hexToBytes(),
+    (9223372036854775807, bundle+{*SystemVault}),
+    "3045022100c58cd73cd1a5c153d4edb3fc6e48aa2344c549a9225bde3def9b98c35e44399902205c3b615a1f19b8b2de23aecfea24dea30ae96eecd5f8bda1c125f47cb92a08d2".hexToBytes(),
+    *uriOut
+  )
+}
