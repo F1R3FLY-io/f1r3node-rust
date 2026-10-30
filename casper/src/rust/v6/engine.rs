@@ -25,7 +25,9 @@ use super::linearizer::{Advance, Linearizer};
 use super::propose::{select_envelopes, SelectionContext};
 use super::record::ExecutionRecord;
 use super::resource_policy::ShardResourcePolicy;
-use super::store::{LmdbRecordStore, MemoryRecordStore, Opened, RecordStore, Retention};
+use super::store::{
+    LmdbRecordStore, MemoryRecordStore, Opened, RecordSource, RecordStore, Retention,
+};
 use super::validators::{AttestedRootValidators, ValidatorSetSource};
 use super::validity::{check_structure, Limits};
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -59,7 +61,6 @@ pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
     deploy_storage: Arc<KeyValueDeployStorage>,
     limits: Limits,
     lag_gate: LagGate,
-    anchor: (BlockHash, i64),
     wake: tokio::sync::Notify,
     started: AtomicBool,
     held: parking_lot::Mutex<Option<BlockHash>>,
@@ -74,8 +75,10 @@ impl V6Engine<BlockRecord> {
         deploy_storage: Arc<KeyValueDeployStorage>,
         lag_threshold: u64,
     ) -> Result<Arc<Self>, CasperError> {
+        let source: Arc<dyn RecordSource<BlockRecord>> = Arc::new(block_store.clone());
         let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
             dag_storage.v6_executor_state(),
+            source,
             genesis.block_hash.clone(),
             genesis.body.state.post_state_hash.clone(),
         )?;
@@ -90,6 +93,10 @@ impl V6Engine<BlockRecord> {
                 target: "f1r3fly.v6",
                 anchor = %hex::encode(&genesis.block_hash),
                 "v6 executor state belonged to another anchor; starting from this one"
+            ),
+            Opened::ReplacedOlderFormat => tracing::warn!(
+                target: "f1r3fly.v6",
+                "v6 executor state was in an older format; starting afresh"
             ),
         }
         let workers = std::thread::available_parallelism()
@@ -142,15 +149,8 @@ impl<R: ExecutionRecord> V6Engine<R> {
             ))
         });
         Arc::new(V6Engine {
-            core: parking_lot::Mutex::new(ExecutorCore::with_store(
-                genesis.block_hash.clone(),
-                params,
-                store,
-            )),
-            linearizer: parking_lot::Mutex::new(Linearizer::new(
-                genesis.block_hash.clone(),
-                genesis.body.state.block_number,
-            )),
+            core: parking_lot::Mutex::new(ExecutorCore::with_store(params, store)),
+            linearizer: parking_lot::Mutex::new(Linearizer::new()),
             backend,
             validators,
             evidence,
@@ -160,7 +160,6 @@ impl<R: ExecutionRecord> V6Engine<R> {
             deploy_storage,
             limits,
             lag_gate: LagGate::new(lag_threshold),
-            anchor: (genesis.block_hash.clone(), genesis.body.state.block_number),
             wake: tokio::sync::Notify::new(),
             started: AtomicBool::new(false),
             held: parking_lot::Mutex::new(None),
@@ -210,6 +209,8 @@ impl<R: ExecutionRecord> V6Engine<R> {
     }
 
     pub fn canonical_len(&self) -> usize { self.core.lock().canonical_len() }
+
+    pub fn resident(&self) -> usize { self.core.lock().resident() }
 
     pub fn lag_gate_engaged(&self) -> bool { self.lag_gate.engaged() }
 
@@ -315,7 +316,11 @@ impl<R: ExecutionRecord> V6Engine<R> {
     pub async fn tick(&self) -> Result<bool, CasperError> {
         let dag = self.dag_storage.get_representation()?;
         let lfb = dag.last_finalized_block();
-        let advance = self.linearizer.lock().advance(&dag, &lfb)?;
+        let advance = {
+            let core = self.core.lock();
+            let emitted = |block: &BlockHash| core.is_emitted(block);
+            self.linearizer.lock().advance(&dag, &lfb, &emitted)?
+        };
         let holding = matches!(advance, Advance::Hold { .. });
         let mut progressed = false;
         match advance {
@@ -363,18 +368,6 @@ impl<R: ExecutionRecord> V6Engine<R> {
         }
         if !holding {
             *self.held.lock() = None;
-        }
-        if self.core.lock().diverged() {
-            tracing::warn!(
-                target: "f1r3fly.v6",
-                "the re-emitted order disagrees with the stored canonical prefix; rebuilding from the anchor"
-            );
-            self.core
-                .lock()
-                .reset()
-                .map_err(CasperError::RuntimeError)?;
-            *self.linearizer.lock() = Linearizer::new(self.anchor.0.clone(), self.anchor.1);
-            return Ok(true);
         }
         let (action, fixed_before) = {
             let mut core = self.core.lock();

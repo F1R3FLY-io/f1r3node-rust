@@ -69,59 +69,57 @@ pub struct EmittedBlock<R> {
 
 pub struct ExecutorCore<R: ExecutionRecord> {
     params: CoreParams,
-    order: Vec<BlockHash>,
+    base: usize,
+    window: VecDeque<BlockHash>,
     index: HashMap<BlockHash, usize>,
     senders: HashMap<BlockHash, Bytes>,
     envelopes: HashMap<BlockHash, Vec<Bytes>>,
     store: Box<dyn RecordStore<R>>,
     spec: VecDeque<R>,
     citations: HashMap<BlockHash, Vec<Candidate<R>>>,
-    dismissed: HashSet<(BlockHash, BlockHash)>,
-    cited: HashSet<(BlockHash, StateHash)>,
+    dismissed: HashMap<BlockHash, HashSet<BlockHash>>,
+    cited: HashMap<BlockHash, HashSet<StateHash>>,
     pending_attestations: HashMap<BlockHash, Vec<PendingAttestation>>,
+    pending_by_citer: HashMap<BlockHash, BlockHash>,
     inclusion_due: VecDeque<InclusionCheck>,
     inclusion_seen: HashSet<BlockHash>,
     evidence: Vec<Evidence>,
-    diverged: bool,
     store_error: Option<String>,
 }
 
 impl<R: ExecutionRecord> ExecutorCore<R> {
     pub fn new(genesis: BlockHash, genesis_root: StateHash, params: CoreParams) -> Self {
-        let store = MemoryRecordStore::new(genesis.clone(), genesis_root, Retention::default());
-        Self::with_store(genesis, params, Box::new(store))
+        let store = MemoryRecordStore::new(genesis, genesis_root, Retention::default());
+        Self::with_store(params, Box::new(store))
     }
 
-    pub fn with_store(
-        genesis: BlockHash,
-        params: CoreParams,
-        store: Box<dyn RecordStore<R>>,
-    ) -> Self {
+    pub fn with_store(params: CoreParams, store: Box<dyn RecordStore<R>>) -> Self {
         ExecutorCore {
             params,
-            order: vec![genesis.clone()],
-            index: HashMap::from([(genesis, 0)]),
+            base: store.canonical_len(),
+            window: VecDeque::new(),
+            index: HashMap::new(),
             senders: HashMap::new(),
             envelopes: HashMap::new(),
             store,
             spec: VecDeque::new(),
             citations: HashMap::new(),
-            dismissed: HashSet::new(),
-            cited: HashSet::new(),
+            dismissed: HashMap::new(),
+            cited: HashMap::new(),
             pending_attestations: HashMap::new(),
+            pending_by_citer: HashMap::new(),
             inclusion_due: VecDeque::new(),
             inclusion_seen: HashSet::new(),
             evidence: Vec::new(),
-            diverged: false,
             store_error: None,
         }
     }
 
     pub fn reset(&mut self) -> Result<(), String> {
         self.store.reset().map_err(|error| error.to_string())?;
-        let anchor = self.order[0].clone();
-        self.order = vec![anchor.clone()];
-        self.index = HashMap::from([(anchor, 0)]);
+        self.base = self.store.canonical_len();
+        self.window.clear();
+        self.index.clear();
         self.senders.clear();
         self.envelopes.clear();
         self.spec.clear();
@@ -129,14 +127,73 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.dismissed.clear();
         self.cited.clear();
         self.pending_attestations.clear();
+        self.pending_by_citer.clear();
         self.inclusion_due.clear();
         self.inclusion_seen.clear();
-        self.diverged = false;
         self.store_error = None;
         Ok(())
     }
 
-    pub fn diverged(&self) -> bool { self.diverged }
+    fn at(&self, position: usize) -> Option<&BlockHash> {
+        position
+            .checked_sub(self.base)
+            .and_then(|offset| self.window.get(offset))
+    }
+
+    fn order_len(&self) -> usize { self.base + self.window.len() }
+
+    pub fn is_emitted(&self, block: &BlockHash) -> bool {
+        self.index.contains_key(block) || self.store.executed(block).is_some()
+    }
+
+    pub fn resident(&self) -> usize {
+        self.window.len()
+            + self.index.len()
+            + self.senders.len()
+            + self.envelopes.len()
+            + self.spec.len()
+            + self.citations.len()
+            + self.dismissed.len()
+            + self.cited.len()
+            + self.pending_attestations.len()
+            + self.pending_by_citer.len()
+            + self.inclusion_due.len()
+            + self.inclusion_seen.len()
+            + self.store.resident()
+    }
+
+    fn prune(&mut self) {
+        while self.base < self.canon_pos() {
+            let Some(block) = self.window.pop_front() else {
+                self.base = self.canon_pos();
+                break;
+            };
+            self.base += 1;
+            self.index.remove(&block);
+            self.senders.remove(&block);
+            self.envelopes.remove(&block);
+            self.citations.remove(&block);
+            self.dismissed.remove(&block);
+            self.cited.remove(&block);
+            self.inclusion_seen.remove(&block);
+            if let Some(attested) = self.pending_by_citer.remove(&block) {
+                if !self.is_emitted(&attested) {
+                    if let Some(pending) = self.pending_attestations.get_mut(&attested) {
+                        pending.retain(|p| p.citer != block);
+                        if pending.is_empty() {
+                            self.pending_attestations.remove(&attested);
+                        }
+                    }
+                    tracing::warn!(
+                        target: "f1r3fly.v6",
+                        block = %hex::encode(&block),
+                        attested = %hex::encode(&attested),
+                        "a canonical block attests a block that was never emitted; its attestation is dropped"
+                    );
+                }
+            }
+        }
+    }
 
     pub fn take_store_error(&mut self) -> Option<String> { self.store_error.take() }
 
@@ -149,21 +206,17 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     fn canon_root(&self) -> StateHash { self.store.canonical_root() }
 
     pub fn emit(&mut self, block: EmittedBlock<R>) {
-        if self.index.contains_key(&block.hash) {
+        if self.is_emitted(&block.hash) {
             return;
         }
-        let citer_index = self.order.len();
-        let fixed = citer_index < self.canon_pos();
-        if fixed && self.store.canonical_at(citer_index).as_ref() != Some(&block.hash) {
-            self.diverged = true;
-        }
+        let citer_index = self.order_len();
         self.index.insert(block.hash.clone(), citer_index);
-        self.order.push(block.hash.clone());
+        self.window.push_back(block.hash.clone());
         self.senders.insert(block.hash.clone(), block.sender);
         self.envelopes
             .insert(block.hash.clone(), block.envelope_ids);
         for record in block.records {
-            if self.store.executed(record.target()).is_some() {
+            if !self.index.contains_key(record.target()) {
                 continue;
             }
             self.citations
@@ -193,7 +246,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 
     pub fn canonical_len(&self) -> usize { self.canon_pos() }
 
-    pub fn emitted_len(&self) -> usize { self.order.len() }
+    pub fn emitted_len(&self) -> usize { self.order_len() }
 
     pub fn speculation_len(&self) -> usize { self.spec.len() }
 
@@ -218,13 +271,12 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 
     pub fn next_action(&mut self) -> Action<R> {
         loop {
-            if self.store_error.is_some() || self.diverged {
+            if self.store_error.is_some() {
                 return Action::Idle;
             }
-            if self.canon_pos() >= self.order.len() {
+            let Some(target) = self.at(self.canon_pos()).cloned() else {
                 break;
-            }
-            let target = self.order[self.canon_pos()].clone();
+            };
             let target_index = self.canon_pos();
             let mut candidates: Vec<Candidate<R>> = self
                 .citations
@@ -232,7 +284,12 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 .map(|c| {
                     c.iter()
                         .filter(|c| c.citer_index > target_index)
-                        .filter(|c| !self.dismissed.contains(&(c.citer.clone(), target.clone())))
+                        .filter(|c| {
+                            !self
+                                .dismissed
+                                .get(&target)
+                                .is_some_and(|citers| citers.contains(&c.citer))
+                        })
                         .cloned()
                         .collect()
                 })
@@ -242,7 +299,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 break;
             };
             if *candidate.record.pre_root() != self.canon_root() {
-                self.dismissed.insert((candidate.citer, target));
+                self.dismiss(candidate.citer, target);
                 continue;
             }
             let expected = self.envelopes.get(&target).cloned().unwrap_or_default();
@@ -256,7 +313,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                         record: candidate.record.encode(),
                     },
                 });
-                self.dismissed.insert((candidate.citer, target));
+                self.dismiss(candidate.citer, target);
                 continue;
             }
             let matches_own = self
@@ -265,7 +322,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 .map(|own| own.target() == &target && own.digest() == candidate.record.digest())
                 .unwrap_or(false);
             if matches_own {
-                self.fix(target, candidate.record);
+                self.fix(target, candidate.citer, candidate.record);
                 continue;
             }
             return Action::Replay {
@@ -275,18 +332,21 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             };
         }
         let next = self.canon_pos() + self.spec.len();
-        if self.spec.len() < self.params.max_speculation && next < self.order.len() {
-            let pre_root = self
-                .spec
-                .back()
-                .map(|r| r.post_root().clone())
-                .unwrap_or_else(|| self.canon_root());
-            return Action::Execute {
-                target: self.order[next].clone(),
-                pre_root,
-            };
+        if self.spec.len() < self.params.max_speculation {
+            if let Some(target) = self.at(next).cloned() {
+                let pre_root = self
+                    .spec
+                    .back()
+                    .map(|r| r.post_root().clone())
+                    .unwrap_or_else(|| self.canon_root());
+                return Action::Execute { target, pre_root };
+            }
         }
         Action::Idle
+    }
+
+    fn dismiss(&mut self, citer: BlockHash, target: BlockHash) {
+        self.dismissed.entry(target).or_default().insert(citer);
     }
 
     pub fn apply_replay(
@@ -296,13 +356,13 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         record: &R,
         result: Result<StateHash, String>,
     ) {
-        if self.order.get(self.canon_pos()) != Some(target)
-            || *record.pre_root() != self.canon_root()
-        {
+        if self.at(self.canon_pos()) != Some(target) || *record.pre_root() != self.canon_root() {
             return;
         }
         match result {
-            Ok(root) if root == *record.post_root() => self.fix(target.clone(), record.clone()),
+            Ok(root) if root == *record.post_root() => {
+                self.fix(target.clone(), citer.clone(), record.clone())
+            }
             _ => {
                 self.evidence.push(Evidence {
                     offender: self.sender_of(citer),
@@ -313,7 +373,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                         record: record.encode(),
                     },
                 });
-                self.dismissed.insert((citer.clone(), target.clone()));
+                self.dismiss(citer.clone(), target.clone());
             }
         }
     }
@@ -325,19 +385,20 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             .back()
             .map(|r| r.post_root().clone())
             .unwrap_or_else(|| self.canon_root());
-        if self.order.get(next) == Some(record.target()) && *record.pre_root() == expected_pre {
+        if self.at(next) == Some(record.target()) && *record.pre_root() == expected_pre {
             self.spec.push_back(record);
         }
     }
 
     pub fn records_to_cite(&self, self_key: &Bytes, max: usize) -> Vec<R> {
-        let newest = self.order.len().saturating_sub(1);
+        let newest = self.order_len().saturating_sub(1);
         self.spec
             .iter()
             .filter(|r| {
                 !self
                     .cited
-                    .contains(&(r.target().clone(), r.pre_root().clone()))
+                    .get(r.target())
+                    .is_some_and(|roots| roots.contains(r.pre_root()))
             })
             .filter(|r| {
                 let own = self.senders.get(r.target()) == Some(self_key);
@@ -356,7 +417,9 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     pub fn mark_cited(&mut self, records: &[R]) {
         for r in records {
             self.cited
-                .insert((r.target().clone(), r.pre_root().clone()));
+                .entry(r.target().clone())
+                .or_default()
+                .insert(r.pre_root().clone());
         }
     }
 
@@ -390,20 +453,23 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                     });
                 }
             }
-            None => self
-                .pending_attestations
-                .entry(attestation.block_hash.clone())
-                .or_default()
-                .push(PendingAttestation {
-                    citer: citer.clone(),
-                    sender: sender.clone(),
-                    root: attestation.root.clone(),
-                    carries_envelopes,
-                }),
+            None => {
+                self.pending_by_citer
+                    .insert(citer.clone(), attestation.block_hash.clone());
+                self.pending_attestations
+                    .entry(attestation.block_hash.clone())
+                    .or_default()
+                    .push(PendingAttestation {
+                        citer: citer.clone(),
+                        sender: sender.clone(),
+                        root: attestation.root.clone(),
+                        carries_envelopes,
+                    });
+            }
         }
     }
 
-    fn fix(&mut self, target: BlockHash, record: R) {
+    fn fix(&mut self, target: BlockHash, citer: BlockHash, record: R) {
         let root = record.post_root().clone();
         let digest = record.digest();
         let misattested = self
@@ -411,7 +477,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             .get(&target)
             .is_some_and(|pending| pending.iter().any(|p| p.root != root));
         let encoded = misattested.then(|| record.encode());
-        if let Err(error) = self.store.fix(target.clone(), record) {
+        if let Err(error) = self.store.fix(target.clone(), citer, record) {
             self.store_error = Some(error.to_string());
             return;
         }
@@ -431,6 +497,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             .remove(&target)
             .unwrap_or_default()
         {
+            self.pending_by_citer.remove(&pending.citer);
             if pending.root == root {
                 if pending.carries_envelopes {
                     let attestation = Attestation {
@@ -452,6 +519,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 },
             });
         }
+        self.prune();
     }
 }
 
@@ -477,7 +545,6 @@ mod tests {
 
     fn core() -> ExecutorCore<BlockRecord> {
         ExecutorCore::with_store(
-            h("g"),
             CoreParams {
                 max_speculation: 4,
                 fallback_distance: 2,
@@ -516,7 +583,7 @@ mod tests {
 
     fn store_with_b1_fixed() -> Box<dyn RecordStore<BlockRecord>> {
         let mut store = MemoryRecordStore::new(h("g"), h("r0"), Retention::default());
-        store.fix(h("b1"), rec("b1", "r0", "r1")).unwrap();
+        store.fix(h("b1"), h("c1"), rec("b1", "r0", "r1")).unwrap();
         Box::new(store)
     }
 
@@ -536,6 +603,7 @@ mod tests {
         fn fix(
             &mut self,
             _target: BlockHash,
+            _citer: BlockHash,
             _record: BlockRecord,
         ) -> Result<(), shared::rust::store::key_value_store::KvStoreError> {
             Err(shared::rust::store::key_value_store::KvStoreError::IoError(
@@ -546,11 +614,13 @@ mod tests {
         fn reset(&mut self) -> Result<(), shared::rust::store::key_value_store::KvStoreError> {
             self.0.reset()
         }
+
+        fn resident(&self) -> usize { self.0.resident() }
     }
 
     #[test]
     fn a_resumed_prefix_is_not_replayed() {
-        let mut c = ExecutorCore::with_store(h("g"), CoreParams::default(), store_with_b1_fixed());
+        let mut c = ExecutorCore::with_store(CoreParams::default(), store_with_b1_fixed());
         c.emit(block("b1", "v1", vec![]));
         c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
         assert_eq!(c.canonical_len(), 2);
@@ -562,24 +632,115 @@ mod tests {
             target: h("b2"),
             pre_root: h("r1")
         });
-        assert!(!c.diverged());
     }
 
     #[test]
-    fn a_different_order_below_the_stored_prefix_is_divergence() {
-        let mut c = ExecutorCore::with_store(h("g"), CoreParams::default(), store_with_b1_fixed());
+    fn a_block_in_the_stored_prefix_is_not_emitted_again_and_a_reset_starts_afresh() {
+        let mut c = ExecutorCore::with_store(CoreParams::default(), store_with_b1_fixed());
+        assert_eq!(c.emitted_len(), 2);
+        assert!(c.is_emitted(&h("b1")));
+        c.emit(block("b1", "v1", vec![]));
+        assert_eq!(c.emitted_len(), 2);
         c.emit(block("x1", "v1", vec![]));
-        assert!(c.diverged());
-        assert_eq!(c.next_action(), Action::Idle);
+        assert_eq!(c.emitted_len(), 3);
+        assert_eq!(c.next_action(), Action::Execute {
+            target: h("x1"),
+            pre_root: h("r1")
+        });
         c.reset().unwrap();
-        assert!(!c.diverged());
         assert_eq!(c.canonical_len(), 1);
+        assert_eq!(c.emitted_len(), 1);
         assert_eq!(c.executed(&h("b1")), None);
         c.emit(block("x1", "v1", vec![]));
         assert_eq!(c.next_action(), Action::Execute {
             target: h("x1"),
             pre_root: h("r0")
         });
+    }
+
+    fn name(prefix: &str, i: usize) -> String { format!("{prefix}{i}") }
+
+    #[test]
+    fn the_window_stays_bounded_while_the_prefix_grows() {
+        let mut c = ExecutorCore::with_store(
+            CoreParams::default(),
+            Box::new(MemoryRecordStore::new(
+                h("g"),
+                h("r0"),
+                Retention::LastBlocks(0),
+            )),
+        );
+        let mut largest = 0;
+        for i in 1..=300 {
+            let records = if i > 1 {
+                vec![rec(&name("b", i - 1), &name("r", i - 2), &name("r", i - 1))]
+            } else {
+                vec![]
+            };
+            c.emit(block(&name("b", i), &name("v", i % 3), records));
+            c.observe_attestation(
+                &h(&name("b", i)),
+                &h(&name("v", i % 3)),
+                &Attestation {
+                    block_hash: h(&name("b", i.saturating_sub(2).max(1))),
+                    root: h(&name("r", i.saturating_sub(2).max(1))),
+                },
+                true,
+            );
+            loop {
+                match c.next_action() {
+                    Action::Replay {
+                        target,
+                        citer,
+                        record,
+                    } => {
+                        let root = record.post_root().clone();
+                        c.apply_replay(&target, &citer, &record, Ok(root));
+                    }
+                    Action::Execute { target, pre_root } => {
+                        let post = h(&format!("own-{}", String::from_utf8_lossy(&target)));
+                        c.apply_execute(BlockRecord::empty(target, pre_root, post));
+                    }
+                    Action::Idle => break,
+                }
+            }
+            while c.next_inclusion_check().is_some() {}
+            largest = largest.max(c.resident() - c.store.resident());
+        }
+        assert_eq!(c.canonical_len(), 300);
+        assert!(largest <= 64, "the window grew to {largest}");
+        assert!(c.evidence().is_empty(), "{:?}", c.evidence());
+    }
+
+    #[test]
+    fn an_attestation_of_a_block_never_emitted_is_dropped_when_its_attester_leaves_the_window() {
+        let mut c = core();
+        c.observe_attestation(
+            &h("y"),
+            &h("vy"),
+            &Attestation {
+                block_hash: h("ghost"),
+                root: h("rg"),
+            },
+            true,
+        );
+        assert_eq!(c.pending_attestations.len(), 1);
+        c.emit(block("y", "vy", vec![]));
+        c.emit(block("z", "vz", vec![rec("y", "r0", "r1")]));
+        let Action::Replay {
+            target,
+            citer,
+            record,
+        } = c.next_action()
+        else {
+            panic!("expected a replay")
+        };
+        c.apply_replay(&target, &citer, &record, Ok(h("r1")));
+        assert_eq!(c.canonical_len(), 2);
+        assert!(c.pending_attestations.is_empty());
+        assert!(c.pending_by_citer.is_empty());
+        assert!(!c.index.contains_key(&h("y")));
+        assert_eq!(c.emitted_len(), 3);
     }
 
     #[test]
@@ -589,7 +750,7 @@ mod tests {
             h("r0"),
             Retention::default(),
         ));
-        let mut c = ExecutorCore::with_store(h("g"), CoreParams::default(), Box::new(store));
+        let mut c = ExecutorCore::with_store(CoreParams::default(), Box::new(store));
         c.emit(block("b1", "v1", vec![]));
         c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
         let Action::Replay {
@@ -811,7 +972,7 @@ mod tests {
     }
 
     fn fixed_b1() -> ExecutorCore<BlockRecord> {
-        let mut c = ExecutorCore::with_store(h("g"), CoreParams::default(), store_with_b1_fixed());
+        let mut c = ExecutorCore::with_store(CoreParams::default(), store_with_b1_fixed());
         c.emit(block("b1", "v1", vec![]));
         c
     }
