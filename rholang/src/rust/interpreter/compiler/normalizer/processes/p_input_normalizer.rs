@@ -266,6 +266,11 @@ pub fn normalize_p_input<'ast>(
                     let remainder = &lhs.remainder;
                     Ok(((names, remainder), rhs))
                 }
+                Bind::Signed { .. } => Err(InterpreterError::NormalizerError(
+                    "cost-accounting syntax (signed terms, token stacks, signed binds) is not \
+                     supported yet"
+                        .to_string(),
+                )),
             })
             .collect();
 
@@ -276,6 +281,7 @@ pub fn normalize_p_input<'ast>(
             Bind::Linear { .. } => (false, false),
             Bind::Repeated { .. } => (true, false),
             Bind::Peek { .. } => (false, true),
+            Bind::Signed { .. } => (false, false),
         };
 
         // Extract patterns and sources
