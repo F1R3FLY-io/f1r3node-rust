@@ -1,0 +1,147 @@
+use std::collections::HashMap;
+
+use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+use crypto::rust::public_key::PublicKey;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::{GDeployerId, GUnforgeable, Par};
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
+use rholang::rust::interpreter::accounting::rev_stack::WalletOwner;
+use rholang::rust::interpreter::compiler::compiler::Compiler;
+use rholang::rust::interpreter::errors::InterpreterError;
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::system_processes::DeployData;
+use rholang::rust::interpreter::test_utils::resources::with_runtime;
+
+const ALICE: [u8; 65] = [4; 65];
+const CAROL: [u8; 65] = [9; 65];
+
+fn deployer_env(key: &[u8]) -> HashMap<String, Par> {
+    let id = Par::default().with_unforgeables(vec![GUnforgeable {
+        unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
+            public_key: key.to_vec(),
+        })),
+    }]);
+    HashMap::from([("rho:system:deployerId".to_string(), id)])
+}
+
+fn owner(key: &[u8]) -> WalletOwner {
+    WalletOwner::from_public_key(&PublicKey::from_bytes(key)).unwrap()
+}
+
+fn named(source: &str) -> Vec<WalletOwner> {
+    let term = Compiler::source_to_adt_with_normalizer_env(source, deployer_env(&ALICE)).unwrap();
+    named_owners(&term)
+}
+
+async fn run_as(runtime: &RhoRuntimeImpl, key: &[u8], source: &str) -> Vec<InterpreterError> {
+    runtime
+        .set_deploy_data(DeployData {
+            timestamp: 1,
+            deployer_id: PublicKey::from_bytes(key),
+            deploy_id: vec![1],
+        })
+        .await;
+    runtime
+        .evaluate(
+            source,
+            Cost::create(i64::MAX, "signed region spec".to_string()),
+            deployer_env(key),
+            Blake2b512Random::create_from_bytes(&[]),
+        )
+        .await
+        .expect("evaluation runs")
+        .errors
+}
+
+fn refused(errors: &[InterpreterError], reason: &str) -> bool {
+    errors.iter().any(
+        |error| matches!(error, InterpreterError::ReduceError(message) if message.contains(reason)),
+    )
+}
+
+const OWN: &str = r#"new d(`rho:system:deployerId`) in { {% @"out"!(1) %}[d] }"#;
+
+#[test]
+fn the_gate_sees_the_deployer_as_the_only_name_of_an_own_signed_term() {
+    assert_eq!(named(OWN), vec![owner(&ALICE)]);
+    assert_eq!(
+        named(r#"new d(`rho:system:deployerId`) in { for ({% @y <- @"c" %}[d]) { Nil } }"#),
+        vec![owner(&ALICE)]
+    );
+    assert_eq!(named(r#"new x in { x!(1) }"#), vec![]);
+}
+
+#[test]
+fn the_gate_sees_a_foreign_owner_for_any_other_signature() {
+    for source in [
+        r#"new s in { {% Nil %}[s] }"#,
+        r#"{% Nil %}[bob]"#,
+        r#"{% Nil %}[# { 1 }]"#,
+        r#"new d(`rho:system:deployerId`), s in { {% Nil %}[d (*) s] }"#,
+        r#"for (d <- @"k") { {% Nil %}[d] }"#,
+        r#"new d(`rho:system:deployerId`) in { [{% Nil %}[d], {% Nil %}[e]] }"#,
+    ] {
+        let names = named(source);
+        assert!(!names.is_empty(), "{source}");
+        assert!(names.iter().any(|n| *n != owner(&ALICE)), "{source}");
+    }
+}
+
+#[tokio::test]
+async fn a_signed_term_of_the_deployer_runs_its_body() {
+    with_runtime("signed-region-", |runtime| async move {
+        assert!(run_as(&runtime, &ALICE, OWN).await.is_empty());
+        let probe = r#"for (@1 <- @"out") { {% Nil %}[bob] }"#;
+        let errors = run_as(&runtime, &ALICE, probe).await;
+        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_signed_term_of_another_signature_is_refused() {
+    with_runtime("signed-region-", |runtime| async move {
+        let errors = run_as(&runtime, &ALICE, r#"new s in { {% Nil %}[s] }"#).await;
+        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+        let errors = run_as(&runtime, &ALICE, r#"{% Nil %}[bob]"#).await;
+        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_signed_bind_must_name_the_deployer() {
+    with_runtime("signed-region-", |runtime| async move {
+        let own = r#"new d(`rho:system:deployerId`) in { for ({% @y <- @"c" %}[d]) { Nil } }"#;
+        assert!(run_as(&runtime, &ALICE, own).await.is_empty());
+        let foreign = r#"new s in { for ({% @y <- @"c" %}[s]) { Nil } }"#;
+        let errors = run_as(&runtime, &ALICE, foreign).await;
+        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stored_signed_term_runs_only_for_its_signer() {
+    with_runtime("signed-region-", |runtime| async move {
+        let store = r#"new d(`rho:system:deployerId`) in { @"held"!({% Nil %}[d]) }"#;
+        assert!(run_as(&runtime, &ALICE, store).await.is_empty());
+        let errors = run_as(&runtime, &CAROL, r#"for (@p <- @"held") { p }"#).await;
+        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+
+        assert!(run_as(&runtime, &ALICE, store).await.is_empty());
+        let errors = run_as(&runtime, &ALICE, r#"for (@p <- @"held") { p }"#).await;
+        assert!(errors.is_empty(), "{errors:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_token_stack_is_refused_until_q23_is_decided() {
+    with_runtime("signed-region-", |runtime| async move {
+        let errors = run_as(&runtime, &ALICE, "new s in { s :: () }").await;
+        assert!(refused(&errors, "Q-23"), "{errors:?}");
+    })
+    .await;
+}

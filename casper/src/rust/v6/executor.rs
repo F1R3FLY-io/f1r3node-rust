@@ -8,12 +8,15 @@ use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, Event, ProcessedDeploy,
 };
+use models::rust::normalizer_env::normalizer_env_from_deploy;
+use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
 use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
 };
 use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id, HotStoreCells, WalletOwner,
 };
+use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -324,8 +327,16 @@ fn gate_inputs<'a>(
     deploys: impl Iterator<Item = &'a Signed<DeployData>>,
 ) -> Result<Vec<GateInput>, CasperError> {
     deploys
-        .map(|d| GateInput::from_deploy(d, Vec::new()))
+        .map(|d| GateInput::from_deploy(d, named_signatures(d)))
         .collect()
+}
+
+fn named_signatures(deploy: &Signed<DeployData>) -> Vec<WalletOwner> {
+    normalizer_env_from_deploy(deploy)
+        .ok()
+        .and_then(|env| Compiler::source_to_adt_with_normalizer_env(&deploy.data.term, env).ok())
+        .map(|term| named_owners(&term))
+        .unwrap_or_default()
 }
 
 fn reservations(

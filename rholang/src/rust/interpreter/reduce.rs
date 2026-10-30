@@ -13,10 +13,11 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, New, Par,
-    ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, CostSignature, CostSignedTerm, EAnd, EDiv, EEq, EGt, EGte, EList, ELt,
+    ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
+    EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If,
+    KeyValuePair, ListParWithRandom, Match, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
+    TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -49,6 +50,8 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
+use super::accounting::rev_stack::region::signature_owner;
+use super::accounting::rev_stack::WalletOwner;
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -62,6 +65,7 @@ use super::metrics_constants::{
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
+use super::system_processes::DeployData;
 use super::util::GeneratedMessage;
 use super::{unwrap_option_ref, unwrap_option_safe};
 use crate::rust::interpreter::accounting::costs::{
@@ -254,6 +258,7 @@ pub struct DebruijnInterpreter {
     /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
     /// system-process closures that clone the reducer.
     pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
+    pub deploy_data: Arc<RwLock<DeployData>>,
 }
 
 type Application = Option<(
@@ -312,10 +317,9 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        if has_cost_accounted_terms(&par) {
+        if !par.cost_stacks.is_empty() {
             return Err(InterpreterError::ReduceError(
-                "signed terms, token stacks and signed binds cannot run yet: the reducer has no \
-                 funding regions"
+                "token stacks cannot run yet: the amount of a stack cell is not decided (Q-23)"
                     .to_string(),
             ));
         }
@@ -340,6 +344,10 @@ impl DebruijnInterpreter {
             par.bundles
                 .into_iter()
                 .map(GeneratedMessage::Bundle)
+                .collect(),
+            par.cost_signed_terms
+                .into_iter()
+                .map(GeneratedMessage::CostSignedTerm)
                 .collect(),
             par.exprs
                 .into_iter()
@@ -1205,6 +1213,9 @@ impl DebruijnInterpreter {
             }
             GeneratedMessage::If(term) => self.eval_if(term, env, rand).await,
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
+            GeneratedMessage::CostSignedTerm(term) => {
+                self.eval_cost_signed_term(term, env, rand).await
+            }
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
@@ -1290,6 +1301,14 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.cost.charge(receive_eval_cost())?;
+
+        for signature in receive
+            .binds
+            .iter()
+            .filter_map(|b| b.cost_signature.clone())
+        {
+            self.check_region_signature(signature, env).await?;
+        }
 
         // Optional `where`-clause guard. Substituted at depth=1 so any
         // variables in scope at the receive site (but not pattern-bound)
@@ -1645,6 +1664,40 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.eval(unwrap_option_safe(bundle.body)?, env, rand).await
+    }
+
+    async fn check_region_signature(
+        &self,
+        signature: CostSignature,
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let signature = self
+            .substitute
+            .substitute_cost_signature(signature, 0, env)?;
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!(
+                "a signed term may name only the deployer's signature: {reason}"
+            ))
+        };
+        let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+        let deployer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
+            .map_err(|e| refused(e.to_string()))?;
+        if owner == deployer {
+            Ok(())
+        } else {
+            Err(refused(format!("{owner:?}")))
+        }
+    }
+
+    async fn eval_cost_signed_term(
+        &self,
+        term: CostSignedTerm,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        self.check_region_signature(unwrap_option_safe(term.signature)?, env)
+            .await?;
+        self.eval(unwrap_option_safe(term.body)?, env, rand).await
     }
 
     // Public here for testing purposes
@@ -7736,6 +7789,7 @@ impl DebruijnInterpreter {
             // Default: reject fs native URNs.  Genesis composition
             // flips the flag off via a yet-to-land runtime slice.
             filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            deploy_data: Arc::new(RwLock::new(DeployData::empty())),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -8098,17 +8152,6 @@ fn divide_fixed_points(
         unscaled: bigint_to_bytes(&result),
         scale: a.scale,
     }
-}
-
-fn has_cost_accounted_terms(par: &Par) -> bool {
-    !par.cost_signed_terms.is_empty()
-        || !par.cost_stacks.is_empty()
-        || par.receives.iter().any(|receive| {
-            receive
-                .binds
-                .iter()
-                .any(|bind| bind.cost_signature.is_some())
-        })
 }
 
 /// Returns `Some(b)` iff `par` represents the bool value `b` —

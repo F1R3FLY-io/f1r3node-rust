@@ -79,31 +79,6 @@ async fn evaluation_errors(source: &'static str) -> Vec<InterpreterError> {
     .await
 }
 
-fn refused(errors: &[InterpreterError]) -> bool {
-    errors.iter().any(|error| {
-        matches!(error, InterpreterError::ReduceError(message) if message.contains("funding regions"))
-    })
-}
-
-#[tokio::test]
-async fn the_reducer_refuses_a_signed_term() {
-    assert!(refused(
-        &evaluation_errors(r#"new s in { {% @"x"!(1) %}[s] }"#).await
-    ));
-}
-
-#[tokio::test]
-async fn the_reducer_refuses_a_token_stack() {
-    assert!(refused(&evaluation_errors("new s in { s :: () }").await));
-}
-
-#[tokio::test]
-async fn the_reducer_refuses_a_signed_bind() {
-    assert!(refused(
-        &evaluation_errors(r#"new s in { for ({% @y <- @"c" %}[s]) { Nil } }"#).await
-    ));
-}
-
 #[tokio::test]
 async fn a_sent_signed_term_is_inert_data() {
     let errors = evaluation_errors(r#"new s in { @"out"!({% Nil %}[s]) }"#).await;

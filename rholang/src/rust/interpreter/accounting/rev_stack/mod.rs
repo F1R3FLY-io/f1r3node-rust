@@ -6,6 +6,7 @@ pub mod hooks;
 pub mod native;
 pub mod ops;
 pub mod owner;
+pub mod region;
 pub mod reserve;
 
 #[cfg(test)]
