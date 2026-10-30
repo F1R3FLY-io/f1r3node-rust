@@ -1,11 +1,12 @@
 use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches,
-    EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus,
-    EPlusPlus, ETuple, EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
-    VarRef,
+    Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
+    CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
+    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple,
+    EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map::ParMap;
@@ -13,6 +14,7 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle};
+use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use models::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use models::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use models::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
@@ -186,6 +188,105 @@ fn rebundle(mut outer: Bundle, body: Par) -> Bundle {
 }
 
 impl Substitute {
+    // The substitution runs on an explicit work stack and a value stack, so
+    // the native stack does not grow with the compound depth. `Visit`
+    // substitutes one signature. A compound pushes `Close` with its element
+    // count and then its elements in reverse, so the elements run in source
+    // order and stop at the first error. `Close` takes the substituted
+    // elements from the value stack in source order. Each leaf and each
+    // compound is sorted when it completes.
+    pub(crate) fn substitute_cost_signature(
+        &self,
+        signature: CostSignature,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<CostSignature, InterpreterError> {
+        enum Step {
+            Visit(CostSignature),
+            Close(usize),
+        }
+        let mut work = vec![Step::Visit(signature)];
+        let mut done: Vec<CostSignature> = Vec::new();
+        while let Some(step) = work.pop() {
+            let value = match step {
+                Step::Close(count) => {
+                    let elements = done.split_off(done.len() - count);
+                    CostSignatureValue::Compound(CostSignatureCompound { elements })
+                }
+                Step::Visit(signature) => match signature.value {
+                    Some(CostSignatureValue::Compound(compound)) => {
+                        work.push(Step::Close(compound.elements.len()));
+                        work.extend(compound.elements.into_iter().rev().map(Step::Visit));
+                        continue;
+                    }
+                    Some(CostSignatureValue::Unit(value)) => CostSignatureValue::Unit(value),
+                    Some(CostSignatureValue::Ground(bytes)) => CostSignatureValue::Ground(bytes),
+                    Some(CostSignatureValue::BoundLevel(index)) if depth == 0 => {
+                        match env.get(&index) {
+                            Some(name) => {
+                                CostSignatureValue::Name(ParSortMatcher::sort_match(&name).term)
+                            }
+                            None => CostSignatureValue::BoundLevel(index),
+                        }
+                    }
+                    Some(CostSignatureValue::BoundLevel(index)) => {
+                        CostSignatureValue::BoundLevel(index)
+                    }
+                    Some(CostSignatureValue::Quote(par)) => CostSignatureValue::Quote(
+                        self.substitute_no_sort(par, depth, env)
+                            .map(|par| ParSortMatcher::sort_match(&par).term)?,
+                    ),
+                    Some(CostSignatureValue::Name(par)) => CostSignatureValue::Name(
+                        self.substitute_no_sort(par, depth, env)
+                            .map(|par| ParSortMatcher::sort_match(&par).term)?,
+                    ),
+                    None => {
+                        return Err(InterpreterError::UndefinedRequiredProtobufFieldError(
+                            "CostSignature.value".to_string(),
+                        ))
+                    }
+                },
+            };
+            done.push(sort_signature(&CostSignature { value: Some(value) }).term);
+        }
+        done.pop().ok_or_else(|| {
+            InterpreterError::BugFoundError(
+                "the cost-signature substitution left no signature".to_string(),
+            )
+        })
+    }
+
+    fn substitute_cost_signed_term(
+        &self,
+        term: CostSignedTerm,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<CostSignedTerm, InterpreterError> {
+        Ok(CostSignedTerm {
+            body: Some(self.substitute_no_sort(unwrap_option_safe(term.body)?, depth, env)?),
+            signature: Some(self.substitute_cost_signature(
+                unwrap_option_safe(term.signature)?,
+                depth,
+                env,
+            )?),
+        })
+    }
+
+    fn substitute_cost_stack(
+        &self,
+        stack: CostStack,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<CostStack, InterpreterError> {
+        Ok(CostStack {
+            cells: stack
+                .cells
+                .into_iter()
+                .map(|cell| self.substitute_cost_signature(cell, depth, env))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
     fn sub_exp(
         &self,
         exprs: Vec<Expr>,
@@ -318,6 +419,18 @@ impl SubstituteTrait<Par> for Substitute {
         let matches = self.substitute_all_no_sort(term.matches, depth, env)?;
         let conditionals = self.substitute_all_no_sort(term.conditionals, depth, env)?;
 
+        let cost_signed_terms = term
+            .cost_signed_terms
+            .into_iter()
+            .map(|signed| self.substitute_cost_signed_term(signed, depth, env))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let cost_stacks = term
+            .cost_stacks
+            .into_iter()
+            .map(|stack| self.substitute_cost_stack(stack, depth, env))
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(concatenate_pars(
             exprs,
             concatenate_pars(connectives, Par {
@@ -332,6 +445,8 @@ impl SubstituteTrait<Par> for Substitute {
                 conditionals,
                 locally_free: set_bits_until(term.locally_free, env.shift),
                 connective_used: term.connective_used,
+                cost_signed_terms,
+                cost_stacks,
             }),
         ))
     }
@@ -392,6 +507,7 @@ impl SubstituteTrait<Receive> for Substitute {
                      source,
                      remainder,
                      free_count,
+                     cost_signature,
                  }| {
                     let sub_channel =
                         self.substitute_no_sort(unwrap_option_safe(source)?, depth, env)?;
@@ -402,6 +518,9 @@ impl SubstituteTrait<Receive> for Substitute {
                         source: Some(sub_channel),
                         remainder,
                         free_count,
+                        cost_signature: cost_signature
+                            .map(|signature| self.substitute_cost_signature(signature, depth, env))
+                            .transpose()?,
                     })
                 },
             )
@@ -1621,6 +1740,7 @@ mod tests {
                 source: Some(bound(0)),
                 remainder: None,
                 free_count: 0,
+                cost_signature: None,
             }],
             body: Some(Par::default()),
             persistent: false,

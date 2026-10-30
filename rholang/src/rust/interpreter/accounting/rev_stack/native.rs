@@ -13,6 +13,7 @@ use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{
     RhoBoolean, RhoDeployerId, RhoName, RhoNumber, RhoString, RhoTuple2,
 };
+use crate::rust::interpreter::util::vault_address::VaultAddress;
 
 pub const REV_WALLET_URN: &str = "rho:rev:wallet";
 
@@ -102,4 +103,44 @@ fn transfer_error(e: RevStackError) -> String {
         RevStackError::InsufficientFunds { .. } => "Insufficient funds".to_string(),
         other => other.to_string(),
     }
+}
+
+pub fn transfer_term(to: &str, amount: i64) -> Result<String, String> {
+    checked_address(to)?;
+    if amount <= 0 {
+        return Err("Amount must be positive value".to_string());
+    }
+    Ok(format!(
+        "new w(`{REV_WALLET_URN}`), deployerId(`rho:system:deployerId`), \
+         deployId(`rho:system:deployId`) in {{\n  \
+         w!(\"transfer\", (*deployerId, \"{to}\", {amount}), *deployId)\n}}\n"
+    ))
+}
+
+pub fn balance_term(address: &str) -> Result<String, String> {
+    checked_address(address)?;
+    Ok(format!(
+        "new return, w(`{REV_WALLET_URN}`) in {{\n  w!(\"balance\", \"{address}\", *return)\n}}\n"
+    ))
+}
+
+pub fn parse_balance(par: &Par) -> Result<RevAmount, String> {
+    let (flag, value) =
+        RhoTuple2::unapply(par).ok_or_else(|| "expected an (ok, value) pair".to_string())?;
+    match RhoBoolean::unapply(&flag) {
+        Some(true) => RhoNumber::unapply(&value)
+            .filter(|n| *n >= 0)
+            .map(|n| n as RevAmount)
+            .ok_or_else(|| "expected a non-negative balance".to_string()),
+        Some(false) => {
+            Err(RhoString::unapply(&value).unwrap_or_else(|| "lookup failed".to_string()))
+        }
+        None => Err("expected an (ok, value) pair".to_string()),
+    }
+}
+
+fn checked_address(address: &str) -> Result<(), String> {
+    VaultAddress::parse(address)
+        .map(|_| ())
+        .map_err(|e| format!("invalid REV address: {e}"))
 }
