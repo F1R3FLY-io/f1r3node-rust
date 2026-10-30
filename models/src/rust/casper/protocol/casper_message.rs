@@ -908,6 +908,42 @@ impl RejectedDeploy {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Attestation {
+    pub block_hash: ByteString,
+    pub root: ByteString,
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct V6Body {
+    pub attestation: Option<Attestation>,
+    pub records: Vec<ByteString>,
+}
+
+impl V6Body {
+    pub fn record_bytes(&self) -> usize { self.records.iter().map(ByteString::len).sum() }
+
+    pub fn from_proto(proto: V6BodyProto) -> Self {
+        V6Body {
+            attestation: proto.attestation.map(|a| Attestation {
+                block_hash: a.block_hash,
+                root: a.root,
+            }),
+            records: proto.records,
+        }
+    }
+
+    pub fn to_proto(&self) -> V6BodyProto {
+        V6BodyProto {
+            attestation: self.attestation.as_ref().map(|a| AttestationProto {
+                block_hash: a.block_hash.clone(),
+                root: a.root.clone(),
+            }),
+            records: self.records.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Body {
     pub state: F1r3flyState,
@@ -917,6 +953,7 @@ pub struct Body {
     pub extra_bytes: ByteString,
     pub applied_from_scope: Vec<ByteString>,
     pub merge_base: ByteString,
+    pub v6: Option<V6Body>,
 }
 
 impl Body {
@@ -945,6 +982,7 @@ impl Body {
             extra_bytes: proto.extra_bytes,
             applied_from_scope: proto.applied_from_scope,
             merge_base: proto.merge_base,
+            v6: proto.v6.map(V6Body::from_proto),
         })
     }
 
@@ -972,6 +1010,7 @@ impl Body {
             extra_bytes: self.extra_bytes.clone(),
             applied_from_scope: self.applied_from_scope.clone(),
             merge_base: self.merge_base.clone(),
+            v6: self.v6.as_ref().map(V6Body::to_proto),
         }
     }
 }
@@ -1850,6 +1889,7 @@ mod approved_block_tests {
                     extra_bytes: Bytes::new(),
                     applied_from_scope: vec![],
                     merge_base: Bytes::new(),
+                    v6: None,
                 },
                 justifications: vec![],
                 sender: Bytes::new(),

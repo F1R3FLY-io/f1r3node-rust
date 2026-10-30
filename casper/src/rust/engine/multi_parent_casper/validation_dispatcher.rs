@@ -140,6 +140,15 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 return Ok(Either::Left(BlockError::Invalid(InvalidBlock::InvalidFormat)));
             }
         }
+    } else if block.body.v6.is_some() {
+        tracing::warn!(
+            target: "f1r3fly.casper",
+            block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+            "a legacy shard refuses a block that carries a v6 body extension"
+        );
+        return Ok(Either::Left(BlockError::Invalid(
+            InvalidBlock::InvalidFormat,
+        )));
     }
 
     let (t2_opt, t3_opt) = if !skip_checkpoint_and_bonds && this.v6.is_none() {

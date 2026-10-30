@@ -2390,6 +2390,7 @@ mod frontier_determinism_tests {
                 extra_bytes: Bytes::new(),
                 applied_from_scope: applied,
                 merge_base: base.unwrap_or_default(),
+                v6: None,
             },
             justifications: Vec::new(),
             sender: Bytes::new(),

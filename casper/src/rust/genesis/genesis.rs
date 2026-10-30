@@ -342,6 +342,7 @@ impl Genesis {
             extra_bytes: Bytes::new(),
             applied_from_scope: Vec::new(),
             merge_base: Bytes::new(),
+            v6: None,
         };
 
         let header = proto_util::block_header(Vec::new(), genesis.version, genesis.timestamp);

@@ -57,6 +57,7 @@ fn fixture_block() -> BlockMessage {
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
             merge_base: Bytes::new(),
+            v6: None,
         },
         justifications: vec![],
         sender: Bytes::from(vec![0xCD; 33]),

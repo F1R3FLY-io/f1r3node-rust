@@ -50,6 +50,7 @@ fn block(sender: Bytes, deploys: Vec<ProcessedDeploy>) -> BlockMessage {
             extra_bytes: Bytes::new(),
             applied_from_scope: vec![],
             merge_base: Bytes::new(),
+            v6: None,
         },
         justifications: vec![],
         sender,

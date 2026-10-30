@@ -232,6 +232,7 @@ pub async fn equivocate_block(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -368,6 +369,7 @@ pub async fn propose_with_explicit_justifications(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -563,6 +565,7 @@ pub async fn propose_with_block_mutation(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),
@@ -712,6 +715,7 @@ pub async fn propose_neglecting_block(
         extra_bytes: Bytes::new(),
         applied_from_scope,
         merge_base: merge_base.unwrap_or_default(),
+        v6: None,
     };
     let header = Header {
         parents_hash_list: parents.iter().map(|p| p.block_hash.clone()).collect(),

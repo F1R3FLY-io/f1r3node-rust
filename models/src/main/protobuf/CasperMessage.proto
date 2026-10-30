@@ -439,6 +439,17 @@ message BodyProto {
   // pointers instead of a per-block re-derivation:
   // state(B) = state(mergeBase) + appliedFromScope + deploys.
   bytes mergeBase                                   = 7;
+  V6BodyProto v6                                    = 8;
+}
+
+message AttestationProto {
+  bytes blockHash = 1;
+  bytes root      = 2;
+}
+
+message V6BodyProto {
+  AttestationProto attestation = 1;
+  repeated bytes records       = 2;
 }
 
 message RejectedDeployProto{
