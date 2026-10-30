@@ -358,4 +358,38 @@ mod tests {
         replace_rev_hook(&store, &ks, RevHook::Noop).unwrap();
         assert_eq!(rev_hook(&store).unwrap(), Some(RevHook::Noop));
     }
+
+    #[test]
+    fn the_compute_wallet_starts_empty_and_spends_only_under_the_authority() {
+        use std::sync::Arc;
+
+        use super::super::compute::{
+            compute_balance, compute_wallet_owner, deposit_compute, spend_compute, ComputeSpender,
+        };
+        use super::super::ops::RevStacks;
+
+        let store: Arc<Mem> = Arc::new(Mem::default());
+        let ks = keys(3);
+        let payee = keys(1).remove(0);
+        install_genesis_hooks(store.as_ref(), &HookAuthority::new(ks.clone(), 2).unwrap()).unwrap();
+        assert_eq!(compute_balance(store.clone()).unwrap(), 0);
+        deposit_compute(store.clone(), 70).unwrap();
+        deposit_compute(store.clone(), 30).unwrap();
+        assert_eq!(compute_balance(store.clone()).unwrap(), 100);
+
+        let one = ComputeSpender::Authority(ks[..1].to_vec());
+        assert!(spend_compute(store.clone(), &one, &payee, 10).is_err());
+        let outsider = ComputeSpender::Authority(vec![ks[0].clone(), payee.clone()]);
+        assert!(spend_compute(store.clone(), &outsider, &payee, 10).is_err());
+        let two = ComputeSpender::Authority(ks[1..].to_vec());
+        assert!(spend_compute(store.clone(), &two, &compute_wallet_owner(), 10).is_err());
+        assert!(spend_compute(store.clone(), &two, &payee, 101).is_err());
+        assert_eq!(spend_compute(store.clone(), &two, &payee, 40).unwrap(), 60);
+        assert_eq!(
+            spend_compute(store.clone(), &ComputeSpender::InstalledHook, &payee, 60).unwrap(),
+            0
+        );
+        assert_eq!(RevStacks::new(store.clone()).balance(&payee).unwrap(), 100);
+        assert_eq!(compute_balance(store).unwrap(), 0);
+    }
 }

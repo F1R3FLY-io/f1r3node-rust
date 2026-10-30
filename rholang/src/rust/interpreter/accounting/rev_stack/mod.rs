@@ -1,5 +1,6 @@
 pub mod cell;
 pub mod channel;
+pub mod compute;
 pub mod genesis;
 pub mod hooks;
 pub mod native;
