@@ -43,10 +43,9 @@ impl Clique {
         let mut best_weight = None;
         for weight in weights.values() {
             meter.step(WorkKind::Clique)?;
-            best_weight =
-                Some(best_weight.map_or(weight.clone(), |best: BigInt| best.max(weight.clone())));
+            best_weight = Some(best_weight.map_or(weight, |best: &BigInt| best.max(weight)));
         }
-        let mut best_weight = best_weight.unwrap_or_default();
+        let mut best_weight = best_weight.cloned().unwrap_or_default();
         Self::expand_max_weight(
             meter,
             0,
@@ -159,6 +158,7 @@ impl Clique {
                 candidates.push(vertex.clone());
             }
         }
+        let zero_weight = BigInt::from(0);
         let mut current_p = Self::copy_set(meter, p)?;
         let mut current_x = Self::copy_set(meter, x)?;
         for vertex in candidates {
@@ -169,7 +169,7 @@ impl Clique {
             Self::expand_max_weight(
                 meter,
                 depth + 1,
-                &ans_weight + weights.get(&vertex).cloned().unwrap_or_default(),
+                &ans_weight + weights.get(&vertex).unwrap_or(&zero_weight),
                 &new_p,
                 &new_x,
                 adj,

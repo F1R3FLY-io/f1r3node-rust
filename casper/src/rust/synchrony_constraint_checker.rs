@@ -189,6 +189,25 @@ mod tests {
     }
 
     #[test]
+    fn compute_synchrony_value_preserves_large_ratios_and_zero_denominator() {
+        let validator = Validator::from(vec![1u8]);
+        let unknown = Validator::from(vec![2u8]);
+        let seen_senders = HashSet::from([validator.clone(), unknown]);
+        for shift in [0, 64, 256, 1024] {
+            let unit = BigInt::from(1) << shift;
+            let weights = HashMap::from([(validator.clone(), &unit * 3)]);
+            let (seen, ratio) =
+                super::compute_synchrony_value(&seen_senders, &weights, &(&unit * 4));
+            assert_eq!(seen, &unit * 3);
+            assert_eq!(ratio, 0.75);
+        }
+        assert_eq!(
+            super::compute_synchrony_value(&HashSet::new(), &HashMap::new(), &0.into()),
+            (0.into(), 1.0)
+        );
+    }
+
+    #[test]
     fn compute_synchrony_value_with_all_senders_reaches_full_ratio() {
         let mut validator_weight_map = HashMap::new();
         let validator1 = Validator::from(vec![1u8]);
@@ -267,7 +286,7 @@ fn compute_synchrony_value(
     } else {
         BigRational::new(seen_senders_weight.clone(), other_validators_weight.clone())
             .to_f64()
-            .unwrap_or(0.0)
+            .expect("A BigInt ratio with a nonzero denominator cannot be NaN")
     };
 
     (seen_senders_weight, synchrony_constraint_value)

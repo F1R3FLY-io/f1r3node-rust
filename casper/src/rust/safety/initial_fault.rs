@@ -25,7 +25,7 @@ pub(crate) fn normalized_initial_fault(equivocating_weight: BigInt, total_weight
     } else {
         BigRational::new(equivocating_weight, total_weight)
             .to_f32()
-            .unwrap_or(f32::INFINITY)
+            .expect("A BigInt ratio with a positive denominator cannot be NaN")
     }
 }
 
@@ -61,5 +61,10 @@ mod tests {
             );
         }
         assert_eq!(normalized_initial_fault(1.into(), 0.into()), 0.0);
+        assert_eq!(normalized_initial_fault(0.into(), 0.into()), 0.0);
+        assert_eq!(
+            normalized_initial_fault(0.into(), BigInt::from(1) << 1024),
+            0.0
+        );
     }
 }

@@ -196,3 +196,19 @@ fn clique_and_finality_preserve_512_bit_weights_and_exact_boundaries() {
         ));
     }
 }
+
+#[test]
+fn missing_weights_and_isolated_vertices_preserve_large_clique_weights() {
+    let unit = num_bigint::BigInt::from(1) << 256;
+    let edges = vec![(0, 1), (0, 2), (1, 2)];
+    let mut weights = HashMap::from([(0, &unit * 2), (2, &unit * 3)]);
+    assert_eq!(
+        Clique::find_maximum_clique_by_weight(&edges, &weights),
+        &unit * 5
+    );
+    weights.insert(3, &unit * 7);
+    assert_eq!(
+        Clique::find_maximum_clique_by_weight(&edges, &weights),
+        &unit * 7
+    );
+}

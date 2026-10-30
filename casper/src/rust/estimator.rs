@@ -428,6 +428,7 @@ impl Estimator {
         }
 
         let mut head = lca;
+        let zero_score = BigInt::from(0);
         loop {
             meter.step(WorkKind::Traversal)?;
             let mut children = scored_main_children(meter, &head, block_dag, scores)?;
@@ -436,9 +437,9 @@ impl Estimator {
             }
             meter.charge(WorkKind::Traversal, children.len() as u64, 0)?;
             children.sort_by(|a, b| {
-                let score_a = scores.get(a).cloned().unwrap_or_default();
-                let score_b = scores.get(b).cloned().unwrap_or_default();
-                score_b.cmp(&score_a).then_with(|| a.cmp(b))
+                let score_a = scores.get(a).unwrap_or(&zero_score);
+                let score_b = scores.get(b).unwrap_or(&zero_score);
+                score_b.cmp(score_a).then_with(|| a.cmp(b))
             });
             head = children.swap_remove(0);
         }
