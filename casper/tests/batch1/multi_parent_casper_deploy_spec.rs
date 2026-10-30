@@ -17,6 +17,165 @@ use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
 #[tokio::test]
+async fn direct_deploy_refuses_invalid_signatures_without_persisting_them() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let mut deploy =
+        construct_deploy::basic_deploy_data(41, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let signature = deploy.sig.clone();
+    deploy.data.phlo_limit += 1;
+
+    assert!(matches!(
+        node.casper.deploy(deploy).unwrap(),
+        Either::Left(DeployError::SignatureVerificationFailed)
+    ));
+    assert!(!node.deploy_storage.contains_sig(&signature).unwrap());
+    assert!(!node
+        .casper
+        .rejected_deploy_buffer
+        .lock()
+        .unwrap()
+        .contains_sig(&signature)
+        .unwrap());
+}
+
+#[tokio::test]
+async fn direct_deploy_accepts_after_quarantining_a_damaged_pool_copy() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(44, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let signature = deploy.sig.to_vec();
+    let key = node.deploy_storage.store.encode_key(&signature).unwrap();
+    node.deploy_storage
+        .store
+        .raw_store()
+        .put_one(key, vec![0xff, 0x01])
+        .unwrap();
+
+    assert!(matches!(node.casper.deploy(deploy.clone()).unwrap(),
+        Either::Right(id) if id == signature));
+    assert!(node.deploy_storage.contains_sig(&signature).unwrap());
+    assert!(node.deploy_storage.read_all().unwrap().contains(&deploy));
+}
+
+#[tokio::test]
+async fn direct_deploy_preserves_duplicate_priority_for_an_already_stored_signature() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let mut deploy =
+        construct_deploy::basic_deploy_data(42, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let signature = deploy.sig.to_vec();
+    node.casper
+        .rejected_deploy_buffer
+        .lock()
+        .unwrap()
+        .add(vec![deploy.clone()])
+        .unwrap();
+    deploy.data.phlo_limit += 1;
+
+    assert!(matches!(node.casper.deploy(deploy).unwrap(),
+        Either::Left(DeployError::DuplicateDeploy(id)) if id == signature));
+}
+
+#[tokio::test]
+async fn direct_deploy_checks_a_cold_buffer_record_without_holding_its_mutex() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
+    use crypto::rust::signatures::signed::Signed;
+    use models::rust::casper::protocol::casper_message::DeployData;
+    use prost::Message;
+    use shared::rust::store::key_value_store::KvStoreError;
+    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+    static BUFFER: OnceLock<Weak<Mutex<KeyValueRejectedDeployBuffer>>> = OnceLock::new();
+    static DECODED: AtomicUsize = AtomicUsize::new(0);
+
+    fn decode(bytes: &[u8]) -> Result<Signed<DeployData>, KvStoreError> {
+        let buffer = BUFFER.get().unwrap().upgrade().unwrap();
+        assert!(buffer.try_lock().is_ok());
+        DECODED.fetch_add(1, Ordering::SeqCst);
+        let proto = models::casper::DeployDataProto::decode(&bytes[b"F1R3DEP\x01".len()..])
+            .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
+        DeployData::from_proto_unverified(proto).map_err(KvStoreError::SerializationError)
+    }
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let mut candidate =
+        construct_deploy::basic_deploy_data(45, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let signature = candidate.sig.to_vec();
+    let buffer = node.casper.rejected_deploy_buffer.clone();
+    assert!(BUFFER.set(Arc::downgrade(&buffer)).is_ok());
+    {
+        let mut guard = buffer.lock().unwrap();
+        guard.store = KeyValueTypedStoreImpl::with_value_codec(
+            guard.store.raw_store().clone(),
+            |deploy| {
+                let mut bytes = b"F1R3DEP\x01".to_vec();
+                DeployData::to_proto_ref(deploy)
+                    .encode(&mut bytes)
+                    .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
+                Ok(bytes)
+            },
+            |bytes| decode(bytes),
+        );
+        guard
+            .store
+            .put_one(signature.clone(), candidate.clone())
+            .unwrap();
+    }
+    candidate.data.phlo_limit += 1;
+
+    assert!(matches!(node.casper.deploy(candidate).unwrap(),
+        Either::Left(DeployError::DuplicateDeploy(id)) if id == signature));
+    assert_eq!(DECODED.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn direct_deploy_refuses_an_algorithm_that_the_store_cannot_decode() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let data =
+        construct_deploy::basic_deploy_data(43, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap()
+            .data;
+    let deploy = crypto::rust::signatures::signed::Signed::create(
+        data,
+        Box::new(crypto::rust::signatures::ed25519::Ed25519),
+        crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]),
+    )
+    .unwrap();
+    assert!(deploy.verify());
+    let signature = deploy.sig.clone();
+
+    assert!(matches!(node.casper.deploy(deploy).unwrap(),
+        Either::Left(DeployError::UnknownSignatureAlgorithm(algorithm)) if algorithm == "ed25519"));
+    assert!(!node.deploy_storage.contains_sig(&signature).unwrap());
+}
+
+#[tokio::test]
 async fn validator_bond_check_uses_selected_parent_metadata() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)

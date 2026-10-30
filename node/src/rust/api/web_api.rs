@@ -14,12 +14,8 @@ use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::Signed;
-#[cfg(feature = "schnorr_secp256k1_experimental")]
-use crypto::rust::signatures::{
-    frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
-};
 use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
@@ -1707,21 +1703,12 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
     let pk = PublicKey::from_bytes(&pk_bytes);
 
     // Look up signature algorithm by name
-    let sig_alg: Box<dyn SignaturesAlg> = match request.sig_algorithm.as_str() {
-        "secp256k1" => Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
-        "secp256k1-eth" => Box::new(crypto::rust::signatures::secp256k1_eth::Secp256k1Eth),
-        "ed25519" => Box::new(crypto::rust::signatures::ed25519::Ed25519),
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "schnorr-secp256k1" => Box::new(SchnorrSecp256k1),
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "frost-secp256k1" => Box::new(FrostSecp256k1),
-        _ => {
-            return Err(eyre!(
-                "Signature algorithm not supported: {}",
-                request.sig_algorithm
-            ))
-        }
-    };
+    let sig_alg = SignaturesAlgFactory::apply(&request.sig_algorithm).ok_or_else(|| {
+        eyre!(
+            "Signature algorithm not supported: {}",
+            request.sig_algorithm
+        )
+    })?;
 
     // Create DeployData (use the data from request)
     let deploy_data = request.data.clone();
@@ -2114,6 +2101,7 @@ fn to_rho_data_response(
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{
@@ -2121,6 +2109,37 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn deploy_request_uses_the_protobuf_algorithm_contract() {
+        let deploy = Signed::create(
+            DeployData {
+                term: "Nil".to_string(),
+                time_stamp: 0,
+                phlo_price: 1,
+                phlo_limit: 100_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+                expiration_timestamp: None,
+                parameters: Vec::new(),
+            },
+            Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
+            crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap();
+        let mut request = DeployRequest {
+            data: deploy.data.clone(),
+            deployer: hex::encode(&deploy.pk.bytes),
+            signature: hex::encode(&deploy.sig),
+            sig_algorithm: deploy.sig_algorithm.name(),
+        };
+        assert_eq!(to_signed_deploy(&request).unwrap(), deploy);
+        request.sig_algorithm = "ed25519".to_string();
+        assert_eq!(
+            to_signed_deploy(&request).unwrap_err().to_string(),
+            "Signature algorithm not supported: ed25519"
+        );
+    }
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {

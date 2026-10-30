@@ -1367,9 +1367,14 @@ impl DeployData {
     }
 
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
-        let trusted = DeployData::from_trusted_proto(proto)?;
-        Signed::from_signed_data(trusted.data, trusted.pk, trusted.sig, trusted.sig_algorithm)?
-            .ok_or_else(|| "Invalid signature".to_string())
+        let unverified = DeployData::from_proto_unverified(proto)?;
+        Signed::from_signed_data(
+            unverified.data,
+            unverified.pk,
+            unverified.sig,
+            unverified.sig_algorithm,
+        )?
+        .ok_or_else(|| "Invalid signature".to_string())
     }
 
     /// Decodes a deploy without verifying its signature.
@@ -1378,7 +1383,7 @@ impl DeployData {
     /// The deploy store and rejected deploy buffer check signatures in `encode`.
     /// [`DeployData::from_proto`] calls this decoder and then verifies the signature.
     /// Use [`DeployData::from_proto`] for network data and other untrusted input.
-    pub fn from_trusted_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
+    pub fn from_proto_unverified(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
         let sig_algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
             .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
         let sig = proto.sig.clone();

@@ -9,6 +9,9 @@ use std::collections::HashSet;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     DeployId, InsertMode, KeyValueDagRepresentation,
 };
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    DeployPreparationError, PreparedInsertResult,
+};
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
@@ -131,32 +134,54 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
     {
         return Ok(true);
     }
-    this.rejected_deploy_buffer
-        .lock()?
-        .contains_sig(deploy_id)
-        .map_err(Into::into)
+    let rejected_deploys = this.rejected_deploy_buffer.lock()?.clone();
+    rejected_deploys.contains_sig(deploy_id).map_err(Into::into)
 }
 
 fn reserve_deploy<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
-    deploy: Signed<DeployData>,
-) -> Result<bool, CasperError> {
+    deploy: &Signed<DeployData>,
+) -> Result<Option<DeployError>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if this
-        .block_dag_storage
-        .deploy_canonical_appearance(&deploy_id)?
-        .is_some()
-    {
-        return Ok(false);
+    loop {
+        let rejected_store = this.rejected_deploy_buffer.lock()?.clone();
+        if this
+            .block_dag_storage
+            .deploy_canonical_appearance(&deploy_id)?
+            .is_some()
+        {
+            return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
+        }
+        let pool = this.deploy_storage.inspect_sig(&deploy_id)?;
+        let rejected = rejected_store.inspect_sig(&deploy_id)?;
+        if pool.is_present() || rejected.is_present() {
+            return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
+        }
+        let prepared = match this.deploy_storage.prepare_checked(deploy) {
+            Ok(prepared) => prepared,
+            Err(DeployPreparationError::InvalidSignature) => {
+                return Ok(Some(DeployError::signature_verification_failed()));
+            }
+            Err(DeployPreparationError::UnsupportedAlgorithm(algorithm)) => {
+                return Ok(Some(DeployError::unknown_signature_algorithm(algorithm)));
+            }
+            Err(DeployPreparationError::Serialization(error)) => return Err(error.into()),
+        };
+        let rejected_guard = this.rejected_deploy_buffer.lock()?;
+        if !rejected_guard.matches_snapshot(&rejected)? {
+            continue;
+        }
+        match this
+            .deploy_storage
+            .add_prepared_if_unchanged(prepared, &pool)?
+        {
+            PreparedInsertResult::Inserted => return Ok(None),
+            PreparedInsertResult::AlreadyPresent => {
+                return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
+            }
+            PreparedInsertResult::Changed => continue,
+        }
     }
-
-    let rejected_deploys = this.rejected_deploy_buffer.lock()?;
-    if rejected_deploys.contains_sig(&deploy_id)? {
-        return Ok(false);
-    }
-    this.deploy_storage
-        .add_if_absent(deploy)
-        .map_err(Into::into)
 }
 
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
@@ -222,8 +247,8 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if !reserve_deploy(this, deploy.clone())? {
-        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+    if let Some(error) = reserve_deploy(this, &deploy)? {
+        return Ok(Either::Left(error));
     }
 
     // Log the received deploy

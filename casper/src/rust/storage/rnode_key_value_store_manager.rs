@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use block_storage::rust::deploy::key_value_deploy_storage::{
-    DEPLOY_STORAGE_QUARANTINE_DB, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
+    DEPLOY_STORAGE_QUARANTINE_DB, DEPLOY_STORAGE_VERIFIED_DB, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
+    REJECTED_DEPLOY_BUFFER_VERIFIED_DB,
 };
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
@@ -45,6 +46,10 @@ fn dag_storage_env_config() -> LmdbEnvConfig {
 
 fn deploy_storage_env_config() -> LmdbEnvConfig {
     LmdbEnvConfig::new("deploystorage".to_string(), GB)
+}
+
+fn deploy_verification_env_config() -> LmdbEnvConfig {
+    LmdbEnvConfig::new("deployverification".to_string(), GB)
 }
 
 // Temporary storage / cache
@@ -169,6 +174,14 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new(REJECTED_DEPLOY_BUFFER_QUARANTINE_DB.to_string(), None),
             deploy_storage_env_config(),
         ),
+        (
+            Db::new(DEPLOY_STORAGE_VERIFIED_DB.to_string(), None),
+            deploy_verification_env_config(),
+        ),
+        (
+            Db::new(REJECTED_DEPLOY_BUFFER_VERIFIED_DB.to_string(), None),
+            deploy_verification_env_config(),
+        ),
         // Reporting (trace) cache
         (
             Db::new("reporting-cache".to_string(), None),
@@ -235,4 +248,62 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
     }
 
     mappings
+}
+
+#[cfg(test)]
+mod tests {
+    use block_storage::rust::deploy::key_value_deploy_storage::{
+        KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    };
+    use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn deploy_verification_indexes_reopen_in_their_own_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let deploy = crate::rust::util::construct_deploy::source_deploy(
+            "Nil".to_string(),
+            1,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        for pass in 0..2 {
+            let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
+            let pool = KeyValueDeployStorage::new(&mut manager).await.unwrap();
+            let rejected = KeyValueRejectedDeployBuffer::new(&mut manager)
+                .await
+                .unwrap();
+            if pass == 0 {
+                pool.add(vec![deploy.clone()]).unwrap();
+                rejected.add(vec![deploy.clone()]).unwrap();
+            }
+            assert_eq!(
+                pool.read_all().unwrap(),
+                std::collections::HashSet::from([deploy.clone()])
+            );
+            assert!(rejected
+                .any(|candidate| Ok(candidate.sig == deploy.sig))
+                .unwrap());
+            for name in [
+                DEPLOY_STORAGE_VERIFIED_DB,
+                REJECTED_DEPLOY_BUFFER_VERIFIED_DB,
+            ] {
+                let proof = manager.store(name.to_string()).await.unwrap();
+                assert!(proof.non_empty().unwrap());
+                let proof = proof.as_any().downcast_ref::<LmdbKeyValueStore>().unwrap();
+                let live = pool
+                    .store
+                    .raw_store()
+                    .as_any()
+                    .downcast_ref::<LmdbKeyValueStore>()
+                    .unwrap();
+                assert_ne!(proof.env.path(), live.env.path());
+            }
+        }
+    }
 }
