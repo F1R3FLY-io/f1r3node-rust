@@ -3,7 +3,7 @@
 //! the block, or every later arrival re-requests it at once and the retry
 //! budget never runs out.
 
-use casper::rust::blocks::block_processor::{IntegrityChecked, OfInterestVerdict};
+use casper::rust::blocks::block_processor::{CheckedBlock, OfInterestVerdict};
 use casper::rust::casper::Casper;
 use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::util::construct_deploy;
@@ -59,7 +59,7 @@ async fn a_duplicate_copy_of_a_buffered_block_keeps_its_refetch_cooldown() {
         .block_processor
         .check_if_of_interest(
             nodes[1].casper.clone(),
-            IntegrityChecked::check(&block_b, BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+            &CheckedBlock::check(block_b.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
         )
         .unwrap();
     assert_eq!(verdict, OfInterestVerdict::AlreadyProcessed);
@@ -67,7 +67,7 @@ async fn a_duplicate_copy_of_a_buffered_block_keeps_its_refetch_cooldown() {
         .block_processor
         .dispose_not_of_interest(
             verdict,
-            IntegrityChecked::check(&block_b, BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+            &CheckedBlock::check(block_b.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
         )
         .await
         .unwrap();
