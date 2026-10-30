@@ -4730,6 +4730,153 @@ tasks:
 
 ---
 
+### EPIC-031: BountyMesh Primary CI Runners with OCI Fallback
+
+```yaml
+epic_id: EPIC-031
+title: "BountyMesh Primary CI Runners with OCI Fallback"
+status: pending
+priority: p2
+user_story: US-015
+branch: ci/depin-runner-provider
+pr_base_branch: dev
+created_at: 2026-10-27
+updated_at: 2026-10-27
+claimed_by: null
+claimed_at: null
+blocked_by:
+  - "BountyMesh provisioningdeployment conventions are a draft. The CI runner tags dgx-spark and dgx-spark-cluster are proposals."
+  - "BountyMesh CPU runners on Docker are planned. Their repository is not yet in the workspace."
+decision: "2026-10-27: the user chose BountyMesh as the DePIN provider, DePIN as the primary provider with automatic OCI fallback, and OCI for the merge recovery soaks."
+tasks:
+  - id: TASK-031-8
+    title: "Profile and benchmark the BountyMesh host against the OCI runners"
+    status: in_progress
+    priority: p2
+    claimed_by: claude-session-5dae053b
+    claimed_at: 2026-10-28T04:45:00Z
+    blocked_by: []
+    decision: "2026-10-28: the user chose to emulate the OCI amd64 shape on the BountyMesh host, to measure only the heavy Integration Pipeline jobs and the Docker image builds, and to use the dev head. cargo build and cargo test stay on the GitHub-hosted runners."
+    notes:
+      - "2026-10-27: the user asked to profile and benchmark the current BountyMesh host before the routing and fallback work, because this host will run the jobs that the OCI runners run now."
+      - "The first host is x86_64 bare metal: AMD Threadripper PRO 5995WX, 128 threads, 995 GB RAM, 915 GB ext4. It is not DGX Spark. The results can change the architecture routing of TASK-031-2."
+      - "launch-runner.sh in the system-integration repository sets the OCI shapes. This repository does not set them."
+      - "Only amd64 is compared now. arm64 is compared when a BountyMesh arm64 host is available."
+      - "system-integration ci/oci-runners/state.env sets the OCI shapes: amd64 VM.Standard.E6.Flex with 16 OCPUs (32 threads) and 48 GB, arm64 VM.Standard.A1.Flex with 16 OCPUs and 32 GB."
+      - "The Docker image builds do not run on OCI. They run on the persistent f1r3fly-rust-ci runners."
+      - "Each emulated job runs in a privileged Docker-in-Docker container with a 32 CPU and 48 GB limit, so the node containers of the docker provider also get the limit. A plain cgroup limit does not cover containers that dockerd starts."
+    acceptance:
+      - "A hardware profile of the BountyMesh host and of each OCI runner shape (amd64 and arm64) records the CPU model, threads, RAM, disk type, and network throughput to GitHub and to the container registry"
+      - "The dev head runs on the BountyMesh host in the emulated OCI amd64 shape and without a limit: the Docker image build and each amd64 heavy Integration Pipeline job, with three runs for each measurement. Recent OCI runs of the same jobs give the OCI times."
+      - "A table in docs/discoveries/ gives the wall-clock time of each measurement on each provider, with the median and the spread, and the run IDs and the head SHA"
+      - "The table records the job startup time on each provider, from queue to first step"
+      - "The discovery states how many concurrent heavy runs the host supports before the median job time is more than the OCI median, and TASK-031-5 uses this value as its concurrency limit"
+
+  - id: TASK-031-1
+    title: "Runner provider variable, depin-run label, and one shared resolver"
+    status: pending
+    priority: p2
+    claimed_by: null
+    blocked_by: []
+    notes:
+      - "2026-10-27: the user asked for a per-pull-request label, so BountyMesh can be tested on one pull request at a time."
+    acceptance:
+      - "A repository variable selects bountymesh or oci. An unset variable selects bountymesh."
+      - "A depin-run label on a pull request of this repository selects bountymesh for that pull request, whatever the variable says"
+      - "The resolver reads the current labels of the pull request, as Resolve Target reads ci-heavy, so a rerun applies a label change"
+      - "Adding or removing depin-run reruns CI through the CI Heavy Label workflow, with no push"
+      - "One resolver step gives the runner labels to every workflow that launches ephemeral runners, except merge-recovery-soak.yml"
+      - "A script test covers the unset, bountymesh, oci, and invalid values, and a pull request with and without depin-run. An invalid value fails the run with an error annotation."
+
+  - id: TASK-031-2
+    title: "Architecture routing for BountyMesh runners"
+    status: pending
+    priority: p2
+    claimed_by: null
+    blocked_by: ["TASK-031-8"]
+    notes:
+      - "BountyMesh GPU compute is NVIDIA DGX Spark (GB10), which is an aarch64 platform. The amd64 jobs of the heavy Integration Pipeline cannot run on it."
+      - "2026-10-27: the user reported that BountyMesh will soon support CPU runners on Docker. Their repository is not yet in the workspace. The routing must use these runners when they declare the job architecture."
+    acceptance:
+      - "The resolver routes each job by its architecture to a BountyMesh runner label that declares that architecture, and to OCI when no BountyMesh label declares it"
+      - "Until BountyMesh CPU runners are available, arm64 jobs use the DGX Spark labels and amd64 jobs use OCI"
+      - "The run summary names the provider of each runner job"
+
+  - id: TASK-031-3
+    title: "BountyMesh runner registration and job isolation"
+    status: pending
+    priority: p2
+    claimed_by: null
+    blocked_by: ["BountyMesh provisioningdeployment conventions"]
+    notes:
+      - "DGX Spark units are persistent hosts, not single-use VMs. Isolation must come from the runner mode, not from host deletion."
+      - "The planned BountyMesh CPU runners on Docker need the same registration and isolation controls."
+    acceptance:
+      - "Each BountyMesh runner takes one job and then deregisters (GitHub ephemeral runner mode), and the next job starts with a clean workspace and no containers or volumes of the previous job"
+      - "Runner registration uses a short-lived token from a GitHub App. No long-lived registration token is stored on a unit."
+      - "A dispatched heavy run on BountyMesh labels completes, and the run summary shows the unit hostname and the provider"
+
+  - id: TASK-031-4
+    title: "Automatic OCI fallback"
+    status: pending
+    priority: p2
+    claimed_by: null
+    blocked_by: ["TASK-031-8"]
+    acceptance:
+      - "If no BountyMesh runner is online for the required labels, or the job does not start within a set time, the run uses OCI runners"
+      - "The run summary records the fallback, the failed provider, and the reason"
+      - "A script test covers the online, offline, and start-timeout cases"
+
+  - id: TASK-031-5
+    title: "Cleanup and cost limits for BountyMesh runners"
+    status: pending
+    priority: p2
+    claimed_by: null
+    blocked_by: ["TASK-031-3"]
+    acceptance:
+      - "A scheduled check removes offline or stale BountyMesh runner registrations, as the OCI reaper does for OCI instances"
+      - "A limit on concurrent BountyMesh jobs keeps units available for OTLaaS tenancy, and a job above the limit falls back to OCI"
+
+  - id: TASK-031-6
+    title: "Check and evidence parity"
+    status: pending
+    priority: p2
+    claimed_by: null
+    blocked_by: ["TASK-031-3", "TASK-031-4"]
+    acceptance:
+      - "A heavy Integration Pipeline run with BountyMesh as the primary provider publishes the same required checks and artifacts as an OCI run of the same commit"
+      - "The run IDs of both runs and the head SHA are recorded in this task"
+
+  - id: TASK-031-7
+    title: "Document the runner provider"
+    status: pending
+    priority: p2
+    claimed_by: null
+    blocked_by: []
+    acceptance:
+      - "docs/ci.md describes the variable, its values, the architecture routing, the fallback, and the credentials and tailnet access that each provider needs"
+      - "docs/ci.md states that the merge recovery soaks always use OCI"
+```
+
+**Context:** The heavy Integration Pipeline depends on one cloud provider and its daily instance quota. BountyMesh units become the primary CI runners, and OCI stays the fallback and the soak platform. BountyMesh compute is persistent DGX Spark hardware on a Tailscale tailnet, so job isolation, registration credentials, and capacity for OTLaaS tenancy need explicit controls. DGX Spark is aarch64, so amd64 jobs stay on OCI until the planned BountyMesh CPU runners on Docker are available.
+
+**Scope:**
+
+- Included: the provider variable and resolver, architecture routing, BountyMesh runner registration, the OCI fallback, cleanup and capacity limits, parity evidence, and the documentation
+- Excluded: the merge recovery soaks, which stay on OCI, and the BountyMesh provisioning conventions, which the provisioningdeployment repository owns
+
+```yaml cross-reference
+reference:
+  purpose: current
+  repository: https://gitlab.com/smart-assets.io/BountyForge/bountymesh/provisioningdeployment
+  checkout: ../../../SA/BountyForge/BountyMesh/provisioningdeployment
+  revision: dev
+  path: README.md
+  url: https://gitlab.com/smart-assets.io/BountyForge/bountymesh/provisioningdeployment/-/blob/dev/README.md
+```
+
+---
+
 ## Epic Dependency Graph
 
 ```text
