@@ -1115,6 +1115,7 @@ mod tests {
             "genesis-hash",
             "finalization-commit-marker",
             "lfb-pointer",
+            "v6-executor-state",
             "blocks",
             "blocks-approved",
         ];

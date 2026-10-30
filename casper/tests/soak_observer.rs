@@ -45,7 +45,7 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::key_value_store::KeyValueStore;
 
-const STORES: [&str; 15] = [
+const STORES: [&str; 16] = [
     "block-metadata",
     "equivocation-tracker",
     "latest-messages",
@@ -59,6 +59,7 @@ const STORES: [&str; 15] = [
     "genesis-hash",
     "finalization-commit-marker",
     "lfb-pointer",
+    "v6-executor-state",
     "blocks",
     "blocks-approved",
 ];
