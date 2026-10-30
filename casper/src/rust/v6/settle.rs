@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use models::rust::block::state_hash::StateHash;
 use prost::bytes::Bytes;
+use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
 use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id, CellStore, HotStoreCells, RevAmount, RevStacks, WalletOwner,
 };
@@ -48,6 +49,8 @@ pub struct EnvelopeCharge {
     pub phlo_price: u64,
     pub comm_phlo: u64,
     pub comm_rev: RevAmount,
+    pub compute_phlo: u64,
+    pub compute_rev: RevAmount,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,12 +59,13 @@ pub struct Settlement {
     pub debits: BTreeMap<WalletId, RevAmount>,
     pub proposer: WalletId,
     pub proposer_credit: RevAmount,
+    pub compute_credit: RevAmount,
 }
 
 impl Settlement {
     pub fn debited(&self) -> RevAmount { self.debits.values().sum() }
 
-    pub fn credited(&self) -> RevAmount { self.proposer_credit }
+    pub fn credited(&self) -> RevAmount { self.proposer_credit.saturating_add(self.compute_credit) }
 
     pub fn is_balanced(&self) -> bool { self.debited() == self.credited() }
 }
@@ -82,13 +86,17 @@ pub fn charges(
     let mut charges = Vec::new();
     let mut debits: BTreeMap<WalletId, RevAmount> = BTreeMap::new();
     let mut credit: RevAmount = 0;
+    let mut compute_credit: RevAmount = 0;
     for ((input, entry), run) in inputs.iter().zip(entries).zip(runs) {
         if !entry.admitted() {
             continue;
         }
         let price = u64::try_from(input.phlo_price).map_err(|_| overflow())?;
         let comm_phlo = run.comm_phlo.min(entry.delta);
+        let compute_phlo = run.compute_phlo.min(entry.delta - comm_phlo);
         let comm_rev = comm_phlo.checked_mul(price).ok_or_else(overflow)?;
+        let compute_rev = compute_phlo.checked_mul(price).ok_or_else(overflow)?;
+        let total_rev = comm_rev.checked_add(compute_rev).ok_or_else(overflow)?;
         for owner in input.paying_wallets() {
             let wallet = wallet_channel_id(&owner);
             let committed: RevAmount = entry
@@ -97,20 +105,25 @@ pub fn charges(
                 .filter(|c| c.wallet == wallet)
                 .map(|c| c.amount)
                 .sum();
-            if comm_rev > committed {
+            if total_rev > committed {
                 return Err(CasperError::RuntimeError(
                     "a charge exceeds the envelope's commitment".into(),
                 ));
             }
             let debit = debits.entry(wallet.clone()).or_insert(0);
-            *debit = debit.checked_add(comm_rev).ok_or_else(overflow)?;
+            *debit = debit.checked_add(total_rev).ok_or_else(overflow)?;
             credit = credit.checked_add(comm_rev).ok_or_else(overflow)?;
+            compute_credit = compute_credit
+                .checked_add(compute_rev)
+                .ok_or_else(overflow)?;
             charges.push(EnvelopeCharge {
                 envelope_sig: entry.envelope_sig.clone(),
                 wallet,
                 phlo_price: price,
                 comm_phlo,
                 comm_rev,
+                compute_phlo,
+                compute_rev,
             });
         }
     }
@@ -119,6 +132,7 @@ pub fn charges(
         debits,
         proposer: wallet_channel_id(proposer),
         proposer_credit: credit,
+        compute_credit,
     })
 }
 
@@ -145,8 +159,9 @@ pub fn apply(
         if charge.phlo_price == 0 {
             continue;
         }
-        let step = boxcar.0.map_or(charge.comm_phlo, NonZeroU64::get);
-        let mut left = charge.comm_phlo;
+        let phlo_total = charge.comm_phlo + charge.compute_phlo;
+        let step = boxcar.0.map_or(phlo_total, NonZeroU64::get);
+        let mut left = phlo_total;
         while left > 0 {
             let phlo = step.min(left);
             stacks
@@ -162,6 +177,9 @@ pub fn apply(
     }
     stacks
         .deposit(proposer, settlement.proposer_credit)
+        .map_err(native)?;
+    stacks
+        .deposit(&compute_wallet_owner(), settlement.compute_credit)
         .map_err(native)
 }
 

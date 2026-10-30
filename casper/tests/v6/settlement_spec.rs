@@ -66,11 +66,13 @@ fn input(who: &Party, ts: i64, limit: i64, price: i64) -> GateInput {
     GateInput::from_deploy(&deploy, Vec::new()).unwrap()
 }
 
-fn run(comms: u64) -> EnvelopeRun {
+fn run(comms: u64) -> EnvelopeRun { metered(comms, 0) }
+
+fn metered(comms: u64, compute: u64) -> EnvelopeRun {
     EnvelopeRun {
         envelope_sig: Default::default(),
         comm_phlo: comms,
-        compute_phlo: 0,
+        compute_phlo: compute,
         failed: false,
         user_log: Vec::new(),
         post_root: Default::default(),
@@ -195,4 +197,56 @@ async fn a_block_with_no_charge_leaves_the_state_alone() {
     .unwrap();
     assert_eq!(settlement.proposer_credit, 0);
     assert_eq!(root, pre);
+}
+
+async fn compute_wallet(rm: &RuntimeManager, root: &StateHash) -> u64 {
+    let cells = casper::rust::v6::genesis_wallets::cells_at(rm, root)
+        .await
+        .unwrap();
+    rholang::rust::interpreter::accounting::rev_stack::compute::compute_balance(
+        std::sync::Arc::new(cells),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn compute_is_paid_to_the_compute_wallet_and_the_charge_never_passes_delta() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let inputs = vec![
+        input(&alice, 1, 1_000, 3),
+        input(&bob, 2, 50, 2),
+        input(&bob, 3, 10, 1),
+    ];
+    let runs = vec![metered(4, 600), metered(20, 500), metered(30, 5)];
+    let reader = StoreReader::at(&rm, &pre).await.unwrap();
+    let gate = gate_block(&reader, &PhloLimitDemand, &inputs).unwrap();
+    let mut roots = Vec::new();
+    for boxcar in [Boxcar::unbounded(), Boxcar::of(7)] {
+        let (settlement, settled) = settle_block(
+            &rm,
+            &pre,
+            &inputs,
+            &gate.entries,
+            &runs,
+            &proposer.owner,
+            boxcar,
+        )
+        .await
+        .unwrap();
+        let c = &settlement.charges;
+        assert_eq!((c[0].comm_phlo, c[0].compute_phlo), (4, 600));
+        assert_eq!((c[1].comm_phlo, c[1].compute_phlo), (20, 30));
+        assert_eq!((c[2].comm_phlo, c[2].compute_phlo), (10, 0));
+        assert_eq!(settlement.proposer_credit, 4 * 3 + 20 * 2 + 10);
+        assert_eq!(settlement.compute_credit, 600 * 3 + 30 * 2);
+        assert!(settlement.is_balanced());
+        assert_eq!(balance(&rm, &settled, &alice).await, 100_000 - 12 - 1_800);
+        assert_eq!(balance(&rm, &settled, &bob).await, 100_000 - 100 - 10);
+        assert_eq!(balance(&rm, &settled, &proposer).await, 62);
+        assert_eq!(compute_wallet(&rm, &settled).await, 1_860);
+        assert_eq!(compute_wallet(&rm, &pre).await, 0);
+        roots.push(settled);
+    }
+    assert_eq!(roots[0], roots[1]);
 }
