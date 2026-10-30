@@ -78,7 +78,7 @@ The expected result should be like
 {
   "version": {
     "api": "1",
-    "node": "F1r3node Rust 0.4.10 ()"
+    "node": "F1r3node Rust 0.4.46 (unknown)"
   },
   "address": "rnode://c93bc07f3d141459356791f9eaaa05f4cec49c0b@f1r3fly0-0.f1r3fly0?protocol=40400&discovery=40404",
   "networkId": "testnet",
