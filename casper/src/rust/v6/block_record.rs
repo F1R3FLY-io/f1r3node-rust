@@ -42,6 +42,7 @@ pub struct BlockRecordProto {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvelopeOutcome {
+    NotRun,
     Completed,
     UserFailure,
     Conflicted,
@@ -50,6 +51,7 @@ pub enum EnvelopeOutcome {
 impl EnvelopeOutcome {
     pub fn tag(self) -> u32 {
         match self {
+            EnvelopeOutcome::NotRun => 0,
             EnvelopeOutcome::Completed => 1,
             EnvelopeOutcome::UserFailure => 2,
             EnvelopeOutcome::Conflicted => 5,
@@ -58,6 +60,7 @@ impl EnvelopeOutcome {
 
     pub fn from_tag(tag: u32) -> Result<Self, String> {
         match tag {
+            0 => Ok(EnvelopeOutcome::NotRun),
             1 => Ok(EnvelopeOutcome::Completed),
             2 => Ok(EnvelopeOutcome::UserFailure),
             5 => Ok(EnvelopeOutcome::Conflicted),

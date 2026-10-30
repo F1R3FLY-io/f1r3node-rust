@@ -60,7 +60,12 @@ async fn execute_and_replay_agree_and_record_comm_and_compute_phlo() {
         assert_ne!(executed.mid_root, pre_root);
 
         let replayed = executor
-            .replay(&pre_root, executed.processed.clone(), block_data())
+            .replay(
+                &pre_root,
+                executed.processed.clone(),
+                &executed.gate.entries,
+                block_data(),
+            )
             .await
             .expect("the block replays");
         assert_eq!(replayed.mid_root, executed.mid_root);
@@ -90,7 +95,12 @@ async fn a_conflicting_envelope_loses_in_block_order() {
         assert_eq!(executed.merged, vec![true, false]);
 
         let replayed = executor
-            .replay(&pre_root, executed.processed.clone(), block_data())
+            .replay(
+                &pre_root,
+                executed.processed.clone(),
+                &executed.gate.entries,
+                block_data(),
+            )
             .await
             .expect("the block replays");
         assert_eq!(replayed.mid_root, executed.mid_root);

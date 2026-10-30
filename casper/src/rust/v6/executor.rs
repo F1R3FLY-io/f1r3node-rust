@@ -8,7 +8,13 @@ use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, Event, ProcessedDeploy,
 };
-use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+use rholang::rust::interpreter::accounting::rev_stack::reserve::{
+    clear_reservation, set_reservation, Reservation,
+};
+use rholang::rust::interpreter::accounting::rev_stack::{
+    wallet_channel_id, HotStoreCells, WalletOwner,
+};
+use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
@@ -16,9 +22,13 @@ use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 use super::backend::{block_data, close_block, ExecutionBackend};
 use super::block_record::{BlockRecord, EnvelopeOutcome, ExecutedEnvelope, RecordEntry};
 use super::body::StateHash;
+use super::gate::{
+    check_recorded, gate_block, GateEntry, GateInput, GateOutcome, PhloLimitDemand, StoreReader,
+};
 use super::merge::{merge_runs, RunEffect};
 use super::record::ExecutionRecord;
 use super::run::EnvelopeRun;
+use super::settle::{self, Boxcar, Settlement};
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -30,6 +40,9 @@ pub struct ExecutedBlock {
     pub runs: Vec<EnvelopeRun>,
     pub processed: Vec<ProcessedDeploy>,
     pub merged: Vec<bool>,
+    pub gate: GateOutcome,
+    pub settlement: Settlement,
+    pub settled_root: StateHash,
 }
 
 struct EnvelopeEffect {
@@ -68,6 +81,7 @@ fn envelope_run(processed: &ProcessedDeploy, post_root: StateHash) -> EnvelopeRu
 pub struct EnvelopeExecutor {
     runtime_manager: Arc<RuntimeManager>,
     workers: usize,
+    boxcar: Boxcar,
 }
 
 impl EnvelopeExecutor {
@@ -75,7 +89,13 @@ impl EnvelopeExecutor {
         EnvelopeExecutor {
             runtime_manager,
             workers: workers.max(1),
+            boxcar: Boxcar::unbounded(),
         }
+    }
+
+    pub fn with_boxcar(mut self, boxcar: Boxcar) -> Self {
+        self.boxcar = boxcar;
+        self
     }
 
     async fn run(
@@ -83,6 +103,7 @@ impl EnvelopeExecutor {
         pre_root: &StateHash,
         envelope: Signed<DeployData>,
         block_data: BlockData,
+        reservations: Vec<(WalletOwner, Reservation)>,
     ) -> Result<EnvelopeEffect, CasperError> {
         let mut ops = RuntimeOps::new(self.runtime_manager.spawn_runtime().await?);
         ops.runtime
@@ -91,7 +112,10 @@ impl EnvelopeExecutor {
             .map_err(CasperError::InterpreterError)?;
         ops.runtime.set_block_data(block_data).await;
         ops.runtime.set_invalid_blocks(HashMap::new()).await;
+        let cells = runtime_cells(&ops.runtime)?;
+        hold(&cells, &reservations)?;
         let (processed, number_channels) = ops.process_deploy_with_mergeable_data(envelope).await?;
+        release(&cells, &reservations)?;
         let post_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
         Ok(EnvelopeEffect {
             run: envelope_run(&processed, post_root),
@@ -105,6 +129,7 @@ impl EnvelopeExecutor {
         pre_root: &StateHash,
         recorded: ProcessedDeploy,
         block_data: BlockData,
+        reservations: Vec<(WalletOwner, Reservation)>,
     ) -> Result<EnvelopeEffect, CasperError> {
         let mut replay =
             ReplayRuntimeOps::new_from_runtime(self.runtime_manager.spawn_replay_runtime().await?);
@@ -115,7 +140,10 @@ impl EnvelopeExecutor {
             .map_err(CasperError::InterpreterError)?;
         runtime.set_block_data(block_data).await;
         runtime.set_invalid_blocks(HashMap::new()).await;
+        let cells = runtime_cells(runtime)?;
+        hold(&cells, &reservations)?;
         let number_channels = replay.replay_deploy_e(false, &recorded).await?;
+        release(&cells, &reservations)?;
         let post_root = replay
             .runtime_ops
             .runtime
@@ -130,13 +158,23 @@ impl EnvelopeExecutor {
         })
     }
 
+    fn refused(pre_root: &StateHash, deploy: Signed<DeployData>) -> EnvelopeEffect {
+        let processed = ProcessedDeploy::empty(deploy);
+        EnvelopeEffect {
+            run: envelope_run(&processed, pre_root.clone()),
+            processed,
+            number_channels: NumberChannelsEndVal::default(),
+        }
+    }
+
     fn merge(
         &self,
         pre_root: &StateHash,
         effects: Vec<EnvelopeEffect>,
-    ) -> Result<ExecutedBlock, CasperError> {
+        admitted: &[bool],
+    ) -> Result<(StateHash, Vec<EnvelopeRun>, Vec<ProcessedDeploy>, Vec<bool>), CasperError> {
         let candidates: Vec<usize> = (0..effects.len())
-            .filter(|i| !effects[*i].run.failed)
+            .filter(|i| admitted[*i] && !effects[*i].run.failed)
             .collect();
         let roots = candidates
             .iter()
@@ -162,11 +200,52 @@ impl EnvelopeExecutor {
             .into_iter()
             .map(|effect| (effect.run, effect.processed))
             .unzip();
+        Ok((merged.mid_root, runs, processed, kept))
+    }
+
+    async fn settle(
+        &self,
+        mid_root: &StateHash,
+        inputs: &[GateInput],
+        gate: &GateOutcome,
+        runs: &[EnvelopeRun],
+        block_data: &BlockData,
+    ) -> Result<(Settlement, StateHash), CasperError> {
+        let proposer = WalletOwner::from_public_key(&block_data.sender)
+            .map_err(|e| invalid(format!("the block sender has no wallet: {e}")))?;
+        settle::settle_block(
+            &self.runtime_manager,
+            mid_root,
+            inputs,
+            &gate.entries,
+            runs,
+            &proposer,
+            self.boxcar,
+        )
+        .await
+    }
+
+    async fn finish(
+        &self,
+        pre_root: &StateHash,
+        inputs: Vec<GateInput>,
+        gate: GateOutcome,
+        effects: Vec<EnvelopeEffect>,
+        block_data: &BlockData,
+    ) -> Result<ExecutedBlock, CasperError> {
+        let admitted = gate.admitted();
+        let (mid_root, runs, processed, merged) = self.merge(pre_root, effects, &admitted)?;
+        let (settlement, settled_root) = self
+            .settle(&mid_root, &inputs, &gate, &runs, block_data)
+            .await?;
         Ok(ExecutedBlock {
-            mid_root: merged.mid_root,
+            mid_root,
             runs,
             processed,
-            merged: kept,
+            merged,
+            gate,
+            settlement,
+            settled_root,
         })
     }
 
@@ -176,27 +255,126 @@ impl EnvelopeExecutor {
         envelopes: Vec<Signed<DeployData>>,
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        let effects: Vec<EnvelopeEffect> = stream::iter(envelopes)
-            .map(|envelope| self.run(pre_root, envelope, block_data.clone()))
+        let inputs = gate_inputs(envelopes.iter())?;
+        let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
+        let gate = gate_block(&reader, &PhloLimitDemand, &inputs)?;
+        let effects: Vec<EnvelopeEffect> = stream::iter(envelopes.into_iter().enumerate())
+            .map(|(i, envelope)| {
+                let gate = &gate;
+                let inputs = &inputs;
+                let block_data = block_data.clone();
+                async move {
+                    if !gate.entries[i].admitted() {
+                        return Ok(Self::refused(pre_root, envelope));
+                    }
+                    self.run(
+                        pre_root,
+                        envelope,
+                        block_data,
+                        reservations(gate, &inputs[i], i),
+                    )
+                    .await
+                }
+            })
             .buffered(self.workers)
             .try_collect()
             .await?;
-        self.merge(pre_root, effects)
+        self.finish(pre_root, inputs, gate, effects, &block_data)
+            .await
     }
 
     pub async fn replay(
         &self,
         pre_root: &StateHash,
         recorded: Vec<ProcessedDeploy>,
+        recorded_gate: &[GateEntry],
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        let effects: Vec<EnvelopeEffect> = stream::iter(recorded)
-            .map(|processed| self.replay_one(pre_root, processed, block_data.clone()))
+        let inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
+        let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
+        let gate = check_recorded(&reader, &PhloLimitDemand, &inputs, recorded_gate)
+            .map_err(|e| invalid(format!("the recorded gate does not replay: {e}")))?;
+        let effects: Vec<EnvelopeEffect> = stream::iter(recorded.into_iter().enumerate())
+            .map(|(i, processed)| {
+                let gate = &gate;
+                let inputs = &inputs;
+                let block_data = block_data.clone();
+                async move {
+                    if !gate.entries[i].admitted() {
+                        return Ok(Self::refused(pre_root, processed.deploy));
+                    }
+                    self.replay_one(
+                        pre_root,
+                        processed,
+                        block_data,
+                        reservations(gate, &inputs[i], i),
+                    )
+                    .await
+                }
+            })
             .buffered(self.workers)
             .try_collect()
             .await?;
-        self.merge(pre_root, effects)
+        self.finish(pre_root, inputs, gate, effects, &block_data)
+            .await
     }
+}
+
+fn gate_inputs<'a>(
+    deploys: impl Iterator<Item = &'a Signed<DeployData>>,
+) -> Result<Vec<GateInput>, CasperError> {
+    deploys
+        .map(|d| GateInput::from_deploy(d, Vec::new()))
+        .collect()
+}
+
+fn reservations(
+    gate: &GateOutcome,
+    input: &GateInput,
+    i: usize,
+) -> Vec<(WalletOwner, Reservation)> {
+    input
+        .paying_wallets()
+        .into_iter()
+        .map(|owner| {
+            let wallet = wallet_channel_id(&owner);
+            let reservation = Reservation {
+                visible: gate.committed_through(i, &wallet),
+                held: gate.table.committed(&wallet),
+            };
+            (owner, reservation)
+        })
+        .collect()
+}
+
+fn runtime_cells(runtime: &RhoRuntimeImpl) -> Result<HotStoreCells, CasperError> {
+    runtime
+        .reducer
+        .space
+        .hot_store()
+        .map(HotStoreCells)
+        .ok_or_else(|| invalid("the runtime's space has no native REV layer"))
+}
+
+fn hold(
+    cells: &HotStoreCells,
+    reservations: &[(WalletOwner, Reservation)],
+) -> Result<(), CasperError> {
+    for (owner, reservation) in reservations {
+        set_reservation(cells, owner, *reservation)
+            .map_err(|e| invalid(format!("reservation: {e}")))?;
+    }
+    Ok(())
+}
+
+fn release(
+    cells: &HotStoreCells,
+    reservations: &[(WalletOwner, Reservation)],
+) -> Result<(), CasperError> {
+    for (owner, _) in reservations {
+        clear_reservation(cells, owner).map_err(|e| invalid(format!("reservation: {e}")))?;
+    }
+    Ok(())
 }
 
 pub struct BlockExecutor {
@@ -211,9 +389,17 @@ impl BlockExecutor {
             runtime_manager,
         }
     }
+
+    pub fn with_boxcar(mut self, boxcar: Boxcar) -> Self {
+        self.envelopes = self.envelopes.with_boxcar(boxcar);
+        self
+    }
 }
 
-fn outcome(failed: bool, merged: bool) -> EnvelopeOutcome {
+fn outcome(admitted: bool, failed: bool, merged: bool) -> EnvelopeOutcome {
+    if !admitted {
+        return EnvelopeOutcome::NotRun;
+    }
     match (failed, merged) {
         (true, _) => EnvelopeOutcome::UserFailure,
         (false, true) => EnvelopeOutcome::Completed,
@@ -226,10 +412,11 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
         .runs
         .iter()
         .zip(&executed.merged)
-        .map(|(run, merged)| RecordEntry {
+        .zip(executed.gate.admitted())
+        .map(|((run, merged), admitted)| RecordEntry {
             executed: ExecutedEnvelope {
                 envelope_id: run.envelope_sig.clone(),
-                outcome: outcome(run.failed, *merged),
+                outcome: outcome(admitted, run.failed, *merged),
                 comm_phlo: run.comm_phlo,
                 compute_phlo: run.compute_phlo,
                 user_log: run.user_log.clone(),
@@ -264,7 +451,7 @@ impl ExecutionBackend for BlockExecutor {
         let (post_root, _, system_deploys) = self
             .runtime_manager
             .compute_state(
-                &executed.mid_root,
+                &executed.settled_root,
                 vec![],
                 vec![close_block(block)],
                 block_data(block),
@@ -279,6 +466,7 @@ impl ExecutionBackend for BlockExecutor {
             entries(&executed),
             system_deploys,
         )
+        .and_then(|record| record.with_gate(executed.gate.entries.clone()))
         .map_err(CasperError::RuntimeError)
     }
 
@@ -313,7 +501,12 @@ impl ExecutionBackend for BlockExecutor {
             .collect::<Result<Vec<_>, _>>()?;
         let replayed = self
             .envelopes
-            .replay(record.pre_root(), processed, block_data(block))
+            .replay(
+                record.pre_root(),
+                processed,
+                record.gate(),
+                block_data(block),
+            )
             .await?;
         if entries(&replayed) != record.entries() {
             return Err(mismatch("envelope outcomes or counts"));
@@ -324,7 +517,7 @@ impl ExecutionBackend for BlockExecutor {
         let post_root = self
             .runtime_manager
             .replay_compute_state(
-                record.mid_root(),
+                &replayed.settled_root,
                 vec![],
                 record.system_deploys().to_vec(),
                 &block_data(block),
