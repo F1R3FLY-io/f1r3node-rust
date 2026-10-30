@@ -366,6 +366,92 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     /// best-effort, and `replay_blocks_for_mergeable_channels` in
     /// `initializing.rs` deterministically reconstructs any missing entries.
     pub fn is_finished(&self) -> bool { self.latest.is_empty() && self.d.is_empty() }
+
+    pub fn add_in_place(&mut self, keys: HashSet<Key>) {
+        for key in keys {
+            if !self.finished.contains(&key) && !self.d.contains_key(&key) {
+                self.d.insert(key, ReqStatus::Init);
+            }
+        }
+    }
+
+    pub fn mergeable_pending_in_place(&mut self, key: Key) {
+        self.mergeable_d.insert(key, ReqStatus::Init);
+    }
+
+    pub fn get_next_mergeable_in_place(&mut self, resend: bool) -> HashSet<Key> {
+        let request_keys: HashSet<Key> = self
+            .mergeable_d
+            .iter()
+            .filter(|(_, status)| {
+                **status == ReqStatus::Init || (resend && **status == ReqStatus::Requested)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &request_keys {
+            self.mergeable_d.insert(key.clone(), ReqStatus::Requested);
+        }
+        request_keys
+    }
+
+    pub fn mergeable_received_in_place(&mut self, key: &Key) -> bool {
+        self.mergeable_d.remove(key).is_some()
+    }
+
+    pub fn get_next_in_place(&mut self, resend: bool) -> HashSet<Key> {
+        let latest_first = !self.latest.is_empty();
+        let mut request_keys: HashSet<Key> = self
+            .d
+            .iter()
+            .filter(|(key, status)| {
+                let check =
+                    **status == ReqStatus::Init || (resend && **status == ReqStatus::Requested);
+                check && (!latest_first || self.latest.contains(*key))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        if latest_first {
+            for key in &self.latest {
+                if !self.d.contains_key(key) {
+                    request_keys.insert(key.clone());
+                }
+            }
+        }
+        for key in &request_keys {
+            self.d.insert(key.clone(), ReqStatus::Requested);
+        }
+        request_keys
+    }
+
+    pub fn received_in_place(
+        &mut self,
+        k: Key,
+        height: i64,
+        latest_replacement: Option<Key>,
+        lowers_bound: bool,
+    ) -> ReceiveInfo {
+        if self.d.get(&k) != Some(&ReqStatus::Requested) {
+            return ReceiveInfo::new(false, false, false);
+        }
+        let is_latest = self.latest.remove(&k);
+        if let Some(replacement) = latest_replacement {
+            self.latest.insert(replacement);
+        }
+        let is_last_latest = is_latest && self.latest.is_empty();
+        self.height_map.entry(height).or_default().insert(k.clone());
+        if is_latest && lowers_bound {
+            self.lower_bound = std::cmp::min(height - 1, self.lower_bound);
+        }
+        self.d.insert(k, ReqStatus::Received);
+        ReceiveInfo::new(true, is_latest, is_last_latest)
+    }
+
+    pub fn done_in_place(&mut self, k: Key) {
+        if self.d.get(&k) == Some(&ReqStatus::Received) {
+            self.d.remove(&k);
+            self.finished.insert(k);
+        }
+    }
 }
 
 /// Whether the block filling a latest-message slot is the testimony of the
@@ -454,14 +540,12 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
 
             let lowers_bound = slot_is_own_testimony(&self.latest_messages, block);
 
-            let (new_state, receive_info) = state.received(
+            state.received_in_place(
                 block.block_hash.clone(),
                 block_number,
                 lm_replacement,
                 lowers_bound,
-            );
-            *state = new_state;
-            receive_info
+            )
         };
 
         let ReceiveInfo {
@@ -568,7 +652,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
                         "Failed to acquire state lock for dependencies".to_string(),
                     )
                 })?;
-                *state = state.add(deps);
+                state.add_in_place(deps);
             } else {
                 tracing::debug!(
                     "Block {} not accepted due to validation criteria",
@@ -634,8 +718,8 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             let mut state = self.st.lock().map_err(|_| {
                 CasperError::StreamError("Failed to acquire state lock for done".to_string())
             })?;
-            *state = state.done(block.block_hash.clone());
-            *state = state.mergeable_pending(block.block_hash.clone());
+            state.done_in_place(block.block_hash.clone());
+            state.mergeable_pending_in_place(block.block_hash.clone());
         }
         // Fire the mergeable-entry request immediately. Sequential per block:
         // block was just saved → ask for its entry now. Failure to send is
@@ -712,8 +796,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
                 "Failed to acquire state lock for mergeable_received".to_string(),
             )
         })?;
-        let (new_state, _) = state.mergeable_received(&resp.block_hash);
-        *state = new_state;
+        state.mergeable_received_in_place(&resp.block_hash);
         Ok(())
     }
 
@@ -726,9 +809,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
                     "Failed to acquire state lock for mergeable resend".to_string(),
                 )
             })?;
-            let (new_state, next_hashes) = state.get_next_mergeable(resend);
-            *state = new_state;
-            next_hashes
+            state.get_next_mergeable_in_place(resend)
         };
 
         if hashes.is_empty() {
@@ -794,9 +875,7 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             let mut state = self.st.lock().map_err(|_| {
                 CasperError::StreamError("Failed to acquire state lock".to_string())
             })?;
-            let (new_state, next_hashes) = state.get_next(resend);
-            *state = new_state;
-            next_hashes
+            state.get_next_in_place(resend)
         };
 
         if hashes.is_empty() {
@@ -1511,5 +1590,144 @@ mod window_tests {
             floor - 1,
             "a signed latest message at the floor must still reach its parents"
         );
+    }
+}
+
+#[cfg(test)]
+mod in_place_equivalence_tests {
+    use std::time::Instant;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Add(HashSet<u8>),
+        GetNext(bool),
+        Received(u8, i64, Option<u8>, bool),
+        Done(u8),
+        MergeablePending(u8),
+        GetNextMergeable(bool),
+        MergeableReceived(u8),
+    }
+
+    fn key() -> impl Strategy<Value = u8> { 0u8..24 }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            prop::collection::hash_set(key(), 0..6).prop_map(Op::Add),
+            any::<bool>().prop_map(Op::GetNext),
+            (key(), -2i64..20, prop::option::of(key()), any::<bool>())
+                .prop_map(|(k, h, r, l)| Op::Received(k, h, r, l)),
+            key().prop_map(Op::Done),
+            key().prop_map(Op::MergeablePending),
+            any::<bool>().prop_map(Op::GetNextMergeable),
+            key().prop_map(Op::MergeableReceived),
+        ]
+    }
+
+    fn same(a: &ST<u8>, b: &ST<u8>) -> bool {
+        a.d == b.d
+            && a.latest == b.latest
+            && a.lower_bound == b.lower_bound
+            && a.height_map == b.height_map
+            && a.finished == b.finished
+            && a.mergeable_d == b.mergeable_d
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn in_place_updates_match_the_functional_ones(
+            initial in prop::collection::hash_set(key(), 0..8),
+            latest in prop::option::of(prop::collection::hash_set(key(), 0..4)),
+            lower_bound in prop::option::of(0i64..10),
+            ops in prop::collection::vec(op(), 0..60),
+        ) {
+            let mut reference = ST::new(initial, latest, lower_bound);
+            let mut in_place = reference.clone();
+            for op in ops {
+                match op {
+                    Op::Add(keys) => {
+                        reference = reference.add(keys.clone());
+                        in_place.add_in_place(keys);
+                    }
+                    Op::GetNext(resend) => {
+                        let (next, expected) = reference.get_next(resend);
+                        reference = next;
+                        prop_assert_eq!(in_place.get_next_in_place(resend), expected);
+                    }
+                    Op::Received(k, h, r, l) => {
+                        let (next, expected) = reference.received(k, h, r, l);
+                        reference = next;
+                        prop_assert_eq!(in_place.received_in_place(k, h, r, l), expected);
+                    }
+                    Op::Done(k) => {
+                        reference = reference.done(k);
+                        in_place.done_in_place(k);
+                    }
+                    Op::MergeablePending(k) => {
+                        reference = reference.mergeable_pending(k);
+                        in_place.mergeable_pending_in_place(k);
+                    }
+                    Op::GetNextMergeable(resend) => {
+                        let (next, expected) = reference.get_next_mergeable(resend);
+                        reference = next;
+                        prop_assert_eq!(in_place.get_next_mergeable_in_place(resend), expected);
+                    }
+                    Op::MergeableReceived(k) => {
+                        let (next, expected) = reference.mergeable_received(&k);
+                        reference = next;
+                        prop_assert_eq!(in_place.mergeable_received_in_place(&k), expected);
+                    }
+                }
+                prop_assert!(same(&reference, &in_place), "{:?} vs {:?}", reference, in_place);
+                prop_assert_eq!(reference.is_finished(), in_place.is_finished());
+            }
+        }
+    }
+
+    fn sync_functional(n: u32) -> ST<u32> {
+        let mut st = ST::new(HashSet::from([0]), None, None);
+        for k in 0..n {
+            let (next, _) = st.get_next(false);
+            let (next, _) = next.received(k, i64::from(k), None, false);
+            st = next.done(k).add(HashSet::from([k + 1]));
+        }
+        st
+    }
+
+    fn sync_in_place(n: u32) -> ST<u32> {
+        let mut st = ST::new(HashSet::from([0]), None, None);
+        for k in 0..n {
+            st.get_next_in_place(false);
+            st.received_in_place(k, i64::from(k), None, false);
+            st.done_in_place(k);
+            st.add_in_place(HashSet::from([k + 1]));
+        }
+        st
+    }
+
+    #[test]
+    #[ignore = "microbenchmark: run with --release --ignored --nocapture"]
+    fn lfs_sync_state_microbenchmark() {
+        for n in [1_000u32, 4_000, 16_000] {
+            let started = Instant::now();
+            let functional = sync_functional(n);
+            let functional_time = started.elapsed();
+            let started = Instant::now();
+            let in_place = sync_in_place(n);
+            let in_place_time = started.elapsed();
+            assert_eq!(functional.finished, in_place.finished);
+            assert_eq!(functional.d, in_place.d);
+            println!(
+                "lfs sync state, {n} blocks: functional {:?}, in place {:?}, {:.0}x",
+                functional_time,
+                in_place_time,
+                functional_time.as_secs_f64() / in_place_time.as_secs_f64()
+            );
+        }
     }
 }
