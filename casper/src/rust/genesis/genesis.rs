@@ -20,6 +20,7 @@ use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::v6::genesis_wallets::genesis_lines;
+use crate::rust::v6::hooks::{authority_addresses, genesis_authority};
 use crate::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -131,10 +132,18 @@ impl Genesis {
                     shard_id,
                 ));
             }
+            let authority =
+                genesis_authority(pos_params).expect("the hook authority is checked before genesis");
+            vault_deploys.push(standard_deploys::rev_hooks_generator(
+                authority.threshold(),
+                &authority_addresses(&authority),
+                timestamp + batches.len() as i64,
+                shard_id,
+            ));
             vault_deploys.push(standard_deploys::vaults_generator(
                 Vec::new(),
                 supply,
-                timestamp + batches.len() as i64,
+                timestamp + batches.len() as i64 + 1,
                 true,
                 shard_id,
             ));
@@ -291,6 +300,7 @@ impl Genesis {
             }
             policy.check().map_err(CasperError::RuntimeError)?;
             genesis_lines(&genesis.vaults)?;
+            genesis_authority(&genesis.proof_of_stake)?;
         } else if genesis.version == PROTOCOL_V6 {
             return Err(CasperError::RuntimeError(format!(
                 "a protocol {PROTOCOL_V6} genesis needs a shard resource policy"

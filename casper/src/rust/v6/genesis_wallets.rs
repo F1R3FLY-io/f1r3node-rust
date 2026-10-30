@@ -62,7 +62,7 @@ pub async fn read_wallet_balance(
         .map_err(|e| CasperError::RuntimeError(e.to_string()))
 }
 
-async fn cells_at(
+pub async fn cells_at(
     runtime_manager: &RuntimeManager,
     state_hash: &StateHash,
 ) -> Result<HotStoreCells, CasperError> {

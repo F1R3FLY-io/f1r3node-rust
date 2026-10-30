@@ -119,6 +119,29 @@ async fn genesis_mints_one_stack_per_wallet_and_records_the_supply() {
 }
 
 #[tokio::test]
+async fn genesis_installs_the_hook_authority_and_a_noop_rev_hook() {
+    use rholang::rust::interpreter::accounting::rev_stack::hooks::{
+        hook_authority, rev_hook, RevHook,
+    };
+    let runtime = runtime().await;
+    let (genesis, alice, bob) = (key(), key(), key());
+    let term = format!(
+        r#"new g(`rho:rev:genesis`) in {{ g!("hooks", (2, ["{}", "{}"]), "out") }}"#,
+        alice.address, bob.address
+    );
+    let refused = eval_as(&runtime, &genesis, &term).await;
+    assert!(refused[0].contains("reserved for genesis"), "{refused:?}");
+    runtime.disable_fs_native_urn_filter();
+    assert!(eval_as(&runtime, &genesis, &term).await.is_empty());
+    let cells = HotStoreCells(runtime.reducer.space.hot_store().unwrap());
+    let authority = hook_authority(&cells).unwrap().unwrap();
+    assert_eq!(authority.threshold(), 2);
+    assert_eq!(authority.members().len(), 2);
+    assert!(authority.authorizes(&[alice.owner.clone(), bob.owner.clone()]));
+    assert_eq!(rev_hook(&cells).unwrap(), Some(RevHook::Noop));
+}
+
+#[tokio::test]
 async fn a_malformed_line_mints_nothing() {
     let runtime = runtime().await;
     runtime.disable_fs_native_urn_filter();

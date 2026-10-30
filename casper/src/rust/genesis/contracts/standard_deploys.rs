@@ -403,6 +403,29 @@ pub fn rev_stacks_generator(
     )
 }
 
+pub fn rev_hooks_generator(
+    threshold: u32,
+    addresses: &[String],
+    timestamp: i64,
+    shard_id: &str,
+) -> Signed<DeployData> {
+    let list = addresses
+        .iter()
+        .map(|a| format!("\"{a}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let code = format!(
+        "new revGenesis(`rho:rev:genesis`), ret in {{ revGenesis!(\"hooks\", ({threshold}, [{list}]), *ret) }}"
+    );
+    to_deploy(
+        CompiledRholangSource::new(code, HashMap::new(), "<synthetic rev hooks generator>".to_string())
+            .expect("Failed to compile the REV hooks generator"),
+        VAULTS_GENERATOR_PK,
+        timestamp,
+        shard_id,
+    )
+}
+
 pub fn to_public(priv_key_hex: &str) -> PublicKey {
     let private_key =
         PrivateKey::from_bytes(&hex::decode(priv_key_hex).expect("Invalid private key hex string"));

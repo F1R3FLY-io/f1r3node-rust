@@ -7,6 +7,7 @@ use models::rhoapi::{GPrivate, GUnforgeable, ListParWithRandom, Par};
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
+use super::hooks::{install_genesis_hooks, HookAuthority};
 use super::native::RhoHotStore;
 use super::ops::{CellStore, HotStoreCells, RevStacks};
 use super::owner::WalletOwner;
@@ -87,6 +88,12 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
                 .map(|supply| RhoNumber::create_par(supply as i64))
                 .map_err(|e| e.to_string())
         }),
+        "hooks" => hooks_args(arg).and_then(|authority| {
+            let store = store.ok_or_else(|| "native REV layer unavailable".to_string())?;
+            install_genesis_hooks(&HotStoreCells(store), &authority)
+                .map(|_| Par::default())
+                .map_err(|e| e.to_string())
+        }),
         _ => return None,
     };
     Some(match result {
@@ -113,6 +120,23 @@ fn mint_args(arg: &Par) -> Result<Vec<(WalletOwner, RevAmount)>, String> {
             Ok((owner, amount as RevAmount))
         })
         .collect()
+}
+
+fn hooks_args(arg: &Par) -> Result<HookAuthority, String> {
+    let usage = "hooks expects (threshold, [revAddress, ...])";
+    let (threshold, members) = RhoTuple2::unapply(arg).ok_or_else(|| usage.to_string())?;
+    let threshold = RhoNumber::unapply(&threshold)
+        .and_then(|t| u32::try_from(t).ok())
+        .ok_or_else(|| usage.to_string())?;
+    let members = RhoList::unapply(&members)
+        .ok_or_else(|| usage.to_string())?
+        .iter()
+        .map(|m| {
+            let address = RhoString::unapply(m).ok_or_else(|| usage.to_string())?;
+            WalletOwner::from_address(&address).map_err(|e| e.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    HookAuthority::new(members, threshold).map_err(|e| e.to_string())
 }
 
 fn add(a: RevAmount, b: RevAmount) -> Result<RevAmount, RevStackError> {
