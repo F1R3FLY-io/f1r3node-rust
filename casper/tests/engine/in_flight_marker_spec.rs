@@ -44,7 +44,7 @@ async fn a_block_dropped_from_the_queue_can_be_queued_again() {
 
     let queued = fixture.block_processing_queue_rx.lock().await.try_recv();
     assert!(
-        queued.is_ok_and(|(_, queued, _)| queued.block_hash == block.block_hash),
+        queued.is_ok_and(|(_, queued, _)| queued.block().block_hash == block.block_hash),
         "a block dropped from the queue without processing keeps its in-flight marker, \
          so the same block is skipped as already queued"
     );
@@ -70,7 +70,7 @@ async fn blocks_dropped_from_the_queue_do_not_wedge_the_node_at_the_cap() {
 
     let queued = fixture.block_processing_queue_rx.lock().await.try_recv();
     assert!(
-        queued.is_ok_and(|(_, block, _)| block.block_hash == next.block_hash),
+        queued.is_ok_and(|(_, block, _)| block.block().block_hash == next.block_hash),
         "after {MAX_BLOCKS_IN_PROCESSING} blocks dropped from the queue unprocessed, \
          the node drops every new block at the in-flight cap"
     );
