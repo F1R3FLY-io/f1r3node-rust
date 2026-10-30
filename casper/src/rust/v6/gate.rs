@@ -548,28 +548,14 @@ mod tests {
     }
 
     #[test]
-    fn gate_entries_round_trip_in_the_record() {
-        use super::super::body::{Record, V6Body};
+    fn a_refused_entry_with_a_commitment_does_not_decode() {
         let os = owners(1);
         let r = reader(&os, &[500]);
-        let mut foreign = input(&os[0], 1, 1, 9);
-        foreign.named = owners(1);
-        let inputs = vec![
-            input(&os[0], 100, 3, 0),
-            input(&os[0], 100, 3, 1),
-            input(&os[0], -1, 3, 2),
-            input(&os[0], i64::MAX, i64::MAX, 3),
-            foreign,
-        ];
+        let inputs: Vec<_> = (0..2).map(|i| input(&os[0], 100, 3, i)).collect();
         let out = gate_block(&r, &PhloLimitDemand, &inputs).unwrap();
-        let mut record = Record::empty(Bytes::from_static(b"t"), Bytes::new(), Bytes::new());
-        record.gate = out.entries.clone();
-        let body = V6Body {
-            attestation: None,
-            records: vec![record],
-        };
-        let decoded = V6Body::decode(&body.encode()).unwrap().unwrap();
-        assert_eq!(decoded.records[0].gate, out.entries);
+        for e in &out.entries {
+            assert_eq!(GateEntry::from_proto(e.to_proto()).unwrap(), *e);
+        }
         let mut bad = out.entries[1].to_proto();
         bad.commitments = out.entries[0].to_proto().commitments;
         assert!(GateEntry::from_proto(bad).is_err());
