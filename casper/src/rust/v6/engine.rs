@@ -13,6 +13,16 @@ use models::rust::casper::protocol::casper_message::{
 use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::KvStoreError;
 
+use super::backend::ExecutionBackend;
+use super::block_record::BlockRecord;
+use super::body::{Attestation, V6Body};
+use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
+use super::executor::BlockExecutor;
+use super::linearizer::{Advance, Linearizer};
+use super::propose::{select_envelopes, SelectionContext};
+use super::record::ExecutionRecord;
+use super::resource_policy::ShardResourcePolicy;
+use super::validity::{check_structure, Limits};
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use crate::rust::blocks::proposer::proposer::DeploySelection;
 use crate::rust::casper::CasperSnapshot;
@@ -22,17 +32,10 @@ use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
-use super::backend::{ConcurrentBackend, ExecutionBackend};
-use super::body::{Attestation, V6Body};
-use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
-use super::linearizer::{Advance, Linearizer};
-use super::propose::{select_envelopes, SelectionContext};
-use super::validity::{check_structure, Limits};
-
-pub struct V6Engine {
-    core: parking_lot::Mutex<ExecutorCore>,
+pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
+    core: parking_lot::Mutex<ExecutorCore<R>>,
     linearizer: parking_lot::Mutex<Linearizer>,
-    backend: Arc<dyn ExecutionBackend>,
+    backend: Arc<dyn ExecutionBackend<Record = R>>,
     block_store: KeyValueBlockStore,
     dag_storage: BlockDagKeyValueStorage,
     deploy_storage: Arc<KeyValueDeployStorage>,
@@ -42,7 +45,7 @@ pub struct V6Engine {
     started: AtomicBool,
 }
 
-impl V6Engine {
+impl V6Engine<BlockRecord> {
     pub fn new(
         genesis: &BlockMessage,
         runtime_manager: Arc<RuntimeManager>,
@@ -50,7 +53,10 @@ impl V6Engine {
         dag_storage: BlockDagKeyValueStorage,
         deploy_storage: Arc<KeyValueDeployStorage>,
     ) -> Arc<Self> {
-        let backend = Arc::new(ConcurrentBackend::new(runtime_manager.clone()));
+        let workers = std::thread::available_parallelism()
+            .map(|cores| cores.get())
+            .unwrap_or(1);
+        let backend = Arc::new(BlockExecutor::new(runtime_manager.clone(), workers));
         Self::with_backend(
             genesis,
             backend,
@@ -58,15 +64,17 @@ impl V6Engine {
             block_store,
             dag_storage,
             deploy_storage,
-            Limits::default(),
+            ShardResourcePolicy::default().limits(),
             CoreParams::default(),
         )
     }
+}
 
+impl<R: ExecutionRecord> V6Engine<R> {
     #[allow(clippy::too_many_arguments)]
     pub fn with_backend(
         genesis: &BlockMessage,
-        backend: Arc<dyn ExecutionBackend>,
+        backend: Arc<dyn ExecutionBackend<Record = R>>,
         runtime_manager: Arc<RuntimeManager>,
         block_store: KeyValueBlockStore,
         dag_storage: BlockDagKeyValueStorage,
@@ -117,32 +125,24 @@ impl V6Engine {
         });
     }
 
-    pub fn wake(&self) {
-        self.wake.notify_one();
-    }
+    pub fn wake(&self) { self.wake.notify_one(); }
 
-    pub fn attestation(&self) -> Attestation {
-        self.core.lock().attestation()
-    }
+    pub fn attestation(&self) -> Attestation { self.core.lock().attestation() }
 
     pub fn executed(&self, block: &BlockHash) -> Option<Bytes> {
         self.core.lock().executed(block).cloned()
     }
 
-    pub fn evidence(&self) -> Vec<Evidence> {
-        self.core.lock().evidence().to_vec()
-    }
+    pub fn evidence(&self) -> Vec<Evidence> { self.core.lock().evidence().to_vec() }
 
-    pub fn canonical_len(&self) -> usize {
-        self.core.lock().canonical_len()
-    }
+    pub fn canonical_len(&self) -> usize { self.core.lock().canonical_len() }
 
     pub fn check_block(
         &self,
         block: &BlockMessage,
         dag: &KeyValueDagRepresentation,
-    ) -> Result<V6Body, String> {
-        check_structure(block, &self.limits, &|hash| dag.block_number(hash))
+    ) -> Result<(V6Body, Vec<R>), String> {
+        check_structure::<R>(block, &self.limits, &|hash| dag.block_number(hash))
     }
 
     pub fn observe_block(&self, block: &BlockMessage, body: &V6Body) {
@@ -171,12 +171,12 @@ impl V6Engine {
                     let records = V6Body::decode(&block.body.extra_bytes)
                         .ok()
                         .flatten()
-                        .map(|b| b.records)
+                        .and_then(|b| b.decode_records::<R>().ok())
                         .unwrap_or_default();
                     self.core.lock().emit(EmittedBlock {
                         hash,
                         sender: block.sender.clone(),
-                        envelope_sigs: block
+                        envelope_ids: block
                             .body
                             .deploys
                             .iter()
@@ -218,6 +218,15 @@ impl V6Engine {
                     .replay(&record, &block)
                     .await
                     .map_err(|e| e.to_string());
+                if let Err(error) = &result {
+                    tracing::warn!(
+                        target: "f1r3fly.v6",
+                        block = %hex::encode(&target),
+                        citer = %hex::encode(&citer),
+                        %error,
+                        "v6 record replay failed"
+                    );
+                }
                 self.core
                     .lock()
                     .apply_replay(&target, &citer, &record, result);
@@ -267,7 +276,7 @@ impl V6Engine {
             .filter(|r| {
                 snapshot
                     .dag
-                    .block_number(&r.target)
+                    .block_number(r.target())
                     .map(|n| n < next_block_number)
                     .unwrap_or(false)
             })
@@ -275,18 +284,18 @@ impl V6Engine {
 
         let pool = self.deploy_storage.read_all()?;
         let in_scope = |sig: &Bytes| snapshot.deploys_in_scope.contains(sig);
-        let envelopes = select_envelopes(
-            pool,
-            &SelectionContext {
-                next_block_number,
-                deploy_lifespan: conf.deploy_lifespan,
-                now_millis,
-                shard_id: &conf.shard_name,
-                min_phlo_price: conf.min_phlo_price,
-                in_scope: &in_scope,
-                limits: &self.limits,
-            },
-        );
+        let envelopes: Vec<ProcessedDeploy> = select_envelopes(pool, &SelectionContext {
+            next_block_number,
+            deploy_lifespan: conf.deploy_lifespan,
+            now_millis,
+            shard_id: &conf.shard_name,
+            min_phlo_price: conf.min_phlo_price,
+            in_scope: &in_scope,
+            limits: &self.limits,
+        })
+        .into_iter()
+        .map(ProcessedDeploy::empty)
+        .collect();
         if envelopes.is_empty() && records.is_empty() && !selection.allows_empty() {
             return Ok(BlockCreatorResult::NoNewDeploys);
         }
@@ -308,10 +317,7 @@ impl V6Engine {
             }
         };
 
-        let extension = V6Body {
-            attestation: Some(attestation.clone()),
-            records: records.clone(),
-        };
+        let extension = V6Body::with_records(attestation.clone(), &records);
         let body = Body {
             state: F1r3flyState {
                 pre_state_hash: attestation.root.clone(),
@@ -319,7 +325,7 @@ impl V6Engine {
                 bonds,
                 block_number: next_block_number,
             },
-            deploys: envelopes.into_iter().map(ProcessedDeploy::empty).collect(),
+            deploys: envelopes,
             rejected_deploys: vec![],
             system_deploys: vec![],
             extra_bytes: extension.encode(),

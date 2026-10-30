@@ -129,7 +129,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
 
     if let Some(engine) = this.v6.as_ref() {
         match engine.check_block(block, &snapshot.dag) {
-            Ok(body) => engine.observe_block(block, &body),
+            Ok((body, _records)) => engine.observe_block(block, &body),
             Err(reason) => {
                 tracing::warn!(
                     target: "f1r3fly.v6",

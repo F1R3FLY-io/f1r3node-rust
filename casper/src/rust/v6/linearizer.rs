@@ -104,9 +104,7 @@ impl Linearizer {
         }
     }
 
-    pub fn last(&self) -> &BlockHash {
-        &self.last
-    }
+    pub fn last(&self) -> &BlockHash { &self.last }
 
     pub fn advance<D: DagView>(
         &mut self,
@@ -153,8 +151,9 @@ impl Linearizer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use prost::bytes::Bytes;
+
+    use super::*;
 
     struct TestDag(HashMap<BlockHash, (i64, Vec<BlockHash>)>);
 
@@ -162,14 +161,10 @@ mod tests {
         fn parents(&self, hash: &BlockHash) -> Result<Vec<BlockHash>, KvStoreError> {
             Ok(self.0[hash].1.clone())
         }
-        fn number(&self, hash: &BlockHash) -> Result<i64, KvStoreError> {
-            Ok(self.0[hash].0)
-        }
+        fn number(&self, hash: &BlockHash) -> Result<i64, KvStoreError> { Ok(self.0[hash].0) }
     }
 
-    fn h(s: &str) -> BlockHash {
-        Bytes::copy_from_slice(s.as_bytes())
-    }
+    fn h(s: &str) -> BlockHash { Bytes::copy_from_slice(s.as_bytes()) }
 
     fn dag(edges: &[(&str, i64, &[&str])]) -> TestDag {
         TestDag(
@@ -256,13 +251,10 @@ mod tests {
         ]);
         let mut lin = Linearizer::new(h("g"), 0);
         lin.advance(&d, &h("a")).unwrap();
-        assert_eq!(
-            lin.advance(&d, &h("c")).unwrap(),
-            Advance::Hold {
-                previous: h("a"),
-                proposed: h("c")
-            }
-        );
+        assert_eq!(lin.advance(&d, &h("c")).unwrap(), Advance::Hold {
+            previous: h("a"),
+            proposed: h("c")
+        });
     }
 
     #[test]
