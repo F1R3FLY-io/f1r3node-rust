@@ -1050,6 +1050,11 @@ mod embedded_defaults_tests {
             cfg.casper.deploy_verified_encodings_cap,
             casper::rust::casper_conf::default_deploy_verified_encodings_cap()
         );
+        assert_eq!(cfg.casper.rejection_search_cap_from_height, None);
+        assert_eq!(
+            cfg.casper.rejection_search_group_branch_cap,
+            casper::rust::casper_conf::default_rejection_search_group_branch_cap()
+        );
     }
 
     /// I5: the stale-recovery interval must exceed the heartbeat tick, or

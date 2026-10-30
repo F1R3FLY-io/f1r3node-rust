@@ -96,6 +96,7 @@ pub const DAG_MERGE_APPLY_TRIE_ACTIONS_TIME_METRIC: &str = "dag.merge.apply-trie
 pub const DAG_MERGE_BRANCHES_TIME_METRIC: &str = "dag.merge.branches.time";
 pub const DAG_MERGE_CONFLICTS_MAP_TIME_METRIC: &str = "dag.merge.conflicts-map.time";
 pub const DAG_MERGE_REJECTION_OPTIONS_TIME_METRIC: &str = "dag.merge.rejection-options.time";
+pub const DAG_MERGE_REJECTION_GREEDY_GROUPS_METRIC: &str = "dag.merge.rejection-greedy-groups";
 pub const DAG_MERGE_REJECTION_SELECTION_TIME_METRIC: &str = "dag.merge.rejection-selection.time";
 pub const DAG_MERGE_RELATION_ITEMS_METRIC: &str = "dag.merge.relation.items";
 pub const DAG_MERGE_RELATION_BRANCHES_METRIC: &str = "dag.merge.relation.branches";
