@@ -7,6 +7,7 @@ use prost::Message;
 use super::body::StateHash;
 use super::gate::{GateEntry, GateEntryProto};
 use super::record::ExecutionRecord;
+use super::settle::{Settlement, SettlementProto};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RecordEntryProto {
@@ -38,6 +39,8 @@ pub struct BlockRecordProto {
     pub system_deploys: Vec<ProcessedSystemDeployProto>,
     #[prost(message, repeated, tag = "11")]
     pub gate: Vec<GateEntryProto>,
+    #[prost(message, optional, tag = "12")]
+    pub settlement: Option<SettlementProto>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +48,7 @@ pub enum EnvelopeOutcome {
     NotRun,
     Completed,
     UserFailure,
+    Exhausted,
     Conflicted,
 }
 
@@ -54,6 +58,7 @@ impl EnvelopeOutcome {
             EnvelopeOutcome::NotRun => 0,
             EnvelopeOutcome::Completed => 1,
             EnvelopeOutcome::UserFailure => 2,
+            EnvelopeOutcome::Exhausted => 3,
             EnvelopeOutcome::Conflicted => 5,
         }
     }
@@ -63,6 +68,7 @@ impl EnvelopeOutcome {
             0 => Ok(EnvelopeOutcome::NotRun),
             1 => Ok(EnvelopeOutcome::Completed),
             2 => Ok(EnvelopeOutcome::UserFailure),
+            3 => Ok(EnvelopeOutcome::Exhausted),
             5 => Ok(EnvelopeOutcome::Conflicted),
             other => Err(format!("unknown envelope outcome {other}")),
         }
@@ -102,6 +108,7 @@ pub struct BlockRecord {
     system_deploys: Vec<ProcessedSystemDeploy>,
     envelope_ids: Vec<Bytes>,
     gate: Vec<GateEntry>,
+    settlement: Option<Settlement>,
 }
 
 impl BlockRecord {
@@ -150,6 +157,7 @@ impl BlockRecord {
             system_deploys,
             envelope_ids,
             gate: Vec::new(),
+            settlement: None,
         })
     }
 
@@ -167,6 +175,13 @@ impl BlockRecord {
     }
 
     pub fn gate(&self) -> &[GateEntry] { &self.gate }
+
+    pub fn with_settlement(mut self, settlement: Settlement) -> Self {
+        self.settlement = Some(settlement);
+        self
+    }
+
+    pub fn settlement(&self) -> Option<&Settlement> { self.settlement.as_ref() }
 
     pub fn mid_root(&self) -> &StateHash { &self.mid_root }
 
@@ -195,6 +210,7 @@ impl BlockRecord {
                 .map(ProcessedSystemDeploy::to_proto)
                 .collect(),
             gate: self.gate.iter().map(GateEntry::to_proto).collect(),
+            settlement: self.settlement.as_ref().map(Settlement::to_proto),
         }
     }
 
@@ -223,6 +239,10 @@ impl BlockRecord {
             system_deploys,
         )?
         .with_gate(gate)
+        .and_then(|record| match proto.settlement {
+            Some(s) => Settlement::from_proto(s).map(|s| record.with_settlement(s)),
+            None => Ok(record),
+        })
     }
 }
 

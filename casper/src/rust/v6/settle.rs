@@ -318,3 +318,172 @@ mod tests {
         assert_eq!(Boxcar::of(4).chunks(0), Vec::<u64>::new());
     }
 }
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ChargeProto {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub envelope_id: Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub wallet: Bytes,
+    #[prost(uint64, tag = "3")]
+    pub phlo_price: u64,
+    #[prost(uint64, tag = "4")]
+    pub comm_phlo: u64,
+    #[prost(uint64, tag = "5")]
+    pub comm_rev: u64,
+    #[prost(uint64, tag = "6")]
+    pub compute_phlo: u64,
+    #[prost(uint64, tag = "7")]
+    pub compute_rev: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WalletAmountProto {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub wallet: Bytes,
+    #[prost(uint64, tag = "2")]
+    pub amount: u64,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct SettlementProto {
+    #[prost(message, repeated, tag = "1")]
+    pub charges: Vec<ChargeProto>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub proposer: Bytes,
+    #[prost(uint64, tag = "3")]
+    pub proposer_credit: u64,
+    #[prost(uint64, tag = "4")]
+    pub compute_credit: u64,
+    #[prost(message, repeated, tag = "5")]
+    pub released: Vec<WalletAmountProto>,
+}
+
+impl Settlement {
+    pub fn to_proto(&self) -> SettlementProto {
+        SettlementProto {
+            charges: self
+                .charges
+                .iter()
+                .map(|c| ChargeProto {
+                    envelope_id: c.envelope_sig.clone(),
+                    wallet: Bytes::copy_from_slice(&c.wallet),
+                    phlo_price: c.phlo_price,
+                    comm_phlo: c.comm_phlo,
+                    comm_rev: c.comm_rev,
+                    compute_phlo: c.compute_phlo,
+                    compute_rev: c.compute_rev,
+                })
+                .collect(),
+            proposer: Bytes::copy_from_slice(&self.proposer),
+            proposer_credit: self.proposer_credit,
+            compute_credit: self.compute_credit,
+            released: self
+                .released
+                .iter()
+                .map(|(w, a)| WalletAmountProto {
+                    wallet: Bytes::copy_from_slice(w),
+                    amount: *a,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn from_proto(proto: SettlementProto) -> Result<Self, String> {
+        let charges: Vec<EnvelopeCharge> = proto
+            .charges
+            .into_iter()
+            .map(|c| {
+                let comm = c.comm_phlo.checked_mul(c.phlo_price);
+                let compute = c.compute_phlo.checked_mul(c.phlo_price);
+                if comm != Some(c.comm_rev) || compute != Some(c.compute_rev) {
+                    return Err("a recorded charge is not its phlo times its price".to_string());
+                }
+                Ok(EnvelopeCharge {
+                    envelope_sig: c.envelope_id,
+                    wallet: c.wallet.to_vec(),
+                    phlo_price: c.phlo_price,
+                    comm_phlo: c.comm_phlo,
+                    comm_rev: c.comm_rev,
+                    compute_phlo: c.compute_phlo,
+                    compute_rev: c.compute_rev,
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let mut debits: BTreeMap<WalletId, RevAmount> = BTreeMap::new();
+        let (mut comm, mut compute) = (0u64, 0u64);
+        let sum = |a: u64, b: u64| a.checked_add(b).ok_or("a recorded amount overflows");
+        for c in &charges {
+            let d = debits.entry(c.wallet.clone()).or_insert(0);
+            *d = sum(*d, sum(c.comm_rev, c.compute_rev)?)?;
+            comm = sum(comm, c.comm_rev)?;
+            compute = sum(compute, c.compute_rev)?;
+        }
+        if comm != proto.proposer_credit || compute != proto.compute_credit {
+            return Err("the recorded credits do not add up to the recorded charges".to_string());
+        }
+        let released = proto
+            .released
+            .into_iter()
+            .map(|r| (r.wallet.to_vec(), r.amount))
+            .collect();
+        Ok(Settlement {
+            charges,
+            debits,
+            proposer: proto.proposer.to_vec(),
+            proposer_credit: proto.proposer_credit,
+            compute_credit: proto.compute_credit,
+            released,
+        })
+    }
+
+    pub fn charged_phlo(&self, envelope: &[u8]) -> Option<u64> {
+        self.charges
+            .iter()
+            .find(|c| c.envelope_sig.as_ref() == envelope)
+            .map(|c| c.comm_phlo + c.compute_phlo)
+    }
+}
+
+#[cfg(test)]
+mod proto_tests {
+    use super::*;
+
+    fn settlement() -> Settlement {
+        let charge = |id: &'static [u8], wallet: u8, comm: u64, compute: u64| EnvelopeCharge {
+            envelope_sig: Bytes::from_static(id),
+            wallet: vec![wallet; 32],
+            phlo_price: 3,
+            comm_phlo: comm,
+            comm_rev: comm * 3,
+            compute_phlo: compute,
+            compute_rev: compute * 3,
+        };
+        let charges = vec![
+            charge(b"a", 1, 2, 10),
+            charge(b"b", 1, 1, 0),
+            charge(b"c", 2, 0, 4),
+        ];
+        Settlement {
+            debits: BTreeMap::from([(vec![1; 32], 39), (vec![2; 32], 12)]),
+            charges,
+            proposer: vec![9; 32],
+            proposer_credit: 9,
+            compute_credit: 42,
+            released: BTreeMap::from([(vec![1; 32], 61)]),
+        }
+    }
+
+    #[test]
+    fn a_settlement_round_trips_and_its_arithmetic_is_checked() {
+        let s = settlement();
+        assert_eq!(Settlement::from_proto(s.to_proto()), Ok(s.clone()));
+        assert_eq!(s.charged_phlo(b"a"), Some(12));
+        let mut bad = s.to_proto();
+        bad.charges[0].comm_rev += 1;
+        assert!(Settlement::from_proto(bad).is_err());
+        let mut bad = s.to_proto();
+        bad.compute_credit += 1;
+        assert!(Settlement::from_proto(bad).is_err());
+    }
+}

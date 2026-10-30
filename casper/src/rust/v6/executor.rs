@@ -396,9 +396,12 @@ impl BlockExecutor {
     }
 }
 
-fn outcome(admitted: bool, failed: bool, merged: bool) -> EnvelopeOutcome {
+fn outcome(admitted: bool, exhausted: bool, failed: bool, merged: bool) -> EnvelopeOutcome {
     if !admitted {
         return EnvelopeOutcome::NotRun;
+    }
+    if failed && exhausted {
+        return EnvelopeOutcome::Exhausted;
     }
     match (failed, merged) {
         (true, _) => EnvelopeOutcome::UserFailure,
@@ -412,11 +415,17 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
         .runs
         .iter()
         .zip(&executed.merged)
-        .zip(executed.gate.admitted())
-        .map(|((run, merged), admitted)| RecordEntry {
+        .zip(&executed.gate.entries)
+        .map(|((run, merged), gate)| RecordEntry {
             executed: ExecutedEnvelope {
                 envelope_id: run.envelope_sig.clone(),
-                outcome: outcome(admitted, run.failed, *merged),
+                outcome: outcome(
+                    gate.admitted(),
+                    gate.delta > 0
+                        && executed.settlement.charged_phlo(&run.envelope_sig) == Some(gate.delta),
+                    run.failed,
+                    *merged,
+                ),
                 comm_phlo: run.comm_phlo,
                 compute_phlo: run.compute_phlo,
                 user_log: run.user_log.clone(),
@@ -467,6 +476,7 @@ impl ExecutionBackend for BlockExecutor {
             system_deploys,
         )
         .and_then(|record| record.with_gate(executed.gate.entries.clone()))
+        .map(|record| record.with_settlement(executed.settlement.clone()))
         .map_err(CasperError::RuntimeError)
     }
 
@@ -494,7 +504,10 @@ impl ExecutionBackend for BlockExecutor {
                         cost: entry.compute_phlo,
                     },
                     deploy_log: entry.user_log.clone(),
-                    is_failed: entry.outcome == EnvelopeOutcome::UserFailure,
+                    is_failed: matches!(
+                        entry.outcome,
+                        EnvelopeOutcome::UserFailure | EnvelopeOutcome::Exhausted
+                    ),
                     system_deploy_error: None,
                 })
             })
@@ -513,6 +526,9 @@ impl ExecutionBackend for BlockExecutor {
         }
         if replayed.mid_root != *record.mid_root() {
             return Err(mismatch("user-phase root"));
+        }
+        if record.settlement() != Some(&replayed.settlement) {
+            return Err(mismatch("the settled charges"));
         }
         let post_root = self
             .runtime_manager

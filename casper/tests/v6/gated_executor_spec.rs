@@ -202,9 +202,15 @@ async fn a_run_cannot_spend_the_rev_its_block_has_committed() {
         .unwrap();
     assert_eq!(played.gate.admitted(), vec![true, true]);
     assert_eq!(balance(&rm, &played.runs[0].post_root, &bob).await, 0);
-    assert_eq!(balance(&rm, &played.runs[0].post_root, &alice).await, 10_000);
+    assert_eq!(
+        balance(&rm, &played.runs[0].post_root, &alice).await,
+        10_000
+    );
     let paid = played.settlement.debited();
-    assert_eq!(balance(&rm, &played.settled_root, &alice).await, 10_000 - paid);
+    assert_eq!(
+        balance(&rm, &played.settled_root, &alice).await,
+        10_000 - paid
+    );
 
     let envelopes = vec![envelope(&transfer(6_000, "fits"), 3, &alice, 1_000, 3)];
     let played = executor
@@ -235,6 +241,7 @@ async fn a_block_record_carries_the_gate_and_replays_it() {
     let deploys = vec![
         ProcessedDeploy::empty(envelope(TWO_COMMS, 1, &alice, 1_000, 3)),
         ProcessedDeploy::empty(envelope(ONE_COMM, 2, &bob, 1_000, 1)),
+        ProcessedDeploy::empty(envelope(TWO_COMMS, 3, &alice, 5, 2)),
     ];
     let b = BlockMessage {
         block_hash: Bytes::from_static(b"v6-gated-block"),
@@ -273,9 +280,44 @@ async fn a_block_record_carries_the_gate_and_replays_it() {
     let outcomes: Vec<_> = record.executed().iter().map(|e| e.outcome).collect();
     assert_eq!(
         outcomes,
-        vec![EnvelopeOutcome::Completed, EnvelopeOutcome::NotRun]
+        vec![
+            EnvelopeOutcome::Completed,
+            EnvelopeOutcome::NotRun,
+            EnvelopeOutcome::Exhausted,
+        ]
     );
-    assert_eq!(record.gate().len(), 2);
+    assert_eq!(record.gate().len(), 3);
+    let settlement = record
+        .settlement()
+        .expect("the record carries the settlement");
+    assert!(settlement.is_balanced());
+    assert_eq!(
+        settlement.charged_phlo(&b.body.deploys[2].deploy.sig),
+        Some(5)
+    );
+    let policy = casper::rust::v6::resource_policy::ShardResourcePolicy::default();
+    let deltas: u64 = record.gate().iter().map(|g| g.delta).sum();
+    let bound = policy
+        .record_bound(deltas, record.gate().len() as u64)
+        .unwrap();
+    assert!(
+        (record.encode().len() as u128) <= bound,
+        "{} > {bound}",
+        record.encode().len()
+    );
+    let without_close = BlockRecord::new(
+        record.target().clone(),
+        record.pre_root().clone(),
+        record.mid_root().clone(),
+        record.post_root().clone(),
+        record.entries().to_vec(),
+        Vec::new(),
+    )
+    .unwrap()
+    .with_gate(record.gate().to_vec())
+    .unwrap()
+    .with_settlement(settlement.clone());
+    assert!((without_close.encode().len() as u128) <= bound);
     assert!(balance(&rm, record.post_root(), &proposer).await > 0);
 
     let decoded = BlockRecord::decode(&record.encode()).unwrap();
@@ -284,6 +326,14 @@ async fn a_block_record_carries_the_gate_and_replays_it() {
         &executor.replay(&decoded, &b).await.unwrap(),
         record.post_root()
     );
+
+    let mut tampered = settlement.clone();
+    tampered.charges[0].comm_phlo += 1;
+    tampered.charges[0].comm_rev += tampered.charges[0].phlo_price;
+    tampered.proposer_credit += tampered.charges[0].phlo_price;
+    let forged = record.clone().with_settlement(tampered);
+    assert!(BlockRecord::decode(&forged.encode()).is_ok());
+    assert!(executor.replay(&forged, &b).await.is_err());
 
     let mut gate = record.gate().to_vec();
     gate[1].verdict = Verdict::Admitted;
