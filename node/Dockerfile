@@ -184,6 +184,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 # Image version label. Populate via `--build-arg VERSION=...` from
 # docker-commands.sh / CI so the label tracks the actual build instead of
 # drifting from node/Cargo.toml.
+ENV RUST_MIN_STACK=67108864
+
 ARG VERSION=unknown
 LABEL maintainer="F1r3fly.io LCA https://f1r3fly.io/"
 LABEL version="0.4.46"
