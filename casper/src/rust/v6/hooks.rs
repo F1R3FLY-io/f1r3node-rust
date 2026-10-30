@@ -44,7 +44,7 @@ pub fn authority_addresses(authority: &HookAuthority) -> Vec<String> {
 pub fn rev_hook_call(store: &dyn CellStore, point: HookPoint) -> Result<HookCall, CasperError> {
     let hook = rev_hook(store)
         .map_err(|e| CasperError::RuntimeError(e.to_string()))?
-        .ok_or_else(|| CasperError::RuntimeError("no REV hook is installed".to_string()))?;
+        .unwrap_or(RevHook::Noop);
     Ok(match (point, hook) {
         (HookPoint::AfterSettlement, RevHook::Contract(p)) => HookCall::Contract(p),
         _ => HookCall::Noop,

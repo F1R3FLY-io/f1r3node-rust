@@ -91,6 +91,8 @@ impl ShardResourcePolicy {
             demand_cap: self.demand_cap,
             max_envelopes: self.max_envelopes,
             max_records: self.block_records,
+            max_record_bytes: self.block_record_bytes,
+            ordered_only: true,
             min_phlo_price: 0,
         }
     }
@@ -112,6 +114,7 @@ mod tests {
         assert_eq!(limits.max_records, 7);
         assert_eq!(limits.max_envelopes, 9);
         assert_eq!(limits.demand_cap, 11);
+        assert_eq!(limits.max_record_bytes, 1024);
         assert_eq!(Limits::default().max_records, DEFAULT_BLOCK_RECORDS);
     }
 
