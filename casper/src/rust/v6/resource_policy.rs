@@ -91,6 +91,7 @@ impl ShardResourcePolicy {
             demand_cap: self.demand_cap,
             max_envelopes: self.max_envelopes,
             max_records: self.block_records,
+            min_phlo_price: 0,
         }
     }
 }

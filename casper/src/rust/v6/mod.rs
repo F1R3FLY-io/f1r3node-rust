@@ -8,6 +8,7 @@ pub mod genesis_policy;
 pub mod genesis_wallets;
 pub mod linearizer;
 pub mod merge;
+pub mod price;
 pub mod propose;
 pub mod resource_policy;
 pub mod run;

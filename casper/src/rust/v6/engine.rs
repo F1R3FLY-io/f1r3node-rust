@@ -26,6 +26,7 @@ use super::backend::{ConcurrentBackend, ExecutionBackend};
 use super::body::{Attestation, V6Body};
 use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
 use super::linearizer::{Advance, Linearizer};
+use super::price::{effective_price, FixedPriceHook, NodePriceConf, PriceHook};
 use super::propose::{select_envelopes, SelectionContext};
 use super::validity::{check_structure, Limits};
 
@@ -38,6 +39,7 @@ pub struct V6Engine {
     deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
     runtime_manager: Arc<RuntimeManager>,
     limits: Limits,
+    price_hook: parking_lot::RwLock<Arc<dyn PriceHook>>,
     wake: tokio::sync::Notify,
     started: AtomicBool,
 }
@@ -90,6 +92,10 @@ impl V6Engine {
             deploy_storage,
             runtime_manager,
             limits,
+            price_hook: parking_lot::RwLock::new(Arc::new(
+                FixedPriceHook::from_conf(&NodePriceConf::default())
+                    .expect("the default price configuration is valid"),
+            )),
             wake: tokio::sync::Notify::new(),
             started: AtomicBool::new(false),
         })
@@ -116,6 +122,8 @@ impl V6Engine {
             }
         });
     }
+
+    pub fn set_price_hook(&self, hook: Arc<dyn PriceHook>) { *self.price_hook.write() = hook; }
 
     pub fn wake(&self) {
         self.wake.notify_one();
@@ -282,7 +290,7 @@ impl V6Engine {
                 deploy_lifespan: conf.deploy_lifespan,
                 now_millis,
                 shard_id: &conf.shard_name,
-                min_phlo_price: conf.min_phlo_price,
+                min_phlo_price: effective_price(&**self.price_hook.read(), conf.min_phlo_price),
                 in_scope: &in_scope,
                 limits: &self.limits,
             },
