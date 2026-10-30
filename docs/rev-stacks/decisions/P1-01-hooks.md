@@ -39,3 +39,5 @@ Each entry gives the decision, the alternatives, the reason and whether it is re
 - `casper --lib`: 743 tests pass, including the v6 module tests. The one failure is the WAL test that also fails in debug builds on dev.
 - Clippy (`--all-targets`, `casper`) gives no warning in a file that this round changes.
 - `casper --test mod` with the flag off: 95 tests pass in `add_block`, `blocks`, `multi_parent_casper_finalization_spec`, `multi_parent_casper_deploy_spec` and `last_finalized_api_test`.
+- `casper --test mod`, the remaining modules (`slashing`, `genesis`, `merging`, `util`, `repeat_deploy`, `differential`, `helper`) on this branch: 608 tests pass, 7 are ignored, and 2 fail. The 2 failures are `genesis::contracts::block_data_contract_spec` and `genesis::contracts::pos_spec`. Both reach a hard-coded Rholang test timeout (30 s and 60 s) in a debug build on two cores. Both fail in the same way on dev `252a86d1d` in the same environment, so these patches do not cause them.
+- With the stack run on `patch/P0-08`, every test in `casper --test mod` has run on the rev-stacks code: 1,230 pass, 12 are ignored, and the 2 timeouts above fail.
