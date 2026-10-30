@@ -16,12 +16,11 @@
 //!
 //! Mirrors `lfs_tuple_space_requester` and `lfs_block_requester`. Each
 //! horizon root enters an `ST<StatePartPath>` state machine as
-//! `Init → Requested → Received → Done`. A request loop fans out all
-//! pending paths in parallel via `try_join_all`, while a response loop
+//! `Init → Requested → Received → Done`. A request loop fans out pending
+//! paths in parallel, at most `MAX_IN_FLIGHT_REQUESTS` at once, while a response loop
 //! demultiplexes incoming `StoreItemsMessage`s by `start_path`, applies
 //! items, paginates within each root, and on the terminal cursor calls
-//! `set_root` + verifies via `runtime_manager.has_root` (loud-fail on
-//! byzantine peer).
+//! `set_root`.
 //!
 //! Wire format (`StoreItemsMessageRequest` / `StoreItemsMessage`) is shared
 //! with `lfs_tuple_space_requester`. Pagination semantics: a response with
@@ -29,9 +28,8 @@
 //! enqueue `last_path` as the next chunk to request for that same root.
 
 use std::collections::{HashMap, HashSet};
-use std::hash::Hash;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -40,123 +38,16 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
 use tokio::sync::mpsc;
 
-use crate::rust::engine::lfs_tuple_space_requester::StatePartPath;
+use crate::rust::engine::lfs_tuple_space_requester::{
+    validate_store_items, StatePartPath, StoreItems, ValidChunk, ST,
+};
 use crate::rust::errors::CasperError;
 
 /// Per-request chunk size, carried in the request (the responder pages by
 /// it); independent of `lfs_tuple_space_requester::PAGE_SIZE`.
 pub const PAGE_SIZE: i32 = 1024;
 
-/// Per-chunk request status. Mirrors `lfs_tuple_space_requester::ReqStatus`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReqStatus {
-    Init,
-    Requested,
-    Received,
-    Done,
-}
-
-/// State to control processing of horizon-root requests. Keyed by chunk
-/// path so that pagination cursors and initial root requests live in the
-/// same data structure (matches `lfs_tuple_space_requester::ST`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ST<Key: Hash + Eq + Clone> {
-    d: HashMap<Key, ReqStatus>,
-}
-
-impl<Key: Hash + Eq + Clone> ST<Key> {
-    pub fn new(initial: Vec<Key>) -> Self {
-        let d = initial
-            .into_iter()
-            .map(|key| (key, ReqStatus::Init))
-            .collect();
-        Self { d }
-    }
-
-    pub fn add(&self, keys: HashSet<Key>) -> Self {
-        let mut new_d = self.d.clone();
-        for key in keys {
-            if !self.d.contains_key(&key) {
-                new_d.insert(key, ReqStatus::Init);
-            }
-        }
-        Self { d: new_d }
-    }
-
-    /// Arm a pagination cursor for request.
-    ///
-    /// Unlike [`ST::add`], a key that is already `Done` is returned to `Init`.
-    /// Cursors converge — adjacent block states share nearly all of their trie —
-    /// and a root arriving at a path another root has already finished still
-    /// needs that path's chain walked with it in the root set. Leaving it `Done`
-    /// strands the root: its `set_root` never fires, yet every entry reads Done,
-    /// so the run reports success without it.
-    ///
-    /// Keys still in flight (`Init`/`Requested`/`Received`) are left alone —
-    /// they will complete for the merged root set on their own.
-    pub fn re_arm(&self, key: Key) -> Self {
-        let mut new_d = self.d.clone();
-        match self.d.get(&key) {
-            None | Some(ReqStatus::Done) => {
-                new_d.insert(key, ReqStatus::Init);
-            }
-            Some(_) => {}
-        }
-        Self { d: new_d }
-    }
-
-    /// Returns the next batch of keys to request. Init keys always; if
-    /// `resend` is true, also Requested keys (for timeout-driven retries).
-    pub fn get_next(&self, resend: bool) -> (Self, Vec<Key>) {
-        let mut new_d = self.d.clone();
-        let mut requested_keys = Vec::new();
-        for (key, status) in &self.d {
-            let should_request = match status {
-                ReqStatus::Init => true,
-                ReqStatus::Requested if resend => true,
-                _ => false,
-            };
-            if should_request {
-                new_d.insert(key.clone(), ReqStatus::Requested);
-                requested_keys.push(key.clone());
-            }
-        }
-        (Self { d: new_d }, requested_keys)
-    }
-
-    pub fn received(&self, k: Key) -> (Self, bool) {
-        let current_status = self.d.get(&k);
-        let is_valid = current_status == Some(&ReqStatus::Requested)
-            || current_status == Some(&ReqStatus::Init);
-        let new_d = if is_valid {
-            let mut updated_d = self.d.clone();
-            updated_d.insert(k, ReqStatus::Received);
-            updated_d
-        } else {
-            self.d.clone()
-        };
-        (Self { d: new_d }, is_valid)
-    }
-
-    pub fn done(&self, k: Key) -> Self {
-        let is_received = self.d.get(&k) == Some(&ReqStatus::Received);
-        if is_received {
-            let mut new_d = self.d.clone();
-            new_d.insert(k, ReqStatus::Done);
-            Self { d: new_d }
-        } else {
-            self.clone()
-        }
-    }
-
-    pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
-
-    pub fn len(&self) -> usize { self.d.len() }
-
-    pub fn is_empty(&self) -> bool { self.d.is_empty() }
-
-    pub fn done_count(&self) -> usize { self.d.values().filter(|s| **s == ReqStatus::Done).count() }
-}
+pub const MAX_IN_FLIGHT_REQUESTS: usize = 4;
 
 /// Network operations needed by the horizon requester. Decoupled from
 /// `TransportLayer` so unit tests can stub it without spinning up a
@@ -171,6 +62,25 @@ pub trait HorizonRequesterOps: Send + Sync {
         path: &StatePartPath,
         page_size: i32,
     ) -> Result<(), CasperError>;
+
+    async fn validate_horizon_chunk(
+        &self,
+        history_items: StoreItems,
+        data_items: StoreItems,
+        start_path: StatePartPath,
+        last_path: StatePartPath,
+        get_from_history: Arc<dyn RSpaceImporter>,
+    ) -> Result<ValidChunk, CasperError> {
+        validate_store_items(
+            history_items,
+            data_items,
+            start_path,
+            last_path,
+            PAGE_SIZE,
+            get_from_history,
+        )
+        .await
+    }
 }
 
 /// Per-root pagination accounting. Used to detect the "terminal cursor on
@@ -206,13 +116,21 @@ struct HorizonStreamProcessor<T: HorizonRequesterOps> {
     /// Per-root chunk-count + byte counters for byzantine-peer detection.
     root_progress: Arc<Mutex<HashMap<Blake2b256Hash, RootProgress>>>,
     request_tx: mpsc::Sender<bool>,
+    in_flight: Mutex<HashMap<StatePartPath, PathTimer>>,
+    request_timeout: Duration,
+    max_request_timeout: Duration,
+}
+
+struct PathTimer {
+    sent_at: Instant,
+    timeout: Duration,
 }
 
 impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
     async fn process_store_items_message(
         &self,
         message: StoreItemsMessage,
-    ) -> Result<(), CasperError> {
+    ) -> Result<bool, CasperError> {
         let StoreItemsMessage {
             start_path,
             last_path,
@@ -240,8 +158,12 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
         };
         if !was_known {
             tracing::debug!("LFS forward-horizon: ignoring chunk for unknown/stale path");
-            return Ok(());
+            return Ok(false);
         }
+        self.in_flight
+            .lock()
+            .expect("in_flight lock")
+            .remove(&start_path);
 
         // Find which roots this chunk's pagination chain belongs to.
         // Multiple roots may share the same cursor — the chunk's content
@@ -257,15 +179,60 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             tracing::warn!(
                 "LFS forward-horizon: received chunk for path with no root mapping; ignoring"
             );
-            return Ok(());
+            return Ok(false);
         }
 
-        // Apply items to local rspace. Radix nodes are content-addressed so
-        // the importer can validate keys against contents internally.
-        let history_count = history_items.len();
-        let data_count = data_items.len();
-        self.state_importer.set_history_items(history_items);
-        self.state_importer.set_data_items(data_items);
+        if last_path == start_path && history_items.is_empty() && data_items.is_empty() {
+            // Byzantine signal: terminal cursor on first chunk + no data
+            // means the peer doesn't have this root. Fail loud if ANY root
+            // sharing this terminal saw only an empty first chunk — that's
+            // still an unrecoverable signal even if other roots happened to
+            // have legitimate data on a prior path.
+            let progress_map = self.root_progress.lock().expect("root_progress lock");
+            for root in &roots {
+                let progress = progress_map.get(root).cloned().unwrap_or_default();
+                if progress.chunk_count == 0 {
+                    return Err(CasperError::RuntimeError(format!(
+                        "LFS forward-horizon: bootstrap signalled empty/missing root {} \
+                         (terminal cursor on first chunk)",
+                        root
+                    )));
+                }
+            }
+        }
+
+        let valid = match self
+            .request_ops
+            .validate_horizon_chunk(
+                history_items,
+                data_items,
+                start_path.clone(),
+                last_path.clone(),
+                self.state_importer.clone(),
+            )
+            .await
+        {
+            Ok(valid) => valid,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "LFS forward-horizon: rejected invalid chunk for path (length: {}); it will be requested again",
+                    start_path.len()
+                );
+                {
+                    let mut state = self.st.lock().expect("ST lock");
+                    *state = state.rejected(start_path);
+                }
+                let _ = self.request_tx.try_send(false);
+                return Ok(false);
+            }
+        };
+
+        let history_count = valid.history_items.len();
+        let data_count = valid.data_items.len();
+        let complete = valid.complete;
+        self.state_importer.set_history_items(valid.history_items);
+        self.state_importer.set_data_items(valid.data_items);
 
         // Update per-root progress for every root sharing this chunk.
         {
@@ -278,31 +245,7 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             }
         }
 
-        let is_terminal = last_path == start_path;
-
-        if is_terminal {
-            // Byzantine signal: terminal cursor on first chunk + no data
-            // means the peer doesn't have this root. Fail loud if ANY root
-            // sharing this terminal saw only an empty first chunk — that's
-            // still an unrecoverable signal even if other roots happened to
-            // have legitimate data on a prior path.
-            {
-                let progress_map = self.root_progress.lock().expect("root_progress lock");
-                for root in &roots {
-                    let progress = progress_map.get(root).cloned().unwrap_or_default();
-                    if progress.chunk_count == 1
-                        && progress.total_history == 0
-                        && progress.total_data == 0
-                    {
-                        return Err(CasperError::RuntimeError(format!(
-                            "LFS forward-horizon: bootstrap signalled empty/missing root {} \
-                             (terminal cursor on first chunk)",
-                            root
-                        )));
-                    }
-                }
-            }
-
+        if last_path == start_path || complete {
             // Record the root tag in roots_store and verify the import
             // reconstructed each expected root.
             for root in &roots {
@@ -387,37 +330,70 @@ impl<T: HorizonRequesterOps> HorizonStreamProcessor<T> {
             let _ = self.request_tx.try_send(false);
         }
 
-        Ok(())
+        Ok(true)
     }
 
     async fn request_next(&self, resend: bool) -> Result<(), CasperError> {
         // Snapshot is_finished and pull next-paths under one lock.
-        let (is_finished, paths) = {
+        let (is_finished, fresh) = {
             let mut state = self.st.lock().expect("ST lock");
             if state.is_finished() {
                 (true, Vec::new())
             } else {
-                let (new_state, paths) = state.get_next(resend);
+                let (new_state, paths) = state.get_next_bounded(false, MAX_IN_FLIGHT_REQUESTS);
                 *state = new_state;
                 (false, paths)
             }
         };
-        if is_finished || paths.is_empty() {
+        if is_finished {
             return Ok(());
         }
 
-        if resend {
+        let now = Instant::now();
+        let expired: Vec<StatePartPath> = {
+            let mut in_flight = self.in_flight.lock().expect("in_flight lock");
+            let expired = if resend {
+                in_flight
+                    .iter_mut()
+                    .filter(|(_, timer)| now.duration_since(timer.sent_at) >= timer.timeout)
+                    .map(|(path, timer)| {
+                        timer.sent_at = now;
+                        timer.timeout = timer
+                            .timeout
+                            .saturating_mul(2)
+                            .min(self.max_request_timeout);
+                        path.clone()
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            for path in &fresh {
+                in_flight.insert(path.clone(), PathTimer {
+                    sent_at: now,
+                    timeout: self.request_timeout,
+                });
+            }
+            expired
+        };
+        if fresh.is_empty() && expired.is_empty() {
+            return Ok(());
+        }
+
+        if !expired.is_empty() {
             tracing::info!(
-                "LFS forward-horizon: resending {} pending chunk requests",
-                paths.len()
+                "LFS forward-horizon: resending {} chunk request(s) with no response within their timeout",
+                expired.len()
             );
-        } else {
+        }
+        if !fresh.is_empty() {
             tracing::debug!(
                 "LFS forward-horizon: dispatching {} chunk requests in parallel",
-                paths.len()
+                fresh.len()
             );
         }
 
+        let paths: Vec<StatePartPath> = expired.into_iter().chain(fresh).collect();
         let request_futures: Vec<_> = paths
             .iter()
             .map(|path| async move {
@@ -528,6 +504,8 @@ pub async fn stream<T: HorizonRequesterOps>(
     // below. async_stream! yields ST snapshots only.
     let last_error: Arc<Mutex<Option<CasperError>>> = Arc::new(Mutex::new(None));
 
+    let max_request_timeout = crate::rust::engine::lfs_block_requester::LFS_MAX_REQUEST_TIMEOUT;
+
     let processor = Arc::new(HorizonStreamProcessor {
         request_ops,
         has_root,
@@ -537,6 +515,9 @@ pub async fn stream<T: HorizonRequesterOps>(
         path_to_root,
         root_progress,
         request_tx: request_tx.clone(),
+        in_flight: Mutex::new(HashMap::new()),
+        request_timeout,
+        max_request_timeout,
     });
 
     // Empty-input shortcut: yield a finished ST and exit so callers see
@@ -555,8 +536,6 @@ pub async fn stream<T: HorizonRequesterOps>(
         })?;
     }
 
-    let max_request_timeout = crate::rust::engine::lfs_block_requester::LFS_MAX_REQUEST_TIMEOUT;
-
     let stream = async_stream::stream! {
         if nothing_to_do {
             let final_state = st_for_stream.lock().expect("ST lock").clone();
@@ -564,10 +543,11 @@ pub async fn stream<T: HorizonRequesterOps>(
             return;
         }
 
-        let mut current_timeout = request_timeout;
-        let mut idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
+        let mut resend_tick =
+            tokio::time::interval_at(tokio::time::Instant::now() + request_timeout, request_timeout);
+        resend_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut no_progress_deadline = Box::pin(tokio::time::sleep(overall_deadline));
         let mut last_progress = std::time::Instant::now();
-        let mut last_done: usize = 0;
         let outstanding_roots =
             || roots_pending_for_stream.lock().expect("roots_pending lock").len();
 
@@ -577,21 +557,39 @@ pub async fn stream<T: HorizonRequesterOps>(
                 // we don't starve the demux while issuing more sends.
                 biased;
 
+                _ = &mut no_progress_deadline => {
+                    tracing::error!(
+                        "LFS forward-horizon: no progress for {:?} (deadline {:?}); giving up",
+                        last_progress.elapsed(),
+                        overall_deadline
+                    );
+                    *last_error_for_stream.lock().expect("last_error lock") =
+                        Some(CasperError::RuntimeError(format!(
+                            "LFS forward-horizon: peer made no progress within {:?}",
+                            overall_deadline
+                        )));
+                    break;
+                }
+
                 Some(message) = store_items_message_receiver.recv() => {
-                    if let Err(e) = processor.process_store_items_message(message).await {
-                        tracing::error!(error = ?e, "LFS forward-horizon store items processing failed; terminating stream");
-                        *last_error_for_stream.lock().expect("last_error lock") = Some(e);
-                        break;
-                    }
+                    let imported = match processor.process_store_items_message(message).await {
+                        Ok(imported) => imported,
+                        Err(e) => {
+                            tracing::error!(error = ?e, "LFS forward-horizon store items processing failed; terminating stream");
+                            *last_error_for_stream.lock().expect("last_error lock") = Some(e);
+                            break;
+                        }
+                    };
 
                     let current_state = st_for_stream
                         .lock()
                         .expect("ST lock")
                         .clone();
-                    let done = current_state.done_count();
-                    if done > last_done {
-                        last_done = done;
+                    if imported {
                         last_progress = std::time::Instant::now();
+                        no_progress_deadline
+                            .as_mut()
+                            .reset(tokio::time::Instant::now() + overall_deadline);
                     }
                     let is_finished = current_state.is_finished();
 
@@ -628,9 +626,6 @@ pub async fn stream<T: HorizonRequesterOps>(
                         break;
                     }
 
-                    // Activity = reset backoff.
-                    current_timeout = request_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
                     yield current_state;
                 }
 
@@ -646,8 +641,6 @@ pub async fn stream<T: HorizonRequesterOps>(
                                 break;
                             }
 
-                            current_timeout = request_timeout;
-                            idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
                             yield current_state;
                         }
                         Err(e) => {
@@ -656,33 +649,19 @@ pub async fn stream<T: HorizonRequesterOps>(
                     }
                 }
 
-                _ = &mut idle_timeout => {
+                _ = resend_tick.tick() => {
                     let stalled_for = last_progress.elapsed();
-                    if stalled_for >= overall_deadline {
-                        tracing::error!(
-                            "LFS forward-horizon: no progress for {:?} (deadline {:?}); giving up",
-                            stalled_for,
-                            overall_deadline
+                    if stalled_for >= request_timeout {
+                        tracing::warn!(
+                            "LFS forward-horizon: no imported chunk for {:?} of {:?}",
+                            stalled_for, overall_deadline
                         );
-                        *last_error_for_stream.lock().expect("last_error lock") =
-                            Some(CasperError::RuntimeError(format!(
-                                "LFS forward-horizon: peer made no progress within {:?}",
-                                overall_deadline
-                            )));
-                        break;
                     }
-                    let next_timeout = current_timeout.saturating_mul(2).min(max_request_timeout);
-                    tracing::warn!(
-                        "LFS forward-horizon: no responses for {:?}; resending (stalled {:?} of {:?}). backoff -> {:?}",
-                        current_timeout, stalled_for, overall_deadline, next_timeout
-                    );
                     if request_tx.try_send(true).is_err() {
                         tracing::warn!(
                             "LFS forward-horizon: request queue full on resend trigger"
                         );
                     }
-                    current_timeout = next_timeout;
-                    idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
                 }
             }
         }
@@ -776,6 +755,27 @@ mod tests {
         let (st, _) = st.get_next(false); // 1 -> Requested
         let (_, batch) = st.get_next(true); // resend: pick Requested again
         assert_eq!(batch, vec![1]);
+    }
+
+    #[test]
+    fn st_get_next_bounded_keeps_at_most_limit_requested() {
+        let st: ST<i32> = ST::new((1..=10).collect());
+        let (st, first) = st.get_next_bounded(false, 3);
+        assert_eq!(first.len(), 3);
+        let (st, none) = st.get_next_bounded(false, 3);
+        assert!(none.is_empty());
+
+        let (st, _) = st.received(first[0]);
+        let (st, next) = st.get_next_bounded(false, 3);
+        assert_eq!(next.len(), 1);
+        assert!(!first.contains(&next[0]));
+
+        let (_, resent) = st.get_next_bounded(true, 3);
+        let mut resent = resent;
+        resent.sort();
+        let mut expected = vec![first[1], first[2], next[0]];
+        expected.sort();
+        assert_eq!(resent, expected);
     }
 
     #[test]
@@ -936,6 +936,21 @@ mod tests {
             // is what unblocks the next request cycle.
             Ok(())
         }
+
+        async fn validate_horizon_chunk(
+            &self,
+            history_items: StoreItems,
+            data_items: StoreItems,
+            _start_path: StatePartPath,
+            _last_path: StatePartPath,
+            _get_from_history: Arc<dyn RSpaceImporter>,
+        ) -> Result<ValidChunk, CasperError> {
+            Ok(ValidChunk {
+                history_items,
+                data_items,
+                complete: false,
+            })
+        }
     }
 
     fn hash_for(seed: u8) -> Blake2b256Hash {
@@ -1089,6 +1104,67 @@ mod tests {
              finish. Roots synced: {:?}",
             synced.len()
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_walk_over_finished_cursors_holds_off_the_deadline() {
+        let first = hash_for(1);
+        let second = hash_for(2);
+        let cursors: Vec<StatePartPath> =
+            (3..6).map(|seed| vec![(hash_for(seed), Some(0))]).collect();
+        let chain = |start: StatePartPath| {
+            let mut paths = vec![start];
+            paths.extend(cursors.iter().cloned());
+            let last = paths.last().unwrap().clone();
+            let mut chunks: Vec<StoreItemsMessage> = paths
+                .windows(2)
+                .map(|pair| make_response(pair[0].clone(), pair[1].clone(), Some(hash_for(9))))
+                .collect();
+            chunks.push(make_response(last.clone(), last, Some(hash_for(9))));
+            chunks
+        };
+        let first_chain = chain(vec![(first.clone(), None)]);
+        let second_chain = chain(vec![(second.clone(), None)]);
+
+        let (recording, recorded) = RecordingImporter::new();
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(recording);
+        let has_root: HasRootFn = {
+            let recorded = recorded.clone();
+            Arc::new(move |query| Ok(recorded.lock().unwrap().contains(query)))
+        };
+        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(16);
+        let feeder = tokio::spawn(async move {
+            for chunk in first_chain {
+                let _ = tx.send(chunk).await;
+            }
+            for chunk in second_chain {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                let _ = tx.send(chunk).await;
+            }
+            tx
+        });
+
+        let (stream, last_error) = stream(
+            vec![first.clone(), second.clone()],
+            has_root,
+            importer,
+            MockOps::new(),
+            rx,
+            Duration::from_secs(5),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        let final_state = drain(stream).await;
+        let _tx = feeder.await.unwrap();
+
+        assert!(
+            last_error.lock().unwrap().is_none(),
+            "the deadline fired while chunks were imported: {:?}",
+            last_error.lock().unwrap()
+        );
+        assert!(final_state.expect("a final state").is_finished());
+        assert!(recorded.lock().unwrap().contains(&second));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1308,6 +1384,147 @@ mod tests {
             "orchestrator must dispatch all 4 root requests in parallel; \
              max_in_flight={}",
             observed
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_keeps_at_most_max_in_flight_requests_outstanding() {
+        let roots: Vec<Blake2b256Hash> = (1..=100u8).map(hash_for).collect();
+        let (recording, recorded) = RecordingImporter::new();
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(recording);
+        let has_root: HasRootFn = {
+            let recorded = recorded.clone();
+            Arc::new(move |query| Ok(recorded.lock().unwrap().contains(query)))
+        };
+        let ops = MockOps::new();
+        let (sends, _) = ops.handles();
+        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(256);
+
+        let (stream, _) = stream(
+            roots.clone(),
+            has_root,
+            importer,
+            ops,
+            rx,
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap();
+        let mut stream = Box::pin(stream);
+
+        let mut answered = 0usize;
+        let mut max_outstanding = 0usize;
+        let mut last = None;
+        while let Some(st) = stream.next().await {
+            let sent: Vec<StatePartPath> = sends.lock().unwrap().clone();
+            max_outstanding = max_outstanding.max(sent.len() - answered);
+            for path in &sent[answered..] {
+                tx.send(make_response(path.clone(), path.clone(), Some(hash_for(0))))
+                    .await
+                    .unwrap();
+            }
+            answered = sent.len();
+            last = Some(st);
+        }
+
+        assert!(
+            max_outstanding <= MAX_IN_FLIGHT_REQUESTS,
+            "at most {} requests may be outstanding, observed {}",
+            MAX_IN_FLIGHT_REQUESTS,
+            max_outstanding
+        );
+        assert!(last.expect("stream yields a final state").is_finished());
+        assert_eq!(recorded.lock().unwrap().len(), roots.len());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lost_response_is_resent_with_backoff_while_other_roots_progress() {
+        const STEPS: u8 = 40;
+        let walking = hash_for(1);
+        let lost = hash_for(2);
+        let lost_path: StatePartPath = vec![(lost.clone(), None)];
+        let (recording, recorded) = RecordingImporter::new();
+        let importer: Arc<dyn RSpaceImporter> = Arc::new(recording);
+        let has_root: HasRootFn = {
+            let recorded = recorded.clone();
+            Arc::new(move |query| Ok(recorded.lock().unwrap().contains(query)))
+        };
+        let ops = MockOps::new();
+        let (sends, _) = ops.handles();
+        let (tx, rx) = test_mpsc::channel::<StoreItemsMessage>(256);
+
+        let (stream, _) = stream(
+            vec![walking.clone(), lost.clone()],
+            has_root,
+            importer,
+            ops,
+            rx,
+            Duration::from_millis(50),
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap();
+
+        let responder = {
+            let sends = sends.clone();
+            let recorded = recorded.clone();
+            let walking = walking.clone();
+            let lost_path = lost_path.clone();
+            tokio::spawn(async move {
+                let mut seen = 0usize;
+                loop {
+                    let sent: Vec<StatePartPath> = sends.lock().unwrap().clone();
+                    for path in &sent[seen..] {
+                        if path[0].0 != walking {
+                            continue;
+                        }
+                        let step = path[0].1.map_or(0, |i| i);
+                        let next = if step == STEPS {
+                            path.clone()
+                        } else {
+                            vec![(walking.clone(), Some(step + 1))]
+                        };
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        let _ = tx
+                            .send(make_response(path.clone(), next, Some(hash_for(0))))
+                            .await;
+                    }
+                    seen = sent.len();
+                    if recorded.lock().unwrap().contains(&walking) {
+                        let lost_sends = sent.iter().filter(|p| **p == lost_path).count();
+                        let _ = tx
+                            .send(make_response(
+                                lost_path.clone(),
+                                lost_path.clone(),
+                                Some(hash_for(0)),
+                            ))
+                            .await;
+                        return lost_sends;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+        };
+
+        let final_st = tokio::time::timeout(Duration::from_secs(20), drain(stream))
+            .await
+            .expect("the sync ends")
+            .expect("stream yields a final state");
+        let lost_sends = responder.await.unwrap();
+
+        assert!(final_st.is_finished());
+        assert!(recorded.lock().unwrap().contains(&lost));
+        assert!(
+            lost_sends >= 2,
+            "a path with no response must be resent while other roots import chunks; sent {} time(s)",
+            lost_sends
+        );
+        assert!(
+            lost_sends <= 10,
+            "resends of one path must back off; sent {} times while one root walked {} chunks",
+            lost_sends,
+            STEPS
         );
     }
 

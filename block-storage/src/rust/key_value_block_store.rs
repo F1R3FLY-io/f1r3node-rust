@@ -13,6 +13,10 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::soak_snapshot::SnapshotError;
 
+use crate::rust::pending_blocks::{
+    PendingBlockLimits, PendingBlocks, PendingClass, PendingInsert, PendingOutcome,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockDecodeLimits {
     pub max_compressed_bytes: usize,
@@ -50,6 +54,7 @@ pub struct KeyValueBlockStore {
     store: Arc<dyn KeyValueStore>,
     store_approved_block: Arc<dyn KeyValueStore>,
     approved_block_key: [u8; 1],
+    pending: Arc<PendingBlocks>,
 }
 
 thread_local! {
@@ -68,10 +73,19 @@ impl KeyValueBlockStore {
         store: Arc<dyn KeyValueStore>,
         store_approved_block: Arc<dyn KeyValueStore>,
     ) -> Self {
+        Self::with_pending_limits(store, store_approved_block, PendingBlockLimits::default())
+    }
+
+    pub fn with_pending_limits(
+        store: Arc<dyn KeyValueStore>,
+        store_approved_block: Arc<dyn KeyValueStore>,
+        pending_limits: PendingBlockLimits,
+    ) -> Self {
         Self {
             store,
             store_approved_block,
             approved_block_key: [42],
+            pending: Arc::new(PendingBlocks::new(pending_limits)),
         }
     }
 
@@ -92,7 +106,7 @@ impl KeyValueBlockStore {
     pub fn get(&self, block_hash: &BlockHash) -> Result<Option<BlockMessage>, KvStoreError> {
         let bytes = self.store.get_one(&block_hash.to_vec())?;
         if bytes.is_none() {
-            return Ok(None);
+            return Ok(self.pending.get(block_hash));
         }
         let bytes = bytes.unwrap();
         let block_proto = Self::bytes_to_block_proto(&bytes)?;
@@ -263,11 +277,86 @@ impl KeyValueBlockStore {
     pub fn put(&self, block_hash: BlockHash, block: &BlockMessage) -> Result<(), KvStoreError> {
         let block_proto = block.to_proto();
         let bytes = Self::block_proto_to_bytes(&block_proto);
-        self.store.put_one(block_hash.to_vec(), bytes)
+        self.store.put_one(block_hash.to_vec(), bytes)?;
+        self.pending.remove(&block_hash);
+        Ok(())
     }
 
     pub fn put_block_message(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
         self.put(block.block_hash.clone(), block)
+    }
+
+    pub fn put_pending(
+        &self,
+        block: &BlockMessage,
+        solicited: bool,
+    ) -> Result<PendingOutcome, KvStoreError> {
+        let class = if solicited {
+            PendingClass::Solicited
+        } else {
+            PendingClass::Unsolicited
+        };
+        self.put_pending_as(block, class)
+    }
+
+    pub fn put_pending_as(
+        &self,
+        block: &BlockMessage,
+        class: PendingClass,
+    ) -> Result<PendingOutcome, KvStoreError> {
+        if self.disk_contains(&block.block_hash)? {
+            return Ok(PendingOutcome {
+                status: PendingInsert::Accepted,
+                evicted: Vec::new(),
+            });
+        }
+        let outcome = self.pending.insert_as(block, class);
+        if self.disk_contains(&block.block_hash)? {
+            self.pending.remove(&block.block_hash);
+        }
+        Ok(outcome)
+    }
+
+    pub fn persist_block(&self, block: &BlockMessage) -> Result<(), KvStoreError> {
+        if self.disk_contains(&block.block_hash)? {
+            self.pending.remove(&block.block_hash);
+            return Ok(());
+        }
+        self.put(block.block_hash.clone(), block)
+    }
+
+    pub fn discard_pending(&self, block_hash: &BlockHash) -> bool {
+        self.pending.remove(block_hash)
+    }
+
+    pub fn discard_copy(&self, block: &BlockMessage) -> Result<bool, KvStoreError> {
+        let key = block.block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(self.pending.get(&block.block_hash).as_ref() == Some(block)
+                && self.pending.remove(&block.block_hash));
+        };
+        let stored = BlockMessage::from_proto(Self::bytes_to_block_proto(&bytes)?).ok();
+        if stored.as_ref() != Some(block) {
+            return Ok(false);
+        }
+        self.store.delete_if_value(&key, &bytes)
+    }
+
+    pub fn is_pending(&self, block_hash: &BlockHash) -> bool { self.pending.contains(block_hash) }
+
+    pub fn pending_blocks(&self) -> &PendingBlocks { &self.pending }
+
+    pub fn set_pending_limits(&self, limits: PendingBlockLimits) -> Vec<BlockHash> {
+        self.pending.set_limits(limits)
+    }
+
+    fn disk_contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        Ok(self
+            .store
+            .contains(&vec![block_hash.to_vec()])?
+            .first()
+            .copied()
+            .unwrap_or(false))
     }
 
     pub fn contains(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
@@ -283,12 +372,7 @@ impl KeyValueBlockStore {
     /// The cheap availability probe for callers revalidating cached
     /// per-block facts against THIS store.
     pub fn contains_key(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
-        Ok(self
-            .store
-            .contains(&vec![block_hash.to_vec()])?
-            .first()
-            .copied()
-            .unwrap_or(false))
+        Ok(self.disk_contains(block_hash)? || self.pending.contains(block_hash))
     }
 
     fn error_approved_block(cause: String) -> String {
@@ -1207,6 +1291,122 @@ mod tests {
             bs.deploy_sigs(&block.block_hash),
             Err(KvStoreError::SerializationError(_))
         ));
+    }
+
+    fn in_mem_store() -> (KeyValueBlockStore, Arc<dyn KeyValueStore>) {
+        let disk: Arc<dyn KeyValueStore> = Arc::new(
+            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+        );
+        let approved: Arc<dyn KeyValueStore> = Arc::new(
+            rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
+        );
+        (KeyValueBlockStore::new(disk.clone(), approved), disk)
+    }
+
+    #[test]
+    fn pending_block_is_readable_but_not_written_to_disk() {
+        let (bs, disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        let hash = block.block_hash.clone();
+
+        assert_eq!(
+            bs.put_pending(&block, false).unwrap().status,
+            PendingInsert::Accepted
+        );
+
+        assert!(disk.get_one(&hash.to_vec()).unwrap().is_none());
+        assert_eq!(bs.get(&hash).unwrap(), Some(block.clone()));
+        assert!(bs.contains(&hash).unwrap());
+        assert!(bs.contains_key(&hash).unwrap());
+        assert!(bs.is_pending(&hash));
+        assert!(bs.clone().is_pending(&hash));
+    }
+
+    #[test]
+    fn persist_block_moves_a_pending_block_to_disk() {
+        let (bs, disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        let hash = block.block_hash.clone();
+        bs.put_pending(&block, true).unwrap();
+
+        bs.persist_block(&block).unwrap();
+
+        assert!(disk.get_one(&hash.to_vec()).unwrap().is_some());
+        assert!(!bs.is_pending(&hash));
+        assert_eq!(bs.get(&hash).unwrap(), Some(block.clone()));
+        bs.persist_block(&block).unwrap();
+        assert_eq!(bs.get(&hash).unwrap(), Some(block));
+    }
+
+    #[test]
+    fn persist_block_writes_a_block_that_the_pending_area_evicted() {
+        let (bs, disk) = in_mem_store();
+        bs.set_pending_limits(PendingBlockLimits {
+            max_blocks: 1,
+            max_bytes: usize::MAX,
+            max_per_sender: 10,
+        });
+        let evicted = models::rust::block_implicits::get_random_block_default();
+        let mut newer = evicted.clone();
+        newer.block_hash = prost::bytes::Bytes::from(vec![9u8; 32]);
+        bs.put_pending(&evicted, false).unwrap();
+        let outcome = bs.put_pending(&newer, false).unwrap();
+        assert_eq!(outcome.evicted, vec![evicted.block_hash.clone()]);
+        assert!(bs.get(&evicted.block_hash).unwrap().is_none());
+
+        bs.persist_block(&evicted).unwrap();
+
+        assert!(disk
+            .get_one(&evicted.block_hash.to_vec())
+            .unwrap()
+            .is_some());
+        assert_eq!(bs.get(&evicted.block_hash).unwrap(), Some(evicted));
+    }
+
+    #[test]
+    fn put_and_discard_clear_the_pending_entry() {
+        let (bs, disk) = in_mem_store();
+        let stored = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&stored, false).unwrap();
+        bs.put_block_message(&stored).unwrap();
+        assert!(!bs.is_pending(&stored.block_hash));
+        assert!(disk.get_one(&stored.block_hash.to_vec()).unwrap().is_some());
+
+        let dropped = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&dropped, false).unwrap();
+        assert!(bs.discard_pending(&dropped.block_hash));
+        assert!(bs.get(&dropped.block_hash).unwrap().is_none());
+        assert!(!bs.contains_key(&dropped.block_hash).unwrap());
+    }
+
+    #[test]
+    fn a_block_already_on_disk_is_not_held_as_pending() {
+        let (bs, _disk) = in_mem_store();
+        let block = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&block).unwrap();
+        assert_eq!(
+            bs.put_pending(&block, false).unwrap().status,
+            PendingInsert::Accepted
+        );
+        assert!(!bs.is_pending(&block.block_hash));
+    }
+
+    #[test]
+    fn discard_copy_removes_only_the_matching_body() {
+        let (bs, _disk) = in_mem_store();
+        let stored = models::rust::block_implicits::get_random_block_default();
+        bs.put_block_message(&stored).unwrap();
+        let mut other = stored.clone();
+        other.seq_num += 1;
+        assert!(!bs.discard_copy(&other).unwrap());
+        assert_eq!(bs.get(&stored.block_hash).unwrap(), Some(stored.clone()));
+        assert!(bs.discard_copy(&stored).unwrap());
+        assert_eq!(bs.get(&stored.block_hash).unwrap(), None);
+
+        let pending = models::rust::block_implicits::get_random_block_default();
+        bs.put_pending(&pending, false).unwrap();
+        assert!(bs.discard_copy(&pending).unwrap());
+        assert!(!bs.is_pending(&pending.block_hash));
     }
 }
 

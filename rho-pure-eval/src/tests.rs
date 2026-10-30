@@ -483,3 +483,29 @@ fn determinism_same_input_same_output() {
     let r2 = eval(&expr, &env).unwrap();
     assert_eq!(r1, r2);
 }
+
+#[test]
+fn extended_matches_sequential_puts() {
+    let seed: Env<Par> = Env::new().put(gint(100)).put(gint(200));
+    let bindings = vec![gint(1), gint(2), gint(3), gint(4), gint(5)];
+
+    let via_put = bindings
+        .clone()
+        .into_iter()
+        .fold(seed.clone(), |env, b| env.put(b));
+    let via_extended = seed.extended(bindings.clone());
+
+    for k in 0..(via_put.level()) {
+        assert_eq!(via_put.get(&k), via_extended.get(&k));
+    }
+    assert_eq!(via_put.level(), via_extended.level());
+    assert_eq!(via_put.shift, via_extended.shift);
+}
+
+#[test]
+fn extended_preserves_shift() {
+    let seed: Env<Par> = Env::new().put(gint(1)).shift(7);
+    let out = seed.extended([gint(2), gint(3)]);
+    assert_eq!(out.shift, 7);
+    assert_eq!(out.level(), 3);
+}
