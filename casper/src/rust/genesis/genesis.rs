@@ -19,6 +19,7 @@ use super::contracts::vault::Vault;
 use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Genesis {
@@ -86,6 +87,34 @@ impl Genesis {
         fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
         consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Vec<Signed<DeployData>> {
+        Self::default_blessed_terms_with_timestamp_policy(
+            timestamp,
+            pos_params,
+            vaults,
+            supply,
+            shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            fs_bundle,
+            consensus_fs_snapshot_cadence,
+            None,
+        )
+    }
+
+    pub fn default_blessed_terms_with_timestamp_policy(
+        timestamp: i64,
+        pos_params: &ProofOfStake,
+        vaults: &Vec<Vault>,
+        supply: i64,
+        shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
+        fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
+        consensus_fs_snapshot_cadence: Option<u64>,
+        resource_policy: Option<&ShardResourcePolicy>,
+    ) -> Vec<Signed<DeployData>> {
         // Splits initial vaults creation in multiple deploys (batches)
         const BATCH_SIZE: usize = 100;
 
@@ -125,11 +154,12 @@ impl Genesis {
         let system_vault = standard_deploys::system_vault(shard_id);
         let multi_sig_system_vault = standard_deploys::multi_sig_system_vault(shard_id);
         let stack = standard_deploys::stack(shard_id);
-        let token_metadata = standard_deploys::token_metadata(
+        let token_metadata = standard_deploys::token_metadata_with_policy(
             native_token_name,
             native_token_symbol,
             native_token_decimals,
             shard_id,
+            resource_policy,
         );
         let pos_generator = standard_deploys::pos_generator(pos_params, shard_id);
         // File I/O FIP MVP: shared-Fs model with empty static bundle +
@@ -179,9 +209,35 @@ impl Genesis {
         fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
         consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Vec<Signed<DeployData>> {
+        Self::default_blessed_terms_with_policy(
+            pos_params,
+            vaults,
+            supply,
+            shard_id,
+            native_token_name,
+            native_token_symbol,
+            native_token_decimals,
+            fs_bundle,
+            consensus_fs_snapshot_cadence,
+            None,
+        )
+    }
+
+    pub fn default_blessed_terms_with_policy(
+        pos_params: &ProofOfStake,
+        vaults: &Vec<Vault>,
+        supply: i64,
+        shard_id: &str,
+        native_token_name: &str,
+        native_token_symbol: &str,
+        native_token_decimals: u32,
+        fs_bundle: &[super::contracts::fs_genesis::BundleEntry],
+        consensus_fs_snapshot_cadence: Option<u64>,
+        resource_policy: Option<&ShardResourcePolicy>,
+    ) -> Vec<Signed<DeployData>> {
         // Use hardcoded timestamp for backwards compatibility
         const BASE_TIMESTAMP: i64 = 1565818101792;
-        Self::default_blessed_terms_with_timestamp(
+        Self::default_blessed_terms_with_timestamp_policy(
             BASE_TIMESTAMP,
             pos_params,
             vaults,
@@ -192,6 +248,7 @@ impl Genesis {
             native_token_decimals,
             fs_bundle,
             consensus_fs_snapshot_cadence,
+            resource_policy,
         )
     }
 
@@ -199,7 +256,28 @@ impl Genesis {
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
-        let blessed_terms = Self::default_blessed_terms(
+        Self::create_genesis_block_with_policy(runtime_manager, genesis, None).await
+    }
+
+    pub async fn create_genesis_block_with_policy(
+        runtime_manager: &RuntimeManager,
+        genesis: &Genesis,
+        resource_policy: Option<&ShardResourcePolicy>,
+    ) -> Result<BlockMessage, CasperError> {
+        if let Some(policy) = resource_policy {
+            if genesis.version != PROTOCOL_V6 {
+                return Err(CasperError::RuntimeError(format!(
+                    "a shard resource policy needs a protocol {PROTOCOL_V6} genesis, not version {}",
+                    genesis.version
+                )));
+            }
+            policy.check().map_err(CasperError::RuntimeError)?;
+        } else if genesis.version == PROTOCOL_V6 {
+            return Err(CasperError::RuntimeError(format!(
+                "a protocol {PROTOCOL_V6} genesis needs a shard resource policy"
+            )));
+        }
+        let blessed_terms = Self::default_blessed_terms_with_policy(
             &genesis.proof_of_stake,
             &genesis.vaults,
             genesis.supply,
@@ -209,6 +287,7 @@ impl Genesis {
             genesis.native_token_decimals,
             &genesis.fs_bundle,
             genesis.consensus_fs_snapshot_cadence,
+            resource_policy,
         );
 
         let (start_hash, state_hash, processed_deploys) = runtime_manager
