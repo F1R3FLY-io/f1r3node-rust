@@ -272,6 +272,12 @@ pub mod builder {
                 node_conf.casper.deploy_lifespan,
             ));
         }
+        if node_conf.casper.v6_execution_lag_threshold == 0 {
+            return Err(eyre::eyre!(
+                "casper.v6-execution-lag-threshold must be at least 1: the execution-lag \
+                gate is part of protocol-6 backpressure and cannot be turned off"
+            ));
+        }
         if node_conf.casper.min_phlo_price < 0 {
             return Err(eyre::eyre!(
                 "casper.min-phlo-price ({}) must be non-negative",
@@ -932,6 +938,13 @@ mod embedded_defaults_tests {
             builder::validate_config(&cfg).is_err(),
             "deploy-lifespan 0 must fail startup"
         );
+
+        let mut cfg = base.clone();
+        cfg.casper.v6_execution_lag_threshold = 0;
+        let err = builder::validate_config(&cfg)
+            .expect_err("v6-execution-lag-threshold 0 must fail startup");
+        assert!(err.to_string().contains("v6-execution-lag-threshold"));
+        assert_eq!(base.casper.v6_execution_lag_threshold, 32);
 
         let mut cfg = base.clone();
         cfg.casper.min_phlo_price = -1;

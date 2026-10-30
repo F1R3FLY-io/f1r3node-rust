@@ -107,6 +107,8 @@ mod tests {
                 casper::rust::casper_conf::default_proposal_pacing_floor_distance(),
             deploy_verified_encodings_cap:
                 casper::rust::casper_conf::default_deploy_verified_encodings_cap(),
+            v6_execution_lag_threshold:
+                casper::rust::casper_conf::default_v6_execution_lag_threshold(),
         }
     }
 

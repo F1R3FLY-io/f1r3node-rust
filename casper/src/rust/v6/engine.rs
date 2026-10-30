@@ -19,6 +19,7 @@ use super::body::{Attestation, V6Body, V6Records};
 use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore};
 use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink};
 use super::executor::BlockExecutor;
+use super::lag::{Lag, LagGate, Transition};
 use super::linearizer::{Advance, Linearizer};
 use super::propose::{select_envelopes, SelectionContext};
 use super::record::ExecutionRecord;
@@ -41,6 +42,7 @@ pub struct V6Parts<R: ExecutionRecord> {
     pub store: Option<Box<dyn RecordStore<R>>>,
     pub limits: Limits,
     pub params: CoreParams,
+    pub lag_threshold: u64,
 }
 
 pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
@@ -53,6 +55,7 @@ pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
     dag_storage: BlockDagKeyValueStorage,
     deploy_storage: Arc<KeyValueDeployStorage>,
     limits: Limits,
+    lag_gate: LagGate,
     anchor: (BlockHash, i64),
     wake: tokio::sync::Notify,
     started: AtomicBool,
@@ -65,6 +68,7 @@ impl V6Engine<BlockRecord> {
         block_store: KeyValueBlockStore,
         dag_storage: BlockDagKeyValueStorage,
         deploy_storage: Arc<KeyValueDeployStorage>,
+        lag_threshold: u64,
     ) -> Result<Arc<Self>, CasperError> {
         let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
             dag_storage.v6_executor_state(),
@@ -95,6 +99,7 @@ impl V6Engine<BlockRecord> {
             store: Some(Box::new(store)),
             limits: ShardResourcePolicy::default().limits(),
             params: CoreParams::default(),
+            lag_threshold,
         };
         Ok(Self::with_parts(
             genesis,
@@ -121,6 +126,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             store,
             limits,
             params,
+            lag_threshold,
         } = parts;
         let store = store.unwrap_or_else(|| {
             Box::new(MemoryRecordStore::new(
@@ -146,6 +152,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             dag_storage,
             deploy_storage,
             limits,
+            lag_gate: LagGate::new(lag_threshold),
             anchor: (genesis.block_hash.clone(), genesis.body.state.block_number),
             wake: tokio::sync::Notify::new(),
             started: AtomicBool::new(false),
@@ -195,6 +202,40 @@ impl<R: ExecutionRecord> V6Engine<R> {
     }
 
     pub fn canonical_len(&self) -> usize { self.core.lock().canonical_len() }
+
+    pub fn lag_gate_engaged(&self) -> bool { self.lag_gate.engaged() }
+
+    fn admits_envelopes(&self, snapshot: &CasperSnapshot, attestation: &Attestation) -> bool {
+        let lfb = snapshot.dag.last_finalized_block();
+        let lag = Lag::measure(
+            snapshot.dag.block_number(&lfb),
+            snapshot.dag.block_number(&attestation.block_hash),
+        );
+        let (admits, transition) = self.lag_gate.admits(lag);
+        let threshold = self.lag_gate.threshold();
+        match (lag, transition) {
+            (Lag::Unknown, _) => tracing::warn!(
+                target: "f1r3fly.v6",
+                lfb = %hex::encode(&lfb),
+                executed = %hex::encode(&attestation.block_hash),
+                "execution lag is unknown; this proposal carries no envelopes"
+            ),
+            (Lag::Blocks(blocks), Transition::Engaged) => tracing::warn!(
+                target: "f1r3fly.v6",
+                lag = blocks,
+                threshold,
+                "execution-lag gate engaged: proposals carry no envelopes until execution catches up"
+            ),
+            (Lag::Blocks(blocks), Transition::Released) => tracing::info!(
+                target: "f1r3fly.v6",
+                lag = blocks,
+                threshold,
+                "execution-lag gate released: proposals carry envelopes again"
+            ),
+            _ => {}
+        }
+        admits
+    }
 
     pub fn check_block(
         &self,
@@ -361,20 +402,24 @@ impl<R: ExecutionRecord> V6Engine<R> {
             })
             .collect();
 
-        let pool = self.deploy_storage.read_all()?;
-        let in_scope = |sig: &Bytes| snapshot.deploys_in_scope.contains(sig);
-        let envelopes: Vec<ProcessedDeploy> = select_envelopes(pool, &SelectionContext {
-            next_block_number,
-            deploy_lifespan: conf.deploy_lifespan,
-            now_millis,
-            shard_id: &conf.shard_name,
-            min_phlo_price: conf.min_phlo_price,
-            in_scope: &in_scope,
-            limits: &self.limits,
-        })
-        .into_iter()
-        .map(ProcessedDeploy::empty)
-        .collect();
+        let envelopes: Vec<ProcessedDeploy> = if self.admits_envelopes(snapshot, &attestation) {
+            let pool = self.deploy_storage.read_all()?;
+            let in_scope = |sig: &Bytes| snapshot.deploys_in_scope.contains(sig);
+            select_envelopes(pool, &SelectionContext {
+                next_block_number,
+                deploy_lifespan: conf.deploy_lifespan,
+                now_millis,
+                shard_id: &conf.shard_name,
+                min_phlo_price: conf.min_phlo_price,
+                in_scope: &in_scope,
+                limits: &self.limits,
+            })
+            .into_iter()
+            .map(ProcessedDeploy::empty)
+            .collect()
+        } else {
+            Vec::new()
+        };
         if envelopes.is_empty() && records.is_empty() && !selection.allows_empty() {
             return Ok(BlockCreatorResult::NoNewDeploys);
         }
