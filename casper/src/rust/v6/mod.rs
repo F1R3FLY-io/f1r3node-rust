@@ -13,6 +13,7 @@ pub mod price;
 pub mod propose;
 pub mod resource_policy;
 pub mod run;
+pub mod settle;
 pub mod validity;
 
 pub use engine::V6Engine;

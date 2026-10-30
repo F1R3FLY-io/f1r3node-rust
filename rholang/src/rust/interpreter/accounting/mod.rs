@@ -5,6 +5,7 @@ use costs::Cost;
 
 use super::errors::InterpreterError;
 
+pub mod comm_ledger;
 pub mod cost_accounting;
 pub mod costs;
 pub mod has_cost;
@@ -20,6 +21,7 @@ pub struct CostManager {
     state: Arc<Mutex<Cost>>,
     log: Arc<Mutex<VecDeque<Cost>>>,
     max_log_entries: usize,
+    comms: comm_ledger::CommLedger,
 }
 
 impl CostManager {
@@ -39,6 +41,7 @@ impl CostManager {
             state: Arc::new(Mutex::new(initial_value)),
             log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
             max_log_entries,
+            comms: comm_ledger::CommLedger::default(),
         }
     }
 
@@ -83,4 +86,8 @@ impl CostManager {
     pub fn get_log(&self) -> Vec<Cost> { self.log.lock().unwrap().iter().cloned().collect() }
 
     pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
+
+    pub fn record_comm(&self) { self.comms.on_comm(); }
+
+    pub fn comm_ledger(&self) -> &comm_ledger::CommLedger { &self.comms }
 }

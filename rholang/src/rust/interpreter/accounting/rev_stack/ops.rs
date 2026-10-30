@@ -51,6 +51,8 @@ impl RevStacks {
         Self::new(Arc::new(HotStoreCells(store)))
     }
 
+    pub fn cells(&self) -> &dyn CellStore { self.store.as_ref() }
+
     pub fn deposit(&self, owner: &WalletOwner, amount: RevAmount) -> Result<(), RevStackError> {
         if amount == 0 {
             return Ok(());
@@ -83,11 +85,21 @@ impl RevStacks {
         owner: &WalletOwner,
         amount: RevAmount,
     ) -> Result<RevAmount, RevStackError> {
+        self.spend_keeping(owner, amount, 0)
+    }
+
+    pub fn spend_keeping(
+        &self,
+        owner: &WalletOwner,
+        amount: RevAmount,
+        keep: RevAmount,
+    ) -> Result<RevAmount, RevStackError> {
         let (channel, id) = Self::locate(owner);
         let _guard = self.lock(&id);
         let (count, total) = self.read_cells(&channel)?;
         let remaining = total
             .checked_sub(amount)
+            .filter(|r| *r >= keep)
             .ok_or(RevStackError::InsufficientFunds {
                 balance: total,
                 requested: amount,
@@ -104,10 +116,20 @@ impl RevStacks {
         to: &WalletOwner,
         amount: RevAmount,
     ) -> Result<RevAmount, RevStackError> {
+        self.transfer_keeping(from, to, amount, 0)
+    }
+
+    pub fn transfer_keeping(
+        &self,
+        from: &WalletOwner,
+        to: &WalletOwner,
+        amount: RevAmount,
+        keep: RevAmount,
+    ) -> Result<RevAmount, RevStackError> {
         if amount == 0 || amount > MAX_AMOUNT {
             return Err(RevStackError::InvalidAmount(amount));
         }
-        let remaining = self.spend(from, amount)?;
+        let remaining = self.spend_keeping(from, amount, keep)?;
         self.deposit(to, amount)?;
         Ok(remaining)
     }

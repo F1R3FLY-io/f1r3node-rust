@@ -1,0 +1,198 @@
+use casper::rust::genesis::contracts::vault::Vault;
+use casper::rust::genesis::genesis::Genesis;
+use casper::rust::util::construct_deploy;
+use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+use casper::rust::v6::gate::{gate_block, GateInput, PhloLimitDemand, StoreReader};
+use casper::rust::v6::genesis_wallets::read_wallet_balance;
+use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
+use casper::rust::v6::run::EnvelopeRun;
+use casper::rust::v6::settle::{settle_block, Boxcar};
+use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use models::rust::block::state_hash::StateHash;
+use rholang::rust::interpreter::accounting::rev_stack::WalletOwner;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
+
+use crate::util::genesis_builder::GenesisBuilder;
+use crate::util::rholang::resources::mk_runtime_manager;
+
+struct Party {
+    sk: PrivateKey,
+    pk: PublicKey,
+    owner: WalletOwner,
+}
+
+fn party() -> Party {
+    let (sk, pk): (PrivateKey, PublicKey) = Secp256k1.new_key_pair();
+    let owner = WalletOwner::from_public_key(&pk).unwrap();
+    Party { sk, pk, owner }
+}
+
+async fn shard(funded: &[(&Party, u128)]) -> (RuntimeManager, StateHash) {
+    let rm = mk_runtime_manager("v6-settlement", Some(Genesis::default_mergeable_tags_arc())).await;
+    let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    genesis.version = PROTOCOL_V6;
+    genesis.vaults = funded
+        .iter()
+        .map(|(p, balance)| Vault {
+            vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
+            initial_balance: *balance,
+        })
+        .collect();
+    let block = Genesis::create_genesis_block_with_policy(
+        &rm,
+        &genesis,
+        Some(&ShardResourcePolicy::default()),
+    )
+    .await
+    .unwrap();
+    let root = block.body.state.post_state_hash.clone();
+    (rm, root)
+}
+
+fn input(who: &Party, ts: i64, limit: i64, price: i64) -> GateInput {
+    let deploy = construct_deploy::source_deploy(
+        "Nil".to_string(),
+        ts,
+        Some(limit),
+        Some(price),
+        Some(who.sk.clone()),
+        None,
+        Some("root".to_string()),
+    )
+    .unwrap();
+    GateInput::from_deploy(&deploy, Vec::new()).unwrap()
+}
+
+fn run(comms: u64) -> EnvelopeRun {
+    EnvelopeRun {
+        envelope_sig: Default::default(),
+        comm_phlo: comms,
+        compute_phlo: 0,
+        failed: false,
+        user_log: Vec::new(),
+        post_root: Default::default(),
+    }
+}
+
+async fn balance(rm: &RuntimeManager, root: &StateHash, who: &Party) -> u64 {
+    read_wallet_balance(rm, root, &who.owner).await.unwrap()
+}
+
+#[tokio::test]
+async fn comms_are_paid_to_the_proposer_in_the_canonical_form() {
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 50_000)]).await;
+    let inputs = vec![
+        input(&alice, 1, 1_000, 3),
+        input(&alice, 2, 1_000, 5),
+        input(&bob, 3, 1_000, 7),
+        input(&carol, 4, 1_000, 1),
+        input(&bob, 5, 4, 2),
+    ];
+    let runs = vec![run(2), run(1), run(1), run(1), run(9)];
+    let reader = StoreReader::at(&rm, &pre).await.unwrap();
+    let gate = gate_block(&reader, &PhloLimitDemand, &inputs).unwrap();
+    assert_eq!(gate.admitted(), vec![true, true, true, false, true]);
+
+    let (settlement, settled) = settle_block(
+        &rm,
+        &pre,
+        &inputs,
+        &gate.entries,
+        &runs,
+        &proposer.owner,
+        Boxcar::unbounded(),
+    )
+    .await
+    .unwrap();
+    let comm_rev = 2 * 3 + 5 + 7 + 4 * 2;
+    assert_eq!(settlement.proposer_credit, comm_rev);
+    assert!(settlement.is_balanced());
+    assert_eq!(settlement.charges.len(), 4);
+    assert_eq!(settlement.charges[3].comm_phlo, 4);
+
+    assert_eq!(balance(&rm, &settled, &alice).await, 100_000 - 11);
+    assert_eq!(balance(&rm, &settled, &bob).await, 50_000 - 15);
+    assert_eq!(balance(&rm, &settled, &carol).await, 0);
+    assert_eq!(balance(&rm, &settled, &proposer).await, comm_rev);
+    let mut total = 0;
+    for p in [&alice, &bob, &carol, &proposer] {
+        total += balance(&rm, &settled, p).await;
+    }
+    assert_eq!(total, 150_000);
+
+    let (again, settled_again) = settle_block(
+        &rm,
+        &pre,
+        &inputs,
+        &gate.entries,
+        &runs,
+        &proposer.owner,
+        Boxcar::unbounded(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again, settlement);
+    assert_eq!(settled_again, settled);
+}
+
+#[tokio::test]
+async fn the_box_car_size_never_changes_the_state() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let inputs = vec![
+        input(&alice, 1, 1_000, 3),
+        input(&bob, 2, 1_000, 2),
+        input(&alice, 3, 1_000, 1),
+    ];
+    let runs = vec![run(10), run(7), run(1)];
+    let reader = StoreReader::at(&rm, &pre).await.unwrap();
+    let gate = gate_block(&reader, &PhloLimitDemand, &inputs).unwrap();
+    let mut roots = Vec::new();
+    for boxcar in [
+        Boxcar::unbounded(),
+        Boxcar::of(1),
+        Boxcar::of(3),
+        Boxcar::of(64),
+    ] {
+        let (_, root) = settle_block(
+            &rm,
+            &pre,
+            &inputs,
+            &gate.entries,
+            &runs,
+            &proposer.owner,
+            boxcar,
+        )
+        .await
+        .unwrap();
+        roots.push(root);
+    }
+    assert!(roots.windows(2).all(|w| w[0] == w[1]));
+    assert_ne!(roots[0], pre);
+}
+
+#[tokio::test]
+async fn a_block_with_no_charge_leaves_the_state_alone() {
+    let (alice, proposer) = (party(), party());
+    let (rm, pre) = shard(&[(&alice, 100)]).await;
+    let inputs = vec![input(&alice, 1, 10, 0)];
+    let reader = StoreReader::at(&rm, &pre).await.unwrap();
+    let gate = gate_block(&reader, &PhloLimitDemand, &inputs).unwrap();
+    let (settlement, root) = settle_block(
+        &rm,
+        &pre,
+        &inputs,
+        &gate.entries,
+        &[run(5)],
+        &proposer.owner,
+        Boxcar::unbounded(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(settlement.proposer_credit, 0);
+    assert_eq!(root, pre);
+}

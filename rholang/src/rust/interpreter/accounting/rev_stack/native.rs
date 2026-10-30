@@ -8,6 +8,7 @@ use rspace_plus_plus::rspace::hot_store::HotStore;
 use super::channel::wallet_channel;
 use super::ops::RevStacks;
 use super::owner::WalletOwner;
+use super::reserve::reservation;
 use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{
     RhoBoolean, RhoDeployerId, RhoName, RhoNumber, RhoString, RhoTuple2,
@@ -24,12 +25,16 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
         "balance" => with_stacks(store, |stacks| {
             let owner = owner_of(arg)?;
             let balance = stacks.balance(&owner).map_err(|e| e.to_string())?;
-            Ok(RhoNumber::create_par(balance as i64))
+            let reserved = reservation(stacks.cells(), &owner).map_err(|e| e.to_string())?;
+            Ok(RhoNumber::create_par(balance.saturating_sub(reserved.visible) as i64))
         }),
         "transfer" => with_stacks(store, |stacks| {
             let (from, to, amount) = transfer_args(arg)?;
+            let held = reservation(stacks.cells(), &from)
+                .map_err(|e| e.to_string())?
+                .held;
             stacks
-                .transfer(&from, &to, amount)
+                .transfer_keeping(&from, &to, amount, held)
                 .map(|_| Par::default())
                 .map_err(transfer_error)
         }),
