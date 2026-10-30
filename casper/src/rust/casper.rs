@@ -125,6 +125,8 @@ pub trait Casper {
     /// Defaulted to a no-op so effect mocks need no retriever wiring.
     async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
 
+    fn v6_engine(&self) -> Option<Arc<crate::rust::v6::V6Engine>> { None }
+
     fn contains(&self, hash: &BlockHash) -> bool;
 
     fn dag_contains(&self, hash: &BlockHash) -> bool;
@@ -402,6 +404,20 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
 
     let finalized_bond_cache =
         FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
+    let deploy_storage = Arc::new(deploy_storage);
+    let v6 = if casper_shard_conf.v6_order_then_execute {
+        let engine = crate::rust::v6::V6Engine::new(
+            &approved_block,
+            runtime_manager.clone(),
+            block_store.clone(),
+            block_dag_storage.clone(),
+            deploy_storage.clone(),
+        );
+        engine.start();
+        Some(engine)
+    } else {
+        None
+    };
     let finalization = crate::rust::engine::multi_parent_casper::FinalizationContext {
         observer: Arc::new(std::sync::OnceLock::new()),
         finalized_bond_cache: finalized_bond_cache.clone(),
@@ -412,8 +428,9 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         divergence_monitor: Arc::new(
             crate::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
         ),
-        deploy_storage: Arc::new(deploy_storage),
+        deploy_storage,
         shard_conf: casper_shard_conf,
+        v6: v6.clone(),
     };
     Ok(MultiParentCasperImpl {
         observer: finalization.observer.clone(),
@@ -435,6 +452,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        v6,
     })
 }
 
@@ -576,6 +594,7 @@ pub struct CasperShardConf {
     pub enable_mergeable_channel_gc: bool,
     pub rejection_search_cap_from_height: Option<i64>,
     pub rejection_search_group_branch_cap: usize,
+    pub v6_order_then_execute: bool,
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
@@ -632,6 +651,7 @@ impl CasperShardConf {
             enable_mergeable_channel_gc: false,
             rejection_search_cap_from_height: None,
             rejection_search_group_branch_cap: REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT,
+            v6_order_then_execute: false,
             mergeable_channels_gc_depth_buffer: 10,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),

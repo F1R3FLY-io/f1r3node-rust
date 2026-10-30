@@ -127,7 +127,22 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(block_error));
     }
 
-    let (t2_opt, t3_opt) = if !skip_checkpoint_and_bonds {
+    if let Some(engine) = this.v6.as_ref() {
+        match engine.check_block(block, &snapshot.dag) {
+            Ok(body) => engine.observe_block(block, &body),
+            Err(reason) => {
+                tracing::warn!(
+                    target: "f1r3fly.v6",
+                    block = %PrettyPrinter::build_string_bytes(&block.block_hash),
+                    %reason,
+                    "v6 structural validity failed"
+                );
+                return Ok(Either::Left(BlockError::Invalid(InvalidBlock::InvalidFormat)));
+            }
+        }
+    }
+
+    let (t2_opt, t3_opt) = if !skip_checkpoint_and_bonds && this.v6.is_none() {
         // Reuse the floor derived by block_summary's fill; a deploy-less
         // block never filled it, so derive here — same frozen inputs, same
         // result, same BlockException class on failure.
@@ -316,7 +331,7 @@ async fn update_mergeable_cache_after_validation<T: TransportLayer + Send + Sync
     block: &BlockMessage,
     log_label: &str,
 ) {
-    if this.casper_shard_conf.max_number_of_parents <= 1 {
+    if this.casper_shard_conf.max_number_of_parents <= 1 || this.v6.is_some() {
         return;
     }
 
