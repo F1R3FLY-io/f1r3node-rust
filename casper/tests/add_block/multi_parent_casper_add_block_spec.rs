@@ -3,7 +3,7 @@
 use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
 use block_storage::rust::pending_blocks::PendingBlockLimits;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::blocks::block_processor::CheckedBlock;
+use casper::rust::blocks::block_processor::{CheckedBlock, OfInterestVerdict};
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
 use casper::rust::engine::block_retriever::AdmitHashReason;
@@ -687,7 +687,22 @@ async fn multi_parent_casper_should_request_an_evicted_parent_that_a_child_waits
         .unwrap()
         .contains_key(&evicted.block_hash));
 
+    let checked = CheckedBlock::check(evicted.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap();
+    assert_eq!(
+        nodes[1]
+            .block_processor
+            .check_if_of_interest(nodes[1].casper.clone(), &checked)
+            .unwrap(),
+        OfInterestVerdict::Fresh
+    );
+    let status = nodes[1].process_block(evicted.clone()).await.unwrap();
+    assert_eq!(status, Either::Left(BlockError::MissingBlocks));
+
     for block in [&chain[0], evicted] {
+        let status = nodes[1].process_block(block.clone()).await.unwrap();
+        assert_eq!(status, Either::Right(Valid));
+    }
+    for block in &chain[2..] {
         let status = nodes[1].process_block(block.clone()).await.unwrap();
         assert_eq!(status, Either::Right(Valid));
     }
