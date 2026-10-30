@@ -56,4 +56,4 @@ All 15 failures come from the test environment, not from the patches:
 
 - The P0-07 soak is not part of phase 0. It runs on an isolated host when the end-to-end branch works (M2). The soak also confirms the defaults of P0-09 and P0-10.
 - The review of D-P0-04-2 (the `bonded_status_api_test` adaptation) happens outside the agent sessions.
-- P0-12 escalation (`decisions/P0-12.md`, D-P0-12-4): where the rejection-search shard parameters live before any shard sets an activation height.
+- P0-12 (`decisions/P0-12.md`, D-P0-12-4): option 1 is accepted. Before any shard sets an activation height, decide where the rejection-search shard parameters live.
