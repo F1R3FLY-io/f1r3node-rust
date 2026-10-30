@@ -265,6 +265,35 @@ fn balance_query_term(address: &str) -> Result<String> {
     ))
 }
 
+const MAX_REGISTRY_URI_LEN: usize = 256;
+
+fn is_valid_registry_uri(uri: &str) -> bool {
+    uri.len() <= MAX_REGISTRY_URI_LEN
+        && uri
+            .strip_prefix("rho:")
+            .is_some_and(|rest| !rest.is_empty() && !rest.starts_with(':'))
+        && uri
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '-' | '_' | '@' | '/'))
+}
+
+fn registry_query_term(uri: &str) -> Result<String> {
+    if !is_valid_registry_uri(uri) {
+        return Err(eyre!("Invalid registry URI {}", uri));
+    }
+    Ok(format!(
+        r#"new return, rl(`rho:registry:lookup`), ch in {{
+  rl!(`{uri}`, *ch) |
+  for (@val <- ch) {{
+    match val {{
+      (true, data) => {{ return!(data) }}
+      (false, _)   => {{ return!("not found") }}
+    }}
+  }}
+}}"#
+    ))
+}
+
 impl WebApiImpl {
     pub fn new(
         api_max_blocks_limit: i32,
@@ -875,17 +904,7 @@ impl WebApi for WebApiImpl {
         uri: String,
         block_hash: Option<String>,
     ) -> Result<RegistryResponse> {
-        let term = format!(
-            r#"new return, rl(`rho:registry:lookup`), ch in {{
-  rl!(`{uri}`, *ch) |
-  for (@val <- ch) {{
-    match val {{
-      (true, data) => {{ return!(data) }}
-      (false, _)   => {{ return!("not found") }}
-    }}
-  }}
-}}"#
-        );
+        let term = registry_query_term(&uri)?;
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -2136,6 +2155,38 @@ mod tests {
     fn balance_query_accepts_a_valid_address() {
         let term = balance_query_term(ADDRESS).unwrap();
         assert!(term.contains(&format!("\"findOrCreate\", \"{ADDRESS}\"")));
+    }
+
+    #[test]
+    fn registry_query_accepts_registry_and_system_uris() {
+        for uri in [
+            "rho:id:6zcfqnwnaqcwpeyuysx1rm48ndr6sgsbbgjuwf45i5nor3io7dr76j",
+            "rho:vault:system",
+            "rho:registry:insertSigned:secp256k1",
+            "rho:registry:1.0.0",
+        ] {
+            let term = registry_query_term(uri).unwrap();
+            assert!(term.contains(&format!("rl!(`{uri}`, *ch)")), "{uri}");
+        }
+    }
+
+    #[test]
+    fn registry_query_rejects_uris_that_are_not_valid() {
+        let long = format!("rho:id:{}", "a".repeat(MAX_REGISTRY_URI_LEN));
+        for bad in [
+            "",
+            "rho:",
+            "rho::id",
+            "id:abc",
+            "rho:id:abc def",
+            "rho:id:abc`, *ch) | @\"x\"!(`rho:id:def",
+            "rho:id:abc\"",
+            "rho:id:{abc}",
+            "rho:id:abc\n",
+            long.as_str(),
+        ] {
+            assert!(registry_query_term(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
