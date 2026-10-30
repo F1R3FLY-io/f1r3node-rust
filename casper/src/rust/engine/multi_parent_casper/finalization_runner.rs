@@ -369,7 +369,8 @@ fn finalizer_cycle(ctx: FinalizationContext) -> Cycle {
         Box::pin(async move {
             run_cycle(
                 FINALIZER_COMPUTE_TIMEOUT,
-                || compute_last_finalized_block(&ctx, &oracle_cache),
+                || derive_last_finalized_block(&ctx, &oracle_cache),
+                |derived| adopt_derived(&ctx, derived),
                 |advanced| settle_after_cycle(ctx.clone(), memo, advanced),
             )
             .await
@@ -377,19 +378,23 @@ fn finalizer_cycle(ctx: FinalizationContext) -> Cycle {
     })
 }
 
-/// One finalizer cycle, generic over its two steps so its accounting is
-/// testable without a casper instance. `compute` runs under the timeout and
-/// reports whether the LFB advanced; `after` runs untimed with that answer, so
-/// a slow step after the advance is never abandoned midway.
-pub(crate) async fn run_cycle<E, F, Fut, A, AFut>(
+/// One finalizer cycle, generic over its three steps so its accounting is
+/// testable without a casper instance. Only `derive` runs under the timeout. A
+/// derivation that times out never reaches `commit`, and `commit` is never
+/// cancelled. `after` runs untimed with whether the LFB advanced. Returns
+/// whether the derivation timed out.
+pub(crate) async fn run_cycle<D, E, FD, FutD, FC, FutC, A, AFut>(
     timeout: std::time::Duration,
-    compute: F,
+    derive: FD,
+    commit: FC,
     after: A,
 ) -> bool
 where
     E: std::fmt::Debug,
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<bool, E>>,
+    FD: FnOnce() -> FutD,
+    FutD: std::future::Future<Output = Result<D, E>>,
+    FC: FnOnce(D) -> FutC,
+    FutC: std::future::Future<Output = Result<bool, E>>,
     A: FnOnce(bool) -> AFut,
     AFut: std::future::Future<Output = ()>,
 {
@@ -398,10 +403,15 @@ where
         FINALIZER_RUN_TIME_METRIC,
     };
     let cycle_started = std::time::Instant::now();
-    let outcome = tokio::time::timeout(timeout, compute()).await;
+    let derived = tokio::time::timeout(timeout, derive()).await;
+    let timed_out = derived.is_err();
+    let outcome = match derived {
+        Ok(Ok(derived)) => Ok(commit(derived).await),
+        Ok(Err(err)) => Ok(Err(err)),
+        Err(elapsed) => Err(elapsed),
+    };
     metrics::histogram!(FINALIZER_RUN_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
         .record(cycle_started.elapsed().as_secs_f64());
-    let timed_out = outcome.is_err();
     let advanced = match outcome {
         Ok(Ok(advanced)) => advanced,
         Ok(Err(err)) => {
@@ -414,7 +424,7 @@ where
             metrics::counter!(FINALIZER_RUN_TIMEOUTS_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
             tracing::warn!(
-                "finalizer-run timed out after {:?}; its oracle facts are kept for the rerun",
+                "finalizer derivation timed out after {:?}; its oracle facts are kept for the rerun",
                 timeout
             );
             false
@@ -507,17 +517,22 @@ fn settle_blocking(
 /// every block operation uses. It advances the LFB only to a floor that
 /// CAPTURES the current one, so the read surface never designates a state
 /// missing settled content.
-pub(crate) async fn compute_last_finalized_block(
+pub(crate) struct DerivedLfb {
+    current: crate::rust::finality::floor::Floor,
+    adopt: Option<(crate::rust::finality::floor::Floor, f32)>,
+    started: std::time::Instant,
+}
+
+pub(crate) async fn derive_last_finalized_block(
     ctx: &FinalizationContext,
     oracle_cache: &Arc<crate::rust::safety::clique_oracle::SharedOracleCache>,
-) -> Result<bool, CasperError> {
+) -> Result<DerivedLfb, CasperError> {
     use crate::rust::finality::floor::{floor_of_view_metered, Floor};
-    use crate::rust::safety::clique_oracle::OracleCacheMeter;
+    use crate::rust::safety::clique_oracle::{CliqueOracle, OracleCacheMeter};
 
     let started = std::time::Instant::now();
     let observer = ctx.observer.get().cloned();
     let operation = observer.as_ref().and_then(|observer| observer.operation());
-    let observed = observer.as_ref().map(|observer| (observer, operation));
     let dag = ctx.block_dag_storage.get_representation()?;
     let current_hash = dag.last_finalized_block();
     let current = Floor {
@@ -528,12 +543,35 @@ pub(crate) async fn compute_last_finalized_block(
     let meter = OracleCacheMeter::new(oracle_cache.clone());
     let derivation =
         floor_of_view_metered(&meter, &dag, &ctx.block_store, &current, ctx.ftt()).await;
-    if let Some((observer, operation)) = observed {
+    if let Some(observer) = &observer {
         emit_derivation(observer, operation, &derivation);
     }
-    let adopted = match adoption(ctx, &current, derivation?) {
+    let adopt = match adoption(ctx, &current, derivation?) {
         Some(new_lfb) => {
-            adopt(ctx, &dag, &current, &new_lfb, observed).await?;
+            let ft_value = CliqueOracle::normalized_fault_tolerance(&new_lfb.hash, &dag)
+                .await
+                .map_err(CasperError::from)?;
+            Some((new_lfb, ft_value))
+        }
+        None => None,
+    };
+    Ok(DerivedLfb {
+        current,
+        adopt,
+        started,
+    })
+}
+
+pub(crate) async fn adopt_derived(
+    ctx: &FinalizationContext,
+    derived: DerivedLfb,
+) -> Result<bool, CasperError> {
+    let observer = ctx.observer.get().cloned();
+    let operation = observer.as_ref().and_then(|observer| observer.operation());
+    let observed = observer.as_ref().map(|observer| (observer, operation));
+    let adopted = match &derived.adopt {
+        Some((new_lfb, ft_value)) => {
+            adopt(ctx, &derived.current, new_lfb, *ft_value, observed).await?;
             true
         }
         None => false,
@@ -541,7 +579,7 @@ pub(crate) async fn compute_last_finalized_block(
     tracing::debug!(
         target: "f1r3fly.casper.lfb.timing",
         "last_finalized_block timing: total_ms={}, new_lfb_found={}",
-        started.elapsed().as_millis(),
+        derived.started.elapsed().as_millis(),
         adopted
     );
     Ok(adopted)
@@ -626,18 +664,12 @@ fn adoption(
 /// the persist succeeds.
 async fn adopt(
     ctx: &FinalizationContext,
-    dag: &block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation,
     current: &crate::rust::finality::floor::Floor,
     new_lfb: &crate::rust::finality::floor::Floor,
+    ft_value: f32,
     observed: Option<(&crate::rust::soak_observer::ObserverBinding, Option<u64>)>,
 ) -> Result<(), CasperError> {
     use crate::rust::soak_observer::EventKind;
-    let ft_value = crate::rust::safety::clique_oracle::CliqueOracle::normalized_fault_tolerance(
-        &new_lfb.hash,
-        dag,
-    )
-    .await
-    .map_err(CasperError::from)?;
     // `extends_previous_lfb` is true by construction (an adoption captures the
     // current LFB); soak dashboards alarm on the field, so it stays.
     tracing::info!(
@@ -943,6 +975,7 @@ mod finalizer_run_metric_tests {
                         _ => Ok(true),
                     }
                 },
+                |derived| async move { Ok::<bool, &str>(derived) },
                 |advanced| {
                     advances.push(advanced);
                     async {}
@@ -961,6 +994,64 @@ mod finalizer_run_metric_tests {
         assert_eq!(recorded.samples(FINALIZER_RUN_TIME_METRIC), 3);
         assert_eq!(recorded.counter(FINALIZER_RUN_FAILURES_METRIC), 1);
         assert_eq!(recorded.counter(FINALIZER_RUN_TIMEOUTS_METRIC), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_timed_out_derivation_never_commits() {
+        let mut committed = false;
+        let mut advances = Vec::new();
+        let timed_out = run_cycle(
+            Duration::from_millis(50),
+            || async {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                Ok::<bool, &str>(true)
+            },
+            |derived| {
+                committed = true;
+                async move { Ok::<bool, &str>(derived) }
+            },
+            |advanced| {
+                advances.push(advanced);
+                async {}
+            },
+        )
+        .await;
+        assert!(timed_out);
+        assert!(!committed, "a derivation that timed out must not reach the commit");
+        assert_eq!(advances, vec![false]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_commit_slower_than_the_timeout_is_never_cancelled() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        let finished = Arc::new(AtomicBool::new(false));
+        let mut advances = Vec::new();
+        let timed_out = run_cycle(
+            Duration::from_millis(50),
+            || async { Ok::<bool, &str>(true) },
+            |derived| {
+                let finished = finished.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    finished.store(true, Ordering::SeqCst);
+                    Ok::<bool, &str>(derived)
+                }
+            },
+            |advanced| {
+                advances.push(advanced);
+                async {}
+            },
+        )
+        .await;
+        assert!(!timed_out);
+        assert!(finished.load(Ordering::SeqCst), "the commit ran to completion");
+        assert_eq!(advances, vec![true]);
+        assert_eq!(
+            Recorded::take(&snapshotter).counter(FINALIZER_RUN_TIMEOUTS_METRIC),
+            0
+        );
     }
 
     /// A mock cycle: counts its runs, holds each run until `gate` gets a
