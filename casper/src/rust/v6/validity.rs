@@ -98,7 +98,11 @@ pub fn check_structure(
 mod tests {
     use super::*;
     use crate::rust::v6::body::{Attestation, Record};
-    use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header};
+    use crate::rust::v6::resource_policy::ShardResourcePolicy;
+    use models::rhoapi::PCost;
+    use models::rust::casper::protocol::casper_message::{
+        Body, F1r3flyState, Header, ProcessedDeploy,
+    };
     use prost::bytes::Bytes;
 
     fn h(s: &str) -> Bytes {
@@ -158,6 +162,61 @@ mod tests {
 
     fn record(target: &str) -> Record {
         Record::empty(h(target), h("p"), h("q"))
+    }
+
+    fn envelope(ts: i64, phlo_limit: i64) -> ProcessedDeploy {
+        let signed = crate::rust::util::construct_deploy::source_deploy(
+            format!("@{ts}!({ts})"),
+            ts,
+            Some(phlo_limit),
+            Some(0),
+            None,
+            None,
+            Some("root".to_string()),
+        )
+        .unwrap();
+        ProcessedDeploy::empty(signed)
+    }
+
+    fn ordered_block(envelopes: Vec<ProcessedDeploy>) -> BlockMessage {
+        let mut b = block(&ext(vec![record("t")]), "r", "r");
+        b.body.deploys = envelopes;
+        b
+    }
+
+    #[test]
+    fn ordered_envelopes_round_trip_through_the_wire_format() {
+        let b = ordered_block(vec![envelope(1, 100), envelope(2, 200)]);
+        let decoded = BlockMessage::from_proto(b.to_proto()).unwrap();
+        assert_eq!(decoded, b);
+        let body = check_structure(&decoded, &Limits::default(), &known).unwrap();
+        assert_eq!(body, ext(vec![record("t")]));
+    }
+
+    #[test]
+    fn an_executed_envelope_is_not_an_ordered_envelope() {
+        let mut ran = envelope(1, 100);
+        ran.cost = PCost { cost: 5 };
+        assert!(check_structure(&ordered_block(vec![ran]), &Limits::default(), &known).is_err());
+        let mut failed = envelope(1, 100);
+        failed.is_failed = true;
+        assert!(check_structure(&ordered_block(vec![failed]), &Limits::default(), &known).is_err());
+    }
+
+    #[test]
+    fn the_policy_bounds_envelopes_and_demand() {
+        let limits = ShardResourcePolicy {
+            max_envelopes: 2,
+            demand_cap: 250,
+            ..ShardResourcePolicy::default()
+        }
+        .limits();
+        let fits = ordered_block(vec![envelope(1, 100), envelope(2, 150)]);
+        assert!(check_structure(&fits, &limits, &known).is_ok());
+        let too_many = ordered_block(vec![envelope(1, 10), envelope(2, 10), envelope(3, 10)]);
+        assert!(check_structure(&too_many, &limits, &known).is_err());
+        let over_cap = ordered_block(vec![envelope(1, 100), envelope(2, 151)]);
+        assert!(check_structure(&over_cap, &limits, &known).is_err());
     }
 
     #[test]
