@@ -47,6 +47,23 @@ impl SpatialMatcherContext {
     pub fn into_match_result(mut self, target: Par, pattern: Par) -> Option<FreeMap> {
         self.spatial_match(target, pattern).map(|_| self.free_map)
     }
+
+    /// Borrowing variant used by hot `match` fall-through loops that would
+    /// otherwise clone a possibly large scrutinee once per case before
+    /// discovering the case did not match. The literal-pattern fast path
+    /// (shared with `spatial_match<Par, Par>` at `pattern.connective_used ==
+    /// false`) completes without any clone of `target`.
+    pub fn match_result(mut self, target: &Par, pattern: Par) -> Option<FreeMap> {
+        if !pattern.connective_used {
+            return if match_pars(target, &pattern) {
+                Some(self.free_map)
+            } else {
+                None
+            };
+        }
+        self.spatial_match(target.clone(), pattern)
+            .map(|_| self.free_map)
+    }
 }
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - forTuple

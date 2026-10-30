@@ -37,6 +37,15 @@ impl<A: Clone> Env<A> {
         self
     }
 
+    /// Push every `a` from `bindings` as if `put` had been called in order.
+    /// Avoids the per-step accumulator rewrap that a `fold(env.clone(), ..)`
+    /// pays for large match free-counts or long `new` lists.
+    pub fn extended<I: IntoIterator<Item = A>>(&self, bindings: I) -> Env<A> {
+        let mut out = self.clone();
+        out.bindings.extend(bindings);
+        out
+    }
+
     pub fn get(&self, k: &i32) -> Option<A> {
         let position = self.level() + self.shift - k - 1;
         usize::try_from(position)
