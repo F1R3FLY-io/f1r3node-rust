@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use prost::Message;
+
 use super::par_sort_matcher::ParSortMatcher;
 use super::score_tree::ScoredTerm;
 use super::sortable::Sortable;
@@ -28,8 +30,10 @@ impl Ordering {
     }
 
     pub fn sort_map(ps: &HashMap<Par, Par>) -> Vec<(Par, Par)> {
-        let mut pairs_sorted: Vec<ScoredTerm<(Par, Par)>> = ps
-            .iter()
+        let mut raw: Vec<(&Par, &Par)> = ps.iter().collect();
+        raw.sort_by_cached_key(|(key, _)| key.encode_to_vec());
+        let mut pairs_sorted: Vec<ScoredTerm<(Par, Par)>> = raw
+            .into_iter()
             .map(|kv| Ordering::sort_key_value_pair(kv.0, kv.1))
             .collect();
 

@@ -183,21 +183,8 @@ mod extend_differential_tests {
             .collect()
     }
 
-    fn canonical_keys_are_distinct(map: &SortedParMap) -> bool {
-        let canonical: std::collections::HashSet<Vec<u8>> = map
-            .sorted_map
-            .keys()
-            .map(|k| SortedParMap::sort(k).encode_to_vec())
-            .collect();
-        canonical.len() == map.sorted_map.len()
-    }
-
     proptest! {
-        #![proptest_config(ProptestConfig {
-            cases: 512,
-            max_global_rejects: 100_000,
-            ..ProptestConfig::default()
-        })]
+        #![proptest_config(ProptestConfig::with_cases(512))]
 
         #[test]
         fn extend_matches_the_per_element_implementation(
@@ -215,7 +202,6 @@ mod extend_differential_tests {
             let mut legacy = SortedParMap::create_from_vec(initial);
             let mut fixed = legacy.clone();
             let expected = legacy_extend(&mut legacy, kvs.clone());
-            prop_assume!(canonical_keys_are_distinct(&legacy));
             let actual = fixed.extend(kvs);
             prop_assert_eq!(bytes(&actual), bytes(&expected));
             prop_assert_eq!(&actual.ps, &expected.ps);
@@ -224,6 +210,82 @@ mod extend_differential_tests {
             prop_assert_eq!(bytes(&fixed), bytes(&legacy));
             prop_assert_eq!(&fixed.ps, &legacy.ps);
         }
+    }
+
+    fn colliding_pairs() -> impl Strategy<Value = Vec<(Par, Par)>> {
+        prop::collection::vec((leaf(), leaf(), par()), 1..12).prop_map(|triples| {
+            triples
+                .into_iter()
+                .flat_map(|(a, b, v)| {
+                    let ab = Par::default().with_exprs(vec![a.clone(), b.clone()]);
+                    let ba = Par::default().with_exprs(vec![b, a]);
+                    [(ab, v.clone()), (ba, v.with_exprs(vec![]))]
+                })
+                .fold(Vec::new(), |mut acc: Vec<(Par, Par)>, (k, v)| {
+                    if !acc.iter().any(|(seen, _)| seen == &k) {
+                        acc.push((k, v));
+                    }
+                    acc
+                })
+        })
+    }
+
+    fn output_of(pairs: &[(Par, Par)], rotation: usize) -> (Vec<(Vec<u8>, Vec<u8>)>, Vec<u8>) {
+        let mut shuffled = pairs.to_vec();
+        if !shuffled.is_empty() {
+            let n = rotation % shuffled.len();
+            shuffled.rotate_left(n);
+        }
+        let map = SortedParMap::create_from_vec(shuffled);
+        let mut contents: Vec<Vec<u8>> = map
+            .sorted_map
+            .iter()
+            .map(|(k, v)| [k.encode_to_vec(), v.encode_to_vec()].concat())
+            .collect();
+        contents.sort();
+        (bytes(&map), contents.concat())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn canonically_equal_keys_sort_the_same_in_every_run(pairs in colliding_pairs()) {
+            let first = output_of(&pairs, 0);
+            for run in 1..200 {
+                prop_assert_eq!(&output_of(&pairs, run), &first, "run {}", run);
+            }
+        }
+    }
+
+    #[test]
+    fn a_fixed_collision_sorts_the_same_in_200_runs() {
+        let e = |i| Expr {
+            expr_instance: Some(i),
+        };
+        let k1 = Par::default().with_exprs(vec![
+            e(ExprInstance::GInt(1)),
+            e(ExprInstance::GString("a".into())),
+        ]);
+        let k2 = Par::default().with_exprs(vec![
+            e(ExprInstance::GString("a".into())),
+            e(ExprInstance::GInt(1)),
+        ]);
+        let v = |n| Par::default().with_exprs(vec![e(ExprInstance::GInt(n))]);
+        let mut seen = std::collections::HashSet::new();
+        for run in 0..200 {
+            let mut map = SortedParMap::create_from_empty();
+            if run % 2 == 0 {
+                map.insert((k1.clone(), v(10)));
+                map.insert((k2.clone(), v(20)));
+            } else {
+                map.insert((k2.clone(), v(20)));
+                map.insert((k1.clone(), v(10)));
+            }
+            let rebuilt = SortedParMap::create_from_map(map.sorted_map.clone());
+            seen.insert(bytes(&rebuilt));
+        }
+        assert_eq!(seen.len(), 1);
     }
 
     #[test]
