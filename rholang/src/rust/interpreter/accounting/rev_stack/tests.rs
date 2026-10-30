@@ -374,3 +374,39 @@ fn foreign_datum_marks_wallet_corrupt() {
         Err(RevStackError::CorruptWallet(_))
     ));
 }
+
+#[test]
+fn term_builders_accept_only_valid_addresses_and_amounts() {
+    let (pk, _) = key_owner();
+    let address = VaultAddress::from_deployer_id(pk).unwrap().to_base58();
+
+    let transfer = super::native::transfer_term(&address, 5).unwrap();
+    assert!(transfer.contains(&format!("\"{address}\", 5")));
+    assert!(super::native::balance_term(&address)
+        .unwrap()
+        .contains(&address));
+
+    let injected = format!("{address}\"), *deployId) | @\"x\"!(\"y");
+    for bad in ["", "lala", injected.as_str()] {
+        assert!(super::native::transfer_term(bad, 5).is_err(), "{bad}");
+        assert!(super::native::balance_term(bad).is_err(), "{bad}");
+    }
+    assert!(super::native::transfer_term(&address, 0).is_err());
+    assert!(super::native::transfer_term(&address, -1).is_err());
+}
+
+#[test]
+fn balance_results_parse() {
+    use crate::rust::interpreter::rho_type::{RhoBoolean, RhoNumber, RhoString, RhoTuple2};
+    let ok = RhoTuple2::create_par((RhoBoolean::create_par(true), RhoNumber::create_par(42)));
+    assert_eq!(super::native::parse_balance(&ok), Ok(42));
+    let failed = RhoTuple2::create_par((
+        RhoBoolean::create_par(false),
+        RhoString::create_par("invalid".to_string()),
+    ));
+    assert_eq!(
+        super::native::parse_balance(&failed),
+        Err("invalid".to_string())
+    );
+    assert!(super::native::parse_balance(&RhoNumber::create_par(1)).is_err());
+}

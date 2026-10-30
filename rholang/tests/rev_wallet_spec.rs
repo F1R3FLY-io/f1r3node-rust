@@ -2,10 +2,11 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use models::rhoapi::Par;
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::{GDeployId, GUnforgeable, Par};
 use models::rust::normalizer_env::with_deployer_id;
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::rev_stack::{RevStacks, WalletOwner};
+use rholang::rust::interpreter::accounting::rev_stack::{native, RevStacks, WalletOwner};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNumber, RhoString, RhoTuple2};
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
@@ -228,4 +229,59 @@ async fn play_and_replay_reach_the_same_state() {
     assert_eq!(stacks(&runtime).balance(&bob.owner).unwrap(), 540);
     assert_eq!(stacks(&runtime).balance(&carol.owner).unwrap(), 20);
     assert_eq!(stacks(&replay).balance(&carol.owner).unwrap(), 20);
+}
+
+fn deploy_id(sig: &[u8]) -> Par {
+    Par::default().with_unforgeables(vec![GUnforgeable {
+        unf_instance: Some(UnfInstance::GDeployIdBody(GDeployId { sig: sig.to_vec() })),
+    }])
+}
+
+async fn eval_deploy(runtime: &RhoRuntimeImpl, signer: &Key, sig: &[u8], term: &str) {
+    let mut env = with_deployer_id(&signer.pk);
+    env.insert("rho:system:deployId".to_string(), deploy_id(sig));
+    let result = runtime.evaluate(term, phlo(), env, rand()).await.unwrap();
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_cli_transfer_term_pays_and_reports_on_the_deploy_id() {
+    let (runtime, _) = runtimes().await;
+    let (alice, bob) = (key(), key());
+    stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
+
+    let term = native::transfer_term(&bob.address, 125).unwrap();
+    eval_deploy(&runtime, &alice, b"sig-1", &term).await;
+
+    let reported = runtime.get_data(&deploy_id(b"sig-1")).await;
+    assert_eq!(reported.len(), 1);
+    assert_eq!(either(&reported[0].a.pars[0]), (true, Par::default()));
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 875);
+    assert_eq!(stacks(&runtime).balance(&bob.owner).unwrap(), 125);
+
+    let query = native::balance_term(&bob.address).unwrap();
+    eval_as(&runtime, &alice, &query.replace("*return", "\"bal\"")).await;
+    let result = take(&runtime, "bal").await;
+    assert_eq!(native::parse_balance(&result[0]), Ok(125));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_vault_demo_scripts_run_on_the_native_path() {
+    let (runtime, _) = runtimes().await;
+    let (alice, bob) = (key(), key());
+    stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
+
+    let transfer =
+        include_str!("../examples/vault_demo/3.transfer_funds.rho").replace("%TO", &bob.address);
+    assert!(eval_as(&runtime, &alice, &transfer).await.is_empty());
+    assert_eq!(stacks(&runtime).balance(&bob.owner).unwrap(), 100);
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 900);
+
+    let check = include_str!("../examples/vault_demo/2.check_balance.rho")
+        .replace("%VAULT_ADDR", &bob.address);
+    assert!(eval_as(&runtime, &bob, &check).await.is_empty());
+
+    let bad = include_str!("../examples/vault_demo/3.transfer_funds.rho").replace("%TO", "lala");
+    assert!(eval_as(&runtime, &alice, &bad).await.is_empty());
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 900);
 }
