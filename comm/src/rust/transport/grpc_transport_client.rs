@@ -13,9 +13,10 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
 
 use crate::rust::errors::CommError;
+use crate::rust::metrics_constants::{STREAM_OUTGOING_TIMEOUTS_METRIC, TRANSPORT_METRICS_SOURCE};
 use crate::rust::peer_node::{NodeIdentifier, PeerNode};
 use crate::rust::transport::f1r3fly_connector::F1r3flyConnector;
-use crate::rust::transport::grpc_transport::GrpcTransport;
+use crate::rust::transport::grpc_transport::{GrpcTransport, TransportLayerClientTrait};
 use crate::rust::transport::packet_ops::PacketOps;
 use crate::rust::transport::ssl_session_client_interceptor::SslSessionClientInterceptor;
 use crate::rust::transport::stream_observable::StreamObservable;
@@ -102,6 +103,57 @@ fn stream_timeout(packet_size: usize, default_send_timeout: Duration) -> Duratio
     packet_based_timeout
         .max(default_send_timeout)
         .min(super::GRPC_REQUEST_TIMEOUT)
+}
+
+struct StreamAttempt {
+    packet_size: usize,
+    timeout: Duration,
+    outcome: StreamOutcome,
+}
+
+enum StreamOutcome {
+    Sent,
+    Failed(CommError),
+    TimedOut,
+}
+
+async fn send_cached_stream<T: TransportLayerClientTrait>(
+    key: &str,
+    client: &mut T,
+    peer: &PeerNode,
+    sender: &PeerNode,
+    cache: &StreamCache,
+    network_id: &str,
+    default_send_timeout: Duration,
+    packet_chunk_size: usize,
+) -> Result<StreamAttempt, CommError> {
+    let packet = PacketOps::restore(key, cache)?;
+    let packet_size = packet.content.len();
+    let timeout = stream_timeout(packet_size, default_send_timeout);
+    tracing::debug!(
+        "Attempting to stream packet to {} with timeout: {}ms",
+        peer.to_address(),
+        timeout.as_millis()
+    );
+    let blob = Blob {
+        sender: sender.clone(),
+        packet,
+    };
+    let outcome = match tokio::time::timeout(
+        timeout,
+        GrpcTransport::stream(client, peer, network_id, &blob, packet_chunk_size),
+    )
+    .await
+    {
+        Ok(Ok(())) => StreamOutcome::Sent,
+        Ok(Err(error)) => StreamOutcome::Failed(error),
+        Err(_) => StreamOutcome::TimedOut,
+    };
+    Ok(StreamAttempt {
+        packet_size,
+        timeout,
+        outcome,
+    })
 }
 
 impl GrpcTransportClient {
@@ -471,68 +523,60 @@ impl GrpcTransportClient {
             >,
         >,
     ) -> Result<(), CommError> {
-        // Restore packet from cache
-        match PacketOps::restore(key, cache) {
-            Ok(packet) => {
-                let timeout = stream_timeout(packet.content.len(), default_send_timeout);
+        let mut client_guard = client.lock().await;
+        let attempt = send_cached_stream(
+            key,
+            &mut *client_guard,
+            peer,
+            sender,
+            cache,
+            network_id,
+            default_send_timeout,
+            packet_chunk_size as usize,
+        )
+        .await;
+        drop(client_guard);
 
-                tracing::debug!(
-                    "Attempting to stream packet to {} with timeout: {}ms",
-                    peer.to_address(),
-                    timeout.as_millis()
-                );
-
-                // Create blob for streaming
-                let blob = Blob {
-                    sender: sender.clone(),
-                    packet: packet.clone(),
-                };
-
-                // Use pre-created client directly (no connection management needed)
-                let mut client_guard = client.lock().await;
-                let stream_result = tokio::time::timeout(
-                    timeout,
-                    GrpcTransport::stream(
-                        &mut *client_guard,
-                        peer,
-                        network_id,
-                        &blob,
-                        packet_chunk_size as usize,
-                    ),
-                )
-                .await;
-                drop(client_guard); // Release lock
-
-                // Handle the result
-                match stream_result {
-                    Ok(Ok(())) => {
-                        tracing::debug!("Streamed packet {} to {}", key, peer.to_address());
-                    }
-                    Ok(Err(error)) => {
-                        tracing::debug!(
-                            key = %key,
-                            peer = %peer.to_address(),
-                            timeout_ms = timeout.as_millis(),
-                            error = %error,
-                            "Outgoing stream failed"
-                        );
-                    }
-                    Err(_) => {
-                        tracing::debug!(
-                            key = %key,
-                            peer = %peer.to_address(),
-                            timeout_ms = timeout.as_millis(),
-                            "Outgoing stream timed out"
-                        );
-                    }
+        match attempt {
+            Ok(StreamAttempt {
+                packet_size,
+                timeout,
+                outcome,
+            }) => match outcome {
+                StreamOutcome::Sent => {
+                    tracing::debug!("Streamed packet {} to {}", key, peer.to_address());
                 }
-                Ok(())
-            }
+                StreamOutcome::Failed(error) => {
+                    if matches!(&error, CommError::TimeOut) {
+                        metrics::counter!(STREAM_OUTGOING_TIMEOUTS_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
+                                .increment(1);
+                    }
+                    tracing::warn!(
+                        key = %key,
+                        peer = %peer.to_address(),
+                        packet_size_bytes = packet_size,
+                        timeout_ms = timeout.as_millis(),
+                        error = %error,
+                        "Outgoing stream failed"
+                    );
+                }
+                StreamOutcome::TimedOut => {
+                    metrics::counter!(STREAM_OUTGOING_TIMEOUTS_METRIC, "source" => TRANSPORT_METRICS_SOURCE)
+                            .increment(1);
+                    tracing::warn!(
+                        key = %key,
+                        peer = %peer.to_address(),
+                        packet_size_bytes = packet_size,
+                        timeout_ms = timeout.as_millis(),
+                        "Outgoing stream timed out"
+                    );
+                }
+            },
             Err(error) => {
                 tracing::error!(key = %key, peer = %peer.to_address(), error = %error, "packet streaming failed");
-                Ok(())
             }
         }
+        Ok(())
     }
 
     /// Check if a channel is terminated
@@ -644,10 +688,37 @@ impl TransportLayer for GrpcTransportClient {
 
 #[cfg(test)]
 mod tests {
+    use models::routing::tl_response::Payload;
+    use models::routing::{Ack, Chunk, Packet, TlRequest, TlResponse};
     use prost::bytes::Bytes;
+    use rand::{RngCore, SeedableRng};
+    use tokio_stream::StreamExt;
+    use tonic::Status;
 
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
+    use crate::rust::transport::chunker::Chunker;
+
+    struct SlowClient {
+        chunk_delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl TransportLayerClientTrait for SlowClient {
+        async fn send(&mut self, _: TlRequest) -> Result<TlResponse, Status> {
+            panic!("unexpected unary request")
+        }
+
+        async fn stream<S>(&mut self, mut input: S) -> Result<TlResponse, Status>
+        where S: tokio_stream::Stream<Item = Chunk> + Send + Unpin + 'static {
+            while input.next().await.is_some() {
+                tokio::time::sleep(self.chunk_delay).await;
+            }
+            Ok(TlResponse {
+                payload: Some(Payload::Ack(Ack { header: None })),
+            })
+        }
+    }
 
     fn peer(name: &str) -> PeerNode {
         PeerNode {
@@ -692,6 +763,61 @@ mod tests {
             stream_timeout(1, Duration::from_secs(60)),
             super::super::GRPC_REQUEST_TIMEOUT
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_stream_completes_before_deadline_and_times_out_after_it() {
+        let sender = peer("sender");
+        let receiver = peer("receiver");
+
+        for (stream_duration, should_timeout) in [
+            (Duration::from_secs(26), false),
+            (Duration::from_secs(32), true),
+        ] {
+            let cache = Arc::new(dashmap::DashMap::new());
+            let mut content = vec![0; 6 * 1024 * 1024];
+            rand::rngs::StdRng::seed_from_u64(1).fill_bytes(&mut content);
+            let packet = Packet {
+                type_id: "test".to_string(),
+                content: Bytes::from(content),
+            };
+            let blob = Blob {
+                sender: sender.clone(),
+                packet: packet.clone(),
+            };
+            let chunk_size = 64 * 1024;
+            let chunk_count = Chunker::chunk_it("test", &blob, chunk_size).len() as u32;
+            let mut client = SlowClient {
+                chunk_delay: stream_duration / chunk_count,
+            };
+            let key = PacketOps::store(&packet, &cache).unwrap();
+            assert_eq!(cache.len(), 1);
+            let start = tokio::time::Instant::now();
+            let attempt = send_cached_stream(
+                &key,
+                &mut client,
+                &receiver,
+                &sender,
+                &cache,
+                "test",
+                Duration::from_secs(1),
+                chunk_size,
+            )
+            .await
+            .unwrap();
+            assert_eq!(attempt.packet_size, 6 * 1024 * 1024);
+            assert_eq!(attempt.timeout, super::super::GRPC_REQUEST_TIMEOUT);
+
+            if should_timeout {
+                assert!(matches!(attempt.outcome, StreamOutcome::TimedOut));
+                assert_eq!(start.elapsed(), attempt.timeout);
+            } else {
+                assert!(matches!(attempt.outcome, StreamOutcome::Sent));
+                assert!(start.elapsed() >= Duration::from_secs(25));
+                assert!(start.elapsed() < attempt.timeout);
+            }
+            assert!(cache.is_empty());
+        }
     }
 
     #[tokio::test]
