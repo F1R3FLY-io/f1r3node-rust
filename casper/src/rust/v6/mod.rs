@@ -3,6 +3,7 @@ pub mod body;
 pub mod core;
 pub mod engine;
 pub mod executor;
+pub mod gate;
 pub mod genesis_policy;
 pub mod genesis_wallets;
 pub mod linearizer;
