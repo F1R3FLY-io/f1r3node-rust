@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use casper::rust::blocks::block_processor::{
     mark_in_flight, BlockProcessor, BlockQueueItem, InFlightBlocks, InFlightMark, IntegrityChecked,
-    SenderAuthorization, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
+    StoreVerdict, ValidationFailureDisposition, MAX_BLOCKS_IN_PROCESSING,
 };
 use casper::rust::casper::MultiParentCasper;
 use casper::rust::errors::CasperError;
@@ -189,7 +189,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorInstance<T> {
                         // Already logged at INFO by the pipeline; a routine
                         // drop is not a failure.
                         Ok(BlockProcessOutcome::NotOfInterest)
-                        | Ok(BlockProcessOutcome::UnauthorizedSender)
+                        | Ok(BlockProcessOutcome::PendingRefused) => {
+                            block_processor.forget_block_source(&block);
+                        }
+                        Ok(BlockProcessOutcome::UnauthorizedSender)
                         | Ok(BlockProcessOutcome::Malformed) => {}
                         Err(e) => {
                             tracing::error!(block = %block_str, error = %e, "block processing failed");
@@ -323,6 +326,7 @@ enum BlockProcessOutcome {
     NotOfInterest,
     UnauthorizedSender,
     Malformed,
+    PendingRefused,
     MissingDependencies,
 }
 
@@ -400,7 +404,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         }
     };
 
-    if authorization == SenderAuthorization::Unauthorized {
+    let Some(store_mode) = authorization.store_mode() else {
         block_processor
             .purge_from_buffer_and_ack(&block)
             .await
@@ -411,21 +415,37 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
                 ))
             })?;
         return Ok(BlockProcessOutcome::UnauthorizedSender);
-    }
+    };
 
     // Step 2: Store
     // Equivalent to the store half of: blockProcessor.checkIfWellFormedAndStore(b)
-    if let Err(err) = block_processor.store(checked).await {
+    let store_verdict = match block_processor.store(checked, store_mode).await {
+        Ok(store_verdict) => store_verdict,
+        Err(err) => {
+            block_processor
+                .ack_processed(&block)
+                .await
+                .map_err(|ack_err| {
+                    CasperError::RuntimeError(format!(
+                        "store failed for {}, and cleanup failed: {}",
+                        block_str, ack_err
+                    ))
+                })?;
+            return Err(err);
+        }
+    };
+
+    if let StoreVerdict::PendingRefused(refusal) = store_verdict {
         block_processor
-            .ack_processed(&block)
+            .release_refused_pending(&block, refusal)
             .await
-            .map_err(|ack_err| {
+            .map_err(|err| {
                 CasperError::RuntimeError(format!(
-                    "store failed for {}, and cleanup failed: {}",
-                    block_str, ack_err
+                    "Refused pending block {} cleanup failed: {}",
+                    block_str, err
                 ))
             })?;
-        return Err(err);
+        return Ok(BlockProcessOutcome::PendingRefused);
     }
 
     // Step 3: Log started
@@ -523,7 +543,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -578,7 +598,6 @@ mod tests {
         runtime_manager: Arc<RuntimeManager>,
         dag_reads: AtomicUsize,
         processed: Mutex<Vec<BlockHash>>,
-        in_dag: AtomicBool,
     }
 
     #[async_trait]
@@ -591,7 +610,7 @@ mod tests {
 
         fn dag_contains(&self, hash: &BlockHash) -> bool {
             self.processed.lock().unwrap().push(hash.clone());
-            self.in_dag.load(Ordering::SeqCst)
+            true
         }
 
         fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
@@ -762,7 +781,6 @@ mod tests {
                     runtime_manager,
                     dag_reads: AtomicUsize::new(0),
                     processed: Mutex::new(Vec::new()),
-                    in_dag: AtomicBool::new(true),
                 }),
                 processor: Arc::new(BlockProcessor::new(dependencies)),
                 in_flight: Arc::new(InFlightBlocks::new()),
@@ -786,24 +804,36 @@ mod tests {
             (tx, instance)
         }
 
-        fn junk(&self, byte: u8) -> BlockMessage {
+        fn signed(&self, byte: u8) -> BlockMessage {
             let mut block = self.casper.approved.clone();
             block.seq_num = i32::from(byte);
             let (sk, _pk) = Secp256k1.new_key_pair();
-            let mut block = ValidatorIdentity::new(&sk).sign_block(&block);
-            let mut sig = block.sig.to_vec();
-            sig[4] ^= 0xff;
-            block.sig = sig.into();
-            assert!(!Validate::block_signature(&block));
-            assert!(matches!(Validate::block_hash(&block), Either::Right(_)));
-            block
+            ValidatorIdentity::new(&sk).sign_block(&block)
         }
 
-        fn item(&self, byte: u8) -> BlockQueueItem {
-            let mut block = self.casper.approved.clone();
-            block.seq_num = i32::from(byte);
+        fn item(&self, byte: u8) -> BlockQueueItem { self.queue(self.signed(byte)) }
+
+        fn forged_item(&self, foreign_hash: bool) -> BlockQueueItem {
             let (sk, _pk) = Secp256k1.new_key_pair();
-            let block = ValidatorIdentity::new(&sk).sign_block(&block);
+            let attacker = ValidatorIdentity::new(&sk);
+            let mut block = attacker.sign_block(&self.casper.approved);
+            if foreign_hash {
+                block.block_hash = vec![31; 32].into();
+                block.sig = attacker.signature(block.block_hash.as_ref()).sig;
+            } else {
+                let mut sig = block.sig.to_vec();
+                sig[4] ^= 0xff;
+                block.sig = sig.into();
+            }
+            assert_eq!(Validate::block_signature(&block), foreign_hash);
+            assert_eq!(
+                matches!(Validate::block_hash(&block), Either::Right(_)),
+                !foreign_hash
+            );
+            self.queue(block)
+        }
+
+        fn queue(&self, block: BlockMessage) -> BlockQueueItem {
             let InFlightMark::Marked(guard) =
                 mark_in_flight(&self.in_flight, block.block_hash.clone())
             else {
@@ -867,12 +897,10 @@ mod tests {
             .is_empty());
     }
 
-    #[tokio::test]
-    async fn a_junk_message_does_not_drop_the_request_for_the_hash_that_it_claims() {
+    async fn refuse_without_touching_the_claimed_hash(foreign_hash: bool) {
         let fixture = StartupFixture::new().await;
-        fixture.casper.in_dag.store(false, Ordering::SeqCst);
-        let junk = fixture.junk(31);
-        let claimed = junk.block_hash.clone();
+        let item = fixture.forged_item(foreign_hash);
+        let claimed = item.1.block_hash.clone();
         fixture
             .retriever
             .admit_hash(
@@ -882,19 +910,19 @@ mod tests {
             )
             .await
             .unwrap();
+        assert!(fixture
+            .retriever
+            .was_requested_as_dependency(&claimed)
+            .unwrap());
 
-        let InFlightMark::Marked(guard) = mark_in_flight(&fixture.in_flight, claimed.clone())
-        else {
-            panic!("Test block must acquire an in-flight marker")
-        };
         let (tx, instance) = fixture.instance();
         let mut results = instance.create().unwrap();
-        assert!(tx.send((fixture.casper.clone(), junk, guard)).await.is_ok());
+        assert!(tx.send(item).await.is_ok());
         drop(tx);
         assert!(
             tokio::time::timeout(Duration::from_secs(10), results.recv())
                 .await
-                .expect("The junk message must finish processing")
+                .expect("The refused message must finish processing")
                 .is_none()
         );
 
@@ -902,14 +930,30 @@ mod tests {
             .retriever
             .was_requested_as_dependency(&claimed)
             .unwrap());
+        assert!(fixture.casper.processed.lock().unwrap().is_empty());
+        assert!(fixture.in_flight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_body_signed_under_a_foreign_hash_does_not_touch_that_hash() {
+        refuse_without_touching_the_claimed_hash(true).await;
+    }
+
+    #[tokio::test]
+    async fn a_badly_signed_message_does_not_touch_the_hash_that_it_claims() {
+        refuse_without_touching_the_claimed_hash(false).await;
     }
 
     #[tokio::test]
     async fn a_refused_body_that_this_node_stored_is_purged() {
         let fixture = StartupFixture::new().await;
-        fixture.casper.in_dag.store(false, Ordering::SeqCst);
-        let junk = fixture.junk(32);
-        let claimed = junk.block_hash.clone();
+        let item = fixture.forged_item(true);
+        let claimed = item.1.block_hash.clone();
+        fixture
+            .casper
+            .block_store
+            .put_block_message(&item.1)
+            .unwrap();
         fixture
             .retriever
             .admit_hash(
@@ -920,14 +964,9 @@ mod tests {
             .await
             .unwrap();
 
-        fixture.casper.block_store.put_block_message(&junk).unwrap();
-        let InFlightMark::Marked(guard) = mark_in_flight(&fixture.in_flight, claimed.clone())
-        else {
-            panic!("Test block must acquire an in-flight marker")
-        };
         let (tx, instance) = fixture.instance();
         let mut results = instance.create().unwrap();
-        assert!(tx.send((fixture.casper.clone(), junk, guard)).await.is_ok());
+        assert!(tx.send(item).await.is_ok());
         drop(tx);
         assert!(
             tokio::time::timeout(Duration::from_secs(10), results.recv())
@@ -940,8 +979,11 @@ mod tests {
             .retriever
             .was_requested_as_dependency(&claimed)
             .unwrap());
+        assert!(fixture.casper.processed.lock().unwrap().is_empty());
+        assert!(fixture.in_flight.is_empty());
         assert_eq!(fixture.casper.block_store.get(&claimed).unwrap(), None);
     }
+
     #[tokio::test]
     async fn startup_with_a_closed_empty_queue_finishes_without_reading_casper() {
         let fixture = StartupFixture::new().await;

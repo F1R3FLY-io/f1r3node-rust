@@ -9,7 +9,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::block_processor::{
     BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks, IntegrityChecked,
-    IntegrityFailure, SenderAuthorization,
+    IntegrityFailure, StoreVerdict,
 };
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -218,13 +218,23 @@ impl TestNode {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
-        if block_processor.check_sender_authorization(checked)? == SenderAuthorization::Unauthorized
-        {
+        let Some(store_mode) = block_processor
+            .check_sender_authorization(checked)?
+            .store_mode()
+        else {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
-        }
+        };
 
         // Store
-        block_processor.store(checked).await?;
+        match block_processor.store(checked, store_mode).await? {
+            StoreVerdict::Stored => {}
+            StoreVerdict::PendingRefused(refusal) => {
+                block_processor
+                    .release_refused_pending(&block, refusal)
+                    .await?;
+                return Ok(Either::Left(BlockStatus::missing_blocks()));
+            }
+        }
 
         // Check dependencies
         let dependencies_ready = block_processor
