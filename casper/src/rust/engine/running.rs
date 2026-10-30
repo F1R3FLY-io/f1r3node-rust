@@ -275,10 +275,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                 } else {
-                    let (b, integrity) = tokio::task::spawn_blocking(move || {
-                        let integrity =
-                            IntegrityChecked::check(&b, RUNNING_METRICS_SOURCE).map(|_| ());
-                        (b, integrity)
+                    let checked = match tokio::task::spawn_blocking(move || {
+                        CheckedBlock::check(b, RUNNING_METRICS_SOURCE)
                     })
                     .await
                     .map_err(|err| {
@@ -286,18 +284,20 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                             "Block integrity check failed to run: {}",
                             err
                         ))
-                    })?;
-                    if let Err(failure) = integrity {
-                        let strike = match failure {
-                            IntegrityFailure::Malformed => Strike::Malformed,
-                            IntegrityFailure::HashMismatch => Strike::HashMismatch,
-                        };
-                        self.block_retriever
-                            .strike_peer(&peer, &b.block_hash, strike);
-                        return Ok(());
-                    }
+                    })? {
+                        Ok(checked) => checked,
+                        Err((refused, failure)) => {
+                            let strike = match failure {
+                                IntegrityFailure::Malformed => Strike::Malformed,
+                                IntegrityFailure::HashMismatch => Strike::HashMismatch,
+                            };
+                            self.block_retriever
+                                .strike_peer(&peer, &refused.block_hash, strike);
+                            return Ok(());
+                        }
+                    };
                     if let Some(id) = self.casper.get_validator() {
-                        if b.sender == id.public_key.bytes {
+                        if checked.block().sender == id.public_key.bytes {
                             tracing::warn!(
                                 "There is another node {} proposing using the same private key as you. Or did you restart your node?",
                                 peer
@@ -306,10 +306,10 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     }
                     tracing::debug!(
                         "Incoming BlockMessage {} from {}",
-                        PrettyPrinter::build_string_block_message(&b, true),
+                        PrettyPrinter::build_string_block_message(checked.block(), true),
                         peer.endpoint.host
                     );
-                    let block_hash = b.block_hash.clone();
+                    let block_hash = checked.block().block_hash.clone();
                     let guard = match mark_in_flight(&self.blocks_in_processing, block_hash.clone())
                     {
                         InFlightMark::Marked(guard) => guard,
@@ -333,7 +333,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     };
                     self.block_retriever.note_block_source(&block_hash, &peer)?;
                     self.block_processing_queue_tx
-                        .send((self.casper.clone(), b, guard))
+                        .send((self.casper.clone(), QueuedBlock::Network(checked), guard))
                         .await
                         .map_err(|e| {
                             CasperError::RuntimeError(format!(
@@ -625,8 +625,8 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, IntegrityChecked,
-    IntegrityFailure, MAX_BLOCKS_IN_PROCESSING,
+    mark_in_flight, BlockQueueItem, CheckedBlock, InFlightBlocks, InFlightMark, IntegrityFailure,
+    QueuedBlock, MAX_BLOCKS_IN_PROCESSING,
 };
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
