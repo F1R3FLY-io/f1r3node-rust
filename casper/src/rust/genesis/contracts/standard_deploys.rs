@@ -17,6 +17,7 @@ use super::proof_of_stake::ProofOfStake;
 use super::vault::Vault;
 use super::vaults_generator::VaultsGenerator;
 use super::{embedded_rho, fs_genesis};
+use crate::rust::v6::resource_policy::ShardResourcePolicy;
 
 /// Build a `CompiledRholangSource` from an embedded `.rho` constant. The
 /// `name` is preserved on the resulting source as identification metadata
@@ -277,7 +278,29 @@ pub fn token_metadata(
     native_token_decimals: u32,
     shard_id: &str,
 ) -> Signed<DeployData> {
+    token_metadata_with_policy(
+        native_token_name,
+        native_token_symbol,
+        native_token_decimals,
+        shard_id,
+        None,
+    )
+}
+
+pub fn token_metadata_with_policy(
+    native_token_name: &str,
+    native_token_symbol: &str,
+    native_token_decimals: u32,
+    shard_id: &str,
+    resource_policy: Option<&ShardResourcePolicy>,
+) -> Signed<DeployData> {
     let decimals_str = native_token_decimals.to_string();
+    let getter = resource_policy.map_or_else(String::new, |policy| {
+        format!(
+            "contract TokenMetadata(@\"resourcePolicy\", ret) = {{ ret!(\"{}\".hexToBytes()) }} |\n  ",
+            hex::encode(policy.encode())
+        )
+    });
     to_deploy(
         CompiledRholangTemplate::new(
             "TokenMetadata.rhox",
@@ -287,6 +310,7 @@ pub fn token_metadata(
                 ("nativeTokenName", native_token_name),
                 ("nativeTokenSymbol", native_token_symbol),
                 ("nativeTokenDecimals", &decimals_str),
+                ("resourcePolicyGetter", &getter),
             ],
         ),
         TOKEN_METADATA_PK,
