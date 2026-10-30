@@ -48,6 +48,7 @@ use crate::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyV
 use crate::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
+use crate::rust::key_value_block_store::KeyValueBlockStore;
 
 /// Describes what (if anything) the atomic helper does to the casper
 /// buffer after committing the DAG insert. Two variants — extend only
@@ -144,6 +145,24 @@ pub fn reconcile_buffer_against_dag(
                 Err(KvStoreError::InvalidArgument(_)) => {} // already removed
                 Err(e) => return Err(e),
             }
+        }
+    }
+    Ok(purged)
+}
+
+pub fn purge_buffered_blocks_without_body(
+    buffer: &CasperBufferKeyValueStorage,
+    block_store: &KeyValueBlockStore,
+) -> Result<usize, KvStoreError> {
+    let mut purged = 0;
+    for hash in buffer.buffered_block_hashes() {
+        if block_store.contains_key(&hash.0)? {
+            continue;
+        }
+        match buffer.remove(hash) {
+            Ok(()) => purged += 1,
+            Err(KvStoreError::InvalidArgument(_)) => {}
+            Err(e) => return Err(e),
         }
     }
     Ok(purged)

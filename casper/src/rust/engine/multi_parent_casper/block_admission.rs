@@ -171,6 +171,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     // DAG acceptance. They are retained until the finalizer writes their
     // terminal verdict, so an accepted-but-orphaned deploy can be re-proposed
     // via the canonical-won record before it is lost.
+    this.block_store.persist_block(block)?;
     let block_hash_serde = BlockHashSerde(block.block_hash.clone());
     let insert_start = std::time::Instant::now();
     let updated_dag = block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
