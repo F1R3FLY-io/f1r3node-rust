@@ -2,6 +2,7 @@ use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
 
+use super::record::ExecutionRecord;
 use super::validity::Limits;
 
 pub struct SelectionContext<'a> {
@@ -45,6 +46,25 @@ where
         }
     }
     out
+}
+
+pub fn pack_records<R: ExecutionRecord>(records: Vec<R>, limits: &Limits) -> Vec<R> {
+    let mut bytes = 0usize;
+    let mut packed = Vec::new();
+    for record in records {
+        if packed.len() >= limits.max_records {
+            break;
+        }
+        let size = record.encode().len();
+        match bytes.checked_add(size) {
+            Some(total) if total <= limits.max_record_bytes => {
+                bytes = total;
+                packed.push(record);
+            }
+            _ => break,
+        }
+    }
+    packed
 }
 
 #[cfg(test)]
@@ -115,5 +135,47 @@ mod tests {
             &ctx(&limits, &in_scope),
         );
         assert_eq!(picked, vec![fine]);
+    }
+
+    #[test]
+    fn records_are_packed_in_order_within_both_caps() {
+        use crate::rust::v6::block_record::BlockRecord;
+        let h = |s: &str| Bytes::copy_from_slice(s.as_bytes());
+        let records: Vec<BlockRecord> = (0..4)
+            .map(|i| BlockRecord::empty(h(&format!("b{i}")), h("pre"), h(&format!("post{i}"))))
+            .collect();
+        let size = records[0].encode().len();
+        let names = |packed: &[BlockRecord]| {
+            packed
+                .iter()
+                .map(|r| r.target().clone())
+                .collect::<Vec<_>>()
+        };
+        let by_count = Limits {
+            max_records: 3,
+            max_record_bytes: usize::MAX,
+            ..Limits::default()
+        };
+        assert_eq!(names(&pack_records(records.clone(), &by_count)), vec![
+            h("b0"),
+            h("b1"),
+            h("b2")
+        ]);
+        let by_bytes = Limits {
+            max_records: 64,
+            max_record_bytes: 2 * size + size / 2,
+            ..Limits::default()
+        };
+        let packed = pack_records(records.clone(), &by_bytes);
+        assert_eq!(names(&packed), vec![h("b0"), h("b1")]);
+        assert!(
+            packed.iter().map(|r| r.encode().len()).sum::<usize>() <= by_bytes.max_record_bytes
+        );
+        let none = Limits {
+            max_records: 64,
+            max_record_bytes: size - 1,
+            ..Limits::default()
+        };
+        assert!(pack_records(records, &none).is_empty());
     }
 }

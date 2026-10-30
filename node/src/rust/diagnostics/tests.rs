@@ -109,6 +109,7 @@ mod tests {
                 casper::rust::casper_conf::default_deploy_verified_encodings_cap(),
             v6_execution_lag_threshold:
                 casper::rust::casper_conf::default_v6_execution_lag_threshold(),
+            v6_fallback_distance: casper::rust::casper_conf::default_v6_fallback_distance(),
         }
     }
 

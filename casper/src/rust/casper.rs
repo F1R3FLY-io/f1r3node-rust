@@ -406,6 +406,21 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
     let deploy_storage = Arc::new(deploy_storage);
     let v6 = if casper_shard_conf.v6_order_then_execute {
+        let policy = match crate::rust::v6::genesis_policy::read_genesis_policy(
+            &runtime_manager,
+            &approved_block.body.state.post_state_hash,
+        )
+        .await?
+        {
+            Some(policy) => policy,
+            None => {
+                tracing::warn!(
+                    target: "f1r3fly.v6",
+                    "the approved block's state holds no shard resource policy; using the defaults"
+                );
+                crate::rust::v6::resource_policy::ShardResourcePolicy::default()
+            }
+        };
         let engine = crate::rust::v6::V6Engine::new(
             &approved_block,
             runtime_manager.clone(),
@@ -413,6 +428,8 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             block_dag_storage.clone(),
             deploy_storage.clone(),
             casper_shard_conf.v6_execution_lag_threshold,
+            casper_shard_conf.v6_fallback_distance,
+            policy,
         )?;
         engine.start();
         Some(engine)
@@ -606,6 +623,7 @@ pub struct CasperShardConf {
     pub synchrony_finalized_baseline_max_distance: u64,
     pub max_user_deploys_per_block: u32,
     pub v6_execution_lag_threshold: u64,
+    pub v6_fallback_distance: usize,
     /// Native token metadata baked into the TokenMetadata contract at genesis.
     /// Present on every node (joiner, validator, ceremony master, observer, standalone)
     /// so each path can log the effective values at startup.
@@ -662,6 +680,7 @@ impl CasperShardConf {
             synchrony_finalized_baseline_max_distance: 2048,
             max_user_deploys_per_block: 128,
             v6_execution_lag_threshold: crate::rust::v6::lag::DEFAULT_LAG_THRESHOLD,
+            v6_fallback_distance: crate::rust::v6::core::DEFAULT_FALLBACK_DISTANCE,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
