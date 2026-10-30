@@ -1,3 +1,4 @@
+use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::Signed;
 use models::casper::DeployDataProto;
 use models::rust::casper::protocol::casper_message::DeployData;
@@ -6,6 +7,8 @@ use prost::Message;
 use serde::Deserialize;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::BitVector;
+
+use super::key_value_deploy_storage::DeployPreparationError;
 
 const PREFIX: &[u8] = b"F1R3DEP\x01";
 const LEGACY_DECODE_METRIC: &str = "deploy.storage.legacy_decode";
@@ -22,20 +25,53 @@ struct LegacyDeployData {
 }
 
 pub(super) fn encode(deploy: &Signed<DeployData>) -> Result<BitVector, KvStoreError> {
-    validate_parameters(&deploy.data.parameters)
-        .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
+    encode_checked(deploy).map_err(Into::into)
+}
+
+pub(super) fn encode_checked(
+    deploy: &Signed<DeployData>,
+) -> Result<BitVector, DeployPreparationError> {
+    validate_parameters(&deploy.data.parameters).map_err(|error| {
+        DeployPreparationError::Serialization(KvStoreError::SerializationError(error.to_string()))
+    })?;
+    let algorithm = deploy.sig_algorithm.name();
+    if SignaturesAlgFactory::apply(&algorithm).is_none() {
+        return Err(DeployPreparationError::UnsupportedAlgorithm(algorithm));
+    }
+    verify_signature(deploy).map_err(|_| DeployPreparationError::InvalidSignature)?;
     let mut bytes = PREFIX.to_vec();
     DeployData::to_proto_ref(deploy)
         .encode(&mut bytes)
-        .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
+        .map_err(|error| {
+            DeployPreparationError::Serialization(KvStoreError::SerializationError(
+                error.to_string(),
+            ))
+        })?;
     Ok(bytes)
+}
+
+pub(super) fn verify_signature(deploy: &Signed<DeployData>) -> Result<(), KvStoreError> {
+    if deploy.verify() {
+        Ok(())
+    } else {
+        Err(KvStoreError::SerializationError(
+            "Invalid deploy signature".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+pub(super) fn encode_unchecked(deploy: &Signed<DeployData>) -> BitVector {
+    let mut bytes = PREFIX.to_vec();
+    DeployData::to_proto_ref(deploy).encode(&mut bytes).unwrap();
+    bytes
 }
 
 pub(super) fn decode(bytes: &BitVector) -> Result<Signed<DeployData>, KvStoreError> {
     if let Some(payload) = bytes.strip_prefix(PREFIX) {
         let proto = DeployDataProto::decode(payload)
             .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-        return DeployData::from_proto(proto).map_err(KvStoreError::SerializationError);
+        return DeployData::from_proto_unverified(proto).map_err(KvStoreError::SerializationError);
     }
     metrics::counter!(LEGACY_DECODE_METRIC).increment(1);
     let legacy: Signed<LegacyDeployData> = bincode::deserialize(bytes)?;
@@ -125,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn deploy_storage_rejects_tampered_signed_fields() {
+    fn deploy_storage_verifies_signatures_on_write_and_not_on_read() {
         for parameters in [Vec::new(), vec![DeployParameter {
             name: "input".into(),
             value: RholangValue::Int(42),
@@ -133,13 +169,26 @@ mod tests {
             let mut deploy = signed(parameters);
             assert_eq!(decode(&encode(&deploy).unwrap()).unwrap(), deploy);
             deploy.data.expiration_timestamp = Some(999);
-            let bytes = encode(&deploy).unwrap();
-            assert!(bytes.starts_with(PREFIX));
-            assert!(matches!(
-                decode(&bytes),
-                Err(KvStoreError::SerializationError(error)) if error == "Invalid signature"
-            ));
+            assert!(encode(&deploy).is_err());
+            let bytes = encode_unchecked(&deploy);
+            assert_eq!(decode(&bytes).unwrap(), deploy);
         }
+    }
+
+    #[test]
+    fn encode_rejects_a_valid_signature_with_an_unreadable_algorithm() {
+        let deploy = Signed::create(
+            signed(Vec::new()).data,
+            Box::new(crypto::rust::signatures::ed25519::Ed25519),
+            PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap();
+        assert!(deploy.verify());
+        assert!(matches!(
+            encode(&deploy),
+            Err(KvStoreError::SerializationError(message))
+                if message == "Unknown signature algorithm: ed25519"
+        ));
     }
 
     #[test]

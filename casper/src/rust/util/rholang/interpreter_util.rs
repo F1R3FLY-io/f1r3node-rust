@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::Par;
@@ -310,6 +311,49 @@ fn retain_recoverable_rejected_deploys_for_buffer(
             > floor_block_number
     });
     before - deploys.len()
+}
+
+fn populate_rejected_deploy_buffer(
+    buffer: &std::sync::Mutex<KeyValueRejectedDeployBuffer>,
+    deploys: Vec<Signed<DeployData>>,
+    floor_block_number: i64,
+) -> Result<(), CasperError> {
+    if deploys.is_empty() {
+        return Ok(());
+    }
+    let store = buffer.lock()?.clone();
+    let mut prepared = Vec::with_capacity(deploys.len());
+    let mut accepted = Vec::with_capacity(deploys.len());
+    for deploy in deploys {
+        match store.prepare(&deploy) {
+            Ok(record) => {
+                prepared.push(record);
+                accepted.push((deploy.sig, deploy.data.valid_after_block_number));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    deploy_sig = %hex::encode(&deploy.sig),
+                    %error,
+                    "RejectedDeployBuffer populate: invalid deploy skipped"
+                );
+            }
+        }
+    }
+    if prepared.is_empty() {
+        return Ok(());
+    }
+    buffer.lock()?.add_prepared(prepared)?;
+    for (sig, valid_after_block) in accepted {
+        tracing::info!(
+            target: "f1r3fly.casper.deploy_lifecycle",
+            event = "buffer_added",
+            deploy_sig = %hex::encode(&sig),
+            valid_after_block,
+            floor_block = floor_block_number,
+            "deploy lifecycle"
+        );
+    }
+    Ok(())
 }
 
 /// Update `disposition[sig]` toward the latest (highest-block) verdict. A higher
@@ -2059,29 +2103,12 @@ pub async fn compute_parents_post_state(
                             skipped
                         );
                     }
-                    if !deploys_to_buffer.is_empty() {
-                        for deploy in &deploys_to_buffer {
-                            tracing::info!(
-                                target: "f1r3fly.casper.deploy_lifecycle",
-                                event = "buffer_added",
-                                deploy_sig = %hex::encode(&deploy.sig),
-                                valid_after_block = deploy.data.valid_after_block_number,
-                                floor_block = floor_block_number,
-                                "deploy lifecycle"
-                            );
-                        }
-                        match buffer.lock() {
-                            Ok(guard) => {
-                                if let Err(err) = guard.add(deploys_to_buffer) {
-                                    tracing::warn!("RejectedDeployBuffer add failed: {}", err);
-                                }
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                                    "RejectedDeployBuffer lock poisoned; skipping populate"
-                                );
-                            }
-                        }
+                    if let Err(err) = populate_rejected_deploy_buffer(
+                        buffer,
+                        deploys_to_buffer,
+                        floor_block_number,
+                    ) {
+                        tracing::warn!("RejectedDeployBuffer add failed: {}", err);
                     }
                 }
             }
@@ -2243,11 +2270,16 @@ fn assert_no_settled_rejection(
 #[cfg(test)]
 mod backstop_tests {
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use block_storage::rust::dag::block_dag_key_value_storage::{
         BlockDagKeyValueStorage, InsertMode,
     };
+    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer;
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+    use crypto::rust::private_key::PrivateKey;
+    use crypto::rust::public_key::PublicKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use models::rust::block_hash::BlockHash;
@@ -2260,11 +2292,73 @@ mod backstop_tests {
 
     use super::{
         block_in_base_merge_scope, canonical_dispositions, canonical_won_sigs,
-        merge_scope_backstop_exceeded, rejected_sig_has_visible_non_source_win,
-        retain_recoverable_rejected_deploys_for_buffer, suppress_already_recorded_rejections,
-        MAX_FLOOR_DISTANCE_BLOCKS,
+        merge_scope_backstop_exceeded, populate_rejected_deploy_buffer,
+        rejected_sig_has_visible_non_source_win, retain_recoverable_rejected_deploys_for_buffer,
+        suppress_already_recorded_rejections, MAX_FLOOR_DISTANCE_BLOCKS,
     };
     use crate::rust::util::construct_deploy;
+
+    #[derive(Clone)]
+    struct CheckBufferLock {
+        buffer: Arc<Mutex<KeyValueRejectedDeployBuffer>>,
+        checks: Arc<AtomicUsize>,
+    }
+
+    impl std::fmt::Debug for CheckBufferLock {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("CheckBufferLock")
+        }
+    }
+
+    impl SignaturesAlg for CheckBufferLock {
+        fn verify(&self, data: &[u8], signature: &[u8], pub_key: &[u8]) -> bool {
+            assert!(self.buffer.try_lock().is_ok());
+            self.checks.fetch_add(1, Ordering::SeqCst);
+            Secp256k1.verify(data, signature, pub_key)
+        }
+
+        fn sign(&self, data: &[u8], sec: &[u8]) -> Vec<u8> { Secp256k1.sign(data, sec) }
+
+        fn to_public(&self, sec: &PrivateKey) -> PublicKey { Secp256k1.to_public(sec) }
+
+        fn new_key_pair(&self) -> (PrivateKey, PublicKey) { Secp256k1.new_key_pair() }
+
+        fn name(&self) -> String { Secp256k1.name() }
+
+        fn sig_length(&self) -> usize { Secp256k1.sig_length() }
+
+        fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
+
+        fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
+    }
+
+    #[tokio::test]
+    async fn rejected_buffer_prepares_without_its_mutex_and_preserves_valid_batch_entries() {
+        let mut manager = InMemoryStoreManager::new();
+        let buffer = Arc::new(Mutex::new(
+            KeyValueRejectedDeployBuffer::new(&mut manager)
+                .await
+                .unwrap(),
+        ));
+        let checks = Arc::new(AtomicUsize::new(0));
+        let mut deploys = (1..=3)
+            .map(|n| {
+                let mut deploy = construct_deploy::basic_deploy_data(n, None, None).unwrap();
+                deploy.sig_algorithm = Box::new(CheckBufferLock {
+                    buffer: buffer.clone(),
+                    checks: checks.clone(),
+                });
+                deploy
+            })
+            .collect::<Vec<_>>();
+        let expected = HashSet::from([deploys[0].clone(), deploys[2].clone()]);
+        deploys[1].data.phlo_limit += 1;
+
+        populate_rejected_deploy_buffer(&buffer, deploys, 0).unwrap();
+
+        assert_eq!(checks.load(Ordering::SeqCst), 3);
+        assert_eq!(buffer.lock().unwrap().read_all().unwrap(), expected);
+    }
 
     #[test]
     fn backstop_rejects_only_on_floor_distance_over_cap() {
