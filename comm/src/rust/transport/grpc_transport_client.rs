@@ -176,6 +176,13 @@ impl GrpcTransportClient {
                 effective_timeout.as_millis()
             );
         }
+        if effective_timeout > super::GRPC_REQUEST_TIMEOUT {
+            tracing::warn!(
+                configured_timeout_ms = effective_timeout.as_millis(),
+                max_stream_timeout_ms = super::GRPC_REQUEST_TIMEOUT.as_millis(),
+                "Configured network timeout exceeds the outgoing stream timeout limit"
+            );
+        }
 
         Ok(Self {
             network_id,
@@ -757,11 +764,11 @@ mod tests {
         );
         assert_eq!(
             stream_timeout(10_000_000, Duration::from_secs(5)),
-            super::super::GRPC_REQUEST_TIMEOUT
+            crate::rust::transport::GRPC_REQUEST_TIMEOUT
         );
         assert_eq!(
             stream_timeout(1, Duration::from_secs(60)),
-            super::super::GRPC_REQUEST_TIMEOUT
+            crate::rust::transport::GRPC_REQUEST_TIMEOUT
         );
     }
 
@@ -806,7 +813,10 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(attempt.packet_size, 6 * 1024 * 1024);
-            assert_eq!(attempt.timeout, super::super::GRPC_REQUEST_TIMEOUT);
+            assert_eq!(
+                attempt.timeout,
+                crate::rust::transport::GRPC_REQUEST_TIMEOUT
+            );
 
             if should_timeout {
                 assert!(matches!(attempt.outcome, StreamOutcome::TimedOut));
