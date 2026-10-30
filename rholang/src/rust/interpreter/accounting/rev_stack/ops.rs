@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::hot_store::HotStore;
@@ -35,18 +35,15 @@ impl CellStore for HotStoreCells {
 
 const LOCK_STRIPES: usize = 256;
 
+static WALLET_LOCKS: LazyLock<Vec<Mutex<()>>> =
+    LazyLock::new(|| (0..LOCK_STRIPES).map(|_| Mutex::new(())).collect());
+
 pub struct RevStacks {
     store: Arc<dyn CellStore>,
-    locks: Vec<Mutex<()>>,
 }
 
 impl RevStacks {
-    pub fn new(store: Arc<dyn CellStore>) -> Self {
-        RevStacks {
-            store,
-            locks: (0..LOCK_STRIPES).map(|_| Mutex::new(())).collect(),
-        }
-    }
+    pub fn new(store: Arc<dyn CellStore>) -> Self { RevStacks { store } }
 
     pub fn over_hot_store(
         store: Arc<Box<dyn HotStore<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
@@ -101,13 +98,27 @@ impl RevStacks {
         Ok(remaining)
     }
 
+    pub fn transfer(
+        &self,
+        from: &WalletOwner,
+        to: &WalletOwner,
+        amount: RevAmount,
+    ) -> Result<RevAmount, RevStackError> {
+        if amount == 0 || amount > MAX_AMOUNT {
+            return Err(RevStackError::InvalidAmount(amount));
+        }
+        let remaining = self.spend(from, amount)?;
+        self.deposit(to, amount)?;
+        Ok(remaining)
+    }
+
     fn locate(owner: &WalletOwner) -> (Par, Vec<u8>) {
         (wallet_channel(owner), wallet_channel_id(owner))
     }
 
     fn lock(&self, id: &[u8]) -> MutexGuard<'_, ()> {
         let stripe = id.first().copied().unwrap_or(0) as usize % LOCK_STRIPES;
-        self.locks[stripe]
+        WALLET_LOCKS[stripe]
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }

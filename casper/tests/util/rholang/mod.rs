@@ -9,4 +9,5 @@ pub mod non_negative_number_bound_test;
 pub mod resources;
 pub mod runtime_manager_test;
 pub mod runtime_spec;
+pub mod system_vault_v6_test;
 pub mod test_rho_loader;
