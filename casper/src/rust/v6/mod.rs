@@ -4,6 +4,7 @@ pub mod core;
 pub mod engine;
 pub mod executor;
 pub mod genesis_policy;
+pub mod genesis_wallets;
 pub mod linearizer;
 pub mod merge;
 pub mod propose;

@@ -377,6 +377,32 @@ pub fn vaults_generator(
     )
 }
 
+pub fn rev_stacks_generator(
+    lines: &[(String, u64)],
+    timestamp: i64,
+    shard_id: &str,
+) -> Signed<DeployData> {
+    let list = lines
+        .iter()
+        .map(|(address, amount)| format!("(\"{address}\", {amount})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let code = format!(
+        "new revGenesis(`rho:rev:genesis`), ret in {{ revGenesis!(\"mint\", [{list}], *ret) }}"
+    );
+    to_deploy(
+        CompiledRholangSource::new(
+            code,
+            HashMap::new(),
+            "<synthetic rev stacks generator>".to_string(),
+        )
+        .expect("Failed to compile the REV stacks generator"),
+        VAULTS_GENERATOR_PK,
+        timestamp,
+        shard_id,
+    )
+}
+
 pub fn to_public(priv_key_hex: &str) -> PublicKey {
     let private_key =
         PrivateKey::from_bytes(&hex::decode(priv_key_hex).expect("Invalid private key hex string"));

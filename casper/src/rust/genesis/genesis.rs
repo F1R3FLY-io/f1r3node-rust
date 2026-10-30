@@ -19,6 +19,7 @@ use super::contracts::vault::Vault;
 use crate::rust::errors::CasperError;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::v6::genesis_wallets::genesis_lines;
 use crate::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -120,7 +121,24 @@ impl Genesis {
 
         // Create vault deploys only if vaults are not empty
         let mut vault_deploys = Vec::new();
-        if !vaults.is_empty() {
+        if resource_policy.is_some() {
+            let lines = genesis_lines(vaults).expect("wallets.txt is checked before genesis");
+            let batches: Vec<_> = lines.chunks(BATCH_SIZE).collect();
+            for (idx, batch) in batches.iter().enumerate() {
+                vault_deploys.push(standard_deploys::rev_stacks_generator(
+                    batch,
+                    timestamp + idx as i64,
+                    shard_id,
+                ));
+            }
+            vault_deploys.push(standard_deploys::vaults_generator(
+                Vec::new(),
+                supply,
+                timestamp + batches.len() as i64,
+                true,
+                shard_id,
+            ));
+        } else if !vaults.is_empty() {
             let batch_count = (vaults.len() + BATCH_SIZE - 1) / BATCH_SIZE;
             vault_deploys.reserve(batch_count);
 
@@ -272,6 +290,7 @@ impl Genesis {
                 )));
             }
             policy.check().map_err(CasperError::RuntimeError)?;
+            genesis_lines(&genesis.vaults)?;
         } else if genesis.version == PROTOCOL_V6 {
             return Err(CasperError::RuntimeError(format!(
                 "a protocol {PROTOCOL_V6} genesis needs a shard resource policy"
