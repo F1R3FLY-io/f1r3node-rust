@@ -6,3 +6,4 @@ pub mod incremental_release_scan_spec;
 pub mod recovery_purge_race_spec;
 pub mod refetch_cooldown_spec;
 pub mod stale_buffer_link_spec;
+pub mod release_order_invariance_spec;
