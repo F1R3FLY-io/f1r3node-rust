@@ -37,6 +37,7 @@ use super::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
     RhoSysAuthToken, RhoUri,
 };
+use super::swi_prolog_service::{petta_execute_framed, Frame};
 use super::util::vault_address::VaultAddress;
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
@@ -276,6 +277,8 @@ impl FixedChannels {
     /// stops needing to resolve URNs through `urn_map` itself.
     pub fn registry_lookup() -> Par { byte_name(37) }
 
+    pub fn swipl_execute_petta() -> Par { byte_name(38) }
+
     // -----------------------------------------------------------
     // Fileio handlers — `rho:io:fs:native:*` URN space.
     //
@@ -498,6 +501,7 @@ impl BodyRefs {
     pub const CHROMA_QUERY: i64 = 35;
     pub const CHROMA_DELETE_DOCUMENTS: i64 = 36;
     pub const REGISTRY_LOOKUP: i64 = 30;
+    pub const SWIPL_EXECUTE_PETTA: i64 = 37;
 
     // Fileio handlers — see `FixedChannels` above for the URN
     // space.  Numbering matches fileio's BodyRefs assignment; gaps
@@ -656,6 +660,13 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
     ])
 }
 
+/// Channel URNs that a PeTTa program is allowed to forward emission frames to
+/// (see [`SystemProcesses::forward_frames`]). The frame `channel` is controlled
+/// by the MeTTa program, and `urn_to_channel` holds every dispatch-table URN
+/// (including the `rho:io:fs:native:*` URNs that `eval_new` hides from deploys),
+/// so this allowlist is the boundary that keeps program output to stdout.
+pub const FORWARDABLE_FRAME_CHANNELS: &[&str] = &["rho:io:stdout"];
+
 #[derive(Clone)]
 pub struct ProcessContext {
     pub space: RhoISpace,
@@ -669,6 +680,7 @@ pub struct ProcessContext {
     /// consulting it directly instead of duplicating the table.
     pub urn_map: Arc<HashMap<String, Par>>,
     pub system_processes: SystemProcesses,
+    pub urn_to_channel: Arc<HashMap<String, Par>>,
 }
 
 impl ProcessContext {
@@ -683,6 +695,7 @@ impl ProcessContext {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        urn_to_channel: Arc<HashMap<String, Par>>,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -701,7 +714,9 @@ impl ProcessContext {
                 ollama_service,
                 grpc_client_service,
                 chromadb_service,
+                urn_to_channel.clone(),
             ),
+            urn_to_channel,
         }
     }
 }
@@ -863,6 +878,7 @@ pub struct SystemProcesses {
     pretty_printer: PrettyPrinter,
     #[allow(dead_code)] // Note: This isn't dead when the chromadb flag is used
     chromadb_service: SharedChromaDBService,
+    pub urn_to_channel: Arc<HashMap<String, Par>>,
 }
 
 impl SystemProcesses {
@@ -876,6 +892,7 @@ impl SystemProcesses {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        urn_to_channel: Arc<HashMap<String, Par>>,
     ) -> Self {
         SystemProcesses {
             dispatcher,
@@ -888,6 +905,7 @@ impl SystemProcesses {
             grpc_client_service,
             pretty_printer: PrettyPrinter::new(),
             chromadb_service,
+            urn_to_channel,
         }
     }
 
@@ -2337,6 +2355,153 @@ impl SystemProcesses {
     }
 
     // ChromaDB section end
+
+    // SWIPL section begin
+
+    /// System process handler for `rho:petta:execute` URN.
+    ///
+    /// Executes MeTTa code through the PeTTa (SWI-Prolog) interpreter and returns
+    /// the result to the calling Rholang contract.
+    ///
+    /// # URN Specification
+    ///
+    /// **URN:** `rho:petta:execute`
+    ///
+    /// **Arity:** 2 arguments
+    ///
+    /// **Arguments:**
+    /// 1. `metta_code: String` - MeTTa code to execute
+    /// 2. `ack: Channel` - Acknowledgment channel to receive result
+    ///
+    /// # Return Shape
+    ///
+    /// Sends a single `Par` on the acknowledgment channel containing the execution result.
+    /// The structure matches PeTTa's JSON output converted to Rholang types.
+    ///
+    /// # Determinism and consensus
+    ///
+    /// This is a **deterministic** system process. It is NOT registered in
+    /// [`non_deterministic_ops`], so the output is not cached in the event log.
+    /// Every node runs the interpreter: the proposer during play, and each
+    /// validator again during replay. Determinism is enforced by ordinary replay
+    /// validation — the recomputed post-state hash, the COMM matching in the
+    /// replay rspace (including the forwarded frames), and the deploy cost must
+    /// all match the proposer's block.
+    ///
+    /// Re-execution is deterministic because [`petta_execute_framed`] closes every
+    /// nondeterminism source: network unshared, `git-import!` stripped, Python excluded;
+    /// the entropy/clock builtins are blocked (`PETTA_CONSENSUS_BLOCKED_PREDS`, a denylist
+    /// — add future ones there), leaving seeded `rand-*` for randomness; and the wall-clock
+    /// timeout is replaced by a deterministic inference budget (`PETTA_MAX_INFERENCES`), so
+    /// an over-budget run fails identically on every node. A deploy that still diverges is
+    /// rejected as an invalid transaction (non-slashable).
+    ///
+    /// # Error handling
+    ///
+    /// An interpreter error, a frame-forwarding error, or an ack produce error
+    /// returns an `InterpreterError` that fails the deploy. Because the process
+    /// is deterministic, a validator re-running the same failing program observes
+    /// the same error.
+    ///
+    /// # See Also
+    ///
+    /// - [`petta_execute`] - Low-level PeTTa execution (in `swi_prolog_service`)
+    /// - [`non_deterministic_ops`] - Registry of non-deterministic body refs (PeTTa is absent)
+    /// - Tests: `swipl_petta_replay_spec.rs`
+    pub async fn petta_execute(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let rand = contract_args
+            .0
+            .first()
+            .map(|lpwr| lpwr.random_state.clone())
+            .unwrap_or_default();
+
+        let Some((produce, _is_replay, _previous_output, args)) =
+            self.is_contract_call().unapply(contract_args)
+        else {
+            return Err(illegal_argument_error("petta_execute"));
+        };
+
+        let [metta_code, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("petta_execute"));
+        };
+        let Some(metta_code) = RhoString::unapply(metta_code) else {
+            return Err(illegal_argument_error("petta_execute"));
+        };
+
+        // Deterministic: `petta_execute_framed` blocks the entropy/clock builtins and
+        // bounds the run with an inference budget, so every node re-executes to the same
+        // output and frames (confirmed by ordinary replay validation).
+        let (frames, output_par) = match petta_execute_framed(&metta_code).await {
+            Ok((frames, par)) => (frames, par),
+            Err(e) => return Err(InterpreterError::SwiplError(e.to_string().into())),
+        };
+
+        // Forward emission frames to their Rholang channels.
+        self.forward_frames(&frames, rand.clone()).await?;
+
+        let output = vec![output_par];
+        if let Err(e) = produce(&output, ack).await {
+            return Err(InterpreterError::SwiplError(
+                format!("Failed to produce PeTTa output on ack channel: {e}").into(),
+            ));
+        }
+        Ok(output)
+    }
+
+    /// Forward frames emitted by the MeTTa interpreter to their Rholang channels.
+    ///
+    /// Each frame specifies a channel URN (e.g. `"rho:io:stdout"`) and a list of argument
+    /// `Par` values. This method looks up the URN in the `urn_to_channel` map and produces
+    /// each argument on the corresponding fixed channel via rspace.
+    ///
+    /// Only the URNs in [`FORWARDABLE_FRAME_CHANNELS`] may be targeted. The frame
+    /// `channel` is controlled by the MeTTa program, and `urn_to_channel` holds every
+    /// dispatch-table URN (including the `rho:io:fs:native:*` URNs that `eval_new` hides
+    /// from deploys), so without this allowlist a program could forward arguments onto a
+    /// privileged channel. Frames for any other channel are dropped with a warning.
+    async fn forward_frames(
+        &self,
+        frames: &[Frame],
+        rand: Vec<u8>,
+    ) -> Result<(), InterpreterError> {
+        for frame in frames {
+            if !FORWARDABLE_FRAME_CHANNELS.contains(&frame.channel.as_str()) {
+                tracing::warn!(target: "f1r3fly.petta",
+                    "Dropping frame for non-forwardable channel URN: {}", frame.channel);
+                continue;
+            }
+
+            let channel_par = match self.urn_to_channel.get(&frame.channel) {
+                Some(ch) => ch.clone(),
+                None => {
+                    tracing::warn!(target: "f1r3fly.petta",
+                        "Unknown channel URN in frame: {}", frame.channel);
+                    continue;
+                }
+            };
+
+            for arg in &frame.arguments {
+                let lpwr = ListParWithRandom {
+                    pars: vec![arg.clone()],
+                    random_state: rand.clone(),
+                };
+
+                self.space
+                    .produce(channel_par.clone(), lpwr, false)
+                    .await
+                    .map_err(|e| InterpreterError::NonDeterministicProcessFailure {
+                        cause: Box::new(InterpreterError::SwiplError(
+                            format!("Failed to produce on channel {}: {}", frame.channel, e).into(),
+                        )),
+                        output_not_produced: vec![],
+                    })?;
+            }
+        }
+        Ok(())
+    }
 }
 
 // See casper/src/test/scala/coop/rchain/casper/helper/RhoSpec.scala
@@ -2648,5 +2813,17 @@ mod body_refs_fs_tests {
                 );
             }
         }
+    }
+
+    /// `forward_frames` may only forward PeTTa emission frames to the channels
+    /// in `FORWARDABLE_FRAME_CHANNELS`. A MeTTa program controls the frame
+    /// channel URN, so widening this list (or letting a privileged
+    /// `rho:io:fs:native:*` URN in) would let a deploy reach a channel
+    /// `eval_new` hides from it. This pins the allowlist to stdout only.
+    #[test]
+    fn forwardable_frame_channels_is_stdout_only() {
+        assert_eq!(FORWARDABLE_FRAME_CHANNELS, &["rho:io:stdout"]);
+        assert!(FORWARDABLE_FRAME_CHANNELS.contains(&"rho:io:stdout"));
+        assert!(!FORWARDABLE_FRAME_CHANNELS.contains(&"rho:io:fs:native:1.0.0/removeDir"));
     }
 }

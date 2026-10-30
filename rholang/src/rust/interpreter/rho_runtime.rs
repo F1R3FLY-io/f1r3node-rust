@@ -1263,6 +1263,22 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 #[cfg(not(feature = "chromadb"))]
 fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
+fn std_petta_processes() -> Vec<Definition> {
+    vec![Definition {
+        urn: "rho:petta:execute".to_string(),
+        fixed_channel: FixedChannels::swipl_execute_petta(),
+        arity: 2,
+        body_ref: BodyRefs::SWIPL_EXECUTE_PETTA,
+        handler: Box::new(|ctx| {
+            Box::new(move |args| {
+                let ctx = ctx.clone();
+                Box::pin(async move { ctx.system_processes.clone().petta_execute(args).await })
+            })
+        }),
+        remainder: None,
+    }]
+}
+
 /// Build `Definition` rows for every entry in the `FS_HANDLERS`
 /// distributed slice.  Each definition adapts the typed per-handler
 /// `dispatch` fn-pointer (which takes an `FsProcesses` + the triple
@@ -1360,6 +1376,7 @@ fn dispatch_table_creator(
     all_processes.extend(std_rho_crypto_processes());
     all_processes.extend(std_rho_ai_processes());
     all_processes.extend(std_rho_chroma_processes());
+    all_processes.extend(std_petta_processes());
 
     // File I/O native URNs — one Definition per entry in the
     // FS_HANDLERS distributed slice.  Registration is unconditional
@@ -1405,6 +1422,14 @@ fn dispatch_table_creator(
 
     all_processes.append(extra_system_processes);
 
+    // Build a URN → fixed_channel map so the petta_execute handler can forward frames
+    let urn_to_channel: Arc<HashMap<String, Par>> = Arc::new(
+        all_processes
+            .iter()
+            .map(|def| (def.urn.clone(), def.fixed_channel.clone()))
+            .collect(),
+    );
+
     for def in all_processes.iter_mut() {
         let tuple = def.to_dispatch_table(ProcessContext::create(
             space.clone(),
@@ -1417,6 +1442,7 @@ fn dispatch_table_creator(
             ollama_service.clone(),
             grpc_client_service.clone(),
             chromadb_service.clone(),
+            urn_to_channel.clone(),
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -1569,13 +1595,17 @@ fn setup_maps_and_refs(
     // When OpenAI is disabled, the NoOp service handles calls gracefully.
     let rho_ai_binding = std_rho_ai_processes();
     let rho_chroma_binding = std_rho_chroma_processes();
+    let rho_swipl_binding = std_petta_processes();
+    let rho_petta_binding = std_petta_processes();
 
     let combined_processes = system_binding
         .iter()
         .chain(rho_crypto_binding.iter())
         .chain(rho_ai_binding.iter())
+        .chain(rho_petta_binding.iter())
         .chain(extra_system_processes.iter())
         .chain(rho_chroma_binding.iter())
+        .chain(rho_swipl_binding.iter())
         .collect::<Vec<&Definition>>();
 
     let mut urn_map: HashMap<_, _> = basic_processes();

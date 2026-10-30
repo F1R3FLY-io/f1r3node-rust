@@ -1010,6 +1010,33 @@ jobs:
           path: /tmp/test-logs/
           retention-days: 7
 
+  # The PeTTa specs skip unless the sandboxed interpreter prerequisites (swipl,
+  # petta.sh, PETTA_DIR, CACHE_DIR, SANDBOX_LIB_PATH, PLN/workspace sources) are
+  # all present, so no other test job exercises a `rho:petta:execute` call. The
+  # petta-test Docker stage wires those prerequisites and runs the ecan + workspace
+  # specs. REQUIRE_PETTA_TESTS=1 turns a missing prerequisite into a failure instead
+  # of a silent skip. --privileged is required: petta.sh runs each spec inside a
+  # bubblewrap user namespace, which the default Docker seccomp/apparmor profile blocks.
+  petta_test:
+    name: PeTTa Specs
+    needs: [build_base, static_checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.build_base.outputs.TARGET_SHA }}
+          persist-credentials: false
+
+      - name: Build petta-test image
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: docker build --target petta-test -t f1r3fly-petta-test -f node/Dockerfile .
+
+      - name: Run PeTTa specs
+        run: docker run --rm --privileged -e REQUIRE_PETTA_TESTS=1 f1r3fly-petta-test
+
   # casper is the one crate whose suite does not reliably fit the shared
   # 30-minute test-job ceiling: ~23 minutes on a nominal runner (7m build +
   # 15m tests), which a degraded runner overran on 2026-08-27 with every
