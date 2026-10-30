@@ -307,6 +307,134 @@ async fn out_of_window_deploys_are_refused_without_persistence_or_slot_consumpti
 }
 
 #[tokio::test]
+async fn arrival_horizon_accepts_its_boundary_and_refuses_the_next_height() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let next = node
+        .block_dag_storage
+        .get_representation()
+        .unwrap()
+        .latest_block_number()
+        + 1;
+    for (index, height) in [next, next + 3, next + 4].into_iter().enumerate() {
+        let candidate = construct_deploy::source_deploy(
+            "Nil".to_owned(),
+            index as i64,
+            None,
+            None,
+            None,
+            Some(height),
+            Some(genesis.genesis_block.shard_id.clone()),
+        )
+        .unwrap();
+        let result = node.casper.deploy(candidate.clone()).unwrap();
+        if height <= next + 3 {
+            assert!(matches!(result, Either::Right(_)), "{result:?}");
+        } else {
+            assert!(matches!(
+                result,
+                Either::Left(DeployError::InvalidFreshness)
+            ));
+        }
+        assert_eq!(
+            node.deploy_storage.contains_sig(&candidate.sig).unwrap(),
+            height <= next + 3
+        );
+    }
+    assert_eq!(node.deploy_storage.read_all().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn previously_stored_future_deploys_keep_their_slots_outside_the_arrival_horizon() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let next = node
+        .block_dag_storage
+        .get_representation()
+        .unwrap()
+        .latest_block_number()
+        + 1;
+    let stored: Vec<_> = (0..24)
+        .map(|timestamp| {
+            construct_deploy::source_deploy(
+                "Nil".to_owned(),
+                timestamp,
+                None,
+                None,
+                None,
+                Some(next + 4),
+                Some(genesis.genesis_block.shard_id.clone()),
+            )
+            .unwrap()
+        })
+        .collect();
+    node.deploy_storage.add(stored.clone()).unwrap();
+    let candidate = queued_deploy(100, &genesis.genesis_block.shard_id);
+    assert!(matches!(
+        node.casper.deploy(candidate.clone()).unwrap(),
+        Either::Left(DeployError::PoolBusy { capacity: 24, .. })
+    ));
+    assert!(!node.deploy_storage.contains_sig(&candidate.sig).unwrap());
+    assert_eq!(
+        node.deploy_storage.read_all().unwrap(),
+        stored.into_iter().collect()
+    );
+}
+
+#[tokio::test]
+async fn draining_a_setup_deploy_does_not_lower_capacity_even_with_future_entries() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    for with_future in [false, true] {
+        let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let setup = queued_deploy(0, &genesis.genesis_block.shard_id);
+        let block = match node.create_block(&[setup]).await.unwrap() {
+            BlockCreatorResult::Created(block, ..) => block,
+            other => panic!("Expected a setup block: {other:?}"),
+        };
+        if with_future {
+            let future = construct_deploy::source_deploy(
+                "Nil".to_owned(),
+                1,
+                None,
+                None,
+                None,
+                Some(block.body.state.block_number + 1),
+                Some(genesis.genesis_block.shard_id.clone()),
+            )
+            .unwrap();
+            assert!(matches!(
+                node.casper.deploy(future).unwrap(),
+                Either::Right(_)
+            ));
+        }
+        assert!(matches!(
+            node.process_block(block).await.unwrap(),
+            Either::Right(_)
+        ));
+        for index in 0..(24 - usize::from(with_future)) {
+            let candidate = queued_deploy(100 + index as i64, &genesis.genesis_block.shard_id);
+            let result = node.casper.deploy(candidate).unwrap();
+            assert!(matches!(result, Either::Right(_)), "{result:?}");
+        }
+        assert!(matches!(
+            node.casper
+                .deploy(queued_deploy(200, &genesis.genesis_block.shard_id))
+                .unwrap(),
+            Either::Left(DeployError::PoolBusy { capacity: 24, .. })
+        ));
+    }
+}
+
+#[tokio::test]
 async fn peer_blocks_do_not_reduce_local_admission_capacity() {
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(None)
@@ -1349,6 +1477,105 @@ mod admission_regressions {
     struct StoreWithScanHook {
         inner: Arc<dyn KeyValueStore>,
         after_scan: Arc<dyn Fn() -> Result<(), KvStoreError> + Send + Sync>,
+        before_insert: Option<Arc<dyn Fn() -> Result<(), KvStoreError> + Send + Sync>>,
+    }
+
+    #[tokio::test]
+    async fn admission_continues_while_another_handle_is_waiting_to_persist() {
+        use casper::rust::engine::engine::noop;
+        let genesis = GenesisBuilder::new()
+            .build_genesis_with_parameters(None)
+            .await
+            .unwrap();
+        let mut first = TestNode::standalone(genesis.clone()).await.unwrap();
+        let mut second = TestNode::standalone(genesis.clone()).await.unwrap();
+        first.engine_cell.set(Arc::new(noop())).await;
+        second.engine_cell.set(Arc::new(noop())).await;
+        let original = first.deploy_storage.clone();
+        let shared = first.casper.deploy_admission.clone();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let write_gate = gate.clone();
+        let wrapped: Arc<dyn KeyValueStore> = Arc::new(StoreWithScanHook {
+            inner: original.store.raw_store().clone(),
+            after_scan: Arc::new(|| Ok(())),
+            before_insert: Some(Arc::new(move || {
+                entered.send(()).unwrap();
+                let (lock, condition) = &*write_gate;
+                let _released = condition
+                    .wait_while(lock.lock().unwrap(), |released| !*released)
+                    .unwrap();
+                Ok(())
+            })),
+        });
+        let first_pool = Arc::new(
+            KeyValueDeployStorage::from_stores(wrapped, Arc::new(InMemoryKeyValueStore::new()))
+                .unwrap(),
+        );
+        let second_pool = Arc::new(
+            KeyValueDeployStorage::from_stores(
+                original.store.raw_store().clone(),
+                Arc::new(InMemoryKeyValueStore::new()),
+            )
+            .unwrap(),
+        );
+        first.deploy_storage = first_pool.clone();
+        Arc::get_mut(&mut first.casper).unwrap().deploy_storage = first_pool;
+        second.deploy_storage = second_pool.clone();
+        {
+            let casper = Arc::get_mut(&mut second.casper).unwrap();
+            casper.deploy_storage = second_pool;
+            casper.deploy_admission = shared;
+            casper.block_dag_storage = first.block_dag_storage.clone();
+        }
+        let first_casper = first.casper.clone();
+        let first_candidate = signed_deploy(1000, &genesis.genesis_block.shard_id);
+        let first_write = std::thread::spawn(move || {
+            matches!(
+                first_casper.deploy(first_candidate).unwrap(),
+                Either::Right(_)
+            )
+        });
+        let reached_write = waiting.recv_timeout(Duration::from_secs(20));
+        if reached_write.is_err() {
+            *gate.0.lock().unwrap() = true;
+            gate.1.notify_all();
+            assert!(first_write.join().unwrap());
+            panic!("Admission did not reach the persistence gate");
+        }
+        let second_casper = second.casper.clone();
+        let second_candidate = signed_deploy(1001, &genesis.genesis_block.shard_id);
+        let (completed, result) = std::sync::mpsc::channel();
+        let second_write = std::thread::spawn(move || {
+            completed
+                .send(matches!(
+                    second_casper.deploy(second_candidate).unwrap(),
+                    Either::Right(_)
+                ))
+                .unwrap();
+        });
+        let concurrent_result = result.recv_timeout(Duration::from_secs(5));
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(first_write.join().unwrap());
+        second_write.join().unwrap();
+        assert!(concurrent_result.unwrap());
+        for timestamp in 1002..1024 {
+            assert!(matches!(
+                second
+                    .casper
+                    .deploy(signed_deploy(timestamp, &genesis.genesis_block.shard_id))
+                    .unwrap(),
+                Either::Right(_)
+            ));
+        }
+        assert!(matches!(
+            second
+                .casper
+                .deploy(signed_deploy(1024, &genesis.genesis_block.shard_id))
+                .unwrap(),
+            Either::Left(DeployError::PoolBusy { capacity: 24, .. })
+        ));
     }
 
     impl KeyValueStore for StoreWithScanHook {
@@ -1367,6 +1594,9 @@ mod admission_regressions {
             key: ByteBuffer,
             value: ByteBuffer,
         ) -> Result<bool, KvStoreError> {
+            if let Some(before_insert) = &self.before_insert {
+                before_insert()?;
+            }
             self.inner.put_one_if_absent(key, value)
         }
 
@@ -1422,13 +1652,72 @@ mod admission_regressions {
     }
 
     #[tokio::test]
-    async fn repeated_lifecycle_changes_exhaust_refresh_without_persisting_the_candidate() {
-        assert_admission_during_lifecycle_changes(3, true).await;
+    async fn terminal_progress_does_not_exhaust_admission_refresh() {
+        assert_admission_during_lifecycle_changes(3, false).await;
     }
 
     #[tokio::test]
-    async fn one_lifecycle_change_retries_and_accepts_the_candidate_once() {
-        assert_admission_during_lifecycle_changes(1, false).await;
+    async fn a_candidate_finalized_during_refresh_is_not_persisted() {
+        assert_admission_during_lifecycle_changes(1, true).await;
+    }
+
+    #[tokio::test]
+    async fn repeated_pool_changes_exhaust_refresh_without_persisting_the_candidate() {
+        use casper::rust::engine::engine::noop;
+
+        let genesis = GenesisBuilder::new()
+            .build_genesis_with_parameters(None)
+            .await
+            .unwrap();
+        let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+        node.engine_cell.set(Arc::new(noop())).await;
+        let shard = &genesis.genesis_block.shard_id;
+        for timestamp in 0..23 {
+            assert!(matches!(
+                node.casper.deploy(deploy(timestamp, shard)).unwrap(),
+                Either::Right(_)
+            ));
+        }
+        let original = node.deploy_storage.clone();
+        let records: Vec<_> = (200..206)
+            .map(|timestamp| {
+                let deploy = deploy(timestamp, shard);
+                (
+                    original.store.encode_key(&deploy.sig.to_vec()).unwrap(),
+                    original.store.encode_value(&deploy).unwrap(),
+                )
+            })
+            .collect();
+        let scans = Arc::new(AtomicUsize::new(0));
+        let hook = {
+            let scans = scans.clone();
+            let raw = original.store.raw_store().clone();
+            Arc::new(move || {
+                let scan = scans.fetch_add(1, Ordering::SeqCst);
+                if let Some((key, value)) = records.get(scan) {
+                    raw.put_one(key.clone(), value.clone())?;
+                }
+                Ok(())
+            })
+        };
+        let wrapped = Arc::new(StoreWithScanHook {
+            inner: original.store.raw_store().clone(),
+            after_scan: hook,
+            before_insert: None,
+        });
+        let instrumented = Arc::new(
+            KeyValueDeployStorage::from_stores(wrapped, Arc::new(InMemoryKeyValueStore::new()))
+                .unwrap(),
+        );
+        node.deploy_storage = instrumented.clone();
+        Arc::get_mut(&mut node.casper).unwrap().deploy_storage = instrumented;
+        let candidate = deploy(100, shard);
+        assert!(matches!(
+            node.casper.deploy(candidate.clone()).unwrap(),
+            Either::Left(DeployError::AdmissionBusy)
+        ));
+        assert_eq!(scans.load(Ordering::SeqCst), 6);
+        assert!(!original.contains_sig(&candidate.sig).unwrap());
     }
 
     #[tokio::test]
@@ -1485,7 +1774,7 @@ mod admission_regressions {
         assert_eq!(lifecycle.revision().unwrap().1, revision_after.1);
     }
 
-    async fn assert_admission_during_lifecycle_changes(changes: usize, expect_busy: bool) {
+    async fn assert_admission_during_lifecycle_changes(changes: usize, settle_candidate: bool) {
         let genesis = GenesisBuilder::new()
             .build_genesis_with_parameters(None)
             .await
@@ -1521,8 +1810,15 @@ mod admission_regressions {
         assert!(initial_revision.is_some());
         let original = node.deploy_storage.clone();
         let scans = Arc::new(AtomicUsize::new(0));
+        let candidate = deploy(100, shard);
         let markers: Vec<_> = (0..changes)
-            .map(|index| deploy(200 + index as i64, shard).sig)
+            .map(|index| {
+                if settle_candidate {
+                    candidate.sig.clone()
+                } else {
+                    deploy(200 + index as i64, shard).sig
+                }
+            })
             .collect();
         let hook = {
             let scans = scans.clone();
@@ -1530,6 +1826,7 @@ mod admission_regressions {
             Arc::new(move || {
                 let scan = scans.fetch_add(1, Ordering::SeqCst);
                 if let Some(signature) = markers.get(scan) {
+                    dag.open_dropped_deploy_lifecycle_row(signature, 0)?;
                     dag.put_deploy_terminal_if_absent(signature, TerminalRecord {
                         state: TerminalState::Finalized,
                         rejection_count: 0,
@@ -1543,6 +1840,7 @@ mod admission_regressions {
         let wrapped: Arc<dyn KeyValueStore> = Arc::new(StoreWithScanHook {
             inner: original.store.raw_store().clone(),
             after_scan: hook,
+            before_insert: None,
         });
         let instrumented =
             KeyValueDeployStorage::from_stores(wrapped, Arc::new(InMemoryKeyValueStore::new()))
@@ -1551,21 +1849,23 @@ mod admission_regressions {
         node.deploy_storage = instrumented.clone();
         Arc::get_mut(&mut node.casper).unwrap().deploy_storage = instrumented;
 
-        let candidate = deploy(100, shard);
         let result = node.casper.deploy(candidate.clone());
         node.deploy_storage = original.clone();
         Arc::get_mut(&mut node.casper).unwrap().deploy_storage = original;
 
-        if expect_busy {
+        if settle_candidate {
             assert!(matches!(
                 result,
-                Ok(Either::Left(DeployError::AdmissionBusy))
+                Ok(Either::Left(DeployError::DuplicateDeploy(_)))
             ));
-            assert_eq!(scans.load(Ordering::SeqCst), 3);
         } else {
             assert!(matches!(result, Ok(Either::Right(id)) if id == candidate.sig.to_vec()));
-            assert!(scans.load(Ordering::SeqCst) > 1);
         }
+        assert_eq!(
+            scans.load(Ordering::SeqCst),
+            2,
+            "Admission should complete one snapshot attempt"
+        );
         assert_ne!(
             node.block_dag_storage.deploy_status_revision(),
             initial_revision
@@ -1576,19 +1876,22 @@ mod admission_regressions {
         );
         {
             let pool = node.deploy_storage.as_ref();
-            assert_eq!(pool.contains_sig(&candidate.sig).unwrap(), !expect_busy);
+            assert_eq!(
+                pool.contains_sig(&candidate.sig).unwrap(),
+                !settle_candidate
+            );
             assert_eq!(
                 pool.read_all().unwrap().len(),
-                if expect_busy { 23 } else { 24 }
+                if settle_candidate { 23 } else { 24 }
             );
             for accepted in &seeded {
                 assert!(pool.contains_sig(&accepted.sig).unwrap());
             }
         }
 
-        if expect_busy {
+        if settle_candidate {
             assert!(matches!(
-                node.casper.deploy(candidate.clone()).unwrap(),
+                node.casper.deploy(deploy(101, shard)).unwrap(),
                 Either::Right(_)
             ));
         }
@@ -1598,7 +1901,7 @@ mod admission_regressions {
         ));
         assert_eq!(node.deploy_storage.as_ref().read_all().unwrap().len(), 24);
         assert!(matches!(
-            node.casper.deploy(deploy(101, shard)).unwrap(),
+            node.casper.deploy(deploy(102, shard)).unwrap(),
             Either::Left(DeployError::PoolBusy { capacity: 24, .. })
         ));
     }

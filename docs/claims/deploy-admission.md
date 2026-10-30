@@ -19,7 +19,10 @@ Admission reserves capacity before persistence and bounds all fresh pending sign
 Refused deploys produce no pool insertion or proposal signal.
 Reservation rollback and deferred exclusion release each slot once.
 Duplicate checks keep priority over full-queue errors.
-State changes during all three snapshot attempts produce a retryable refusal without saving the candidate.
+Incompatible pool, rejected-buffer, DAG, or reservation changes during all three attempts produce a retryable refusal without saving the candidate.
+Terminal progress alone does not restart an attempt. Its permanent exclusions can only reduce the fresh queue.
+Only local blocks with remaining eligible demand contribute service samples.
+New arrivals have a three-height horizon beyond the next block. Previously accepted future entries retain their queue positions.
 Verified-record reuse preserves consistent metadata and the existing quarantine rules.
 
 ```yaml

@@ -288,6 +288,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
                             DeployError::DuplicateDeploy(_)
                                 | DeployError::PoolBusy { .. }
                                 | DeployError::AdmissionBusy
+                                | DeployError::InvalidFreshness
                         )
                     )
                 });

@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
@@ -39,13 +39,13 @@ pub(crate) struct ReservationCache {
 }
 
 impl DeployAdmission {
-    pub(crate) fn observe(&self, sequence: i32, included: usize, had_demand: bool) {
+    pub(crate) fn observe(&self, sequence: i32, included: usize, has_remaining_demand: bool) {
         let mut samples = self.samples.lock();
         if samples.last_sequence.is_some_and(|last| sequence <= last) {
             return;
         }
         samples.last_sequence = Some(sequence);
-        if !had_demand {
+        if !has_remaining_demand {
             return;
         }
         if samples.inclusions.len() == SERVICE_SAMPLE_BLOCKS {
@@ -95,6 +95,12 @@ pub struct FreshWindow {
 }
 
 impl FreshWindow {
+    pub(crate) fn allows_arrival(self, deploy: &PendingDeploy, next_block: i64) -> bool {
+        const MAX_FUTURE_HEIGHTS: i64 = 3;
+        self.contains(deploy)
+            && deploy.valid_after_block_number <= next_block.saturating_add(MAX_FUTURE_HEIGHTS)
+    }
+
     pub(crate) fn contains(self, deploy: &PendingDeploy) -> bool {
         deploy.valid_after_block_number > self.earliest_valid_after
             && deploy.valid_after_block_number <= self.latest_valid_after
@@ -122,6 +128,15 @@ struct State {
 pub struct AdmissionReservations {
     state: Mutex<State>,
     occupied: AtomicUsize,
+    revision: AtomicU64,
+}
+
+pub(crate) enum ReservationUpdate {
+    Full(HashMap<DeployId, PendingDeploy>),
+    Delta {
+        fresh: HashMap<DeployId, PendingDeploy>,
+        removals: Vec<DeployId>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -173,6 +188,7 @@ impl AdmissionReservations {
         }
         Ok(Arc::new(Self {
             occupied: AtomicUsize::new(entries.len()),
+            revision: AtomicU64::new(0),
             state: Mutex::new(State {
                 entries,
                 valid: true,
@@ -182,6 +198,19 @@ impl AdmissionReservations {
 
     pub fn refresh_window(&self, window: FreshWindow) {
         self.expire_entries(&mut self.state.lock(), window);
+    }
+
+    pub(crate) fn refresh_window_at_revision(
+        &self,
+        window: FreshWindow,
+        expected_revision: u64,
+    ) -> Result<u64, ReserveError> {
+        let mut state = self.state.lock();
+        if !state.valid || self.revision() != expected_revision {
+            return Err(ReserveError::NeedsRefresh);
+        }
+        self.expire_entries(&mut state, window);
+        Ok(self.revision())
     }
 
     pub fn pending_ahead(&self, candidate: &PendingDeploy) -> usize {
@@ -206,14 +235,106 @@ impl AdmissionReservations {
 
     pub fn occupied(&self) -> usize { self.occupied.load(AtomicOrdering::Acquire) }
 
+    pub(crate) fn revision(&self) -> u64 { self.revision.load(AtomicOrdering::Acquire) }
+
+    fn advance_revision(&self) { self.revision.fetch_add(1, AtomicOrdering::AcqRel); }
+
+    pub(crate) fn reconcile(
+        &self,
+        update: ReservationUpdate,
+        window: FreshWindow,
+        expected_revision: u64,
+    ) -> Result<u64, ReserveError> {
+        let mut state = self.state.lock();
+        if !state.valid || self.revision() != expected_revision {
+            return Err(ReserveError::NeedsRefresh);
+        }
+        let mut changed = false;
+        let fresh = match update {
+            ReservationUpdate::Full(fresh) => {
+                state.entries.retain(|signature, entry| {
+                    let keep = matches!(entry.marker, Marker::Reserved { .. })
+                        || fresh.contains_key(signature);
+                    changed |= !keep;
+                    keep
+                });
+                fresh
+            }
+            ReservationUpdate::Delta { fresh, removals } => {
+                for signature in removals {
+                    if fresh.contains_key(&signature) {
+                        continue;
+                    }
+                    match state.entries.get_mut(&signature) {
+                        Some(Entry {
+                            marker: Marker::Reserved { excluded },
+                            ..
+                        }) => {
+                            changed |= !*excluded;
+                            *excluded = true;
+                        }
+                        Some(_) => {
+                            state.entries.remove(&signature);
+                            changed = true;
+                        }
+                        None => {}
+                    }
+                }
+                fresh
+            }
+        };
+        for (signature, deploy) in fresh {
+            if !window.contains(&deploy) {
+                continue;
+            }
+            match state.entries.get_mut(&signature) {
+                Some(Entry {
+                    marker: Marker::Reserved { excluded },
+                    ..
+                }) => {
+                    changed |= *excluded;
+                    *excluded = false;
+                }
+                Some(entry) => {
+                    changed |= entry.deploy != deploy;
+                    entry.deploy = deploy;
+                }
+                None => {
+                    changed = true;
+                    state.entries.insert(signature, Entry {
+                        deploy,
+                        marker: Marker::Pending,
+                    });
+                }
+            }
+        }
+        self.occupied
+            .store(state.entries.len(), AtomicOrdering::Release);
+        self.expire_entries(&mut state, window);
+        if changed {
+            self.advance_revision();
+        }
+        Ok(self.revision())
+    }
+
     pub fn try_reserve(
         self: &Arc<Self>,
         deploy: PendingDeploy,
         capacity: usize,
         window: FreshWindow,
     ) -> Result<Reservation, ReserveError> {
+        self.try_reserve_at_revision(deploy, capacity, window, None)
+    }
+
+    pub(crate) fn try_reserve_at_revision(
+        self: &Arc<Self>,
+        deploy: PendingDeploy,
+        capacity: usize,
+        window: FreshWindow,
+        expected_revision: Option<u64>,
+    ) -> Result<Reservation, ReserveError> {
         let mut state = self.state.lock();
-        if !state.valid {
+        if !state.valid || expected_revision.is_some_and(|revision| revision != self.revision()) {
             return Err(ReserveError::NeedsRefresh);
         }
         if state.entries.contains_key(&deploy.signature) {
@@ -248,12 +369,16 @@ impl AdmissionReservations {
             .map(|entry| &mut entry.marker)
         {
             Some(Marker::Reserved { excluded, .. }) => {
-                *excluded = true;
+                if !*excluded {
+                    *excluded = true;
+                    self.advance_revision();
+                }
                 Exclusion::DeferredUntilWriteCompletes
             }
             Some(Marker::Pending) => {
                 state.entries.remove(signature);
                 self.release(1);
+                self.advance_revision();
                 Exclusion::Released
             }
             None => Exclusion::NotTracked,
@@ -274,7 +399,10 @@ impl AdmissionReservations {
         }
         if let Some(entry) = state.entries.get_mut(&deploy.signature) {
             if let Marker::Reserved { excluded, .. } = &mut entry.marker {
-                *excluded = false;
+                if *excluded {
+                    *excluded = false;
+                    self.advance_revision();
+                }
             }
             return Ok(false);
         }
@@ -287,6 +415,7 @@ impl AdmissionReservations {
             deploy,
             marker: Marker::Pending,
         });
+        self.advance_revision();
         Ok(true)
     }
 
@@ -295,12 +424,14 @@ impl AdmissionReservations {
 
     fn expire_entries(&self, state: &mut State, window: FreshWindow) {
         let mut removed = 0;
+        let mut changed = false;
         state.entries.retain(|_, entry| {
             if window.contains(&entry.deploy) {
                 return true;
             }
             match &mut entry.marker {
                 Marker::Reserved { excluded, .. } => {
+                    changed |= !*excluded;
                     *excluded = true;
                     true
                 }
@@ -311,6 +442,9 @@ impl AdmissionReservations {
             }
         });
         self.release(removed);
+        if changed || removed != 0 {
+            self.advance_revision();
+        }
     }
 
     fn release(&self, count: usize) {
@@ -336,14 +470,16 @@ impl Reservation {
                 Marker::Reserved { excluded } => excluded,
                 _ => panic!("Reservation marker is not reserved"),
             };
-            if excluded || !window.contains(&entry.deploy) {
+            let result = if excluded || !window.contains(&entry.deploy) {
                 state.entries.remove(&self.signature);
                 self.book.release(1);
                 CommitResult::Excluded
             } else {
                 entry.marker = Marker::Pending;
                 CommitResult::Pending
-            }
+            };
+            self.book.advance_revision();
+            result
         };
         self.completed = true;
         result
@@ -366,6 +502,7 @@ impl Drop for Reservation {
         if owned {
             state.entries.remove(&self.signature);
             self.book.release(1);
+            self.book.advance_revision();
         }
     }
 }
@@ -421,6 +558,16 @@ mod tests {
         assert_eq!(admission.capacity(0), 0);
         admission.observe(1, 128, true);
         assert_eq!(admission.capacity(4), 12);
+    }
+
+    #[test]
+    fn draining_blocks_do_not_replace_saturated_service_samples() {
+        let admission = DeployAdmission::default();
+        admission.observe(1, 8, true);
+        for sequence in 2..=10 {
+            admission.observe(sequence, 1, false);
+        }
+        assert_eq!(admission.capacity(128), 24);
     }
 
     #[test]
@@ -498,6 +645,69 @@ mod reservation_tests {
 
     fn book(count: u8) -> Arc<AdmissionReservations> {
         AdmissionReservations::from_fresh((0..count).map(deploy), window()).unwrap()
+    }
+
+    #[test]
+    fn arrival_bounds_preserve_stored_freshness_and_handle_height_overflow() {
+        let mut candidate = deploy(1);
+        candidate.valid_after_block_number = 104;
+        assert!(window().contains(&candidate));
+        assert!(window().allows_arrival(&candidate, 101));
+        assert!(!window().allows_arrival(&candidate, 100));
+        candidate.valid_after_block_number = i64::MAX;
+        let window = FreshWindow {
+            latest_valid_after: i64::MAX,
+            ..window()
+        };
+        assert!(window.allows_arrival(&candidate, i64::MAX - 1));
+    }
+
+    #[test]
+    fn refreshing_a_snapshot_preserves_unwritten_reservations() {
+        let book = book(0);
+        let reservation = book.try_reserve(deploy(1), 1, window()).unwrap();
+        let revision = book.revision();
+        book.reconcile(
+            ReservationUpdate::Full(HashMap::new()),
+            window(),
+            book.revision(),
+        )
+        .unwrap();
+        assert_eq!(book.revision(), revision);
+        assert_eq!(book.occupied(), 1);
+        assert!(matches!(
+            book.try_reserve(deploy(2), 1, window()),
+            Err(ReserveError::Full { .. })
+        ));
+        assert_eq!(reservation.commit(window()), CommitResult::Pending);
+        assert_eq!(book.occupied(), 1);
+    }
+
+    #[test]
+    fn stale_snapshots_cannot_overwrite_a_completed_reservation() {
+        let book = book(0);
+        let reservation = book.try_reserve(deploy(1), 1, window()).unwrap();
+        let revision = book.revision();
+        assert_eq!(reservation.commit(window()), CommitResult::Pending);
+        assert_eq!(
+            book.reconcile(ReservationUpdate::Full(HashMap::new()), window(), revision),
+            Err(ReserveError::NeedsRefresh)
+        );
+        assert_eq!(book.occupied(), 1);
+    }
+
+    #[test]
+    fn a_rolled_back_write_invalidates_snapshots_without_leaking_a_slot() {
+        let book = book(0);
+        let reservation = book.try_reserve(deploy(1), 1, window()).unwrap();
+        let revision = book.revision();
+        drop(reservation);
+        assert_eq!(
+            book.reconcile(ReservationUpdate::Full(HashMap::new()), window(), revision),
+            Err(ReserveError::NeedsRefresh)
+        );
+        assert_eq!(book.occupied(), 0);
+        assert!(book.try_reserve(deploy(2), 1, window()).is_ok());
     }
 
     #[test]

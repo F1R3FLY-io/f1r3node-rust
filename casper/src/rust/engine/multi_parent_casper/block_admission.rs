@@ -25,7 +25,7 @@ use super::types::MultiParentCasperImpl;
 use crate::rust::casper::{Casper, CasperSnapshot, DeployError};
 use crate::rust::deploy_admission::{
     AdmissionReservations, AdmissionRevision, CommitResult, FreshWindow, PendingDeploy,
-    ReserveError,
+    ReservationUpdate, ReserveError,
 };
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -168,7 +168,12 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
         }
         let mut capacity = this.deploy_admission.capacity(shard_cap);
-        let mut cache = this.deploy_admission.reservations.lock();
+        let (cached_revision, cached_window, cached_book, observed_book_revision) = {
+            let cache = this.deploy_admission.reservations.lock();
+            let book = cache.book.clone();
+            let revision = book.as_ref().map(|book| book.revision());
+            (cache.revision, cache.window, book, revision)
+        };
         let generation = this.block_dag_storage.current_generation();
         let lifecycle = this.block_dag_storage.deploy_status_revision();
         let dag = this.block_dag_storage.get_representation()?;
@@ -190,7 +195,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             now_millis,
         };
         let metadata = PendingDeploy::from(&deploy);
-        if !window.contains(&metadata) {
+        if !window.allows_arrival(&metadata, dag.latest_block_number().saturating_add(1)) {
             return Ok(Either::Left(DeployError::InvalidFreshness));
         }
         let revision = AdmissionRevision {
@@ -199,14 +204,14 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             dag: generation,
             lifecycle,
         };
-        let monotonic = cache.window.is_some_and(|previous| {
+        let monotonic = cached_window.is_some_and(|previous| {
             previous.earliest_valid_after <= earliest_valid_after
                 && previous.now_millis <= now_millis
         });
-        let reusable = lifecycle.is_some() && cache.revision == Some(revision) && monotonic;
+        let reusable = lifecycle.is_some() && cached_revision == Some(revision) && monotonic;
         let incremental = lifecycle.is_some()
             && monotonic
-            && cache.revision.is_some_and(|previous| {
+            && cached_revision.is_some_and(|previous| {
                 previous.rejected == revision.rejected
                     && previous.dag == generation
                     && previous.lifecycle == lifecycle
@@ -215,29 +220,53 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         let is_fresh = |deploy: &PendingDeploy| -> Result<bool, KvStoreError> {
             deploy_is_fresh(&dag, &rejected, deploy, window)
         };
-        let book = if reusable || incremental {
-            cache
-                .book
-                .as_ref()
-                .expect("Admission reservation cache is missing")
-                .clone()
+        let update = if reusable {
+            None
         } else {
-            let mut fresh = Vec::new();
-            for deploy in pool.entries.values() {
+            let mut fresh = std::collections::HashMap::new();
+            let mut add_fresh = |deploy: &PendingDeploy| -> Result<(), KvStoreError> {
                 if is_fresh(deploy)? {
-                    fresh.push(deploy.clone());
+                    fresh.insert(deploy.signature.clone(), deploy.clone());
+                }
+                Ok(())
+            };
+            if incremental {
+                for deploy in &pool.additions {
+                    add_fresh(deploy)?;
+                }
+            } else {
+                for deploy in pool.entries.values() {
+                    add_fresh(deploy)?;
                 }
             }
-            AdmissionReservations::from_fresh(fresh, window).map_err(|error| {
-                CasperError::RuntimeError(format!(
-                    "Admission reservation refresh failed: {error:?}"
-                ))
-            })?
+            Some(if incremental {
+                ReservationUpdate::Delta {
+                    fresh,
+                    removals: pool
+                        .removals
+                        .iter()
+                        .cloned()
+                        .chain(pool.additions.iter().map(|deploy| deploy.signature.clone()))
+                        .collect(),
+                }
+            } else {
+                ReservationUpdate::Full(fresh)
+            })
+        };
+        let prepared_book = match (&cached_book, &update) {
+            (None, Some(ReservationUpdate::Full(fresh))) => Some(
+                AdmissionReservations::from_fresh(fresh.values().cloned(), window).map_err(
+                    |error| {
+                        CasperError::RuntimeError(format!(
+                            "Admission reservation refresh failed: {error:?}"
+                        ))
+                    },
+                )?,
+            ),
+            _ => None,
         };
         let mismatch = if generation != this.block_dag_storage.current_generation() {
             Some("dag")
-        } else if lifecycle != this.block_dag_storage.deploy_status_revision() {
-            Some("lifecycle")
         } else if pool.generation != deploy_storage.metadata_snapshot()?.generation {
             Some("pool")
         } else if rejected.generation != rejected_deploys.metadata_snapshot()?.generation {
@@ -249,27 +278,43 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             *changed_component = Some(component);
             continue;
         }
-        if incremental {
-            cache.revision = None;
-            for signature in &pool.removals {
-                book.exclude(signature);
-            }
-            for deploy in &pool.additions {
-                book.exclude(&deploy.signature);
-                if is_fresh(deploy)? {
-                    book.restore_accepted(deploy.clone(), window)
-                        .map_err(|error| {
-                            CasperError::RuntimeError(format!(
-                                "Admission metadata update failed: {error:?}"
-                            ))
-                        })?;
-                }
-            }
+        if dag.deploy_terminal(&deploy_id)?.is_some()
+            || dag.deploy_canonical_appearance(&deploy_id)?.is_some()
+        {
+            return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
         }
+        let mut cache = this.deploy_admission.reservations.lock();
+        let book = match (&cached_book, &cache.book) {
+            (Some(expected), Some(current)) if std::sync::Arc::ptr_eq(expected, current) => {
+                current.clone()
+            }
+            (None, None) => prepared_book.expect("Initial reservation snapshot is missing"),
+            _ => {
+                *changed_component = Some("reservations");
+                continue;
+            }
+        };
+        let expected = observed_book_revision.unwrap_or_else(|| book.revision());
+        let expected = if let (Some(_), Some(update)) = (&cached_book, update) {
+            book.reconcile(update, window, expected)
+        } else {
+            book.refresh_window_at_revision(window, expected)
+        };
+        let expected = match expected {
+            Ok(revision) => revision,
+            Err(ReserveError::NeedsRefresh) => {
+                *changed_component = Some("reservations");
+                continue;
+            }
+            Err(error) => {
+                return Err(CasperError::RuntimeError(format!(
+                    "Admission reservation refresh failed: {error:?}"
+                )))
+            }
+        };
         cache.revision = Some(revision);
         cache.window = Some(window);
         cache.book = Some(book.clone());
-        book.refresh_window(window);
         if capacity == 0 && book.occupied() == 0 && shard_cap > 0 {
             capacity = 1;
         }
@@ -278,12 +323,21 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             .set(pending_ahead as f64);
         metrics::gauge!(DEPLOY_ADMISSION_CAPACITY_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(capacity as f64);
-        let reservation = match book.try_reserve(metadata.clone(), capacity, window) {
+        let reservation = match book.try_reserve_at_revision(
+            metadata.clone(),
+            capacity,
+            window,
+            Some(expected),
+        ) {
             Ok(reservation) => reservation,
             Err(ReserveError::Duplicate) => {
                 return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)))
             }
             Err(ReserveError::NotFresh) => return Ok(Either::Left(DeployError::InvalidFreshness)),
+            Err(ReserveError::NeedsRefresh) => {
+                *changed_component = Some("reservations");
+                continue;
+            }
             Err(ReserveError::Full { .. }) => {
                 metrics::counter!(DEPLOY_ADMISSION_REFUSED_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
@@ -298,7 +352,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
                 )))
             }
         };
-        cache.revision = None;
+        drop(cache);
         if !deploy_storage.add_if_absent(deploy)? {
             return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
         }
@@ -312,14 +366,6 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         {
             deploy_storage.remove_by_sig(&deploy_id)?;
             return Ok(Either::Left(DeployError::InvalidFreshness));
-        }
-        if let Ok(updated) = deploy_storage.metadata_snapshot() {
-            if updated.parent_generation == Some(revision.pool) {
-                cache.revision = Some(AdmissionRevision {
-                    pool: updated.generation,
-                    ..revision
-                });
-            }
         }
         metrics::counter!(DEPLOY_ADMISSION_ACCEPTED_METRIC, "source" => CASPER_METRICS_SOURCE)
             .increment(1);
@@ -404,15 +450,15 @@ fn local_service_sample<T: TransportLayer + Send + Sync>(
             included.insert(deploy.sig.clone());
         }
     }
-    let had_demand = !included.is_empty()
-        || pool.entries.values().try_fold(false, |found, deploy| {
-            Ok::<_, KvStoreError>(
-                found
-                    || (deploy.valid_after_block_number < block.body.state.block_number
-                        && deploy_is_fresh(&dag, &buffered, deploy, window)?),
-            )
-        })?;
-    Ok(Some((included.len(), had_demand)))
+    let has_remaining_demand = pool.entries.values().try_fold(false, |found, deploy| {
+        Ok::<_, KvStoreError>(
+            found
+                || (!included.contains(deploy.signature.as_slice())
+                    && deploy.valid_after_block_number < block.body.state.block_number
+                    && deploy_is_fresh(&dag, &buffered, deploy, window)?),
+        )
+    })?;
+    Ok(Some((included.len(), has_remaining_demand)))
 }
 
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
@@ -446,9 +492,9 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             block_hash_serde,
         ),
     )?;
-    if let Some((included, had_demand)) = service_sample {
+    if let Some((included, has_remaining_demand)) = service_sample {
         this.deploy_admission
-            .observe(block.seq_num, included, had_demand);
+            .observe(block.seq_num, included, has_remaining_demand);
     }
     let insert_ms = insert_start.elapsed().as_millis();
     if insert_ms >= 1_000 {
