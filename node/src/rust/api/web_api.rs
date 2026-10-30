@@ -24,6 +24,7 @@ use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -235,6 +236,33 @@ pub struct WebApiImpl {
     epoch_length: i32,
     quarantine_length: i32,
     is_ready: Arc<AtomicBool>,
+}
+
+fn balance_query_term(address: &str) -> Result<String> {
+    if !VaultAddress::is_valid(address) {
+        return Err(eyre!("Invalid REV address {}", address));
+    }
+    Ok(format!(
+        r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh in {{
+  rl!(`rho:vault:system`, *systemVaultCh) |
+  for (@(_, SystemVault) <- systemVaultCh) {{
+    @SystemVault!("findOrCreate", "{address}", *vaultCh) |
+    for (@either <- vaultCh) {{
+      match either {{
+        (true, vault) => {{
+          @vault!("balance", *balanceCh) |
+          for (@balance <- balanceCh) {{
+            return!(balance)
+          }}
+        }}
+        (false, errorMsg) => {{
+          return!(errorMsg)
+        }}
+      }}
+    }}
+  }}
+}}"#
+    ))
 }
 
 impl WebApiImpl {
@@ -813,27 +841,7 @@ impl WebApi for WebApiImpl {
         address: String,
         block_hash: Option<String>,
     ) -> Result<BalanceResponse> {
-        let term = format!(
-            r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh in {{
-  rl!(`rho:vault:system`, *systemVaultCh) |
-  for (@(_, SystemVault) <- systemVaultCh) {{
-    @SystemVault!("findOrCreate", "{address}", *vaultCh) |
-    for (@either <- vaultCh) {{
-      match either {{
-        (true, vault) => {{
-          @vault!("balance", *balanceCh) |
-          for (@balance <- balanceCh) {{
-            return!(balance)
-          }}
-        }}
-        (false, errorMsg) => {{
-          return!(errorMsg)
-        }}
-      }}
-    }}
-  }}
-}}"#
-        );
+        let term = balance_query_term(&address)?;
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -2121,6 +2129,22 @@ mod tests {
     };
 
     use super::*;
+
+    const ADDRESS: &str = "1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5";
+
+    #[test]
+    fn balance_query_accepts_a_valid_address() {
+        let term = balance_query_term(ADDRESS).unwrap();
+        assert!(term.contains(&format!("\"findOrCreate\", \"{ADDRESS}\"")));
+    }
+
+    #[test]
+    fn balance_query_rejects_addresses_that_are_not_valid() {
+        let injected = format!("{ADDRESS}\", *vaultCh) | @\"x\"!(\"y");
+        for bad in ["", "lala", injected.as_str()] {
+            assert!(balance_query_term(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {
