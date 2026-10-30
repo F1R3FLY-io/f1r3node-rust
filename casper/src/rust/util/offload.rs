@@ -33,7 +33,10 @@ mod tests {
                 off_async_workers(async move {
                     let deadline = std::time::Instant::now() + Duration::from_secs(5);
                     while !observed.load(Ordering::SeqCst) {
-                        assert!(std::time::Instant::now() < deadline, "the heartbeat never ran");
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "the heartbeat never ran"
+                        );
                         std::thread::sleep(Duration::from_millis(5));
                     }
                 })
@@ -56,10 +59,9 @@ mod tests {
         let total = runtime.block_on(async {
             tokio::spawn(async {
                 off_async_workers(async {
-                    let inner = off_async_workers(async {
-                        tokio::spawn(async { 20 }).await.unwrap()
-                    })
-                    .await;
+                    let inner =
+                        off_async_workers(async { tokio::spawn(async { 20 }).await.unwrap() })
+                            .await;
                     tokio::time::sleep(Duration::from_millis(1)).await;
                     inner + 1
                 })

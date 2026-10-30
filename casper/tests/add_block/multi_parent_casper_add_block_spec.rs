@@ -1789,11 +1789,13 @@ async fn proposal_and_peer_validation_run_off_the_async_workers() {
         .await
         .unwrap();
 
-    let deploy_a = construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone())).unwrap();
+    let deploy_a =
+        construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone())).unwrap();
     let block_a = TestNode::publish_block_at_index(&mut nodes, 0, &[deploy_a])
         .await
         .unwrap();
-    let deploy_b = construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone())).unwrap();
+    let deploy_b =
+        construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone())).unwrap();
     let block_b = TestNode::publish_block_at_index(&mut nodes, 1, &[deploy_b])
         .await
         .unwrap();
