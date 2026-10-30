@@ -1002,6 +1002,32 @@ mod embedded_defaults_tests {
         );
     }
 
+    #[test]
+    fn finalizer_cache_and_rerun_fallbacks_match_shipped_defaults() {
+        use casper::rust::casper_conf::{
+            default_finalizer_oracle_cache_ancestors, default_finalizer_oracle_cache_justifications,
+            default_finalizer_oracle_cache_self_justifications, default_finalizer_timeout_reruns,
+        };
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        assert_eq!(
+            cfg.casper.finalizer_oracle_cache_justifications,
+            default_finalizer_oracle_cache_justifications()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_oracle_cache_self_justifications,
+            default_finalizer_oracle_cache_self_justifications()
+        );
+        assert_eq!(
+            cfg.casper.finalizer_oracle_cache_ancestors,
+            default_finalizer_oracle_cache_ancestors()
+        );
+        assert_eq!(cfg.casper.finalizer_timeout_reruns, default_finalizer_timeout_reruns());
+    }
+
     /// I5: the stale-recovery interval must exceed the heartbeat tick, or
     /// the empty-frontier cap's per-validator exemption opens every tick.
     #[test]

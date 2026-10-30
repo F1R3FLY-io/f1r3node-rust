@@ -30,12 +30,21 @@ use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::multi_parent_casper::{FinalizedBondCache, MultiParentCasperImpl};
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
+use crate::rust::safety::clique_oracle::OracleCacheBounds;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validator_identity::ValidatorIdentity;
 
 /// Default for `CasperShardConf::active_validators_cache_max_entries`.
 /// See the commit centralizing Phase 13 hardcoded defaults.
 pub const ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT: usize = 4096;
+
+pub const FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT: OracleCacheBounds = OracleCacheBounds {
+    latest_justifications: 8192,
+    self_justification: 131_072,
+    ancestor: 131_072,
+};
+
+pub const FINALIZER_TIMEOUT_RERUNS_DEFAULT: u32 = 3;
 
 /// Wire convention for `CasperShardConf::max_number_of_parents`: `-1`
 /// disables the parent-count cap. C15 / Smell-3: hoisted from two
@@ -564,6 +573,8 @@ pub struct CasperShardConf {
     /// no conf key feeds it. Distinct from the `runtime_manager`'s own
     /// 256-entry validator-key cache.
     pub active_validators_cache_max_entries: usize,
+    pub finalizer_oracle_cache_bounds: OracleCacheBounds,
+    pub finalizer_timeout_reruns: u32,
 }
 
 impl CasperShardConf {
@@ -602,6 +613,8 @@ impl CasperShardConf {
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,
             active_validators_cache_max_entries: ACTIVE_VALIDATORS_CACHE_MAX_ENTRIES_DEFAULT,
+            finalizer_oracle_cache_bounds: FINALIZER_ORACLE_CACHE_BOUNDS_DEFAULT,
+            finalizer_timeout_reruns: FINALIZER_TIMEOUT_RERUNS_DEFAULT,
         }
     }
 }
