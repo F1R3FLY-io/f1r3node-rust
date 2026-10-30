@@ -1,6 +1,6 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/ReceiveBindsSortMatcher.scala
 
-use models::rhoapi::{Par, ReceiveBind, Var};
+use models::rhoapi::{CostSignature, Par, ReceiveBind, Var};
 use models::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
 use models::rust::rholang::sorter::score_tree::ScoredTerm;
 
@@ -8,23 +8,32 @@ use crate::rust::interpreter::compiler::exports::FreeMap;
 use crate::rust::interpreter::errors::InterpreterError;
 
 pub fn pre_sort_binds<T: Clone + std::fmt::Debug>(
-    binds: Vec<(Vec<Par>, Option<Var>, Par, FreeMap<T>)>,
+    binds: Vec<(
+        Vec<Par>,
+        Option<Var>,
+        Par,
+        FreeMap<T>,
+        Option<CostSignature>,
+    )>,
 ) -> Result<Vec<(ReceiveBind, FreeMap<T>)>, InterpreterError> {
     let mut bind_sortings: Vec<ScoredTerm<(ReceiveBind, FreeMap<T>)>> = binds
         .into_iter()
-        .map(|(patterns, remainder, channel, known_free)| {
-            let sorted_bind = ReceiveSortMatcher::sort_bind(ReceiveBind {
-                patterns,
-                source: Some(channel),
-                remainder,
-                free_count: known_free.count_no_wildcards() as i32,
-            });
+        .map(
+            |(patterns, remainder, channel, known_free, cost_signature)| {
+                let sorted_bind = ReceiveSortMatcher::sort_bind(ReceiveBind {
+                    patterns,
+                    source: Some(channel),
+                    remainder,
+                    free_count: known_free.count_no_wildcards() as i32,
+                    cost_signature,
+                });
 
-            ScoredTerm {
-                term: (sorted_bind.term, known_free),
-                score: sorted_bind.score,
-            }
-        })
+                ScoredTerm {
+                    term: (sorted_bind.term, known_free),
+                    score: sorted_bind.score,
+                }
+            },
+        )
         .collect();
 
     ScoredTerm::sort_vec(&mut bind_sortings);
@@ -45,30 +54,40 @@ mod tests {
     fn binds_should_pre_sort_based_on_their_channel_and_then_patterns() {
         let empty_map = FreeMap::new();
 
-        let binds: Vec<(Vec<Par>, Option<Var>, Par, FreeMap<VarSort>)> = vec![
+        let binds: Vec<(
+            Vec<Par>,
+            Option<Var>,
+            Par,
+            FreeMap<VarSort>,
+            Option<CostSignature>,
+        )> = vec![
             (
                 vec![new_gint_par(2, Vec::new(), false)],
                 None,
                 new_gint_par(3, Vec::new(), false),
                 empty_map.clone(),
+                None,
             ),
             (
                 vec![new_gint_par(3, Vec::new(), false)],
                 None,
                 new_gint_par(2, Vec::new(), false),
                 empty_map.clone(),
+                None,
             ),
             (
                 vec![new_gint_par(3, Vec::new(), false)],
                 Some(new_freevar_var(0)),
                 new_gint_par(2, Vec::new(), false),
                 empty_map.clone(),
+                None,
             ),
             (
                 vec![new_gint_par(1, Vec::new(), false)],
                 None,
                 new_gint_par(3, Vec::new(), false),
                 empty_map.clone(),
+                None,
             ),
         ];
 
@@ -79,6 +98,7 @@ mod tests {
                     source: Some(new_gint_par(2, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 },
                 empty_map.clone(),
             ),
@@ -88,6 +108,7 @@ mod tests {
                     source: Some(new_gint_par(2, Vec::new(), false)),
                     remainder: Some(new_freevar_var(0)),
                     free_count: 0,
+                    cost_signature: None,
                 },
                 empty_map.clone(),
             ),
@@ -97,6 +118,7 @@ mod tests {
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 },
                 empty_map.clone(),
             ),
@@ -106,6 +128,7 @@ mod tests {
                     source: Some(new_gint_par(3, Vec::new(), false)),
                     remainder: None,
                     free_count: 0,
+                    cost_signature: None,
                 },
                 empty_map,
             ),

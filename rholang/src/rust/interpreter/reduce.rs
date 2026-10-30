@@ -312,6 +312,13 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        if has_cost_accounted_terms(&par) {
+            return Err(InterpreterError::ReduceError(
+                "signed terms, token stacks and signed binds cannot run yet: the reducer has no \
+                 funding regions"
+                    .to_string(),
+            ));
+        }
         let terms: Vec<GeneratedMessage> = vec![
             par.sends
                 .into_iter()
@@ -8088,6 +8095,17 @@ fn divide_fixed_points(
     }
 }
 
+fn has_cost_accounted_terms(par: &Par) -> bool {
+    !par.cost_signed_terms.is_empty()
+        || !par.cost_stacks.is_empty()
+        || par.receives.iter().any(|receive| {
+            receive
+                .binds
+                .iter()
+                .any(|bind| bind.cost_signature.is_some())
+        })
+}
+
 /// Returns `Some(b)` iff `par` represents the bool value `b` —
 /// exactly one Expr (a `GBool`) and nothing else of substance.
 fn extract_bool(par: &Par) -> Option<bool> {
@@ -8099,6 +8117,8 @@ fn extract_bool(par: &Par) -> Option<bool> {
         || !par.unforgeables.is_empty()
         || !par.connectives.is_empty()
         || !par.conditionals.is_empty()
+        || !par.cost_signed_terms.is_empty()
+        || !par.cost_stacks.is_empty()
         || par.exprs.len() != 1
     {
         return None;

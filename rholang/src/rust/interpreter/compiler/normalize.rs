@@ -80,13 +80,6 @@ pub struct CollectVisitOutputs {
 /**
  * Rholang normalizer entry point
  */
-fn cost_syntax_not_supported() -> InterpreterError {
-    InterpreterError::NormalizerError(
-        "cost-accounting syntax (signed terms, token stacks, signed binds) is not supported yet"
-            .to_string(),
-    )
-}
-
 pub fn normalize_ann_proc<'ast>(
     proc: &AnnProc<'ast>,
     input: ProcVisitInputs,
@@ -149,7 +142,14 @@ pub fn normalize_ann_proc<'ast>(
             free_map: input.free_map.clone(),
         }),
 
-        Proc::SignedTerm { .. } | Proc::TokenStack { .. } => Err(cost_syntax_not_supported()),
+        Proc::SignedTerm { proc: inner, sig } => {
+            use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_signed_term;
+            recognize_signed_term(inner, sig, input, _env, parser)
+        }
+        Proc::TokenStack { stack } => {
+            use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_token_stack;
+            recognize_token_stack(stack, input, _env, parser)
+        }
 
         // Ground literals
         Proc::Unit

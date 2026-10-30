@@ -112,6 +112,8 @@ fn extract_bool(par: &Par) -> Option<bool> {
         || !par.unforgeables.is_empty()
         || !par.connectives.is_empty()
         || !par.conditionals.is_empty()
+        || !par.cost_signed_terms.is_empty()
+        || !par.cost_stacks.is_empty()
         || par.exprs.len() != 1
     {
         return None;

@@ -45,6 +45,33 @@ message Par {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 10;
+  repeated CostSignedTerm cost_signed_terms = 13;
+  repeated CostStack cost_stacks = 14;
+}
+
+message CostSignature {
+  oneof value {
+    bytes ground = 1;
+    sint32 bound_level = 2;
+    Par quote = 3;
+    CostSignatureCompound compound = 4;
+    Par name = 5;
+    bool unit = 6;
+  }
+}
+
+message CostSignatureCompound {
+  repeated CostSignature elements = 1;
+}
+
+message CostSignedTerm {
+  Par body = 1;
+  CostSignature signature = 2;
+  reserved 3;
+}
+
+message CostStack {
+  repeated CostSignature cells = 1;
 }
 
 /**
@@ -131,6 +158,7 @@ message ReceiveBind {
   Par source = 2 [(scalapb.field).no_box = true];
   Var remainder = 3;
   int32 freeCount = 4;
+  CostSignature cost_signature = 5;
 }
 
 message BindPattern {

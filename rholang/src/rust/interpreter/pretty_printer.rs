@@ -1,17 +1,19 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/PrettyPrinter.scala
 
 use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    Bundle, Connective, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple,
-    EVar, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
+    Bundle, Connective, CostSignature, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches,
+    EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus,
+    ETuple, EVar, Expr, GUnforgeable, Match, MatchCase, New, Par, Receive, Var,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
+use prost::Message;
 use shared::rust::shared::printer::Printer;
 use shared::rust::shared::string_ops::wrap_with_braces;
 
@@ -741,6 +743,9 @@ impl PrettyPrinter {
                     self.base_id = self.set_base_id();
 
                     let bind_string = self.build_pattern(&bind.patterns);
+                    if bind.cost_signature.is_some() {
+                        string.push_str("{% ");
+                    }
                     string.push_str(&bind_string);
 
                     if r.persistent {
@@ -759,6 +764,12 @@ impl PrettyPrinter {
                             indent,
                         )?,
                     );
+
+                    if let Some(signature) = &bind.cost_signature {
+                        string.push_str(" %}[");
+                        string.push_str(&self.build_cost_signature(Some(signature), indent)?);
+                        string.push(']');
+                    }
 
                     if i != r.binds.len() - 1 {
                         string.push_str("  & ");
@@ -1027,6 +1038,36 @@ impl PrettyPrinter {
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }
                     }
+                    prev_non_empty = true;
+                }
+
+                for term in &p.cost_signed_terms {
+                    if prev_non_empty {
+                        result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                    }
+                    let body = self._build_string_from_message(
+                        term.body.as_ref().ok_or_else(|| {
+                            InterpreterError::BugFoundError(
+                                "signed term without a body".to_string(),
+                            )
+                        })?,
+                        indent,
+                    )?;
+                    let signature = self.build_cost_signature(term.signature.as_ref(), indent)?;
+                    result.push_str(&format!("{{% {} %}}[{}]", body, signature));
+                    prev_non_empty = true;
+                }
+
+                for stack in &p.cost_stacks {
+                    if prev_non_empty {
+                        result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                    }
+                    for cell in &stack.cells {
+                        result.push_str(&self.build_cost_signature(Some(cell), indent)?);
+                        result.push_str(" :: ");
+                    }
+                    result.push_str("()");
+                    prev_non_empty = true;
                 }
 
                 Ok(result)
@@ -1146,11 +1187,56 @@ impl PrettyPrinter {
             && p.unforgeables.is_empty()
             && p.bundles.is_empty()
             && p.connectives.is_empty()
+            && p.cost_signed_terms.is_empty()
+            && p.cost_stacks.is_empty()
+    }
+
+    fn build_cost_signature(
+        &mut self,
+        signature: Option<&CostSignature>,
+        indent: usize,
+    ) -> Result<String, InterpreterError> {
+        match signature.and_then(|signature| signature.value.as_ref()) {
+            None => Err(InterpreterError::BugFoundError(
+                "cost signature without a value".to_string(),
+            )),
+            Some(CostSignatureValue::Unit(_)) => Ok("()".to_string()),
+            Some(CostSignatureValue::Ground(bytes)) => Ok(ground_signature_name(bytes)),
+            Some(CostSignatureValue::BoundLevel(level)) => Ok(self._build_string_from_var(&Var {
+                var_instance: Some(VarInstance::BoundVar(*level)),
+            })),
+            Some(CostSignatureValue::Quote(par)) => Ok(format!(
+                "# {{ {} }}",
+                self._build_string_from_message(par, indent)?
+            )),
+            Some(CostSignatureValue::Name(par)) => Ok(format!(
+                "@{{ {} }}",
+                self._build_string_from_message(par, indent)?
+            )),
+            Some(CostSignatureValue::Compound(compound)) => Ok(compound
+                .elements
+                .iter()
+                .map(|element| self.build_cost_signature(Some(element), indent))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" (*) ")),
+        }
     }
 
     fn is_new_var(level: &i32, news_shift_indices: Vec<i32>, bound_shift: i32) -> bool {
         news_shift_indices.contains(&(bound_shift - level - 1))
     }
+}
+
+fn ground_signature_name(bytes: &[u8]) -> String {
+    let decoded = Par::decode(bytes)
+        .ok()
+        .and_then(|par| match par.exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::GString(name)),
+            }] => Some(name.clone()),
+            _ => None,
+        });
+    decoded.unwrap_or_else(|| format!("0x{}", hex::encode(bytes)))
 }
 
 fn twos_complement_to_decimal(bytes: &[u8]) -> String {
@@ -1896,6 +1982,7 @@ mod tests {
                         source: Some(Par::default()),
                         remainder: None,
                         free_count: 1,
+                        cost_signature: None,
                     }],
                     body: Some(Par::default()),
                     persistent,

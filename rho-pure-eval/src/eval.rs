@@ -26,6 +26,8 @@ pub fn eval(par: &Par, env: &Env<Par>) -> Result<Par, EvalError> {
         exprs: Vec::new(),
         locally_free: par.locally_free.clone(),
         connective_used: par.connective_used,
+        cost_signed_terms: par.cost_signed_terms.clone(),
+        cost_stacks: par.cost_stacks.clone(),
     };
 
     for expr in &par.exprs {
@@ -49,6 +51,8 @@ fn concatenate(a: Par, b: Par) -> Par {
         conditionals: [a.conditionals, b.conditionals].concat(),
         locally_free: union_bytes(a.locally_free, b.locally_free),
         connective_used: a.connective_used || b.connective_used,
+        cost_signed_terms: [a.cost_signed_terms, b.cost_signed_terms].concat(),
+        cost_stacks: [a.cost_stacks, b.cost_stacks].concat(),
     }
 }
 
@@ -233,6 +237,8 @@ fn single_expr_instance(par: &Par) -> Result<ExprInstance, EvalError> {
         || !par.unforgeables.is_empty()
         || !par.connectives.is_empty()
         || !par.conditionals.is_empty()
+        || !par.cost_signed_terms.is_empty()
+        || !par.cost_stacks.is_empty()
         || par.exprs.len() != 1
     {
         return Err(EvalError::NotASingleValue {
