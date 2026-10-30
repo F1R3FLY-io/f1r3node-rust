@@ -249,15 +249,23 @@ where
         };
 
         let step_start = std::time::Instant::now();
-        let block_result = self
-            .block_creator
-            .create_block(
-                casper_snapshot,
-                &self.validator,
-                self.dummy_deploy_opt.clone(),
-                selection,
-            )
-            .await?;
+        let block_result = match casper.v6_engine() {
+            Some(engine) => {
+                engine
+                    .create_block(casper_snapshot, &self.validator, selection)
+                    .await?
+            }
+            None => {
+                self.block_creator
+                    .create_block(
+                        casper_snapshot,
+                        &self.validator,
+                        self.dummy_deploy_opt.clone(),
+                        selection,
+                    )
+                    .await?
+            }
+        };
         let create_ms = step_start.elapsed().as_millis();
 
         match block_result {

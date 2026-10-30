@@ -204,6 +204,7 @@ pub struct FinalizationContext {
     pub deploy_storage: Arc<KeyValueDeployStorage>,
     pub finalized_bond_cache: super::bond_cache::FinalizedBondCache,
     pub shard_conf: CasperShardConf,
+    pub v6: Option<Arc<crate::rust::v6::V6Engine>>,
 }
 
 impl FinalizationContext {
@@ -641,6 +642,11 @@ pub(crate) async fn adopt_derived(
         }
         None => false,
     };
+    if adopted {
+        if let Some(engine) = &ctx.v6 {
+            engine.wake();
+        }
+    }
     tracing::debug!(
         target: "f1r3fly.casper.lfb.timing",
         "last_finalized_block timing: total_ms={}, new_lfb_found={}",

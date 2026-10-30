@@ -1224,6 +1224,7 @@ impl TestNode {
             ),
             deploy_storage: deploy_storage.clone(),
             shard_conf,
+            v6: None,
         };
         let casper_impl = MultiParentCasperImpl {
             observer: finalization.observer.clone(),
@@ -1247,6 +1248,7 @@ impl TestNode {
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
+            v6: None,
         };
 
         let casper = Arc::new(casper_impl);

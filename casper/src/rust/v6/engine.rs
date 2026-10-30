@@ -35,7 +35,7 @@ pub struct V6Engine {
     backend: Arc<dyn ExecutionBackend>,
     block_store: KeyValueBlockStore,
     dag_storage: BlockDagKeyValueStorage,
-    deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
     runtime_manager: Arc<RuntimeManager>,
     limits: Limits,
     wake: tokio::sync::Notify,
@@ -48,7 +48,7 @@ impl V6Engine {
         runtime_manager: Arc<RuntimeManager>,
         block_store: KeyValueBlockStore,
         dag_storage: BlockDagKeyValueStorage,
-        deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+        deploy_storage: Arc<KeyValueDeployStorage>,
     ) -> Arc<Self> {
         let backend = Arc::new(ConcurrentBackend::new(runtime_manager.clone()));
         Self::with_backend(
@@ -70,7 +70,7 @@ impl V6Engine {
         runtime_manager: Arc<RuntimeManager>,
         block_store: KeyValueBlockStore,
         dag_storage: BlockDagKeyValueStorage,
-        deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+        deploy_storage: Arc<KeyValueDeployStorage>,
         limits: Limits,
         params: CoreParams,
     ) -> Arc<Self> {
@@ -273,7 +273,7 @@ impl V6Engine {
             })
             .collect();
 
-        let pool = self.deploy_storage.lock().read_all()?;
+        let pool = self.deploy_storage.read_all()?;
         let in_scope = |sig: &Bytes| snapshot.deploys_in_scope.contains(sig);
         let envelopes = select_envelopes(
             pool,
