@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 
 /// Casper configuration
@@ -70,8 +71,8 @@ pub struct CasperConf {
     #[serde(rename = "genesis-ceremony")]
     pub genesis_ceremony: GenesisCeremony,
 
-    #[serde(rename = "min-phlo-price")]
-    pub min_phlo_price: i64,
+    #[serde(rename = "min-phlo-price", with = "shared::rust::asi_amount")]
+    pub min_phlo_price: num_bigint::BigInt,
 
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
@@ -185,10 +186,10 @@ pub struct GenesisBlockData {
     #[serde(rename = "wallets-file")]
     pub wallets_file: String,
 
-    #[serde(rename = "bond-minimum")]
-    pub bond_minimum: i64,
-    #[serde(rename = "bond-maximum")]
-    pub bond_maximum: i64,
+    #[serde(rename = "bond-minimum", with = "shared::rust::asi_amount")]
+    pub bond_minimum: BigInt,
+    #[serde(rename = "bond-maximum", with = "shared::rust::asi_amount")]
+    pub bond_maximum: BigInt,
 
     #[serde(rename = "epoch-length")]
     pub epoch_length: i32,
@@ -498,8 +499,8 @@ mod native_token_validation_tests {
             genesis_data_dir: String::new(),
             bonds_file: String::new(),
             wallets_file: String::new(),
-            bond_minimum: 0,
-            bond_maximum: 0,
+            bond_minimum: 0.into(),
+            bond_maximum: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,

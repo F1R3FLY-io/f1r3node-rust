@@ -367,11 +367,11 @@ impl TestFixture {
         casper_shard_conf.height_constraint_threshold = i64::MAX;
         casper_shard_conf.deploy_lifespan = 50;
         casper_shard_conf.casper_version = 1;
-        casper_shard_conf.bond_minimum = genesis_params.proof_of_stake.minimum_bond;
-        casper_shard_conf.bond_maximum = genesis_params.proof_of_stake.maximum_bond;
+        casper_shard_conf.bond_minimum = genesis_params.proof_of_stake.minimum_bond.clone();
+        casper_shard_conf.bond_maximum = genesis_params.proof_of_stake.maximum_bond.clone();
         casper_shard_conf.epoch_length = genesis_params.proof_of_stake.epoch_length;
         casper_shard_conf.quarantine_length = genesis_params.proof_of_stake.quarantine_length;
-        casper_shard_conf.min_phlo_price = 1;
+        casper_shard_conf.min_phlo_price = (1).into();
 
         // **Scala equivalent**: exporter params with skip and take
         let exporter_params = ExporterParams {
@@ -393,11 +393,11 @@ impl TestFixture {
         let deploy_timestamp = 0i64;
 
         // Extract bonds from genesis validators for bap
-        let bonds: HashMap<PublicKey, i64> = genesis_params
+        let bonds: HashMap<PublicKey, num_bigint::BigInt> = genesis_params
             .proof_of_stake
             .validators
             .iter()
-            .map(|v| (v.pk.clone(), v.stake))
+            .map(|v| (v.pk.clone(), v.stake.clone()))
             .collect();
 
         // Scala: val local: PeerNode = peerNode("src", 40400)

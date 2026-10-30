@@ -72,7 +72,7 @@ async fn clique_computations_for_one_derivation(validator_count: usize) -> usize
         .iter()
         .map(|validator| Bond {
             validator: validator.clone(),
-            stake: 10,
+            stake: 10.into(),
         })
         .collect();
 
@@ -163,8 +163,8 @@ async fn one_floor_derivation_evaluates_each_shared_spine_block_once() {
     );
 }
 
-fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-    pks.into_iter().map(|pk| (pk, 100)).collect()
+fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
+    pks.into_iter().map(|pk| (pk, 100.into())).collect()
 }
 
 #[tokio::test]

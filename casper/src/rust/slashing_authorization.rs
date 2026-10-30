@@ -35,6 +35,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 
 use crate::rust::casper::CasperSnapshot;
 use crate::rust::epoch::Epoch;
@@ -189,7 +190,9 @@ pub fn slash_evidence_epoch_matches_target(
         .map(|evidence_epoch| target_activation_epoch == evidence_epoch)
 }
 
-pub fn slash_target_has_positive_bond(bond: i64) -> bool { bond > 0 }
+pub fn slash_target_has_positive_bond<T: PartialOrd + From<i32>>(bond: T) -> bool {
+    bond > T::from(0)
+}
 
 pub fn slash_target_key(
     offender: &Validator,
@@ -221,12 +224,12 @@ pub fn slash_target_key_collides<T: Eq>(
 /// conjunction is the precondition proven sufficient by Theorem T-9.13
 /// (`formal/rocq/slashing/theories/BugFixSlashAuthorization.v`) and modeled
 /// in `kani_proofs::received_slash_deploy_authorized_*`.
-pub fn received_slash_deploy_authorized(
+pub fn received_slash_deploy_authorized<T: PartialOrd + From<i32>>(
     reference_block_number: i64,
     evidence_block_number: i64,
     target_activation_epoch: Epoch,
     epoch_length: i32,
-    bond: i64,
+    bond: T,
     invalid: bool,
 ) -> Result<bool, DomainError> {
     let current = slash_target_epoch_is_current(
@@ -336,9 +339,9 @@ pub fn authorized_slash_candidates(
             .on_chain_state
             .bonds_map
             .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
+            .cloned()
+            .unwrap_or_default();
+        if bond <= BigInt::from(0) {
             continue;
         }
         let candidate = AuthorizedSlashCandidate {
@@ -494,9 +497,9 @@ pub fn validate_received_slash_deploys(
             .on_chain_state
             .bonds_map
             .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
+            .cloned()
+            .unwrap_or_default();
+        if bond <= BigInt::from(0) {
             return Err(SlashAuthError::TargetNotBonded {
                 validator: hex::encode(&metadata.sender),
             }

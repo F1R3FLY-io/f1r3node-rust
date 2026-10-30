@@ -79,7 +79,10 @@ fn report_batches(
 /// `(from_addr, amount)` for each. Replicates the parse order of
 /// `block_info_enricher::find_transfers_in_report` without taking a
 /// dependency on the `node` crate.
-fn transfers_in_batch(batch: &SingleReport, channel: &models::rhoapi::Par) -> Vec<(String, i64)> {
+fn transfers_in_batch(
+    batch: &SingleReport,
+    channel: &models::rhoapi::Par,
+) -> Vec<(String, num_bigint::BigInt)> {
     use models::rust::par_ext::ParExt;
 
     let mut out = Vec::new();
@@ -97,7 +100,9 @@ fn transfers_in_batch(batch: &SingleReport, channel: &models::rhoapi::Par) -> Ve
                 if let Some(data) = &produce.data {
                     if data.pars.len() >= 6 {
                         let from = data.pars[0].get_g_string();
-                        let amount = data.pars[3].get_g_int();
+                        let amount =
+                            rholang::rust::interpreter::rho_type::RhoBigInt::unapply(&data.pars[3])
+                                .or_else(|| data.pars[3].get_g_int().map(Into::into));
                         if let (Some(from), Some(amount)) = (from, amount) {
                             out.push((from, amount));
                         }
@@ -160,7 +165,7 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
         VAULT_TRANSFER_TERM.to_string(),
         1,
         Some(PHLO_LIMIT),
-        Some(PHLO_PRICE),
+        Some((PHLO_PRICE).into()),
         Some(construct_deploy::DEFAULT_SEC.clone()),
         None,
         Some(shard_id.clone()),
@@ -203,7 +208,7 @@ async fn cost_accounted_user_deploy_report_starts_with_precharge_batch() {
     let expected_precharge = deploy.data.total_phlo_charge();
     assert_eq!(
         expected_precharge,
-        PHLO_LIMIT * PHLO_PRICE,
+        (num_bigint::BigInt::from(PHLO_LIMIT) * PHLO_PRICE),
         "total_phlo_charge must match the configured phlo_limit * phlo_price"
     );
 
@@ -286,13 +291,14 @@ async fn genesis_deploys_carry_zero_phlo_price_so_no_precharge() {
 
     for (i, processed) in deploys.iter().enumerate() {
         assert_eq!(
-            processed.deploy.data.phlo_price, 0,
+            processed.deploy.data.phlo_price,
+            0.into(),
             "genesis deploy {} must carry phlo_price == 0 (standard_deploys::to_deploy)",
             i
         );
         assert_eq!(
             processed.deploy.data.total_phlo_charge(),
-            0,
+            (0).into(),
             "genesis deploy {} must have zero precharge amount",
             i
         );

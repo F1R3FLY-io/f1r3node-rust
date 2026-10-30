@@ -1202,12 +1202,12 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
-            casper_version: 1,
-            bond_minimum: 0,
-            bond_maximum: i64::MAX,
+            casper_version: genesis.header.version,
+            bond_minimum: 0.into(),
+            bond_maximum: i64::MAX.into(),
             epoch_length: 10000,
             quarantine_length: 20000,
-            min_phlo_price: 1,
+            min_phlo_price: (1).into(),
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled

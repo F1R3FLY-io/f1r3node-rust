@@ -24,6 +24,7 @@ use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -168,7 +169,7 @@ pub struct PendingDeployJson {
     pub term: String,
     pub timestamp: i64,
     #[serde(rename = "phloPrice")]
-    pub phlo_price: i64,
+    pub phlo_price: String,
     #[serde(rename = "phloLimit")]
     pub phlo_limit: i64,
     #[serde(rename = "validAfterBlockNumber")]
@@ -219,7 +220,7 @@ pub struct WebApiImpl {
     dev_mode: bool,
     network_id: String,
     shard_id: String,
-    min_phlo_price: i64,
+    min_phlo_price: num_bigint::BigInt,
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
@@ -243,7 +244,7 @@ impl WebApiImpl {
         dev_mode: bool,
         network_id: String,
         shard_id: String,
-        min_phlo_price: i64,
+        min_phlo_price: num_bigint::BigInt,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
@@ -432,8 +433,8 @@ impl WebApi for WebApiImpl {
         // Advertise the floor admission and validity actually enforce — the
         // chain-adopted value; local conf only until casper is up.
         let min_phlo_price = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => casper.casper_shard_conf().min_phlo_price,
-            None => self.min_phlo_price,
+            Some(casper) => casper.casper_shard_conf().min_phlo_price.clone(),
+            None => self.min_phlo_price.clone(),
         };
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
@@ -451,7 +452,7 @@ impl WebApi for WebApiImpl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price,
+            min_phlo_price: min_phlo_price.to_string(),
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),
@@ -789,7 +790,7 @@ impl WebApi for WebApiImpl {
                 PendingDeployJson {
                     term: dd.term.clone(),
                     timestamp: dd.time_stamp,
-                    phlo_price: dd.phlo_price,
+                    phlo_price: dd.phlo_price.to_string(),
                     phlo_limit: dd.phlo_limit,
                     valid_after_block_number: dd.valid_after_block_number,
                     shard_id: dd.shard_id.clone(),
@@ -925,14 +926,16 @@ impl WebApi for WebApiImpl {
         let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
 
         let mut validators = Vec::new();
-        let mut total_stake: i64 = 0;
+        let mut total_stake = BigInt::from(0);
 
         // getBonds returns a Rholang map: {pubkey: stake, ...}
         // ExprMap keys are already String (extracted by extract_key_from_expr)
         if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
             for (public_key, value) in data {
                 let stake = match value {
-                    RhoExpr::ExprInt { data } => *data,
+                    RhoExpr::ExprBigInt { data } => {
+                        shared::rust::asi_amount::parse(data).map_err(|e| eyre!(e))?
+                    }
                     other => {
                         return Err(eyre!(
                             "Unexpected stake type for validator {}: {:?}",
@@ -941,7 +944,7 @@ impl WebApi for WebApiImpl {
                         ))
                     }
                 };
-                total_stake += stake;
+                total_stake += &stake;
                 validators.push(ValidatorInfo {
                     public_key: public_key.clone(),
                     stake,
@@ -1089,8 +1092,8 @@ impl WebApi for WebApiImpl {
         if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
             if let Some(value) = data.get(&pubkey) {
                 is_bonded = true;
-                if let RhoExpr::ExprInt { data } = value {
-                    stake = Some(*data);
+                if let RhoExpr::ExprBigInt { data } = value {
+                    stake = Some(shared::rust::asi_amount::parse(data).map_err(|e| eyre!(e))?);
                 }
             }
         }
@@ -1442,7 +1445,7 @@ pub struct ApiStatus {
     pub peers: i32,
     pub nodes: i32,
     #[serde(rename = "minPhloPrice")]
-    pub min_phlo_price: i64,
+    pub min_phlo_price: String,
     #[serde(rename = "peerList")]
     pub peer_list: Vec<PeerInfoData>,
     /// Full display name of the native token. Baked into genesis state via
@@ -1510,7 +1513,7 @@ pub struct DeployResponse {
     #[serde(skip_serializing_if = "Option::is_none", rename = "systemDeployError")]
     pub system_deploy_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "phloPrice")]
-    pub phlo_price: Option<i64>,
+    pub phlo_price: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "phloLimit")]
     pub phlo_limit: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "sigAlgorithm")]
@@ -1567,7 +1570,9 @@ pub struct RegistryResponse {
 pub struct ValidatorInfo {
     #[serde(rename = "publicKey")]
     pub public_key: String,
-    pub stake: i64,
+    #[serde(with = "shared::rust::asi_amount")]
+    #[schema(value_type = String)]
+    pub stake: BigInt,
 }
 
 /// Active validator set response
@@ -1575,7 +1580,9 @@ pub struct ValidatorInfo {
 pub struct ValidatorsResponse {
     pub validators: Vec<ValidatorInfo>,
     #[serde(rename = "totalStake")]
-    pub total_stake: i64,
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub total_stake: BigInt,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1640,7 +1647,9 @@ pub struct ValidatorStatusResponse {
     pub public_key: String,
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
-    pub stake: Option<i64>,
+    #[serde(with = "shared::rust::asi_amount::optional")]
+    #[schema(value_type = Option<String>)]
+    pub stake: Option<BigInt>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1694,6 +1703,10 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
 
 /// Convert DeployRequest to Signed DeployData
 fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
+    request
+        .data
+        .validate_amounts()
+        .map_err(|error| eyre!("Invalid deploy amount: {error}"))?;
     models::rust::deploy_parameters::validate_parameters(&request.data.parameters)
         .map_err(|error| eyre!("Invalid deploy parameters: {}", error))?;
     // Decode hex strings
@@ -2123,6 +2136,53 @@ mod tests {
     use super::*;
 
     #[test]
+    fn validator_json_uses_canonical_uint256_stakes() {
+        let max = shared::rust::asi_amount::maximum();
+        for stake in [
+            "0".to_string(),
+            (BigInt::from(1) << 128usize).to_string(),
+            max.to_string(),
+        ] {
+            let info = serde_json::json!({"publicKey": "validator", "stake": stake});
+            let value: ValidatorInfo = serde_json::from_value(info.clone()).unwrap();
+            assert_eq!(serde_json::to_value(value).unwrap(), info);
+            let status = serde_json::json!({"publicKey": "validator", "isBonded": true,
+                "stake": stake, "blockNumber": 0, "blockHash": "hash"});
+            let value: ValidatorStatusResponse = serde_json::from_value(status.clone()).unwrap();
+            assert_eq!(serde_json::to_value(value).unwrap(), status);
+        }
+        for stake in [
+            serde_json::json!(0),
+            serde_json::json!(-5),
+            serde_json::json!("-5"),
+            serde_json::json!("-0"),
+            serde_json::json!("007"),
+            serde_json::json!("+1"),
+            serde_json::json!("1e2"),
+            serde_json::json!((max + 1u8).to_string()),
+        ] {
+            assert!(serde_json::from_value::<ValidatorInfo>(serde_json::json!(
+                {"publicKey": "validator", "stake": stake}))
+            .is_err());
+            assert!(
+                serde_json::from_value::<ValidatorStatusResponse>(serde_json::json!(
+                {"publicKey": "validator", "isBonded": true, "stake": stake,
+                 "blockNumber": 0, "blockHash": "hash"}))
+                .is_err()
+            );
+        }
+        let status: ValidatorStatusResponse = serde_json::from_value(serde_json::json!(
+            {"publicKey": "validator", "isBonded": false, "stake": null,
+             "blockNumber": 0, "blockHash": "hash"}))
+        .unwrap();
+        assert!(status.stake.is_none());
+        let total = shared::rust::asi_amount::maximum() * 2u8;
+        let response: ValidatorsResponse = serde_json::from_value(serde_json::json!(
+            {"validators": [], "totalStake": total.to_string(), "blockNumber": 0, "blockHash": "hash"})).unwrap();
+        assert_eq!(response.total_stake, total);
+    }
+
+    #[test]
     fn test_deploy_response_full_view_includes_all_fields() {
         let response = DeployResponse {
             deploy_id: "abc123".to_string(),
@@ -2137,7 +2197,7 @@ mod tests {
             deployer: Some("deployer1".to_string()),
             term: Some("new ret in { ret!(42) }".to_string()),
             system_deploy_error: Some(String::new()),
-            phlo_price: Some(10),
+            phlo_price: Some((10).to_string()),
             phlo_limit: Some(100000),
             sig_algorithm: Some("secp256k1".to_string()),
             valid_after_block_number: Some(0),
@@ -2216,7 +2276,7 @@ mod tests {
             data: DeployData {
                 term: "contract".to_string(),
                 time_stamp: 1234567890,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 1000000,
                 valid_after_block_number: 0,
                 shard_id: "".to_string(),
@@ -3129,7 +3189,7 @@ mod tests {
         DeployData {
             term: "new x in { x!(1) }".to_string(),
             time_stamp: 1,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 1000,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),

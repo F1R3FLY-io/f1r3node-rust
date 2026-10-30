@@ -260,7 +260,7 @@ impl EquivocationDetector {
                 block_store,
                 equivocation_record,
                 latest_messages,
-                bond.stake,
+                &bond.stake,
                 genesis,
                 canonical_child_cache,
             ),
@@ -287,11 +287,11 @@ impl EquivocationDetector {
         block_store: &KeyValueBlockStore,
         equivocation_record: &EquivocationRecord,
         latest_messages: &BTreeMap<Validator, BlockHash>,
-        stake: i64,
+        stake: &num_bigint::BigInt,
         genesis: &BlockMessage,
         canonical_child_cache: &mut CanonicalChildCache,
     ) -> Result<EquivocationDiscoveryStatus, KvStoreError> {
-        if stake > 0 {
+        if *stake > num_bigint::BigInt::from(0) {
             let equivocation_detectable = Self::is_equivocation_detectable(
                 dag,
                 block_store,
@@ -909,7 +909,7 @@ mod tests {
         let mut cache = CanonicalChildCache::new();
         let bonds = [Bond {
             validator: sender,
-            stake: 0,
+            stake: 0.into(),
         }];
 
         let status = EquivocationDetector::get_equivocation_discovery_status(

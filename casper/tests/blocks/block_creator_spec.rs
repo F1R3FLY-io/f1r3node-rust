@@ -62,7 +62,7 @@ fn create_deploy(
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0),
-        phlo_price: 1,
+        phlo_price: (1).into(),
         phlo_limit: 1000,
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
@@ -200,19 +200,19 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         height_constraint_threshold: 0,
         deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
-        bond_minimum: 0,
-        bond_maximum: i64::MAX,
+        bond_minimum: 0.into(),
+        bond_maximum: i64::MAX.into(),
         epoch_length: 0,
         quarantine_length: 0,
-        min_phlo_price: 0,
+        min_phlo_price: (0).into(),
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
         disable_validator_progress_check: false,
         ..CasperShardConf::new()
     };
 
-    let mut bonds_map: HashMap<ByteString, i64> = HashMap::new();
-    bonds_map.insert(validator_id.clone(), 100);
+    let mut bonds_map: HashMap<ByteString, num_bigint::BigInt> = HashMap::new();
+    bonds_map.insert(validator_id.clone(), 100.into());
 
     // Set maxSeqNums like Scala does: Map(validatorId -> 0)
     let mut max_seq_nums: HashMap<ByteString, u64> = HashMap::new();

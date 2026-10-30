@@ -64,7 +64,7 @@ async fn selected_parent_metadata_matches_block_bonds_after_admission() {
             .state
             .bonds
             .iter()
-            .map(|bond| (bond.validator.clone(), bond.stake))
+            .map(|bond| (bond.validator.clone(), bond.stake.clone()))
             .collect();
         assert_eq!(metadata.weight_map, bonds);
     }
@@ -87,7 +87,7 @@ async fn selected_parent_metadata_matches_block_bonds_after_admission() {
 
 #[tokio::test]
 async fn block_api_rejects_deploy_from_unbonded_validator() {
-    fn bonds_without_first(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+    fn bonds_without_first(validators: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
         GenesisBuilder::create_bonds(validators.into_iter().skip(1).collect())
     }
 
@@ -474,7 +474,7 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
     let deploy_data = construct_deploy::source_deploy_now_full(
         "Nil".to_string(),
         None,
-        Some(phlo_price),
+        Some((phlo_price).into()),
         None,
         None,
         Some(shard_id.clone()),
@@ -511,4 +511,190 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
         expected_message,
         error_message
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
+    use casper::rust::casper::CASPER_PROTOCOL_VERSION;
+    use casper::rust::util::proto_util;
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    for validator in &mut parameters.2.proof_of_stake.validators {
+        validator.stake = "100000000000000000000".parse().unwrap();
+    }
+    parameters.2.proof_of_stake.maximum_bond = "100000000000000000000000".parse().unwrap();
+    parameters.2.native_token_decimals = 18;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    assert_eq!(
+        genesis.genesis_block.header.version,
+        CASPER_PROTOCOL_VERSION
+    );
+    assert!(genesis
+        .genesis_block
+        .body
+        .state
+        .bonds
+        .iter()
+        .all(|bond| bond.stake > i64::MAX.into()));
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let deploy =
+        construct_deploy::basic_deploy_data(0, None, Some(genesis.genesis_block.shard_id.clone()))
+            .unwrap();
+    let block = TestNode::propagate_block_at_index(&mut nodes, 0, &[deploy])
+        .await
+        .unwrap();
+    assert_eq!(block.header.version, CASPER_PROTOCOL_VERSION);
+    assert_eq!(proto_util::hash_block(&block), block.block_hash);
+    assert_eq!(
+        block.body.state.bonds,
+        genesis.genesis_block.body.state.bonds
+    );
+    for node in &nodes {
+        assert!(node.casper.dag_contains(&block.block_hash));
+        let metadata = node
+            .block_dag_storage
+            .get_representation()
+            .unwrap()
+            .lookup(&block.block_hash)
+            .unwrap()
+            .unwrap();
+        for bond in &block.body.state.bonds {
+            assert_eq!(metadata.weight_map[&bond.validator], bond.stake);
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
+    use casper::rust::util::rspace_util;
+    use num_bigint::BigInt;
+    use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoMap};
+    use rholang::rust::interpreter::util::vault_address::VaultAddress;
+
+    async fn balance(node: &TestNode, hash: &Bytes, address: &str) -> BigInt {
+        let source = r#"
+            new return, rl(`rho:registry:lookup`), systemCh, vaultCh, balanceCh in {
+                rl!(`rho:vault:system`, *systemCh) |
+                for (@(_, system) <- systemCh) {
+                    @system!("findOrCreate", "ADDRESS", *vaultCh) |
+                    for (@(true, vault) <- vaultCh) { @vault!("balance", *return) }
+                }
+            }
+        "#
+        .replace("ADDRESS", address);
+        let (values, _) = node
+            .runtime_manager
+            .play_exploratory_deploy(source, hash, None)
+            .await
+            .unwrap();
+        assert_eq!(values.len(), 1);
+        RhoBigInt::unapply(&values[0]).unwrap()
+    }
+
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    let funding: BigInt = BigInt::from(1) << 230;
+    let price: BigInt = BigInt::from(1) << 128;
+    let amount: BigInt = BigInt::from(1) << 150;
+    let payer = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB).unwrap();
+    parameters
+        .2
+        .vaults
+        .iter_mut()
+        .find(|vault| vault.vault_address == payer)
+        .unwrap()
+        .initial_balance = funding.clone();
+    for validator in &mut parameters.2.proof_of_stake.validators {
+        validator.stake = BigInt::from(1) << 190;
+    }
+    parameters.2.proof_of_stake.maximum_bond = shared::rust::asi_amount::maximum();
+    parameters.2.proof_of_stake.min_phlo_price = BigInt::from(1) << 65;
+    parameters.2.proof_of_stake.epoch_length = 1;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let recipient = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
+    let term = r#"
+        new rl(`rho:registry:lookup`), systemCh, vaultCh, recipientCh, authCh, ret,
+            deployerId(`rho:system:deployerId`), abort(`rho:execution:abort`) in {
+            rl!(`rho:vault:system`, *systemCh) |
+            for (@(_, system) <- systemCh) {
+                @system!("findOrCreate", "PAYER", *vaultCh) |
+                @system!("findOrCreate", "RECIPIENT", *recipientCh) |
+                @system!("deployerAuthKey", *deployerId, *authCh) |
+                for (@(true, vault) <- vaultCh & @(true, _) <- recipientCh & key <- authCh) {
+                    @vault!("transfer", "RECIPIENT", AMOUNTn, *key, *ret) |
+                    for (@result <- ret) {
+                        match result {
+                            (true, _) => { @1!(true) }
+                            _ => { abort!(result) }
+                        }
+                    }
+                }
+            }
+        }
+    "#
+    .replace("PAYER", &payer.to_base58())
+    .replace("RECIPIENT", recipient)
+    .replace("AMOUNT", &amount.to_string());
+    let mut paid = BigInt::from(0);
+    for (timestamp, term, failed) in [(1, term, false), (2, "@0!(1 + true)".to_string(), true)] {
+        let deploy = construct_deploy::source_deploy(
+            term,
+            timestamp,
+            Some(5_000_000),
+            Some(price.clone()),
+            None,
+            None,
+            Some(genesis.genesis_block.shard_id.clone()),
+        )
+        .unwrap();
+        let block = nodes[0].add_block_from_deploys(&[deploy]).await.unwrap();
+        let validation = nodes[1].process_block(block.clone()).await.unwrap();
+        assert!(matches!(validation, Either::Right(_)), "{validation:?}");
+        assert_eq!(block.body.deploys.len(), 1);
+        let processed = &block.body.deploys[0];
+        assert_eq!(processed.is_failed, failed);
+        assert!(processed.system_deploy_error.is_none());
+        assert!(processed.cost.cost > 0);
+        let fee = BigInt::from(processed.cost.cost) * &price;
+        assert_eq!(
+            processed.deploy.data.total_phlo_charge() - processed.refund_amount(),
+            fee
+        );
+        assert!(&fee * &block.body.state.bonds[0].stake > shared::rust::asi_amount::maximum());
+        paid += fee;
+        for node in &nodes {
+            assert!(node.casper.dag_contains(&block.block_hash));
+            let hash = &block.body.state.post_state_hash;
+            assert_eq!(
+                rspace_util::get_data_at_public_channel_block(&block, 1, &node.runtime_manager)
+                    .await,
+                vec!["true"],
+                "The transfer must reply successfully before balances are read"
+            );
+            assert_eq!(
+                balance(node, hash, &payer.to_base58()).await,
+                &funding - &amount - &paid
+            );
+            assert_eq!(balance(node, hash, recipient).await, amount);
+            let (values, _) = node.runtime_manager.play_exploratory_deploy(
+                "new return, rl(`rho:registry:lookup`), posCh in { rl!(`rho:system:pos`, *posCh) | for (@(_, pos) <- posCh) { @pos!(\"getRewards\", *return) } }".into(), hash, None
+            ).await.unwrap();
+            assert_eq!(values.len(), 1);
+            let rewards = RhoMap::unapply(&values[0]).unwrap();
+            let total: BigInt = rewards
+                .values()
+                .map(|value| RhoBigInt::unapply(value).unwrap())
+                .sum();
+            assert_eq!(total, paid);
+        }
+    }
 }

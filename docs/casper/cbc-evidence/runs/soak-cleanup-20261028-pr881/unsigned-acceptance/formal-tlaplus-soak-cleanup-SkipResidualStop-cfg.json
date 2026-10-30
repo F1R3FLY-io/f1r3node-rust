@@ -1,0 +1,15 @@
+{
+  "schema": "cbc-acceptance/v2",
+  "artifact": "formal/tlaplus/soak_cleanup/SkipResidualStop.cfg",
+  "source_sha256": "8595e5fa25e28c0bb41727407e1c048e0cf60a93f1b0ad792a04a192b36e4481",
+  "claim": {
+    "path": "docs/claims/soak-segment-cleanup.md",
+    "sha256": "69b5bf4b10e440a70c08400d078ba55f95dd55739c67d7ffa454b644c780ef44"
+  },
+  "claim_id": "CLAIM-SOAK-CLEANUP-001",
+  "claim_set_sha256": "5d52b1c1d4a2c2b8b26e839c6133bdcecbc059a84a12e5fca125bdeec8fe1e44",
+  "evidence_sha256": "0fd54ff800f3f84f569df0bca9e948fca6878762e4b700a61ac5488819e31fa2",
+  "accepted_by": "",
+  "approved_at": "",
+  "approval_ref": ""
+}

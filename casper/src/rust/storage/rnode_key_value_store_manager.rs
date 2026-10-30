@@ -236,3 +236,40 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
 
     mappings
 }
+
+#[cfg(test)]
+mod bigint_metadata_tests {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use models::rust::block_implicits::get_random_block_default;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn production_lmdb_mapping_supports_bigint_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
+        let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let mut block = get_random_block_default();
+        block.header.parents_hash_list.clear();
+        block.body.state.block_number = 0;
+        block.body.state.bonds[0].stake = "100000000000000000000".parse().unwrap();
+        dag.insert(&block, InsertMode::Approved).unwrap();
+        drop(dag);
+        manager.shutdown().await.unwrap();
+        drop(manager);
+        let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
+        let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        assert_eq!(
+            dag.get_representation()
+                .unwrap()
+                .lookup(&block.block_hash)
+                .unwrap()
+                .unwrap()
+                .weight_map[&block.body.state.bonds[0].validator],
+            block.body.state.bonds[0].stake
+        );
+        drop(dag);
+    }
+}

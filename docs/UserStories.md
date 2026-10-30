@@ -280,3 +280,20 @@ Use this template when adding new user stories:
 ```
 
 ---
+
+#### US-015: Exact ASI token amounts
+
+> As a node operator, I want all ASI amount paths to support unsigned 256-bit values so that large balances, bonds, and fees remain exact.
+
+**Implemented in:** EPIC-031
+
+**Value Stream:** Node reliability
+
+**Acceptance Criteria:**
+
+- [x] Genesis, transfers, bonds, fees, APIs, and persistence retain exact amounts.
+- [x] Consensus and replay agree for amounts above the 64-bit range.
+- [x] The default maximum bond is 2^256-1 and invalid amounts are rejected.
+- [x] Focused tests, workspace checks, and independent review pass.
+
+**Completed:** 2026-10-27

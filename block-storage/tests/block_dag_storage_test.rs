@@ -712,7 +712,7 @@ fn dag_storage_settled_history_insert_never_touches_latest_messages() {
         None,
         Some(vec![Bond {
             validator: unseen_validator.clone(),
-            stake: 100,
+            stake: 100.into(),
         }]),
         None,
         None,
@@ -1921,7 +1921,7 @@ fn newly_bonded_placeholder_is_the_learned_genesis_on_a_truncated_dag() {
             None,
             Some(vec![models::rust::casper::protocol::casper_message::Bond {
                 validator: new_validator.clone(),
-                stake: 100,
+                stake: 100.into(),
             }]),
             None,
             None,
@@ -2394,4 +2394,65 @@ async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_h
         anchor.block_hash,
         "the anchor is the seed every derived floor descends from"
     );
+}
+
+#[tokio::test]
+async fn bigint_metadata_survives_restart() {
+    let mut manager = InMemoryStoreManager::new();
+    let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+    let mut genesis = genesis_block();
+    genesis.body.state.bonds = vec![Bond {
+        validator: vec![1u8; 33].into(),
+        stake: "100000000000000000000".parse().unwrap(),
+    }];
+    storage
+        .insert(
+            &genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
+    drop(storage);
+    let restarted = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+    let representation = restarted.get_representation().unwrap();
+    assert_eq!(
+        representation
+            .lookup(&genesis.block_hash)
+            .unwrap()
+            .unwrap()
+            .weight_map
+            .values()
+            .next(),
+        Some(&genesis.body.state.bonds[0].stake)
+    );
+}
+
+#[tokio::test]
+async fn bigint_metadata_reopen_rejects_out_of_range_persisted_weights() {
+    use models::rust::block_hash::BlockHashSerde;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    let mut manager = InMemoryStoreManager::new();
+    let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+    let mut genesis = genesis_block();
+    let amount = "100000000000000000000";
+    genesis.body.state.bonds = vec![Bond {
+        validator: vec![1u8; 33].into(),
+        stake: amount.parse().unwrap(),
+    }];
+    storage
+        .insert(
+            &genesis,
+            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+        )
+        .unwrap();
+    drop(storage);
+    let raw = manager.store("block-metadata".to_string()).await.unwrap();
+    let key = bincode::serialize(&BlockHashSerde(genesis.block_hash)).unwrap();
+    let mut value = raw.get_one(&key).unwrap().unwrap();
+    let offset = value
+        .windows(amount.len())
+        .position(|bytes| bytes == amount.as_bytes())
+        .unwrap();
+    value[offset] = b'-';
+    raw.put_one(key, value).unwrap();
+    assert!(BlockDagKeyValueStorage::new(&mut manager).await.is_err());
 }

@@ -243,7 +243,7 @@ fn preflight_metadata(
     }
     for _ in 0..wire.count("metadata validators", limits.max_validators)? {
         wire.bytes()?;
-        wire.take(8)?;
+        wire.bytes()?;
     }
     wire.take(19)?;
     wire.bytes()?;
@@ -770,7 +770,7 @@ impl CanonicalEncoder {
         self.u64(metadata.weight_map.len() as u64)?;
         for (validator, weight) in &metadata.weight_map {
             self.bytes(validator)?;
-            self.i64(*weight)?;
+            self.bytes(&weight.to_signed_bytes_be())?;
         }
         self.i64(metadata.block_number)?;
         self.i32(metadata.sequence_number)?;

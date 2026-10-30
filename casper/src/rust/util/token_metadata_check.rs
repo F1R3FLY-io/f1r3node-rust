@@ -126,7 +126,7 @@ pub async fn read_on_chain_fault_tolerance_threshold_ppm(
 pub async fn read_on_chain_consensus_parameters(
     runtime_manager: &RuntimeManager,
     post_state_hash: &StateHash,
-) -> Result<(i32, i64, i64), CasperError> {
+) -> Result<(i32, i64, num_bigint::BigInt), CasperError> {
     runtime_manager
         .get_consensus_parameters(post_state_hash)
         .await?

@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/api/BlockAPI.scala
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -581,7 +581,10 @@ impl BlockAPI {
         }
 
         // Validation chain - mimics Scala's whenA pattern
-        let validation_result: Result<(), DeployValidationError> = Ok(())
+        let validation_result: Result<(), DeployValidationError> = d
+            .data
+            .validate_amounts()
+            .map_err(|message| DeployValidationError { message })
             .and_then(|_| {
                 if is_node_read_only {
                     Err(DeployValidationError {
@@ -651,7 +654,7 @@ impl BlockAPI {
         if let Some(casper) = eng.with_casper() {
             // The floor check reads the SAME value the validity rule reads
             // (the shard conf), never a second node-conf copy.
-            let min_phlo_price = casper.casper_shard_conf().min_phlo_price;
+            let min_phlo_price = casper.casper_shard_conf().min_phlo_price.clone();
             if d.data.phlo_price < min_phlo_price {
                 return Err(eyre::Report::new(DeployValidationError {
                     message: format!(
@@ -1588,12 +1591,7 @@ impl BlockAPI {
         };
 
         let weights_map = proto_util::weight_map(block);
-        let weights_u64: HashMap<Bytes, u64> = weights_map
-            .into_iter()
-            .map(|(k, v)| (k, v as u64))
-            .collect();
-
-        let initial_fault = casper.normalized_initial_fault(weights_u64)?;
+        let initial_fault = casper.normalized_initial_fault(weights_map)?;
         let fault_tolerance = crate::rust::safety::initial_fault::display_projection(
             normalized_fault_tolerance,
             initial_fault,

@@ -5,5 +5,5 @@ use rholang::rust::interpreter::util::vault_address::VaultAddress;
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Vault {
     pub vault_address: VaultAddress,
-    pub initial_balance: u128,
+    pub initial_balance: num_bigint::BigInt,
 }

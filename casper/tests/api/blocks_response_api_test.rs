@@ -29,15 +29,15 @@ fn create_validators_and_bonds() -> (Validator, Validator, Validator, Bond, Bond
 
     let v1_bond = Bond {
         validator: v1.clone(),
-        stake: 25,
+        stake: 25.into(),
     };
     let v2_bond = Bond {
         validator: v2.clone(),
-        stake: 20,
+        stake: 20.into(),
     };
     let v3_bond = Bond {
         validator: v3.clone(),
-        stake: 15,
+        stake: 15.into(),
     };
 
     let bonds = vec![v1_bond.clone(), v2_bond.clone(), v3_bond.clone()];

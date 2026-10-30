@@ -728,7 +728,7 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
     let deploy1 = construct_deploy::source_deploy_now_full(
         "@1!(Nil)".to_string(),
         Some(1000000),
-        Some(1),
+        Some((1).into()),
         None,
         None,
         None,
@@ -738,7 +738,7 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
     let deploy2 = construct_deploy::source_deploy_now_full(
         "@3!([1,2,3,4])".to_string(),
         Some(1000000),
-        Some(1),
+        Some((1).into()),
         None,
         None,
         None,
@@ -748,7 +748,7 @@ async fn compute_deploys_checkpoint_should_aggregate_cost_of_deploying_rholang_p
     let deploy3 = construct_deploy::source_deploy_now_full(
         "for(@x <- @0) { @4!(x.toByteArray()) }".to_string(),
         Some(1000000),
-        Some(1),
+        Some((1).into()),
         None,
         None,
         None,

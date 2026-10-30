@@ -25,7 +25,7 @@ async fn metadata_reads_for_one_walk(validator_count: usize) -> (usize, usize) {
         .iter()
         .map(|validator| Bond {
             validator: validator.clone(),
-            stake: 10,
+            stake: 10.into(),
         })
         .collect();
 
@@ -120,7 +120,7 @@ async fn walk_with_a_missing_metadata_row(
     let validator = generate_validator(Some("scope-walk missing row"));
     let bonds = vec![Bond {
         validator: validator.clone(),
-        stake: 10,
+        stake: 10.into(),
     }];
     let justification = |hash: &BlockHash| {
         vec![Justification {

@@ -246,7 +246,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         async {
             Ok(Validate::phlo_price(
                 block,
-                this.casper_shard_conf.min_phlo_price,
+                this.casper_shard_conf.min_phlo_price.clone(),
             ))
         },
     )

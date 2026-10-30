@@ -837,7 +837,9 @@ fn metadata_collections_are_bounded_before_typed_decoding() {
     let typed = metadata_store(fx.handle("block-metadata"));
     let hash = fx.chain[1].block_hash.clone();
     let mut metadata = typed.get_unsafe(&BlockHashSerde(hash.clone())).unwrap();
-    metadata.weight_map = (0..5).map(|n| (BlockHash::from(vec![n; 32]), 1)).collect();
+    metadata.weight_map = (0..5)
+        .map(|n| (BlockHash::from(vec![n; 32]), 1.into()))
+        .collect();
     typed
         .put_one(BlockHashSerde(hash.clone()), metadata.clone())
         .unwrap();
@@ -1304,7 +1306,7 @@ impl<'a> CanonicalReader<'a> {
         self.count(value.weight_map.len());
         for (validator, weight) in &value.weight_map {
             assert_eq!(self.bytes(), validator.as_ref());
-            assert_eq!(i64::from_be_bytes(self.fixed()), *weight);
+            assert_eq!(self.bytes(), weight.to_signed_bytes_be());
         }
         assert_eq!(i64::from_be_bytes(self.fixed()), value.block_number);
         assert_eq!(i32::from_be_bytes(self.fixed()), value.sequence_number);

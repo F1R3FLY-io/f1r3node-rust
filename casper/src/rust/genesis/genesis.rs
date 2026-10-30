@@ -27,7 +27,7 @@ pub struct Genesis {
     pub block_number: i64,
     pub proof_of_stake: ProofOfStake,
     pub vaults: Vec<Vault>,
-    pub supply: i64,
+    pub supply: num_bigint::BigInt,
     pub version: i64,
     /// Full display name of the native token (e.g. "F1R3CAP"). Baked into
     /// the `TokenMetadata` Rholang contract at genesis.
@@ -78,7 +78,7 @@ impl Genesis {
         timestamp: i64,
         pos_params: &ProofOfStake,
         vaults: &Vec<Vault>,
-        supply: i64,
+        supply: num_bigint::BigInt,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
@@ -103,7 +103,7 @@ impl Genesis {
 
                 let deploy = standard_deploys::vaults_generator(
                     batch_vaults,
-                    supply,
+                    supply.clone(),
                     deploy_timestamp,
                     is_last_batch,
                     shard_id,
@@ -171,7 +171,7 @@ impl Genesis {
     pub fn default_blessed_terms(
         pos_params: &ProofOfStake,
         vaults: &Vec<Vault>,
-        supply: i64,
+        supply: num_bigint::BigInt,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
@@ -199,10 +199,19 @@ impl Genesis {
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
+        genesis
+            .proof_of_stake
+            .validate_amounts()
+            .map_err(CasperError::RuntimeError)?;
+        shared::rust::asi_amount::validate(&genesis.supply).map_err(CasperError::RuntimeError)?;
+        for vault in &genesis.vaults {
+            shared::rust::asi_amount::validate(&vault.initial_balance)
+                .map_err(CasperError::RuntimeError)?;
+        }
         let blessed_terms = Self::default_blessed_terms(
             &genesis.proof_of_stake,
             &genesis.vaults,
-            genesis.supply,
+            genesis.supply.clone(),
             &genesis.shard_id,
             &genesis.native_token_name,
             &genesis.native_token_symbol,
@@ -273,7 +282,7 @@ impl Genesis {
         let mut bonds: Vec<_> = proof_of_stake
             .validators
             .iter()
-            .map(|validator| (validator.pk.clone(), validator.stake))
+            .map(|validator| (validator.pk.clone(), validator.stake.clone()))
             .collect();
 
         bonds.sort_by_key(|(pk, _)| pk.bytes.clone());
@@ -304,11 +313,11 @@ mod tests {
         use super::super::contracts::validator::Validator;
 
         let pos_params = ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (num_bigint::BigInt::from(1) << 256) - 1,
             validators: vec![Validator {
                 pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 10,
             quarantine_length: 20,
@@ -316,7 +325,7 @@ mod tests {
             fault_tolerance_threshold_ppm: 100_000,
             max_parent_depth: 1,
             deploy_lifespan: 1,
-            min_phlo_price: 1,
+            min_phlo_price: (1).into(),
             pos_multi_sig_public_keys: vec![hex::encode(
                 &*standard_deploys::POS_GENERATOR_PUB_KEY.bytes,
             )],
@@ -325,7 +334,7 @@ mod tests {
         let deploys = Genesis::default_blessed_terms(
             &pos_params,
             &vec![],
-            0,
+            0.into(),
             "root",
             "F1R3CAP",
             "F1R3",

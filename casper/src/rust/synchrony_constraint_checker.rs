@@ -9,6 +9,9 @@ use lazy_static::lazy_static;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::ToPrimitive;
 
 use super::blocks::proposer::propose_result::CheckProposeConstraintsResult;
 use super::casper::{CasperShardConf, CasperSnapshot};
@@ -170,18 +173,37 @@ mod tests {
         let mut validator_weight_map = HashMap::new();
         let validator1 = Validator::from(vec![1u8]);
         let validator2 = Validator::from(vec![2u8]);
-        validator_weight_map.insert(validator1.clone(), 1000);
-        validator_weight_map.insert(validator2, 1000);
+        validator_weight_map.insert(validator1.clone(), 1000.into());
+        validator_weight_map.insert(validator2, 1000.into());
 
         let mut seen_senders = HashSet::new();
         let _ = seen_senders.insert(validator1);
 
         let (seen_weight, ratio) =
-            super::compute_synchrony_value(&seen_senders, &validator_weight_map, 2000);
-        assert_eq!(seen_weight, 1000);
+            super::compute_synchrony_value(&seen_senders, &validator_weight_map, &2000.into());
+        assert_eq!(seen_weight, 1000.into());
         assert!(
             (ratio - 0.5).abs() < f64::EPSILON,
             "single sender should be 50% of total other validators weight"
+        );
+    }
+
+    #[test]
+    fn compute_synchrony_value_preserves_large_ratios_and_zero_denominator() {
+        let validator = Validator::from(vec![1u8]);
+        let unknown = Validator::from(vec![2u8]);
+        let seen_senders = HashSet::from([validator.clone(), unknown]);
+        for shift in [0, 64, 256, 1024] {
+            let unit = BigInt::from(1) << shift;
+            let weights = HashMap::from([(validator.clone(), &unit * 3)]);
+            let (seen, ratio) =
+                super::compute_synchrony_value(&seen_senders, &weights, &(&unit * 4));
+            assert_eq!(seen, &unit * 3);
+            assert_eq!(ratio, 0.75);
+        }
+        assert_eq!(
+            super::compute_synchrony_value(&HashSet::new(), &HashMap::new(), &0.into()),
+            (0.into(), 1.0)
         );
     }
 
@@ -190,16 +212,16 @@ mod tests {
         let mut validator_weight_map = HashMap::new();
         let validator1 = Validator::from(vec![1u8]);
         let validator2 = Validator::from(vec![2u8]);
-        validator_weight_map.insert(validator1.clone(), 1000);
-        validator_weight_map.insert(validator2.clone(), 1000);
+        validator_weight_map.insert(validator1.clone(), 1000.into());
+        validator_weight_map.insert(validator2.clone(), 1000.into());
 
         let mut seen_senders = HashSet::new();
         let _ = seen_senders.insert(validator1);
         let _ = seen_senders.insert(validator2);
 
         let (seen_weight, ratio) =
-            super::compute_synchrony_value(&seen_senders, &validator_weight_map, 2000);
-        assert_eq!(seen_weight, 2000);
+            super::compute_synchrony_value(&seen_senders, &validator_weight_map, &2000.into());
+        assert_eq!(seen_weight, 2000.into());
         assert!(
             (ratio - 1.0).abs() < f64::EPSILON,
             "all senders should be 100% of total other validators weight"
@@ -246,18 +268,25 @@ fn update_recovery_state_on_success(validator: &Validator) {
 
 fn compute_synchrony_value(
     seen_senders: &HashSet<Validator>,
-    validator_weight_map: &HashMap<Validator, i64>,
-    other_validators_weight: i64,
-) -> (i64, f64) {
-    let seen_senders_weight: i64 = seen_senders
+    validator_weight_map: &HashMap<Validator, BigInt>,
+    other_validators_weight: &BigInt,
+) -> (BigInt, f64) {
+    let seen_senders_weight: BigInt = seen_senders
         .iter()
-        .map(|validator| validator_weight_map.get(validator).unwrap_or(&0))
+        .map(|validator| {
+            validator_weight_map
+                .get(validator)
+                .cloned()
+                .unwrap_or_default()
+        })
         .sum();
 
-    let synchrony_constraint_value = if other_validators_weight == 0 {
+    let synchrony_constraint_value = if *other_validators_weight == BigInt::from(0) {
         1.0
     } else {
-        seen_senders_weight as f64 / other_validators_weight as f64
+        BigRational::new(seen_senders_weight.clone(), other_validators_weight.clone())
+            .to_f64()
+            .expect("A BigInt ratio with a nonzero denominator cannot be NaN")
     };
 
     (seen_senders_weight, synchrony_constraint_value)
@@ -347,7 +376,7 @@ pub async fn check(
                     .iter()
                     .map(|(validator, hash)| (validator.clone(), hash.clone()))
                     .collect();
-                let validator_weight_map: HashMap<Validator, i64> =
+                let validator_weight_map: HashMap<Validator, BigInt> =
                     CliqueOracle::participating_weight_map(
                         main_parent_meta.weight_map.into_iter().collect(),
                         &snapshot.dag,
@@ -364,14 +393,17 @@ pub async fn check(
                 // This method can be called on readonly node or not active validator.
                 // So map validator -> stake might not have key associated with the node,
                 // that's why we need `getOrElse`
-                let validator_own_stake = validator_weight_map.get(&validator).unwrap_or(&0);
+                let validator_own_stake = validator_weight_map
+                    .get(&validator)
+                    .cloned()
+                    .unwrap_or_default();
                 let other_validators_weight =
-                    validator_weight_map.values().sum::<i64>() - validator_own_stake;
+                    validator_weight_map.values().sum::<BigInt>() - validator_own_stake;
 
                 let (seen_senders_weight, synchrony_constraint_value) = compute_synchrony_value(
                     &seen_senders,
                     &validator_weight_map,
-                    other_validators_weight,
+                    &other_validators_weight,
                 );
 
                 let threshold_f64 = synchrony_constraint_threshold;
@@ -413,7 +445,7 @@ pub async fn check(
                             compute_synchrony_value(
                                 &finalized_seen_senders,
                                 &validator_weight_map,
-                                other_validators_weight,
+                                &other_validators_weight,
                             );
 
                         tracing::warn!(

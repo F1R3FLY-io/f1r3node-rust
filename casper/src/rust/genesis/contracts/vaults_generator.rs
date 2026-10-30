@@ -3,16 +3,16 @@
 use super::vault::Vault;
 
 pub struct VaultsGenerator {
-    pub supply: i64,
+    pub supply: num_bigint::BigInt,
     pub code: String,
 }
 
 impl VaultsGenerator {
-    pub fn new(supply: i64, code: String) -> Self { Self { supply, code } }
+    pub fn new(supply: num_bigint::BigInt, code: String) -> Self { Self { supply, code } }
 
     pub fn create_from_user_vaults(
         user_vaults: Vec<Vault>,
-        supply: i64,
+        supply: num_bigint::BigInt,
         is_last_batch: bool,
     ) -> Self {
         let vault_balance_list = user_vaults

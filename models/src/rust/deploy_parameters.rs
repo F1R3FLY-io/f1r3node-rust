@@ -409,7 +409,7 @@ mod tests {
         DeployData {
             term: "Nil".into(),
             time_stamp: 1,
-            phlo_price: 2,
+            phlo_price: (2).into(),
             phlo_limit: 3,
             valid_after_block_number: 4,
             shard_id: "root".into(),
@@ -510,9 +510,11 @@ mod tests {
     }
 
     #[test]
-    fn deploy_parameters_empty_preserves_legacy_wire_bytes_and_json() {
+    fn deploy_parameters_empty_preserves_uint256_wire_bytes_and_json() {
         let original = deploy(Vec::new());
-        let bytes = hex::decode("12034e696c18013802400350045a04726f6f7468f403").unwrap();
+        let mut bytes = hex::decode("12034e696c1801400350045a04726f6f7468f4037a20").unwrap();
+        bytes.extend_from_slice(&[0; 31]);
+        bytes.push(2);
         assert_eq!(DeployData::encode(original.clone()), bytes);
         assert_eq!(DeployData::decode(bytes).unwrap(), original);
         let json = serde_json::to_value(&original).unwrap();

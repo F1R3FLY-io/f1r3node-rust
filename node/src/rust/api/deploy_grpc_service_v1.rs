@@ -74,7 +74,7 @@ pub struct DeployGrpcServiceV1Impl {
     dev_mode: bool,
     network_id: String,
     shard_id: String,
-    min_phlo_price: i64,
+    min_phlo_price: num_bigint::BigInt,
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
@@ -98,7 +98,7 @@ impl DeployGrpcServiceV1Impl {
         dev_mode: bool,
         network_id: String,
         shard_id: String,
-        min_phlo_price: i64,
+        min_phlo_price: num_bigint::BigInt,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
@@ -1075,8 +1075,8 @@ impl DeployService for DeployGrpcServiceV1Impl {
         // Advertise the floor admission and validity actually enforce — the
         // chain-adopted value; local conf only until casper is up.
         let min_phlo_price = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => casper.casper_shard_conf().min_phlo_price,
-            None => self.min_phlo_price,
+            Some(casper) => casper.casper_shard_conf().min_phlo_price.clone(),
+            None => self.min_phlo_price.clone(),
         };
 
         let status = Status {
@@ -1089,7 +1089,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             shard_id: self.shard_id.clone(),
             peers,
             nodes,
-            min_phlo_price,
+            min_phlo_price: min_phlo_price.to_string(),
             peer_list,
             native_token_name: self.native_token_name.clone(),
             native_token_symbol: self.native_token_symbol.clone(),
@@ -1165,7 +1165,7 @@ mod tests {
             false,
             "testnet".to_string(),
             "root".to_string(),
-            1,
+            (1).into(),
             "F1R3".to_string(),
             "F1R3".to_string(),
             8,
@@ -1208,7 +1208,7 @@ mod tests {
         let deploy_data = DeployDataMessage {
             term: "Nil".to_string(),
             time_stamp: 1,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 1000,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),

@@ -182,7 +182,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         construct_deploy::source_deploy_now_full(
             CONFLICT_RHO.to_string(),
             Some(PHLO_LIMIT),
-            Some(PHLO_PRICE),
+            Some((PHLO_PRICE).into()),
             Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),
@@ -194,7 +194,7 @@ async fn recovery_cycle_rejected_deploy_retries_while_source_is_visible() {
         construct_deploy::source_deploy_now_full(
             CONFLICT_RHO.to_string(),
             Some(PHLO_LIMIT),
-            Some(PHLO_PRICE),
+            Some((PHLO_PRICE).into()),
             Some(construct_deploy::DEFAULT_SEC.clone()),
             None,
             Some(shard_id.clone()),
@@ -602,7 +602,7 @@ async fn three_validator_same_payer_merge_keeps_purses_single_valued_and_live() 
             construct_deploy::source_deploy_now_full(
                 CONFLICT_RHO.to_string(),
                 Some(PHLO_LIMIT),
-                Some(PHLO_PRICE),
+                Some((PHLO_PRICE).into()),
                 Some(construct_deploy::DEFAULT_SEC.clone()),
                 None,
                 Some(shard_id.clone()),

@@ -95,7 +95,7 @@ async fn build_ucc_i6_fork(
         .iter()
         .map(|v| Bond {
             validator: v.clone(),
-            stake: 100,
+            stake: 100.into(),
         })
         .collect();
 
@@ -296,7 +296,7 @@ proptest! {
             let bonds: Vec<Bond> = validators
                 .iter()
                 .zip(shape.stakes.iter())
-                .map(|(v, stake)| Bond { validator: v.clone(), stake: *stake })
+                .map(|(v, stake)| Bond { validator: v.clone(), stake: (*stake).into() })
                 .collect();
             let genesis = create_genesis_block(
                 &mut block_store,

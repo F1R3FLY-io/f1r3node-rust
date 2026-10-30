@@ -52,7 +52,7 @@ async fn integration_t_contains_future_deploy() {
     let future_deploy = construct_deploy::source_deploy_now_full(
         "@0!(0)".to_string(),
         Some(90_000),
-        Some(1),
+        Some((1).into()),
         None,
         Some(100),
         Some(shard_id.clone()),

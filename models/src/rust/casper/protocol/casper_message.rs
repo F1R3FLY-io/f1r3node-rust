@@ -3,6 +3,7 @@
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::{Signed, ToMessage};
+use num_bigint::BigInt;
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::{Blake2b256Hash, LENGTH as HASH_LENGTH};
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
@@ -926,7 +927,7 @@ impl Body {
                 proto
                     .state
                     .ok_or_else(|| "Missing state field".to_string())?,
-            ),
+            )?,
             deploys: proto
                 .deploys
                 .into_iter()
@@ -1017,17 +1018,17 @@ pub struct F1r3flyState {
 }
 
 impl F1r3flyState {
-    pub fn from_proto(proto: RChainStateProto) -> Self {
-        Self {
+    pub fn from_proto(proto: RChainStateProto) -> Result<Self, String> {
+        Ok(Self {
             pre_state_hash: proto.pre_state_hash,
             post_state_hash: proto.post_state_hash,
             bonds: proto
                 .bonds
                 .into_iter()
                 .map(|b| Bond::from_proto(b))
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
             block_number: proto.block_number,
-        }
+        })
     }
 
     pub fn to_proto(&self) -> RChainStateProto {
@@ -1055,8 +1056,10 @@ pub struct ProcessedDeploy {
 }
 
 impl ProcessedDeploy {
-    pub fn refund_amount(&self) -> i64 {
-        (self.deploy.data.phlo_limit - self.cost.cost as i64).max(0) * self.deploy.data.phlo_price
+    pub fn refund_amount(&self) -> BigInt {
+        (BigInt::from(self.deploy.data.phlo_limit) - BigInt::from(self.cost.cost))
+            .max(BigInt::from(0))
+            * &self.deploy.data.phlo_price
     }
 
     pub fn empty(deploy: Signed<DeployData>) -> Self {
@@ -1076,7 +1079,7 @@ impl ProcessedDeploy {
             timestamp: self.deploy.data.time_stamp,
             sig: PrettyPrinter::build_string_no_limit(&self.deploy.sig),
             sig_algorithm: self.deploy.sig_algorithm.name(),
-            phlo_price: self.deploy.data.phlo_price,
+            phlo_price: self.deploy.data.phlo_price.to_string(),
             phlo_limit: self.deploy.data.phlo_limit,
             valid_after_block_number: self.deploy.data.valid_after_block_number,
             cost: self.cost.cost,
@@ -1298,8 +1301,9 @@ pub struct DeployData {
     pub term: String,
     #[serde(rename = "timestamp")]
     pub time_stamp: i64,
-    #[serde(rename = "phloPrice")]
-    pub phlo_price: i64,
+    #[serde(rename = "phloPrice", with = "shared::rust::asi_amount")]
+    #[schema(value_type = String)]
+    pub phlo_price: num_bigint::BigInt,
     #[serde(rename = "phloLimit")]
     pub phlo_limit: i64,
     #[serde(rename = "validAfterBlockNumber")]
@@ -1322,7 +1326,15 @@ impl ToMessage for DeployData {
 }
 
 impl DeployData {
-    pub fn total_phlo_charge(&self) -> i64 { self.phlo_limit * self.phlo_price }
+    pub fn total_phlo_charge(&self) -> BigInt { self.phlo_limit * &self.phlo_price }
+
+    pub fn validate_amounts(&self) -> Result<(), String> {
+        shared::rust::asi_amount::validate(&self.phlo_price)?;
+        if self.phlo_limit < 0 {
+            return Err("Phlo limit must be non-negative".into());
+        }
+        shared::rust::asi_amount::validate(&self.total_phlo_charge())
+    }
 
     /// Returns true if this deploy has a time-based expiration set
     pub fn has_expiration(&self) -> bool {
@@ -1349,10 +1361,10 @@ impl DeployData {
     fn _from_proto(proto: DeployDataProto) -> Result<Self, String> {
         let parameters = crate::rust::deploy_parameters::parameters_from_proto(proto.parameters)
             .map_err(|error| error.to_string())?;
-        Ok(Self {
+        let data = Self {
             term: proto.term,
             time_stamp: proto.timestamp,
-            phlo_price: proto.phlo_price,
+            phlo_price: shared::rust::asi_amount::decode(&proto.phlo_price)?,
             phlo_limit: proto.phlo_limit,
             valid_after_block_number: proto.valid_after_block_number,
             shard_id: proto.shard_id,
@@ -1363,7 +1375,9 @@ impl DeployData {
                 Some(proto.expiration_timestamp)
             },
             parameters,
-        })
+        };
+        data.validate_amounts()?;
+        Ok(data)
     }
 
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
@@ -1384,7 +1398,10 @@ impl DeployData {
         DeployDataProto {
             term: dd.term,
             timestamp: dd.time_stamp,
-            phlo_price: dd.phlo_price,
+            phlo_price: shared::rust::asi_amount::encode(&dd.phlo_price)
+                .expect("validated phlo price")
+                .to_vec()
+                .into(),
             phlo_limit: dd.phlo_limit,
             valid_after_block_number: dd.valid_after_block_number,
             shard_id: dd.shard_id,
@@ -1405,7 +1422,10 @@ impl DeployData {
         DeployDataProto {
             term: dd.data.term.clone(),
             timestamp: dd.data.time_stamp,
-            phlo_price: dd.data.phlo_price,
+            phlo_price: shared::rust::asi_amount::encode(&dd.data.phlo_price)
+                .expect("validated phlo price")
+                .to_vec()
+                .into(),
             phlo_limit: dd.data.phlo_limit,
             valid_after_block_number: dd.data.valid_after_block_number,
             shard_id: dd.data.shard_id.clone(),
@@ -1586,21 +1606,24 @@ impl CommEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bond {
     pub validator: ByteString,
-    pub stake: i64,
+    pub stake: BigInt,
 }
 
 impl Bond {
-    pub fn from_proto(proto: BondProto) -> Self {
-        Self {
+    pub fn from_proto(proto: BondProto) -> Result<Self, String> {
+        Ok(Self {
             validator: proto.validator,
-            stake: proto.stake,
-        }
+            stake: shared::rust::asi_amount::decode(&proto.stake)?,
+        })
     }
 
     pub fn to_proto(self) -> BondProto {
         BondProto {
             validator: self.validator,
-            stake: self.stake,
+            stake: shared::rust::asi_amount::encode(&self.stake)
+                .expect("validated bond amount")
+                .to_vec()
+                .into(),
         }
     }
 }
@@ -1978,6 +2001,37 @@ mod tests {
     fn hash32(fill: u8) -> Blake2b256Hash { Blake2b256Hash::from_bytes(vec![fill; 32]) }
 
     #[test]
+    fn bond_wire_encoding_covers_the_token_range() {
+        for stake in [
+            BigInt::from(0),
+            i64::MAX.into(),
+            BigInt::from(1) << 63usize,
+            BigInt::from(1) << 128usize,
+            shared::rust::asi_amount::maximum(),
+        ] {
+            let bond = Bond {
+                validator: Bytes::from_static(b"validator"),
+                stake,
+            };
+            let wire = bond.clone().to_proto();
+            assert_eq!(wire.stake.len(), 32);
+            let decoded = BondProto::decode(wire.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(Bond::from_proto(decoded).unwrap(), bond);
+        }
+    }
+
+    #[test]
+    fn bond_wire_encoding_rejects_missing_or_wrong_width_amounts() {
+        for len in [0, 1, 31, 33] {
+            assert!(Bond::from_proto(BondProto {
+                validator: Bytes::new(),
+                stake: vec![0; len].into(),
+            })
+            .is_err());
+        }
+    }
+
+    #[test]
     fn rejected_deploy_decodes_legacy_wire_format() {
         let legacy = [0x0a, 0x03, b's', b'i', b'g'];
         let decoded = RejectedDeployProto::decode(legacy.as_slice()).unwrap();
@@ -2263,11 +2317,107 @@ mod tests {
     }
 
     #[test]
+    fn fee_amounts_round_trip_at_uint256_boundaries() {
+        for price in [
+            BigInt::from(0),
+            1.into(),
+            i64::MAX.into(),
+            BigInt::from(1) << 63,
+            BigInt::from(1) << 128,
+            shared::rust::asi_amount::maximum(),
+        ] {
+            let mut data = signed_deploy().data;
+            data.phlo_limit = 1;
+            data.phlo_price = price.clone();
+            data.validate_amounts().unwrap();
+            assert_eq!(data.total_phlo_charge(), price);
+            let bytes = DeployData::encode(data.clone());
+            let wire = DeployDataProto::decode(bytes.as_slice()).unwrap();
+            assert_eq!(wire.phlo_price.len(), 32);
+            assert_eq!(
+                shared::rust::asi_amount::decode(&wire.phlo_price).unwrap(),
+                price
+            );
+            assert_eq!(DeployData::decode(bytes).unwrap(), data);
+            let json = serde_json::to_value(&data).unwrap();
+            assert_eq!(json["phloPrice"], price.to_string());
+            assert_eq!(serde_json::from_value::<DeployData>(json).unwrap(), data);
+        }
+    }
+
+    #[test]
+    fn fee_limits_reject_invalid_prices_and_charges() {
+        let mut data = signed_deploy().data;
+        data.phlo_limit = 2;
+        data.phlo_price = shared::rust::asi_amount::maximum();
+        assert_eq!(
+            data.total_phlo_charge(),
+            shared::rust::asi_amount::maximum() * 2
+        );
+        assert!(data.validate_amounts().is_err());
+        assert!(DeployData::decode(DeployData::encode(data.clone())).is_err());
+        for price in [BigInt::from(-1), shared::rust::asi_amount::maximum() + 1] {
+            data.phlo_price = price;
+            assert!(data.validate_amounts().is_err());
+            assert!(serde_json::to_value(&data).is_err());
+        }
+        data.phlo_price = 1.into();
+        data.phlo_limit = -1;
+        assert!(data.validate_amounts().is_err());
+        data.phlo_limit = 1;
+        let mut wire = DeployData::_to_proto(data.clone());
+        for length in [0, 1, 31, 33] {
+            wire.phlo_price = vec![0; length].into();
+            assert!(DeployData::_from_proto(wire.clone()).is_err());
+        }
+        let mut json = serde_json::to_value(&data).unwrap();
+        for price in [
+            serde_json::json!(1),
+            serde_json::json!("-1"),
+            serde_json::json!("01"),
+            serde_json::json!((shared::rust::asi_amount::maximum() + BigInt::from(1)).to_string()),
+        ] {
+            json["phloPrice"] = price;
+            assert!(serde_json::from_value::<DeployData>(json.clone()).is_err());
+        }
+    }
+
+    #[test]
+    fn fee_refunds_use_exact_cost_arithmetic_and_prices_are_signed() {
+        use crypto::rust::private_key::PrivateKey;
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        let mut data = signed_deploy().data;
+        data.phlo_limit = 3;
+        data.phlo_price = BigInt::from(1) << 128;
+        let signed = Signed::create(
+            data.clone(),
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap();
+        assert_eq!(
+            DeployData::from_proto(DeployData::to_proto_ref(&signed)).unwrap(),
+            signed
+        );
+        let mut tampered = DeployData::to_proto_ref(&signed);
+        tampered.phlo_price = shared::rust::asi_amount::encode(&(&data.phlo_price + 1))
+            .unwrap()
+            .to_vec()
+            .into();
+        assert!(DeployData::from_proto(tampered).is_err());
+        let mut processed = ProcessedDeploy::empty(signed);
+        processed.cost.cost = 1;
+        assert_eq!(processed.refund_amount(), &data.phlo_price * 2);
+        processed.cost.cost = u64::MAX;
+        assert_eq!(processed.refund_amount(), BigInt::from(0));
+    }
+
+    #[test]
     fn deploy_data_encode_decode_round_trips_expiration() {
         let with_expiration = DeployData {
             term: "Nil".to_string(),
             time_stamp: 1,
-            phlo_price: 2,
+            phlo_price: (2).into(),
             phlo_limit: 3,
             valid_after_block_number: 4,
             shard_id: "root".to_string(),
@@ -2296,14 +2446,14 @@ mod tests {
         let mut deploy = DeployData {
             term: "Nil".to_string(),
             time_stamp: 1,
-            phlo_price: 7,
+            phlo_price: (7).into(),
             phlo_limit: 11,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
         };
-        assert_eq!(deploy.total_phlo_charge(), 77);
+        assert_eq!(deploy.total_phlo_charge(), BigInt::from(77));
         assert!(!deploy.has_expiration());
         assert!(!deploy.is_expired_at(i64::MAX));
 

@@ -1223,7 +1223,7 @@ impl RuntimeManager {
     pub async fn get_consensus_parameters(
         &self,
         start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+    ) -> Result<Option<(i32, i64, num_bigint::BigInt)>, CasperError> {
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops.get_consensus_parameters(start_hash).await

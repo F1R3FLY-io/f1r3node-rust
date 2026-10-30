@@ -36,7 +36,10 @@ pub fn bond_gen() -> impl Strategy<Value = Bond> {
     let validator_gen = prop::collection::vec(any::<u8>(), validator::LENGTH)
         .prop_map(|byte_vec| prost::bytes::Bytes::from(byte_vec));
     let stake_gen = 1i64..=1024i64;
-    (validator_gen, stake_gen).prop_map(|(validator, stake)| Bond { validator, stake })
+    (validator_gen, stake_gen).prop_map(|(validator, stake)| Bond {
+        validator,
+        stake: stake.into(),
+    })
 }
 
 pub fn justification_gen() -> impl Strategy<Value = Justification> {
@@ -65,7 +68,7 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
         Signed::create(
             DeployData {
                 time_stamp: timestamp,
-                phlo_price: 1,
+                phlo_price: (1).into(),
                 phlo_limit: 9000000,
                 valid_after_block_number: 1,
                 term,

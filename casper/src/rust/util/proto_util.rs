@@ -17,6 +17,7 @@ use models::rust::casper::protocol::casper_message::{
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
 use shared::rust::dag::observation_work::{NoopWork, WorkMeter};
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
@@ -111,23 +112,23 @@ pub fn get_creator_justification_as_list_until_goal_in_memory(
 /// Get weight map from a block message
 pub fn weight_map(
     block_message: &BlockMessage,
-) -> std::collections::HashMap<prost::bytes::Bytes, i64> {
+) -> std::collections::HashMap<prost::bytes::Bytes, BigInt> {
     weight_map_from_state(&block_message.body.state)
 }
 
 /// Get weight map from a state
 fn weight_map_from_state(
     state: &models::rust::casper::protocol::casper_message::F1r3flyState,
-) -> std::collections::HashMap<prost::bytes::Bytes, i64> {
+) -> std::collections::HashMap<prost::bytes::Bytes, BigInt> {
     state
         .bonds
         .iter()
-        .map(|bond| (bond.validator.clone(), bond.stake))
+        .map(|bond| (bond.validator.clone(), bond.stake.clone()))
         .collect()
 }
 
 /// Get total weight from a weight map
-pub fn weight_map_total(weights: &std::collections::HashMap<ByteString, i64>) -> i64 {
+pub fn weight_map_total(weights: &std::collections::HashMap<ByteString, BigInt>) -> BigInt {
     weights.values().sum()
 }
 
@@ -136,10 +137,10 @@ pub fn min_total_validator_weight(
     dag: &mut KeyValueDagRepresentation,
     block_hash: &BlockHash,
     max_clique_min_size: i32,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     dag.lookup(block_hash).map(|block_metadata_opt| {
         let block_metadata = block_metadata_opt.expect("Block metadata should exist");
-        let mut sorted_weights: Vec<i64> = block_metadata.weight_map.values().cloned().collect();
+        let mut sorted_weights: Vec<BigInt> = block_metadata.weight_map.values().cloned().collect();
         sorted_weights.sort();
         sorted_weights
             .iter()
@@ -164,7 +165,7 @@ pub fn weight_from_validator_by_dag(
     dag: &mut KeyValueDagRepresentation,
     block_hash: &BlockHash,
     validator: &Validator,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     weight_from_validator_by_dag_metered(&NoopWork, dag, block_hash, validator)
 }
 
@@ -173,7 +174,7 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
     dag: &mut KeyValueDagRepresentation,
     block_hash: &BlockHash,
     validator: &Validator,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     // On the fork-choice BFS a traversed block — or its main parent, read for
     // the weight map — can be absent from the metadata index: a sync/prune
     // window, or, on an LFS-restored node, a parent below the restore horizon
@@ -209,7 +210,7 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
                 .weight_map
                 .get(validator)
                 .cloned()
-                .unwrap_or(0))
+                .unwrap_or_default())
         }
         None => {
             // No parents (genesis) - use current block's weight map
@@ -217,7 +218,7 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
                 .weight_map
                 .get(validator)
                 .cloned()
-                .unwrap_or(0))
+                .unwrap_or_default())
         }
     }
 }
@@ -227,13 +228,13 @@ pub fn weight_from_validator(
     block_store: &KeyValueBlockStore,
     b: &BlockMessage,
     validator: &prost::bytes::Bytes,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     // A block's own bonds are written by its sender, so they never decide its
     // weight: a parentless block carries none here (`Validate::
     // block_sender_has_weight` judges it against the genesis). A main parent this
     // node does not hold leaves the weight unknown, never self-asserted.
     let Some(parent_hash) = b.header.parents_hash_list.first() else {
-        return Ok(0);
+        return Ok(BigInt::from(0));
     };
     let parent = block_store
         .get(parent_hash)?
@@ -242,14 +243,17 @@ pub fn weight_from_validator(
             context: MissingBlockContext::new("weight_from_validator: main parent"),
         })?;
 
-    Ok(weight_map(&parent).get(validator).cloned().unwrap_or(0))
+    Ok(weight_map(&parent)
+        .get(validator)
+        .cloned()
+        .unwrap_or_default())
 }
 
 /// Get weight from sender
 pub fn weight_from_sender(
     block_store: &KeyValueBlockStore,
     b: &BlockMessage,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     weight_from_validator(block_store, b, &b.sender)
 }
 
@@ -403,7 +407,7 @@ pub fn block_number(block: &BlockMessage) -> i64 { block.body.state.block_number
 pub fn bond_to_bond_info(bond: &Bond) -> BondInfo {
     BondInfo {
         validator: PrettyPrinter::build_string_no_limit(&bond.validator),
-        stake: bond.stake,
+        stake: bond.stake.to_string(),
     }
 }
 
@@ -587,7 +591,7 @@ const LEAF_PROCESSED_SYSTEM_DEPLOY: u8 = 0x11;
 const LEAF_HEADER: u8 = 0x12;
 const LEAF_REJECTED_DEPLOY: u8 = 0x13;
 const LEAF_APPLIED_FROM_SCOPE_SIG: u8 = 0x14;
-const LEAF_BOND: u8 = 0x15;
+const LEAF_BIGINT_BOND: u8 = 0x16;
 
 const MERKLE_PARAMS: crypto::rust::hash::merkle::MerkleParams =
     crypto::rust::hash::merkle::MerkleParams::new(INTERIOR_DOMAIN);
@@ -707,20 +711,15 @@ fn applied_from_scope_root(block: &BlockMessage) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Merkle root over the bonds sub-tree.  Bonds are sorted by validator
-/// public key before leaf-hashing so the root is independent of
-/// in-memory order.  Each leaf is
-/// `Blake2b256(LEAF_BOND || validator_pk || stake_le)`.
 fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
     let mut sorted: Vec<&Bond> = bonds.iter().collect();
     sorted.sort_by(|a, b| a.validator.as_ref().cmp(b.validator.as_ref()));
     let leaves: Vec<[u8; 32]> = sorted
         .iter()
         .map(|b| {
-            let mut buf = Vec::with_capacity(b.validator.len() + 8);
-            buf.extend_from_slice(b.validator.as_ref());
-            buf.extend_from_slice(&b.stake.to_le_bytes());
-            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_BOND, &buf)
+            use prost::Message;
+            let buf = (*b).clone().to_proto().encode_to_vec();
+            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_BIGINT_BOND, &buf)
         })
         .collect();
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
@@ -1021,7 +1020,7 @@ mod fork_choice_b1_repro_tests {
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
-        wm.insert(v.clone(), 7i64);
+        wm.insert(v.clone(), 7i64.into());
         BlockMetadata {
             block_hash: hash,
             parents,
@@ -1361,7 +1360,7 @@ mod merkle_block_hash_tests {
         let data = DeployData {
             term: format!("@{nonce}!({nonce})"),
             time_stamp: nonce,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 100_000,
             valid_after_block_number: 0,
             shard_id: "test-shard".to_string(),
@@ -1561,7 +1560,7 @@ mod merkle_block_hash_tests {
         let mut b = base.clone();
         b.body.state.bonds = vec![Bond {
             validator: Bytes::from(vec![0xBB; 33]),
-            stake: 1,
+            stake: 1.into(),
         }];
         assert_ne!(hash_block(&b), h0, "bonds must affect hash");
 
@@ -1633,6 +1632,32 @@ mod merkle_block_hash_tests {
     }
 
     #[test]
+    fn bigint_bonds_root_uses_canonical_amounts() {
+        use prost::Message;
+        let first = Bond {
+            validator: Bytes::from_static(b"v"),
+            stake: shared::rust::asi_amount::maximum(),
+        };
+        let second = Bond {
+            validator: Bytes::from_static(b"v\x01"),
+            stake: BigInt::from(1) << 248,
+        };
+        let leaf = crypto::rust::hash::merkle::hash_leaf_tagged(
+            0x16,
+            &first.clone().to_proto().encode_to_vec(),
+        );
+        assert_eq!(
+            bonds_root(&[first.clone()]),
+            crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &[leaf])
+        );
+        assert_ne!(bonds_root(&[first.clone()]), bonds_root(&[second.clone()]));
+        assert_eq!(
+            bonds_root(&[first.clone(), second.clone()]),
+            bonds_root(&[second, first])
+        );
+    }
+
+    #[test]
     fn bonds_root_is_order_independent() {
         let v1 = Bytes::from(vec![0x11; 33]);
         let v2 = Bytes::from(vec![0x22; 33]);
@@ -1640,22 +1665,22 @@ mod merkle_block_hash_tests {
         a.body.state.bonds = vec![
             Bond {
                 validator: v1.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: v2.clone(),
-                stake: 200,
+                stake: 200.into(),
             },
         ];
         let mut b = empty_block();
         b.body.state.bonds = vec![
             Bond {
                 validator: v2,
-                stake: 200,
+                stake: 200.into(),
             },
             Bond {
                 validator: v1,
-                stake: 100,
+                stake: 100.into(),
             },
         ];
         assert_eq!(

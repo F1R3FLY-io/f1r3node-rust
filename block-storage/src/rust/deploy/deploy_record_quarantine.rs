@@ -236,24 +236,14 @@ mod tests {
         REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
     };
 
-    const LEGACY_DEPLOY_HEX: &str = concat!(
-        "03000000000000004e696c7b000000000000000700000000000000a086010000",
-        "00000011000000000000000400000000000000726f6f7401e803000000000000",
-        "4100000000000000041b84c5567b126440995d3ed5aaba0565d71e1834604819",
-        "ff9c17f5e9d5dd078f70beaf8f588b541507fed6a642c5ab42dfdf8120a7f639",
-        "de5122d47a69a8e8d14700000000000000304502210092526253b63faa274731",
-        "a1907908ded5bb5e46fea2d28464985ca4bf3ec3c4b802206f05828da0310cfd",
-        "c5e7da0cd34385559b5f6d4cf3b25ca78176416ecf6fadb50900000000000000",
-        "736563703235366b31",
-    );
     const MALFORMED_VALUE: &[u8] = &[0xff, 0x01];
-    const UNSUPPORTED_FORMAT_VALUE: &[u8] = b"F1R3DEP\x02\x0a\x03Nil\x10\x7b";
+    const UNSUPPORTED_FORMAT_VALUE: &[u8] = b"F1R3DEP\x03\x0a\x03Nil\x10\x7b";
 
     fn deploy(time_stamp: i64) -> Signed<DeployData> {
         signed(DeployData {
             term: "Nil".to_string(),
             time_stamp,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 100_000,
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
@@ -262,11 +252,11 @@ mod tests {
         })
     }
 
-    fn legacy_deploy() -> Signed<DeployData> {
+    fn stored_deploy() -> Signed<DeployData> {
         signed(DeployData {
             term: "Nil".to_string(),
             time_stamp: 123,
-            phlo_price: 7,
+            phlo_price: (7).into(),
             phlo_limit: 100_000,
             valid_after_block_number: 17,
             shard_id: "root".to_string(),
@@ -279,7 +269,9 @@ mod tests {
         Signed::create(data, Box::new(Secp256k1), PrivateKey::from_bytes(&[1; 32])).unwrap()
     }
 
-    fn legacy_bytes() -> ByteBuffer { hex::decode(LEGACY_DEPLOY_HEX).unwrap() }
+    fn stored_bytes() -> ByteBuffer {
+        super::super::deploy_codec::encode(&stored_deploy()).unwrap()
+    }
 
     fn key_for(sig: &[u8]) -> ByteBuffer {
         KeyValueTypedStoreImpl::<ByteString, Signed<DeployData>>::new(Arc::new(
@@ -579,16 +571,16 @@ mod tests {
     }
 
     #[test]
-    fn read_all_keeps_valid_and_legacy_records_and_quarantines_damaged_ones() {
+    fn read_all_keeps_valid_and_stored_records_and_quarantines_damaged_ones() {
         for name in POOLS {
             let (live, quarantine) = (in_memory(), in_memory());
             let mut pool = Pool::open(name, &live, &quarantine);
-            let (d1, d2, legacy) = (deploy(1), deploy(2), legacy_deploy());
+            let (d1, d2, stored) = (deploy(1), deploy(2), stored_deploy());
             pool.add(vec![d1.clone(), d2.clone()]);
-            live.put_one(key_for(&legacy.sig), legacy_bytes()).unwrap();
+            live.put_one(key_for(&stored.sig), stored_bytes()).unwrap();
             let (malformed_key, unsupported_key) = seed_damaged(&live);
 
-            let expected = HashSet::from([d1, d2, legacy]);
+            let expected = HashSet::from([d1, d2, stored]);
             assert_eq!(pool.read_all().unwrap(), expected, "{name}");
             assert_eq!(
                 quarantine.to_map().unwrap(),
@@ -676,17 +668,17 @@ mod tests {
         metrics::with_local_recorder(&recorder, || {
             for name in POOLS {
                 let (live, quarantine) = (in_memory(), in_memory());
-                let legacy = legacy_deploy();
-                let legacy_key = key_for(&legacy.sig);
+                let stored = stored_deploy();
+                let stored_key = key_for(&stored.sig);
                 quarantine
-                    .put_one(legacy_key.clone(), legacy_bytes())
+                    .put_one(stored_key.clone(), stored_bytes())
                     .unwrap();
                 let (malformed_key, _) = seed_damaged(&quarantine);
 
                 let pool = Pool::open(name, &live, &quarantine);
 
-                assert_eq!(pool.read_all().unwrap(), HashSet::from([legacy]), "{name}");
-                assert_eq!(quarantine.get_one(&legacy_key).unwrap(), None, "{name}");
+                assert_eq!(pool.read_all().unwrap(), HashSet::from([stored]), "{name}");
+                assert_eq!(quarantine.get_one(&stored_key).unwrap(), None, "{name}");
                 assert!(
                     quarantine.get_one(&malformed_key).unwrap().is_some(),
                     "{name}"
@@ -701,32 +693,31 @@ mod tests {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         metrics::with_local_recorder(&recorder, || {
-            let legacy = legacy_deploy();
-            let legacy_key = key_for(&legacy.sig);
+            let stored = stored_deploy();
+            let stored_key = key_for(&stored.sig);
             for live_bytes in [None, Some(MALFORMED_VALUE.to_vec())] {
                 let (live, quarantine) = (in_memory(), in_memory());
-                let storage =
-                    KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
                 match &live_bytes {
-                    Some(bytes) => live.put_one(legacy_key.clone(), bytes.clone()).unwrap(),
-                    None => storage
-                        .store
-                        .put_one(legacy.sig.to_vec(), legacy.clone())
-                        .unwrap(),
+                    Some(bytes) => live.put_one(stored_key.clone(), bytes.clone()).unwrap(),
+                    None => {
+                        let mut bytes = stored_bytes();
+                        bytes.extend_from_slice(&[0xf8, 0x07, 0x01]);
+                        live.put_one(stored_key.clone(), bytes).unwrap();
+                    }
                 }
-                let live_before = live.get_one(&legacy_key).unwrap();
+                let live_before = live.get_one(&stored_key).unwrap();
                 quarantine
-                    .put_one(legacy_key.clone(), legacy_bytes())
+                    .put_one(stored_key.clone(), stored_bytes())
                     .unwrap();
 
                 let reopened =
                     KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
                 reopened.read_all().unwrap();
 
-                assert_eq!(live.get_one(&legacy_key).unwrap(), live_before);
+                assert_eq!(live.get_one(&stored_key).unwrap(), live_before);
                 assert_eq!(
-                    quarantine.get_one(&legacy_key).unwrap(),
-                    Some(legacy_bytes())
+                    quarantine.get_one(&stored_key).unwrap(),
+                    Some(stored_bytes())
                 );
             }
             assert_eq!(
@@ -742,16 +733,16 @@ mod tests {
         let snapshotter = recorder.snapshotter();
         metrics::with_local_recorder(&recorder, || {
             let (live, quarantine) = (in_memory(), in_memory());
-            let legacy = legacy_deploy();
-            let legacy_key = key_for(&legacy.sig);
-            live.put_one(legacy_key.clone(), legacy_bytes()).unwrap();
+            let stored = stored_deploy();
+            let stored_key = key_for(&stored.sig);
+            live.put_one(stored_key.clone(), stored_bytes()).unwrap();
             quarantine
-                .put_one(legacy_key.clone(), legacy_bytes())
+                .put_one(stored_key.clone(), stored_bytes())
                 .unwrap();
 
             KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
 
-            assert_eq!(live.get_one(&legacy_key).unwrap(), Some(legacy_bytes()));
+            assert_eq!(live.get_one(&stored_key).unwrap(), Some(stored_bytes()));
             assert!(!quarantine.non_empty().unwrap());
             assert_eq!(
                 counter(&snapshotter, RESTORED_RECORDS_METRIC, DEPLOY_STORAGE_DB),

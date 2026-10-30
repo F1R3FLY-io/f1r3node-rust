@@ -1028,7 +1028,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         transfer_unforgeable.clone(),
         conf.protocol_server.network_id.clone(),
         conf.casper.shard_name.clone(),
-        conf.casper.min_phlo_price,
+        conf.casper.min_phlo_price.clone(),
         conf.casper.genesis_block_data.native_token_name.clone(),
         conf.casper.genesis_block_data.native_token_symbol.clone(),
         conf.casper.genesis_block_data.native_token_decimals,
@@ -1189,7 +1189,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
             conf.dev_mode,
             conf.protocol_server.network_id.clone(),
             conf.casper.shard_name.clone(),
-            conf.casper.min_phlo_price,
+            conf.casper.min_phlo_price.clone(),
             conf.casper.genesis_block_data.native_token_name.clone(),
             conf.casper.genesis_block_data.native_token_symbol.clone(),
             conf.casper.genesis_block_data.native_token_decimals,
@@ -1455,7 +1455,7 @@ mod tests {
         TransferInfo {
             from_addr: from.to_string(),
             to_addr: to.to_string(),
-            amount,
+            amount: amount.to_string(),
             success: true,
             fail_reason: String::new(),
         }
@@ -1473,7 +1473,7 @@ mod tests {
         let entry = &out[0];
         assert_eq!(entry.deploy_id, "deploy_with");
         assert_eq!(entry.transfers.len(), 1);
-        assert_eq!(entry.transfers[0].amount, 10);
+        assert_eq!(entry.transfers[0].amount, "10");
     }
 
     #[test]
@@ -1502,8 +1502,8 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].transfers.len(), 2);
-        assert_eq!(out[0].transfers[0].amount, 1);
-        assert_eq!(out[0].transfers[1].amount, 2);
+        assert_eq!(out[0].transfers[0].amount, "1");
+        assert_eq!(out[0].transfers[1].amount, "2");
     }
 
     // ---------- register_consensus_bundle_roots_core ----------

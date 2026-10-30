@@ -99,20 +99,19 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
 async fn vault_issuance_test() {
     // Two known, valid rev addresses issued at genesis with distinct non-zero balances. Distinct
     // values make each per-address assertion load-bearing (a result cannot pass by symmetry).
-    // BALANCE_2 exceeds i64::MAX (10^30 base units): vault balances are BigInt.
     const REV_ADDRESS_1: &str = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
     const BALANCE_1: u128 = 777_000_000;
     const REV_ADDRESS_2: &str = "1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M";
-    const BALANCE_2: u128 = 1_000_000_000_000_000_000_000_000_000_000;
+    let balance_2 = shared::rust::asi_amount::maximum();
 
     let issued_vaults = vec![
         Vault {
             vault_address: VaultAddress::parse(REV_ADDRESS_1).expect("REV_ADDRESS_1 must be valid"),
-            initial_balance: BALANCE_1,
+            initial_balance: BALANCE_1.into(),
         },
         Vault {
             vault_address: VaultAddress::parse(REV_ADDRESS_2).expect("REV_ADDRESS_2 must be valid"),
-            initial_balance: BALANCE_2,
+            initial_balance: balance_2,
         },
     ];
 

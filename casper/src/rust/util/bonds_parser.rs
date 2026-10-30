@@ -7,6 +7,7 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::rust::string_ops::StringOps;
+use num_bigint::BigInt;
 use regex::Regex;
 
 #[derive(Debug, thiserror::Error)]
@@ -33,7 +34,7 @@ impl BondsParser {
     /// Parser for bonds file used in genesis ceremony to set initial validators.
     ///
     /// TODO: Create async file operations. For now it's ok because it's used only once at genesis.
-    pub fn parse(bonds_path: &Path) -> Result<HashMap<PublicKey, i64>, BondsParserError> {
+    pub fn parse(bonds_path: &Path) -> Result<HashMap<PublicKey, BigInt>, BondsParserError> {
         tracing::info!("Parsing bonds file {:?}.", bonds_path);
 
         let content =
@@ -42,11 +43,11 @@ impl BondsParser {
                 source: Box::new(e),
             })?;
 
-        let line_regex = Regex::new(r"^([0-9a-fA-F]+) ([0-9]+)").unwrap();
+        let line_regex = Regex::new(r"^([0-9a-fA-F]+) ([0-9]+)$").unwrap();
         let mut bonds = HashMap::new();
 
         for line in content.lines() {
-            let trimmed_line = line.trim();
+            let trimmed_line = line.split_once('#').map_or(line, |(data, _)| data).trim();
             if trimmed_line.is_empty() {
                 continue;
             }
@@ -82,11 +83,11 @@ impl BondsParser {
             let public_key = PublicKey::from_bytes(&public_key_bytes);
 
             // Parse stake
-            let stake = stake_str
-                .parse::<i64>()
-                .map_err(|_| BondsParserError::InvalidStake {
+            let stake = shared::rust::asi_amount::parse(stake_str).map_err(|_| {
+                BondsParserError::InvalidStake {
                     stake: stake_str.to_string(),
-                })?;
+                }
+            })?;
 
             tracing::info!(
                 "Bond loaded {} => {}",
@@ -103,7 +104,7 @@ impl BondsParser {
     pub fn parse_with_autogen(
         bonds_path_str: &str,
         autogen_shard_size: usize,
-    ) -> Result<HashMap<PublicKey, i64>, BondsParserError> {
+    ) -> Result<HashMap<PublicKey, BigInt>, BondsParserError> {
         let bonds_path = Path::new(bonds_path_str);
 
         if bonds_path.exists() {
@@ -121,7 +122,7 @@ impl BondsParser {
     fn new_validators(
         autogen_shard_size: usize,
         bonds_file_path: &Path,
-    ) -> Result<HashMap<PublicKey, i64>, BondsParserError> {
+    ) -> Result<HashMap<PublicKey, BigInt>, BondsParserError> {
         let genesis_folder = bonds_file_path.parent().ok_or_else(|| {
             BondsParserError::IoError(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -137,7 +138,7 @@ impl BondsParser {
 
         let mut bonds = HashMap::new();
         for (i, (_, public_key)) in keys.iter().enumerate() {
-            bonds.insert(public_key.clone(), (i as i64) + 1);
+            bonds.insert(public_key.clone(), BigInt::from(i + 1));
         }
 
         // Create genesis directory if it doesn't exist
@@ -174,6 +175,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn genesis_bond_comments_preserve_exact_amounts() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bonds.txt");
+        let public_key = "04f026cc75502aa420f589ba1437d52eb9055ba26701f112ff1b9a0b98cadec54bc3e77bdef9094b33f6afacd59eb1aed78bc1e1320ce714ec9debaabaf0f37ba3";
+        fs::write(
+            &path,
+            format!(
+                "# validator bonds\n  {public_key} {} # bootstrap node\n",
+                shared::rust::asi_amount::MAX_DECIMAL
+            ),
+        )
+        .unwrap();
+        let bonds = BondsParser::parse(&path).unwrap();
+        assert_eq!(bonds.len(), 1);
+        let key = PublicKey::from_bytes(&hex::decode(public_key).unwrap());
+        assert_eq!(bonds[&key], shared::rust::asi_amount::maximum());
+        fs::write(&path, format!("{public_key} 100abc # invalid stake\n")).unwrap();
+        assert!(BondsParser::parse(&path).is_err());
+    }
+
+    #[test]
     fn test_parse_valid_bonds_file() {
         let temp_dir = TempDir::new().unwrap();
         let bonds_file = temp_dir.path().join("bonds.txt");
@@ -188,7 +210,7 @@ mod tests {
         assert_eq!(bonds.len(), 2);
 
         for (_, stake) in bonds {
-            assert!(stake > 0);
+            assert!(stake > 0.into());
         }
     }
 

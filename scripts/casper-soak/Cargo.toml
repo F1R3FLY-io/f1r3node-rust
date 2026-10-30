@@ -14,6 +14,7 @@ path = "src/bin/casper-authority-p2p.rs"
 required-features = ["p2p"]
 
 [dependencies]
+num-bigint = { workspace = true }
 clap = { workspace = true }
 eyre = { workspace = true }
 libc = "0.2"
