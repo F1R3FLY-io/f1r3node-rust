@@ -1284,7 +1284,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .state
             .bonds
             .iter()
-            .filter(|bond| bond.stake == 0)
+            .filter(|bond| bond.stake == num_bigint::BigInt::from(0))
             .map(|bond| bond.validator.to_vec())
             .collect();
 

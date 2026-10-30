@@ -24,6 +24,7 @@ use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -124,6 +125,18 @@ pub trait WebApi {
     /// Get active validator set via exploratory deploy against PoS contract.
     /// Queries against `block_hash` if provided, otherwise LFB.
     async fn get_validators(&self, block_hash: Option<String>) -> Result<ValidatorsResponse>;
+
+    /// Get full delegation state via exploratory deploy against PoS contract.
+    /// Queries against `block_hash` if provided, otherwise LFB.
+    async fn get_delegations(&self, block_hash: Option<String>) -> Result<DelegationsResponse>;
+
+    /// Get delegation state for one delegator via exploratory deploy against PoS contract.
+    /// Queries against `block_hash` if provided, otherwise LFB.
+    async fn get_delegator(
+        &self,
+        pubkey: String,
+        block_hash: Option<String>,
+    ) -> Result<DelegatorStateResponse>;
 
     /// Get epoch info via exploratory deploy against PoS contract.
     /// Queries against `block_hash` if provided, otherwise LFB.
@@ -304,6 +317,60 @@ impl WebApiImpl {
                 Ok((bi.block_hash.clone(), bi.block_number))
             }
         }
+    }
+
+    async fn get_pos_value(&self, method: &str, resolved_hash: &str) -> Result<RhoExpr> {
+        let term = format!(
+            r#"new return, rl(`rho:registry:lookup`), poSCh in {{
+  rl!(`rho:system:pos`, *poSCh) |
+  for(@(_, PoS) <- poSCh) {{
+    @PoS!("{method}", *return)
+  }}
+}}"#
+        );
+
+        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
+            &self.engine_cell,
+            term,
+            Some(resolved_hash.to_string()),
+            false,
+            self.dev_mode,
+            None,
+        )
+        .await?;
+
+        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+        exprs
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre!("No result from PoS method {}", method))
+    }
+
+    async fn get_pos_amount_map(
+        &self,
+        method: &str,
+        resolved_hash: &str,
+    ) -> Result<HashMap<String, BigInt>> {
+        let expr = self.get_pos_value(method, resolved_hash).await?;
+        parse_amount_map(method, &expr)
+    }
+
+    async fn get_pos_nested_amount_map(
+        &self,
+        method: &str,
+        resolved_hash: &str,
+    ) -> Result<HashMap<String, HashMap<String, BigInt>>> {
+        let expr = self.get_pos_value(method, resolved_hash).await?;
+        parse_nested_amount_map(method, &expr)
+    }
+
+    async fn get_pos_pending_undelegations(
+        &self,
+        method: &str,
+        resolved_hash: &str,
+    ) -> Result<HashMap<String, HashMap<String, PendingUndelegationInfo>>> {
+        let expr = self.get_pos_value(method, resolved_hash).await?;
+        parse_pending_undelegation_map(method, &expr)
     }
 
     /// Enrich a BlockInfoSerde with transfer data from the block report.
@@ -902,59 +969,78 @@ impl WebApi for WebApiImpl {
     }
 
     async fn get_validators(&self, block_hash: Option<String>) -> Result<ValidatorsResponse> {
-        let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-  rl!(`rho:system:pos`, *poSCh) |
-  for(@(_, PoS) <- poSCh) {
-    @PoS!("getBonds", *return)
-  }
-}"#
-        .to_string();
-
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            Some(resolved_hash.clone()),
-            false,
-            self.dev_mode,
-            None,
-        )
-        .await?;
-
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+        let self_bonds = self.get_pos_amount_map("getBonds", &resolved_hash).await?;
+        let effective_bonds = self
+            .get_pos_amount_map("getEffectiveBonds", &resolved_hash)
+            .await?;
 
         let mut validators = Vec::new();
-        let mut total_stake: i64 = 0;
+        let mut total_stake = BigInt::from(0);
+        let mut total_self_stake = BigInt::from(0);
+        let mut total_delegated_stake = BigInt::from(0);
 
-        // getBonds returns a Rholang map: {pubkey: stake, ...}
-        // ExprMap keys are already String (extracted by extract_key_from_expr)
-        if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
-            for (public_key, value) in data {
-                let stake = match value {
-                    RhoExpr::ExprInt { data } => *data,
-                    other => {
-                        return Err(eyre!(
-                            "Unexpected stake type for validator {}: {:?}",
-                            public_key,
-                            other
-                        ))
-                    }
-                };
-                total_stake += stake;
-                validators.push(ValidatorInfo {
-                    public_key: public_key.clone(),
-                    stake,
-                });
-            }
+        for (public_key, effective_stake) in effective_bonds {
+            let self_stake = self_bonds.get(&public_key).cloned().unwrap_or_default();
+            let delegated_stake = &effective_stake - &self_stake;
+            total_stake += &effective_stake;
+            total_self_stake += &self_stake;
+            total_delegated_stake += &delegated_stake;
+            validators.push(ValidatorInfo {
+                public_key,
+                stake: effective_stake,
+                self_stake,
+                delegated_stake,
+            });
         }
 
         Ok(ValidatorsResponse {
             validators,
             total_stake,
+            total_self_stake,
+            total_delegated_stake,
             block_number,
             block_hash: resolved_hash,
         })
+    }
+
+    async fn get_delegations(&self, block_hash: Option<String>) -> Result<DelegationsResponse> {
+        let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
+        let delegations = self
+            .get_pos_nested_amount_map("getDelegations", &resolved_hash)
+            .await?;
+        let delegated_totals = self
+            .get_pos_amount_map("getDelegatedTotals", &resolved_hash)
+            .await?;
+        let delegator_rewards = parse_reward_map(
+            "getDelegatorRewards",
+            &self
+                .get_pos_value("getDelegatorRewards", &resolved_hash)
+                .await?,
+        )?;
+        let pending_undelegations = self
+            .get_pos_pending_undelegations("getPendingUndelegations", &resolved_hash)
+            .await?;
+
+        Ok(DelegationsResponse {
+            delegations,
+            delegated_totals,
+            delegator_rewards,
+            pending_undelegations,
+            block_number,
+            block_hash: resolved_hash,
+        })
+    }
+
+    async fn get_delegator(
+        &self,
+        pubkey: String,
+        block_hash: Option<String>,
+    ) -> Result<DelegatorStateResponse> {
+        let _ = validate_and_decode_pubkey(&pubkey)?;
+        let snapshot = self.get_delegations(block_hash).await?;
+
+        Ok(delegator_state_from_snapshot(pubkey, snapshot))
     }
 
     async fn get_epoch(&self, block_hash: Option<String>) -> Result<EpochResponse> {
@@ -1063,42 +1149,27 @@ impl WebApi for WebApiImpl {
     ) -> Result<ValidatorStatusResponse> {
         let _ = validate_and_decode_pubkey(&pubkey)?;
 
-        let term = r#"new return, rl(`rho:registry:lookup`), poSCh in {
-            rl!(`rho:system:pos`, *poSCh) |
-            for(@(_, PoS) <- poSCh) { @PoS!("getBonds", *return) }
-        }"#
-        .to_string();
-
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
-
-        let (pars, _block, _cost) = BlockAPI::exploratory_deploy(
-            &self.engine_cell,
-            term,
-            Some(resolved_hash.clone()),
-            false,
-            self.dev_mode,
-            None,
-        )
-        .await?;
-
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
-
-        let mut is_bonded = false;
-        let mut stake = None;
-
-        if let Some(RhoExpr::ExprMap { data }) = exprs.first() {
-            if let Some(value) = data.get(&pubkey) {
-                is_bonded = true;
-                if let RhoExpr::ExprInt { data } = value {
-                    stake = Some(*data);
-                }
-            }
-        }
+        let self_bonds = self.get_pos_amount_map("getBonds", &resolved_hash).await?;
+        let effective_bonds = self
+            .get_pos_amount_map("getEffectiveBonds", &resolved_hash)
+            .await?;
+        let self_stake = self_bonds.get(&pubkey).cloned();
+        let effective_stake = effective_bonds.get(&pubkey).cloned();
+        let is_bonded = self_stake
+            .as_ref()
+            .is_some_and(|stake| *stake > BigInt::from(0));
+        let delegated_stake = effective_stake
+            .as_ref()
+            .zip(self_stake.as_ref())
+            .map(|(effective, own)| effective - own);
 
         Ok(ValidatorStatusResponse {
             public_key: pubkey,
             is_bonded,
-            stake,
+            stake: effective_stake,
+            self_stake,
+            delegated_stake,
             block_number,
             block_hash: resolved_hash,
         })
@@ -1567,7 +1638,17 @@ pub struct RegistryResponse {
 pub struct ValidatorInfo {
     #[serde(rename = "publicKey")]
     pub public_key: String,
-    pub stake: i64,
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub stake: BigInt,
+    #[serde(rename = "selfStake")]
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub self_stake: BigInt,
+    #[serde(rename = "delegatedStake")]
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub delegated_stake: BigInt,
 }
 
 /// Active validator set response
@@ -1575,7 +1656,89 @@ pub struct ValidatorInfo {
 pub struct ValidatorsResponse {
     pub validators: Vec<ValidatorInfo>,
     #[serde(rename = "totalStake")]
-    pub total_stake: i64,
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub total_stake: BigInt,
+    #[serde(rename = "totalSelfStake")]
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub total_self_stake: BigInt,
+    #[serde(rename = "totalDelegatedStake")]
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub total_delegated_stake: BigInt,
+    #[serde(rename = "blockNumber")]
+    pub block_number: i64,
+    #[serde(rename = "blockHash")]
+    pub block_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct PendingUndelegationInfo {
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub amount: BigInt,
+    #[serde(rename = "unlockBlock")]
+    pub unlock_block: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct DelegationEntry {
+    #[serde(rename = "validatorPublicKey")]
+    pub validator_public_key: String,
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub amount: BigInt,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+pub struct PendingUndelegationEntry {
+    #[serde(rename = "validatorPublicKey")]
+    pub validator_public_key: String,
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub amount: BigInt,
+    #[serde(rename = "unlockBlock")]
+    pub unlock_block: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DelegationsResponse {
+    #[serde(with = "models::rust::serde_helpers::nested_decimal_bigint_map")]
+    #[schema(value_type = HashMap<String, HashMap<String, String>>)]
+    pub delegations: HashMap<String, HashMap<String, BigInt>>,
+    #[serde(rename = "delegatedTotals")]
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint_map")]
+    #[schema(value_type = HashMap<String, String>)]
+    pub delegated_totals: HashMap<String, BigInt>,
+    #[serde(rename = "delegatorRewards")]
+    pub delegator_rewards: HashMap<String, String>,
+    #[serde(rename = "pendingUndelegations")]
+    pub pending_undelegations: HashMap<String, HashMap<String, PendingUndelegationInfo>>,
+    #[serde(rename = "blockNumber")]
+    pub block_number: i64,
+    #[serde(rename = "blockHash")]
+    pub block_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DelegatorStateResponse {
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
+    #[serde(rename = "activeDelegations")]
+    pub active_delegations: Vec<DelegationEntry>,
+    #[serde(rename = "pendingUndelegations")]
+    pub pending_undelegations: Vec<PendingUndelegationEntry>,
+    #[serde(rename = "claimableRewards")]
+    pub claimable_rewards: String,
+    #[serde(rename = "totalActiveDelegated")]
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub total_active_delegated: BigInt,
+    #[serde(rename = "totalPendingUndelegation")]
+    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[schema(value_type = String)]
+    pub total_pending_undelegation: BigInt,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1640,7 +1803,17 @@ pub struct ValidatorStatusResponse {
     pub public_key: String,
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
-    pub stake: Option<i64>,
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[schema(value_type = Option<String>)]
+    pub stake: Option<BigInt>,
+    #[serde(rename = "selfStake")]
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[schema(value_type = Option<String>)]
+    pub self_stake: Option<BigInt>,
+    #[serde(rename = "delegatedStake")]
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[schema(value_type = Option<String>)]
+    pub delegated_stake: Option<BigInt>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -1654,6 +1827,139 @@ pub struct BondStatusResponse {
     pub public_key: String,
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
+}
+
+fn parse_stake_amount(method: &str, value: &RhoExpr) -> Result<BigInt> {
+    let amount = match value {
+        RhoExpr::ExprInt { data } => BigInt::from(*data),
+        RhoExpr::ExprBigInt { data } => data.parse::<BigInt>()?,
+        _ => {
+            return Err(eyre!(
+                "Expected an integer amount from {}: {:?}",
+                method,
+                value
+            ))
+        }
+    };
+    if amount < BigInt::from(0) {
+        return Err(eyre!("Negative staking amount from {}", method));
+    }
+    Ok(amount)
+}
+
+fn parse_amount_map(method: &str, expr: &RhoExpr) -> Result<HashMap<String, BigInt>> {
+    let RhoExpr::ExprMap { data } = expr else {
+        return Err(eyre!("Expected map result from {}: {:?}", method, expr));
+    };
+    data.iter()
+        .map(|(key, value)| Ok((key.clone(), parse_stake_amount(method, value)?)))
+        .collect()
+}
+
+fn parse_reward_map(method: &str, expr: &RhoExpr) -> Result<HashMap<String, String>> {
+    let RhoExpr::ExprMap { data } = expr else {
+        return Err(eyre!("Expected map result from {}: {:?}", method, expr));
+    };
+
+    data.iter()
+        .map(|(public_key, value)| {
+            let amount = match value {
+                RhoExpr::ExprBigInt { data } => data.clone(),
+                RhoExpr::ExprInt { data } => data.to_string(),
+                _ => {
+                    return Err(eyre!(
+                        "Unexpected reward value type from {} for key {}: {:?}",
+                        method,
+                        public_key,
+                        value
+                    ));
+                }
+            };
+            Ok((public_key.clone(), amount))
+        })
+        .collect()
+}
+
+fn parse_nested_amount_map(
+    method: &str,
+    expr: &RhoExpr,
+) -> Result<HashMap<String, HashMap<String, BigInt>>> {
+    let RhoExpr::ExprMap { data } = expr else {
+        return Err(eyre!(
+            "Expected nested map result from {}: {:?}",
+            method,
+            expr
+        ));
+    };
+    data.iter()
+        .map(|(key, value)| Ok((key.clone(), parse_amount_map(method, value)?)))
+        .collect()
+}
+
+fn parse_pending_undelegation_map(
+    method: &str,
+    expr: &RhoExpr,
+) -> Result<HashMap<String, HashMap<String, PendingUndelegationInfo>>> {
+    let RhoExpr::ExprMap { data } = expr else {
+        return Err(eyre!(
+            "Expected pending-undelegation map result from {}: {:?}",
+            method,
+            expr
+        ));
+    };
+
+    let mut values = HashMap::new();
+    for (delegator, validator_expr) in data {
+        let RhoExpr::ExprMap {
+            data: validator_map,
+        } = validator_expr
+        else {
+            return Err(eyre!(
+                "Unexpected pending-undelegation inner type from {} for delegator {}: {:?}",
+                method,
+                delegator,
+                validator_expr
+            ));
+        };
+
+        let mut parsed_validators = HashMap::new();
+        for (validator, pending_expr) in validator_map {
+            let RhoExpr::ExprTuple { data } = pending_expr else {
+                return Err(eyre!(
+                    "Unexpected pending-undelegation value type from {} for {}/{}: {:?}",
+                    method,
+                    delegator,
+                    validator,
+                    pending_expr
+                ));
+            };
+            let [amount_expr, unlock_expr] = data.as_slice() else {
+                return Err(eyre!(
+                    "Unexpected pending-undelegation tuple arity from {} for {}/{}: {:?}",
+                    method,
+                    delegator,
+                    validator,
+                    pending_expr
+                ));
+            };
+            let amount = parse_stake_amount(method, amount_expr)?;
+            let RhoExpr::ExprInt { data: unlock_block } = unlock_expr else {
+                return Err(eyre!(
+                    "Unexpected pending-undelegation unlock type from {} for {}/{}: {:?}",
+                    method,
+                    delegator,
+                    validator,
+                    unlock_expr
+                ));
+            };
+            parsed_validators.insert(validator.clone(), PendingUndelegationInfo {
+                amount: amount.clone(),
+                unlock_block: *unlock_block,
+            });
+        }
+        values.insert(delegator.clone(), parsed_validators);
+    }
+    Ok(values)
 }
 
 // Error types
@@ -1688,6 +1994,58 @@ fn validate_and_decode_pubkey(pubkey_hex: &str) -> Result<Vec<u8>> {
         eyre::Report::new(InvalidPublicKeyError(format!("invalid public key: {}", e)))
     })?;
     Ok(bytes)
+}
+
+fn delegator_state_from_snapshot(
+    pubkey: String,
+    snapshot: DelegationsResponse,
+) -> DelegatorStateResponse {
+    let mut active_delegations = snapshot
+        .delegations
+        .get(&pubkey)
+        .into_iter()
+        .flat_map(|validator_map| validator_map.iter())
+        .map(|(validator_public_key, amount)| DelegationEntry {
+            validator_public_key: validator_public_key.clone(),
+            amount: amount.clone(),
+        })
+        .collect::<Vec<_>>();
+    active_delegations.sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+
+    let mut pending_undelegations = snapshot
+        .pending_undelegations
+        .get(&pubkey)
+        .into_iter()
+        .flat_map(|validator_map| validator_map.iter())
+        .map(|(validator_public_key, pending)| PendingUndelegationEntry {
+            validator_public_key: validator_public_key.clone(),
+            amount: pending.amount.clone(),
+            unlock_block: pending.unlock_block,
+        })
+        .collect::<Vec<_>>();
+    pending_undelegations.sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+
+    let total_active_delegated = active_delegations.iter().map(|entry| &entry.amount).sum();
+    let total_pending_undelegation = pending_undelegations
+        .iter()
+        .map(|entry| &entry.amount)
+        .sum();
+    let claimable_rewards = snapshot
+        .delegator_rewards
+        .get(&pubkey)
+        .cloned()
+        .unwrap_or_else(|| "0".to_string());
+
+    DelegatorStateResponse {
+        public_key: pubkey,
+        active_delegations,
+        pending_undelegations,
+        claimable_rewards,
+        total_active_delegated,
+        total_pending_undelegation,
+        block_number: snapshot.block_number,
+        block_hash: snapshot.block_hash,
+    }
 }
 
 // Conversion functions
@@ -2121,6 +2479,36 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn staking_json_preserves_large_amounts_as_decimal_strings() {
+        let amount = "100000000000000000001";
+        let response = ValidatorInfo {
+            public_key: "validator".to_string(),
+            stake: amount.parse().unwrap(),
+            self_stake: amount.parse().unwrap(),
+            delegated_stake: 0.into(),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["stake"], amount);
+        assert_eq!(json["selfStake"], amount);
+        assert_eq!(json["delegatedStake"], "0");
+        assert_eq!(
+            serde_json::from_value::<ValidatorInfo>(json).unwrap().stake,
+            response.stake
+        );
+        let pending = PendingUndelegationInfo {
+            amount: response.stake,
+            unlock_block: 7,
+        };
+        let json = serde_json::to_value(&pending).unwrap();
+        assert_eq!(json["amount"], amount);
+        assert_eq!(json["unlockBlock"], 7);
+        assert_eq!(
+            serde_json::from_value::<PendingUndelegationInfo>(json).unwrap(),
+            pending
+        );
+    }
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {
@@ -3125,6 +3513,121 @@ mod tests {
         assert_eq!(valid, pk.bytes.to_vec());
     }
 
+    #[test]
+    fn test_delegator_state_from_snapshot_sorts_and_totals() {
+        let secp = crypto::rust::signatures::secp256k1::Secp256k1;
+        let (_sk0, delegator_pk) = secp.new_key_pair();
+        let (_sk1, validator_a_pk) = secp.new_key_pair();
+        let (_sk2, validator_b_pk) = secp.new_key_pair();
+        let delegator = hex::encode(&delegator_pk.bytes);
+        let validator_a = hex::encode(&validator_a_pk.bytes);
+        let validator_b = hex::encode(&validator_b_pk.bytes);
+        validate_and_decode_pubkey(&delegator).unwrap();
+
+        let snapshot = DelegationsResponse {
+            delegations: HashMap::from([(
+                delegator.clone(),
+                HashMap::from([
+                    (validator_b.clone(), 7.into()),
+                    (validator_a.clone(), 5.into()),
+                ]),
+            )]),
+            delegated_totals: HashMap::from([
+                (validator_a.clone(), 5.into()),
+                (validator_b.clone(), 7.into()),
+            ]),
+            delegator_rewards: HashMap::from([(
+                delegator.clone(),
+                "9223372036854775808".to_string(),
+            )]),
+            pending_undelegations: HashMap::from([(
+                delegator.clone(),
+                HashMap::from([
+                    (validator_b.clone(), PendingUndelegationInfo {
+                        amount: 3.into(),
+                        unlock_block: 99,
+                    }),
+                    (validator_a.clone(), PendingUndelegationInfo {
+                        amount: 2.into(),
+                        unlock_block: 88,
+                    }),
+                ]),
+            )]),
+            block_number: 42,
+            block_hash: "block-hash".to_string(),
+        };
+
+        let absent = delegator_state_from_snapshot("absent".to_string(), snapshot.clone());
+        assert_eq!(absent.claimable_rewards, "0");
+        let state = delegator_state_from_snapshot(delegator.clone(), snapshot);
+        let mut expected_active_delegations = vec![
+            DelegationEntry {
+                validator_public_key: validator_a.clone(),
+                amount: 5.into(),
+            },
+            DelegationEntry {
+                validator_public_key: validator_b.clone(),
+                amount: 7.into(),
+            },
+        ];
+        expected_active_delegations
+            .sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+        let mut expected_pending_undelegations = vec![
+            PendingUndelegationEntry {
+                validator_public_key: validator_a,
+                amount: 2.into(),
+                unlock_block: 88,
+            },
+            PendingUndelegationEntry {
+                validator_public_key: validator_b,
+                amount: 3.into(),
+                unlock_block: 99,
+            },
+        ];
+        expected_pending_undelegations
+            .sort_by(|a, b| a.validator_public_key.cmp(&b.validator_public_key));
+
+        assert_eq!(state.public_key, delegator);
+        assert_eq!(state.active_delegations, expected_active_delegations);
+        assert_eq!(state.pending_undelegations, expected_pending_undelegations);
+        assert_eq!(state.claimable_rewards, "9223372036854775808");
+        assert_eq!(state.total_active_delegated, 12.into());
+        assert_eq!(state.total_pending_undelegation, 5.into());
+        assert_eq!(state.block_number, 42);
+        assert_eq!(state.block_hash, "block-hash");
+    }
+
+    #[test]
+    fn delegation_reward_map_preserves_bigint_and_legacy_int_values() {
+        let expr = RhoExpr::ExprMap {
+            data: HashMap::from([
+                ("large".to_string(), RhoExpr::ExprBigInt {
+                    data: "184467440737095516160000".to_string(),
+                }),
+                ("legacy".to_string(), RhoExpr::ExprInt { data: 42 }),
+            ]),
+        };
+        let rewards = parse_reward_map("getDelegatorRewards", &expr).unwrap();
+        assert_eq!(rewards["large"], "184467440737095516160000");
+        assert_eq!(rewards["legacy"], "42");
+        assert_eq!(
+            serde_json::to_value(rewards).unwrap()["large"],
+            "184467440737095516160000"
+        );
+    }
+
+    #[test]
+    fn delegation_reward_map_rejects_non_numeric_values() {
+        let value = RhoExpr::ExprString {
+            data: "42".to_string(),
+        };
+        assert!(parse_reward_map("getDelegatorRewards", &value).is_err());
+        let expr = RhoExpr::ExprMap {
+            data: HashMap::from([("delegator".to_string(), value)]),
+        };
+        assert!(parse_reward_map("getDelegatorRewards", &expr).is_err());
+    }
+
     fn sample_deploy_data() -> DeployData {
         DeployData {
             term: "new x in { x!(1) }".to_string(),
@@ -3301,5 +3804,38 @@ mod tests {
             }),
             "SysAuthToken"
         );
+    }
+
+    #[test]
+    fn test_delegation_state_parsers() {
+        let delegations_expr = RhoExpr::ExprMap {
+            data: [("delegator".to_string(), RhoExpr::ExprMap {
+                data: [("validator".to_string(), RhoExpr::ExprInt { data: 30 })]
+                    .into_iter()
+                    .collect(),
+            })]
+            .into_iter()
+            .collect(),
+        };
+        let delegations = parse_nested_amount_map("getDelegations", &delegations_expr).unwrap();
+        assert_eq!(delegations["delegator"]["validator"], 30.into());
+
+        let pending_expr = RhoExpr::ExprMap {
+            data: [("delegator".to_string(), RhoExpr::ExprMap {
+                data: [("validator".to_string(), RhoExpr::ExprTuple {
+                    data: vec![RhoExpr::ExprInt { data: 7 }, RhoExpr::ExprInt { data: 55 }],
+                })]
+                .into_iter()
+                .collect(),
+            })]
+            .into_iter()
+            .collect(),
+        };
+        let pending =
+            parse_pending_undelegation_map("getPendingUndelegations", &pending_expr).unwrap();
+        assert_eq!(pending["delegator"]["validator"], PendingUndelegationInfo {
+            amount: 7.into(),
+            unlock_block: 55,
+        });
     }
 }

@@ -139,13 +139,12 @@ fn expected_validation_ok(
         {
             return false;
         }
-        let bond = snapshot
+        let bonded = snapshot
             .on_chain_state
             .bonds_map
             .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
+            .is_some_and(|bond| bond > &0.into());
+        if !bonded {
             return false;
         }
         if !seen.insert((metadata.sender, target_activation_epoch)) {
@@ -207,13 +206,12 @@ fuzz_target!(|input: Input| {
                 {
                     continue;
                 }
-                let bond = snapshot
+                let bonded = snapshot
                     .on_chain_state
                     .bonds_map
                     .get(&metadata.sender)
-                    .copied()
-                    .unwrap_or(0);
-                if bond <= 0 {
+                    .is_some_and(|bond| bond > &0.into());
+                if !bonded {
                     continue;
                 }
                 // Lex-smallest-hash tie-breaker mirrors the production rule

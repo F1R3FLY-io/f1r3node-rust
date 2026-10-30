@@ -273,7 +273,7 @@ impl Genesis {
         let mut bonds: Vec<_> = proof_of_stake
             .validators
             .iter()
-            .map(|validator| (validator.pk.clone(), validator.stake))
+            .map(|validator| (validator.pk.clone(), validator.stake.clone()))
             .collect();
 
         bonds.sort_by_key(|(pk, _)| pk.bytes.clone());
@@ -304,11 +304,11 @@ mod tests {
         use super::super::contracts::validator::Validator;
 
         let pos_params = ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (num_bigint::BigInt::from(1) << 256) - 1,
             validators: vec![Validator {
                 pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 10,
             quarantine_length: 20,

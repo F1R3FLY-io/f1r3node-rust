@@ -1,5 +1,11 @@
 # Slashing — TLA+ Specifications and Model Checking
 
+> **PR #54 proposal scope:** The verdict lists and formal taxonomy below describe historical behavior.
+> They do not prove the current Rust verdict set or the BigInt proposal.
+> Current production code permits slashing only for admissible or ignorable equivocation.
+> The proposal adds `InvalidDeployCost` as a non-slashable admission rejection.
+> The models do not include that verdict. Updating the historical taxonomy proofs remains separate work.
+
 This directory contains seven TLA+ specifications and their TLC model-checking
 instances for the slashing subsystem. The verification model complements the
 Rocq proofs at `formal/rocq/slashing/` by exhaustively model-checking finite
@@ -147,7 +153,7 @@ table. In summary:
 | `PartitionGossipDivergenceClass` / `ObjectiveGuidedDivergenceClass` / `PreconditionFuzzingClass` / `RustReplayDivergenceClass` / `DeepThreatModelDivergenceClass` / `DagTraceDivergenceClass` / `AdversarialCampaignDivergenceClass` / `DifferentialOraclePipelineClass` | `frontier_expansion_reasons_require_review` in `Bisimulation.v`; `deep_threat_chain_closure_bound_assumption_needed` in `TwoLevelSlashing.v` |
 | `Inv_LivenessAsSafety` (Eager) | T-2 (`detection_complete` in `EquivocationDetector.v`) |
 | `Inv_StaleEvidenceCannotSlashRebondedKey`, `Inv_OnlyAuthorizedSlashCanBePending`, `Inv_RejectedSlashWithoutEvidenceNoPending`, `Inv_InvalidAuthSlashNoPending`, `Inv_BondsZeroAfterSlash`, `Inv_AuthorizationUsesParentPreState`, `Inv_AmbientZeroDoesNotBlockParentPositiveAuth`, `Inv_ParentZeroRejectsEvenAmbientPositive` | `ValidatorLifetime.v`, `BugFixSlashAuthorization.v`, and `SlashDeploy.v` authorization/no-op theorems |
-| `Inv_RecoveredSlashHasEvidence`, `Inv_RecoveredSlashCoveredByPendingOrExecuted`, `Inv_PendingSlashHashUnique`, `Inv_SlashSeedInputInjectiveByHash`, `Inv_ZeroBondSlashNoTransfer` | `BlockCreator.v` recoverable rejected-slash hash theorems, `SlashDeploy.v` seed-input injectivity, and `PoSContract.v` zero-bond no-op theorem |
+| `Inv_RecoveredSlashHasEvidence`, `Inv_RecoveredSlashCoveredByPendingOrExecuted`, `Inv_PendingSlashHashUnique`, `Inv_SlashSeedInputInjectiveByHash`, `Inv_ZeroBondSlashNoTransfer` | `BlockCreator.v` recoverable rejected-slash hash theorems, `SlashDeploy.v` seed-input injectivity, and `PoSContract.v` zero-exposure no-op theorem |
 | `Inv_NoInvalidLatestLivenessGap` | `BlockCreator.deploy_epoch_matches_target` and `BugFixSlashAuthorization.authorized_execution_zeros_offender` |
 | `Inv_DuplicateJustificationsRejected`, `Inv_AcceptedImpliesUniqueJustifications`, `Inv_AcceptedProjectionCardinality` | `BugFixDuplicateJustifications.v` |
 

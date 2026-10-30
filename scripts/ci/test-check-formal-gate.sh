@@ -6,6 +6,7 @@ trap 'rm -rf "$WORK"' EXIT
 GATE="$ROOT/scripts/ci/check-formal-gate.sh"
 mkdir -p "$WORK/bin" "$WORK/repo/.github/workflows" "$WORK/repo/scripts/ci"
 cp "$ROOT/.github/workflows/slashing-tests.yml" "$WORK/repo/.github/workflows/"
+cp "$ROOT/.github/workflows/casper-merge-accounting.yml" "$WORK/repo/.github/workflows/"
 cp "$GATE" "$ROOT/scripts/ci/test-check-formal-gate.sh" "$WORK/repo/scripts/ci/"
 printf 'fixture\n' > "$WORK/repo/Cargo.toml"
 cp "$WORK/repo/.github/workflows/slashing-tests.yml" "$WORK/workflow.yml"
@@ -22,7 +23,8 @@ case "$1" in
             --error-unmatch) test -f scripts/ci/check-formal-gate.sh && test -f scripts/ci/test-check-formal-gate.sh ;;
             *)
                 if [[ "${TEST_GIT_FAILURE:-}" == inventory ]]; then printf '%s\n' Cargo.toml; exit 2; fi
-                printf '%s\n' .github/workflows/slashing-tests.yml scripts/ci/check-formal-gate.sh scripts/ci/test-check-formal-gate.sh Cargo.toml ;;
+                [[ " $* " == *' .github/workflows/casper-merge-accounting.yml '* ]] || exit 2
+                printf '%s\n' .github/workflows/slashing-tests.yml .github/workflows/casper-merge-accounting.yml scripts/ci/check-formal-gate.sh scripts/ci/test-check-formal-gate.sh Cargo.toml ;;
         esac ;;
     *) exit 2 ;;
 esac
@@ -101,6 +103,10 @@ printf 'wrong workflow\n' > "$WORK/workflow.yml"
 reject bash "$GATE" verify receipts
 cp .github/workflows/slashing-tests.yml "$WORK/workflow.yml"
 bash "$GATE" verify receipts
+printf '\n' >> .github/workflows/casper-merge-accounting.yml
+reject bash "$GATE" verify receipts
+cp "$ROOT/.github/workflows/casper-merge-accounting.yml" .github/workflows/casper-merge-accounting.yml
+bash "$GATE" verify receipts
 awk '/^  formal-verification-gate:/{active=1;next} active && /^  [a-zA-Z0-9_-]+:/{exit} active{print}' .github/workflows/slashing-tests.yml > "$WORK/job.yml"
 grep -Fxq '    if: always()' "$WORK/job.yml"
 grep -Fxq '    needs: [tla-model-check, rocq-build]' "$WORK/job.yml"
@@ -111,5 +117,61 @@ grep -Fq 'check-formal-gate.sh verify target/formal-receipts' "$WORK/job.yml"
 ! grep -Eq 'continue-on-error|pull_request_target' .github/workflows/slashing-tests.yml
 for kind in tla rocq; do
     [[ $(grep -Fc "name: formal-provenance-$kind-\${{ github.run_id }}-\${{ github.run_attempt }}" .github/workflows/slashing-tests.yml) == 2 ]]
+done
+cat > "$WORK/bin/java" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == -version ]]
+exit "${TEST_JAVA_FAILURE:-0}"
+SH
+cat > "$WORK/bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == "--fail --silent --show-error --location --proto =https --proto-redir =https --connect-timeout 10 --max-time 60 --retry 2 --retry-max-time 120 $TLA_TOOLS_URL -o $TEST_TLC_TARGET" ]]
+printf 'download\n' >> "$HOME/downloads"
+[[ "${TEST_DOWNLOAD_FAILURE:-0}" == 0 ]] || exit 1
+printf '%s' "${TEST_TLC_BYTES:-fixture}" > "$TEST_TLC_TARGET"
+SH
+chmod +x "$WORK/bin/java" "$WORK/bin/curl"
+export TLA_TOOLS_URL=https://example.invalid/tla2tools.jar
+export TLA_TOOLS_SHA256
+TLA_TOOLS_SHA256=$(printf fixture | sha256sum | awk '{print $1}')
+export JAVA_HOME_21_X64="$WORK" GITHUB_PATH="$WORK/github-path"
+for workflow in slashing-tests casper-merge-accounting; do
+    export HOME="$WORK/$workflow-home" RUNNER_TEMP="$WORK/$workflow-runner"
+    export GITHUB_PATH="$WORK/$workflow-github-path"
+    mkdir "$HOME" "$RUNNER_TEMP"
+    if [[ "$workflow" == slashing-tests ]]; then
+        step='Prepare Java and TLC'
+        export TEST_TLC_TARGET="$HOME/.tla/tla2tools.jar"
+    else
+        step='Install the verifier'
+        export TEST_TLC_TARGET="$RUNNER_TEMP/casper-merge-accounting-tools/tla2tools.jar"
+    fi
+    awk -v step="$step" '
+        $0 == "      - name: " step { active=1; next }
+        active && /^      - / { exit }
+        active { print }
+    ' ".github/workflows/$workflow.yml" > "$WORK/setup-step.yml"
+    grep -Fxq '        timeout-minutes: 3' "$WORK/setup-step.yml"
+    grep -Fq 'https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar' "$WORK/setup-step.yml"
+    grep -Fq '936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88' "$WORK/setup-step.yml"
+    ! grep -Eq 'apt-get|sudo|wget|continue-on-error' "$WORK/setup-step.yml"
+    awk '
+        /^        run: \|$/ { active=1; next }
+        active { sub(/^          /, ""); print }
+    ' "$WORK/setup-step.yml" > "$WORK/setup-tlc.sh"
+    [[ -s "$WORK/setup-tlc.sh" ]]
+    reject env -u JAVA_HOME_21_X64 bash -euo pipefail "$WORK/setup-tlc.sh"
+    [[ ! -e "$HOME/downloads" && ! -e "$TEST_TLC_TARGET" && ! -e "$GITHUB_PATH" ]]
+    reject env TEST_JAVA_FAILURE=1 bash -euo pipefail "$WORK/setup-tlc.sh"
+    [[ ! -e "$HOME/downloads" && ! -e "$TEST_TLC_TARGET" ]]
+    reject env TEST_DOWNLOAD_FAILURE=1 bash -euo pipefail "$WORK/setup-tlc.sh"
+    [[ ! -e "$TEST_TLC_TARGET" ]]
+    reject env TEST_TLC_BYTES=altered bash -euo pipefail "$WORK/setup-tlc.sh"
+    bash -euo pipefail "$WORK/setup-tlc.sh"
+    [[ "$(< "$TEST_TLC_TARGET")" == fixture ]]
+    grep -Fxq "$JAVA_HOME_21_X64/bin" "$GITHUB_PATH"
+    printf '%s TLC setup: bounded download and failure controls passed.\n' "$workflow"
 done
 printf 'Formal gate: positive round trips, workflow wiring, and %s exact-exit refusal controls passed.\n' "$count"

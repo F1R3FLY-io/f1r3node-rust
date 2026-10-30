@@ -103,16 +103,18 @@ Theorem main_T9_slash_idempotent :
   forall ps v,
     let (ps1, _)  := slash ps  v in
     let (ps2, _)  := slash ps1 v in
-    ps_allBonds  ps2 = ps_allBonds  ps1
+    ps_allBonds ps2 = ps_allBonds ps1
+    /\ ps_delegatedTotals ps2 = ps_delegatedTotals ps1
+    /\ ps_pendingUndelegationTotals ps2 = ps_pendingUndelegationTotals ps1
     /\ ps_coopVault ps2 = ps_coopVault ps1
-    /\ ps_active   ps2 = ps_active   ps1.
+    /\ ps_active ps2 = ps_active ps1.
 Proof. exact slash_idempotent. Qed.
 
-Theorem main_TIdem_zero_bond_noop :
+Theorem main_TIdem_zero_exposure_noop :
   forall ps v,
-    bm_lookup (ps_allBonds ps) v = 0 ->
+    slash_exposure ps v = 0 ->
     slash ps v = (ps, true).
-Proof. exact slash_zero_bond_noop. Qed.
+Proof. exact slash_zero_exposure_noop. Qed.
 
 Theorem main_T10_fork_choice_exclusion :
   forall lm bonds v,
@@ -628,9 +630,9 @@ Proof. exact detect_neglected_complete. Qed.
    or ignorable equivocation, applying the slash effect and the atomic record
    update yields (i) a confirmed equivocation, (ii) the witnessing hash
    retained in the record store, (iii) the offender's bond zeroed, (iv) the
-   offender excluded from fork choice, and (v) the forfeited stake credited to
-   the Coop vault. All ten documented bug fixes (T-9.1 .. T-9.15, summarized
-   in §4) hold of the components composed here. *)
+   offender excluded from fork choice, and (v) the forfeited slash exposure
+   credited to the Coop vault. All ten documented bug fixes
+   (T-9.1 .. T-9.15, summarized in §4) hold of the components composed here. *)
 
 Theorem main_slashing_algorithm_correct :
   forall cj lmh d status v n ps lm records witness,
@@ -643,8 +645,8 @@ Theorem main_slashing_algorithm_correct :
     /\ In witness (hashes_at_key records' (v, pred n))
     /\ bm_lookup (ps_allBonds ps') v = 0
     /\ fc_lookup (filter_slashed lm (ps_allBonds ps')) v = None
-    /\ (bm_lookup (ps_allBonds ps) v > 0 ->
-        ps_coopVault ps' = ps_coopVault ps + bm_lookup (ps_allBonds ps) v).
+    /\ (slash_exposure ps v > 0 ->
+        ps_coopVault ps' = ps_coopVault ps + slash_exposure ps v).
 Proof.
   intros cj lmh d status v n ps lm records witness Hd Hstatus.
   pose proof (@detection_sound cj lmh d status Hd Hstatus) as Heq.

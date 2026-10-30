@@ -34,6 +34,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::{
@@ -1881,7 +1882,7 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
 
         let _genesis = create_chain(&mut block_store, &mut block_dag_storage, 3, vec![Bond {
             validator: validator.clone(),
-            stake: 1,
+            stake: 1.into(),
         }]);
 
         let genesis = block_dag_storage.lookup_by_id_unsafe(0);
@@ -1907,13 +1908,59 @@ async fn sender_validation_should_return_true_for_genesis_and_blocks_from_bonded
 // Parent validation tests - Testing validator progress check (InvalidParents)
 // ============================================================================
 
+#[tokio::test]
+async fn sender_validation_preserves_trusted_parent_authority_with_bigint_stakes() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let validator = generate_validator(Some("Validator"));
+        let impostor = generate_validator(Some("Impostor"));
+        let stake = num_bigint::BigInt::from(i64::MAX) + num_bigint::BigInt::from(1);
+        let genesis = create_chain(&mut block_store, &mut block_dag_storage, 2, vec![Bond {
+            validator: validator.clone(),
+            stake: stake.clone(),
+        }]);
+        let valid = with_sender(&block_dag_storage.lookup_by_id_unsafe(1), &validator);
+        assert_eq!(
+            proto_util::weight_from_sender(&block_store, &valid).unwrap(),
+            stake
+        );
+        assert!(Validate::block_sender_has_weight(&valid, &genesis, &block_store).unwrap());
+
+        let mut forged = with_sender(&valid, &impostor);
+        forged.body.state.bonds.push(Bond {
+            validator: impostor,
+            stake,
+        });
+        assert!(!Validate::block_sender_has_weight(&forged, &genesis, &block_store).unwrap());
+
+        forged.header.parents_hash_list.clear();
+        assert_eq!(
+            proto_util::weight_from_sender(&block_store, &forged).unwrap(),
+            0.into()
+        );
+        assert!(!Validate::block_sender_has_weight(&forged, &genesis, &block_store).unwrap());
+
+        let mut parentless_bonded = valid;
+        parentless_bonded.header.parents_hash_list.clear();
+        assert!(
+            Validate::block_sender_has_weight(&parentless_bonded, &genesis, &block_store).unwrap()
+        );
+
+        forged.header.parents_hash_list = vec![Bytes::from(vec![0xff; 32])];
+        assert!(matches!(
+            Validate::block_sender_has_weight(&forged, &genesis, &block_store),
+            Err(KvStoreError::MissingBlock { .. })
+        ));
+    })
+    .await
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parent_validation_should_allow_first_block_from_new_validator() {
     with_storage(|mut block_store, mut block_dag_storage| async move {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         let genesis = create_genesis_block(
@@ -1967,11 +2014,11 @@ async fn parent_validation_should_allow_empty_block_when_new_parents_exist() {
         let bonds = vec![
             Bond {
                 validator: v0.clone(),
-                stake: 10,
+                stake: 10.into(),
             },
             Bond {
                 validator: v1.clone(),
-                stake: 10,
+                stake: 10.into(),
             },
         ];
 
@@ -2077,7 +2124,7 @@ async fn parent_validation_progress_verdict_is_independent_of_finality_markers()
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         let genesis = create_genesis_block(
@@ -2206,7 +2253,7 @@ async fn parent_validation_should_reject_empty_block_when_no_new_parents_exist()
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         let genesis = create_genesis_block(
@@ -2280,7 +2327,7 @@ async fn parent_validation_should_allow_block_with_user_deploys_regardless_of_pa
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         let genesis = create_genesis_block(
@@ -2354,7 +2401,7 @@ async fn parent_validation_should_allow_proposal_when_previous_block_is_genesis(
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         // Create genesis with v0 as sender (so v0's "previous block" is genesis)
@@ -2411,15 +2458,15 @@ async fn parent_validation_should_enforce_max_number_of_parents_constraint() {
         let bonds = vec![
             Bond {
                 validator: v0.clone(),
-                stake: 10,
+                stake: 10.into(),
             },
             Bond {
                 validator: v1.clone(),
-                stake: 10,
+                stake: 10.into(),
             },
             Bond {
                 validator: v2.clone(),
-                stake: 10,
+                stake: 10.into(),
             },
         ];
 
@@ -2597,11 +2644,11 @@ async fn justification_follow_validation_should_return_valid_for_proper_justific
         let v2 = generate_validator(Some("Validator Two"));
         let v1_bond = Bond {
             validator: v1.clone(),
-            stake: 2,
+            stake: 2.into(),
         };
         let v2_bond = Bond {
             validator: v2.clone(),
-            stake: 3,
+            stake: 3.into(),
         };
         let bonds = vec![v1_bond, v2_bond];
 
@@ -2797,11 +2844,11 @@ async fn justification_regression_validation_should_return_valid_for_proper_just
         let bonds = vec![
             Bond {
                 validator: v0.clone(),
-                stake: 1, // 2 * 0 (index) + 1 = 1
+                stake: 1.into(), // 2 * 0 (index) + 1 = 1
             },
             Bond {
                 validator: v1.clone(),
-                stake: 3, // 2 * 1(index) + 1 = 3
+                stake: 3.into(), // 2 * 1(index) + 1 = 3
             },
         ];
 
@@ -2939,11 +2986,11 @@ async fn justification_regression_validation_should_return_valid_for_regressive_
         let bonds = vec![
             Bond {
                 validator: v0.clone(),
-                stake: 1, // 2 * 0 (index) + 1 = 1
+                stake: 1.into(), // 2 * 0 (index) + 1 = 1
             },
             Bond {
                 validator: v1.clone(),
-                stake: 3, // 2 * 1 (index) + 1 = 3
+                stake: 3.into(), // 2 * 1 (index) + 1 = 3
             },
         ];
 
@@ -3318,7 +3365,7 @@ async fn parent_validation_should_pass_when_parent_within_horizon() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         // Chain of 5 blocks. Tip at chain[4] (block_number=4).
@@ -3375,7 +3422,7 @@ async fn parent_validation_should_pass_at_parent_spread_boundary() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         // Chain of 6 blocks, block_numbers 0..5.
@@ -3433,7 +3480,7 @@ async fn parent_validation_should_reject_parent_spread_beyond_the_bound() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         // Chain of 7 blocks, block_numbers 0..6.
@@ -3503,7 +3550,7 @@ async fn parent_validation_ignores_how_far_ahead_this_node_is() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         // Chain of 10 blocks: this node's tip is far above the block under test.
@@ -3565,7 +3612,7 @@ async fn parent_validation_should_exempt_genesis_from_depth_check() {
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         // Chain of 12 blocks. Tip at chain[11] (block_number=11). Genesis depth=11.
@@ -3622,7 +3669,7 @@ async fn parent_validation_should_skip_depth_check_when_max_parent_depth_is_unli
         let v0 = generate_validator(Some("Validator0"));
         let bonds = vec![Bond {
             validator: v0.clone(),
-            stake: 10,
+            stake: 10.into(),
         }];
 
         // Chain of 7 blocks. Max block_number = 6, latest_block_number() returns 7.
@@ -3687,8 +3734,8 @@ async fn parent_validation_enforces_max_parent_depth_horizon() {
         let v0 = generate_validator(Some("Validator0"));
         let v_fresh = generate_validator(Some("FreshValidator"));
         let bonds = vec![
-            Bond { validator: v0.clone(), stake: 10 },
-            Bond { validator: v_fresh.clone(), stake: 10 },
+            Bond { validator: v0.clone(), stake: 10.into() },
+            Bond { validator: v_fresh.clone(), stake: 10.into() },
         ];
 
         let genesis = create_genesis_block(

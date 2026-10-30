@@ -4,6 +4,9 @@ The user accepted this bounded pre-merge binding. Node accounting and live execu
 
 The maintainer accepted the PR #829 change of the Java install step of this file on 2026-10-23 (PR #829, review 5628129141) at revision `f2f3645dd`.
 
+PR #54 adds download time limits and HTTPS restrictions. The current binding is pending.
+The source hashes, acceptance, and evidence below remain the historical record, not verification of the changed workflow.
+
 ```json
 {
   "artifact": {
@@ -22,7 +25,7 @@ The maintainer accepted the PR #829 change of the Java install step of this file
     "docs/claims/casper-soak-merge-accounting.md": "22a6534ef37b1675b6fe69cd04dbae6473d2fa93d9306efb454499cd04c970f3"
   },
   "adapter": "embedded",
-  "status": "discharged",
+  "status": "pending",
   "scope": "bounded-merge-accounting-profile",
   "evidence": {
     "kind": "accepted-change",
@@ -32,10 +35,10 @@ The maintainer accepted the PR #829 change of the Java install step of this file
   "tiers": {
     "refutation": "bounded-safety-pass",
     "construction": "not-applicable",
-    "binding": "passed"
+    "binding": "pending"
   },
   "phase_status": {
-    "pre_pr216_merge": "discharged",
+    "pre_pr216_merge": "pending",
     "post_pr216_merge": "blocked"
   },
   "soak": "pending",

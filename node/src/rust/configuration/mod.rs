@@ -132,6 +132,11 @@ pub mod builder {
         if let Some(config) = &node_conf.soak_observer {
             crate::rust::soak_observer::validate_config(config)?;
         }
+        node_conf
+            .casper
+            .genesis_block_data
+            .validate_bond_limits()
+            .map_err(|e| eyre::eyre!("bond config invalid: {}", e))?;
         let mut warnings = Vec::new();
         let pos_multi_sig_quorum = node_conf.casper.genesis_block_data.pos_multi_sig_quorum;
         let pos_multi_sig_public_keys_length = node_conf
@@ -781,6 +786,29 @@ mod embedded_defaults_tests {
                 .unwrap()
                 .resolve();
             assert!(result.is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn bigint_bond_limits_load_exactly_and_reject_invalid_ranges() {
+        let base: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(
+            base.casper.genesis_block_data.bond_maximum.to_string(),
+            "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+        );
+        builder::validate_config(&base).unwrap();
+        for (minimum, maximum) in [(0, 10), (-1, 10), (10, 9)] {
+            let mut cfg = base.clone();
+            cfg.casper.genesis_block_data.bond_minimum = minimum.into();
+            cfg.casper.genesis_block_data.bond_maximum = maximum.into();
+            assert!(builder::validate_config(&cfg)
+                .unwrap_err()
+                .to_string()
+                .contains("bond config invalid"));
         }
     }
 

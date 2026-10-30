@@ -630,7 +630,7 @@ By definition: `bm_slash` updates only the entry for `v`; entries at
 
 ### 6.1 Theorem 6.1 (T-7, Slash zeros bond)
 
-**Statement.** *(`slash_zeros_bond`, `PoSContract.v:75`.)* For every
+**Statement.** *(`slash_zeros_bond`, `PoSContract.v:87`.)* For every
 PoS state `ps` and offender `v`,
 
 ```
@@ -638,7 +638,7 @@ PoS state `ps` and offender `v`,
     bm_lookup(ps_allBonds(ps'), v) = 0
 ```
 
-**Proof.** Case analysis on whether `bm_lookup(ps_allBonds(ps), v) = 0`:
+**Proof.** Case analysis on whether `slash_exposure(ps, v) = 0`:
 
 - **Already zero**: `slash` is a no-op; the lookup is still 0.
 - **Positive**: the new state's bond map is `bm_slash(ps_allBonds(ps),
@@ -647,35 +647,42 @@ PoS state `ps` and offender `v`,
 
 ### 6.2 Theorem 6.2 (T-8, Slash transfers stake)
 
-**Statement.** *(`slash_transfers_stake`, `PoSContract.v:95`.)* When the
-offender's bond is positive,
+**Statement.** *(`slash_transfers_stake`, `PoSContract.v:107`.)* When the
+offender's slash exposure is positive,
 
 ```
-  ps_coopVault(ps') = ps_coopVault(ps) + bm_lookup(ps_allBonds(ps), v)
+  ps_coopVault(ps') =
+    ps_coopVault(ps)
+    + bm_lookup(ps_allBonds(ps), v)
+    + bm_lookup(ps_delegatedTotals(ps), v)
+    + bm_lookup(ps_pendingUndelegationTotals(ps), v)
 ```
 
-**Proof.** In the positive-bond branch of `slash`, the new state has
-`ps_coopVault := ps_coopVault(ps) + bond` by direct construction. ∎
+**Proof.** In the positive-exposure branch of `slash`, the new state has
+`ps_coopVault := ps_coopVault(ps) + slash_exposure(ps, v)` by direct construction. ∎
 
 ### 6.3 Theorem 6.3 (T-Idem, Slash idempotence; alias T-9)
 
-**Statement.** *(`slash_idempotent`, `PoSContract.v:128`.)*
+**Statement.** *(`slash_idempotent`, `PoSContract.v:140`.)*
 
 ```
   let (ps₁, _) := slash(ps, v) in
   let (ps₂, _) := slash(ps₁, v) in
     ps_allBonds(ps₂) = ps_allBonds(ps₁)
+  ∧ ps_delegatedTotals(ps₂) = ps_delegatedTotals(ps₁)
+  ∧ ps_pendingUndelegationTotals(ps₂) = ps_pendingUndelegationTotals(ps₁)
   ∧ ps_coopVault(ps₂) = ps_coopVault(ps₁)
   ∧ ps_active(ps₂) = ps_active(ps₁)
 ```
 
-The third conjunct (`ps_active`) was added in the gap-closure pass (Audit
-Gap 5): a second slash on an already-slashed validator preserves *all*
-PoSState fields, not just bonds and vault.
+The delegated and pending-undelegation conjuncts make the full slash
+exposure idempotence explicit; `ps_active` was added in the gap-closure
+pass (Audit Gap 5). A second slash on an already-slashed validator
+preserves all PoSState fields, not just bonds and vault.
 
-**Proof.** After the first slash, `bm_lookup(ps_allBonds(ps₁), v) = 0`
-(by T-7). The second slash hits the early-return zero-bond branch and
-returns `ps₁` unchanged — including `ps_active`. ∎
+**Proof.** After the first slash, self-bond, active delegated total, and
+pending undelegation exposure for `v` are all zero. The second slash hits
+the zero-exposure branch and returns `ps₁` unchanged. ∎
 
 ### 6.4 Theorem 6.4 (T-10, Fork-choice exclusion)
 
@@ -2609,7 +2616,7 @@ confirming the fix.
 | `Inv_DetectedHashDetects`                                                            | `fixed_detectable_detected_hash_true`                                     | yes            |
 | `Inv_RecordMonotone` (Locked=⊤)                                                      | `t_9_2_atomic_no_overwrite`                                               | yes            |
 | `Inv_BondsZeroAfterSlash`                                                            | `slash_zeros_bond`                                                        | yes            |
-| `Inv_ZeroBondSlashNoTransfer`                                                        | `slash_zero_bond_noop`                                                     | yes            |
+| `Inv_ZeroExposureSlashNoTransfer`                                                    | `slash_zero_exposure_noop`                                                 | yes            |
 | `Inv_SlashedExcludedFromFC`                                                          | `fork_choice_exclusion`                                                   | yes            |
 | `Inv_LevelClosureTerminates`                                                         | `t_11_level_2_termination`                                                | yes            |
 | `Inv_ActiveStakeAboveWeightedQuorum`                                                 | `weighted_slash_iter_quorum_preservation`                                 | yes            |
