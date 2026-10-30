@@ -8,6 +8,20 @@ pub const RECORD_DIGEST_DOMAIN: &[u8] = b"f1r3node:v6-execution-record:v1";
 
 pub type RecordDigest = [u8; 32];
 
+pub(crate) fn domain_digest(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(domain.len() + bytes.len());
+    input.extend_from_slice(domain);
+    input.extend_from_slice(bytes);
+    Blake2b256::hash(input)
+        .try_into()
+        .expect("Blake2b256 emits 32 bytes")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Footprint {
+    pub channels: Vec<[u8; 32]>,
+}
+
 pub trait ExecutionRecord: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static {
     fn target(&self) -> &BlockHash;
 
@@ -23,13 +37,9 @@ pub trait ExecutionRecord: Clone + std::fmt::Debug + PartialEq + Send + Sync + '
 
     fn encoded_len(&self) -> usize { self.encode().len() }
 
+    fn footprint(&self) -> Option<Footprint> { None }
+
     fn digest(&self) -> RecordDigest {
-        let encoded = self.encode();
-        let mut input = Vec::with_capacity(RECORD_DIGEST_DOMAIN.len() + encoded.len());
-        input.extend_from_slice(RECORD_DIGEST_DOMAIN);
-        input.extend_from_slice(&encoded);
-        Blake2b256::hash(input)
-            .try_into()
-            .expect("Blake2b256 emits 32 bytes")
+        domain_digest(RECORD_DIGEST_DOMAIN, &self.encode())
     }
 }

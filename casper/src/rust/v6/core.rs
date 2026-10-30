@@ -4,7 +4,9 @@ use models::rust::block_hash::BlockHash;
 use prost::bytes::Bytes;
 
 use super::body::{Attestation, StateHash};
-use super::record::{ExecutionRecord, RecordDigest};
+use super::evidence::{Evidence, InvalidRecordReason, Offence};
+use super::record::ExecutionRecord;
+use super::store::{MemoryRecordStore, RecordStore, Retention};
 
 #[derive(Clone, Debug)]
 pub struct CoreParams {
@@ -19,23 +21,6 @@ impl Default for CoreParams {
             fallback_distance: 8,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EvidenceKind {
-    InvalidRecord,
-    MismatchedEnvelopes,
-    Misattestation {
-        attested: StateHash,
-        executed: StateHash,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Evidence {
-    pub against: BlockHash,
-    pub target: BlockHash,
-    pub kind: EvidenceKind,
 }
 
 #[derive(Clone, Debug)]
@@ -72,28 +57,33 @@ pub struct ExecutorCore<R: ExecutionRecord> {
     index: HashMap<BlockHash, usize>,
     senders: HashMap<BlockHash, Bytes>,
     envelopes: HashMap<BlockHash, Vec<Bytes>>,
-    canon_pos: usize,
-    canon_root: StateHash,
-    executed: HashMap<BlockHash, StateHash>,
+    store: Box<dyn RecordStore<R>>,
     spec: VecDeque<R>,
     citations: HashMap<BlockHash, Vec<Candidate<R>>>,
     dismissed: HashSet<(BlockHash, BlockHash)>,
     cited: HashSet<(BlockHash, StateHash)>,
-    pending_attestations: HashMap<BlockHash, Vec<(BlockHash, StateHash)>>,
+    pending_attestations: HashMap<BlockHash, Vec<(BlockHash, Bytes, StateHash)>>,
     evidence: Vec<Evidence>,
 }
 
 impl<R: ExecutionRecord> ExecutorCore<R> {
     pub fn new(genesis: BlockHash, genesis_root: StateHash, params: CoreParams) -> Self {
+        let store = MemoryRecordStore::new(genesis.clone(), genesis_root, Retention::default());
+        Self::with_store(genesis, params, Box::new(store))
+    }
+
+    pub fn with_store(
+        genesis: BlockHash,
+        params: CoreParams,
+        store: Box<dyn RecordStore<R>>,
+    ) -> Self {
         ExecutorCore {
             params,
             order: vec![genesis.clone()],
-            index: HashMap::from([(genesis.clone(), 0)]),
+            index: HashMap::from([(genesis, 0)]),
             senders: HashMap::new(),
             envelopes: HashMap::new(),
-            canon_pos: 1,
-            canon_root: genesis_root.clone(),
-            executed: HashMap::from([(genesis, genesis_root)]),
+            store,
             spec: VecDeque::new(),
             citations: HashMap::new(),
             dismissed: HashSet::new(),
@@ -102,6 +92,14 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             evidence: Vec::new(),
         }
     }
+
+    fn sender_of(&self, block: &BlockHash) -> Bytes {
+        self.senders.get(block).cloned().unwrap_or_default()
+    }
+
+    fn canon_pos(&self) -> usize { self.store.canonical_len() }
+
+    fn canon_root(&self) -> StateHash { self.store.canonical_root().clone() }
 
     pub fn emit(&mut self, block: EmittedBlock<R>) {
         if self.index.contains_key(&block.hash) {
@@ -127,14 +125,16 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 
     pub fn attestation(&self) -> Attestation {
         Attestation {
-            block_hash: self.order[self.canon_pos - 1].clone(),
-            root: self.canon_root.clone(),
+            block_hash: self.order[self.canon_pos() - 1].clone(),
+            root: self.canon_root(),
         }
     }
 
-    pub fn executed(&self, block: &BlockHash) -> Option<&StateHash> { self.executed.get(block) }
+    pub fn executed(&self, block: &BlockHash) -> Option<&StateHash> { self.store.executed(block) }
 
-    pub fn canonical_len(&self) -> usize { self.canon_pos }
+    pub fn record(&self, block: &BlockHash) -> Option<&R> { self.store.record(block) }
+
+    pub fn canonical_len(&self) -> usize { self.canon_pos() }
 
     pub fn emitted_len(&self) -> usize { self.order.len() }
 
@@ -142,13 +142,15 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 
     pub fn evidence(&self) -> &[Evidence] { &self.evidence }
 
+    pub fn take_evidence(&mut self) -> Vec<Evidence> { std::mem::take(&mut self.evidence) }
+
     pub fn next_action(&mut self) -> Action<R> {
         loop {
-            if self.canon_pos >= self.order.len() {
+            if self.canon_pos() >= self.order.len() {
                 break;
             }
-            let target = self.order[self.canon_pos].clone();
-            let target_index = self.canon_pos;
+            let target = self.order[self.canon_pos()].clone();
+            let target_index = self.canon_pos();
             let mut candidates: Vec<Candidate<R>> = self
                 .citations
                 .get(&target)
@@ -164,16 +166,20 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             let Some(candidate) = candidates.into_iter().next() else {
                 break;
             };
-            if *candidate.record.pre_root() != self.canon_root {
+            if *candidate.record.pre_root() != self.canon_root() {
                 self.dismissed.insert((candidate.citer, target));
                 continue;
             }
             let expected = self.envelopes.get(&target).cloned().unwrap_or_default();
             if candidate.record.envelope_ids() != expected.as_slice() {
                 self.evidence.push(Evidence {
-                    against: candidate.citer.clone(),
+                    offender: self.sender_of(&candidate.citer),
+                    citer: candidate.citer.clone(),
                     target: target.clone(),
-                    kind: EvidenceKind::MismatchedEnvelopes,
+                    offence: Offence::InvalidRecord {
+                        reason: InvalidRecordReason::Envelopes,
+                        record: candidate.record.encode(),
+                    },
                 });
                 self.dismissed.insert((candidate.citer, target));
                 continue;
@@ -184,8 +190,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 .map(|own| own.target() == &target && own.digest() == candidate.record.digest())
                 .unwrap_or(false);
             if matches_own {
-                let digest = candidate.record.digest();
-                self.fix(target, candidate.record.post_root().clone(), Some(digest));
+                self.fix(target, candidate.record);
                 continue;
             }
             return Action::Replay {
@@ -194,13 +199,13 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 record: candidate.record,
             };
         }
-        let next = self.canon_pos + self.spec.len();
+        let next = self.canon_pos() + self.spec.len();
         if self.spec.len() < self.params.max_speculation && next < self.order.len() {
             let pre_root = self
                 .spec
                 .back()
                 .map(|r| r.post_root().clone())
-                .unwrap_or_else(|| self.canon_root.clone());
+                .unwrap_or_else(|| self.canon_root());
             return Action::Execute {
                 target: self.order[next].clone(),
                 pre_root,
@@ -216,18 +221,22 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         record: &R,
         result: Result<StateHash, String>,
     ) {
-        if self.order.get(self.canon_pos) != Some(target) || *record.pre_root() != self.canon_root {
+        if self.order.get(self.canon_pos()) != Some(target)
+            || *record.pre_root() != self.canon_root()
+        {
             return;
         }
         match result {
-            Ok(root) if root == *record.post_root() => {
-                self.fix(target.clone(), root, Some(record.digest()))
-            }
+            Ok(root) if root == *record.post_root() => self.fix(target.clone(), record.clone()),
             _ => {
                 self.evidence.push(Evidence {
-                    against: citer.clone(),
+                    offender: self.sender_of(citer),
+                    citer: citer.clone(),
                     target: target.clone(),
-                    kind: EvidenceKind::InvalidRecord,
+                    offence: Offence::InvalidRecord {
+                        reason: InvalidRecordReason::Replay,
+                        record: record.encode(),
+                    },
                 });
                 self.dismissed.insert((citer.clone(), target.clone()));
             }
@@ -235,12 +244,12 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     }
 
     pub fn apply_execute(&mut self, record: R) {
-        let next = self.canon_pos + self.spec.len();
+        let next = self.canon_pos() + self.spec.len();
         let expected_pre = self
             .spec
             .back()
             .map(|r| r.post_root().clone())
-            .unwrap_or_else(|| self.canon_root.clone());
+            .unwrap_or_else(|| self.canon_root());
         if self.order.get(next) == Some(record.target()) && *record.pre_root() == expected_pre {
             self.spec.push_back(record);
         }
@@ -276,16 +285,27 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         }
     }
 
-    pub fn observe_attestation(&mut self, citer: &BlockHash, attestation: &Attestation) {
-        match self.executed.get(&attestation.block_hash) {
+    pub fn observe_attestation(
+        &mut self,
+        citer: &BlockHash,
+        sender: &Bytes,
+        attestation: &Attestation,
+    ) {
+        match self.store.executed(&attestation.block_hash).cloned() {
             Some(executed) => {
-                if *executed != attestation.root {
+                if executed != attestation.root {
+                    let canonical_record = self
+                        .store
+                        .record(&attestation.block_hash)
+                        .map(ExecutionRecord::encode);
                     self.evidence.push(Evidence {
-                        against: citer.clone(),
+                        offender: sender.clone(),
+                        citer: citer.clone(),
                         target: attestation.block_hash.clone(),
-                        kind: EvidenceKind::Misattestation {
+                        offence: Offence::Misattestation {
                             attested: attestation.root.clone(),
-                            executed: executed.clone(),
+                            executed,
+                            canonical_record,
                         },
                     });
                 }
@@ -294,38 +314,44 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 .pending_attestations
                 .entry(attestation.block_hash.clone())
                 .or_default()
-                .push((citer.clone(), attestation.root.clone())),
+                .push((citer.clone(), sender.clone(), attestation.root.clone())),
         }
     }
 
-    fn fix(&mut self, target: BlockHash, root: StateHash, digest: Option<RecordDigest>) {
+    fn fix(&mut self, target: BlockHash, record: R) {
+        let root = record.post_root().clone();
+        let digest = record.digest();
         match self.spec.front() {
             Some(own)
                 if own.target() == &target
                     && own.post_root() == &root
-                    && digest.is_none_or(|digest| own.digest() == digest) =>
+                    && own.digest() == digest =>
             {
                 self.spec.pop_front();
             }
             _ => self.spec.clear(),
         }
-        self.executed.insert(target.clone(), root.clone());
-        self.canon_root = root.clone();
-        self.canon_pos += 1;
+        let misattested: Vec<_> = self
+            .pending_attestations
+            .remove(&target)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, _, attested)| *attested != root)
+            .collect();
+        let encoded = (!misattested.is_empty()).then(|| record.encode());
+        self.store.fix(target.clone(), record);
         self.citations.remove(&target);
-        if let Some(pending) = self.pending_attestations.remove(&target) {
-            for (citer, attested) in pending {
-                if attested != root {
-                    self.evidence.push(Evidence {
-                        against: citer,
-                        target: target.clone(),
-                        kind: EvidenceKind::Misattestation {
-                            attested,
-                            executed: root.clone(),
-                        },
-                    });
-                }
-            }
+        for (citer, sender, attested) in misattested {
+            self.evidence.push(Evidence {
+                offender: sender,
+                citer,
+                target: target.clone(),
+                offence: Offence::Misattestation {
+                    attested,
+                    executed: root.clone(),
+                    canonical_record: encoded.clone(),
+                },
+            });
         }
     }
 }
@@ -351,10 +377,42 @@ mod tests {
     }
 
     fn core() -> ExecutorCore<BlockRecord> {
-        ExecutorCore::new(h("g"), h("r0"), CoreParams {
-            max_speculation: 4,
-            fallback_distance: 2,
-        })
+        ExecutorCore::with_store(
+            h("g"),
+            CoreParams {
+                max_speculation: 4,
+                fallback_distance: 2,
+            },
+            Box::new(MemoryRecordStore::new(
+                h("g"),
+                h("r0"),
+                Retention::LastBlocks(2),
+            )),
+        )
+    }
+
+    #[test]
+    fn fixed_records_are_retained_up_to_the_bound() {
+        let mut c = core();
+        c.emit(block("b1", "v1", vec![]));
+        c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
+        c.emit(block("b3", "v3", vec![rec("b2", "r1", "r2")]));
+        c.emit(block("b4", "v4", vec![rec("b3", "r2", "r3")]));
+        for _ in 0..3 {
+            let Action::Replay {
+                target,
+                citer,
+                record,
+            } = c.next_action()
+            else {
+                panic!("expected a replay")
+            };
+            let root = record.post_root().clone();
+            c.apply_replay(&target, &citer, &record, Ok(root));
+        }
+        assert_eq!(c.record(&h("b1")), None);
+        assert_eq!(c.record(&h("b2")), Some(&rec("b2", "r1", "r2")));
+        assert_eq!(c.record(&h("b3")), Some(&rec("b3", "r2", "r3")));
     }
 
     #[test]
@@ -425,7 +483,14 @@ mod tests {
             panic!()
         };
         c.apply_replay(&target, &citer, &record, Ok(h("other")));
-        assert_eq!(c.evidence()[0].kind, EvidenceKind::InvalidRecord);
+        assert_eq!(c.evidence()[0].offender, h("v2"));
+        assert!(matches!(
+            &c.evidence()[0].offence,
+            Offence::InvalidRecord { reason: InvalidRecordReason::Replay, record }
+                if *record == rec("b1", "r0", "bad").encode()
+        ));
+        assert_eq!(c.take_evidence().len(), 1);
+        assert!(c.evidence().is_empty());
         let Action::Replay {
             target,
             citer,
@@ -467,7 +532,11 @@ mod tests {
         });
         c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
         let _ = c.next_action();
-        assert_eq!(c.evidence()[0].kind, EvidenceKind::MismatchedEnvelopes);
+        assert!(matches!(c.evidence()[0].offence, Offence::InvalidRecord {
+            reason: InvalidRecordReason::Envelopes,
+            ..
+        }));
+        assert_eq!(c.evidence()[0].offender, h("v2"));
     }
 
     #[test]
@@ -500,11 +569,11 @@ mod tests {
     fn attestations_are_checked_when_the_root_is_fixed() {
         let mut c = core();
         c.emit(block("b1", "v1", vec![]));
-        c.observe_attestation(&h("x"), &Attestation {
+        c.observe_attestation(&h("x"), &h("vx"), &Attestation {
             block_hash: h("b1"),
             root: h("wrong"),
         });
-        c.observe_attestation(&h("y"), &Attestation {
+        c.observe_attestation(&h("y"), &h("vy"), &Attestation {
             block_hash: h("b1"),
             root: h("r1"),
         });
@@ -519,7 +588,13 @@ mod tests {
         };
         c.apply_replay(&target, &citer, &record, Ok(h("r1")));
         assert_eq!(c.evidence().len(), 1);
-        assert_eq!(c.evidence()[0].against, h("x"));
+        assert_eq!(c.evidence()[0].citer, h("x"));
+        assert_eq!(c.evidence()[0].offender, h("vx"));
+        assert_eq!(c.evidence()[0].offence, Offence::Misattestation {
+            attested: h("wrong"),
+            executed: h("r1"),
+            canonical_record: Some(rec("b1", "r0", "r1").encode()),
+        });
     }
 
     #[test]

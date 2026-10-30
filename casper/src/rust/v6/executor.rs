@@ -19,6 +19,7 @@ use super::body::StateHash;
 use super::merge::{merge_runs, RunEffect};
 use super::record::ExecutionRecord;
 use super::run::EnvelopeRun;
+use super::slash::{require_no_slashes, NoSlashing, SlashSource};
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -202,6 +203,7 @@ impl EnvelopeExecutor {
 pub struct BlockExecutor {
     envelopes: EnvelopeExecutor,
     runtime_manager: Arc<RuntimeManager>,
+    slashes: Arc<dyn SlashSource>,
 }
 
 impl BlockExecutor {
@@ -209,7 +211,13 @@ impl BlockExecutor {
         BlockExecutor {
             envelopes: EnvelopeExecutor::new(Arc::clone(&runtime_manager), workers),
             runtime_manager,
+            slashes: Arc::new(NoSlashing),
         }
+    }
+
+    pub fn with_slash_source(mut self, slashes: Arc<dyn SlashSource>) -> Self {
+        self.slashes = slashes;
+        self
     }
 }
 
@@ -251,6 +259,7 @@ impl ExecutionBackend for BlockExecutor {
         pre_root: &StateHash,
         block: &BlockMessage,
     ) -> Result<BlockRecord, CasperError> {
+        require_no_slashes(&self.slashes.slashes(block)?)?;
         let envelopes = block
             .body
             .deploys
@@ -287,6 +296,10 @@ impl ExecutionBackend for BlockExecutor {
         record: &BlockRecord,
         block: &BlockMessage,
     ) -> Result<StateHash, CasperError> {
+        if record.target() != &block.block_hash {
+            return Err(mismatch("the record executes another block"));
+        }
+        require_no_slashes(&self.slashes.slashes(block)?)?;
         let recorded = record.executed();
         if recorded.len() != block.body.deploys.len() {
             return Err(mismatch("the record does not cover the block's envelopes"));

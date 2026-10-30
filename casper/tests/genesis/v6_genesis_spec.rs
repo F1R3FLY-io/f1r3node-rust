@@ -76,3 +76,25 @@ async fn the_policy_and_the_protocol_version_must_agree() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn the_attested_root_validator_source_reads_the_floor_committee() {
+    use casper::rust::finality::floor::floor_committee;
+    use casper::rust::v6::body::Attestation;
+    use casper::rust::v6::validators::{AttestedRootValidators, ValidatorSetSource};
+
+    let rm = std::sync::Arc::new(runtime_manager().await);
+    let block =
+        Genesis::create_genesis_block_with_policy(&rm, &parameters(PROTOCOL_V6), Some(&policy()))
+            .await
+            .expect("a protocol 6 genesis builds");
+    let root = block.body.state.post_state_hash.clone();
+    let expected = floor_committee(&rm, &root).await.unwrap();
+    assert!(!expected.is_empty());
+    let source = AttestedRootValidators::new(rm.clone());
+    let attestation = Attestation {
+        block_hash: block.block_hash.clone(),
+        root,
+    };
+    assert_eq!(source.bonds(&attestation, 1).await.unwrap(), expected);
+}

@@ -3,6 +3,7 @@ pub mod block_record;
 pub mod body;
 pub mod core;
 pub mod engine;
+pub mod evidence;
 pub mod executor;
 pub mod genesis_policy;
 pub mod linearizer;
@@ -11,6 +12,9 @@ pub mod propose;
 pub mod record;
 pub mod resource_policy;
 pub mod run;
+pub mod slash;
+pub mod store;
+pub mod validators;
 pub mod validity;
 
 pub use engine::V6Engine;
