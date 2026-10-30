@@ -1511,6 +1511,11 @@ impl DebruijnInterpreter {
                          at genesis"
                     )));
                 }
+                if super::accounting::rev_stack::genesis::is_genesis_only_urn(urn) {
+                    return Err(InterpreterError::ReduceError(format!(
+                        "urn `{urn}` is reserved for genesis"
+                    )));
+                }
             }
         }
 
