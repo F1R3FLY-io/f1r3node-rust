@@ -16,8 +16,9 @@ use shared::rust::store::key_value_store::KvStoreError;
 use super::backend::ExecutionBackend;
 use super::block_record::BlockRecord;
 use super::body::{Attestation, V6Body, V6Records};
-use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore};
-use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink};
+use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore, InclusionCheck};
+use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink, Offence};
+use super::inclusion::{AdmitAll, InclusionScreen};
 use super::executor::BlockExecutor;
 use super::lag::{Lag, LagGate, Transition};
 use super::linearizer::{Advance, Linearizer};
@@ -39,6 +40,7 @@ pub struct V6Parts<R: ExecutionRecord> {
     pub backend: Arc<dyn ExecutionBackend<Record = R>>,
     pub validators: Arc<dyn ValidatorSetSource>,
     pub evidence: Arc<dyn EvidenceSink>,
+    pub inclusion: Arc<dyn InclusionScreen>,
     pub store: Option<Box<dyn RecordStore<R>>>,
     pub limits: Limits,
     pub params: CoreParams,
@@ -51,6 +53,7 @@ pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
     backend: Arc<dyn ExecutionBackend<Record = R>>,
     validators: Arc<dyn ValidatorSetSource>,
     evidence: Arc<dyn EvidenceSink>,
+    inclusion: Arc<dyn InclusionScreen>,
     block_store: KeyValueBlockStore,
     dag_storage: BlockDagKeyValueStorage,
     deploy_storage: Arc<KeyValueDeployStorage>,
@@ -96,6 +99,7 @@ impl V6Engine<BlockRecord> {
             backend,
             validators: Arc::new(AttestedRootValidators::new(runtime_manager)),
             evidence: Arc::new(MemoryEvidenceSink::new()),
+            inclusion: Arc::new(AdmitAll),
             store: Some(Box::new(store)),
             limits: ShardResourcePolicy::default().limits(),
             params: CoreParams::default(),
@@ -123,6 +127,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             backend,
             validators,
             evidence,
+            inclusion,
             store,
             limits,
             params,
@@ -148,6 +153,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             backend,
             validators,
             evidence,
+            inclusion,
             block_store,
             dag_storage,
             deploy_storage,
@@ -247,11 +253,55 @@ impl<R: ExecutionRecord> V6Engine<R> {
 
     pub fn observe_block(&self, block: &BlockMessage, body: &V6Body) {
         if let Some(attestation) = &body.attestation {
-            self.core
-                .lock()
-                .observe_attestation(&block.block_hash, &block.sender, attestation);
+            self.core.lock().observe_attestation(
+                &block.block_hash,
+                &block.sender,
+                attestation,
+                !block.body.deploys.is_empty(),
+            );
         }
         self.report_evidence();
+    }
+
+    async fn check_inclusion(&self, check: InclusionCheck) -> Result<(), CasperError> {
+        let block = self.load(&check.block)?;
+        let started = std::time::Instant::now();
+        let screened = self
+            .inclusion
+            .refused(&check.root, block.header.timestamp, &block.body.deploys)
+            .await;
+        let refused = match screened {
+            Ok(refused) => refused,
+            Err(error) => {
+                tracing::warn!(
+                    target: "f1r3fly.v6",
+                    block = %hex::encode(&check.block),
+                    %error,
+                    "v6 inclusion check could not run; the block is not checked"
+                );
+                return Ok(());
+            }
+        };
+        tracing::debug!(
+            target: "f1r3fly.v6",
+            block = %hex::encode(&check.block),
+            envelopes = block.body.deploys.len(),
+            refused = refused.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "v6 inclusion check"
+        );
+        for (envelope_id, cause) in refused {
+            self.evidence.report(Evidence {
+                offender: check.sender.clone(),
+                citer: check.block.clone(),
+                target: check.attested.clone(),
+                offence: Offence::InclusionViolation {
+                    envelope_id,
+                    cause,
+                },
+            });
+        }
+        Ok(())
     }
 
     fn load(&self, hash: &BlockHash) -> Result<BlockMessage, CasperError> {
@@ -352,6 +402,11 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 self.core.lock().apply_execute(record);
                 progressed = true;
             }
+        }
+        let check = self.core.lock().next_inclusion_check();
+        if let Some(check) = check {
+            self.check_inclusion(check).await?;
+            progressed = true;
         }
         self.report_evidence();
         if let Some(error) = self.core.lock().take_store_error() {

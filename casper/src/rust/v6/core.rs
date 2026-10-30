@@ -44,6 +44,22 @@ pub enum Action<R> {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InclusionCheck {
+    pub block: BlockHash,
+    pub sender: Bytes,
+    pub attested: BlockHash,
+    pub root: StateHash,
+}
+
+#[derive(Clone, Debug)]
+struct PendingAttestation {
+    citer: BlockHash,
+    sender: Bytes,
+    root: StateHash,
+    carries_envelopes: bool,
+}
+
 pub struct EmittedBlock<R> {
     pub hash: BlockHash,
     pub sender: Bytes,
@@ -62,7 +78,9 @@ pub struct ExecutorCore<R: ExecutionRecord> {
     citations: HashMap<BlockHash, Vec<Candidate<R>>>,
     dismissed: HashSet<(BlockHash, BlockHash)>,
     cited: HashSet<(BlockHash, StateHash)>,
-    pending_attestations: HashMap<BlockHash, Vec<(BlockHash, Bytes, StateHash)>>,
+    pending_attestations: HashMap<BlockHash, Vec<PendingAttestation>>,
+    inclusion_due: VecDeque<InclusionCheck>,
+    inclusion_seen: HashSet<BlockHash>,
     evidence: Vec<Evidence>,
     diverged: bool,
     store_error: Option<String>,
@@ -91,6 +109,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             dismissed: HashSet::new(),
             cited: HashSet::new(),
             pending_attestations: HashMap::new(),
+            inclusion_due: VecDeque::new(),
+            inclusion_seen: HashSet::new(),
             evidence: Vec::new(),
             diverged: false,
             store_error: None,
@@ -109,6 +129,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.dismissed.clear();
         self.cited.clear();
         self.pending_attestations.clear();
+        self.inclusion_due.clear();
+        self.inclusion_seen.clear();
         self.diverged = false;
         self.store_error = None;
         Ok(())
@@ -178,6 +200,21 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     pub fn evidence(&self) -> &[Evidence] { &self.evidence }
 
     pub fn take_evidence(&mut self) -> Vec<Evidence> { std::mem::take(&mut self.evidence) }
+
+    pub fn next_inclusion_check(&mut self) -> Option<InclusionCheck> {
+        self.inclusion_due.pop_front()
+    }
+
+    fn inclusion_due_for(&mut self, block: &BlockHash, sender: &Bytes, attestation: &Attestation) {
+        if self.inclusion_seen.insert(block.clone()) {
+            self.inclusion_due.push_back(InclusionCheck {
+                block: block.clone(),
+                sender: sender.clone(),
+                attested: attestation.block_hash.clone(),
+                root: attestation.root.clone(),
+            });
+        }
+    }
 
     pub fn next_action(&mut self) -> Action<R> {
         loop {
@@ -328,10 +365,15 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         citer: &BlockHash,
         sender: &Bytes,
         attestation: &Attestation,
+        carries_envelopes: bool,
     ) {
         match self.store.executed(&attestation.block_hash) {
             Some(executed) => {
-                if executed != attestation.root {
+                if executed == attestation.root {
+                    if carries_envelopes {
+                        self.inclusion_due_for(citer, sender, attestation);
+                    }
+                } else {
                     let canonical_record = self
                         .store
                         .record(&attestation.block_hash)
@@ -352,7 +394,12 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 .pending_attestations
                 .entry(attestation.block_hash.clone())
                 .or_default()
-                .push((citer.clone(), sender.clone(), attestation.root.clone())),
+                .push(PendingAttestation {
+                    citer: citer.clone(),
+                    sender: sender.clone(),
+                    root: attestation.root.clone(),
+                    carries_envelopes,
+                }),
         }
     }
 
@@ -362,7 +409,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         let misattested = self
             .pending_attestations
             .get(&target)
-            .is_some_and(|pending| pending.iter().any(|(_, _, attested)| *attested != root));
+            .is_some_and(|pending| pending.iter().any(|p| p.root != root));
         let encoded = misattested.then(|| record.encode());
         if let Err(error) = self.store.fix(target.clone(), record) {
             self.store_error = Some(error.to_string());
@@ -379,20 +426,27 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             _ => self.spec.clear(),
         }
         self.citations.remove(&target);
-        for (citer, sender, attested) in self
+        for pending in self
             .pending_attestations
             .remove(&target)
             .unwrap_or_default()
         {
-            if attested == root {
+            if pending.root == root {
+                if pending.carries_envelopes {
+                    let attestation = Attestation {
+                        block_hash: target.clone(),
+                        root: root.clone(),
+                    };
+                    self.inclusion_due_for(&pending.citer, &pending.sender, &attestation);
+                }
                 continue;
             }
             self.evidence.push(Evidence {
-                offender: sender,
-                citer,
+                offender: pending.sender,
+                citer: pending.citer,
                 target: target.clone(),
                 offence: Offence::Misattestation {
-                    attested,
+                    attested: pending.root,
                     executed: root.clone(),
                     canonical_record: encoded.clone(),
                 },
@@ -707,14 +761,25 @@ mod tests {
     fn attestations_are_checked_when_the_root_is_fixed() {
         let mut c = core();
         c.emit(block("b1", "v1", vec![]));
-        c.observe_attestation(&h("x"), &h("vx"), &Attestation {
-            block_hash: h("b1"),
-            root: h("wrong"),
-        });
-        c.observe_attestation(&h("y"), &h("vy"), &Attestation {
-            block_hash: h("b1"),
-            root: h("r1"),
-        });
+        c.observe_attestation(
+            &h("x"),
+            &h("vx"),
+            &Attestation {
+                block_hash: h("b1"),
+                root: h("wrong"),
+            },
+            true,
+        );
+        c.observe_attestation(
+            &h("y"),
+            &h("vy"),
+            &Attestation {
+                block_hash: h("b1"),
+                root: h("r1"),
+            },
+            true,
+        );
+        assert_eq!(c.next_inclusion_check(), None);
         c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
         let Action::Replay {
             target,
@@ -733,6 +798,70 @@ mod tests {
             executed: h("r1"),
             canonical_record: Some(rec("b1", "r0", "r1").encode()),
         });
+        assert_eq!(
+            c.next_inclusion_check(),
+            Some(InclusionCheck {
+                block: h("y"),
+                sender: h("vy"),
+                attested: h("b1"),
+                root: h("r1"),
+            })
+        );
+        assert_eq!(c.next_inclusion_check(), None);
+    }
+
+    fn fixed_b1() -> ExecutorCore<BlockRecord> {
+        let mut c = ExecutorCore::with_store(h("g"), CoreParams::default(), store_with_b1_fixed());
+        c.emit(block("b1", "v1", vec![]));
+        c
+    }
+
+    fn attests_b1(root: &str) -> Attestation {
+        Attestation {
+            block_hash: h("b1"),
+            root: h(root),
+        }
+    }
+
+    #[test]
+    fn a_block_attesting_a_fixed_root_is_due_for_its_inclusion_check_at_once() {
+        let mut c = fixed_b1();
+        c.observe_attestation(&h("y"), &h("vy"), &attests_b1("r1"), true);
+        assert_eq!(
+            c.next_inclusion_check(),
+            Some(InclusionCheck {
+                block: h("y"),
+                sender: h("vy"),
+                attested: h("b1"),
+                root: h("r1"),
+            })
+        );
+        assert!(c.evidence().is_empty());
+    }
+
+    #[test]
+    fn a_block_without_envelopes_or_with_a_wrong_root_gets_no_inclusion_check() {
+        let mut c = fixed_b1();
+        c.observe_attestation(&h("y"), &h("vy"), &attests_b1("r1"), false);
+        c.observe_attestation(&h("z"), &h("vz"), &attests_b1("wrong"), true);
+        assert_eq!(c.next_inclusion_check(), None);
+        assert_eq!(c.evidence().len(), 1);
+        assert!(matches!(
+            c.evidence()[0].offence,
+            Offence::Misattestation { .. }
+        ));
+    }
+
+    #[test]
+    fn each_block_is_checked_once_and_a_reset_forgets_the_checks() {
+        let mut c = fixed_b1();
+        c.observe_attestation(&h("y"), &h("vy"), &attests_b1("r1"), true);
+        c.observe_attestation(&h("y"), &h("vy"), &attests_b1("r1"), true);
+        assert!(c.next_inclusion_check().is_some());
+        assert_eq!(c.next_inclusion_check(), None);
+        c.observe_attestation(&h("w"), &h("vw"), &attests_b1("r1"), true);
+        c.reset().unwrap();
+        assert_eq!(c.next_inclusion_check(), None);
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod engine;
 pub mod evidence;
 pub mod executor;
 pub mod genesis_policy;
+pub mod inclusion;
 pub mod lag;
 pub mod linearizer;
 pub mod merge;
