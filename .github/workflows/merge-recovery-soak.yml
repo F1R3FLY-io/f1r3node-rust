@@ -2282,7 +2282,7 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --file node/Dockerfile \
-            --build-arg VERSION="$(git describe --tags --always --exclude '*/*')" \
+            --build-arg VERSION="$(git describe --tags --always)" \
             --tag "$DOCKER_IMAGE_NAME:latest" \
             --load \
             .
