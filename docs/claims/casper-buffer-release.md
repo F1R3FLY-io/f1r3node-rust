@@ -91,13 +91,18 @@ The status of each item is recorded here as the TDD cycles complete.
 6. Record the evidence in `docs/casper/cbc-evidence/` for each `cbc=mandatory` artifact and cite this claim id. **Done 2026-10-30.**
    - `scripts/cbc.sh claim-set` declared this claim on the nine `cbc=mandatory` artifacts (`docs/cbc-evidence/*.claims.json`). No artifact is discharged or waived yet.
    - The review package for items 2 to 6 is in `docs/cbc-evidence/runs/casper-buffer-release-discharge-20261030-01/`.
-7. Compare a soak of `dev` after PR #653 with the issue #24 baseline before PR #653. The comparison reports park time, release queue wait, and sustained finalization p95. PR #653 merged on 2026-10-07, so a soak pair on one base is not available. **Evidence recorded 2026-10-30. Maintainer acceptance is open.**
+7. Compare a soak of `dev` after PR #653 with the issue #24 baseline before PR #653. The comparison reports park time, release queue wait, sustained finalization p95, and the `test_load` failure count. PR #653 merged on 2026-10-07, so a soak pair on one base is not available. **Evidence recorded 2026-10-30. Maintainer acceptance is open.**
    - Baseline before PR #653: issue #24 measured 56% of received blocks parked, for 7.1 s median and 39.6 s p90. Run 37469364217 on `dev` `778cc6754` had 8 of 49 `test_load` failures.
    - After PR #653: the scheduled soak run 40806861759 tested `dev` `252a86d1d` for 72,469 s with 146 iterations and 0 failures. The aggregates use the node metrics of the 73 Docker iterations.
    - Park time: 230 of 148,605 replayed blocks parked (0.15%). The median is at most 0.1 s, the p90 is from 1 s to 2.5 s, and the maximum is at most 5 s. The mean is 0.28 s.
    - Release queue wait: 1,554 released blocks. Each one waited less than 5 ms. The mean is 44 µs.
    - Sustained finalization p95: the median across the 572 sustained-phase samples is 23.5 s, the 95th percentile is 29 s, and the maximum is 45.6 s. No block stayed unfinalized.
-   - Limit: this soak ran no `test_load` bench segments, so it gives no `test_load` failure count.
+   - `test_load`: each of the 146 iterations ran `test_deploy_throughput_and_finalization`. The 143 completed sessions had 0 failures, 73 on Docker and 70 on subprocess. The segment deadline stopped 3 subprocess sessions (exit 124), which do not count as failures.
+   - Limit: issue #24 needs at least 100 sessions on each provider. This soak has 73 and 70, so it cannot close issue #24.
+   - Interim 60-hour soak: run 40545189128 tests `master` `de6756ed3`, which contains PR #653. Checkpoint segment 5 (2026-10-29 20:00Z, 49.1 h elapsed) records 300 `test_load` sessions with 0 failures, 150 on Docker and 150 on subprocess.
+     - The finalization p95 is 23.3 s and the p99 is 25.0 s. The last-finalized-block spread is 0 in all 295 samples.
+     - All 73 active benchmark segments passed, and each segment finalized all of its deploys.
+     - The checkpoint holds no node metrics. Park time and release queue wait come from the final artifact.
 8. C5: a unit test adds two dependency-free entries at different times and runs the overflow prune with a limit of one node. The older entry is removed and the newer entry stays. The test fails on the old order. **Done 2026-10-16:** `the_overflow_prune_removes_the_oldest_dependency_free_entry_first` failed on the old order and passed after the fix. The prune now sorts oldest first and tries each hash once.
    - After the PR #752 review, the prune builds the list again when it uses up the first list. It then also finds the entries that a removal freed. `the_overflow_prune_also_removes_an_entry_that_a_removal_freed` failed on the single-list prune and passed after the change.
 9. C6: a `TestNode` spec buffers a block, sends a recovery request for it, and disposes a duplicate copy of it. A second recovery request inside the cooldown sends nothing, and the retriever keeps tracking the block. The spec fails on the old disposal. **Done 2026-10-16:** `a_duplicate_copy_of_a_buffered_block_keeps_its_refetch_cooldown` (`casper/tests/sync/refetch_cooldown_spec.rs`) failed on the old disposal: the second request sent one more message.
