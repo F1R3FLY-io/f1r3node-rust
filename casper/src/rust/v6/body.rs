@@ -4,6 +4,8 @@ use models::rust::casper::protocol::casper_message::{Event, ProcessedSystemDeplo
 use prost::bytes::Bytes;
 use prost::Message;
 
+use super::gate::{GateEntry, GateEntryProto};
+
 pub type StateHash = Bytes;
 
 const MAGIC: &[u8] = b"F1R3V6\x01";
@@ -38,6 +40,8 @@ pub struct RecordProto {
     pub failed: Vec<bool>,
     #[prost(message, repeated, tag = "10")]
     pub system_deploys: Vec<ProcessedSystemDeployProto>,
+    #[prost(message, repeated, tag = "11")]
+    pub gate: Vec<GateEntryProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -66,6 +70,7 @@ pub struct Record {
     pub aborted: bool,
     pub failed: Vec<bool>,
     pub system_deploys: Vec<ProcessedSystemDeploy>,
+    pub gate: Vec<GateEntry>,
 }
 
 impl Record {
@@ -81,6 +86,7 @@ impl Record {
             aborted: false,
             failed: vec![],
             system_deploys: vec![],
+            gate: vec![],
         }
     }
 
@@ -101,6 +107,7 @@ impl Record {
                 .cloned()
                 .map(ProcessedSystemDeploy::to_proto)
                 .collect(),
+            gate: self.gate.iter().map(GateEntry::to_proto).collect(),
         }
     }
 
@@ -123,6 +130,11 @@ impl Record {
                 .system_deploys
                 .into_iter()
                 .map(ProcessedSystemDeploy::from_proto)
+                .collect::<Result<_, _>>()?,
+            gate: proto
+                .gate
+                .into_iter()
+                .map(GateEntry::from_proto)
                 .collect::<Result<_, _>>()?,
         })
     }

@@ -227,6 +227,7 @@ impl ExecutionBackend for ConcurrentBackend {
             aborted: outcome.exhausted,
             failed: outcome.failed,
             system_deploys,
+            gate: vec![],
         })
     }
 
