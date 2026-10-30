@@ -151,7 +151,7 @@ queue_rules:
       - or:
           - author=@F1R3FLY-io/ci-maintainers
           - approved-reviews-by=@F1R3FLY-io/ci-maintainers
-          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
+          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|SECURITY\.md$|docs/security-advisory-process\.md$|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
       - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
       - check-success=Script Tests
@@ -190,7 +190,7 @@ queue_rules:
       - or:
           - author=@F1R3FLY-io/ci-maintainers
           - approved-reviews-by=@F1R3FLY-io/ci-maintainers
-          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
+          - '-files~=^(\.github/(workflows|scripts)/|\.github/CODEOWNERS$|\.mergify\.yml$|deny\.toml$|supply-chain/|\.cargo/|Cross\.toml$|rust-toolchain\.toml$|scripts/(ci|supply-chain)/|SECURITY\.md$|docs/security-advisory-process\.md$|(.*/)?(Cargo\.toml|Cargo\.lock|build\.rs|Dockerfile)$)'
       - "#changes-requested-reviews-by=0"
       - check-success=Static Checks
       - check-success=Script Tests
