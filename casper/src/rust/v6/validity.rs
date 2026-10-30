@@ -13,13 +13,7 @@ pub struct Limits {
 }
 
 impl Default for Limits {
-    fn default() -> Self {
-        Limits {
-            demand_cap: 50_000_000_000,
-            max_envelopes: 256,
-            max_records: 64,
-        }
-    }
+    fn default() -> Self { super::resource_policy::ShardResourcePolicy::default().limits() }
 }
 
 pub fn check_structure(
