@@ -255,7 +255,7 @@ mod tests {
     fn new_store() -> KeyValueTypedStoreImpl<String, i64> {
         let dir = tempfile::tempdir().unwrap();
         let path = Box::leak(Box::new(dir)).path();
-        let mut builder = EnvOpenOptions::new();
+        let mut builder = EnvOpenOptions::new().read_txn_without_tls();
         builder.map_size(10 * 1024 * 1024);
         builder.max_dbs(1);
         let env = Arc::new(unsafe { builder.open(path).unwrap() });

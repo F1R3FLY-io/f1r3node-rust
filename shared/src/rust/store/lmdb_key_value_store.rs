@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use heed::types::SerdeBincode;
-use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
+use heed::{Database, Env, Error as HeedError, MdbError, PutFlags, WithoutTls};
 
 use super::key_value_store::{KeyValueStore, KvStoreError};
 use crate::rust::ByteBuffer;
@@ -17,7 +17,7 @@ use crate::rust::ByteBuffer;
 // own single-writer lock inside `env.write_txn()`. The Mutex was therefore
 // unnecessary and is removed so reads proceed in parallel.
 pub struct LmdbKeyValueStore {
-    pub env: Arc<Env>,
+    pub env: Arc<Env<WithoutTls>>,
     pub db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
 }
 
@@ -243,7 +243,7 @@ pub fn batched_put(writes: Vec<StoreWrite<'_>>) -> Result<(), KvStoreError> {
 
 impl LmdbKeyValueStore {
     pub fn new(
-        env: Arc<Env>,
+        env: Arc<Env<WithoutTls>>,
         db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
     ) -> Self {
         LmdbKeyValueStore { env, db }
@@ -267,19 +267,19 @@ mod batched_put_tests {
 
     use super::*;
 
-    pub(super) fn open_env() -> Arc<Env> {
+    pub(super) fn open_env() -> Arc<Env<WithoutTls>> {
         let dir = tempfile::tempdir().unwrap();
         // Leak the tempdir path so the Env (and its mmap) stay valid for the
         // lifetime of the test; each test opens its own directory.
         let path = Box::leak(Box::new(dir)).path();
-        let mut builder = EnvOpenOptions::new();
+        let mut builder = EnvOpenOptions::new().read_txn_without_tls();
         builder.map_size(10 * 1024 * 1024);
         builder.max_dbs(4);
         let env = unsafe { builder.open(path).unwrap() };
         Arc::new(env)
     }
 
-    pub(super) fn open_store(env: &Arc<Env>, name: &str) -> LmdbKeyValueStore {
+    pub(super) fn open_store(env: &Arc<Env<WithoutTls>>, name: &str) -> LmdbKeyValueStore {
         let mut wtxn = env.write_txn().unwrap();
         let db = env.create_database(&mut wtxn, Some(name)).unwrap();
         wtxn.commit().unwrap();

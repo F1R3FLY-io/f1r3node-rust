@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use heed::types::SerdeBincode;
-use heed::{Database, Env};
+use heed::{Database, Env, WithoutTls};
 use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 use tokio::sync::Mutex;
@@ -19,13 +19,13 @@ pub struct LmdbStoreManager {
     dir_path: PathBuf,
     max_env_size: usize,
     max_dbs: u32,
-    env: Arc<Mutex<Option<Arc<Env>>>>,
+    env: Arc<Mutex<Option<Arc<Env<WithoutTls>>>>>,
     dbs: Arc<Mutex<HashMap<String, DbEnv>>>,
 }
 
 #[derive(Clone)]
 struct DbEnv {
-    env: Arc<Env>,
+    env: Arc<Env<WithoutTls>>,
     db: Database<SerdeBincode<Vec<u8>>, SerdeBincode<Vec<u8>>>,
 }
 

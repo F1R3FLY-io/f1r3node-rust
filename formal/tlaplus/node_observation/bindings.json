@@ -364,7 +364,7 @@
           "tests": [
             {
               "source": "shared/tests/soak_snapshot.rs",
-              "name": "stores_in_one_environment_share_one_transaction_and_a_second_same_thread_reader_fails"
+              "name": "stores_in_one_environment_share_one_transaction_and_allow_independent_reads"
             },
             {
               "source": "shared/tests/soak_snapshot.rs",
