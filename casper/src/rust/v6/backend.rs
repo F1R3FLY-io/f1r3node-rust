@@ -73,6 +73,7 @@ mod tests {
                 extra_bytes: Bytes::new(),
                 applied_from_scope: vec![],
                 merge_base: Bytes::new(),
+                v6: None,
             },
             justifications: vec![],
             sender: vec![0xAAu8; 33].into(),

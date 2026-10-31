@@ -13,13 +13,10 @@ use crate::helper::v6_network::{
     broadcast, cited_records, engine, propose, propose_and_broadcast, tick_until_idle,
     wait_for_finality, wake_until,
 };
-use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+use crate::util::genesis_builder::GenesisContext;
 
 async fn genesis() -> GenesisContext {
-    GenesisBuilder::new()
-        .build_genesis_with_parameters(None)
-        .await
-        .unwrap()
+    crate::helper::v6_network::v6_genesis().await
 }
 
 struct Deploys {
@@ -152,7 +149,7 @@ async fn wait_until<F: Fn(&TestNode) -> bool>(nodes: &[TestNode], done: F) -> bo
 async fn driven_engines_advance_only_when_the_test_ticks_them() {
     let genesis = genesis().await;
     let mut deploys = Deploys::new(&genesis);
-    let mut nodes = TestNode::create_v6_network_driven(genesis, 3)
+    let mut nodes = TestNode::create_v6_network_driven(genesis, 3, None)
         .await
         .unwrap();
 

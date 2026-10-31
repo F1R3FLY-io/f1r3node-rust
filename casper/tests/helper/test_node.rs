@@ -83,6 +83,7 @@ pub struct V6TestConfig {
     pub start_engine: bool,
     pub max_user_deploys_per_block: Option<u32>,
     pub retained_records: usize,
+    pub lag_threshold: Option<u64>,
 }
 
 impl Default for V6TestConfig {
@@ -91,6 +92,7 @@ impl Default for V6TestConfig {
             start_engine: true,
             max_user_deploys_per_block: None,
             retained_records: casper::rust::casper::V6_RETAINED_RECORDS_DEFAULT,
+            lag_threshold: None,
         }
     }
 }
@@ -109,8 +111,14 @@ fn v6_engine_for_test(
         block_store,
         block_dag_storage,
         deploy_storage,
+        config
+            .lag_threshold
+            .unwrap_or_else(casper::rust::casper_conf::default_v6_execution_lag_threshold),
+        casper::rust::casper_conf::default_v6_fallback_distance(),
+        casper::rust::v6::resource_policy::ShardResourcePolicy::default(),
         config.retained_records,
-    );
+    )
+    .expect("the v6 engine opens its executor state");
     if config.start_engine {
         engine.start();
     }
@@ -897,9 +905,11 @@ impl TestNode {
     pub async fn create_v6_network_driven(
         genesis: GenesisContext,
         network_size: usize,
+        lag_threshold: Option<u64>,
     ) -> Result<Vec<TestNode>, CasperError> {
         Self::create_v6_network_with(genesis, network_size, V6TestConfig {
             start_engine: false,
+            lag_threshold,
             ..V6TestConfig::default()
         })
         .await
@@ -1285,7 +1295,7 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
-            casper_version: 1,
+            casper_version: genesis.header.version,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
             epoch_length: 10000,

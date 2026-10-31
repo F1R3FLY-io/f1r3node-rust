@@ -5,7 +5,7 @@ use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::blocks::proposer::proposer::DeploySelection;
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::v6::block_record::BlockRecord;
-use casper::rust::v6::body::V6Body;
+use casper::rust::v6::body::V6Records;
 use casper::rust::v6::V6Engine;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
@@ -13,6 +13,8 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
+use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
+use casper::rust::v6::resource_policy::PROTOCOL_V6;
 
 pub fn engine(node: &TestNode) -> Arc<V6Engine> {
     node.casper
@@ -99,8 +101,10 @@ pub fn cited_records(node: &TestNode, block: &BlockHash) -> Vec<BlockRecord> {
         .get(block)
         .expect("block store read")
         .expect("a stored block");
-    V6Body::decode(&message.body.extra_bytes)
-        .expect("a readable v6 body")
+    message
+        .body
+        .v6
+        .as_ref()
         .map(|body| {
             body.decode_records::<BlockRecord>()
                 .expect("readable records")
@@ -122,4 +126,13 @@ pub async fn wait_for_finality(nodes: &[TestNode], rounds: usize) -> bool {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     false
+}
+
+pub async fn v6_genesis() -> GenesisContext {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    parameters.2.version = PROTOCOL_V6;
+    GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .expect("a protocol-6 genesis")
 }

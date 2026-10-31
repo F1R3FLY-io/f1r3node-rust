@@ -8,3 +8,4 @@ pub mod gated_executor_spec;
 pub mod pos_v6_spec;
 pub mod region_spec;
 pub mod offer_screen_spec;
+pub mod exit_spec;
