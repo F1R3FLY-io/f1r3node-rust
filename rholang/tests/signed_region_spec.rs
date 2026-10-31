@@ -6,10 +6,11 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GDeployerId, GUnforgeable, Par};
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
-use rholang::rust::interpreter::accounting::rev_stack::WalletOwner;
+use rholang::rust::interpreter::accounting::rev_stack::{RevStacks, WalletOwner};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNumber, RhoString, RhoTuple2};
 use rholang::rust::interpreter::system_processes::DeployData;
 use rholang::rust::interpreter::test_utils::resources::with_runtime;
 
@@ -137,11 +138,57 @@ async fn a_stored_signed_term_runs_only_for_its_signer() {
     .await;
 }
 
+fn stacks(runtime: &RhoRuntimeImpl) -> RevStacks {
+    RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
+}
+
+async fn take(runtime: &RhoRuntimeImpl, channel: &str) -> Vec<Par> {
+    runtime
+        .get_data(&RhoString::create_par(channel.to_string()))
+        .await
+        .into_iter()
+        .flat_map(|d| d.a.pars)
+        .collect()
+}
+
 #[tokio::test]
-async fn a_token_stack_is_refused_until_q23_is_decided() {
+async fn each_stack_cell_moves_one_unit_from_the_writer_to_the_wallet_at_its_signature() {
     with_runtime("signed-region-", |runtime| async move {
-        let errors = run_as(&runtime, &ALICE, "new s in { s :: () }").await;
-        assert!(refused(&errors, "Q-23"), "{errors:?}");
+        stacks(&runtime).deposit(&owner(&ALICE), 1_000).unwrap();
+        let source = r#"new w(`rho:rev:wallet`), slot in {
+            slot :: slot :: slot :: () | w!("balance", *slot, "slot")
+        }"#;
+        let errors = run_as(&runtime, &ALICE, source).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        let reply = take(&runtime, "slot").await;
+        let (ok, balance) = RhoTuple2::unapply(&reply[0]).unwrap();
+        assert_eq!(RhoBoolean::unapply(&ok), Some(true));
+        assert_eq!(RhoNumber::unapply(&balance), Some(3));
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 997);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stack_to_the_writers_own_signature_conserves_the_writers_balance() {
+    with_runtime("signed-region-", |runtime| async move {
+        stacks(&runtime).deposit(&owner(&ALICE), 10).unwrap();
+        let source = r#"new d(`rho:system:deployerId`) in { d :: d :: () }"#;
+        assert!(run_as(&runtime, &ALICE, source).await.is_empty());
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 10);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_stack_the_writer_cannot_pay_moves_nothing() {
+    with_runtime("signed-region-", |runtime| async move {
+        stacks(&runtime).deposit(&owner(&ALICE), 1).unwrap();
+        let errors = run_as(&runtime, &ALICE, "new s, t in { s :: t :: () }").await;
+        assert!(refused(&errors, "cannot be paid"), "{errors:?}");
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1);
+        let errors = run_as(&runtime, &ALICE, "{% Nil %}[bob] | bob :: ()").await;
+        assert!(!errors.is_empty());
     })
     .await;
 }

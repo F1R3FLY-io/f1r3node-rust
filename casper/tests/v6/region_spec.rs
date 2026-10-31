@@ -172,3 +172,63 @@ async fn the_gate_refuses_a_signed_term_that_names_another_signature() {
     assert!(played.gate.entries[1].admitted());
     assert_eq!(played.merged, vec![false, true]);
 }
+
+#[tokio::test]
+async fn a_stack_literal_moves_one_unit_per_cell_and_replays() {
+    let (alice, proposer) = (party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let stack = r#"new d(`rho:system:deployerId`), slot in { slot :: slot :: d :: () }"#;
+    let played = executor
+        .execute(
+            &pre,
+            vec![envelope(stack, 1, &alice, 1_000, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block executes");
+
+    assert_eq!(played.gate.admitted(), vec![true]);
+    assert!(!played.processed[0].is_failed);
+    assert_eq!(
+        balance(&rm, &played.runs[0].post_root, &alice).await,
+        100_000 - 2
+    );
+    assert_eq!(played.merged, vec![true]);
+    assert!(played.settlement.is_balanced());
+
+    let again = executor
+        .replay(
+            &pre,
+            played.processed.clone(),
+            &played.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block replays");
+    assert_eq!(again.settled_root, played.settled_root);
+}
+
+#[tokio::test]
+#[ignore = "the v6 merge drops native REV writes of a run (reported 2026-10-30)"]
+async fn native_rev_writes_of_a_run_survive_the_merge() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 10_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let address = VaultAddress::from_public_key(&bob.pk).unwrap().to_base58();
+    let term = format!(
+        r#"new w(`rho:rev:wallet`), deployerId(`rho:system:deployerId`) in {{
+             w!("transfer", (*deployerId, "{address}", 6000), "out")
+           }}"#
+    );
+    let played = executor
+        .execute(
+            &pre,
+            vec![envelope(&term, 1, &alice, 1_000, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .unwrap();
+    assert_eq!(balance(&rm, &played.runs[0].post_root, &bob).await, 6_000);
+    assert_eq!(balance(&rm, &played.settled_root, &bob).await, 6_000);
+}

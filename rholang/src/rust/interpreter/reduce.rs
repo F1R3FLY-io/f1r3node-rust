@@ -13,8 +13,8 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, CostSignature, CostSignedTerm, EAnd, EDiv, EEq, EGt, EGte, EList, ELt,
-    ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
+    BindPattern, Bundle, CostSignature, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
     EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If,
     KeyValuePair, ListParWithRandom, Match, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
     TaggedContinuation, Var,
@@ -51,7 +51,8 @@ use super::accounting::costs::{
     var_eval_cost,
 };
 use super::accounting::rev_stack::region::signature_owner;
-use super::accounting::rev_stack::WalletOwner;
+use super::accounting::rev_stack::reserve::reservation;
+use super::accounting::rev_stack::{RevAmount, RevStacks, WalletOwner};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -317,11 +318,8 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        if !par.cost_stacks.is_empty() {
-            return Err(InterpreterError::ReduceError(
-                "token stacks cannot run yet: the amount of a stack cell is not decided (Q-23)"
-                    .to_string(),
-            ));
+        for stack in &par.cost_stacks {
+            self.eval_cost_stack(stack, env).await?;
         }
         let terms: Vec<GeneratedMessage> = vec![
             par.sends
@@ -1687,6 +1685,52 @@ impl DebruijnInterpreter {
         } else {
             Err(refused(format!("{owner:?}")))
         }
+    }
+
+    async fn eval_cost_stack(
+        &self,
+        stack: &CostStack,
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!("a token stack cannot be paid: {reason}"))
+        };
+        let writer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
+            .map_err(|e| refused(e.to_string()))?;
+        let mut payees: Vec<(WalletOwner, RevAmount)> = Vec::new();
+        for cell in &stack.cells {
+            let signature = self
+                .substitute
+                .substitute_cost_signature(cell.clone(), 0, env)?;
+            let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+            match payees.iter_mut().find(|(payee, _)| *payee == owner) {
+                Some((_, units)) => *units += 1,
+                None => payees.push((owner, 1)),
+            }
+        }
+        let store = self
+            .space
+            .hot_store()
+            .ok_or_else(|| refused("the native REV layer is unavailable".to_string()))?;
+        let stacks = RevStacks::over_hot_store(store);
+        let held = reservation(stacks.cells(), &writer)
+            .map_err(|e| refused(e.to_string()))?
+            .held;
+        let total: RevAmount = payees.iter().map(|(_, units)| units).sum();
+        let balance = stacks
+            .balance(&writer)
+            .map_err(|e| refused(e.to_string()))?;
+        if balance < total.saturating_add(held) {
+            return Err(refused(format!(
+                "the writer's wallet holds {balance}, of which {held} is committed, and the stack needs {total}"
+            )));
+        }
+        for (payee, units) in payees {
+            stacks
+                .transfer_keeping(&writer, &payee, units, held)
+                .map_err(|e| refused(e.to_string()))?;
+        }
+        Ok(())
     }
 
     async fn eval_cost_signed_term(
