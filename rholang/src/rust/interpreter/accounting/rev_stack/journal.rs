@@ -22,6 +22,16 @@ pub struct JournalEntry {
     pub amount: RevAmount,
 }
 
+impl JournalEntry {
+    pub fn canonical_key(&self) -> (Vec<u8>, Vec<u8>, RevAmount) {
+        (
+            self.from.canonical_bytes(),
+            self.to.canonical_bytes(),
+            self.amount,
+        )
+    }
+}
+
 fn channel(domain: &[u8]) -> Par {
     Par::default().with_unforgeables(vec![GUnforgeable {
         unf_instance: Some(UnfInstance::GPrivateBody(GPrivate {
@@ -70,10 +80,8 @@ pub fn journal_open(store: &dyn CellStore) -> bool { !store.get_data(&marker_cha
 
 pub fn record(store: &dyn CellStore, entry: &JournalEntry) -> Result<(), RevStackError> {
     let ch = journal_channel();
-    let seq = store.get_data(&ch).len() as i64;
     let pars = vec![RhoList::create_par(vec![
         RhoString::create_par(ENTRY_TAG.into()),
-        RhoNumber::create_par(seq),
         RhoByteArray::create_par(entry.from.canonical_bytes()),
         RhoByteArray::create_par(entry.to.canonical_bytes()),
         RhoNumber::create_par(entry.amount as i64),
@@ -90,13 +98,12 @@ pub fn entries(store: &dyn CellStore) -> Result<Vec<JournalEntry>, RevStackError
             return Err(malformed());
         };
         let items = RhoList::unapply(par).ok_or_else(malformed)?;
-        let [tag, seq, from, to, amount] = items.as_slice() else {
+        let [tag, from, to, amount] = items.as_slice() else {
             return Err(malformed());
         };
         if RhoString::unapply(tag).as_deref() != Some(ENTRY_TAG) {
             return Err(malformed());
         }
-        let seq = RhoNumber::unapply(seq).ok_or_else(malformed)?;
         let owner = |p: &Par| {
             RhoByteArray::unapply(p)
                 .and_then(|b| WalletOwner::from_canonical_bytes(&b))
@@ -105,17 +112,14 @@ pub fn entries(store: &dyn CellStore) -> Result<Vec<JournalEntry>, RevStackError
         let amount = RhoNumber::unapply(amount)
             .filter(|a| *a > 0)
             .ok_or_else(malformed)?;
-        out.push((
-            seq,
-            JournalEntry {
-                from: owner(from)?,
-                to: owner(to)?,
-                amount: amount as RevAmount,
-            },
-        ));
+        out.push(JournalEntry {
+            from: owner(from)?,
+            to: owner(to)?,
+            amount: amount as RevAmount,
+        });
     }
-    out.sort_by_key(|(seq, _)| *seq);
-    Ok(out.into_iter().map(|(_, e)| e).collect())
+    out.sort_by_cached_key(JournalEntry::canonical_key);
+    Ok(out)
 }
 
 pub fn net(

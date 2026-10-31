@@ -36,7 +36,7 @@ impl Boxcar {
             Some(size) => {
                 let size = size.get();
                 let mut out = vec![size; (phlo / size) as usize];
-                if phlo % size != 0 {
+                if !phlo.is_multiple_of(size) {
                     out.push(phlo % size);
                 }
                 out
@@ -191,7 +191,10 @@ pub fn apply(
         }
     }
     for t in &settlement.transfers {
-        stacks.transfer(&t.from, &t.to, t.amount).map_err(native)?;
+        stacks.deposit(&t.to, t.amount).map_err(native)?;
+    }
+    for t in &settlement.transfers {
+        stacks.spend(&t.from, t.amount).map_err(native)?;
     }
     stacks
         .deposit(proposer, settlement.proposer_credit)

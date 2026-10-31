@@ -216,3 +216,41 @@ async fn an_open_journal_holds_transfers_out_of_the_state() {
     assert!(!journal_open(&cells(&runtime)));
     let _ = before;
 }
+
+#[tokio::test]
+async fn a_journal_closes_to_the_same_entries_in_any_recording_order() {
+    use rholang::rust::interpreter::accounting::rev_stack::journal::{
+        close_journal, open_journal, record, JournalEntry,
+    };
+    let (play, replay) = runtimes().await;
+    let (alice, bob, carol) = (key(), key(), key());
+    let moves = [
+        JournalEntry {
+            from: alice.owner.clone(),
+            to: bob.owner.clone(),
+            amount: 300,
+        },
+        JournalEntry {
+            from: alice.owner.clone(),
+            to: carol.owner.clone(),
+            amount: 200,
+        },
+        JournalEntry {
+            from: alice.owner.clone(),
+            to: bob.owner.clone(),
+            amount: 100,
+        },
+    ];
+    open_journal(&cells(&play)).unwrap();
+    for m in &moves {
+        record(&cells(&play), m).unwrap();
+    }
+    open_journal(&cells(&replay)).unwrap();
+    for m in moves.iter().rev() {
+        record(&cells(&replay), m).unwrap();
+    }
+    let played = close_journal(&cells(&play)).unwrap();
+    let replayed = close_journal(&cells(&replay)).unwrap();
+    assert_eq!(played.len(), 3);
+    assert_eq!(played, replayed);
+}
