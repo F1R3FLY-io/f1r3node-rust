@@ -6,9 +6,9 @@ use models::rust::block::state_hash::StateHash;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
 use rholang::rust::interpreter::accounting::rev_stack::genesis::{genesis_supply, legacy_bonds};
-use rholang::rust::interpreter::accounting::rev_stack::journal::JournalEntry;
+use rholang::rust::interpreter::accounting::rev_stack::journal::{JournalEntry, Source};
 use rholang::rust::interpreter::accounting::rev_stack::{
-    wallet_channel_id, CellStore, HotStoreCells, RevAmount, RevStacks, WalletOwner,
+    wallet_channel_id, CellStore, HotStoreCells, RevAmount, RevStacks, TokenKind, WalletOwner,
 };
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -59,7 +59,8 @@ pub struct EnvelopeCharge {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeTransfer {
     pub envelope_sig: Bytes,
-    pub from: WalletOwner,
+    pub kind: TokenKind,
+    pub from: Source,
     pub to: WalletOwner,
     pub amount: RevAmount,
 }
@@ -191,7 +192,18 @@ pub fn apply(
         }
     }
     for t in &settlement.transfers {
-        stacks.transfer(&t.from, &t.to, t.amount).map_err(native)?;
+        let wallets = stacks.of_kind(&t.kind);
+        match &t.from {
+            Source::Wallet(from) => {
+                wallets.transfer(from, &t.to, t.amount).map_err(native)?;
+            }
+            Source::Mint if t.kind.is_rev() => {
+                return Err(CasperError::RuntimeError(
+                    "a settlement cannot mint REV".into(),
+                ))
+            }
+            Source::Mint => wallets.deposit(&t.to, t.amount).map_err(native)?,
+        }
     }
     stacks
         .deposit(proposer, settlement.proposer_credit)
@@ -229,14 +241,26 @@ pub async fn settle_block(
         CasperError::RuntimeError("the runtime's space has no native REV layer".into())
     })?;
     let cells: Arc<dyn CellStore> = Arc::new(HotStoreCells(store));
-    let mut touched: Vec<WalletOwner> = owners.values().cloned().collect();
-    touched.push(proposer.clone());
-    touched.push(compute_wallet_owner());
+    let mut touched: BTreeMap<TokenKind, Vec<WalletOwner>> = BTreeMap::new();
+    let rev = touched.entry(TokenKind::rev()).or_default();
+    rev.extend(owners.values().cloned());
+    rev.push(proposer.clone());
+    rev.push(compute_wallet_owner());
+    let mut minted: BTreeMap<TokenKind, u128> = BTreeMap::new();
     for t in &settlement.transfers {
-        touched.push(t.from.clone());
-        touched.push(t.to.clone());
+        let wallets = touched.entry(t.kind.clone()).or_default();
+        wallets.push(t.to.clone());
+        match &t.from {
+            Source::Wallet(from) => wallets.push(from.clone()),
+            Source::Mint => *minted.entry(t.kind.clone()).or_default() += t.amount as u128,
+        }
     }
-    let before = held_by(cells.clone(), &touched)?;
+    if minted.contains_key(&TokenKind::rev()) {
+        return Err(CasperError::RuntimeError(
+            "a settlement cannot mint REV".into(),
+        ));
+    }
+    let before = held_by_kind(cells.clone(), &touched)?;
     let writes = settlement.debited() > 0 || !settlement.transfers.is_empty();
     if writes {
         apply(cells.clone(), &settlement, &owners, proposer, boxcar)?;
@@ -249,11 +273,17 @@ pub async fn settle_block(
             ))
         }
     }
-    let after = held_by(cells, &touched)?;
-    if before != after {
-        return Err(CasperError::RuntimeError(format!(
-            "settlement broke conservation: the settled wallets held {before} and now hold {after}"
-        )));
+    let after = held_by_kind(cells, &touched)?;
+    for (kind, held) in &before {
+        let expected = held + minted.get(kind).copied().unwrap_or(0);
+        let now = after.get(kind).copied().unwrap_or(0);
+        if now != expected {
+            let what = if kind.is_rev() { "REV" } else { "a token kind" };
+            return Err(CasperError::RuntimeError(format!(
+                "settlement broke conservation of {what}: the settled wallets held {held}, minted {}, and now hold {now}",
+                expected - held
+            )));
+        }
     }
     if !writes {
         return Ok((settlement, mid_root.clone()));
@@ -280,6 +310,7 @@ fn kept_transfers(
         .flat_map(|((e, journal), _)| {
             journal.iter().map(|j| NativeTransfer {
                 envelope_sig: e.envelope_sig.clone(),
+                kind: j.kind.clone(),
                 from: j.from.clone(),
                 to: j.to.clone(),
                 amount: j.amount,
@@ -313,8 +344,26 @@ fn released(
         .collect()
 }
 
+fn held_by_kind(
+    store: Arc<dyn CellStore>,
+    touched: &BTreeMap<TokenKind, Vec<WalletOwner>>,
+) -> Result<BTreeMap<TokenKind, u128>, CasperError> {
+    touched
+        .iter()
+        .map(|(kind, owners)| Ok((kind.clone(), held_of(store.clone(), kind, owners)?)))
+        .collect()
+}
+
 fn held_by(store: Arc<dyn CellStore>, owners: &[WalletOwner]) -> Result<u128, CasperError> {
-    let stacks = RevStacks::new(store);
+    held_of(store, &TokenKind::rev(), owners)
+}
+
+fn held_of(
+    store: Arc<dyn CellStore>,
+    kind: &TokenKind,
+    owners: &[WalletOwner],
+) -> Result<u128, CasperError> {
+    let stacks = RevStacks::new(store).of_kind(kind);
     let mut seen = std::collections::BTreeSet::new();
     let mut total: u128 = 0;
     for owner in owners {
@@ -419,6 +468,10 @@ pub struct TransferProto {
     pub to: Bytes,
     #[prost(uint64, tag = "4")]
     pub amount: u64,
+    #[prost(bytes = "bytes", tag = "5")]
+    pub kind: Bytes,
+    #[prost(bool, tag = "6")]
+    pub mint: bool,
 }
 
 impl Settlement {
@@ -453,9 +506,18 @@ impl Settlement {
                 .iter()
                 .map(|t| TransferProto {
                     envelope_id: t.envelope_sig.clone(),
-                    from: Bytes::from(t.from.canonical_bytes()),
+                    from: match &t.from {
+                        Source::Wallet(from) => Bytes::from(from.canonical_bytes()),
+                        Source::Mint => Bytes::new(),
+                    },
                     to: Bytes::from(t.to.canonical_bytes()),
                     amount: t.amount,
+                    kind: if t.kind.is_rev() {
+                        Bytes::new()
+                    } else {
+                        Bytes::copy_from_slice(t.kind.name())
+                    },
+                    mint: t.from == Source::Mint,
                 })
                 .collect(),
         }
@@ -510,9 +572,22 @@ impl Settlement {
                 if t.amount == 0 {
                     return Err("a recorded transfer moves nothing".to_string());
                 }
+                let kind = if t.kind.is_empty() {
+                    TokenKind::rev()
+                } else {
+                    TokenKind::from_name(t.kind.to_vec())
+                        .ok_or_else(|| "a recorded transfer names no kind".to_string())?
+                };
+                let from = match (t.mint, kind.is_rev()) {
+                    (true, true) => return Err("a recorded transfer mints REV".to_string()),
+                    (true, false) if t.from.is_empty() => Source::Mint,
+                    (true, false) => return Err("a recorded mint names a payer".to_string()),
+                    (false, _) => Source::Wallet(owner(&t.from)?),
+                };
                 Ok(NativeTransfer {
                     envelope_sig: t.envelope_id.clone(),
-                    from: owner(&t.from)?,
+                    kind,
+                    from,
                     to: owner(&t.to)?,
                     amount: t.amount,
                 })
@@ -563,12 +638,22 @@ mod proto_tests {
             proposer_credit: 9,
             compute_credit: 42,
             released: BTreeMap::from([(vec![1; 32], 61)]),
-            transfers: vec![NativeTransfer {
-                envelope_sig: Bytes::from_static(b"a"),
-                from: WalletOwner::Unforgeable(vec![5; 32]),
-                to: WalletOwner::Unforgeable(vec![6; 32]),
-                amount: 7,
-            }],
+            transfers: vec![
+                NativeTransfer {
+                    envelope_sig: Bytes::from_static(b"a"),
+                    kind: TokenKind::rev(),
+                    from: Source::Wallet(WalletOwner::Unforgeable(vec![5; 32])),
+                    to: WalletOwner::Unforgeable(vec![6; 32]),
+                    amount: 7,
+                },
+                NativeTransfer {
+                    envelope_sig: Bytes::from_static(b"b"),
+                    kind: TokenKind::from_name(vec![4; 32]).unwrap(),
+                    from: Source::Mint,
+                    to: WalletOwner::Unforgeable(vec![6; 32]),
+                    amount: 3,
+                },
+            ],
         }
     }
 
@@ -582,6 +667,23 @@ mod proto_tests {
         assert!(Settlement::from_proto(bad).is_err());
         let mut bad = s.to_proto();
         bad.compute_credit += 1;
+        assert!(Settlement::from_proto(bad).is_err());
+    }
+
+    #[test]
+    fn a_recorded_settlement_cannot_mint_rev() {
+        let mut bad = settlement().to_proto();
+        bad.transfers[1].kind = Bytes::new();
+        assert_eq!(
+            Settlement::from_proto(bad),
+            Err("a recorded transfer mints REV".to_string())
+        );
+        let mut bad = settlement().to_proto();
+        bad.transfers[1].kind = Bytes::from(TokenKind::rev().name().to_vec());
+        assert!(Settlement::from_proto(bad).is_err());
+        let mut bad = settlement().to_proto();
+        bad.transfers[1].from =
+            Bytes::from(WalletOwner::Unforgeable(vec![5; 32]).canonical_bytes());
         assert!(Settlement::from_proto(bad).is_err());
     }
 }

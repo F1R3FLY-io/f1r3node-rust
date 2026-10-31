@@ -9,7 +9,7 @@ use rspace_plus_plus::rspace::hot_store::HotStore;
 
 use super::channel::wallet_channel;
 use super::journal::{journal_open, journaled_transfer, visible_balance, JournalEntry};
-use super::kind::{kind_owner, stack_kind};
+use super::kind::{stack_kind, TokenKind};
 use super::ops::RevStacks;
 use super::owner::WalletOwner;
 use super::region::admissible;
@@ -37,16 +37,23 @@ pub fn handle(
             let owner = owner_of(arg)?;
             let balance = stacks.balance(&owner).map_err(|e| e.to_string())?;
             let reserved = reservation(stacks.cells(), &owner).map_err(|e| e.to_string())?;
-            let shown = visible_balance(stacks.cells(), &owner, balance, reserved.visible)
-                .map_err(|e| e.to_string())?;
+            let shown = visible_balance(
+                stacks.cells(),
+                stacks.kind(),
+                &owner,
+                balance,
+                reserved.visible,
+            )
+            .map_err(|e| e.to_string())?;
             Ok(RhoNumber::create_par(shown as i64))
         }),
         "kindBalance" => with_stacks(store, |stacks| {
             let (kind, owner) = kind_args(arg)?;
-            let balance = stacks
-                .balance(&kind_owner(&kind, &owner))
+            let wallets = stacks.of_kind(&kind);
+            let balance = wallets.balance(&owner).map_err(|e| e.to_string())?;
+            let shown = visible_balance(wallets.cells(), &kind, &owner, balance, 0)
                 .map_err(|e| e.to_string())?;
-            Ok(RhoNumber::create_par(balance as i64))
+            Ok(RhoNumber::create_par(shown as i64))
         }),
         "transfer" => with_stacks(store, |stacks| {
             let (from, to, amount) = transfer_args(arg)?;
@@ -62,7 +69,7 @@ pub fn handle(
                     stacks.cells(),
                     balance,
                     held,
-                    JournalEntry { from, to, amount },
+                    JournalEntry::transfer(from, to, amount),
                 )
                 .map(|_| Par::default())
                 .map_err(transfer_error);
@@ -137,7 +144,7 @@ fn transfer_args(arg: &Par) -> Result<(WalletOwner, WalletOwner, RevAmount), Str
     Ok((from, to, amount as RevAmount))
 }
 
-fn kind_args(arg: &Par) -> Result<(Vec<u8>, WalletOwner), String> {
+fn kind_args(arg: &Par) -> Result<(TokenKind, WalletOwner), String> {
     let usage = "kindBalance expects (kind, owner)";
     let Some(ExprInstance::ETupleBody(tuple)) = single_expr(arg).and_then(|e| e.expr_instance)
     else {

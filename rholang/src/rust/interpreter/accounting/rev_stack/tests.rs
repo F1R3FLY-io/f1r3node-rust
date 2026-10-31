@@ -410,3 +410,80 @@ fn balance_results_parse() {
     );
     assert!(super::native::parse_balance(&RhoNumber::create_par(1)).is_err());
 }
+
+#[test]
+fn kinds_are_located_stacks_apart_from_rev() {
+    let (_, rev) = mem_stacks();
+    let kind = TokenKind::from_name(vec![3; 32]).unwrap();
+    let tokens = rev.of_kind(&kind);
+    let owner = unforgeable(&[1; 32]);
+    let other = unforgeable(&[2; 32]);
+    tokens.deposit(&owner, 5).unwrap();
+    rev.deposit(&owner, 100).unwrap();
+    tokens.transfer(&owner, &other, 2).unwrap();
+    assert_eq!(tokens.balance(&owner).unwrap(), 3);
+    assert_eq!(tokens.balance(&other).unwrap(), 2);
+    assert_eq!(rev.balance(&owner).unwrap(), 100);
+    assert_eq!(rev.balance(&other).unwrap(), 0);
+    assert!(tokens.spend(&other, 3).is_err());
+}
+
+#[test]
+fn the_journal_marks_mints_and_keeps_kinds_apart() {
+    use super::journal::{
+        close_journal, entries, journaled_transfer, journaled_transfers, net, open_journal, record,
+        JournalEntry, Source,
+    };
+    let (store, _) = mem_stacks();
+    let cells: &dyn CellStore = store.as_ref();
+    let kind = TokenKind::from_name(vec![3; 32]).unwrap();
+    let (alice, bob) = (unforgeable(&[1; 32]), unforgeable(&[2; 32]));
+    open_journal(cells).unwrap();
+    let mint = JournalEntry::mint(kind.clone(), alice.clone(), 4).unwrap();
+    assert!(mint.is_mint());
+    record(cells, &mint).unwrap();
+    journaled_transfers(cells, 0, 0, &kind, &alice, &[(bob.clone(), 3)]).unwrap();
+    assert!(journaled_transfers(cells, 0, 0, &kind, &alice, &[(bob.clone(), 2)]).is_err());
+    assert!(journaled_transfer(
+        cells,
+        0,
+        0,
+        JournalEntry::transfer(alice.clone(), bob.clone(), 1)
+    )
+    .is_err());
+    assert_eq!(net(cells, &kind, &alice).unwrap(), (3, 4));
+    assert_eq!(net(cells, &TokenKind::rev(), &alice).unwrap(), (0, 0));
+    assert_eq!(
+        entries(cells).unwrap(),
+        vec![
+            mint.clone(),
+            JournalEntry::transfer_of(kind.clone(), alice.clone(), bob.clone(), 3)
+        ]
+    );
+    assert_eq!(close_journal(cells).unwrap()[0].from, Source::Mint);
+}
+
+#[test]
+fn no_journal_entry_can_mint_rev() {
+    use super::journal::{entries, journaled_transfer, open_journal, record, JournalEntry, Source};
+    let (store, _) = mem_stacks();
+    let cells: &dyn CellStore = store.as_ref();
+    let alice = unforgeable(&[1; 32]);
+    open_journal(cells).unwrap();
+    assert_eq!(
+        JournalEntry::mint(TokenKind::rev(), alice.clone(), 1),
+        Err(RevStackError::RevMint)
+    );
+    let forged = JournalEntry {
+        kind: TokenKind::rev(),
+        from: Source::Mint,
+        to: alice.clone(),
+        amount: 1,
+    };
+    assert_eq!(record(cells, &forged), Err(RevStackError::RevMint));
+    assert_eq!(
+        journaled_transfer(cells, 0, 0, forged),
+        Err(RevStackError::RevMint)
+    );
+    assert!(entries(cells).unwrap().is_empty());
+}

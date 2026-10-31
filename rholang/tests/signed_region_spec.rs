@@ -319,3 +319,24 @@ async fn tokens_of_a_kind_never_pay_where_rev_is_required() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn no_term_can_mint_rev() {
+    with_runtime("signed-region-", |runtime| async move {
+        stacks(&runtime).deposit(&owner(&ALICE), 10).unwrap();
+        for source in [
+            r#"new k, d(`rho:system:deployerId`) in { {% d :: d :: () %}[k] }"#,
+            r#"new k, d(`rho:system:deployerId`) in { {% d :: () %}[bundle0{*k}] }"#,
+            r#"new k(`rho:rev:wallet`), d(`rho:system:deployerId`) in { {% d :: () %}[k] }"#,
+            r#"new k(`rho:registry:lookup`), d(`rho:system:deployerId`) in { {% d :: () %}[k] }"#,
+            r#"new d(`rho:system:deployerId`) in { {% d :: d :: () %}[d] }"#,
+            r#"new d(`rho:system:deployerId`) in { {% d :: () %}[Nil] }"#,
+        ] {
+            let _ = run_as(&runtime, &ALICE, source).await;
+            let _ = run_as(&runtime, &CAROL, source).await;
+            assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 10);
+            assert_eq!(stacks(&runtime).balance(&owner(&CAROL)).unwrap(), 0);
+        }
+    })
+    .await;
+}

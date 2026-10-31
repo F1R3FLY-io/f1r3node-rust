@@ -50,11 +50,13 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
-use super::accounting::rev_stack::kind::{is_stack_body, kind_owner, stack_kind, KindStack};
-use super::accounting::rev_stack::journal::{journal_open, journaled_transfers};
+use super::accounting::rev_stack::journal::{
+    journal_open, journaled_transfers, record, JournalEntry,
+};
+use super::accounting::rev_stack::kind::{is_stack_body, stack_kind, TokenKind};
 use super::accounting::rev_stack::region::{admissible, signature_owner};
 use super::accounting::rev_stack::reserve::reservation;
-use super::accounting::rev_stack::{RevAmount, RevStacks, WalletOwner};
+use super::accounting::rev_stack::{RevAmount, RevStackError, RevStacks, WalletOwner};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -1691,26 +1693,45 @@ impl DebruijnInterpreter {
         stack: &CostStack,
         env: &Env<Par>,
     ) -> Result<(), InterpreterError> {
+        self.pay_stacks(TokenKind::rev(), std::slice::from_ref(stack), env)
+            .await
+    }
+
+    async fn pay_stacks(
+        &self,
+        kind: TokenKind,
+        stacks: &[CostStack],
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let what = if kind.is_rev() {
+            "a token stack"
+        } else {
+            "a token stack of a kind"
+        };
         let refused = |reason: String| {
-            InterpreterError::ReduceError(format!("a token stack cannot be paid: {reason}"))
+            InterpreterError::ReduceError(format!("{what} cannot be paid: {reason}"))
         };
         let writer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
             .map_err(|e| refused(e.to_string()))?;
-        let payees = self.stack_payees(std::slice::from_ref(stack), env, &refused)?;
+        let payees = self.stack_payees(stacks, env, &refused)?;
         let store = self
             .space
             .hot_store()
-            .ok_or_else(|| refused("the native REV layer is unavailable".to_string()))?;
-        let stacks = RevStacks::over_hot_store(store);
-        let held = reservation(stacks.cells(), &writer)
-            .map_err(|e| refused(e.to_string()))?
-            .held;
+            .ok_or_else(|| refused("the native token layer is unavailable".to_string()))?;
+        let wallets = RevStacks::over_hot_store(store).of_kind(&kind);
+        let held = if kind.is_rev() {
+            reservation(wallets.cells(), &writer)
+                .map_err(|e| refused(e.to_string()))?
+                .held
+        } else {
+            0
+        };
         let total: RevAmount = payees.iter().map(|(_, units)| units).sum();
-        let balance = stacks
+        let balance = wallets
             .balance(&writer)
             .map_err(|e| refused(e.to_string()))?;
-        if journal_open(stacks.cells()) {
-            return journaled_transfers(stacks.cells(), balance, held, &writer, &payees)
+        if journal_open(wallets.cells()) {
+            return journaled_transfers(wallets.cells(), balance, held, &kind, &writer, &payees)
                 .map_err(|e| refused(e.to_string()));
         }
         if balance < total.saturating_add(held) {
@@ -1719,9 +1740,46 @@ impl DebruijnInterpreter {
             )));
         }
         for (payee, units) in payees {
-            stacks
+            wallets
                 .transfer_keeping(&writer, &payee, units, held)
                 .map_err(|e| refused(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn mint_stacks(
+        &self,
+        kind: TokenKind,
+        stacks: &[CostStack],
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!(
+                "a token stack of a kind cannot be minted: {reason}"
+            ))
+        };
+        if kind.is_rev() {
+            return Err(refused(RevStackError::RevMint.to_string()));
+        }
+        let payees = self.stack_payees(stacks, env, &refused)?;
+        let store = self
+            .space
+            .hot_store()
+            .ok_or_else(|| refused("the native token layer is unavailable".to_string()))?;
+        let wallets = RevStacks::over_hot_store(store).of_kind(&kind);
+        let minted = payees
+            .into_iter()
+            .map(|(payee, units)| JournalEntry::mint(kind.clone(), payee, units))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| refused(e.to_string()))?;
+        let journaled = journal_open(wallets.cells());
+        for entry in minted {
+            if journaled {
+                record(wallets.cells(), &entry)
+            } else {
+                wallets.deposit(&entry.to, entry.amount)
+            }
+            .map_err(|e| refused(e.to_string()))?;
         }
         Ok(())
     }
@@ -1746,51 +1804,6 @@ impl DebruijnInterpreter {
         Ok(payees)
     }
 
-    async fn eval_kind_stacks(
-        &self,
-        kind: KindStack,
-        stacks: &[CostStack],
-        env: &Env<Par>,
-    ) -> Result<(), InterpreterError> {
-        let refused = |reason: String| {
-            InterpreterError::ReduceError(format!(
-                "a token stack of a kind cannot be paid: {reason}"
-            ))
-        };
-        let payees = self.stack_payees(stacks, env, &refused)?;
-        let store = self
-            .space
-            .hot_store()
-            .ok_or_else(|| refused("the native token layer is unavailable".to_string()))?;
-        let wallets = RevStacks::over_hot_store(store);
-        if kind.issuer {
-            for (payee, units) in payees {
-                wallets
-                    .deposit(&kind_owner(&kind.kind, &payee), units)
-                    .map_err(|e| refused(e.to_string()))?;
-            }
-            return Ok(());
-        }
-        let writer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
-            .map_err(|e| refused(e.to_string()))?;
-        let source = kind_owner(&kind.kind, &writer);
-        let total: RevAmount = payees.iter().map(|(_, units)| units).sum();
-        let balance = wallets
-            .balance(&source)
-            .map_err(|e| refused(e.to_string()))?;
-        if balance < total {
-            return Err(refused(format!(
-                "the writer holds {balance} of the kind, and the stack needs {total}"
-            )));
-        }
-        for (payee, units) in payees {
-            wallets
-                .transfer(&source, &kind_owner(&kind.kind, &payee), units)
-                .map_err(|e| refused(e.to_string()))?;
-        }
-        Ok(())
-    }
-
     async fn eval_cost_signed_term(
         &self,
         term: CostSignedTerm,
@@ -1803,8 +1816,12 @@ impl DebruijnInterpreter {
             let resolved = self
                 .substitute
                 .substitute_cost_signature(signature.clone(), 0, env)?;
-            if let Some(kind) = stack_kind(&resolved) {
-                return self.eval_kind_stacks(kind, &body.cost_stacks, env).await;
+            if let Some(stack) = stack_kind(&resolved) {
+                return if stack.mint {
+                    self.mint_stacks(stack.kind, &body.cost_stacks, env).await
+                } else {
+                    self.pay_stacks(stack.kind, &body.cost_stacks, env).await
+                };
             }
         }
         self.check_region_signature(signature, env).await?;

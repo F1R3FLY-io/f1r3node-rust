@@ -3,23 +3,31 @@ use models::rhoapi::cost_signature::Value;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{CostSignature, Par};
 
-use super::WalletOwner;
+pub const REV_KIND_DOMAIN: &[u8] = b"f1r3fly/token-kind/rev/v1";
 
-pub const TOKEN_KIND_DOMAIN: &[u8] = b"f1r3fly/token-kind/wallet/v1";
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TokenKind(Vec<u8>);
+
+impl TokenKind {
+    pub fn rev() -> Self { TokenKind(Blake2b256::hash(REV_KIND_DOMAIN.to_vec())) }
+
+    pub fn from_name(name: Vec<u8>) -> Option<Self> {
+        if name.is_empty() {
+            None
+        } else {
+            Some(TokenKind(name))
+        }
+    }
+
+    pub fn name(&self) -> &[u8] { &self.0 }
+
+    pub fn is_rev(&self) -> bool { *self == Self::rev() }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KindStack {
-    pub kind: Vec<u8>,
-    pub issuer: bool,
-}
-
-pub fn kind_owner(kind: &[u8], owner: &WalletOwner) -> WalletOwner {
-    let mut input = Vec::with_capacity(TOKEN_KIND_DOMAIN.len() + 4 + kind.len() + 64);
-    input.extend_from_slice(TOKEN_KIND_DOMAIN);
-    input.extend_from_slice(&(kind.len() as u32).to_be_bytes());
-    input.extend_from_slice(kind);
-    input.extend_from_slice(&owner.canonical_bytes());
-    WalletOwner::Unforgeable(Blake2b256::hash(input))
+    pub kind: TokenKind,
+    pub mint: bool,
 }
 
 pub fn is_stack_body(body: &Par) -> bool {
@@ -61,7 +69,7 @@ pub fn stack_kind(signature: &CostSignature) -> Option<KindStack> {
         return None;
     };
     if let Some(kind) = only_unforgeable(name) {
-        return Some(KindStack { kind, issuer: true });
+        return TokenKind::from_name(kind).map(|kind| KindStack { kind, mint: true });
     }
     let alone = name.sends.is_empty()
         && name.receives.is_empty()
@@ -78,10 +86,8 @@ pub fn stack_kind(signature: &CostSignature) -> Option<KindStack> {
             .body
             .as_ref()
             .and_then(only_unforgeable)
-            .map(|kind| KindStack {
-                kind,
-                issuer: false,
-            }),
+            .and_then(TokenKind::from_name)
+            .map(|kind| KindStack { kind, mint: false }),
         _ => None,
     }
 }
@@ -90,6 +96,8 @@ pub fn stack_kind(signature: &CostSignature) -> Option<KindStack> {
 mod tests {
     use models::rhoapi::{Bundle, GPrivate, GUnforgeable};
 
+    use super::super::channel::{wallet_channel_id, wallet_channel_id_of};
+    use super::super::WalletOwner;
     use super::*;
 
     fn private(id: u8) -> Par {
@@ -109,8 +117,8 @@ mod tests {
         assert_eq!(
             stack_kind(&name(private(1))),
             Some(KindStack {
-                kind: vec![1; 32],
-                issuer: true
+                kind: TokenKind(vec![1; 32]),
+                mint: true
             })
         );
         let public = Par::default().with_bundles(vec![Bundle {
@@ -121,8 +129,8 @@ mod tests {
         assert_eq!(
             stack_kind(&name(public)),
             Some(KindStack {
-                kind: vec![1; 32],
-                issuer: false
+                kind: TokenKind(vec![1; 32]),
+                mint: false
             })
         );
         let writable = Par::default().with_bundles(vec![Bundle {
@@ -136,7 +144,22 @@ mod tests {
     #[test]
     fn kind_wallets_are_apart_from_rev_wallets_and_from_each_other() {
         let owner = WalletOwner::Unforgeable(vec![7; 32]);
-        assert_ne!(kind_owner(&[1; 32], &owner), owner);
-        assert_ne!(kind_owner(&[1; 32], &owner), kind_owner(&[2; 32], &owner));
+        let one = TokenKind(vec![1; 32]);
+        let two = TokenKind(vec![2; 32]);
+        assert_eq!(
+            wallet_channel_id_of(&owner, &TokenKind::rev()),
+            wallet_channel_id(&owner)
+        );
+        assert_ne!(
+            wallet_channel_id_of(&owner, &one),
+            wallet_channel_id(&owner)
+        );
+        assert_ne!(
+            wallet_channel_id_of(&owner, &one),
+            wallet_channel_id_of(&owner, &two)
+        );
+        assert!(TokenKind::rev().is_rev());
+        assert!(!one.is_rev());
+        assert_eq!(TokenKind::from_name(Vec::new()), None);
     }
 }

@@ -6,16 +6,21 @@ use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::v6::executor::EnvelopeExecutor;
 use casper::rust::v6::gate::{Refusal, Verdict};
-use casper::rust::v6::genesis_wallets::read_wallet_balance;
+use casper::rust::v6::genesis_wallets::{cells_at, read_wallet_balance};
 use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
+use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{Cosignature, DeployData};
-use rholang::rust::interpreter::accounting::rev_stack::{wallet_channel_id, WalletOwner};
+use rholang::rust::interpreter::accounting::rev_stack::journal::Source;
+use rholang::rust::interpreter::accounting::rev_stack::{
+    wallet_channel_id, CellStore, RevStacks, TokenKind, WalletOwner,
+};
+use rholang::rust::interpreter::rho_type::RhoString;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
@@ -499,4 +504,106 @@ async fn the_gate_admits_a_mint_of_a_kind_and_the_block_replays() {
         .await
         .expect("the block replays");
     assert_eq!(again.settled_root, played.settled_root);
+}
+
+async fn published(rm: &RuntimeManager, root: &StateHash, channel: &str) -> Vec<u8> {
+    let cells = cells_at(rm, root).await.unwrap();
+    let data = cells.get_data(&RhoString::create_par(channel.to_string()));
+    let [datum] = data.as_slice() else {
+        panic!("one datum on {channel}");
+    };
+    let par = &datum.a.pars[0];
+    let name = match par.bundles.as_slice() {
+        [bundle] => bundle.body.clone().unwrap(),
+        _ => par.clone(),
+    };
+    match &name.unforgeables[0].unf_instance {
+        Some(UnfInstance::GPrivateBody(private)) => private.id.clone(),
+        other => panic!("{other:?}"),
+    }
+}
+
+async fn kind_balance(
+    rm: &RuntimeManager,
+    root: &StateHash,
+    kind: &TokenKind,
+    owner: &WalletOwner,
+) -> u64 {
+    RevStacks::new(Arc::new(cells_at(rm, root).await.unwrap()))
+        .of_kind(kind)
+        .balance(owner)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_kind_mint_and_a_kind_transfer_reach_the_settled_root() {
+    let (alice, proposer) = (party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let mint = r#"new k, d(`rho:system:deployerId`) in {
+        {% d :: d :: d :: () %}[k] | @"pub"!(bundle0{*k})
+    }"#;
+    let minted = executor
+        .execute(
+            &pre,
+            vec![envelope(mint, 1, &alice, 1_000, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the mint executes");
+    assert_eq!(minted.gate.admitted(), vec![true]);
+    assert!(!minted.processed[0].is_failed);
+    assert!(minted
+        .settlement
+        .transfers
+        .iter()
+        .any(|t| t.from == Source::Mint));
+    let kind = TokenKind::from_name(published(&rm, &minted.settled_root, "pub").await).unwrap();
+    assert!(!kind.is_rev());
+    assert_eq!(
+        kind_balance(&rm, &minted.settled_root, &kind, &alice.owner).await,
+        3
+    );
+    let again = executor
+        .replay(
+            &pre,
+            minted.processed.clone(),
+            &minted.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the mint replays");
+    assert_eq!(again.settled_root, minted.settled_root);
+
+    let give = r#"new slot in {
+        for (kind <<- @"pub") { {% slot :: slot :: () %}[kind] } | @"slot"!(*slot)
+    }"#;
+    let given = executor
+        .execute(
+            &minted.settled_root,
+            vec![envelope(give, 2, &alice, 1_000, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the transfer executes");
+    assert_eq!(given.gate.admitted(), vec![true]);
+    assert!(!given.processed[0].is_failed);
+    let settled = &given.settled_root;
+    let slot = WalletOwner::Unforgeable(published(&rm, settled, "slot").await);
+    assert_eq!(kind_balance(&rm, settled, &kind, &alice.owner).await, 1);
+    assert_eq!(kind_balance(&rm, settled, &kind, &slot).await, 2);
+    assert_eq!(
+        balance(&rm, settled, &alice).await + given.settlement.debited(),
+        balance(&rm, &minted.settled_root, &alice).await
+    );
+    let again = executor
+        .replay(
+            &minted.settled_root,
+            given.processed.clone(),
+            &given.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the transfer replays");
+    assert_eq!(again.settled_root, given.settled_root);
 }

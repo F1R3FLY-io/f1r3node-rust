@@ -15,7 +15,8 @@ pub mod reserve;
 #[cfg(test)]
 mod tests;
 
-pub use channel::{wallet_channel, wallet_channel_id};
+pub use channel::{wallet_channel, wallet_channel_id, wallet_channel_id_of, wallet_channel_of};
+pub use kind::TokenKind;
 pub use ops::{CellStore, HotStoreCells, RevStacks};
 pub use owner::WalletOwner;
 
@@ -38,6 +39,8 @@ pub enum RevStackError {
     Overflow,
     #[error("corrupt wallet: {0}")]
     CorruptWallet(String),
+    #[error("no term can mint REV")]
+    RevMint,
     #[error("store error: {0}")]
     Store(String),
 }

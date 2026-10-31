@@ -172,7 +172,7 @@ async fn a_cleared_reservation_leaves_no_trace_in_the_state() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_open_journal_holds_transfers_out_of_the_state() {
     use rholang::rust::interpreter::accounting::rev_stack::journal::{
-        close_journal, journal_open, open_journal,
+        close_journal, journal_open, open_journal, JournalEntry,
     };
     let (mut runtime, _) = runtimes().await;
     let (alice, bob) = (key(), key());
@@ -209,10 +209,14 @@ async fn an_open_journal_holds_transfers_out_of_the_state() {
     );
 
     let journal = close_journal(&cells(&runtime)).unwrap();
-    assert_eq!(journal.len(), 1);
-    assert_eq!(journal[0].from, alice.owner);
-    assert_eq!(journal[0].to, bob.owner);
-    assert_eq!(journal[0].amount, 600);
+    assert_eq!(
+        journal,
+        vec![JournalEntry::transfer(
+            alice.owner.clone(),
+            bob.owner.clone(),
+            600
+        )]
+    );
     assert!(!journal_open(&cells(&runtime)));
     let _ = before;
 }

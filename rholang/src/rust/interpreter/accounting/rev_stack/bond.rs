@@ -85,11 +85,7 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
                     cells.as_ref(),
                     balance,
                     held,
-                    JournalEntry {
-                        to: bond_owner(&pk),
-                        from,
-                        amount,
-                    },
+                    JournalEntry::transfer(from, bond_owner(&pk), amount),
                 )
                 .map(|_| Par::default())
                 .map_err(funds_error);

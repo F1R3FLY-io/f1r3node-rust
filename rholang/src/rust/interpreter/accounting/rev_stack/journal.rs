@@ -4,6 +4,7 @@ use models::rhoapi::{GPrivate, GUnforgeable, ListParWithRandom, Par};
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
+use super::kind::TokenKind;
 use super::ops::CellStore;
 use super::owner::WalletOwner;
 use super::{RevAmount, RevStackError};
@@ -12,14 +13,69 @@ use crate::rust::interpreter::rho_type::{RhoByteArray, RhoList, RhoNumber, RhoSt
 pub const JOURNAL_DOMAIN: &[u8] = b"f1r3fly/rev-stack/journal/v1";
 pub const JOURNAL_MARKER_DOMAIN: &[u8] = b"f1r3fly/rev-stack/journal-marker/v1";
 
-const ENTRY_TAG: &str = "transfer";
+const TRANSFER_TAG: &str = "transfer";
+const MINT_TAG: &str = "mint";
 const MARKER_TAG: &str = "journal";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    Mint,
+    Wallet(WalletOwner),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JournalEntry {
-    pub from: WalletOwner,
+    pub kind: TokenKind,
+    pub from: Source,
     pub to: WalletOwner,
     pub amount: RevAmount,
+}
+
+impl JournalEntry {
+    pub fn transfer(from: WalletOwner, to: WalletOwner, amount: RevAmount) -> Self {
+        Self::transfer_of(TokenKind::rev(), from, to, amount)
+    }
+
+    pub fn transfer_of(
+        kind: TokenKind,
+        from: WalletOwner,
+        to: WalletOwner,
+        amount: RevAmount,
+    ) -> Self {
+        JournalEntry {
+            kind,
+            from: Source::Wallet(from),
+            to,
+            amount,
+        }
+    }
+
+    pub fn mint(
+        kind: TokenKind,
+        to: WalletOwner,
+        amount: RevAmount,
+    ) -> Result<Self, RevStackError> {
+        let entry = JournalEntry {
+            kind,
+            from: Source::Mint,
+            to,
+            amount,
+        };
+        entry.check()?;
+        Ok(entry)
+    }
+
+    pub fn is_mint(&self) -> bool { self.from == Source::Mint }
+
+    pub fn check(&self) -> Result<(), RevStackError> {
+        if self.amount == 0 || self.amount > super::MAX_AMOUNT {
+            return Err(RevStackError::InvalidAmount(self.amount));
+        }
+        if self.is_mint() && self.kind.is_rev() {
+            return Err(RevStackError::RevMint);
+        }
+        Ok(())
+    }
 }
 
 fn channel(domain: &[u8]) -> Par {
@@ -69,15 +125,21 @@ pub fn open_journal(store: &dyn CellStore) -> Result<(), RevStackError> {
 pub fn journal_open(store: &dyn CellStore) -> bool { !store.get_data(&marker_channel()).is_empty() }
 
 pub fn record(store: &dyn CellStore, entry: &JournalEntry) -> Result<(), RevStackError> {
+    entry.check()?;
     let ch = journal_channel();
     let seq = store.get_data(&ch).len() as i64;
-    let pars = vec![RhoList::create_par(vec![
-        RhoString::create_par(ENTRY_TAG.into()),
+    let mut items = vec![
+        RhoString::create_par(TRANSFER_TAG.into()),
         RhoNumber::create_par(seq),
-        RhoByteArray::create_par(entry.from.canonical_bytes()),
-        RhoByteArray::create_par(entry.to.canonical_bytes()),
-        RhoNumber::create_par(entry.amount as i64),
-    ])];
+        RhoByteArray::create_par(entry.kind.name().to_vec()),
+    ];
+    match &entry.from {
+        Source::Mint => items[0] = RhoString::create_par(MINT_TAG.into()),
+        Source::Wallet(from) => items.push(RhoByteArray::create_par(from.canonical_bytes())),
+    }
+    items.push(RhoByteArray::create_par(entry.to.canonical_bytes()));
+    items.push(RhoNumber::create_par(entry.amount as i64));
+    let pars = vec![RhoList::create_par(items)];
     store.put_datum(&ch, datum(&ch, pars));
     Ok(())
 }
@@ -90,29 +152,39 @@ pub fn entries(store: &dyn CellStore) -> Result<Vec<JournalEntry>, RevStackError
             return Err(malformed());
         };
         let items = RhoList::unapply(par).ok_or_else(malformed)?;
-        let [tag, seq, from, to, amount] = items.as_slice() else {
-            return Err(malformed());
-        };
-        if RhoString::unapply(tag).as_deref() != Some(ENTRY_TAG) {
-            return Err(malformed());
-        }
-        let seq = RhoNumber::unapply(seq).ok_or_else(malformed)?;
         let owner = |p: &Par| {
             RhoByteArray::unapply(p)
                 .and_then(|b| WalletOwner::from_canonical_bytes(&b))
                 .ok_or_else(malformed)
         };
+        let (seq, kind, from, to, amount) = match items.as_slice() {
+            [tag, seq, kind, from, to, amount]
+                if RhoString::unapply(tag).as_deref() == Some(TRANSFER_TAG) =>
+            {
+                (seq, kind, Source::Wallet(owner(from)?), to, amount)
+            }
+            [tag, seq, kind, to, amount]
+                if RhoString::unapply(tag).as_deref() == Some(MINT_TAG) =>
+            {
+                (seq, kind, Source::Mint, to, amount)
+            }
+            _ => return Err(malformed()),
+        };
+        let seq = RhoNumber::unapply(seq).ok_or_else(malformed)?;
+        let kind = RhoByteArray::unapply(kind)
+            .and_then(TokenKind::from_name)
+            .ok_or_else(malformed)?;
         let amount = RhoNumber::unapply(amount)
             .filter(|a| *a > 0)
             .ok_or_else(malformed)?;
-        out.push((
-            seq,
-            JournalEntry {
-                from: owner(from)?,
-                to: owner(to)?,
-                amount: amount as RevAmount,
-            },
-        ));
+        let entry = JournalEntry {
+            kind,
+            from,
+            to: owner(to)?,
+            amount: amount as RevAmount,
+        };
+        entry.check().map_err(|_| malformed())?;
+        out.push((seq, entry));
     }
     out.sort_by_key(|(seq, _)| *seq);
     Ok(out.into_iter().map(|(_, e)| e).collect())
@@ -120,12 +192,13 @@ pub fn entries(store: &dyn CellStore) -> Result<Vec<JournalEntry>, RevStackError
 
 pub fn net(
     store: &dyn CellStore,
+    kind: &TokenKind,
     owner: &WalletOwner,
 ) -> Result<(RevAmount, RevAmount), RevStackError> {
     let mut debits: RevAmount = 0;
     let mut credits: RevAmount = 0;
-    for e in entries(store)? {
-        if &e.from == owner {
+    for e in entries(store)?.into_iter().filter(|e| &e.kind == kind) {
+        if e.from == Source::Wallet(owner.clone()) {
             debits = debits.saturating_add(e.amount);
         }
         if &e.to == owner {
@@ -150,13 +223,14 @@ pub fn journaled_transfer(
     held: RevAmount,
     entry: JournalEntry,
 ) -> Result<(), RevStackError> {
-    if entry.amount == 0 || entry.amount > super::MAX_AMOUNT {
-        return Err(RevStackError::InvalidAmount(entry.amount));
-    }
+    entry.check()?;
+    let Source::Wallet(from) = &entry.from else {
+        return record(store, &entry);
+    };
     let _guard = JOURNAL_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (debits, credits) = net(store, &entry.from)?;
+    let (debits, credits) = net(store, &entry.kind, from)?;
     let available = balance
         .saturating_add(credits)
         .saturating_sub(debits)
@@ -174,6 +248,7 @@ pub fn journaled_transfers(
     store: &dyn CellStore,
     balance: RevAmount,
     held: RevAmount,
+    kind: &TokenKind,
     from: &WalletOwner,
     payees: &[(WalletOwner, RevAmount)],
 ) -> Result<(), RevStackError> {
@@ -188,7 +263,7 @@ pub fn journaled_transfers(
     let _guard = JOURNAL_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (debits, credits) = net(store, from)?;
+    let (debits, credits) = net(store, kind, from)?;
     let available = balance
         .saturating_add(credits)
         .saturating_sub(debits)
@@ -202,11 +277,7 @@ pub fn journaled_transfers(
     for (to, amount) in payees.iter().filter(|(to, _)| to != from) {
         record(
             store,
-            &JournalEntry {
-                from: from.clone(),
-                to: to.clone(),
-                amount: *amount,
-            },
+            &JournalEntry::transfer_of(kind.clone(), from.clone(), to.clone(), *amount),
         )?;
     }
     Ok(())
@@ -214,11 +285,12 @@ pub fn journaled_transfers(
 
 pub fn visible_balance(
     store: &dyn CellStore,
+    kind: &TokenKind,
     owner: &WalletOwner,
     balance: RevAmount,
     visible: RevAmount,
 ) -> Result<RevAmount, RevStackError> {
-    let (debits, credits) = net(store, owner)?;
+    let (debits, credits) = net(store, kind, owner)?;
     Ok(balance
         .saturating_add(credits)
         .saturating_sub(debits)

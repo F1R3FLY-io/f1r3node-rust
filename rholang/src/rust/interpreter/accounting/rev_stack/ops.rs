@@ -5,7 +5,8 @@ use rspace_plus_plus::rspace::hot_store::HotStore;
 use rspace_plus_plus::rspace::internal::Datum;
 
 use super::cell::{cell_amount, make_cell};
-use super::channel::{wallet_channel, wallet_channel_id};
+use super::channel::{wallet_channel_id_of, wallet_channel_of};
+use super::kind::TokenKind;
 use super::owner::WalletOwner;
 use super::{RevAmount, RevStackError, MAX_AMOUNT};
 
@@ -40,10 +41,25 @@ static WALLET_LOCKS: LazyLock<Vec<Mutex<()>>> =
 
 pub struct RevStacks {
     store: Arc<dyn CellStore>,
+    kind: TokenKind,
 }
 
 impl RevStacks {
-    pub fn new(store: Arc<dyn CellStore>) -> Self { RevStacks { store } }
+    pub fn new(store: Arc<dyn CellStore>) -> Self {
+        RevStacks {
+            store,
+            kind: TokenKind::rev(),
+        }
+    }
+
+    pub fn of_kind(&self, kind: &TokenKind) -> Self {
+        RevStacks {
+            store: self.store.clone(),
+            kind: kind.clone(),
+        }
+    }
+
+    pub fn kind(&self) -> &TokenKind { &self.kind }
 
     pub fn over_hot_store(
         store: Arc<Box<dyn HotStore<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
@@ -57,7 +73,7 @@ impl RevStacks {
         if amount == 0 {
             return Ok(());
         }
-        let (channel, id) = Self::locate(owner);
+        let (channel, id) = self.locate(owner);
         let cell = make_cell(&channel, amount)?;
         let _guard = self.lock(&id);
         self.store.put_datum(&channel, cell);
@@ -65,13 +81,13 @@ impl RevStacks {
     }
 
     pub fn balance(&self, owner: &WalletOwner) -> Result<RevAmount, RevStackError> {
-        let (channel, id) = Self::locate(owner);
+        let (channel, id) = self.locate(owner);
         let _guard = self.lock(&id);
         self.read_cells(&channel).map(|(_, total)| total)
     }
 
     pub fn combine(&self, owner: &WalletOwner) -> Result<RevAmount, RevStackError> {
-        let (channel, id) = Self::locate(owner);
+        let (channel, id) = self.locate(owner);
         let _guard = self.lock(&id);
         let (count, total) = self.read_cells(&channel)?;
         if count > 1 {
@@ -94,7 +110,7 @@ impl RevStacks {
         amount: RevAmount,
         keep: RevAmount,
     ) -> Result<RevAmount, RevStackError> {
-        let (channel, id) = Self::locate(owner);
+        let (channel, id) = self.locate(owner);
         let _guard = self.lock(&id);
         let (count, total) = self.read_cells(&channel)?;
         let remaining = total
@@ -134,8 +150,11 @@ impl RevStacks {
         Ok(remaining)
     }
 
-    fn locate(owner: &WalletOwner) -> (Par, Vec<u8>) {
-        (wallet_channel(owner), wallet_channel_id(owner))
+    fn locate(&self, owner: &WalletOwner) -> (Par, Vec<u8>) {
+        (
+            wallet_channel_of(owner, &self.kind),
+            wallet_channel_id_of(owner, &self.kind),
+        )
     }
 
     fn lock(&self, id: &[u8]) -> MutexGuard<'_, ()> {

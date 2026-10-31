@@ -9,7 +9,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, Event, ProcessedDeploy,
 };
 use rholang::rust::interpreter::accounting::rev_stack::journal::{
-    close_journal, open_journal, JournalEntry,
+    close_journal, open_journal, JournalEntry, Source,
 };
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
@@ -17,7 +17,7 @@ use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
 };
 use rholang::rust::interpreter::accounting::rev_stack::{
-    wallet_channel_id, HotStoreCells, WalletOwner,
+    wallet_channel_id, wallet_channel_id_of, HotStoreCells, WalletOwner,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -208,7 +208,10 @@ impl EnvelopeExecutor {
             let payers: std::collections::BTreeSet<Vec<u8>> = effects[i]
                 .journal
                 .iter()
-                .map(|j| j.from.canonical_bytes())
+                .filter_map(|j| match &j.from {
+                    Source::Wallet(from) => Some(wallet_channel_id_of(from, &j.kind)),
+                    Source::Mint => None,
+                })
                 .collect();
             if payers.iter().any(|p| debited.contains(p)) {
                 continue;
