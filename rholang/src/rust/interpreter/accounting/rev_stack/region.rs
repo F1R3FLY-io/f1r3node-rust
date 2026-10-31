@@ -53,6 +53,30 @@ pub fn signature_owner(signature: &CostSignature) -> Result<WalletOwner, RevStac
     }
 }
 
+pub fn admissible(owner: &WalletOwner, signers: &[WalletOwner]) -> bool {
+    match owner {
+        WalletOwner::Compound(components) => components.iter().all(|c| signers.contains(c)),
+        single => signers.contains(single),
+    }
+}
+
+pub fn paying_owners(deployer: &WalletOwner, named: &[WalletOwner]) -> Vec<WalletOwner> {
+    let mut owners = vec![deployer.clone()];
+    for owner in named {
+        let components = match owner {
+            WalletOwner::Compound(components) => components.clone(),
+            single => vec![single.clone()],
+        };
+        for component in components {
+            if !owners.contains(&component) {
+                owners.push(component);
+            }
+        }
+    }
+    owners[1..].sort_by_cached_key(WalletOwner::canonical_bytes);
+    owners
+}
+
 fn unresolved_owner(signature: &CostSignature) -> WalletOwner {
     WalletOwner::Unforgeable(signature.encode_to_vec())
 }

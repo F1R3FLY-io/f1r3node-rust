@@ -20,7 +20,12 @@ pub const REV_WALLET_URN: &str = "rho:rev:wallet";
 pub type RhoHotStore =
     Arc<Box<dyn HotStore<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>;
 
-pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Par> {
+pub fn handle(
+    store: Option<RhoHotStore>,
+    command: &str,
+    arg: &Par,
+    signers: &[WalletOwner],
+) -> Option<Par> {
     let result = match command {
         "find" => owner_of(arg).map(|owner| wallet_handle(&owner)),
         "balance" => with_stacks(store, |stacks| {
@@ -31,6 +36,9 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
         }),
         "transfer" => with_stacks(store, |stacks| {
             let (from, to, amount) = transfer_args(arg)?;
+            if !signers.contains(&from) {
+                return Err("the payer must be a signer of this deployment".to_string());
+            }
             let held = reservation(stacks.cells(), &from)
                 .map_err(|e| e.to_string())?
                 .held;

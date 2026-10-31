@@ -212,6 +212,7 @@ impl DeployRuntime {
             shard_id: params.shard_id.clone(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
         };
         Signed::create(
             d,

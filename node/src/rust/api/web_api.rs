@@ -2318,6 +2318,7 @@ mod tests {
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
@@ -3231,6 +3232,7 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
         }
     }
 

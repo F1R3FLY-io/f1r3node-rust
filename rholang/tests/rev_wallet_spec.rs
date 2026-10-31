@@ -9,6 +9,7 @@ use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::rev_stack::{native, RevStacks, WalletOwner};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNumber, RhoString, RhoTuple2};
+use rholang::rust::interpreter::system_processes::DeployData;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -42,7 +43,19 @@ fn stacks(runtime: &RhoRuntimeImpl) -> RevStacks {
     RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
 }
 
+async fn sign_as(runtime: &RhoRuntimeImpl, signer: &Key) {
+    runtime
+        .set_deploy_data(DeployData {
+            timestamp: 1,
+            deployer_id: signer.pk.clone(),
+            deploy_id: vec![1],
+            cosigners: Vec::new(),
+        })
+        .await;
+}
+
 async fn eval_as(runtime: &RhoRuntimeImpl, signer: &Key, term: &str) -> Vec<String> {
+    sign_as(runtime, signer).await;
     let result = runtime
         .evaluate(term, phlo(), with_deployer_id(&signer.pk), rand())
         .await
@@ -238,6 +251,7 @@ fn deploy_id(sig: &[u8]) -> Par {
 }
 
 async fn eval_deploy(runtime: &RhoRuntimeImpl, signer: &Key, sig: &[u8], term: &str) {
+    sign_as(runtime, signer).await;
     let mut env = with_deployer_id(&signer.pk);
     env.insert("rho:system:deployId".to_string(), deploy_id(sig));
     let result = runtime.evaluate(term, phlo(), env, rand()).await.unwrap();
@@ -284,4 +298,24 @@ async fn the_vault_demo_scripts_run_on_the_native_path() {
     let bad = include_str!("../examples/vault_demo/3.transfer_funds.rho").replace("%TO", "lala");
     assert!(eval_as(&runtime, &alice, &bad).await.is_empty());
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 900);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stored_deployer_id_cannot_pay_for_another_deployer() {
+    let (runtime, _) = runtimes().await;
+    let (alice, mallory) = (key(), key());
+    stacks(&runtime).deposit(&alice.owner, 100).unwrap();
+    let leak = r#"new deployerId(`rho:system:deployerId`) in { @"leak"!(*deployerId) }"#;
+    assert!(eval_as(&runtime, &alice, leak).await.is_empty());
+    let steal = format!(
+        r#"new w(`rho:rev:wallet`) in {{
+             for (@id <- @"leak") {{ w!("transfer", (id, "{}", 60), "out") }}
+           }}"#,
+        mallory.address
+    );
+    assert!(eval_as(&runtime, &mallory, &steal).await.is_empty());
+    let (ok, _) = either(&take(&runtime, "out").await[0]);
+    assert!(!ok);
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 100);
+    assert_eq!(stacks(&runtime).balance(&mallory.owner).unwrap(), 0);
 }

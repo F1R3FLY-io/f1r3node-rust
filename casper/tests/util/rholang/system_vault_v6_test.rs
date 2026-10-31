@@ -66,6 +66,7 @@ async fn runtime_with_facade() -> RhoRuntimeImpl {
             timestamp: standard_deploys::SYSTEM_VAULT_TIMESTAMP,
             deployer_id: vault.pk.clone(),
             deploy_id: vec![2],
+            cosigners: Vec::new(),
         })
         .await;
     eval(&runtime, &vault, SYSTEM_VAULT_V6, 2).await;

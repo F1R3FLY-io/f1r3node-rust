@@ -50,7 +50,7 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
-use super::accounting::rev_stack::region::signature_owner;
+use super::accounting::rev_stack::region::{admissible, signature_owner};
 use super::accounting::rev_stack::reserve::reservation;
 use super::accounting::rev_stack::{RevAmount, RevStacks, WalletOwner};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
@@ -1674,13 +1674,19 @@ impl DebruijnInterpreter {
             .substitute_cost_signature(signature, 0, env)?;
         let refused = |reason: String| {
             InterpreterError::ReduceError(format!(
-                "a signed term may name only the deployer's signature: {reason}"
+                "a signed term may name only the signatures of the deployment's signers: {reason}"
             ))
         };
         let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
-        let deployer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
-            .map_err(|e| refused(e.to_string()))?;
-        if owner == deployer {
+        let signers = {
+            let data = self.deploy_data.read().await;
+            std::iter::once(&data.deployer_id)
+                .chain(data.cosigners.iter())
+                .map(WalletOwner::from_public_key)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| refused(e.to_string()))?
+        };
+        if admissible(&owner, &signers) {
             Ok(())
         } else {
             Err(refused(format!("{owner:?}")))

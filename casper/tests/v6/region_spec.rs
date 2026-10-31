@@ -14,7 +14,7 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block::state_hash::StateHash;
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::casper::protocol::casper_message::{Cosignature, DeployData};
 use rholang::rust::interpreter::accounting::rev_stack::WalletOwner;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
@@ -231,4 +231,98 @@ async fn native_rev_writes_of_a_run_survive_the_merge() {
         .unwrap();
     assert_eq!(balance(&rm, &played.runs[0].post_root, &bob).await, 6_000);
     assert_eq!(balance(&rm, &played.settled_root, &bob).await, 6_000);
+}
+
+fn cosigned(term: &str, ts: i64, who: &Party, cosigner: &Party, price: i64) -> Signed<DeployData> {
+    let mut deploy = envelope(term, ts, who, 1_000, price);
+    let cosignature = Cosignature::sign(&deploy.data, &cosigner.sk, &Secp256k1.name()).unwrap();
+    deploy.data.cosignatures.push(cosignature);
+    deploy
+}
+
+const JOINT: &str = r#"new d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`) in {
+    {% new x in { x!(1) | for (_ <- x) { Nil } } %}[d (*) c]
+}"#;
+
+#[tokio::test]
+async fn each_component_of_a_compound_pays_the_full_charge() {
+    let (alice, carol, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&carol, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let played = executor
+        .execute(
+            &pre,
+            vec![cosigned(JOINT, 1, &alice, &carol, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block executes");
+
+    assert_eq!(played.gate.admitted(), vec![true]);
+    assert_eq!(played.gate.entries[0].commitments.len(), 2);
+    let charges = &played.settlement.charges;
+    assert_eq!(charges.len(), 2);
+    assert_eq!(charges[0].wallet, wallet(&alice));
+    assert_eq!(charges[1].wallet, wallet(&carol));
+    assert_eq!(charges[0].comm_rev, charges[1].comm_rev);
+    assert_eq!(charges[0].compute_rev, charges[1].compute_rev);
+    assert_eq!(charges[0].comm_phlo, 1);
+    assert_eq!(played.settlement.proposer_credit, 2 * charges[0].comm_rev);
+    assert!(played.settlement.is_balanced());
+
+    let settled = &played.settled_root;
+    let each = charges[0].comm_rev + charges[0].compute_rev;
+    assert_eq!(balance(&rm, settled, &alice).await, 100_000 - each);
+    assert_eq!(balance(&rm, settled, &carol).await, 100_000 - each);
+    assert_eq!(
+        balance(&rm, settled, &proposer).await,
+        played.settlement.proposer_credit
+    );
+
+    let again = executor
+        .replay(
+            &pre,
+            played.processed.clone(),
+            &played.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block replays");
+    assert_eq!(again.settled_root, played.settled_root);
+    assert_eq!(again.settlement, played.settlement);
+}
+
+#[tokio::test]
+async fn the_gate_refuses_a_compound_that_a_component_cannot_cover_or_did_not_sign() {
+    let (alice, carol, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&carol, 10)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let mut tampered = cosigned(JOINT, 3, &alice, &carol, 3);
+    tampered.data.cosignatures[0].sig[4] ^= 1;
+    let played = executor
+        .execute(
+            &pre,
+            vec![
+                cosigned(JOINT, 1, &alice, &carol, 3),
+                envelope(JOINT, 2, &alice, 1_000, 3),
+                tampered,
+            ],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block executes");
+
+    assert!(matches!(
+        played.gate.entries[0].verdict,
+        Verdict::Refused(Refusal::InsufficientFunds { .. })
+    ));
+    assert_eq!(
+        played.gate.entries[1].verdict,
+        Verdict::Refused(Refusal::ForeignSignature)
+    );
+    assert_eq!(
+        played.gate.entries[2].verdict,
+        Verdict::Refused(Refusal::InvalidTerms)
+    );
+    assert_eq!(balance(&rm, &played.settled_root, &carol).await, 10);
 }

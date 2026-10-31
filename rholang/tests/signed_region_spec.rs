@@ -36,18 +36,33 @@ fn named(source: &str) -> Vec<WalletOwner> {
 }
 
 async fn run_as(runtime: &RhoRuntimeImpl, key: &[u8], source: &str) -> Vec<InterpreterError> {
+    run_with(runtime, key, &[], source).await
+}
+
+async fn run_with(
+    runtime: &RhoRuntimeImpl,
+    key: &[u8],
+    cosigners: &[&[u8]],
+    source: &str,
+) -> Vec<InterpreterError> {
     runtime
         .set_deploy_data(DeployData {
             timestamp: 1,
             deployer_id: PublicKey::from_bytes(key),
             deploy_id: vec![1],
+            cosigners: cosigners.iter().map(|c| PublicKey::from_bytes(c)).collect(),
         })
         .await;
+    let mut env = deployer_env(key);
+    for (i, c) in cosigners.iter().enumerate() {
+        let id = deployer_env(c).remove("rho:system:deployerId").unwrap();
+        env.insert(format!("rho:system:cosignerId:{i}"), id);
+    }
     runtime
         .evaluate(
             source,
             Cost::create(i64::MAX, "signed region spec".to_string()),
-            deployer_env(key),
+            env,
             Blake2b512Random::create_from_bytes(&[]),
         )
         .await
@@ -95,7 +110,7 @@ async fn a_signed_term_of_the_deployer_runs_its_body() {
         assert!(run_as(&runtime, &ALICE, OWN).await.is_empty());
         let probe = r#"for (@1 <- @"out") { {% Nil %}[bob] }"#;
         let errors = run_as(&runtime, &ALICE, probe).await;
-        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+        assert!(refused(&errors, "deployment's signers"), "{errors:?}");
     })
     .await;
 }
@@ -104,9 +119,9 @@ async fn a_signed_term_of_the_deployer_runs_its_body() {
 async fn a_signed_term_of_another_signature_is_refused() {
     with_runtime("signed-region-", |runtime| async move {
         let errors = run_as(&runtime, &ALICE, r#"new s in { {% Nil %}[s] }"#).await;
-        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+        assert!(refused(&errors, "deployment's signers"), "{errors:?}");
         let errors = run_as(&runtime, &ALICE, r#"{% Nil %}[bob]"#).await;
-        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+        assert!(refused(&errors, "deployment's signers"), "{errors:?}");
     })
     .await;
 }
@@ -118,7 +133,7 @@ async fn a_signed_bind_must_name_the_deployer() {
         assert!(run_as(&runtime, &ALICE, own).await.is_empty());
         let foreign = r#"new s in { for ({% @y <- @"c" %}[s]) { Nil } }"#;
         let errors = run_as(&runtime, &ALICE, foreign).await;
-        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+        assert!(refused(&errors, "deployment's signers"), "{errors:?}");
     })
     .await;
 }
@@ -129,7 +144,7 @@ async fn a_stored_signed_term_runs_only_for_its_signer() {
         let store = r#"new d(`rho:system:deployerId`) in { @"held"!({% Nil %}[d]) }"#;
         assert!(run_as(&runtime, &ALICE, store).await.is_empty());
         let errors = run_as(&runtime, &CAROL, r#"for (@p <- @"held") { p }"#).await;
-        assert!(refused(&errors, "deployer's signature"), "{errors:?}");
+        assert!(refused(&errors, "deployment's signers"), "{errors:?}");
 
         assert!(run_as(&runtime, &ALICE, store).await.is_empty());
         let errors = run_as(&runtime, &ALICE, r#"for (@p <- @"held") { p }"#).await;
@@ -189,6 +204,34 @@ async fn a_stack_the_writer_cannot_pay_moves_nothing() {
         assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1);
         let errors = run_as(&runtime, &ALICE, "{% Nil %}[bob] | bob :: ()").await;
         assert!(!errors.is_empty());
+    })
+    .await;
+}
+
+const JOINT: &str = r#"new d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`) in {
+    {% @"joint"!(1) %}[d (*) c]
+}"#;
+
+#[tokio::test]
+async fn a_compound_of_signers_runs_and_a_compound_with_a_non_signer_is_refused() {
+    with_runtime("signed-region-", |runtime| async move {
+        assert!(run_with(&runtime, &ALICE, &[&CAROL], JOINT)
+            .await
+            .is_empty());
+        let errors = run_with(
+            &runtime,
+            &ALICE,
+            &[&CAROL],
+            r#"new d(`rho:system:deployerId`), s in { {% Nil %}[d (*) s] }"#,
+        )
+        .await;
+        assert!(refused(&errors, "deployment's signers"), "{errors:?}");
+        let stored = r#"new c(`rho:system:cosignerId:0`) in { @"held"!({% Nil %}[c]) }"#;
+        assert!(run_with(&runtime, &ALICE, &[&CAROL], stored)
+            .await
+            .is_empty());
+        let errors = run_as(&runtime, &ALICE, r#"for (@p <- @"held") { p }"#).await;
+        assert!(refused(&errors, "deployment's signers"), "{errors:?}");
     })
     .await;
 }
