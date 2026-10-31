@@ -46,6 +46,18 @@ async fn eval(runtime: &RhoRuntimeImpl, signer: &Key, term: &str, seed: u64) {
     assert!(result.errors.is_empty(), "{:?}", result.errors);
 }
 
+async fn eval_signed(runtime: &RhoRuntimeImpl, signer: &Key, term: &str, seed: u64) {
+    runtime
+        .set_deploy_data(DeployData {
+            timestamp: 1,
+            deployer_id: signer.pk.clone(),
+            deploy_id: seed.to_be_bytes().to_vec(),
+            cosigners: Vec::new(),
+        })
+        .await;
+    eval(runtime, signer, term, seed).await;
+}
+
 fn system_key(private_key_hex: &str) -> Key {
     let sk = PrivateKey::from_bytes(&hex::decode(private_key_hex).unwrap());
     let pk = Secp256k1.to_public(&sk);
@@ -112,7 +124,7 @@ async fn the_facade_transfers_natively_and_reads_balances() {
     let (alice, bob) = (key(), key());
     stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
 
-    eval(&runtime, &alice, &transfer(&bob.address, 250, "out"), 10).await;
+    eval_signed(&runtime, &alice, &transfer(&bob.address, 250, "out"), 10).await;
     assert_eq!(
         either(&take(&runtime, "out").await[0]),
         (true, Par::default())
@@ -124,7 +136,7 @@ async fn the_facade_transfers_natively_and_reads_balances() {
         r#"@SystemVault!("balance", "{}", "bal")"#,
         bob.address
     ));
-    eval(&runtime, &alice, &balance, 11).await;
+    eval_signed(&runtime, &alice, &balance, 11).await;
     assert_eq!(
         either(&take(&runtime, "bal").await[0]),
         (true, RhoNumber::create_par(250))
@@ -134,7 +146,7 @@ async fn the_facade_transfers_natively_and_reads_balances() {
         r#"@SystemVault!("find", "{}", "found")"#,
         bob.address
     ));
-    eval(&runtime, &alice, &find, 12).await;
+    eval_signed(&runtime, &alice, &find, 12).await;
     let (ok, handle) = either(&take(&runtime, "found").await[0]);
     assert!(ok);
     assert_eq!(handle.bundles.len(), 1);
@@ -146,7 +158,7 @@ async fn the_facade_refuses_an_overdraft() {
     let (alice, bob) = (key(), key());
     stacks(&runtime).deposit(&alice.owner, 10).unwrap();
 
-    eval(&runtime, &alice, &transfer(&bob.address, 11, "out"), 10).await;
+    eval_signed(&runtime, &alice, &transfer(&bob.address, 11, "out"), 10).await;
     let (ok, _) = either(&take(&runtime, "out").await[0]);
     assert!(!ok);
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 10);
@@ -215,7 +227,7 @@ async fn transfer_benchmark() {
         .collect::<Vec<_>>()
         .join(" | ");
     let started = Instant::now();
-    eval(&runtime, &whale, &with_system_vault(&body), 99).await;
+    eval_signed(&runtime, &whale, &with_system_vault(&body), 99).await;
     let batch = started.elapsed().as_secs_f64();
     assert_eq!(take(&runtime, "batch").await.len(), N);
     assert_eq!(
