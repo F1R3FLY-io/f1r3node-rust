@@ -124,6 +124,7 @@ impl EnvelopeExecutor {
             .map_err(CasperError::InterpreterError)?;
         ops.runtime.set_block_data(block_data).await;
         ops.runtime.set_invalid_blocks(HashMap::new()).await;
+        ops.runtime.cost.charge_storage_left_in_space();
         let cells = runtime_cells(&ops.runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
@@ -155,6 +156,7 @@ impl EnvelopeExecutor {
             .map_err(CasperError::InterpreterError)?;
         runtime.set_block_data(block_data).await;
         runtime.set_invalid_blocks(HashMap::new()).await;
+        runtime.cost.charge_storage_left_in_space();
         let cells = runtime_cells(runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
