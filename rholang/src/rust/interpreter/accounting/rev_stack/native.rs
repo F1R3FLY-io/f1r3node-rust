@@ -8,6 +8,7 @@ use rspace_plus_plus::rspace::hot_store::HotStore;
 use super::channel::wallet_channel;
 use super::ops::RevStacks;
 use super::owner::WalletOwner;
+use super::region::admissible;
 use super::reserve::reservation;
 use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{
@@ -36,7 +37,7 @@ pub fn handle(
         }),
         "transfer" => with_stacks(store, |stacks| {
             let (from, to, amount) = transfer_args(arg)?;
-            if !signers.contains(&from) {
+            if !admissible(&from, signers) {
                 return Err("the payer must be a signer of this deployment".to_string());
             }
             let held = reservation(stacks.cells(), &from)
@@ -84,7 +85,15 @@ fn owner_of(par: &Par) -> Result<WalletOwner, String> {
     if let Some(name) = RhoName::unapply(par) {
         return Ok(WalletOwner::from_unforgeable(&name));
     }
-    Err("expected a REV address, a deployer id or an unforgeable name".to_string())
+    if let Some(ExprInstance::ETupleBody(tuple)) = single_expr(par).and_then(|e| e.expr_instance) {
+        let components = tuple
+            .ps
+            .iter()
+            .map(owner_of)
+            .collect::<Result<Vec<_>, _>>()?;
+        return WalletOwner::compound(components).map_err(|e| e.to_string());
+    }
+    Err("expected a REV address, a deployer id, an unforgeable name or a tuple of them".to_string())
 }
 
 fn transfer_args(arg: &Par) -> Result<(WalletOwner, WalletOwner, RevAmount), String> {
@@ -96,14 +105,27 @@ fn transfer_args(arg: &Par) -> Result<(WalletOwner, WalletOwner, RevAmount), Str
     let [deployer_id, to, amount] = tuple.ps.as_slice() else {
         return Err(usage.to_string());
     };
-    let deployer_id = RhoDeployerId::unapply(deployer_id)
-        .ok_or_else(|| "the payer must be the deployer's own deployer id".to_string())?;
-    let from = WalletOwner::from_deployer_id(&deployer_id).map_err(|e| e.to_string())?;
+    let from = payer_of(deployer_id)?;
     let to = owner_of(to)?;
     let amount = RhoNumber::unapply(amount)
         .filter(|a| *a > 0)
         .ok_or_else(|| "Amount must be positive value".to_string())?;
     Ok((from, to, amount as RevAmount))
+}
+
+fn payer_of(par: &Par) -> Result<WalletOwner, String> {
+    if let Some(deployer_id) = RhoDeployerId::unapply(par) {
+        return WalletOwner::from_deployer_id(&deployer_id).map_err(|e| e.to_string());
+    }
+    if let Some(ExprInstance::ETupleBody(tuple)) = single_expr(par).and_then(|e| e.expr_instance) {
+        let components = tuple
+            .ps
+            .iter()
+            .map(payer_of)
+            .collect::<Result<Vec<_>, _>>()?;
+        return WalletOwner::compound(components).map_err(|e| e.to_string());
+    }
+    Err("the payer must be a signer's deployer id, or a tuple of them".to_string())
 }
 
 fn transfer_error(e: RevStackError) -> String {

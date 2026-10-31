@@ -262,8 +262,11 @@ async fn each_component_of_a_compound_pays_the_full_charge() {
     assert_eq!(played.gate.entries[0].commitments.len(), 2);
     let charges = &played.settlement.charges;
     assert_eq!(charges.len(), 2);
-    assert_eq!(charges[0].wallet, wallet(&alice));
-    assert_eq!(charges[1].wallet, wallet(&carol));
+    let mut paid: Vec<_> = charges.iter().map(|c| c.wallet.clone()).collect();
+    paid.sort();
+    let mut expected = vec![wallet(&alice), wallet(&carol)];
+    expected.sort();
+    assert_eq!(paid, expected);
     assert_eq!(charges[0].comm_rev, charges[1].comm_rev);
     assert_eq!(charges[0].compute_rev, charges[1].compute_rev);
     assert_eq!(charges[0].comm_phlo, 1);
@@ -325,4 +328,128 @@ async fn the_gate_refuses_a_compound_that_a_component_cannot_cover_or_did_not_si
         Verdict::Refused(Refusal::InvalidTerms)
     );
     assert_eq!(balance(&rm, &played.settled_root, &carol).await, 10);
+}
+
+async fn seed(
+    rm: &RuntimeManager,
+    root: &StateHash,
+    owner: &WalletOwner,
+    amount: u64,
+) -> StateHash {
+    use rholang::rust::interpreter::accounting::rev_stack::RevStacks;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    let mut runtime = rm.spawn_runtime().await.unwrap();
+    runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(root))
+        .await
+        .unwrap();
+    RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
+        .deposit(owner, amount)
+        .unwrap();
+    runtime.create_checkpoint().await.root.to_bytes_prost()
+}
+
+fn joint(a: &Party, b: &Party) -> WalletOwner {
+    WalletOwner::compound(vec![a.owner.clone(), b.owner.clone()]).unwrap()
+}
+
+#[tokio::test]
+async fn a_funded_joint_wallet_pays_once_for_its_compound() {
+    let (alice, carol, proposer) = (party(), party(), party());
+    let (rm, genesis) = shard(&[(&alice, 100_000), (&carol, 100_000)]).await;
+    let pair = joint(&alice, &carol);
+    let pre = seed(&rm, &genesis, &pair, 50_000).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let played = executor
+        .execute(
+            &pre,
+            vec![cosigned(JOINT, 1, &alice, &carol, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block executes");
+
+    assert_eq!(played.gate.admitted(), vec![true]);
+    let charges = &played.settlement.charges;
+    assert_eq!(charges.len(), 1);
+    let joint_wallet = rholang::rust::interpreter::accounting::rev_stack::wallet_channel_id(&pair);
+    assert_eq!(charges[0].wallet, joint_wallet);
+    assert!(played.settlement.is_balanced());
+    let settled = &played.settled_root;
+    let each = charges[0].comm_rev + charges[0].compute_rev;
+    assert_eq!(
+        read_wallet_balance(&rm, settled, &pair).await.unwrap(),
+        50_000 - each
+    );
+    assert_eq!(balance(&rm, settled, &alice).await, 100_000);
+    assert_eq!(balance(&rm, settled, &carol).await, 100_000);
+
+    let again = executor
+        .replay(
+            &pre,
+            played.processed.clone(),
+            &played.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block replays");
+    assert_eq!(again.settled_root, played.settled_root);
+}
+
+#[tokio::test]
+async fn a_joint_wallet_is_spent_only_by_all_its_signers() {
+    let (alice, carol, bob, proposer) = (party(), party(), party(), party());
+    let (rm, genesis) = shard(&[(&alice, 100_000), (&carol, 100_000)]).await;
+    let pair = joint(&alice, &carol);
+    let pre = seed(&rm, &genesis, &pair, 50_000).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let address = VaultAddress::from_public_key(&bob.pk).unwrap().to_base58();
+    let spend = format!(
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`) in {{
+             w!("transfer", ((*d, *c), "{address}", 700), "out")
+           }}"#
+    );
+    let played = executor
+        .execute(
+            &pre,
+            vec![cosigned(&spend, 1, &alice, &carol, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block executes");
+    assert_eq!(played.gate.admitted(), vec![true]);
+    let run = &played.runs[0].post_root;
+    assert_eq!(
+        read_wallet_balance(&rm, run, &pair).await.unwrap(),
+        50_000 - 700
+    );
+    assert_eq!(balance(&rm, run, &bob).await, 700);
+
+    let leak = r#"new d(`rho:system:deployerId`) in { @"carol"!(*d) }"#;
+    let leaked = executor
+        .execute(
+            &pre,
+            vec![envelope(leak, 2, &carol, 1_000, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the leak executes");
+    let alone = format!(
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`) in {{
+             for (@c <- @"carol") {{ w!("transfer", ((*d, c), "{address}", 700), "out") }}
+           }}"#
+    );
+    let played = executor
+        .execute(
+            &leaked.settled_root,
+            vec![envelope(&alone, 3, &alice, 1_000, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block executes");
+    assert_eq!(played.gate.admitted(), vec![true]);
+    let run = &played.runs[0].post_root;
+    assert_eq!(read_wallet_balance(&rm, run, &pair).await.unwrap(), 50_000);
+    assert_eq!(balance(&rm, run, &bob).await, 0);
 }

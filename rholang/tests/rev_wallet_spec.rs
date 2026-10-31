@@ -319,3 +319,23 @@ async fn a_stored_deployer_id_cannot_pay_for_another_deployer() {
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 100);
     assert_eq!(stacks(&runtime).balance(&mallory.owner).unwrap(), 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_joint_wallet_is_read_and_funded_through_a_tuple_of_owners() {
+    let (runtime, _) = runtimes().await;
+    let (alice, carol) = (key(), key());
+    let pair = WalletOwner::compound(vec![carol.owner.clone(), alice.owner.clone()]).unwrap();
+    stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
+    let fund = format!(
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`) in {{
+             w!("transfer", (*d, ("{}", "{}"), 300), "out") |
+             w!("balance", ("{}", "{}"), "bal")
+           }}"#,
+        alice.address, carol.address, carol.address, alice.address
+    );
+    assert!(eval_as(&runtime, &alice, &fund).await.is_empty());
+    let (ok, _) = either(&take(&runtime, "out").await[0]);
+    assert!(ok);
+    assert_eq!(stacks(&runtime).balance(&pair).unwrap(), 300);
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 700);
+}

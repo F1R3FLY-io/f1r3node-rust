@@ -26,7 +26,8 @@ use super::backend::{block_data, close_block, ExecutionBackend};
 use super::block_record::{BlockRecord, EnvelopeOutcome, ExecutedEnvelope, RecordEntry};
 use super::body::StateHash;
 use super::gate::{
-    check_recorded, gate_block, GateEntry, GateInput, GateOutcome, PhloLimitDemand, StoreReader,
+    check_recorded, gate_block, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
+    PhloLimitDemand, StoreReader,
 };
 use super::merge::{merge_runs, RunEffect};
 use super::record::ExecutionRecord;
@@ -258,8 +259,9 @@ impl EnvelopeExecutor {
         envelopes: Vec<Signed<DeployData>>,
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        let inputs = gate_inputs(envelopes.iter())?;
+        let mut inputs = gate_inputs(envelopes.iter())?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
+        resolve_joint_wallets(&reader, &mut inputs)?;
         let gate = gate_block(&reader, &PhloLimitDemand, &inputs)?;
         let effects: Vec<EnvelopeEffect> = stream::iter(envelopes.into_iter().enumerate())
             .map(|(i, envelope)| {
@@ -293,8 +295,9 @@ impl EnvelopeExecutor {
         recorded_gate: &[GateEntry],
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        let inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
+        let mut inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
+        resolve_joint_wallets(&reader, &mut inputs)?;
         let gate = check_recorded(&reader, &PhloLimitDemand, &inputs, recorded_gate)
             .map_err(|e| invalid(format!("the recorded gate does not replay: {e}")))?;
         let effects: Vec<EnvelopeEffect> = stream::iter(recorded.into_iter().enumerate())

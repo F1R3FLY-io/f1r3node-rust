@@ -24,6 +24,7 @@ pub struct GateInput {
     pub named: Vec<WalletOwner>,
     pub cosigners: Vec<WalletOwner>,
     pub cosignatures_valid: bool,
+    pub joint: Vec<WalletOwner>,
     pub phlo_limit: i64,
     pub phlo_price: i64,
 }
@@ -50,6 +51,7 @@ impl GateInput {
             named,
             cosigners,
             cosignatures_valid,
+            joint: Vec::new(),
             phlo_limit: deploy.data.phlo_limit,
             phlo_price: deploy.data.phlo_price,
         })
@@ -61,7 +63,28 @@ impl GateInput {
             .collect()
     }
 
-    pub fn paying_wallets(&self) -> Vec<WalletOwner> { paying_owners(&self.deployer, &self.named) }
+    pub fn paying_wallets(&self) -> Vec<WalletOwner> {
+        paying_owners(&self.deployer, &self.named, &self.joint)
+    }
+}
+
+pub fn resolve_joint_wallets<R: WalletReader>(
+    reader: &R,
+    inputs: &mut [GateInput],
+) -> Result<(), CasperError> {
+    for input in inputs.iter_mut() {
+        let mut joint = Vec::new();
+        for owner in &input.named {
+            if matches!(owner, WalletOwner::Compound(_))
+                && !joint.contains(owner)
+                && reader.balance(owner)? > 0
+            {
+                joint.push(owner.clone());
+            }
+        }
+        input.joint = joint;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -458,6 +481,7 @@ mod tests {
             phlo_price: price,
             cosignatures_valid: true,
             cosigners: Vec::new(),
+            joint: Vec::new(),
         }
     }
 

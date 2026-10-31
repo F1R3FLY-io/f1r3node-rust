@@ -60,10 +60,18 @@ pub fn admissible(owner: &WalletOwner, signers: &[WalletOwner]) -> bool {
     }
 }
 
-pub fn paying_owners(deployer: &WalletOwner, named: &[WalletOwner]) -> Vec<WalletOwner> {
-    let mut owners = vec![deployer.clone()];
+pub fn paying_owners(
+    deployer: &WalletOwner,
+    named: &[WalletOwner],
+    joint: &[WalletOwner],
+) -> Vec<WalletOwner> {
+    if named.is_empty() {
+        return vec![deployer.clone()];
+    }
+    let mut owners: Vec<WalletOwner> = Vec::new();
     for owner in named {
         let components = match owner {
+            compound if joint.contains(compound) => vec![compound.clone()],
             WalletOwner::Compound(components) => components.clone(),
             single => vec![single.clone()],
         };
@@ -73,7 +81,7 @@ pub fn paying_owners(deployer: &WalletOwner, named: &[WalletOwner]) -> Vec<Walle
             }
         }
     }
-    owners[1..].sort_by_cached_key(WalletOwner::canonical_bytes);
+    owners.sort_by_cached_key(WalletOwner::canonical_bytes);
     owners
 }
 
