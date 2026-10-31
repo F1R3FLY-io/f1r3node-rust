@@ -50,6 +50,7 @@ pub enum EnvelopeOutcome {
     UserFailure,
     Exhausted,
     Conflicted,
+    Overdrawn,
 }
 
 impl EnvelopeOutcome {
@@ -60,6 +61,7 @@ impl EnvelopeOutcome {
             EnvelopeOutcome::UserFailure => 2,
             EnvelopeOutcome::Exhausted => 3,
             EnvelopeOutcome::Conflicted => 5,
+            EnvelopeOutcome::Overdrawn => 6,
         }
     }
 
@@ -70,6 +72,7 @@ impl EnvelopeOutcome {
             2 => Ok(EnvelopeOutcome::UserFailure),
             3 => Ok(EnvelopeOutcome::Exhausted),
             5 => Ok(EnvelopeOutcome::Conflicted),
+            6 => Ok(EnvelopeOutcome::Overdrawn),
             other => Err(format!("unknown envelope outcome {other}")),
         }
     }

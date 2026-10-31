@@ -4,8 +4,12 @@ use models::rhoapi::{GPrivate, GUnforgeable, ListParWithRandom, Par};
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::trace::event::Produce;
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use super::kind::TokenKind;
-use super::ops::CellStore;
+use super::ops::{CellStore, RevStacks};
+use super::reserve::reservation;
 use super::owner::WalletOwner;
 use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{RhoByteArray, RhoList, RhoNumber, RhoString};
@@ -225,7 +229,16 @@ pub fn close_journal(store: &dyn CellStore) -> Result<Vec<JournalEntry>, RevStac
     Ok(taken)
 }
 
-static JOURNAL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn spendable(balance: RevAmount, held: RevAmount, requested: RevAmount) -> Result<(), RevStackError> {
+    let available = balance.saturating_sub(held);
+    if requested > available {
+        return Err(RevStackError::InsufficientFunds {
+            balance: available,
+            requested,
+        });
+    }
+    Ok(())
+}
 
 pub fn journaled_transfer(
     store: &dyn CellStore,
@@ -234,22 +247,8 @@ pub fn journaled_transfer(
     entry: JournalEntry,
 ) -> Result<(), RevStackError> {
     entry.check()?;
-    let Source::Wallet(from) = &entry.from else {
-        return record(store, &entry);
-    };
-    let _guard = JOURNAL_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (debits, credits) = net(store, &entry.kind, from)?;
-    let available = balance
-        .saturating_add(credits)
-        .saturating_sub(debits)
-        .saturating_sub(held);
-    if entry.amount > available {
-        return Err(RevStackError::InsufficientFunds {
-            balance: available,
-            requested: entry.amount,
-        });
+    if let Source::Wallet(_) = &entry.from {
+        spendable(balance, held, entry.amount)?;
     }
     record(store, &entry)
 }
@@ -270,20 +269,7 @@ pub fn journaled_transfers(
     if payees.iter().any(|(_, amount)| *amount == 0) {
         return Err(RevStackError::InvalidAmount(0));
     }
-    let _guard = JOURNAL_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (debits, credits) = net(store, kind, from)?;
-    let available = balance
-        .saturating_add(credits)
-        .saturating_sub(debits)
-        .saturating_sub(held);
-    if total > available {
-        return Err(RevStackError::InsufficientFunds {
-            balance: available,
-            requested: total,
-        });
-    }
+    spendable(balance, held, total)?;
     for (to, amount) in payees.iter().filter(|(to, _)| to != from) {
         record(
             store,
@@ -293,16 +279,44 @@ pub fn journaled_transfers(
     Ok(())
 }
 
-pub fn visible_balance(
-    store: &dyn CellStore,
+pub fn visible_balance(balance: RevAmount, visible: RevAmount) -> RevAmount {
+    balance.saturating_sub(visible)
+}
+
+type Totals = BTreeMap<(Vec<u8>, Vec<u8>), (TokenKind, WalletOwner, u128, u128)>;
+
+fn totals_of<'a>(
+    totals: &'a mut Totals,
     kind: &TokenKind,
     owner: &WalletOwner,
-    balance: RevAmount,
-    visible: RevAmount,
-) -> Result<RevAmount, RevStackError> {
-    let (debits, credits) = net(store, kind, owner)?;
-    Ok(balance
-        .saturating_add(credits)
-        .saturating_sub(debits)
-        .saturating_sub(visible))
+) -> &'a mut (TokenKind, WalletOwner, u128, u128) {
+    totals
+        .entry((kind.name().to_vec(), owner.canonical_bytes()))
+        .or_insert_with(|| (kind.clone(), owner.clone(), 0, 0))
+}
+
+pub fn journal_overdrawn(store: Arc<dyn CellStore>) -> Result<bool, RevStackError> {
+    let mut totals = Totals::new();
+    for e in entries(store.as_ref())? {
+        if let Source::Wallet(from) = &e.from {
+            totals_of(&mut totals, &e.kind, from).2 += e.amount as u128;
+        }
+        totals_of(&mut totals, &e.kind, &e.to).3 += e.amount as u128;
+    }
+    let stacks = RevStacks::new(store.clone());
+    for (kind, owner, debits, credits) in totals.into_values() {
+        if debits == 0 {
+            continue;
+        }
+        let balance = stacks.of_kind(&kind).balance(&owner)? as u128;
+        let held = if kind.is_rev() {
+            reservation(store.as_ref(), &owner)?.held as u128
+        } else {
+            0
+        };
+        if balance + credits < debits + held {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

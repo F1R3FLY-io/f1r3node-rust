@@ -172,7 +172,7 @@ async fn a_cleared_reservation_leaves_no_trace_in_the_state() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_open_journal_holds_transfers_out_of_the_state() {
     use rholang::rust::interpreter::accounting::rev_stack::journal::{
-        close_journal, journal_open, open_journal, JournalEntry,
+        close_journal, journal_open, journal_overdrawn, open_journal, JournalEntry,
     };
     let (mut runtime, _) = runtimes().await;
     let (alice, bob) = (key(), key());
@@ -186,9 +186,13 @@ async fn an_open_journal_holds_transfers_out_of_the_state() {
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 1_000);
     assert_eq!(stacks(&runtime).balance(&bob.owner).unwrap(), 0);
     assert!(eval_as(&runtime, &alice, &balance_term(&alice.address, "jb")).await.is_empty());
-    assert_eq!(either(&take(&runtime, "jb").await[0]), (true, RhoNumber::create_par(400)));
+    assert_eq!(either(&take(&runtime, "jb").await[0]), (true, RhoNumber::create_par(1_000)));
+    assert!(!journal_overdrawn(std::sync::Arc::new(cells(&runtime))).unwrap());
     assert!(eval_as(&runtime, &alice, &transfer_term(&bob.address, 401, "j2")).await.is_empty());
-    assert!(!either(&take(&runtime, "j2").await[0]).0);
+    assert_eq!(either(&take(&runtime, "j2").await[0]), (true, Par::default()));
+    assert!(eval_as(&runtime, &alice, &transfer_term(&bob.address, 1_001, "j4")).await.is_empty());
+    assert!(!either(&take(&runtime, "j4").await[0]).0);
+    assert!(journal_overdrawn(std::sync::Arc::new(cells(&runtime))).unwrap());
 
     sign_as(&runtime, &bob).await;
     let forged = runtime
@@ -211,11 +215,10 @@ async fn an_open_journal_holds_transfers_out_of_the_state() {
     let journal = close_journal(&cells(&runtime)).unwrap();
     assert_eq!(
         journal,
-        vec![JournalEntry::transfer(
-            alice.owner.clone(),
-            bob.owner.clone(),
-            600
-        )]
+        vec![
+            JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 401),
+            JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 600),
+        ]
     );
     assert!(!journal_open(&cells(&runtime)));
     let _ = before;

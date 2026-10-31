@@ -33,6 +33,26 @@ pub fn split_hash_seals(signature: &CostSignature) -> (Vec<Par>, Vec<CostSignatu
     (hashes, others)
 }
 
+pub fn self_sealed_envelope(term: &Par) -> Option<WalletOwner> {
+    let [signed] = term.cost_signed_terms.as_slice() else {
+        return None;
+    };
+    let mut rest = term.clone();
+    rest.cost_signed_terms.clear();
+    rest.locally_free.clear();
+    rest.connective_used = false;
+    if rest != Par::default() {
+        return None;
+    }
+    let body = signed.body.as_ref()?;
+    let Some(Value::Quote(quoted)) = signed.signature.as_ref().and_then(|s| s.value.as_ref())
+    else {
+        return None;
+    };
+    let closed = body.locally_free.iter().all(|b| *b == 0);
+    (closed && seals_itself(quoted, body)).then(|| process_owner(body))
+}
+
 #[cfg(test)]
 mod tests {
     use models::rhoapi::expr::ExprInstance;
@@ -59,6 +79,26 @@ mod tests {
             process_owner(&both(number(2), number(1)))
         );
         assert_ne!(process_owner(&number(1)), process_owner(&number(2)));
+    }
+
+    #[test]
+    fn only_a_lone_closed_self_sealed_term_is_a_self_sealed_envelope() {
+        use crate::rust::interpreter::compiler::compiler::Compiler;
+        use super::self_sealed_envelope;
+        let term = |s: &str| Compiler::source_to_adt(s).unwrap();
+        let own = term(r#"{% @"x"!(1) %}[# { @"x"!(1) }]"#);
+        assert_eq!(
+            self_sealed_envelope(&own),
+            Some(process_owner(&term(r#"@"x"!(1)"#)))
+        );
+        for other in [
+            r#"{% @"x"!(1) %}[# { @"x"!(1) }] | @"y"!(2)"#,
+            r#"{% @"x"!(2) %}[# { @"x"!(1) }]"#,
+            r#"for (z <- @"c") { {% z!(1) %}[# { z!(1) }] }"#,
+            r#"@"x"!(1)"#,
+        ] {
+            assert_eq!(self_sealed_envelope(&term(other)), None, "{other}");
+        }
     }
 
     #[test]

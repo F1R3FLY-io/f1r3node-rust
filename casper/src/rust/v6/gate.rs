@@ -25,6 +25,7 @@ pub struct GateInput {
     pub cosigners: Vec<WalletOwner>,
     pub cosignatures_valid: bool,
     pub joint: Vec<WalletOwner>,
+    pub sealed: Vec<WalletOwner>,
     pub phlo_limit: i64,
     pub phlo_price: i64,
 }
@@ -52,6 +53,7 @@ impl GateInput {
             cosigners,
             cosignatures_valid,
             joint: Vec::new(),
+            sealed: Vec::new(),
             phlo_limit: deploy.data.phlo_limit,
             phlo_price: deploy.data.phlo_price,
         })
@@ -63,8 +65,24 @@ impl GateInput {
             .collect()
     }
 
+    pub fn with_sealed(mut self, sealed: Vec<WalletOwner>) -> Self {
+        self.sealed = sealed;
+        self
+    }
+
     pub fn paying_wallets(&self) -> Vec<WalletOwner> {
-        paying_owners(&self.deployer, &self.named, &self.joint)
+        let mut owners = if self.named.is_empty() && !self.sealed.is_empty() {
+            Vec::new()
+        } else {
+            paying_owners(&self.deployer, &self.named, &self.joint)
+        };
+        for owner in &self.sealed {
+            if !owners.contains(owner) {
+                owners.push(owner.clone());
+            }
+        }
+        owners.sort_by_cached_key(WalletOwner::canonical_bytes);
+        owners
     }
 }
 
@@ -482,6 +500,7 @@ mod tests {
             cosignatures_valid: true,
             cosigners: Vec::new(),
             joint: Vec::new(),
+            sealed: Vec::new(),
         }
     }
 
@@ -493,6 +512,18 @@ mod tests {
                 .map(|(o, b)| (wallet_channel_id(o), *b))
                 .collect(),
         )
+    }
+
+    #[test]
+    fn a_self_sealed_envelope_is_paid_by_its_process_wallet_alone() {
+        let os = owners(2);
+        let r = reader(&os, &[0, 1_000]);
+        let sealed = input(&os[0], 100, 4, 0).with_sealed(vec![os[1].clone()]);
+        assert_eq!(sealed.paying_wallets(), vec![os[1].clone()]);
+        let out = gate_block(&r, &PhloLimitDemand, &[sealed]).unwrap();
+        assert_eq!(out.admitted(), vec![true]);
+        assert_eq!(out.table.committed(&wallet_channel_id(&os[1])), 400);
+        assert_eq!(out.table.committed(&wallet_channel_id(&os[0])), 0);
     }
 
     #[test]

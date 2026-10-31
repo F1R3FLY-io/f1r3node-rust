@@ -9,9 +9,10 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, Event, ProcessedDeploy,
 };
 use rholang::rust::interpreter::accounting::rev_stack::journal::{
-    close_journal, open_journal, JournalEntry, Source,
+    close_journal, journal_overdrawn, open_journal, JournalEntry, Source,
 };
 use models::rust::normalizer_env::normalizer_env_from_deploy;
+use rholang::rust::interpreter::accounting::rev_stack::process::self_sealed_envelope;
 use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
 use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
@@ -48,6 +49,7 @@ pub struct ExecutedBlock {
     pub runs: Vec<EnvelopeRun>,
     pub processed: Vec<ProcessedDeploy>,
     pub merged: Vec<bool>,
+    pub overdrawn: Vec<bool>,
     pub gate: GateOutcome,
     pub settlement: Settlement,
     pub settled_root: StateHash,
@@ -58,6 +60,7 @@ struct MergedBlock {
     runs: Vec<EnvelopeRun>,
     processed: Vec<ProcessedDeploy>,
     kept: Vec<bool>,
+    overdrawn: Vec<bool>,
     journals: Vec<Vec<JournalEntry>>,
 }
 
@@ -66,6 +69,7 @@ struct EnvelopeEffect {
     processed: ProcessedDeploy,
     number_channels: NumberChannelsEndVal,
     journal: Vec<JournalEntry>,
+    overdrawn: bool,
 }
 
 pub fn comm_count(log: &[Event]) -> u64 {
@@ -134,6 +138,8 @@ impl EnvelopeExecutor {
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         let (processed, number_channels) = ops.process_deploy_with_mergeable_data(envelope).await?;
+        let overdrawn = journal_overdrawn(Arc::new(runtime_cells(&ops.runtime)?))
+            .map_err(|e| invalid(format!("journal: {e}")))?;
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
         let post_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
@@ -142,6 +148,7 @@ impl EnvelopeExecutor {
             processed,
             number_channels,
             journal,
+            overdrawn,
         })
     }
 
@@ -166,6 +173,8 @@ impl EnvelopeExecutor {
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         let number_channels = replay.replay_deploy_e(false, &recorded).await?;
+        let overdrawn = journal_overdrawn(Arc::new(runtime_cells(&replay.runtime_ops.runtime)?))
+            .map_err(|e| invalid(format!("journal: {e}")))?;
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
         let post_root = replay
@@ -180,6 +189,7 @@ impl EnvelopeExecutor {
             processed: recorded,
             number_channels,
             journal,
+            overdrawn,
         })
     }
 
@@ -190,6 +200,7 @@ impl EnvelopeExecutor {
             processed,
             number_channels: NumberChannelsEndVal::default(),
             journal: Vec::new(),
+            overdrawn: false,
         }
     }
 
@@ -202,7 +213,7 @@ impl EnvelopeExecutor {
         let mut debited: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
         let mut candidates: Vec<usize> = Vec::new();
         for i in 0..effects.len() {
-            if !admitted[i] || effects[i].run.failed {
+            if !admitted[i] || effects[i].run.failed || effects[i].overdrawn {
                 continue;
             }
             let payers: std::collections::BTreeSet<Vec<u8>> = effects[i]
@@ -242,10 +253,12 @@ impl EnvelopeExecutor {
         let mut runs = Vec::with_capacity(effects.len());
         let mut processed = Vec::with_capacity(effects.len());
         let mut journals = Vec::with_capacity(effects.len());
+        let mut overdrawn = Vec::with_capacity(effects.len());
         for effect in effects {
             runs.push(effect.run);
             processed.push(effect.processed);
             journals.push(effect.journal);
+            overdrawn.push(effect.overdrawn);
         }
         Ok(MergedBlock {
             mid_root: merged.mid_root,
@@ -253,6 +266,7 @@ impl EnvelopeExecutor {
             processed,
             kept,
             journals,
+            overdrawn,
         })
     }
 
@@ -297,6 +311,7 @@ impl EnvelopeExecutor {
             processed,
             kept: merged,
             journals,
+            overdrawn,
         } = self.merge(pre_root, effects, &admitted)?;
         let (settlement, settled_root) = self
             .settle(
@@ -308,6 +323,7 @@ impl EnvelopeExecutor {
             runs,
             processed,
             merged,
+            overdrawn,
             gate,
             settlement,
             settled_root,
@@ -391,16 +407,24 @@ pub(crate) fn gate_inputs<'a>(
     deploys: impl Iterator<Item = &'a Signed<DeployData>>,
 ) -> Result<Vec<GateInput>, CasperError> {
     deploys
-        .map(|d| GateInput::from_deploy(d, named_signatures(d)))
+        .map(|d| {
+            let (named, sealed) = envelope_signatures(d);
+            GateInput::from_deploy(d, named).map(|input| input.with_sealed(sealed))
+        })
         .collect()
 }
 
-fn named_signatures(deploy: &Signed<DeployData>) -> Vec<WalletOwner> {
-    normalizer_env_from_deploy(deploy)
+fn envelope_signatures(deploy: &Signed<DeployData>) -> (Vec<WalletOwner>, Vec<WalletOwner>) {
+    let Some(term) = normalizer_env_from_deploy(deploy)
         .ok()
         .and_then(|env| Compiler::source_to_adt_with_normalizer_env(&deploy.data.term, env).ok())
-        .map(|term| named_owners(&term))
-        .unwrap_or_default()
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    match self_sealed_envelope(&term) {
+        Some(process) => (Vec::new(), vec![process]),
+        None => (named_owners(&term), Vec::new()),
+    }
 }
 
 fn reservations(
@@ -478,9 +502,18 @@ impl BlockExecutor {
     }
 }
 
-fn outcome(admitted: bool, exhausted: bool, failed: bool, merged: bool) -> EnvelopeOutcome {
+fn outcome(
+    admitted: bool,
+    exhausted: bool,
+    failed: bool,
+    overdrawn: bool,
+    merged: bool,
+) -> EnvelopeOutcome {
     if !admitted {
         return EnvelopeOutcome::NotRun;
+    }
+    if overdrawn && !failed {
+        return EnvelopeOutcome::Overdrawn;
     }
     if failed && exhausted {
         return EnvelopeOutcome::Exhausted;
@@ -497,8 +530,9 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
         .runs
         .iter()
         .zip(&executed.merged)
+        .zip(&executed.overdrawn)
         .zip(&executed.gate.entries)
-        .map(|((run, merged), gate)| RecordEntry {
+        .map(|(((run, merged), overdrawn), gate)| RecordEntry {
             executed: ExecutedEnvelope {
                 envelope_id: run.envelope_sig.clone(),
                 outcome: outcome(
@@ -506,6 +540,7 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
                     gate.delta > 0
                         && executed.settlement.charged_phlo(&run.envelope_sig) == Some(gate.delta),
                     run.failed,
+                    *overdrawn,
                     *merged,
                 ),
                 comm_phlo: run.comm_phlo,
