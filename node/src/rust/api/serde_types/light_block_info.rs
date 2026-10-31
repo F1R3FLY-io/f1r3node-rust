@@ -7,7 +7,7 @@ use models::casper::{BondInfo, JustificationInfo, LightBlockInfo, RejectedDeploy
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use utoipa::ToSchema;
 
-use super::base64_bytes;
+use super::{base64_bytes, int_string};
 
 /// Serializable representation of LightBlockInfo
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -56,6 +56,8 @@ pub struct LightBlockInfoSerde {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BondInfoJson {
     pub validator: String,
+    #[serde(with = "int_string")]
+    #[schema(value_type = String)]
     pub stake: i64,
 }
 

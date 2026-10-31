@@ -5,7 +5,7 @@ use models::casper::{BlockEventInfo, ReportPhase, TransferInfo};
 use models::rhoapi::Par;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
-use super::transaction::helpers;
+use super::transaction::{helpers, legacy_amount, Transaction};
 
 /// Extract user transfers from a report, keyed by deploy signature.
 ///
@@ -210,7 +210,7 @@ pub fn extract_transfers_from_report(
                     find_transfers_in_report(first, transfer_unforgeable, deployer_addr.as_deref());
                 let precharge_consistent = found.len() == 1
                     && deployer_addr.as_deref() == Some(found[0].from_addr.as_str())
-                    && found[0].amount == precharge_amount;
+                    && found[0].amount_raw == precharge_amount.to_string();
 
                 if precharge_consistent {
                     &deploy.report[1..]
@@ -221,7 +221,7 @@ pub fn extract_transfers_from_report(
                             deploy_sig = %deploy_sig,
                             expected_amount = precharge_amount,
                             found_transfers = 1,
-                            found_amount = found[0].amount,
+                            found_amount = %found[0].amount_raw,
                             found_sender = %found[0].from_addr,
                             "report[0] does not match the expected precharge shape; \
                              not skipping it — the precharge may appear as a user transfer"
@@ -306,7 +306,7 @@ fn find_transfers_in_report(
         None => return Vec::new(),
     };
 
-    let mut raw_transactions: Vec<RawTransfer> = Vec::new();
+    let mut raw_transactions: Vec<Transaction> = Vec::new();
     for event in &report.events {
         if let Some(models::casper::report_proto::Report::Comm(comm)) = &event.report {
             if let Some(channel) = comm.consume.as_ref().and_then(|c| c.channels.first()) {
@@ -314,12 +314,7 @@ fn find_transfers_in_report(
                     if let Some(produce) = comm.produces.first() {
                         if let Some(tx) = helpers::parse_transaction_from_produce(produce) {
                             if tx.from_addr == deployer_addr {
-                                raw_transactions.push(RawTransfer {
-                                    from_addr: tx.from_addr,
-                                    to_addr: tx.to_addr,
-                                    amount: tx.amount,
-                                    ret_unforgeable: tx.ret_unforgeable,
-                                });
+                                raw_transactions.push(tx);
                             }
                         }
                     }
@@ -354,20 +349,14 @@ fn find_transfers_in_report(
         transfers.push(TransferInfo {
             from_addr: tx.from_addr,
             to_addr: tx.to_addr,
-            amount: tx.amount,
+            amount: legacy_amount(&tx.amount),
+            amount_raw: tx.amount.to_string(),
             success: fail_reason.is_none(),
             fail_reason: fail_reason.unwrap_or_default(),
         });
     }
 
     transfers
-}
-
-struct RawTransfer {
-    from_addr: String,
-    to_addr: String,
-    amount: i64,
-    ret_unforgeable: Par,
 }
 
 #[cfg(test)]
@@ -382,8 +371,13 @@ mod tests {
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{Expr, GPrivate, GUnforgeable, ListParWithRandom};
+    use num_bigint::BigInt;
+    use prost::Message;
+    use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoBoolean, RhoString, RhoTuple2};
 
     use super::*;
+    use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
+    use crate::rust::web::transaction::LEGACY_AMOUNT_OUT_OF_RANGE;
 
     fn init_logger() { shared::rust::tracing_init::init_for_tests(); }
 
@@ -428,7 +422,7 @@ mod tests {
         transfer_unforgeable: &Par,
         from: &str,
         to: &str,
-        amount: i64,
+        amount: Par,
     ) -> ReportCommProto {
         let ret_unforg = make_transfer_unforgeable();
         let ret_unforg_for_data = ret_unforg.clone();
@@ -437,7 +431,7 @@ mod tests {
                 make_par_string(from),
                 Par::default(),
                 make_par_string(to),
-                make_par_int(amount),
+                amount,
                 Par::default(),
                 ret_unforg_for_data,
             ],
@@ -482,17 +476,7 @@ mod tests {
         amount: i64,
         phase: ReportPhase,
     ) -> SingleReport {
-        SingleReport {
-            events: vec![ReportProto {
-                report: Some(report_proto::Report::Comm(make_comm_event(
-                    transfer_unforgeable,
-                    from,
-                    to,
-                    amount,
-                ))),
-            }],
-            phase: phase as i32,
-        }
+        make_amount_report(transfer_unforgeable, from, to, make_par_int(amount), phase)
     }
 
     fn make_empty_report(phase: ReportPhase) -> SingleReport {
@@ -778,7 +762,7 @@ mod tests {
                         &transfer_unforgeable,
                         &deployer_addr,
                         "receiver_a",
-                        10,
+                        make_par_int(10),
                     ))),
                 },
                 ReportProto {
@@ -786,7 +770,7 @@ mod tests {
                         &transfer_unforgeable,
                         &deployer_addr,
                         "receiver_b",
-                        20,
+                        make_par_int(20),
                     ))),
                 },
             ],
@@ -1253,7 +1237,7 @@ mod tests {
                     &transfer_unforgeable,
                     &deployer_addr,
                     "receiver_addr",
-                    500,
+                    make_par_int(500),
                 ))),
             }],
             phase: 99,
@@ -1299,7 +1283,7 @@ mod tests {
                     &transfer_unforgeable,
                     &deployer_addr,
                     "receiver_addr",
-                    500,
+                    make_par_int(500),
                 ))),
             }],
             phase: 99,
@@ -1326,5 +1310,181 @@ mod tests {
             "unknown-only report uses the fallback path; the transfer is returned, not dropped"
         );
         assert_eq!(transfers[0].amount, 500);
+    }
+
+    fn make_amount_report(
+        transfer_unforgeable: &Par,
+        from: &str,
+        to: &str,
+        amount: Par,
+        phase: ReportPhase,
+    ) -> SingleReport {
+        SingleReport {
+            events: vec![ReportProto {
+                report: Some(report_proto::Report::Comm(make_comm_event(
+                    transfer_unforgeable,
+                    from,
+                    to,
+                    amount,
+                ))),
+            }],
+            phase: phase as i32,
+        }
+    }
+
+    #[test]
+    fn gint_and_gbigint_amounts_are_exact_through_grpc_and_http() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+        let one = BigInt::from(1);
+        let amounts: Vec<(Par, BigInt)> = [
+            one.clone(),
+            (&one << 53) + 1,
+            BigInt::from(i64::MAX),
+            &one << 63,
+            BigInt::from(10_000_000_000_000_000_000u64),
+            &one << 128,
+            (&one << 256) - 1,
+        ]
+        .into_iter()
+        .map(|n| (RhoBigInt::create_par(&n), n))
+        .chain([(make_par_int(i64::MAX), BigInt::from(i64::MAX))])
+        .collect();
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_big",
+                &deployer_hex,
+                0,
+                0,
+            ))
+            .into(),
+            report: amounts
+                .iter()
+                .map(|(par, _)| {
+                    make_amount_report(
+                        &transfer_unforgeable,
+                        &deployer_addr,
+                        "receiver_addr",
+                        par.clone(),
+                        ReportPhase::User,
+                    )
+                })
+                .collect(),
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = &result["deploy_big"];
+        assert_eq!(transfers.len(), amounts.len(), "no amount is dropped");
+        for (transfer, (_, expected)) in transfers.iter().zip(&amounts) {
+            let encoded = transfer.encode_to_vec();
+            let transfer = TransferInfo::decode(encoded.as_slice()).unwrap();
+            let exact = expected.to_string();
+            assert_eq!(transfer.amount_raw, exact);
+            let legacy = i64::try_from(expected).unwrap_or(LEGACY_AMOUNT_OUT_OF_RANGE);
+            assert_eq!(transfer.amount, legacy, "{exact}");
+            assert_ne!(transfer.amount, 0, "{exact}");
+            let json = serde_json::to_value(TransferInfoSerde::from(transfer)).unwrap();
+            assert_eq!(json["amount"], exact.as_str());
+        }
+    }
+
+    #[test]
+    fn precharge_matches_runtime_wrapping_charge_on_fallback_path() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+        let (phlo_limit, phlo_price) = (10_000_000, 1_000_000_000_000);
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_wrapping_precharge",
+                &deployer_hex,
+                phlo_limit,
+                phlo_price,
+            ))
+            .into(),
+            report: vec![
+                make_transfer_report(
+                    &transfer_unforgeable,
+                    &deployer_addr,
+                    "pos_vault_addr",
+                    i64::wrapping_mul(phlo_limit, phlo_price),
+                ),
+                make_transfer_report(&transfer_unforgeable, &deployer_addr, "receiver_addr", 7),
+            ],
+        });
+
+        let result = extract_transfers_from_report(&report, &transfer_unforgeable);
+
+        let transfers = &result["deploy_wrapping_precharge"];
+        assert_eq!(transfers.len(), 1, "the runtime precharge is skipped");
+        assert_eq!(transfers[0].to_addr, "receiver_addr");
+        assert_eq!(transfers[0].amount_raw, "7");
+    }
+
+    #[test]
+    fn failed_transfers_preserve_requested_amounts_above_vault_and_512_bit_limits() {
+        let transfer_unforgeable = make_transfer_unforgeable();
+        let (deployer_hex, deployer_addr) = make_deployer();
+        let amounts: Vec<BigInt> = vec![
+            BigInt::from(0),
+            BigInt::from(-1),
+            BigInt::from(-5),
+            BigInt::from(1) << 256,
+            BigInt::from(1) << 512,
+            BigInt::from(-1) << 512,
+            BigInt::from(1) << 1024,
+        ];
+        let fail_reason = "Transfer amount rejected";
+        let report = make_block_event(DeployInfoWithEventData {
+            deploy_info: Some(make_deploy_info_with_charge(
+                "deploy_failed_amounts",
+                &deployer_hex,
+                0,
+                0,
+            ))
+            .into(),
+            report: amounts
+                .iter()
+                .map(|amount| {
+                    let mut report = make_amount_report(
+                        &transfer_unforgeable,
+                        &deployer_addr,
+                        "receiver_addr",
+                        RhoBigInt::create_par(amount),
+                        ReportPhase::User,
+                    );
+                    report.events.push(ReportProto {
+                        report: Some(report_proto::Report::Produce(ReportProduceProto {
+                            channel: Some(make_transfer_unforgeable()),
+                            data: Some(ListParWithRandom {
+                                pars: vec![RhoTuple2::create_par((
+                                    RhoBoolean::create_par(false),
+                                    RhoString::create_par(fail_reason.to_string()),
+                                ))],
+                                random_state: vec![],
+                            }),
+                        })),
+                    });
+                    report
+                })
+                .collect(),
+        });
+
+        let extracted = extract_transfers_from_report(&report, &transfer_unforgeable);
+        let transfers = &extracted["deploy_failed_amounts"];
+        assert_eq!(transfers.len(), amounts.len());
+        for (transfer, amount) in transfers.iter().zip(amounts) {
+            let encoded = transfer.encode_to_vec();
+            let decoded = TransferInfo::decode(encoded.as_slice()).unwrap();
+            assert_eq!(decoded.amount_raw, amount.to_string());
+            assert_eq!(decoded.from_addr, deployer_addr);
+            assert_eq!(decoded.to_addr, "receiver_addr");
+            assert!(!decoded.success);
+            assert_eq!(decoded.fail_reason, fail_reason);
+            let json = serde_json::to_value(TransferInfoSerde::from(decoded)).unwrap();
+            assert_eq!(json["amount"], amount.to_string());
+            assert_eq!(json["success"], false);
+            assert_eq!(json["failReason"], fail_reason);
+        }
     }
 }

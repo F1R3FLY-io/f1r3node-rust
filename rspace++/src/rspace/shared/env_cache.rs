@@ -28,9 +28,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 
-use heed::{Env, EnvOpenOptions};
+use heed::{Env, EnvOpenOptions, WithoutTls};
 
-static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Weak<Env>>>> = OnceLock::new();
+static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Weak<Env<WithoutTls>>>>> = OnceLock::new();
 
 /// Open an LMDB environment for `dir_path`, or return a clone of the cached
 /// handle if one is already alive. Map size and max_dbs are honored only on
@@ -39,7 +39,7 @@ pub fn get_or_open_env(
     dir_path: &Path,
     max_env_size: usize,
     max_dbs: u32,
-) -> Result<Arc<Env>, heed::Error> {
+) -> Result<Arc<Env<WithoutTls>>, heed::Error> {
     let cache = ENV_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
     let mut cache_lock = cache.lock().expect("LMDB env cache mutex poisoned");
 
@@ -52,7 +52,7 @@ pub fn get_or_open_env(
     }
 
     fs::create_dir_all(dir_path)?;
-    let mut env_builder = EnvOpenOptions::new();
+    let mut env_builder = EnvOpenOptions::new().read_txn_without_tls();
     env_builder.map_size(max_env_size);
     env_builder.max_dbs(max_dbs);
     env_builder.max_readers(2048);
@@ -70,4 +70,50 @@ pub fn get_or_open_env(
     let arc = Arc::new(env);
     cache_lock.insert(dir_path.to_path_buf(), Arc::downgrade(&arc));
     Ok(arc)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Barrier;
+
+    use super::*;
+
+    #[test]
+    fn independent_read_transactions_can_share_a_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = get_or_open_env(dir.path(), 1024 * 1024, 1).unwrap();
+        let first = env.read_txn().unwrap();
+        let second = env.read_txn().unwrap();
+        assert_eq!(first.id(), second.id());
+        drop(first);
+        let third = env.read_txn().unwrap();
+        assert_eq!(second.id(), third.id());
+    }
+
+    #[test]
+    fn environment_can_close_while_reader_threads_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        for _ in 0..256 {
+            let env = get_or_open_env(dir.path(), 1024 * 1024, 1).unwrap();
+            let weak = Arc::downgrade(&env);
+            let barrier = Arc::new(Barrier::new(9));
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    let env = env.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        drop(env.read_txn().unwrap());
+                        drop(env);
+                        barrier.wait();
+                    })
+                })
+                .collect();
+            barrier.wait();
+            drop(env);
+            for thread in threads {
+                thread.join().unwrap();
+            }
+            assert!(weak.upgrade().is_none());
+        }
+    }
 }

@@ -1429,7 +1429,11 @@ fn build_deploy_transfers(
                 .map(|t| TransferEvent {
                     from_addr: t.from_addr,
                     to_addr: t.to_addr,
-                    amount: t.amount,
+                    amount: if t.amount_raw.is_empty() {
+                        t.amount.to_string()
+                    } else {
+                        t.amount_raw
+                    },
                     success: t.success,
                 })
                 .collect(),
@@ -1456,6 +1460,7 @@ mod tests {
             from_addr: from.to_string(),
             to_addr: to.to_string(),
             amount,
+            amount_raw: amount.to_string(),
             success: true,
             fail_reason: String::new(),
         }
@@ -1473,7 +1478,7 @@ mod tests {
         let entry = &out[0];
         assert_eq!(entry.deploy_id, "deploy_with");
         assert_eq!(entry.transfers.len(), 1);
-        assert_eq!(entry.transfers[0].amount, 10);
+        assert_eq!(entry.transfers[0].amount, "10");
     }
 
     #[test]
@@ -1502,8 +1507,33 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].transfers.len(), 2);
-        assert_eq!(out[0].transfers[0].amount, 1);
-        assert_eq!(out[0].transfers[1].amount, 2);
+        assert_eq!(out[0].transfers[0].amount, "1");
+        assert_eq!(out[0].transfers[1].amount, "2");
+    }
+
+    #[test]
+    fn websocket_transfers_preserve_exact_and_legacy_protobuf_amounts() {
+        for (legacy, raw, expected) in [
+            (i64::MIN, "", i64::MIN.to_string()),
+            (0, "", "0".to_string()),
+            (i64::MAX, "", i64::MAX.to_string()),
+            (
+                -1,
+                "10000000000000000000",
+                "10000000000000000000".to_string(),
+            ),
+        ] {
+            let mut transfer = transfer("sender", "recipient", legacy);
+            transfer.amount_raw = raw.to_string();
+            transfer.success = false;
+            let out = build_deploy_transfers(std::collections::HashMap::from([(
+                "deploy".to_string(),
+                vec![transfer],
+            )]));
+            let json = serde_json::to_value(&out[0].transfers[0]).unwrap();
+            assert_eq!(json["amount"], expected);
+            assert_eq!(json["success"], false);
+        }
     }
 
     // ---------- register_consensus_bundle_roots_core ----------
