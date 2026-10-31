@@ -19,7 +19,7 @@ use super::block_record::BlockRecord;
 use super::body::{Attestation, StateHash, V6Body, V6Records};
 use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore, InclusionCheck};
 use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink, Offence};
-use super::inclusion::{AdmitAll, InclusionScreen};
+use super::inclusion::{screen_offers, GateScreen, InclusionScreen};
 use super::executor::BlockExecutor;
 use super::lag::{Lag, LagGate, Transition};
 use super::linearizer::{Advance, Linearizer};
@@ -111,9 +111,9 @@ impl V6Engine<BlockRecord> {
         let backend = Arc::new(BlockExecutor::new(runtime_manager.clone(), workers));
         let parts = V6Parts {
             backend,
-            validators: Arc::new(AttestedRootValidators::new(runtime_manager)),
+            validators: Arc::new(AttestedRootValidators::new(runtime_manager.clone())),
             evidence: Arc::new(MemoryEvidenceSink::new()),
-            inclusion: Arc::new(AdmitAll),
+            inclusion: Arc::new(GateScreen::new(runtime_manager)),
             store: Some(Box::new(store)),
             limits: policy.limits(),
             params: CoreParams {
@@ -535,6 +535,15 @@ impl<R: ExecutionRecord> V6Engine<R> {
         } else {
             Vec::new()
         };
+        let envelopes = screen_offers(
+            &*self.inclusion,
+            &self.deploy_storage,
+            envelopes,
+            &attestation.root,
+            next_block_number,
+            now_millis,
+        )
+        .await?;
         if envelopes.is_empty() && records.is_empty() && !selection.allows_empty() {
             return Ok(BlockCreatorResult::NoNewDeploys);
         }

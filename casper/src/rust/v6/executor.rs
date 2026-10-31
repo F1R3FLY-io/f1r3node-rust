@@ -384,7 +384,7 @@ impl EnvelopeExecutor {
     }
 }
 
-fn gate_inputs<'a>(
+pub(crate) fn gate_inputs<'a>(
     deploys: impl Iterator<Item = &'a Signed<DeployData>>,
 ) -> Result<Vec<GateInput>, CasperError> {
     deploys
