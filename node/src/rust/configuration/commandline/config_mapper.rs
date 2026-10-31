@@ -866,6 +866,11 @@ mod tests {
                 rejection_search_cap_from_height: None,
                 rejection_search_group_branch_cap:
                     casper::rust::casper_conf::default_rejection_search_group_branch_cap(),
+                v6_retained_records: casper::rust::casper_conf::default_v6_retained_records(),
+                offer_rejection_log_capacity:
+                    casper::rust::casper_conf::default_offer_rejection_log_capacity(),
+                offer_rejection_reason_bytes:
+                    casper::rust::casper_conf::default_offer_rejection_reason_bytes(),
                 synchrony_recovery_stall_window: Duration::from_secs(60),
                 synchrony_recovery_cooldown: Duration::from_secs(20),
                 synchrony_recovery_max_bypasses: 2,

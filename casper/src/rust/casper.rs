@@ -56,6 +56,8 @@ pub const PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT: i64 = 128;
 
 pub const REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT: usize = 16;
 
+pub const V6_RETAINED_RECORDS_DEFAULT: usize = 1024;
+
 pub const FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT: u32 =
     crate::rust::finality::floor_runner::MAX_CONSECUTIVE_INVALIDATIONS;
 
@@ -126,6 +128,13 @@ pub trait Casper {
     async fn request_block_from_peers(&self, _hash: BlockHash) -> Result<(), CasperError> { Ok(()) }
 
     fn v6_engine(&self) -> Option<Arc<crate::rust::v6::V6Engine>> { None }
+
+    fn offered_pool_status(
+        &self,
+        _deploy_id: &[u8],
+    ) -> Result<crate::rust::v6::receipt::PoolStatus, CasperError> {
+        Ok(crate::rust::v6::receipt::PoolStatus::Absent)
+    }
 
     fn contains(&self, hash: &BlockHash) -> bool;
 
@@ -412,6 +421,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             block_store.clone(),
             block_dag_storage.clone(),
             deploy_storage.clone(),
+            casper_shard_conf.v6_retained_records,
         );
         engine.start();
         Some(engine)
@@ -595,6 +605,7 @@ pub struct CasperShardConf {
     pub rejection_search_cap_from_height: Option<i64>,
     pub rejection_search_group_branch_cap: usize,
     pub v6_order_then_execute: bool,
+    pub v6_retained_records: usize,
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
@@ -652,6 +663,7 @@ impl CasperShardConf {
             rejection_search_cap_from_height: None,
             rejection_search_group_branch_cap: REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT,
             v6_order_then_execute: false,
+            v6_retained_records: V6_RETAINED_RECORDS_DEFAULT,
             mergeable_channels_gc_depth_buffer: 10,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),

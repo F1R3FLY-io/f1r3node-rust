@@ -5,6 +5,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::offer_rejection::OfferRejection;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
@@ -15,7 +16,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 
 use super::backend::ExecutionBackend;
 use super::block_record::BlockRecord;
-use super::body::{Attestation, V6Body};
+use super::body::{Attestation, StateHash, V6Body};
 use super::core::{Action, CoreParams, EmittedBlock, Evidence, ExecutorCore};
 use super::executor::BlockExecutor;
 use super::linearizer::{Advance, Linearizer};
@@ -52,6 +53,7 @@ impl V6Engine<BlockRecord> {
         block_store: KeyValueBlockStore,
         dag_storage: BlockDagKeyValueStorage,
         deploy_storage: Arc<KeyValueDeployStorage>,
+        retained_records: usize,
     ) -> Arc<Self> {
         let workers = std::thread::available_parallelism()
             .map(|cores| cores.get())
@@ -65,7 +67,10 @@ impl V6Engine<BlockRecord> {
             dag_storage,
             deploy_storage,
             ShardResourcePolicy::default().limits(),
-            CoreParams::default(),
+            CoreParams {
+                retained_records,
+                ..CoreParams::default()
+            },
         )
     }
 }
@@ -131,6 +136,23 @@ impl<R: ExecutionRecord> V6Engine<R> {
 
     pub fn executed(&self, block: &BlockHash) -> Option<Bytes> {
         self.core.lock().executed(block).cloned()
+    }
+
+    pub fn record(&self, block: &BlockHash) -> Option<R> { self.core.lock().record(block).cloned() }
+
+    pub fn record_rejection(
+        &self,
+        deploy_sig: &[u8],
+        pre_state_root: &StateHash,
+        block_number: i64,
+        reason: &str,
+    ) -> Result<bool, CasperError> {
+        Ok(self.deploy_storage.record_rejection(OfferRejection {
+            deploy_id: deploy_sig.to_vec(),
+            pre_state_root: Some(pre_state_root.to_vec()),
+            block_number,
+            reason: reason.to_string(),
+        })?)
     }
 
     pub fn evidence(&self) -> Vec<Evidence> { self.core.lock().evidence().to_vec() }

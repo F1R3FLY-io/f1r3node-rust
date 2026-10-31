@@ -206,6 +206,24 @@ pub struct CasperConf {
         default = "default_rejection_search_group_branch_cap"
     )]
     pub rejection_search_group_branch_cap: usize,
+
+    #[serde(
+        rename = "v6-retained-records",
+        default = "default_v6_retained_records"
+    )]
+    pub v6_retained_records: usize,
+
+    #[serde(
+        rename = "offer-rejection-log-capacity",
+        default = "default_offer_rejection_log_capacity"
+    )]
+    pub offer_rejection_log_capacity: usize,
+
+    #[serde(
+        rename = "offer-rejection-reason-bytes",
+        default = "default_offer_rejection_reason_bytes"
+    )]
+    pub offer_rejection_reason_bytes: usize,
 }
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
@@ -269,6 +287,16 @@ pub fn default_deploy_pool_blocks_of_backlog() -> usize {
 
 pub fn default_proposal_pacing_floor_distance() -> i64 {
     crate::rust::casper::PROPOSAL_PACING_FLOOR_DISTANCE_DEFAULT
+}
+
+pub fn default_v6_retained_records() -> usize { crate::rust::casper::V6_RETAINED_RECORDS_DEFAULT }
+
+pub fn default_offer_rejection_log_capacity() -> usize {
+    block_storage::rust::deploy::offer_rejection::OFFER_REJECTION_LOG_CAPACITY_DEFAULT
+}
+
+pub fn default_offer_rejection_reason_bytes() -> usize {
+    block_storage::rust::deploy::offer_rejection::OFFER_REJECTION_REASON_BYTES_DEFAULT
 }
 
 pub fn default_rejection_search_group_branch_cap() -> usize {
