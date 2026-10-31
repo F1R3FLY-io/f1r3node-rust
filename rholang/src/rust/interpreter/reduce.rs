@@ -1319,8 +1319,8 @@ impl DebruijnInterpreter {
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
-        // A join whose channels resolve to one name never matches: the runtime
-        // counterpart of the normalizer's ReceiveOnSameChannelsError.
+        // A join in which any two channels resolve to the same name never matches:
+        // the runtime counterpart of the normalizer's ReceiveOnSameChannelsError.
         let mut channels = HashSet::with_capacity(binds.len());
         if !binds.iter().all(|(_, channel)| channels.insert(channel)) {
             return Ok(());

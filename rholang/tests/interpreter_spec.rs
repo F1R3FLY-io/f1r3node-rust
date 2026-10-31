@@ -255,13 +255,16 @@ async fn interpreter_should_capture_the_current_outer_value_in_nested_contracts(
 }
 
 #[tokio::test]
-async fn a_join_whose_channels_resolve_to_one_name_never_fires() {
+async fn a_join_with_two_channels_on_one_name_never_fires() {
     with_runtime("same-channel-join-spec-", |mut runtime| async move {
         let term = r#"
-            contract @"join"(@a, @b) = { for (_ <- @a & _ <- @b) { @"fired"!(a) } } |
-            @"join"!("ch", "ch") |
-            @"join"!("left", "right") |
-            @"ch"!(0) | @"ch"!(1) | @"left"!(0) | @"right"!(1)
+            contract @"join"(@a, @b, @c) = {
+                for (_ <- @a & _ <- @b & _ <- @c) { @"fired"!(a) }
+            } |
+            @"join"!("ch", "ch", "other") |
+            @"join"!("left", "middle", "right") |
+            @"ch"!(0) | @"ch"!(1) | @"other"!(2) |
+            @"left"!(0) | @"middle"!(1) | @"right"!(2)
         "#;
 
         success(&mut runtime, term).await.unwrap();
@@ -282,8 +285,9 @@ async fn a_join_whose_channels_resolve_to_one_name_never_fires() {
                 .map_or(0, |row| row.data.len())
         };
 
-        assert_eq!(data_on("fired"), 1, "only the join on two names fires");
-        assert_eq!(data_on("ch"), 2, "the join on one name consumes nothing");
+        assert_eq!(data_on("fired"), 1, "only the join on distinct names fires");
+        assert_eq!(data_on("ch"), 2, "the join with a repeated name consumes nothing");
+        assert_eq!(data_on("other"), 1, "the join with a repeated name consumes nothing");
     })
     .await
 }
