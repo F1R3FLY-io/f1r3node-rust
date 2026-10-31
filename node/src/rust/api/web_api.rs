@@ -25,6 +25,8 @@ use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
+use rholang::rust::interpreter::accounting::rev_stack::native;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -240,6 +242,65 @@ pub struct WebApiImpl {
     epoch_length: i32,
     quarantine_length: i32,
     is_ready: Arc<AtomicBool>,
+    wallet_path: WalletPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WalletPath {
+    #[default]
+    Legacy,
+    Native,
+}
+
+fn balance_query_term(wallet_path: WalletPath, address: &str) -> Result<String> {
+    if !VaultAddress::is_valid(address) {
+        return Err(eyre!("Invalid REV address {}", address));
+    }
+    match wallet_path {
+        WalletPath::Native => native::balance_term(address).map_err(|e| eyre!(e)),
+        WalletPath::Legacy => Ok(format!(
+            r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh in {{
+  rl!(`rho:vault:system`, *systemVaultCh) |
+  for (@(_, SystemVault) <- systemVaultCh) {{
+    @SystemVault!("findOrCreate", "{address}", *vaultCh) |
+    for (@either <- vaultCh) {{
+      match either {{
+        (true, vault) => {{
+          @vault!("balance", *balanceCh) |
+          for (@balance <- balanceCh) {{
+            return!(balance)
+          }}
+        }}
+        (false, errorMsg) => {{
+          return!(errorMsg)
+        }}
+      }}
+    }}
+  }}
+}}"#
+        )),
+    }
+}
+
+fn balance_from_result(wallet_path: WalletPath, address: &str, pars: Vec<Par>) -> Result<String> {
+    match wallet_path {
+        WalletPath::Native => {
+            let first = pars
+                .first()
+                .ok_or_else(|| eyre!("No balance result for address {}", address))?;
+            native::parse_balance(first)
+                .map(|balance| balance.to_string())
+                .map_err(|e| eyre!("Balance lookup for address {} failed: {}", address, e))
+        }
+        WalletPath::Legacy => {
+            let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
+            match exprs.first() {
+                Some(RhoExpr::ExprBigInt { data }) => Ok(data.clone()),
+                Some(RhoExpr::ExprInt { data }) => Ok(data.to_string()),
+                _ => Err(eyre!("Unexpected balance result for address {}", address)),
+            }
+        }
+    }
 }
 
 impl WebApiImpl {
@@ -286,7 +347,13 @@ impl WebApiImpl {
             epoch_length,
             quarantine_length,
             is_ready,
+            wallet_path: WalletPath::default(),
         }
+    }
+
+    pub fn with_wallet_path(mut self, wallet_path: WalletPath) -> Self {
+        self.wallet_path = wallet_path;
+        self
     }
     /// Resolve a block hash to query against. If provided, use it; otherwise use LFB.
     /// Returns (block_hash, block_number).
@@ -827,27 +894,7 @@ impl WebApi for WebApiImpl {
         address: String,
         block_hash: Option<String>,
     ) -> Result<BalanceResponse> {
-        let term = format!(
-            r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh in {{
-  rl!(`rho:vault:system`, *systemVaultCh) |
-  for (@(_, SystemVault) <- systemVaultCh) {{
-    @SystemVault!("findOrCreate", "{address}", *vaultCh) |
-    for (@either <- vaultCh) {{
-      match either {{
-        (true, vault) => {{
-          @vault!("balance", *balanceCh) |
-          for (@balance <- balanceCh) {{
-            return!(balance)
-          }}
-        }}
-        (false, errorMsg) => {{
-          return!(errorMsg)
-        }}
-      }}
-    }}
-  }}
-}}"#
-        );
+        let term = balance_query_term(self.wallet_path, &address)?;
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -861,12 +908,7 @@ impl WebApi for WebApiImpl {
         )
         .await?;
 
-        let exprs: Vec<RhoExpr> = pars.into_iter().filter_map(expr_from_par_proto).collect();
-        let balance = match exprs.first() {
-            Some(RhoExpr::ExprBigInt { data }) => data.clone(),
-            Some(RhoExpr::ExprInt { data }) => data.to_string(),
-            _ => return Err(eyre!("Unexpected balance result for address {}", address)),
-        };
+        let balance = balance_from_result(self.wallet_path, &address, pars)?;
 
         Ok(BalanceResponse {
             address,
@@ -2217,6 +2259,60 @@ mod tests {
 
     use super::*;
 
+    fn tuple(flag: bool, value: Par) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: vec![
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::GBool(flag)),
+                    }]),
+                    value,
+                ],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }])
+    }
+
+    fn int(n: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::GInt(n)),
+        }])
+    }
+
+    const ADDRESS: &str = "1111gW5kkGxHg7xDg6dRkZx2f7qxTizJzaCH9VEM1oJKWRvSX9Sk5";
+
+    #[test]
+    fn balance_query_uses_the_selected_wallet_path() {
+        let native = balance_query_term(WalletPath::Native, ADDRESS).unwrap();
+        assert!(native.contains("rho:rev:wallet"));
+        assert!(!native.contains("findOrCreate"));
+        let legacy = balance_query_term(WalletPath::Legacy, ADDRESS).unwrap();
+        assert!(legacy.contains("findOrCreate"));
+        assert_eq!(WalletPath::default(), WalletPath::Legacy);
+    }
+
+    #[test]
+    fn balance_query_rejects_addresses_that_are_not_valid() {
+        let injected = format!("{ADDRESS}\", *vaultCh) | @\"x\"!(\"y");
+        for path in [WalletPath::Native, WalletPath::Legacy] {
+            for bad in ["", "lala", injected.as_str()] {
+                assert!(balance_query_term(path, bad).is_err(), "{path:?} {bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_balance_results_parse() {
+        let ok = balance_from_result(WalletPath::Native, ADDRESS, vec![tuple(true, int(42))]);
+        assert_eq!(ok.unwrap(), "42");
+        let failed = balance_from_result(WalletPath::Native, ADDRESS, vec![tuple(false, int(0))]);
+        assert!(failed.is_err());
+        assert!(balance_from_result(WalletPath::Native, ADDRESS, vec![]).is_err());
+        let legacy = balance_from_result(WalletPath::Legacy, ADDRESS, vec![int(7)]);
+        assert_eq!(legacy.unwrap(), "7");
+    }
+
     #[test]
     fn offered_ids_are_non_empty_hex() {
         let id = "ab".repeat(70);
@@ -2392,6 +2488,7 @@ mod tests {
                 shard_id: "".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
@@ -3305,6 +3402,7 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
         }
     }
 

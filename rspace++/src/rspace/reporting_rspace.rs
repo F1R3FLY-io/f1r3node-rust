@@ -356,6 +356,10 @@ where
         self.replay_rspace.get_data(channel).await
     }
 
+    fn hot_store(&self) -> Option<Arc<Box<dyn HotStore<C, P, A, K>>>> {
+        self.replay_rspace.hot_store()
+    }
+
     async fn get_data_at(
         &self,
         checkpoint: &SoftCheckpoint<C, P, A, K>,

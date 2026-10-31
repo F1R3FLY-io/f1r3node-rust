@@ -1,6 +1,7 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/storage/ChargingRSpace.scala
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use models::rhoapi::tagged_continuation::TaggedCont;
@@ -8,6 +9,7 @@ use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use rspace_plus_plus::rspace::checkpoint::{Checkpoint, SoftCheckpoint};
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hot_store::HotStore;
 use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
@@ -80,6 +82,22 @@ impl ChargingRSpace {
 
                 let id = consume_id_bytes(&continuation)?;
                 let channels_count = channels.len() as i64;
+                if self.cost.storage_left_in_space().is_some() {
+                    let consume_res = self
+                        .space
+                        .consume(channels, patterns, continuation, persist, peeks)
+                        .await?;
+                    match consume_res.as_ref() {
+                        Some((cont, data_list)) => {
+                            left_in_space_match(cont, data_list, &Trigger::Consume, &self.cost)?
+                        }
+                        None => {
+                            self.cost.charge(event_storage_cost(channels_count))?;
+                            with_rule(&self.cost, |rule| rule.stored_continuation(&id));
+                        }
+                    }
+                    return Ok(consume_res);
+                }
                 let consume_res = self
                     .space
                     .consume(channels, patterns, continuation, persist, peeks)
@@ -108,6 +126,29 @@ impl ChargingRSpace {
                 MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
+                if self.cost.storage_left_in_space().is_some() {
+                    let id = data.random_state.clone();
+                    let restored = with_rule(&self.cost, |rule| rule.restores(&id));
+                    if !restored {
+                        self.cost.charge(storage_cost_produce(&channel, &data))?;
+                    }
+                    let produce_res = self.space.produce(channel, data, persist).await?;
+                    match produce_res.as_ref() {
+                        Some((cont, data_list, _)) => left_in_space_match(
+                            cont,
+                            data_list,
+                            &Trigger::Produce { id, restored },
+                            &self.cost,
+                        )?,
+                        None if !restored => {
+                            self.cost.charge(event_storage_cost(1))?;
+                            with_rule(&self.cost, |rule| rule.stored_datum(&id));
+                        }
+                        None => {}
+                    }
+                    return Ok(produce_res);
+                }
+
                 self.cost.charge(storage_cost_produce(&channel, &data))?;
 
                 let id = data.random_state.clone();
@@ -142,6 +183,14 @@ impl ChargingRSpace {
 
             async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
                 self.space.get_data(channel).await
+            }
+
+            fn hot_store(
+                &self,
+            ) -> Option<
+                Arc<Box<dyn HotStore<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>,
+            > {
+                self.space.hot_store()
             }
 
             async fn get_data_at(
@@ -293,6 +342,8 @@ fn handle_result(
                 "produces storage refund",
             ))?;
 
+            cost.record_comm();
+
             let last_iteration = !triggered_by_persistent;
 
             if last_iteration {
@@ -329,4 +380,74 @@ fn refund_for_removing_produces(
                 )
             },
         )
+}
+
+enum Trigger {
+    Consume,
+    Produce { id: Vec<u8>, restored: bool },
+}
+
+fn with_rule<T: Default>(
+    cost: &_cost,
+    f: impl FnOnce(&mut crate::rust::interpreter::accounting::storage_rule::LeftInSpace) -> T,
+) -> T {
+    cost.storage_left_in_space()
+        .as_mut()
+        .map(f)
+        .unwrap_or_default()
+}
+
+fn refund(cost: &_cost, amount: i64, operation: &'static str) -> Result<(), InterpreterError> {
+    if amount == 0 {
+        return Ok(());
+    }
+    cost.charge(Cost::create(-amount, operation))
+}
+
+fn left_in_space_match(
+    cont: &ContResult<Par, BindPattern, TaggedContinuation>,
+    data_list: &[RSpaceResult<Par, ListParWithRandom>],
+    trigger: &Trigger,
+    cost: &_cost,
+) -> Result<(), InterpreterError> {
+    let consume_storage = storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
+    let consume_refund = match trigger {
+        Trigger::Consume => consume_storage.value,
+        Trigger::Produce { .. } if cont.persistent => 0,
+        Trigger::Produce { .. } => {
+            let id = consume_id_bytes(&cont.continuation)?;
+            if with_rule(cost, |rule| rule.removed_continuation(&id)) {
+                consume_storage.value + event_storage_cost(cont.channels.len() as i64).value
+            } else {
+                0
+            }
+        }
+    };
+    refund(cost, consume_refund, "consume storage refund")?;
+
+    let mut produce_refund = 0;
+    for (data, channel) in data_list.iter().zip(cont.channels.iter()) {
+        let id = &data.removed_datum.random_state;
+        match trigger {
+            Trigger::Produce {
+                id: trigger_id,
+                restored,
+            } if id == trigger_id => {
+                if !restored {
+                    produce_refund += storage_cost_produce(channel, &data.removed_datum).value;
+                }
+            }
+            _ if data.persistent => {}
+            _ => {
+                if with_rule(cost, |rule| rule.removed_datum(id)) {
+                    produce_refund += storage_cost_produce(channel, &data.removed_datum).value
+                        + event_storage_cost(1).value;
+                }
+            }
+        }
+    }
+    refund(cost, produce_refund, "produces storage refund")?;
+
+    cost.record_comm();
+    Ok(())
 }

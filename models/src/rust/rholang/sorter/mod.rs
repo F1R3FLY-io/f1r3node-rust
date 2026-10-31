@@ -1,5 +1,6 @@
 pub mod bundle_sort_matcher;
 pub mod connective_sort_matcher;
+pub mod cost_accounting_sorter;
 pub mod expr_sort_matcher;
 pub mod if_sort_matcher;
 pub mod match_sort_matcher;

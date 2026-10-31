@@ -407,6 +407,7 @@ async fn block_data_deploy_data_and_invalid_blocks() {
                 timestamp: 777,
                 deployer_id: PublicKey::from_bytes(&deployer_bytes),
                 deploy_id: vec![5, 6],
+                cosigners: Vec::new(),
             })
             .await;
         eval_ok(

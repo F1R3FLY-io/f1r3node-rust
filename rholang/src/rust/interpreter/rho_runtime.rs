@@ -30,6 +30,9 @@ use super::accounting::_cost;
 use super::accounting::cost_accounting::CostAccounting;
 use super::accounting::costs::Cost;
 use super::accounting::has_cost::HasCost;
+use super::accounting::rev_stack::bond::REV_BOND_URN;
+use super::accounting::rev_stack::genesis::REV_GENESIS_URN;
+use super::accounting::rev_stack::native::REV_WALLET_URN;
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -871,6 +874,45 @@ fn std_system_processes() -> Vec<Definition> {
             remainder: None,
         },
         Definition {
+            urn: REV_WALLET_URN.to_string(),
+            fixed_channel: FixedChannels::rev_wallet(),
+            arity: 3,
+            body_ref: BodyRefs::REV_WALLET,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().rev_wallet(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: REV_BOND_URN.to_string(),
+            fixed_channel: FixedChannels::rev_bond(),
+            arity: 3,
+            body_ref: BodyRefs::REV_BOND,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().rev_bond(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
+            urn: REV_GENESIS_URN.to_string(),
+            fixed_channel: FixedChannels::rev_genesis(),
+            arity: 3,
+            body_ref: BodyRefs::REV_GENESIS,
+            handler: Box::new(|ctx| {
+                Box::new(move |args| {
+                    let ctx = ctx.clone();
+                    Box::pin(async move { ctx.system_processes.clone().rev_genesis(args).await })
+                })
+            }),
+            remainder: None,
+        },
+        Definition {
             urn: "rho:system:deployerId:ops".to_string(),
             fixed_channel: FixedChannels::deployer_id_ops(),
             arity: 3,
@@ -1518,7 +1560,7 @@ async fn setup_reducer(
         block_data_ref,
         invalid_blocks,
         urn_map.clone(),
-        deploy_data_ref,
+        deploy_data_ref.clone(),
         extra_system_processes,
         openai_service,
         ollama_service,
@@ -1544,6 +1586,7 @@ async fn setup_reducer(
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
         filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        deploy_data: deploy_data_ref,
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

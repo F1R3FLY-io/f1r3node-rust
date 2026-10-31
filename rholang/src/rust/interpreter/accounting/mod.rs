@@ -5,10 +5,13 @@ use costs::Cost;
 
 use super::errors::InterpreterError;
 
+pub mod comm_ledger;
 pub mod cost_accounting;
 pub mod costs;
 pub mod has_cost;
 pub mod noop;
+pub mod rev_stack;
+pub mod storage_rule;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/package.scala
 #[allow(non_camel_case_types)]
@@ -19,6 +22,8 @@ pub struct CostManager {
     state: Arc<Mutex<Cost>>,
     log: Arc<Mutex<VecDeque<Cost>>>,
     max_log_entries: usize,
+    comms: comm_ledger::CommLedger,
+    storage: Arc<Mutex<Option<storage_rule::LeftInSpace>>>,
 }
 
 impl CostManager {
@@ -38,6 +43,8 @@ impl CostManager {
             state: Arc::new(Mutex::new(initial_value)),
             log: Arc::new(Mutex::new(VecDeque::with_capacity(initial_capacity))),
             max_log_entries,
+            comms: comm_ledger::CommLedger::default(),
+            storage: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -82,4 +89,19 @@ impl CostManager {
     pub fn get_log(&self) -> Vec<Cost> { self.log.lock().unwrap().iter().cloned().collect() }
 
     pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
+
+    pub fn record_comm(&self) { self.comms.on_comm(); }
+
+    pub fn comm_ledger(&self) -> &comm_ledger::CommLedger { &self.comms }
+
+    pub fn charge_storage_left_in_space(&self) {
+        *self.storage.lock().expect("storage rule lock") =
+            Some(storage_rule::LeftInSpace::default());
+    }
+
+    pub fn storage_left_in_space(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<storage_rule::LeftInSpace>> {
+        self.storage.lock().expect("storage rule lock")
+    }
 }

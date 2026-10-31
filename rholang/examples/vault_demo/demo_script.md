@@ -29,47 +29,54 @@ Here's how Alice would check her vault address:
 
     ./propose.sh $ALICE_PRV vault_demo/1.know_ones_vaultaddress.rho "-e s/%PUB_KEY/$ALICE_PUB/"
 
-## Access your own vault
+## Read a wallet balance
 
-Here's how Alice would check her vault balance:
+These scripts use the native REV layer, `rho:rev:wallet`. They work only on a
+shard that runs the v6 order-then-execute design.
+
+Alice uses this command to read her wallet balance:
 
     ./propose.sh $ALICE_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$ALICE_VAULT/"
-        
-Notice that anyone can check Alice's vault balance.
+
+Anyone can check the balance of any wallet.
 
     ./propose.sh $BOB_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$ALICE_VAULT/"
 
+The result is `(true, balance)`, or `(false, message)` when the address is not valid.
+
+The node CLI can also read a balance:
+
+    node wallet-balance --address $ALICE_VAULT
+
 ## Transfer to a VaultAddress
 
-Suppose Alice wants to on-board Bob and that she knows his vault address. Here's how she would transfer 100 tokens to Bob.
+Alice uses these commands to transfer 100 tokens to Bob. The payer is always the deployer, so the
+script does not take a source address.
 
-    ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%FROM/$ALICE_VAULT/ -e s/%TO/$BOB_VAULT/"
+    ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%TO/$BOB_VAULT/"
     ./propose.sh $ALICE_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$ALICE_VAULT/"
-    
-Notice the transfer hasn't been finished yet. Still, funds have been deducted from Alice's vault.
 
-Now, let's have Bob check his own balance:
+The node CLI makes the same transfer:
+
+    node transfer --to $BOB_VAULT --amount 100 --phlo-limit 100000 --phlo-price 1 --private-key $ALICE_PRV
+
+Bob then reads his own balance:
 
     ./propose.sh $BOB_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$BOB_VAULT/"
 
-When Bob checks his balance for the first time, a vault is created at the vault address he provides. Once his vault is 
-created, all previous transfers to his vault complete. In other words, the order in which one creates a vault and transfers
-funds into that vault doesn't matter.
-
-This means that the first access to one's vault needs to be done by a 3rd-party having the funds
-to pay for it. So the exchanges should not only do a `transfer`, but also a `findOrCreate`
-the destination vault. So should the Testnet operators distributing the funds.
-
-Because the "transfer" method takes a VaultAddress (and not a SystemVault), transfers between different "kinds", or security 
-schemes of SystemVaults are possible. For now, we only provide a simple SystemVault that only grants access to its designated 
-user.
+A transfer debits the wallet of the deployer and adds a separate deposit to the wallet of the
+payee. The payee does not have to create a wallet first. Every address has a wallet, and its
+balance is zero until a deposit arrives.
 
 ## Attempt a transfer despite insufficient funds
 
-    ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%FROM/$ALICE_VAULT/ -e s/%TO/$BOB_VAULT/"
+    ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%TO/$BOB_VAULT/"
+
+The result is `(false, "Insufficient funds")`, and no wallet changes.
 
 ## Attempt a transfer despite invalid VaultAddress
 
-    ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%FROM/$ALICE_VAULT/ -e s/%TO/lala/"
+    ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%TO/lala/"
 
-Notice the platform only checks whether the address is syntactically correct. A typo means the funds are lost.
+The result is `(false, message)`, and no wallet changes. The platform checks only the syntax and
+the checksum of the address. A valid address with a typo sends the funds to a different wallet.

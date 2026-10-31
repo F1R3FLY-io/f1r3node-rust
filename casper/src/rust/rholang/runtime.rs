@@ -1059,6 +1059,7 @@ impl RuntimeOps {
                 shard_id: String::new(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
             };
 
             let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();

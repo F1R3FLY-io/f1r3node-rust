@@ -21,7 +21,8 @@ fn policy() -> ShardResourcePolicy {
         block_records: 16,
         block_record_bytes: 1 << 20,
         max_envelopes: 32,
-        demand_cap: 1_000_000,
+        demand_cap: 500_000,
+        ..ShardResourcePolicy::default()
     }
 }
 

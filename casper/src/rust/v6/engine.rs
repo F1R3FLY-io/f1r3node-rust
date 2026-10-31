@@ -23,6 +23,7 @@ use super::inclusion::{AdmitAll, InclusionScreen};
 use super::executor::BlockExecutor;
 use super::lag::{Lag, LagGate, Transition};
 use super::linearizer::{Advance, Linearizer};
+use super::price::{effective_price, FixedPriceHook, NodePriceConf, PriceHook};
 use super::propose::{pack_records, select_envelopes, SelectionContext};
 use super::record::ExecutionRecord;
 use super::resource_policy::ShardResourcePolicy;
@@ -62,6 +63,7 @@ pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
     deploy_storage: Arc<KeyValueDeployStorage>,
     limits: Limits,
     lag_gate: LagGate,
+    price_hook: parking_lot::RwLock<Arc<dyn PriceHook>>,
     wake: tokio::sync::Notify,
     started: AtomicBool,
     held: parking_lot::Mutex<Option<BlockHash>>,
@@ -168,6 +170,10 @@ impl<R: ExecutionRecord> V6Engine<R> {
             deploy_storage,
             limits,
             lag_gate: LagGate::new(lag_threshold),
+            price_hook: parking_lot::RwLock::new(Arc::new(
+                FixedPriceHook::from_conf(&NodePriceConf::default())
+                    .expect("the default price configuration is valid"),
+            )),
             wake: tokio::sync::Notify::new(),
             started: AtomicBool::new(false),
             held: parking_lot::Mutex::new(None),
@@ -195,6 +201,8 @@ impl<R: ExecutionRecord> V6Engine<R> {
             }
         });
     }
+
+    pub fn set_price_hook(&self, hook: Arc<dyn PriceHook>) { *self.price_hook.write() = hook; }
 
     pub fn wake(&self) { self.wake.notify_one(); }
 
@@ -517,7 +525,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 deploy_lifespan: conf.deploy_lifespan,
                 now_millis,
                 shard_id: &conf.shard_name,
-                min_phlo_price: conf.min_phlo_price,
+                min_phlo_price: effective_price(&**self.price_hook.read(), conf.min_phlo_price),
                 in_scope: &in_scope,
                 limits: &self.limits,
             })

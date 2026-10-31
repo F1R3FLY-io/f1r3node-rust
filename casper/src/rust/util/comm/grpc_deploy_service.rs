@@ -2,14 +2,14 @@ use crypto::rust::signatures::signed::Signed;
 use models::casper::v1::deploy_service_client::DeployServiceClient;
 use models::casper::v1::{
     block_info_response, block_response, bond_status_response, continuation_at_name_response,
-    deploy_response, find_deploy_response, is_finalized_response, last_finalized_block_response,
-    machine_verify_response, rho_data_response, status_response, visualize_blocks_response,
-    RhoDataPayload,
+    deploy_response, exploratory_deploy_response, find_deploy_response, is_finalized_response,
+    last_finalized_block_response, machine_verify_response, rho_data_response, status_response,
+    visualize_blocks_response, RhoDataPayload,
 };
 use models::casper::{
     BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, ContinuationsWithBlockInfo,
-    DataAtNameByBlockQuery, FindDeployQuery, IsFinalizedQuery, LastFinalizedBlockQuery,
-    LightBlockInfo, MachineVerifyQuery, VisualizeDagQuery,
+    DataAtNameByBlockQuery, ExploratoryDeployQuery, FindDeployQuery, IsFinalizedQuery,
+    LastFinalizedBlockQuery, LightBlockInfo, MachineVerifyQuery, VisualizeDagQuery,
 };
 use models::rhoapi::Par;
 use models::rust::casper::protocol::casper_message::DeployData;
@@ -37,6 +37,7 @@ pub trait DeployService {
     async fn is_finalized(&mut self, q: IsFinalizedQuery) -> ServiceResult<String>;
     async fn bond_status(&mut self, q: BondStatusQuery) -> ServiceResult<String>;
     async fn status(&mut self) -> ServiceResult<String>;
+    async fn exploratory_deploy(&mut self, q: ExploratoryDeployQuery) -> ServiceResult<Vec<Par>>;
 }
 
 #[derive(Clone)]
@@ -98,6 +99,10 @@ impl DeployService for GrpcDeployService {
     }
 
     async fn status(&mut self) -> ServiceResult<String> { self.status_impl().await }
+
+    async fn exploratory_deploy(&mut self, q: ExploratoryDeployQuery) -> ServiceResult<Vec<Par>> {
+        self.exploratory_deploy_impl(q).await
+    }
 }
 
 impl GrpcDeployService {
@@ -293,6 +298,23 @@ impl GrpcDeployService {
                 Err(vec!["Validator is not bonded".into()])
             }
             None => Err(vec!["empty BondStatusResponse.message".into()]),
+        }
+    }
+
+    pub async fn exploratory_deploy_impl(
+        &mut self,
+        q: ExploratoryDeployQuery,
+    ) -> ServiceResult<Vec<Par>> {
+        let resp = self
+            .client
+            .exploratory_deploy(q)
+            .await
+            .map_err(error_to_vec)?;
+
+        match resp.into_inner().message {
+            Some(exploratory_deploy_response::Message::Error(err)) => Err(error_to_vec(err)),
+            Some(exploratory_deploy_response::Message::Result(data)) => Ok(data.post_block_data),
+            None => Err(vec!["empty ExploratoryDeployResponse.message".into()]),
         }
     }
 

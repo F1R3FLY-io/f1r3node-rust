@@ -349,6 +349,7 @@ fn normalize_with_wildcards<'ast>(
                 source: Some(new_boundvar_par(source_depth, source_bitset.clone(), false)),
                 remainder: None,
                 free_count: 1,
+                cost_signature: None,
             }],
             body: Some(match_par),
             persistent: false,

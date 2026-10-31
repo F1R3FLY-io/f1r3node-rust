@@ -5,7 +5,9 @@ use prost::bytes::Bytes;
 use prost::Message;
 
 use super::body::StateHash;
+use super::gate::{GateEntry, GateEntryProto};
 use super::record::ExecutionRecord;
+use super::settle::{Settlement, SettlementProto};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RecordEntryProto {
@@ -35,28 +37,38 @@ pub struct BlockRecordProto {
     pub entries: Vec<RecordEntryProto>,
     #[prost(message, repeated, tag = "6")]
     pub system_deploys: Vec<ProcessedSystemDeployProto>,
+    #[prost(message, repeated, tag = "11")]
+    pub gate: Vec<GateEntryProto>,
+    #[prost(message, optional, tag = "12")]
+    pub settlement: Option<SettlementProto>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvelopeOutcome {
+    NotRun,
     Completed,
     UserFailure,
+    Exhausted,
     Conflicted,
 }
 
 impl EnvelopeOutcome {
     pub fn tag(self) -> u32 {
         match self {
+            EnvelopeOutcome::NotRun => 0,
             EnvelopeOutcome::Completed => 1,
             EnvelopeOutcome::UserFailure => 2,
+            EnvelopeOutcome::Exhausted => 3,
             EnvelopeOutcome::Conflicted => 5,
         }
     }
 
     pub fn from_tag(tag: u32) -> Result<Self, String> {
         match tag {
+            0 => Ok(EnvelopeOutcome::NotRun),
             1 => Ok(EnvelopeOutcome::Completed),
             2 => Ok(EnvelopeOutcome::UserFailure),
+            3 => Ok(EnvelopeOutcome::Exhausted),
             5 => Ok(EnvelopeOutcome::Conflicted),
             other => Err(format!("unknown envelope outcome {other}")),
         }
@@ -95,6 +107,8 @@ pub struct BlockRecord {
     entries: Vec<RecordEntry>,
     system_deploys: Vec<ProcessedSystemDeploy>,
     envelope_ids: Vec<Bytes>,
+    gate: Vec<GateEntry>,
+    settlement: Option<Settlement>,
 }
 
 impl BlockRecord {
@@ -142,8 +156,32 @@ impl BlockRecord {
             entries,
             system_deploys,
             envelope_ids,
+            gate: Vec::new(),
+            settlement: None,
         })
     }
+
+    pub fn with_gate(mut self, gate: Vec<GateEntry>) -> Result<Self, String> {
+        if !gate.is_empty() && gate.len() != self.entries.len() {
+            return Err("a record holds one gate entry per envelope".into());
+        }
+        for (entry, g) in self.entries.iter().zip(&gate) {
+            if entry.executed.envelope_id != g.envelope_sig {
+                return Err("the gate entries follow the envelope order".into());
+            }
+        }
+        self.gate = gate;
+        Ok(self)
+    }
+
+    pub fn gate(&self) -> &[GateEntry] { &self.gate }
+
+    pub fn with_settlement(mut self, settlement: Settlement) -> Self {
+        self.settlement = Some(settlement);
+        self
+    }
+
+    pub fn settlement(&self) -> Option<&Settlement> { self.settlement.as_ref() }
 
     pub fn mid_root(&self) -> &StateHash { &self.mid_root }
 
@@ -171,6 +209,8 @@ impl BlockRecord {
                 .cloned()
                 .map(ProcessedSystemDeploy::to_proto)
                 .collect(),
+            gate: self.gate.iter().map(GateEntry::to_proto).collect(),
+            settlement: self.settlement.as_ref().map(Settlement::to_proto),
         }
     }
 
@@ -185,6 +225,11 @@ impl BlockRecord {
             .into_iter()
             .map(ProcessedSystemDeploy::from_proto)
             .collect::<Result<Vec<_>, _>>()?;
+        let gate = proto
+            .gate
+            .into_iter()
+            .map(GateEntry::from_proto)
+            .collect::<Result<Vec<_>, _>>()?;
         BlockRecord::new(
             proto.target,
             proto.pre_root,
@@ -192,7 +237,12 @@ impl BlockRecord {
             proto.post_root,
             entries,
             system_deploys,
-        )
+        )?
+        .with_gate(gate)
+        .and_then(|record| match proto.settlement {
+            Some(s) => Settlement::from_proto(s).map(|s| record.with_settlement(s)),
+            None => Ok(record),
+        })
     }
 }
 
@@ -317,10 +367,52 @@ mod tests {
         assert!(BlockRecord::decode(&proto.encode_to_vec()).is_err());
     }
 
+    fn gate_entry(id: &str, admitted: bool) -> GateEntry {
+        use super::super::gate::{Commitment, Refusal, Verdict};
+        GateEntry {
+            envelope_sig: b(id),
+            delta: 100,
+            verdict: if admitted {
+                Verdict::Admitted
+            } else {
+                Verdict::Refused(Refusal::InsufficientFunds {
+                    wallet: vec![7; 32],
+                    need: 300,
+                    have: 20,
+                })
+            },
+            commitments: if admitted {
+                vec![Commitment {
+                    wallet: vec![7; 32],
+                    amount: 300,
+                }]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
     #[test]
-    fn the_gate_tag_is_left_free() {
-        let mut bytes = record().encode().to_vec();
-        bytes.extend_from_slice(&[0x5a, 0x00]);
-        assert!(BlockRecordProto::decode(bytes.as_slice()).is_ok());
+    fn the_gate_entries_ride_in_field_11() {
+        let gated = record()
+            .with_gate(vec![
+                gate_entry("a", true),
+                gate_entry("b", true),
+                gate_entry("c", false),
+            ])
+            .unwrap();
+        let decoded = BlockRecord::decode(&gated.encode()).unwrap();
+        assert_eq!(decoded, gated);
+        assert_eq!(decoded.gate().len(), 3);
+        assert_eq!(gated.to_proto().gate.len(), 3);
+        assert!(record().with_gate(vec![gate_entry("a", true)]).is_err());
+        assert!(record()
+            .with_gate(vec![
+                gate_entry("b", true),
+                gate_entry("a", true),
+                gate_entry("c", true),
+            ])
+            .is_err());
+        assert_eq!(BlockRecord::decode(&record().encode()).unwrap().gate(), &[]);
     }
 }

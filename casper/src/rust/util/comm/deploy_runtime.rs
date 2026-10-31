@@ -6,11 +6,12 @@ use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
 use futures::FutureExt;
 use models::casper::{
-    BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, FindDeployQuery,
-    IsFinalizedQuery, MachineVerifyQuery, VisualizeDagQuery,
+    BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, ExploratoryDeployQuery,
+    FindDeployQuery, IsFinalizedQuery, MachineVerifyQuery, VisualizeDagQuery,
 };
 use models::rust::casper::protocol::casper_message::DeployData;
 use prost::bytes::Bytes;
+use rholang::rust::interpreter::accounting::rev_stack::native;
 
 use crate::rust::util::comm::grpc_deploy_service::DeployService;
 use crate::rust::util::comm::grpc_propose_service::ProposeService;
@@ -18,6 +19,21 @@ use crate::rust::util::comm::listen_at_name::{self, Name};
 use crate::rust::util::comm::ServiceResult;
 
 pub struct DeployRuntime;
+
+#[derive(Debug, Clone)]
+pub struct DeployParams {
+    pub phlo_limit: i64,
+    pub phlo_price: i64,
+    pub valid_after_block: i64,
+    pub shard_id: String,
+}
+
+fn now_ms() -> ServiceResult<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .map_err(|e| vec![format!("Clock error: {e}")])
+}
 
 impl DeployRuntime {
     /// Like Scala: gracefulExit(program: F[Either[Seq[String], String]])
@@ -120,40 +136,102 @@ impl DeployRuntime {
                 Ok(code) => code,
                 Err(e) => return Err(vec![format!("Error with given file:\n{e}")]),
             };
-
-            let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                Ok(duration) => duration.as_millis() as i64,
-                Err(e) => return Err(vec![format!("Clock error: {e}")]),
-            };
-
-            let d = DeployData {
-                term: code,
-                time_stamp: now_ms,
-                phlo_price,
+            let params = DeployParams {
                 phlo_limit,
-                valid_after_block_number: valid_after_block,
+                phlo_price,
+                valid_after_block,
                 shard_id: shard_id.to_string(),
-                expiration_timestamp: None,
-                parameters: Vec::new(),
             };
+            Self::deploy_term(svc, code, &params, private_key).await
+        })
+        .await
+    }
 
-            // Signed(d, Secp256k1, privateKey)
-            let signed = match Signed::create(
-                d,
-                Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
-                private_key.clone(),
-            ) {
-                Ok(signed) => signed,
-                Err(e) => return Err(vec![format!("Failed to sign deploy: {e}")]),
-            };
-
-            let resp = match svc.deploy(signed).await {
-                Ok(resp) => resp,
-                Err(e) => return Err(e),
-            };
+    pub async fn transfer_program<S: DeployService>(
+        svc: &mut S,
+        to: &str,
+        amount: i64,
+        params: &DeployParams,
+        private_key: &PrivateKey,
+    ) {
+        Self::graceful_exit(async {
+            let signed = Self::transfer_deploy(to, amount, params, private_key, now_ms()?)
+                .map_err(|e| vec![e])?;
+            let resp = svc.deploy(signed).await?;
             Ok(format!("Response: {resp}"))
         })
         .await
+    }
+
+    pub async fn wallet_balance_program<S: DeployService>(
+        svc: &mut S,
+        address: &str,
+        block_hash: Option<String>,
+    ) {
+        Self::graceful_exit(async {
+            let term = native::balance_term(address).map_err(|e| vec![e])?;
+            let data = svc
+                .exploratory_deploy(ExploratoryDeployQuery {
+                    term,
+                    block_hash: block_hash.unwrap_or_default(),
+                    use_pre_state_hash: false,
+                })
+                .await?;
+            let result = data
+                .first()
+                .ok_or_else(|| vec![format!("no balance returned for {address}")])?;
+            let balance = native::parse_balance(result).map_err(|e| vec![e])?;
+            Ok(format!("Balance of {address}: {balance}"))
+        })
+        .await
+    }
+
+    pub fn transfer_deploy(
+        to: &str,
+        amount: i64,
+        params: &DeployParams,
+        private_key: &PrivateKey,
+        time_stamp: i64,
+    ) -> Result<Signed<DeployData>, String> {
+        let term = native::transfer_term(to, amount)?;
+        Self::signed_deploy(term, params, private_key, time_stamp)
+    }
+
+    pub fn signed_deploy(
+        term: String,
+        params: &DeployParams,
+        private_key: &PrivateKey,
+        time_stamp: i64,
+    ) -> Result<Signed<DeployData>, String> {
+        let d = DeployData {
+            term,
+            time_stamp,
+            phlo_price: params.phlo_price,
+            phlo_limit: params.phlo_limit,
+            valid_after_block_number: params.valid_after_block,
+            shard_id: params.shard_id.clone(),
+            expiration_timestamp: None,
+            parameters: Vec::new(),
+            cosignatures: Vec::new(),
+        };
+        Signed::create(
+            d,
+            Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
+            private_key.clone(),
+        )
+        .map_err(|e| format!("Failed to sign deploy: {e}"))
+    }
+
+    async fn deploy_term<S: DeployService>(
+        svc: &mut S,
+        term: String,
+        params: &DeployParams,
+        private_key: &PrivateKey,
+    ) -> ServiceResult<String> {
+        let signed =
+            Self::signed_deploy(term, params, private_key, now_ms()?).map_err(|e| vec![e])?;
+        let resp = svc.deploy(signed).await?;
+        Ok(format!("Response: {resp}"))
     }
 
     pub async fn last_finalized_block<S: DeployService>(svc: &mut S) {

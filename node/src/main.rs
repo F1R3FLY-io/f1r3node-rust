@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use casper::rust::util::comm::deploy_runtime::DeployRuntime;
+use casper::rust::util::comm::deploy_runtime::{DeployParams, DeployRuntime};
 use casper::rust::util::comm::grpc_deploy_service::GrpcDeployService;
 use casper::rust::util::comm::grpc_propose_service::GrpcProposeService;
 use clap::error::ErrorKind;
@@ -205,6 +205,36 @@ fn run_cli(options: Options, rt: &Runtime, console: &mut impl ConsoleIO) -> Resu
                     &private_key,
                     &location,
                     &shard_id,
+                ));
+                Ok(())
+            }
+            OptionsSubCommand::Transfer(transfer) => {
+                let mut deploy_client = deploy_client()?;
+
+                let private_key =
+                    get_private_key(transfer.private_key, transfer.private_key_path, console)?;
+                let params = DeployParams {
+                    phlo_limit: transfer.phlo_limit,
+                    phlo_price: transfer.phlo_price,
+                    valid_after_block: transfer.valid_after_block_number,
+                    shard_id: transfer.shard_id,
+                };
+                rt.block_on(DeployRuntime::transfer_program(
+                    &mut deploy_client,
+                    &transfer.to,
+                    transfer.amount,
+                    &params,
+                    &private_key,
+                ));
+                Ok(())
+            }
+            OptionsSubCommand::WalletBalance(query) => {
+                let mut deploy_client = deploy_client()?;
+
+                rt.block_on(DeployRuntime::wallet_balance_program(
+                    &mut deploy_client,
+                    &query.address,
+                    query.block_hash,
                 ));
                 Ok(())
             }

@@ -24,7 +24,9 @@ list_match!(
     Match,
     Bundle,
     GUnforgeable,
-    ReceiveBind
+    ReceiveBind,
+    CostSignedTerm,
+    CostStack
 );
 
 pub trait SpatialMatcher<T, P> {
@@ -320,7 +322,43 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
                     wildcard,
                 )
             })
+            .and_then(|_| {
+                self.list_match_single_(
+                    remainder.cost_signed_terms,
+                    pattern.cost_signed_terms,
+                    &|mut p, s| {
+                        p.cost_signed_terms = s;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
+            .and_then(|_| {
+                self.list_match_single_(
+                    remainder.cost_stacks,
+                    pattern.cost_stacks,
+                    &|mut p, s| {
+                        p.cost_stacks = s;
+                        p
+                    },
+                    var_level,
+                    wildcard,
+                )
+            })
         }
+    }
+}
+
+impl SpatialMatcher<CostSignedTerm, CostSignedTerm> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: CostSignedTerm, pattern: CostSignedTerm) -> Option<()> {
+        guard(target == pattern)
+    }
+}
+
+impl SpatialMatcher<CostStack, CostStack> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: CostStack, pattern: CostStack) -> Option<()> {
+        guard(target == pattern)
     }
 }
 
@@ -592,8 +630,10 @@ impl SpatialMatcher<GUnforgeable, GUnforgeable> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - receiveBindSpatialMatcherInstance
 impl SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: ReceiveBind, pattern: ReceiveBind) -> Option<()> {
-        guard(target.patterns == pattern.patterns)
-            .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
+        guard(
+            target.patterns == pattern.patterns && target.cost_signature == pattern.cost_signature,
+        )
+        .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
     }
 }
 

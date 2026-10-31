@@ -13,10 +13,11 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, New, Par,
-    ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    BindPattern, Bundle, CostSignature, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
+    EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If,
+    KeyValuePair, ListParWithRandom, Match, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
+    TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -49,6 +50,10 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
+use super::accounting::rev_stack::kind::{is_stack_body, kind_owner, stack_kind, KindStack};
+use super::accounting::rev_stack::region::{admissible, signature_owner};
+use super::accounting::rev_stack::reserve::reservation;
+use super::accounting::rev_stack::{RevAmount, RevStacks, WalletOwner};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -62,6 +67,7 @@ use super::metrics_constants::{
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
 use super::substitute::Substitute;
+use super::system_processes::DeployData;
 use super::util::GeneratedMessage;
 use super::{unwrap_option_ref, unwrap_option_safe};
 use crate::rust::interpreter::accounting::costs::{
@@ -254,6 +260,7 @@ pub struct DebruijnInterpreter {
     /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
     /// system-process closures that clone the reducer.
     pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
+    pub deploy_data: Arc<RwLock<DeployData>>,
 }
 
 type Application = Option<(
@@ -312,6 +319,9 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        for stack in &par.cost_stacks {
+            self.eval_cost_stack(stack, env).await?;
+        }
         let terms: Vec<GeneratedMessage> = vec![
             par.sends
                 .into_iter()
@@ -333,6 +343,10 @@ impl DebruijnInterpreter {
             par.bundles
                 .into_iter()
                 .map(GeneratedMessage::Bundle)
+                .collect(),
+            par.cost_signed_terms
+                .into_iter()
+                .map(GeneratedMessage::CostSignedTerm)
                 .collect(),
             par.exprs
                 .into_iter()
@@ -1198,6 +1212,9 @@ impl DebruijnInterpreter {
             }
             GeneratedMessage::If(term) => self.eval_if(term, env, rand).await,
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
+            GeneratedMessage::CostSignedTerm(term) => {
+                self.eval_cost_signed_term(term, env, rand).await
+            }
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
                     ExprInstance::EVarBody(e) => {
@@ -1283,6 +1300,14 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.cost.charge(receive_eval_cost())?;
+
+        for signature in receive
+            .binds
+            .iter()
+            .filter_map(|b| b.cost_signature.clone())
+        {
+            self.check_region_signature(signature, env).await?;
+        }
 
         // Optional `where`-clause guard. Substituted at depth=1 so any
         // variables in scope at the receive site (but not pattern-bound)
@@ -1506,6 +1531,11 @@ impl DebruijnInterpreter {
                          at genesis"
                     )));
                 }
+                if super::accounting::rev_stack::genesis::is_genesis_only_urn(urn) {
+                    return Err(InterpreterError::ReduceError(format!(
+                        "urn `{urn}` is reserved for genesis"
+                    )));
+                }
             }
         }
 
@@ -1624,6 +1654,156 @@ impl DebruijnInterpreter {
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
         self.eval(unwrap_option_safe(bundle.body)?, env, rand).await
+    }
+
+    async fn check_region_signature(
+        &self,
+        signature: CostSignature,
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let signature = self
+            .substitute
+            .substitute_cost_signature(signature, 0, env)?;
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!(
+                "a signed term may name only the signatures of the deployment's signers: {reason}"
+            ))
+        };
+        let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+        let signers = {
+            let data = self.deploy_data.read().await;
+            std::iter::once(&data.deployer_id)
+                .chain(data.cosigners.iter())
+                .map(WalletOwner::from_public_key)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| refused(e.to_string()))?
+        };
+        if admissible(&owner, &signers) {
+            Ok(())
+        } else {
+            Err(refused(format!("{owner:?}")))
+        }
+    }
+
+    async fn eval_cost_stack(
+        &self,
+        stack: &CostStack,
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!("a token stack cannot be paid: {reason}"))
+        };
+        let writer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
+            .map_err(|e| refused(e.to_string()))?;
+        let payees = self.stack_payees(std::slice::from_ref(stack), env, &refused)?;
+        let store = self
+            .space
+            .hot_store()
+            .ok_or_else(|| refused("the native REV layer is unavailable".to_string()))?;
+        let stacks = RevStacks::over_hot_store(store);
+        let held = reservation(stacks.cells(), &writer)
+            .map_err(|e| refused(e.to_string()))?
+            .held;
+        let total: RevAmount = payees.iter().map(|(_, units)| units).sum();
+        let balance = stacks
+            .balance(&writer)
+            .map_err(|e| refused(e.to_string()))?;
+        if balance < total.saturating_add(held) {
+            return Err(refused(format!(
+                "the writer's wallet holds {balance}, of which {held} is committed, and the stack needs {total}"
+            )));
+        }
+        for (payee, units) in payees {
+            stacks
+                .transfer_keeping(&writer, &payee, units, held)
+                .map_err(|e| refused(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn stack_payees(
+        &self,
+        stacks: &[CostStack],
+        env: &Env<Par>,
+        refused: &dyn Fn(String) -> InterpreterError,
+    ) -> Result<Vec<(WalletOwner, RevAmount)>, InterpreterError> {
+        let mut payees: Vec<(WalletOwner, RevAmount)> = Vec::new();
+        for cell in stacks.iter().flat_map(|stack| &stack.cells) {
+            let signature = self
+                .substitute
+                .substitute_cost_signature(cell.clone(), 0, env)?;
+            let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+            match payees.iter_mut().find(|(payee, _)| *payee == owner) {
+                Some((_, units)) => *units += 1,
+                None => payees.push((owner, 1)),
+            }
+        }
+        Ok(payees)
+    }
+
+    async fn eval_kind_stacks(
+        &self,
+        kind: KindStack,
+        stacks: &[CostStack],
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!(
+                "a token stack of a kind cannot be paid: {reason}"
+            ))
+        };
+        let payees = self.stack_payees(stacks, env, &refused)?;
+        let store = self
+            .space
+            .hot_store()
+            .ok_or_else(|| refused("the native token layer is unavailable".to_string()))?;
+        let wallets = RevStacks::over_hot_store(store);
+        if kind.issuer {
+            for (payee, units) in payees {
+                wallets
+                    .deposit(&kind_owner(&kind.kind, &payee), units)
+                    .map_err(|e| refused(e.to_string()))?;
+            }
+            return Ok(());
+        }
+        let writer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
+            .map_err(|e| refused(e.to_string()))?;
+        let source = kind_owner(&kind.kind, &writer);
+        let total: RevAmount = payees.iter().map(|(_, units)| units).sum();
+        let balance = wallets
+            .balance(&source)
+            .map_err(|e| refused(e.to_string()))?;
+        if balance < total {
+            return Err(refused(format!(
+                "the writer holds {balance} of the kind, and the stack needs {total}"
+            )));
+        }
+        for (payee, units) in payees {
+            wallets
+                .transfer(&source, &kind_owner(&kind.kind, &payee), units)
+                .map_err(|e| refused(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn eval_cost_signed_term(
+        &self,
+        term: CostSignedTerm,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        let signature = unwrap_option_safe(term.signature)?;
+        let body = unwrap_option_safe(term.body)?;
+        if is_stack_body(&body) {
+            let resolved = self
+                .substitute
+                .substitute_cost_signature(signature.clone(), 0, env)?;
+            if let Some(kind) = stack_kind(&resolved) {
+                return self.eval_kind_stacks(kind, &body.cost_stacks, env).await;
+            }
+        }
+        self.check_region_signature(signature, env).await?;
+        self.eval(body, env, rand).await
     }
 
     // Public here for testing purposes
@@ -7715,6 +7895,7 @@ impl DebruijnInterpreter {
             // Default: reject fs native URNs.  Genesis composition
             // flips the flag off via a yet-to-land runtime slice.
             filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            deploy_data: Arc::new(RwLock::new(DeployData::empty())),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
@@ -8090,6 +8271,8 @@ fn extract_bool(par: &Par) -> Option<bool> {
         || !par.unforgeables.is_empty()
         || !par.connectives.is_empty()
         || !par.conditionals.is_empty()
+        || !par.cost_signed_terms.is_empty()
+        || !par.cost_stacks.is_empty()
         || par.exprs.len() != 1
     {
         return None;

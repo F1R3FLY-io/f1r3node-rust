@@ -13,10 +13,20 @@ pub struct Limits {
     pub max_records: usize,
     pub max_record_bytes: usize,
     pub ordered_only: bool,
+    pub min_phlo_price: i64,
 }
 
 impl Default for Limits {
     fn default() -> Self { super::resource_policy::ShardResourcePolicy::default().limits() }
+}
+
+impl Limits {
+    pub fn with_floor(self, min_phlo_price: i64) -> Self {
+        Limits {
+            min_phlo_price,
+            ..self
+        }
+    }
 }
 
 pub fn check_structure<R: ExecutionRecord>(
@@ -72,6 +82,12 @@ pub fn check_structure<R: ExecutionRecord>(
             || deploy.system_deploy_error.is_some()
         {
             return Err("a v6 envelope must be unexecuted".to_string());
+        }
+        if deploy.deploy.data.phlo_price < limits.min_phlo_price {
+            return Err(format!(
+                "envelope phlo price {} is below the shard floor {}",
+                deploy.deploy.data.phlo_price, limits.min_phlo_price
+            ));
         }
         demand = demand
             .checked_add(deploy.deploy.data.phlo_limit.max(0))
@@ -335,6 +351,31 @@ mod tests {
         )
         .unwrap();
         models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(signed)
+    }
+
+    fn priced(ts: i64, phlo_price: i64) -> models::rust::casper::protocol::casper_message::ProcessedDeploy {
+        let signed = crate::rust::util::construct_deploy::source_deploy(
+            format!("@{ts}!({ts})"),
+            ts,
+            Some(100),
+            Some(phlo_price),
+            None,
+            None,
+            Some("root".to_string()),
+        )
+        .unwrap();
+        models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(signed)
+    }
+
+    #[test]
+    fn an_envelope_below_the_shard_floor_makes_the_block_invalid() {
+        let limits = Limits::default().with_floor(5);
+        let at_floor = ordered_block(vec![priced(1, 5), priced(2, 9)]);
+        assert!(check(&at_floor, &limits).is_ok());
+        let below = ordered_block(vec![priced(1, 5), priced(2, 4)]);
+        let err = check(&below, &limits).unwrap_err();
+        assert!(err.contains("below the shard floor"), "{err}");
+        assert!(check(&below, &Limits::default()).is_ok());
     }
 
     fn ordered_block(
