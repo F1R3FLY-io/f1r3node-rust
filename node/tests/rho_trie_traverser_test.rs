@@ -143,6 +143,7 @@ new
                 &check2_root_bytes,
                 None,
                 5_000_000,
+                Vec::new(),
             )
             .await
             .expect("Failed to play exploratory deploy");

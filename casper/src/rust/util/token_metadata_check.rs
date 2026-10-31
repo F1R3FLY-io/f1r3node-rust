@@ -36,7 +36,12 @@ pub async fn read_on_chain_token_metadata(
     post_state_hash: &StateHash,
 ) -> Result<(String, String, u32), CasperError> {
     let (result, _cost) = runtime_manager
-        .play_exploratory_deploy(TOKEN_METADATA_QUERY.to_string(), post_state_hash, None)
+        .play_exploratory_deploy(
+            TOKEN_METADATA_QUERY.to_string(),
+            post_state_hash,
+            None,
+            Vec::new(),
+        )
         .await?;
 
     // The contract's "all" method returns a single tuple `(name, symbol, decimals)`
