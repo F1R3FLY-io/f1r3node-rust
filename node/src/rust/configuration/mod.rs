@@ -1081,6 +1081,18 @@ mod embedded_defaults_tests {
             cfg.casper.rejection_search_group_branch_cap,
             casper::rust::casper_conf::default_rejection_search_group_branch_cap()
         );
+        assert_eq!(
+            cfg.casper.v6_retained_records,
+            casper::rust::casper_conf::default_v6_retained_records()
+        );
+        assert_eq!(
+            cfg.casper.offer_rejection_log_capacity,
+            casper::rust::casper_conf::default_offer_rejection_log_capacity()
+        );
+        assert_eq!(
+            cfg.casper.offer_rejection_reason_bytes,
+            casper::rust::casper_conf::default_offer_rejection_reason_bytes()
+        );
     }
 
     /// I5: the stale-recovery interval must exceed the heartbeat tick, or

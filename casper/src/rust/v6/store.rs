@@ -10,7 +10,7 @@ use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use super::body::{StateHash, V6Records};
 use super::record::ExecutionRecord;
 
-pub const DEFAULT_RETAINED_RECORDS: usize = 1024;
+pub const DEFAULT_RETAINED_RECORDS: usize = crate::rust::casper::V6_RETAINED_RECORDS_DEFAULT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retention {

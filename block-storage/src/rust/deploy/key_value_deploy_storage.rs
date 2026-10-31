@@ -13,6 +13,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
 use super::deploy_record_quarantine::DeployRecordQuarantine;
+use super::offer_rejection::{OfferRejection, OfferRejectionLog};
 
 pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
 pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
@@ -49,6 +50,7 @@ impl DeployStoreName for RejectedDeployBufferName {
 pub struct KeyValueDeployStore<N: DeployStoreName> {
     pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
     quarantine: DeployRecordQuarantine,
+    rejections: OfferRejectionLog,
     _name: PhantomData<N>,
 }
 
@@ -79,6 +81,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
                 super::deploy_codec::decode,
             ),
             quarantine: DeployRecordQuarantine::new(N::NAME, quarantine),
+            rejections: OfferRejectionLog::default(),
             _name: PhantomData,
         };
         storage.quarantine.restore_readable(&storage.store)?;
@@ -86,6 +89,9 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     }
 
     pub fn add(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
+        for deploy in &deploys {
+            self.rejections.clear(&deploy.sig);
+        }
         self.store.put(
             deploys
                 .into_iter()
@@ -97,7 +103,11 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     /// Atomically insert a deploy by signature, returning false when it already exists.
     pub fn add_if_absent(&self, deploy: Signed<DeployData>) -> Result<bool, KvStoreError> {
         let key: ByteString = deploy.sig.to_vec();
-        self.store.put_one_if_absent(key, deploy)
+        let inserted = self.store.put_one_if_absent(key.clone(), deploy)?;
+        if inserted {
+            self.rejections.clear(&key);
+        }
+        Ok(inserted)
     }
 
     pub fn contains_sig(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
@@ -166,6 +176,22 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     }
 }
 
+impl KeyValueDeployStorage {
+    pub fn record_rejection(&self, rejection: OfferRejection) -> Result<bool, KvStoreError> {
+        let removed = self.remove_by_sig(&rejection.deploy_id)?;
+        self.rejections.record(rejection);
+        Ok(removed)
+    }
+
+    pub fn rejection(&self, deploy_id: &[u8]) -> Option<OfferRejection> {
+        self.rejections.get(deploy_id)
+    }
+
+    pub fn set_rejection_log_bounds(&self, capacity: usize, reason_bytes: usize) {
+        self.rejections.set_bounds(capacity, reason_bytes)
+    }
+}
+
 pub use super::deploy_codec::VERIFIED_ENCODINGS_CAP_DEFAULT;
 
 pub fn set_verified_encodings_cap(cap: usize) {
@@ -202,6 +228,59 @@ mod tests {
             PrivateKey::from_bytes(&[1; 32]),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn record_rejection_removes_the_offer_records_why_and_resubmission_clears_it() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let offer = deploy(1);
+        let id = offer.sig.to_vec();
+        let rejection = |reason: &str| OfferRejection {
+            deploy_id: id.clone(),
+            pre_state_root: Some(vec![9; 32]),
+            block_number: 7,
+            reason: reason.to_string(),
+        };
+        assert!(storage.add_if_absent(offer.clone()).unwrap());
+        assert!(storage
+            .record_rejection(rejection("no feasible assignment"))
+            .unwrap());
+        assert!(!storage.contains_sig(&id).unwrap());
+        assert_eq!(
+            storage.rejection(&id),
+            Some(rejection("no feasible assignment"))
+        );
+        assert!(!storage
+            .record_rejection(rejection("second decision"))
+            .unwrap());
+        assert_eq!(
+            storage.rejection(&id).map(|recorded| recorded.reason),
+            Some("second decision".to_string())
+        );
+        assert!(storage.add_if_absent(offer).unwrap());
+        assert_eq!(storage.rejection(&id), None);
+        assert!(storage.contains_sig(&id).unwrap());
+    }
+
+    #[tokio::test]
+    async fn the_rejection_log_takes_configured_bounds() {
+        let mut kvm = InMemoryStoreManager::new();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        storage.set_rejection_log_bounds(2, 4);
+        for time_stamp in 1..=3 {
+            let offer = deploy(time_stamp);
+            storage
+                .record_rejection(OfferRejection {
+                    deploy_id: offer.sig.to_vec(),
+                    pre_state_root: None,
+                    block_number: time_stamp,
+                    reason: "too long a reason".to_string(),
+                })
+                .unwrap();
+        }
+        assert!(storage.rejection(&deploy(1).sig).is_none());
+        assert_eq!(storage.rejection(&deploy(3).sig).unwrap().reason, "too ");
     }
 
     #[tokio::test]

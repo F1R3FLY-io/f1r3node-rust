@@ -5,6 +5,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::offer_rejection::OfferRejection;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
@@ -15,7 +16,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 
 use super::backend::ExecutionBackend;
 use super::block_record::BlockRecord;
-use super::body::{Attestation, V6Body, V6Records};
+use super::body::{Attestation, StateHash, V6Body, V6Records};
 use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore, InclusionCheck};
 use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink, Offence};
 use super::inclusion::{AdmitAll, InclusionScreen};
@@ -76,6 +77,7 @@ impl V6Engine<BlockRecord> {
         lag_threshold: u64,
         fallback_distance: usize,
         policy: ShardResourcePolicy,
+        retained_records: usize,
     ) -> Result<Arc<Self>, CasperError> {
         let source: Arc<dyn RecordSource<BlockRecord>> = Arc::new(block_store.clone());
         let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
@@ -114,6 +116,7 @@ impl V6Engine<BlockRecord> {
             limits: policy.limits(),
             params: CoreParams {
                 fallback_distance,
+                retained_records,
                 ..CoreParams::default()
             },
             lag_threshold,
@@ -211,6 +214,21 @@ impl<R: ExecutionRecord> V6Engine<R> {
         for evidence in found {
             self.evidence.report(evidence);
         }
+    }
+
+    pub fn record_rejection(
+        &self,
+        deploy_sig: &[u8],
+        pre_state_root: &StateHash,
+        block_number: i64,
+        reason: &str,
+    ) -> Result<bool, CasperError> {
+        Ok(self.deploy_storage.record_rejection(OfferRejection {
+            deploy_id: deploy_sig.to_vec(),
+            pre_state_root: Some(pre_state_root.to_vec()),
+            block_number,
+            reason: reason.to_string(),
+        })?)
     }
 
     pub fn canonical_len(&self) -> usize { self.core.lock().canonical_len() }

@@ -12,6 +12,7 @@ use super::store::{MemoryRecordStore, RecordStore, Retention};
 pub struct CoreParams {
     pub max_speculation: usize,
     pub fallback_distance: usize,
+    pub retained_records: usize,
 }
 
 pub const DEFAULT_FALLBACK_DISTANCE: usize = 8;
@@ -21,6 +22,7 @@ impl Default for CoreParams {
         CoreParams {
             max_speculation: 32,
             fallback_distance: DEFAULT_FALLBACK_DISTANCE,
+            retained_records: super::store::DEFAULT_RETAINED_RECORDS,
         }
     }
 }
@@ -91,7 +93,11 @@ pub struct ExecutorCore<R: ExecutionRecord> {
 
 impl<R: ExecutionRecord> ExecutorCore<R> {
     pub fn new(genesis: BlockHash, genesis_root: StateHash, params: CoreParams) -> Self {
-        let store = MemoryRecordStore::new(genesis, genesis_root, Retention::default());
+        let store = MemoryRecordStore::new(
+            genesis,
+            genesis_root,
+            Retention::LastBlocks(params.retained_records),
+        );
         Self::with_store(params, Box::new(store))
     }
 
@@ -550,6 +556,7 @@ mod tests {
             CoreParams {
                 max_speculation: 4,
                 fallback_distance: 2,
+                retained_records: 2,
             },
             Box::new(MemoryRecordStore::new(
                 h("g"),

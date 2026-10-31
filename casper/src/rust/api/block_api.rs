@@ -43,6 +43,7 @@ use crate::rust::state::instances::proposer_state::ProposerState;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::util::rholang::tools::Tools;
 use crate::rust::util::{event_converter, proto_util};
+use crate::rust::v6::receipt::{receipt_of, OfferedStatus, PoolStatus};
 use crate::rust::ProposeFunction;
 pub struct BlockAPI;
 
@@ -1503,6 +1504,42 @@ impl BlockAPI {
             tracing::warn!("{}", error_message);
             Vec::new()
         }
+    }
+
+    pub async fn offered_status(
+        engine_cell: &EngineCell,
+        deploy_id: &[u8],
+    ) -> ApiErr<OfferedStatus> {
+        if deploy_id.is_empty() {
+            return Err(eyre::Report::new(InvalidHashError(
+                "a deploy id must not be empty".to_string(),
+            )));
+        }
+        let eng = engine_cell.get().await;
+        let casper = eng
+            .with_casper()
+            .ok_or_else(|| eyre::eyre!("Casper instance was not available"))?;
+        let dag = casper.block_dag().await?;
+        if let Some(block_hash) = dag.deploy_canonical_appearance(deploy_id)? {
+            let Some(engine) = casper.v6_engine() else {
+                return Ok(OfferedStatus::Ordered { block_hash });
+            };
+            if let Some(receipt) = engine
+                .record(&block_hash)
+                .and_then(|record| receipt_of(&record, &block_hash, deploy_id))
+            {
+                return Ok(OfferedStatus::Executed(receipt));
+            }
+            return Ok(match engine.executed(&block_hash) {
+                Some(_) => OfferedStatus::NotRetained { block_hash },
+                None => OfferedStatus::Ordered { block_hash },
+            });
+        }
+        Ok(match casper.offered_pool_status(deploy_id)? {
+            PoolStatus::Pending => OfferedStatus::Pending,
+            PoolStatus::Rejected(rejection) => OfferedStatus::Rejected(rejection),
+            PoolStatus::Absent => OfferedStatus::Unknown,
+        })
     }
 
     pub async fn find_deploy(
