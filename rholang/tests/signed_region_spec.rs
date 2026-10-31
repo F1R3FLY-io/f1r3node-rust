@@ -235,3 +235,87 @@ async fn a_compound_of_signers_runs_and_a_compound_with_a_non_signer_is_refused(
     })
     .await;
 }
+
+async fn kind_balance(runtime: &RhoRuntimeImpl, key: &[u8], owner: &str) -> i64 {
+    let query = format!(
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`) in {{
+             for (@kind <<- @"pub") {{ w!("kindBalance", (kind, {owner}), "kbal") }}
+           }}"#
+    );
+    assert!(run_as(runtime, key, &query).await.is_empty());
+    let reply = take(runtime, "kbal").await;
+    let (ok, value) = RhoTuple2::unapply(&reply[0]).unwrap();
+    assert_eq!(RhoBoolean::unapply(&ok), Some(true));
+    RhoNumber::unapply(&value).unwrap()
+}
+
+#[tokio::test]
+async fn an_issuer_mints_a_kind_and_holders_move_it_without_touching_rev() {
+    with_runtime("signed-region-", |runtime| async move {
+        stacks(&runtime).deposit(&owner(&ALICE), 1_000).unwrap();
+        let mint = r#"new k, d(`rho:system:deployerId`) in {
+            {% d :: d :: d :: () %}[k] | @"pub"!(bundle0{*k})
+        }"#;
+        assert!(run_as(&runtime, &ALICE, mint).await.is_empty());
+        assert_eq!(kind_balance(&runtime, &ALICE, "*d").await, 3);
+
+        let pay = r#"new d(`rho:system:deployerId`) in {
+            for (kind <<- @"pub") { {% @"carol-slot" :: () %}[kind] }
+        }"#;
+        let errors = run_as(&runtime, &ALICE, pay).await;
+        assert!(!errors.is_empty(), "a public channel names no wallet");
+
+        let give = r#"new d(`rho:system:deployerId`), ack in {
+            for (kind <<- @"pub") { {% d :: () %}[kind] }
+        }"#;
+        let errors = run_as(&runtime, &ALICE, give).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(kind_balance(&runtime, &ALICE, "*d").await, 3);
+
+        let to_slot = r#"new slot in {
+            for (kind <<- @"pub") { {% slot :: slot :: () %}[kind] } | @"slot"!(*slot)
+        }"#;
+        let errors = run_as(&runtime, &ALICE, to_slot).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(kind_balance(&runtime, &ALICE, "*d").await, 1);
+        let query = r#"new w(`rho:rev:wallet`) in {
+            for (@kind <<- @"pub") { for (@s <<- @"slot") { w!("kindBalance", (kind, s), "sbal") } }
+        }"#;
+        assert!(run_as(&runtime, &ALICE, query).await.is_empty());
+        let reply = take(&runtime, "sbal").await;
+        let (_, value) = RhoTuple2::unapply(&reply[0]).unwrap();
+        assert_eq!(RhoNumber::unapply(&value), Some(2));
+
+        let errors = run_as(&runtime, &CAROL, give).await;
+        assert!(refused(&errors, "of a kind cannot be paid"), "{errors:?}");
+        assert_eq!(kind_balance(&runtime, &CAROL, "*d").await, 0);
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1_000);
+        assert_eq!(stacks(&runtime).balance(&owner(&CAROL)).unwrap(), 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn tokens_of_a_kind_never_pay_where_rev_is_required() {
+    with_runtime("signed-region-", |runtime| async move {
+        let mint =
+            r#"new k, d(`rho:system:deployerId`) in { {% d :: d :: d :: d :: d :: () %}[k] }"#;
+        assert!(run_as(&runtime, &CAROL, mint).await.is_empty());
+        let pay_rev = r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), slot in {
+            w!("transfer", (*d, *slot, 5), "rev")
+        }"#;
+        assert!(run_as(&runtime, &CAROL, pay_rev).await.is_empty());
+        let reply = take(&runtime, "rev").await;
+        let (ok, _) = RhoTuple2::unapply(&reply[0]).unwrap();
+        assert_eq!(RhoBoolean::unapply(&ok), Some(false));
+        let errors = run_as(
+            &runtime,
+            &CAROL,
+            "new d(`rho:system:deployerId`), s in { s :: () }",
+        )
+        .await;
+        assert!(refused(&errors, "cannot be paid"), "{errors:?}");
+        assert_eq!(stacks(&runtime).balance(&owner(&CAROL)).unwrap(), 0);
+    })
+    .await;
+}

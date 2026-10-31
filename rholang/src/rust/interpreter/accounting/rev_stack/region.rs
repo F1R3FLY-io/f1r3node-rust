@@ -6,6 +6,7 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{Connective, CostSignature, Expr, New, Par};
 use prost::Message;
 
+use super::kind::is_stack_body;
 use super::{RevStackError, WalletOwner};
 
 pub fn name_owner(name: &Par) -> Option<WalletOwner> {
@@ -115,6 +116,14 @@ fn static_owner(signature: &CostSignature, scope: &Scope) -> Option<WalletOwner>
     }
 }
 
+fn names_a_kind(signature: &CostSignature, scope: &Scope) -> bool {
+    match &signature.value {
+        Some(Value::BoundLevel(_)) => static_owner(signature, scope).is_none(),
+        Some(Value::Name(_)) => super::kind::stack_kind(signature).is_some(),
+        _ => false,
+    }
+}
+
 fn name_signature(signature: &CostSignature, scope: &mut Scope, named: &mut Vec<WalletOwner>) {
     named.push(static_owner(signature, scope).unwrap_or_else(|| unresolved_owner(signature)));
     visit_signature_pars(signature, scope, named);
@@ -163,7 +172,12 @@ fn new_binders(new: &New) -> Vec<Option<WalletOwner>> {
 
 fn visit_par(par: &Par, scope: &mut Scope, named: &mut Vec<WalletOwner>) {
     for term in &par.cost_signed_terms {
-        if let Some(signature) = &term.signature {
+        let kind_stack = term.body.as_ref().is_some_and(is_stack_body)
+            && term
+                .signature
+                .as_ref()
+                .is_some_and(|signature| names_a_kind(signature, scope));
+        if let (Some(signature), false) = (&term.signature, kind_stack) {
             name_signature(signature, scope, named);
         }
         if let Some(body) = &term.body {

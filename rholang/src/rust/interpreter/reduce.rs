@@ -50,6 +50,7 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
+use super::accounting::rev_stack::kind::{is_stack_body, kind_owner, stack_kind, KindStack};
 use super::accounting::rev_stack::region::{admissible, signature_owner};
 use super::accounting::rev_stack::reserve::reservation;
 use super::accounting::rev_stack::{RevAmount, RevStacks, WalletOwner};
@@ -1703,17 +1704,7 @@ impl DebruijnInterpreter {
         };
         let writer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
             .map_err(|e| refused(e.to_string()))?;
-        let mut payees: Vec<(WalletOwner, RevAmount)> = Vec::new();
-        for cell in &stack.cells {
-            let signature = self
-                .substitute
-                .substitute_cost_signature(cell.clone(), 0, env)?;
-            let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
-            match payees.iter_mut().find(|(payee, _)| *payee == owner) {
-                Some((_, units)) => *units += 1,
-                None => payees.push((owner, 1)),
-            }
-        }
+        let payees = self.stack_payees(std::slice::from_ref(stack), env, &refused)?;
         let store = self
             .space
             .hot_store()
@@ -1739,15 +1730,89 @@ impl DebruijnInterpreter {
         Ok(())
     }
 
+    fn stack_payees(
+        &self,
+        stacks: &[CostStack],
+        env: &Env<Par>,
+        refused: &dyn Fn(String) -> InterpreterError,
+    ) -> Result<Vec<(WalletOwner, RevAmount)>, InterpreterError> {
+        let mut payees: Vec<(WalletOwner, RevAmount)> = Vec::new();
+        for cell in stacks.iter().flat_map(|stack| &stack.cells) {
+            let signature = self
+                .substitute
+                .substitute_cost_signature(cell.clone(), 0, env)?;
+            let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+            match payees.iter_mut().find(|(payee, _)| *payee == owner) {
+                Some((_, units)) => *units += 1,
+                None => payees.push((owner, 1)),
+            }
+        }
+        Ok(payees)
+    }
+
+    async fn eval_kind_stacks(
+        &self,
+        kind: KindStack,
+        stacks: &[CostStack],
+        env: &Env<Par>,
+    ) -> Result<(), InterpreterError> {
+        let refused = |reason: String| {
+            InterpreterError::ReduceError(format!(
+                "a token stack of a kind cannot be paid: {reason}"
+            ))
+        };
+        let payees = self.stack_payees(stacks, env, &refused)?;
+        let store = self
+            .space
+            .hot_store()
+            .ok_or_else(|| refused("the native token layer is unavailable".to_string()))?;
+        let wallets = RevStacks::over_hot_store(store);
+        if kind.issuer {
+            for (payee, units) in payees {
+                wallets
+                    .deposit(&kind_owner(&kind.kind, &payee), units)
+                    .map_err(|e| refused(e.to_string()))?;
+            }
+            return Ok(());
+        }
+        let writer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
+            .map_err(|e| refused(e.to_string()))?;
+        let source = kind_owner(&kind.kind, &writer);
+        let total: RevAmount = payees.iter().map(|(_, units)| units).sum();
+        let balance = wallets
+            .balance(&source)
+            .map_err(|e| refused(e.to_string()))?;
+        if balance < total {
+            return Err(refused(format!(
+                "the writer holds {balance} of the kind, and the stack needs {total}"
+            )));
+        }
+        for (payee, units) in payees {
+            wallets
+                .transfer(&source, &kind_owner(&kind.kind, &payee), units)
+                .map_err(|e| refused(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     async fn eval_cost_signed_term(
         &self,
         term: CostSignedTerm,
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        self.check_region_signature(unwrap_option_safe(term.signature)?, env)
-            .await?;
-        self.eval(unwrap_option_safe(term.body)?, env, rand).await
+        let signature = unwrap_option_safe(term.signature)?;
+        let body = unwrap_option_safe(term.body)?;
+        if is_stack_body(&body) {
+            let resolved = self
+                .substitute
+                .substitute_cost_signature(signature.clone(), 0, env)?;
+            if let Some(kind) = stack_kind(&resolved) {
+                return self.eval_kind_stacks(kind, &body.cost_stacks, env).await;
+            }
+        }
+        self.check_region_signature(signature, env).await?;
+        self.eval(body, env, rand).await
     }
 
     // Public here for testing purposes

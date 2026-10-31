@@ -453,3 +453,35 @@ async fn a_joint_wallet_is_spent_only_by_all_its_signers() {
     assert_eq!(read_wallet_balance(&rm, run, &pair).await.unwrap(), 50_000);
     assert_eq!(balance(&rm, run, &bob).await, 0);
 }
+
+#[tokio::test]
+async fn the_gate_admits_a_mint_of_a_kind_and_the_block_replays() {
+    let (alice, proposer) = (party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let mint = r#"new k, d(`rho:system:deployerId`) in { {% d :: d :: () %}[k] }"#;
+    let played = executor
+        .execute(
+            &pre,
+            vec![envelope(mint, 1, &alice, 1_000, 3)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block executes");
+    assert_eq!(played.gate.admitted(), vec![true]);
+    assert!(!played.processed[0].is_failed);
+    assert_eq!(
+        balance(&rm, &played.runs[0].post_root, &alice).await,
+        100_000
+    );
+    let again = executor
+        .replay(
+            &pre,
+            played.processed.clone(),
+            &played.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block replays");
+    assert_eq!(again.settled_root, played.settled_root);
+}

@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{BindPattern, Bundle, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{
+    cost_signature, BindPattern, Bundle, CostSignature, ListParWithRandom, Par, TaggedContinuation,
+};
 use models::rust::rholang::implicits::single_expr;
 use rspace_plus_plus::rspace::hot_store::HotStore;
 
 use super::channel::wallet_channel;
+use super::kind::{kind_owner, stack_kind};
 use super::ops::RevStacks;
 use super::owner::WalletOwner;
 use super::region::admissible;
@@ -34,6 +37,13 @@ pub fn handle(
             let balance = stacks.balance(&owner).map_err(|e| e.to_string())?;
             let reserved = reservation(stacks.cells(), &owner).map_err(|e| e.to_string())?;
             Ok(RhoNumber::create_par(balance.saturating_sub(reserved.visible) as i64))
+        }),
+        "kindBalance" => with_stacks(store, |stacks| {
+            let (kind, owner) = kind_args(arg)?;
+            let balance = stacks
+                .balance(&kind_owner(&kind, &owner))
+                .map_err(|e| e.to_string())?;
+            Ok(RhoNumber::create_par(balance as i64))
         }),
         "transfer" => with_stacks(store, |stacks| {
             let (from, to, amount) = transfer_args(arg)?;
@@ -111,6 +121,24 @@ fn transfer_args(arg: &Par) -> Result<(WalletOwner, WalletOwner, RevAmount), Str
         .filter(|a| *a > 0)
         .ok_or_else(|| "Amount must be positive value".to_string())?;
     Ok((from, to, amount as RevAmount))
+}
+
+fn kind_args(arg: &Par) -> Result<(Vec<u8>, WalletOwner), String> {
+    let usage = "kindBalance expects (kind, owner)";
+    let Some(ExprInstance::ETupleBody(tuple)) = single_expr(arg).and_then(|e| e.expr_instance)
+    else {
+        return Err(usage.to_string());
+    };
+    let [kind, owner] = tuple.ps.as_slice() else {
+        return Err(usage.to_string());
+    };
+    let signature = CostSignature {
+        value: Some(cost_signature::Value::Name(kind.clone())),
+    };
+    let kind = stack_kind(&signature)
+        .ok_or_else(|| "a kind is an unforgeable name or its bundle0".to_string())?
+        .kind;
+    Ok((kind, owner_of(owner)?))
 }
 
 fn payer_of(par: &Par) -> Result<WalletOwner, String> {
