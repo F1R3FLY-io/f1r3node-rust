@@ -21493,6 +21493,308 @@ review and the approved pgmcp verification recipe remain required.
   every persistence test runner extends, so a future control run can avoid
   saving failing cases at all.
 
+### J-254 — 2026-10-29: the ordered receive byte view (task 8009)
+
+**DERIVED.** Task 8009 asks for a borrowed, admitted byte view over the canonical
+continuation records of the in-memory continuation store and over the RhoPath
+frames of their channel groups. For a receive over $`n`$ channels the view must
+answer two questions without decoding a term or changing a persisted byte: at
+which ordered positions a queried channel occurs, and, at each position, which
+channel frame, pattern bytes and effective peek belong together. The reviewed
+plan (pgmcp artifact 1139) found eight gaps, G1 to G8, and built the task in
+four slices, each a child task of 8009, run in order with one in progress
+(review decision 3). This entry records all four.
+
+| Slice | Task | Commit |
+|---|---|---|
+| The Rocq model: the record image, its admission, fifteen theorems, and twelve mutants refuted by closed computation | 11984 | `f8f56212a` |
+| The view: channel profiles and the legacy group parser in `rho_path.rs`, the encoder pass that reports field ends, `ordered_receive.rs` with its unit tests, and the specification tests that need no store | 11985 | `a824e7fd9` |
+| The store: field bounds kept beside each stored record, identity and source derived from the admitted record, the resting-receive visit through `HotStore`, `BindPattern`'s free-count layout, and the models and rholang tests | 11986 | `3d9a9d08b` |
+| The obligation registry and its checker, the runner's `--ordered-receive-view` flag, the twelve production source mutants, the catalog rows, the integration subsection and its figure, and this entry | 11987 | the commit that adds this entry |
+
+The invariant catalog maps the fifteen capstones, the twelve formal mutants and
+their twelve production analogues to their tests in
+[TLRS-PROP-11](two-level-rspace-authority-invariant-catalog-2026-09-02.md#tlrs-prop-11--ordered-receive-fields-and-occurrence-identity-2026-09-06),
+rows TLRS-RECEIVE-01 to TLRS-RECEIVE-17. The design, with its figure and the
+hot-store read-lock contract, is the integration doc's
+[ordered receive byte view](../rspace/pathmap-bag-rspace-integration.md#ordered-receive-byte-view-task-8009)
+subsection.
+
+**THE RECORD.** Write $`|x|`$ for the length of a byte string $`x`$ and
+$`x \,\|\, y`$ for concatenation. For an integer $`0 \le v < 256^{w}`$,
+$`\mathrm{le}_w(v)`$ is its $`w`$-byte little-endian encoding, and a signed
+32-bit word is written $`\mathrm{i32}(v) = \mathrm{le}_4(v \bmod 2^{32})`$.
+A continuation $`r`$ has patterns $`p_0, \dots, p_{n-1}`$, a body $`b`$, a
+persist flag $`\pi \in \{0, 1\}`$, peeks $`k_0 < \dots < k_{m-1}`$ and a source
+$`s`$. The frozen encoder (`rspace++/src/rspace/serializers/serializers.rs:128`)
+writes
+
+```math
+\begin{aligned}
+P_i &= \mathrm{prefix}(p_i) \,\|\, \mathrm{i32}(\mathrm{free}(p_i)), \\
+\mathrm{identity}(r) &= \mathrm{le}_8(n) \,\|\, P_0 \,\|\, \cdots \,\|\, P_{n-1}
+  \,\|\, b \,\|\, \pi \,\|\, \mathrm{le}_8(m) \,\|\, \mathrm{i32}(k_0) \,\|\, \cdots
+  \,\|\, \mathrm{i32}(k_{m-1}), \\
+\mathrm{record}(r) &= \mathrm{identity}(r) \,\|\, s,
+\end{aligned}
+```
+
+where $`\mathrm{free}(p_i)`$ is the pattern's signed free-variable count and
+$`\mathrm{prefix}(p_i)`$ is everything the encoder writes for the pattern before
+it. The field bounds are the $`n + 2`$ end offsets
+
+```math
+e_i = 8 + \sum_{j \le i} |P_j| \;\; (0 \le i < n), \qquad
+e_n = 8 + \sum_{j < n} |P_j| + |b|, \qquad
+e_{n+1} = e_n + 9 + 4m .
+```
+
+The encoder already visits every field once when a continuation is put.
+`encode_continuation_identity_observed_into`
+(`serializers.rs:138`) reports each end to an observer, and
+`PreparedContinuationRecord::encode_waiting`
+(`rspace++/src/rspace/ordered_receive.rs:81`) keeps the ends in one boxed slice
+allocated with capacity $`n + 2`$. `encode_continuation_identity_into` delegates
+with an observer that does nothing, so its bytes are unchanged by construction.
+
+`ContinuationRecordView::admit_record` (`ordered_receive.rs:128`) admits a record
+against its bounds. It allocates nothing and decodes no term. It makes the checks
+of the model's `admit_record` (`TwoLevelRSpaceContinuationAuthority.v:1939`),
+listed here in the model's order:
+
+1. the first 8 bytes, read little-endian, equal $`n`$, the number of bounds less two;
+2. $`8 \le e_0 \le e_1 \le \dots \le e_{n+1}`$;
+3. the byte at $`e_n`$ is 0 or 1;
+4. with $`k`$ the 8-byte count after that byte, $`e_n + 9 + 4k = e_{n+1}`$,
+   computed with checked arithmetic before any peek is read. The model computes
+   it in exact integers and requires $`e_{n+1} \le 2^{64} - 1`$, which is the
+   bound a 64-bit `usize` enforces;
+5. the peeks are strictly ascending as signed 32-bit words;
+6. $`e_{n+1} \le |\mathrm{record}|`$.
+
+Production makes check 6 before check 5, because a peek word can be read only
+once its bytes are present, and it names the failed check with a typed refusal
+where the model returns `None`. Both admit exactly the records that pass all six
+checks (by inspection of `ordered_receive.rs:128-188`: its truncation checks
+follow from checks 2, 3, 4 and 6), so the order changes only which refusal a
+record with several defects reports.
+
+Admission sets no minimum pattern extent: it checks the framing, not the
+pattern encoding. Pattern $`i`$, the body, the identity
+$`\mathrm{record}[0, e_{n+1})`$ and the source suffix
+$`\mathrm{record}[e_{n+1}, |\mathrm{record}|)`$ are then plain slices.
+
+A receive view pairs the record with a channel group. The group is either a
+legacy V1 group prefix, parsed by `RhoPathV1::parse_continuation_group`
+(`rho_path.rs:1113`), or an RCI2 key, parsed by `RhoPathV2::parse_continuation`
+(`rho_path.rs:1651`). For an RCI2 key, the key's identity frame must equal the
+record's identity. The view refuses a group whose channel count differs from
+$`n`$ (`OrderedReceiveError::ArityMismatch`, `ordered_receive.rs:266`). It
+answers positions only for a query of its own profile, and a query of the other
+profile is refused. Position $`i`$ is peeked exactly when
+
+```math
+\mathrm{peek}(i) \iff i \le 2^{31} - 1 \;\wedge\; \exists j.\; k_j = i ,
+```
+
+so a position above the signed range is never confused with a wrapped one.
+
+**GAPS.** Each gap the plan found is closed as follows.
+
+| Gap | What was missing | Closed by | Witness |
+|---|---|---|---|
+| G1 | an arity check before any position is yielded | the view's alignment refuses `ArityMismatch` | theorem `admitted_receive_refuses_mismatched_arity`; test `admission_refuses_mismatched_arity_before_any_position` |
+| G2 | a byte view of each pattern, the body, the persist flag and the raw and effective peeks | `PreparedContinuationRecord` and `ContinuationRecordView` | `encoded_record_admits_exact_fields` and the bounds, tail, peek, persist and free-count theorems; `view_binds_align_channel_pattern_and_effective_peek_by_position`, `malformed_field_bounds_and_peek_tails_are_refused` |
+| G3 | a source suffix cut at an admitted boundary, not after a separately built identity | `continuation_source` takes `source_suffix()`; the store derives the identity path, the primary path, the source reference and the source bytes from `record_view()` | `source_suffix_is_exact_and_identity_is_source_free`, `first_view_identity_retains_head_source_suffix`; `first_representative_and_exact_source_suffix_are_retained` |
+| G4 | an empty aligned view, distinct from the refused empty RCI2 group | `parse_continuation_group` accepts an empty legacy group; the arity-0 view has no bind and an empty position list | `empty_aligned_view_has_no_bind_or_position`; `empty_aligned_view_has_no_bind_and_v2_empty_group_stays_refused` |
+| G5 | a position type with checked conversions | `RhoPathReceivePosition::index`, `signed_peek_key` and `at_index`; the effective peek is false above $`2^{31} - 1`$ | `wide_view_position_does_not_wrap`; `wide_positions_convert_without_wrap`, `effective_peek_search_matches_linear_membership` |
+| G6 | explicit channel profiles | `ReceiveChannelProfile`, `ReceiveChannelQuery` and `ReceiveChannelGroup`; positions refuse `ProfileMismatch` | `cross_profile_query_is_refused`; `profile_queries_are_explicit` |
+| G7 | a production view over stored bytes, with the bounds kept | `StoredRecord` and `PendingRecord` carry `Option<ContinuationFieldBounds>`; `StoredRecord::receive_view`; `visit_resting_receive_records`; `HotStore::try_visit_resting_receive_views` | the five store tests of `rspace++/tests/ordered_receive_view_spec.rs` |
+| G8 | task 8008's evidence: a legacy-only oracle, an unused cost-annotated corpus entry, and positions from an ad hoc filter | `models/tests/cold_store_records.rs` re-pointed to the RCI2 view over real `rho_path_v2_continuation_key` images and to the V1 store view over `Par` channels | `ordered_receive_view_admits_every_corpus_pattern_and_continuation`: 8 patterns by 7 bodies, 56 names, 48 of them through the legacy oracle and the cost-annotated ones through `decode_continuations` |
+
+**DECISIONS.** The review of the plan (pgmcp artifact 1139) settled eleven
+points. These shaped the code:
+
+1. *A sidecar, not a format* (review decision 1). The view borrows the encoded
+   record. The field bounds are kept in memory beside it and captured by the
+   encoder pass that already runs when a continuation is put, so no resident
+   body is re-encoded and no persisted format, root or identity appears.
+2. *Model first* (decision 2). The model extends
+   `TwoLevelRSpaceContinuationAuthority.v` and its mutants file in place.
+3. *Source mutants are required* (decision 6). The task asks for negative
+   controls against the actual implementation. Each mutant is applied only in an
+   export of the tree, never committed, and must be killed by its named test.
+4. *One iterator left alone* (decision 7). `RhoPathV2ChannelFrames::next` ends
+   on a malformed frame through `.ok()?` (`rho_path.rs:1538`). The task did not
+   require a change, and the change would alter a production iterator's failure
+   mode. Admission validates every frame first, so admitted input cannot reach
+   that path.
+5. *Memory is measured* (decision 8), below.
+6. *Consensus-visible sites stay unchanged* (decision 9). They are flagged to
+   tasks 8012 and 6021 (pgmcp progress notes 25670 to 25673) and listed under
+   BOUNDARY.
+
+The slices added four decisions:
+
+7. *The bridge.* The mutants module states the four admission checks as a
+   record, `admit_with`, and `production_checks_are_admit_record` proves by
+   reflexivity that the production checks give `admit_record`. Each check mutant
+   therefore differs from production in exactly one check. The bridge's
+   `Print Assumptions` raises the mutants file's closed reports from the
+   planned 46 to 47.
+8. *A wrong value, not a refusal.* Admission sets no minimum pattern extent, so
+   a pattern end shifted one byte early is still admitted.
+   `shifted_capture_bound_is_detected` therefore shows the value the mutant
+   reads: a trailing free count of $`773 = 5 + 3 \cdot 2^{8}`$ where production
+   reads 3. The production analogue is killed by tests that assert exact free
+   counts.
+9. *The store accepts what only the visitor refuses.* The store's coherence
+   check first admitted the full receive view of every record, and it panicked
+   in 14 existing tests. Those tests store a pattern count that differs from the
+   channel count. The store must accept such records, and only the visitor
+   reports them, as `ArityMismatch`. The check now admits each record against
+   its bounds only (task 11986, progress note 25662).
+10. *`canonical_bytes` stays test-only.* `StoredRecord::receive_view` admits the
+    whole stored path through `admit_legacy_v1`, whose record half is the same
+    bytes. So `canonical_bytes` gained no production caller, and it keeps its
+    test-only `dead_code` expectation.
+
+**HYPOTHESES.** The entry tests five hypotheses. H1 restates what review
+decision 2 required, H3 is review decision 8, and H2, H4 and H5 state what the
+implementation must show for the view to be the borrowed, consensus-neutral
+view the task describes.
+
+- *H1.* The model closes with nothing assumed. The authority file reports 54
+  capstones closed under the global context (39 before) and the mutants file 46
+  (34 before), and both modules pass independent kernel checking.
+- *H2.* The encoder pass that reports field ends writes exactly the frozen
+  bytes. Every byte golden, hash differential and preimage pin passes unchanged,
+  and prepared records equal the public encoders.
+- *H3.* The sidecar costs exactly $`16 + 8(n + 2)`$ requested bytes per stored
+  continuation: a 16-byte boxed-slice handle, whose `Option` uses the null
+  niche, plus $`n + 2`$ eight-byte ends.
+- *H4.* Admitting and iterating a view allocates nothing at arities 1, 65 and
+  4,097. A resting visit's allocations do not depend on the group's size (64
+  against 4,096 records). A pattern nested 20,000 levels deep is admitted and
+  iterated on a 256 KiB thread.
+- *H5.* Each of the twelve production source mutants, one per Rocq mutant, is
+  killed by its named test.
+
+**MEASURED.** The 11987 evidence ran on tree `eb60f8e7`, which is HEAD
+`3d9a9d08b` plus this slice's sources and its two regenerated registries,
+exported to `target/scratch/idx`. The source mutants ran on tree `0a9310de`,
+the same sources before the registries were regenerated. The memory runs belong
+to task 11986 and compare HEAD `a824e7fd9` (tree `5e69f748`) with the slice-3
+tree `5056f26f`.
+
+| Claim | Command or artifact | Result | Uncertainty | Decision |
+|---|---|---|---|---|
+| H1 | the runner's `--ordered-receive-view` flag | 5 + 21 + 54 + 47 = 127 closed reports, each file's count as required; `coqchk`: "Modules were successfully checked"; the placeholder pattern matches neither file | the theorems describe the model; the source mutants and the tests tie production to it | H1 holds with 47, not 46: the extra report is the bridge (decision 7) |
+| H2 | the flag's pins | `serializer_byte_goldens` 5, `serializer_par_byte_goldens` 7, `event_hash_bytes_differential` 11, `event_hash_encoder_differential` 5, `catalog_hash_preimages_are_exact_raw_identity_bytes` 1 and `rho_path_spec` 24 passed; the property `prepared_record_bytes_equal_the_frozen_encoders` passed; no `MAGIC`, `KIND` or `VERSION` constant changed | the property's cases come from seed 41318009 | H2 holds |
+| H3 | the harness `field_bounds_memory.rs` (its source is in the 11987 pgmcp artifact), release, one process per arity, three repeats each; raw data in [`ordered-receive-field-bounds-sidecar-2026-10-29.txt`](../stack-safety/measurements/ordered-receive-field-bounds-sidecar-2026-10-29.txt) | +40, +56, +160 and +552 requested live bytes per record at arities 1, 3, 16 and 65, identical in every repeat; 2.2 % to 2.6 % of the record's requested bytes | these are allocator requests; resident memory per record moved by +10.35, −4.42, +175.04 and +608.81 bytes, which includes allocator rounding | H3 holds exactly |
+| — | the same runs | allocations per put went from 109.48 to 108.48 at arity 1 and from 134.55 to 133.55 at arity 3, and were unchanged at 16 (297.22) and 65 (888.60) | not attributed | recorded only |
+| H4 | `rholang/tests/ordered_receive_view_rholang.rs` | 4 passed: 11 receives compiled from Rholang source admit exact views; zero allocations to admit and iterate at 1, 65 and 4,097; equal visit allocations at 64 and 4,096 records; the 20,000-level pattern on a 256 KiB thread | the counting allocator counts the measuring thread only | H4 holds |
+| H5 | `scripts/generate-ordered-receive-view-mutant.py`, each mutant applied in the export alone, debug build, seed 41318009 | 12 of 12 killed by their named tests (table below) | each mutant is one fault; a fault not modelled could survive | H5 holds |
+| The plan inferred that legacy byte positions are a superset of typed positions (its risk 1) | `ordered_receive_legacy_store_views_match_typed_par_positions` | equal for every query on the fixture, which changes a root `locally_free` (equal under both relations) and a nested one (distinct under both) | one fixture | the inference is corrected for the fixture: the V1 image of a `Par` blanks only the root `locally_free` (`models/src/rust/rholang/bincode_schema.rs:386-397`), and typed `Par` equality ignores only it (`models/src/rust/par.rs:1102-1105`); a universal claim stays with task 8012 |
+
+**THE SOURCE MUTANTS.** Each row applies one change to production source in
+the export, rebuilds, runs the specification tests (or the module's unit tests
+for the position conversion), records every failing test, and restores the file
+from the tree. The unmutated controls passed 13 of 13 specification tests and 2
+of 2 unit tests.
+
+| Rocq mutant | Production change | Named test | Failed | Log SHA-256 |
+|---|---|---|---|---|
+| `zip_truncating_arity_is_detected` | the alignment compares the channel count with itself | `admission_refuses_mismatched_arity_before_any_position` | 3 of 13 | `06e243304c99890264d8cd545a5f2ebf2bcd1740fde2b4d380c2c5bdbde938ff` |
+| `wrapping_peek_tail_is_detected` | the expected identity end wraps instead of refusing an overflowing peek count | `peek_count_overflow_is_checked_without_wrap` | 1 of 13 | `e730b8f3efe1cfef1410602258a554d2adbe06b2d6ec84d87cbd2423907dbdd3` |
+| `narrowed_count_alias_is_detected` | the header's pattern count is compared modulo $`2^{32}`$ | `malformed_field_bounds_and_peek_tails_are_refused` | 1 of 13 | `b40e99c4614cfaaf9f5764585c48dd4a57845afe9cca85a303bc344482af9d6f` |
+| `shifted_capture_bound_is_detected` | every pattern slice ends one byte early | `view_binds_align_channel_pattern_and_effective_peek_by_position` | 2 of 13 | `0481d286227198d0cca7577d707c65425846a3d57560173bed3a0e886ea106f2` |
+| `source_bearing_identity_is_detected` | the identity includes the source | `first_representative_and_exact_source_suffix_are_retained` | 2 of 13 | `2a04a7c803e9c5fb820f69d38a3fa8fdd6d9f893046c12daff28b176c62dfdca` |
+| `misplaced_source_split_is_detected` | the source suffix starts at the body end | `prepared_record_bytes_equal_the_frozen_encoders` | 2 of 13 | `a552d2cab17b382046b5ae4cd711793416200052d1ae70dcdde223af04122101` |
+| `normalized_peek_tail_is_detected` | the ascending-peek check accepts every pair | `malformed_field_bounds_and_peek_tails_are_refused` | 1 of 13 | `50a2679696169b79eb5e0c0a013bd4453c6ed95f95d68663d6ece499487fb5e7` |
+| `wrapping_signed_position_is_detected` | a position wraps to a signed 32-bit peek key | `wide_positions_convert_without_wrap` | 2 of 2 unit tests | `c5d0876c7fa1fffb0add298e31c1cff47040b0575c427379184c7683e43951e4` |
+| `unframed_prefix_match_is_detected` | a frame also matches a query that is only its prefix | `legacy_store_views_return_exact_ordered_positions_for_repeated_and_prefix_related_channels` | 3 of 13 | `ceb7d34adce3f4998f2f26171f6184543e6dc80d848df32457a799b9e1f6a894` |
+| `profile_blind_query_is_detected` | a query of the other profile reads the view's frames | `profile_queries_are_explicit` | 3 of 13 | `fba3ea157fe6c1cba52967d3a6e175a3e8868021970dd5985a1b917b48487422` |
+| `universal_nonempty_rule_is_detected` | admission refuses every record without patterns | `empty_aligned_view_has_no_bind_and_v2_empty_group_stays_refused` | 3 of 13 | `b19b08f70ed73264b23e099c13b87eb8c717693396cf4c35246e813318079410` |
+| `noncanonical_persist_is_detected` | every nonzero persist byte reads as persistent | `malformed_field_bounds_and_peek_tails_are_refused` | 1 of 13 | `35b04bad57bd5b8747fcad764810223be92af66592c7858455202b60c998a77d` |
+
+Two records belong with the table.
+
+1. *A case added to kill a mutant.* Before this slice, the only header case in
+   `malformed_field_bounds_and_peek_tails_are_refused` was a count of 3 for a
+   record with two patterns. Since $`3 \bmod 2^{32} = 3 \ne 2`$, the
+   narrowed-count mutant refused that case too and would have survived
+   (an inference by inspection). This slice adds the header $`2^{32} + 2`$,
+   which the mutant reads as 2 and admits.
+2. *A classifier error, corrected without a re-run.* The mutant script first
+   reported all twelve runs as build failures. Its pattern for a compile error
+   also matched cargo's `error: test failed` line. The per-mutant logs were
+   complete and are unchanged, so they were re-classified from those logs, and
+   every run was a kill by its named test. The script now treats only
+   `error[E…]` or `could not compile` as a build failure, and it requires a
+   `test result:` line.
+
+**VERIFICATION BOUNDARY.** The 11987 evidence ran on tree `eb60f8e7`, exported
+to `target/scratch/idx`. It differs from the commit that adds this entry only in
+documentation written after the runs: this entry, the measurement file, the
+catalog rows, and the integration subsection and its figure. One heavy job ran
+at a time, each in a user scope with zero swap on cores 16 to 31 and their
+siblings.
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| the runner's `--ordered-receive-view` flag | 32 GiB; release test targets built first | the aggregate registry current and its mutation controls passed; the checker's self-test passed (15 capstones, 12 Rocq mutants, 12 source mutants, 25 executable tests); 127 closed reports and `coqchk` as H1; 21 test runs passed: `ordered_receive` 2, `ordered_receive_view_spec` 13, `record_index` 20, `serializers` 8, the catalog preimage 1, `accepted_match_formal_bindings` 15, `serializer_byte_goldens` 5, `rho_path_spec` 24, `hot_store_spec` 57, `consume_arity_refusal` 5, `replay_comm_order` 3, `guarded_matching_tests` 18, the lifecycle equivalence 1, `cold_store_records` 6, `serializer_par_byte_goldens` 7, `event_hash_bytes_differential` 11, `event_hash_encoder_differential` 5, `ordered_receive_view_rholang` 4, `matching_lifecycle_acceptance` 2, the interpreter budget test 1, `handwritten_recursion_census` 13; exit 0 after 329 s | `target/perf/logs/8009/11987-flag-20261029T154250Z.log` | `cef7349b6918d262836cca40190f5d023fa163f8cee2b14b65214aff39979b48` |
+| the twelve source mutants | tree `0a9310de`; debug | as the table above | `target/perf/logs/8009/11987-negctl-20261029T153723Z.log` | `f07867e4b8ed28a53d47c14424086c1c301b48f32600bf03243dcbfcc2af7ba4` |
+| their classification from the per-mutant logs | — | 12 of 12 killed by their named tests | `target/perf/logs/8009/11987-negctl-20261029T153723Z-classification.log` | `27316a276fa22dfe016e52d05b5bc8f2562081ada2eca0d5430ecb60ce8841f0` |
+| `cargo fmt --all -- --check` and `scripts/check-fmt.sh` | in the export | exit 0; clean, 0 differences | `target/perf/logs/8009/11987-gate-20261029T155224Z.log` | `8a322a72b02de4e4c2df49923d17ad2cf8fb7a3762e0f7e7f28a470eb74947ce` |
+| `cargo clippy --locked --workspace --all-targets --keep-going`, every diagnostic classified | as above | 0 diagnostics in the changed Rust file; every required target checked; the only errors are six `reversed_empty_ranges` in models' test support, present at HEAD | the gate log, and the re-classification below | as above |
+| the re-classification of that run's unchanged JSON | — | 0 failures after the classifier's rholang target kind was corrected from `lib` to `rlib` (the rholang library builds as `cdylib` and `rlib`, so the first classification could not find it) | `target/perf/logs/8009/11987-gate-classify-20261029T155516Z.log` | `7a209974a3fb1de2d339303ef3f0d45d7ac1c45a9b623aba802ddfe8ae84aef2` |
+| `cargo clippy --locked --workspace -- -D warnings`, the pre-commit hook's command | as above | fails only on the unused method at `models/src/rust/rholang/canonical_path_admission.rs:1518`, which HEAD defines and only uncommitted work uses; the hook runs on the working tree, where it passes | the gate log | as above |
+| `cargo deny check` | as above | advisories, bans, licenses and sources ok | the gate log | as above |
+| `cargo test -p shared --test no_raii_in_statics` | as above | 5 passed | the gate log | as above |
+| every obligation registry's `--check` and `--self-test`, then the aggregate's | as above | all sixteen families and the aggregate current; every self-test passed | the gate log | as above |
+| task 11985's red run | the view replaced by an admission that always refuses | the 2 unit tests and the 8 specification tests failed | `target/perf/logs/8009/11985-red-20261029T133128Z.log` | `1de9275d27dd0fba77ee379f24e28d267543627208a70097bf612045a29dbe2f` |
+| task 11986's gate | the slice-3 tree | every new test and every compatibility pin passed | `target/perf/logs/8009/11986-gate-20261029T150213Z.log` | `b71af8582a282d29a069d4ab4f36fabbb055e592a348e1c06cd0b5d32c7fbd9d` |
+| task 11986's red runs | a skeleton store visit; a visit that reports `Unloaded`; a `BindPattern` layout that reads no free count | the skeleton failed the 5 store tests; the `Unloaded` visit failed 6 of 6 models tests and 2 of 4 rholang tests; the missing free count failed 6 of 6 models tests and 4 of 4 rholang tests | `target/perf/logs/8009/11986-red-rspace-20261029T135824Z.log`, `11986-red-models-20261029T145724Z.log`, `11986-red-rholang-20261029T145907Z.log` | `df0c9629397ef9f9e54023b1db15d5f8abfc885495ab5dcc4eb2905d60bdb1d2`, `9707b8c4d9108eae3c507e0bd872227a0ce21d654232666fd40845b1975e5c1e`, `5507863edea1287acd3da89fce5460f642ad429488beb63c8700fe212204f44e` |
+| task 11986's memory runs | release; HEAD against the slice-3 tree | as H3 | `target/perf/logs/8009/11986-memory-20261029T141212Z.log`, copied to the measurement file | `eff1cee5135fd87edbb527663bfec1b294b09b234438064688bcd95d0c720558` |
+
+The same classifier error appears in task 11986's re-gate. That log ends with
+status 1 for this reason alone, and its JSON shows the rholang library checked
+(pgmcp progress note 25674). The gate logs live under `target/`, which is not
+durable; the pgmcp artifacts of tasks 11984 to 11987 hold these tables. These
+are agent-run results; independent review and the approved pgmcp verification
+recipe remain required.
+
+**BOUNDARY.**
+
+- No persisted byte, identity, format, root, wire message or production outcome
+  changes, so the consensus-change register gets no note.
+- The stack-safety report receives no new claim. The view adds no recursion,
+  and its allocation and stack evidence is catalog row TLRS-RECEIVE-17. Its
+  memory record is the measurement file, and the resident-memory figures above
+  include allocator rounding, so they are not an RSS claim.
+- Nothing V2 is activated. `admit_rci2_v2` is reachable only from explicit keys,
+  and no store dispatches to it, so task 6021 remains the stop point.
+- These consensus-visible sites are unchanged and flagged to tasks 8012 and 6021:
+  - the bind positions of retained selection, found by typed channel equality
+    (`rspace++/src/rspace/rspace.rs:1154-1158`);
+  - the reducer's peek keys `(0..sources.len() as i32)`
+    (`rholang/src/rust/interpreter/reduce.rs:1460`), which would wrap above
+    $`2^{31} - 1`$ sources;
+  - the matcher's pairing of channels with patterns by `zip`
+    (`rspace++/src/rspace/space_matcher.rs:636-637` and `:832-833`), which
+    would truncate silently on an arity mismatch that the view refuses.
+- The durable path's `validate_continuation_record`
+  (`rspace++/src/rspace/persistence/semantic.rs:1082`) still checks arity after a
+  full decode; it belongs to task 7931.
+- A visit of a group that is not loaded returns `Unloaded` and hydrates nothing.
+- A visit holds the hot store's read lock: writers wait while a group of
+  $`N`$ records is visited, which takes $`O(N)`$, and a visitor must not re-enter
+  the hot store. The integration subsection states this contract.
+- Installed continuations are typed only and are never visited.
+- The view's later consumers are tasks 8011 (the PathMap-derived catalogs), 8012
+  (selection) and 7931 (the durable path).
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

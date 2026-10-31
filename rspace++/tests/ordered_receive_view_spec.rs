@@ -438,8 +438,10 @@ fn malformed_field_bounds_and_peek_tails_are_refused() {
     };
     let signed_words =
         |first: i32, second: i32| [first.to_le_bytes(), second.to_le_bytes()].concat();
-    let record_cases: [(Vec<u8>, Result<(), OrderedReceiveError>); 12] = [
+    let aliased_count = ((1u64 << 32) + 2).to_le_bytes();
+    let record_cases: [(Vec<u8>, Result<(), OrderedReceiveError>); 13] = [
         (rewritten(0, &3u64.to_le_bytes()), Err(OrderedReceiveError::MalformedFieldBounds)),
+        (rewritten(0, &aliased_count), Err(OrderedReceiveError::MalformedFieldBounds)),
         (rewritten(body_end, &[2]), Err(OrderedReceiveError::InvalidPersist(2))),
         (rewritten(body_end, &[0xFF]), Err(OrderedReceiveError::InvalidPersist(0xFF))),
         (rewritten(body_end + 1, &3u64.to_le_bytes()), Err(OrderedReceiveError::PeekTailMismatch)),

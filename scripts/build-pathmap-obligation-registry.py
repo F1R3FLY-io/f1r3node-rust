@@ -16,6 +16,7 @@ FAMILIES = (
     "epathmap_core",
     "epm1_positional",
     "free_map_journal",
+    "ordered_receive_view",
     "parbag_egress",
     "rci2_channel_image",
     "retained_set_automaton",

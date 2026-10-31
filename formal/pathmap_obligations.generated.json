@@ -1,8 +1,8 @@
 {
   "classified_obligations": {
-    "concrete_witness": 47,
+    "concrete_witness": 74,
     "executable_only": 9,
-    "executable_refinement": 138,
+    "executable_refinement": 150,
     "proof_only": 521
   },
   "families": [
@@ -2387,6 +2387,438 @@
             "target_source": null
           }
         ]
+      }
+    },
+    {
+      "checker": "scripts/check-ordered-receive-view-obligations.py",
+      "family": "ordered_receive_view",
+      "manifest": "formal/ordered_receive_view_obligations.generated.json",
+      "manifest_sha256": "42b37efc7cb42698d23e5513420e306cd8a2f0f6d685ae830fc3588105551cf4",
+      "obligations": {
+        "boundary": "Concrete witnesses assert each capstone on fixtures and generated records; the source mutants show the production checks observe each property. Neither is a formal Rust refinement proof, and the RCI2 profile is admitted only from explicit keys.",
+        "mutants": {
+          "bridge": "production_checks_are_admit_record",
+          "closed_reports": 47,
+          "module": "OrderedReceiveByteViewMutants",
+          "obligations": [
+            {
+              "id": "ORV-MUT-01",
+              "mode": "concrete_witness",
+              "obligation": "zip_truncating_arity_is_detected",
+              "source_mutant": "ORV-RS-01",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "admission_refuses_mismatched_arity_before_any_position"
+            },
+            {
+              "id": "ORV-MUT-02",
+              "mode": "concrete_witness",
+              "obligation": "wrapping_peek_tail_is_detected",
+              "source_mutant": "ORV-RS-02",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "peek_count_overflow_is_checked_without_wrap"
+            },
+            {
+              "id": "ORV-MUT-03",
+              "mode": "concrete_witness",
+              "obligation": "narrowed_count_alias_is_detected",
+              "source_mutant": "ORV-RS-03",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "malformed_field_bounds_and_peek_tails_are_refused"
+            },
+            {
+              "id": "ORV-MUT-04",
+              "mode": "concrete_witness",
+              "obligation": "shifted_capture_bound_is_detected",
+              "source_mutant": "ORV-RS-04",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "view_binds_align_channel_pattern_and_effective_peek_by_position"
+            },
+            {
+              "id": "ORV-MUT-05",
+              "mode": "concrete_witness",
+              "obligation": "source_bearing_identity_is_detected",
+              "source_mutant": "ORV-RS-05",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "first_representative_and_exact_source_suffix_are_retained"
+            },
+            {
+              "id": "ORV-MUT-06",
+              "mode": "concrete_witness",
+              "obligation": "misplaced_source_split_is_detected",
+              "source_mutant": "ORV-RS-06",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "prepared_record_bytes_equal_the_frozen_encoders"
+            },
+            {
+              "id": "ORV-MUT-07",
+              "mode": "concrete_witness",
+              "obligation": "normalized_peek_tail_is_detected",
+              "source_mutant": "ORV-RS-07",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "malformed_field_bounds_and_peek_tails_are_refused"
+            },
+            {
+              "id": "ORV-MUT-08",
+              "mode": "concrete_witness",
+              "obligation": "wrapping_signed_position_is_detected",
+              "source_mutant": "ORV-RS-08",
+              "test_source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_target": "wide_positions_convert_without_wrap"
+            },
+            {
+              "id": "ORV-MUT-09",
+              "mode": "concrete_witness",
+              "obligation": "unframed_prefix_match_is_detected",
+              "source_mutant": "ORV-RS-09",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "legacy_store_views_return_exact_ordered_positions_for_repeated_and_prefix_related_channels"
+            },
+            {
+              "id": "ORV-MUT-10",
+              "mode": "concrete_witness",
+              "obligation": "profile_blind_query_is_detected",
+              "source_mutant": "ORV-RS-10",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "profile_queries_are_explicit"
+            },
+            {
+              "id": "ORV-MUT-11",
+              "mode": "concrete_witness",
+              "obligation": "universal_nonempty_rule_is_detected",
+              "source_mutant": "ORV-RS-11",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "empty_aligned_view_has_no_bind_and_v2_empty_group_stays_refused"
+            },
+            {
+              "id": "ORV-MUT-12",
+              "mode": "concrete_witness",
+              "obligation": "noncanonical_persist_is_detected",
+              "source_mutant": "ORV-RS-12",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "malformed_field_bounds_and_peek_tails_are_refused"
+            }
+          ],
+          "print_assumptions": [
+            "production_checks_are_admit_record",
+            "zip_truncating_arity_is_detected",
+            "wrapping_peek_tail_is_detected",
+            "narrowed_count_alias_is_detected",
+            "shifted_capture_bound_is_detected",
+            "source_bearing_identity_is_detected",
+            "misplaced_source_split_is_detected",
+            "normalized_peek_tail_is_detected",
+            "wrapping_signed_position_is_detected",
+            "unframed_prefix_match_is_detected",
+            "profile_blind_query_is_detected",
+            "universal_nonempty_rule_is_detected",
+            "noncanonical_persist_is_detected"
+          ],
+          "source": "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthorityMutants.v"
+        },
+        "normal_suite": {
+          "models_filter": "ordered_receive",
+          "runner_flag": "--ordered-receive-view",
+          "tests": {
+            "models/tests/cold_store_records.rs": [
+              "ordered_receive_signed_fields_survive_repeated_channel_permutations",
+              "ordered_receive_codec_preserves_arbitrary_signed_fields",
+              "ordered_receive_raw_peeks_and_source_suffix_are_not_erased",
+              "ordered_receive_fixture_detects_erased_and_shifted_fields",
+              "ordered_receive_view_admits_every_corpus_pattern_and_continuation",
+              "ordered_receive_legacy_store_views_match_typed_par_positions"
+            ],
+            "rholang/tests/ordered_receive_view_rholang.rs": [
+              "compiled_rholang_receives_admit_exact_ordered_views",
+              "view_admission_and_iteration_do_not_allocate",
+              "resting_visit_allocations_do_not_grow_with_group_size",
+              "deep_pattern_views_fit_a_256_kib_stack"
+            ],
+            "rspace++/src/rspace/ordered_receive.rs": [
+              "wide_positions_convert_without_wrap",
+              "effective_peek_search_matches_linear_membership"
+            ],
+            "rspace++/tests/ordered_receive_view_spec.rs": [
+              "rci2_views_return_exact_positions_over_explicit_images",
+              "view_binds_align_channel_pattern_and_effective_peek_by_position",
+              "malformed_framing_is_refused",
+              "malformed_field_bounds_and_peek_tails_are_refused",
+              "peek_count_overflow_is_checked_without_wrap",
+              "empty_aligned_view_has_no_bind_and_v2_empty_group_stays_refused",
+              "profile_queries_are_explicit",
+              "legacy_store_views_return_exact_ordered_positions_for_repeated_and_prefix_related_channels",
+              "admission_refuses_mismatched_arity_before_any_position",
+              "first_representative_and_exact_source_suffix_are_retained",
+              "installed_continuations_are_not_visited_as_resting_records",
+              "visit_order_reconstructs_historical_order_and_unloaded_groups_are_not_hydrated",
+              "prepared_record_bytes_equal_the_frozen_encoders"
+            ]
+          }
+        },
+        "rocq": {
+          "closed_reports": 54,
+          "module": "OrderedReceiveByteView",
+          "obligations": [
+            {
+              "id": "ORV-RC-01",
+              "mode": "concrete_witness",
+              "obligation": "encoded_record_admits_exact_fields",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "prepared_record_bytes_equal_the_frozen_encoders"
+            },
+            {
+              "id": "ORV-RC-02",
+              "mode": "concrete_witness",
+              "obligation": "admitted_receive_refuses_mismatched_arity",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "admission_refuses_mismatched_arity_before_any_position"
+            },
+            {
+              "id": "ORV-RC-03",
+              "mode": "concrete_witness",
+              "obligation": "admitted_bounds_are_ordered_and_inside_record",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "malformed_field_bounds_and_peek_tails_are_refused"
+            },
+            {
+              "id": "ORV-RC-04",
+              "mode": "concrete_witness",
+              "obligation": "admitted_peek_tail_is_checked_exactly",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "peek_count_overflow_is_checked_without_wrap"
+            },
+            {
+              "id": "ORV-RC-05",
+              "mode": "concrete_witness",
+              "obligation": "admitted_peeks_are_canonical_signed",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "malformed_field_bounds_and_peek_tails_are_refused"
+            },
+            {
+              "id": "ORV-RC-06",
+              "mode": "concrete_witness",
+              "obligation": "admitted_persist_is_boolean",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "malformed_field_bounds_and_peek_tails_are_refused"
+            },
+            {
+              "id": "ORV-RC-07",
+              "mode": "concrete_witness",
+              "obligation": "admitted_view_binds_refine_bind_at",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "view_binds_align_channel_pattern_and_effective_peek_by_position"
+            },
+            {
+              "id": "ORV-RC-08",
+              "mode": "concrete_witness",
+              "obligation": "view_positions_are_exact_image_positions",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "rci2_views_return_exact_positions_over_explicit_images"
+            },
+            {
+              "id": "ORV-RC-09",
+              "mode": "concrete_witness",
+              "obligation": "prefix_related_images_are_not_aliases",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "legacy_store_views_return_exact_ordered_positions_for_repeated_and_prefix_related_channels"
+            },
+            {
+              "id": "ORV-RC-10",
+              "mode": "concrete_witness",
+              "obligation": "cross_profile_query_is_refused",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "profile_queries_are_explicit"
+            },
+            {
+              "id": "ORV-RC-11",
+              "mode": "concrete_witness",
+              "obligation": "empty_aligned_view_has_no_bind_or_position",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "empty_aligned_view_has_no_bind_and_v2_empty_group_stays_refused"
+            },
+            {
+              "id": "ORV-RC-12",
+              "mode": "concrete_witness",
+              "obligation": "source_suffix_is_exact_and_identity_is_source_free",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "prepared_record_bytes_equal_the_frozen_encoders"
+            },
+            {
+              "id": "ORV-RC-13",
+              "mode": "concrete_witness",
+              "obligation": "first_view_identity_retains_head_source_suffix",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "first_representative_and_exact_source_suffix_are_retained"
+            },
+            {
+              "id": "ORV-RC-14",
+              "mode": "concrete_witness",
+              "obligation": "free_count_is_trailing_signed_word",
+              "test_source": "models/tests/cold_store_records.rs",
+              "test_target": "ordered_receive_view_admits_every_corpus_pattern_and_continuation"
+            },
+            {
+              "id": "ORV-RC-15",
+              "mode": "concrete_witness",
+              "obligation": "wide_view_position_does_not_wrap",
+              "test_source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_target": "wide_positions_convert_without_wrap"
+            }
+          ],
+          "print_assumptions": [
+            "encoded_record_admits_exact_fields",
+            "admitted_receive_refuses_mismatched_arity",
+            "admitted_bounds_are_ordered_and_inside_record",
+            "admitted_peek_tail_is_checked_exactly",
+            "admitted_peeks_are_canonical_signed",
+            "admitted_persist_is_boolean",
+            "admitted_view_binds_refine_bind_at",
+            "view_positions_are_exact_image_positions",
+            "prefix_related_images_are_not_aliases",
+            "cross_profile_query_is_refused",
+            "empty_aligned_view_has_no_bind_or_position",
+            "source_suffix_is_exact_and_identity_is_source_free",
+            "first_view_identity_retains_head_source_suffix",
+            "free_count_is_trailing_signed_word",
+            "wide_view_position_does_not_wrap"
+          ],
+          "source": "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthority.v"
+        },
+        "scope": "Ordered receive byte view admission, positions, binds and resting-record store views (design 8009)",
+        "source_mutants": {
+          "generator": "scripts/generate-ordered-receive-view-mutant.py",
+          "obligations": [
+            {
+              "description": "the view alignment compares the channel count with itself, so every arity is admitted",
+              "id": "ORV-RS-01",
+              "mode": "executable_refinement",
+              "mutation": "zip_truncating_arity",
+              "rocq_mutant": "zip_truncating_arity_is_detected",
+              "source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "admission_refuses_mismatched_arity_before_any_position"
+            },
+            {
+              "description": "the expected identity end wraps instead of refusing an overflowing peek count",
+              "id": "ORV-RS-02",
+              "mode": "executable_refinement",
+              "mutation": "wrapping_peek_tail",
+              "rocq_mutant": "wrapping_peek_tail_is_detected",
+              "source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "peek_count_overflow_is_checked_without_wrap"
+            },
+            {
+              "description": "the record header's pattern count is compared modulo 2^32",
+              "id": "ORV-RS-03",
+              "mode": "executable_refinement",
+              "mutation": "narrowed_count_alias",
+              "rocq_mutant": "narrowed_count_alias_is_detected",
+              "source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "malformed_field_bounds_and_peek_tails_are_refused"
+            },
+            {
+              "description": "every pattern slice ends one byte early, so its trailing free count shifts",
+              "id": "ORV-RS-04",
+              "mode": "executable_refinement",
+              "mutation": "shifted_capture_bound",
+              "rocq_mutant": "shifted_capture_bound_is_detected",
+              "source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "view_binds_align_channel_pattern_and_effective_peek_by_position"
+            },
+            {
+              "description": "the record identity includes the consume source",
+              "id": "ORV-RS-05",
+              "mode": "executable_refinement",
+              "mutation": "source_bearing_identity",
+              "rocq_mutant": "source_bearing_identity_is_detected",
+              "source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "first_representative_and_exact_source_suffix_are_retained"
+            },
+            {
+              "description": "the source suffix starts at the body end instead of the identity end",
+              "id": "ORV-RS-06",
+              "mode": "executable_refinement",
+              "mutation": "misplaced_source_split",
+              "rocq_mutant": "misplaced_source_split_is_detected",
+              "source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "prepared_record_bytes_equal_the_frozen_encoders"
+            },
+            {
+              "description": "the strictly ascending peek check accepts every pair of peeks",
+              "id": "ORV-RS-07",
+              "mode": "executable_refinement",
+              "mutation": "normalized_peek_tail",
+              "rocq_mutant": "normalized_peek_tail_is_detected",
+              "source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "malformed_field_bounds_and_peek_tails_are_refused"
+            },
+            {
+              "description": "a receive position wraps to a 32-bit signed peek key",
+              "id": "ORV-RS-08",
+              "mode": "executable_refinement",
+              "mutation": "wrapping_signed_position",
+              "rocq_mutant": "wrapping_signed_position_is_detected",
+              "source": "rspace++/src/rspace/rho_path.rs",
+              "test_source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_target": "wide_positions_convert_without_wrap"
+            },
+            {
+              "description": "a channel frame also matches a query that is only a prefix of its bytes",
+              "id": "ORV-RS-09",
+              "mode": "executable_refinement",
+              "mutation": "unframed_prefix_match",
+              "rocq_mutant": "unframed_prefix_match_is_detected",
+              "source": "rspace++/src/rspace/rho_path.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "legacy_store_views_return_exact_ordered_positions_for_repeated_and_prefix_related_channels"
+            },
+            {
+              "description": "a query of the other profile reads the view's frames instead of being refused",
+              "id": "ORV-RS-10",
+              "mode": "executable_refinement",
+              "mutation": "profile_blind_query",
+              "rocq_mutant": "profile_blind_query_is_detected",
+              "source": "rspace++/src/rspace/rho_path.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "profile_queries_are_explicit"
+            },
+            {
+              "description": "admission refuses every record without patterns",
+              "id": "ORV-RS-11",
+              "mode": "executable_refinement",
+              "mutation": "universal_nonempty_rule",
+              "rocq_mutant": "universal_nonempty_rule_is_detected",
+              "source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "empty_aligned_view_has_no_bind_and_v2_empty_group_stays_refused"
+            },
+            {
+              "description": "every nonzero persist byte reads as persistent",
+              "id": "ORV-RS-12",
+              "mode": "executable_refinement",
+              "mutation": "noncanonical_persist",
+              "rocq_mutant": "noncanonical_persist_is_detected",
+              "source": "rspace++/src/rspace/ordered_receive.rs",
+              "test_source": "rspace++/tests/ordered_receive_view_spec.rs",
+              "test_target": "malformed_field_bounds_and_peek_tails_are_refused"
+            }
+          ]
+        },
+        "sources_sha256": {
+          "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthority.v": "c4183bbef63011d604a64bcf034dd87362f7921eeaf469e56063252a3481f1e5",
+          "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthorityMutants.v": "4e05f494d7ef3647ae1151c4c7ae2c3f47178a7755ea49246268bdfe87489351",
+          "models/tests/cold_store_records.rs": "f3139ced4e49dc91259d0666c86cd114f6c260bfa4721444bef2d060b971a1ee",
+          "rholang/tests/ordered_receive_view_rholang.rs": "10191077f1417dd08700179902c088fbfff77f143dab0570ed02f003f827a413",
+          "rspace++/src/rspace/ordered_receive.rs": "3b4a8a4bd5dfeaee77f55d3453a827cb99b24904f4b1f4a5432ae71f7a5c2373",
+          "rspace++/src/rspace/rho_path.rs": "fa5c037be8699102959cc84c85d4c6ab2c9ada049cadbe01dfa0e69a952e5397",
+          "rspace++/tests/ordered_receive_view_spec.rs": "056600fdd0262df83e2a8082403f71477127ed757283a44baae103e864cd9fae",
+          "scripts/generate-ordered-receive-view-mutant.py": "3d01cbaa8f4ee260f3e26f2f3f73738e9621a57cc441a39374a86d01a87de9e7"
+        }
       }
     },
     {
@@ -6907,6 +7339,6 @@
       }
     }
   ],
-  "global_obligation_ids": 730,
+  "global_obligation_ids": 769,
   "scope": "PathMap integration formal obligations and normal-suite refinement bindings"
 }

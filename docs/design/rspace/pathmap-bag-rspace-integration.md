@@ -840,6 +840,476 @@ architecture-dependent hash is not used.
 
 Identical records share one trie value whose `Multiplicity` counts occurrences. No tie breaker can distinguish identical record bytes semantically: choosing and removing any occurrence leaves the same record and decremented multiplicity. Unequal candidates retain the existing ordering by the Blake2b-256 digest of canonical candidate bytes, with the complete trie path providing a deterministic collision tie breaker. The vector candidate hot path is retired at `5329b27a3`; the bounded duplicate, exact-removal, and play/replay witnesses pass, while the campaign's exhaustive generated differential and formal quotient proof remain required before closure.
 
+### Ordered receive byte view (task 8009)
+
+The ordered receive byte view reads one resting continuation record of a RhoPathV1 continuation
+group as a sequence of aligned *receive binds* without decoding a term. The bind at position
+$`i`$ pairs the group's channel at position $`i`$ with the record's `BindPattern` image at the
+same position, that pattern's signed `free_count`, and whether position $`i`$ peeks. The derived
+receive accelerator of tasks 8010–8013 needs exactly these observations for every resting receive
+on a channel. Decoding each `WaitingContinuation<BindPattern, TaggedContinuation>` to obtain them
+would allocate and walk every pattern and body term. The view instead borrows the authoritative
+trie bytes, checks them once in time linear in the arity and the peek count, and answers every
+query by slicing those bytes.
+
+Task 8009 was delivered in four slices. `f8f56212a` adds the Rocq model and its causal mutants;
+`a824e7fd9` adds the view in
+[`rspace++/src/rspace/ordered_receive.rs`](../../../rspace++/src/rspace/ordered_receive.rs);
+`3d9a9d08b` integrates the view with the continuation store and the hot store, implements the
+`BindPattern` layout in `models`, and adds the Rholang tests; and the fourth slice registers the
+obligations, runs the twelve production source mutants and adds this subsection. The view
+introduces no persisted format, history key, state root, or RhoPath version. The canonical record
+bytes are the frozen encoder output, and the field offsets the view needs are an in-memory sidecar
+captured by the encoder pass that already runs when a continuation is stored. Candidate selection
+is unchanged; the observations that would change it are listed under
+[consensus-visible observations left untouched](#consensus-visible-observations-left-untouched).
+
+![Ordered receive byte view: single-pass bounds capture, admission, store keys and the resting visit](figures/ordered-receive-byte-view.svg)
+
+The figure follows one continuation from `HotStore::put_continuation` to a caller's visitor.
+Numbered arrows give the order of operations. Dashed arrows lead to typed refusals or come from
+the inactive RCI2 profile, and the two frames mark the spans of the hot-store write and read
+locks. Under the write lock, one encoder pass emits the canonical record and its field bounds,
+and admission over the borrowed record yields the identity and the source suffix from which the
+store derives its keys. Under the read lock, a visit admits each resting record of a loaded group
+as a LegacyV1 view and lends it to the visitor.
+
+#### Notation
+
+| Symbol | Meaning |
+|---|---|
+| $`R`$ | The canonical continuation record bytes. $`\lvert R\rvert`$ is its length, $`R[a]`$ the byte at offset $`a`$, and $`R[a, b)`$ the bytes at offsets $`a`$ through $`b-1`$. |
+| $`x \Vert y`$ | The concatenation of the byte strings $`x`$ and $`y`$. |
+| $`\mathrm{le}_8(x)`$ | The 8-byte little-endian encoding of an unsigned integer $`x`$. |
+| $`n`$ | The arity: the number of `BindPattern`s in the record. An aligned view requires exactly $`n`$ channels. |
+| $`c_i`$, $`f_i`$ | For $`0 \le i < n`$, the channel at bind position $`i`$ and its escaped RhoPath frame, terminator included. |
+| $`p_i`$, $`b`$ | The frozen stable encoding (`StableHashSerialize`) of the `BindPattern` at position $`i`$ and of the `TaggedContinuation` body. |
+| $`\pi`$ | The persist byte: 1 for a persistent receive and 0 otherwise. |
+| $`k`$, $`w_j`$ | The number of raw peeks and, for $`0 \le j < k`$, the peek at index $`j`$ as a signed 32-bit little-endian word. |
+| $`s`$ | The `Consume` source event recorded with the continuation. |
+| $`e_i`$, $`e_{\mathrm{body}}`$, $`e_{\mathrm{id}}`$ | The field bounds: the end offsets of pattern $`i`$, of the body, and of the identity. |
+| $`\mathrm{start}_i`$ | The start offset of pattern $`i`$ for $`i < n`$, and of the body for $`i = n`$. |
+| $`I`$ | The identity: every byte of $`R`$ before the source suffix. |
+| $`P`$ | The LegacyV1 continuation prefix of the channel group. |
+
+#### Record layout and field bounds
+
+The record is the frozen continuation encoding, which this task does not change: the source-free
+identity followed by the bincode image of the source.
+
+```math
+R \;=\; \underbrace{\mathrm{le}_8(n) \,\Vert\, p_0 \,\Vert\, \cdots \,\Vert\, p_{n-1} \,\Vert\, b \,\Vert\, \pi \,\Vert\, \mathrm{le}_8(k) \,\Vert\, w_0 \,\Vert\, \cdots \,\Vert\, w_{k-1}}_{\text{identity } I} \;\Vert\; \underbrace{\mathrm{bincode}(s)}_{\text{source suffix}}
+```
+
+```text
+┌─────────┬───────────┬─────┬───────────────┬──────────┬─────────┬─────────┬────────────┬─────────────────┐
+│ le64(n) │ pattern_0 │ ... │ pattern_(n-1) │   body   │ persist │ le64(k) │ k × i32-LE │ bincode(source) │
+├─────────┴───────────┴─────┴───────────────┴──────────┴─────────┴─────────┴────────────┼─────────────────┤
+│                          identity I: every byte before e_id                           │  source suffix  │
+└───────────────────────────────────────────────────────────────────────────────────────┴─────────────────┘
+0         8           e_0   e_(n-2)         e_(n-1)    e_body    e_body+1  e_body+9     e_id              |R|
+```
+
+The field bounds are the $`n+2`$ offsets $`E = (e_0, \dots, e_{n-1}, e_{\mathrm{body}}, e_{\mathrm{id}})`$.
+With $`\mathrm{start}_0 = 8`$ and $`\mathrm{start}_i = e_{i-1}`$ for $`0 < i \le n`$, pattern $`i`$
+is $`R[\mathrm{start}_i, e_i)`$ and the body is $`R[\mathrm{start}_n, e_{\mathrm{body}})`$. The
+persist byte is $`R[e_{\mathrm{body}}]`$, the peek count is
+$`R[e_{\mathrm{body}}+1, e_{\mathrm{body}}+9)`$, the peek words are
+$`R[e_{\mathrm{body}}+9, e_{\mathrm{id}})`$, the identity is $`I = R[0, e_{\mathrm{id}})`$, and the
+source suffix is $`R[e_{\mathrm{id}}, \lvert R\rvert)`$. One persist byte, one 8-byte count and
+$`k`$ four-byte words lie between the body end and the identity end, so every well-formed record
+satisfies the *tail equation*
+
+```math
+e_{\mathrm{id}} \;=\; e_{\mathrm{body}} + 1 + 8 + 4k \;=\; e_{\mathrm{body}} + 9 + 4k .
+```
+
+**Why the bounds are a sidecar.** Pattern and body images are variable-length encodings of
+arbitrarily deep terms. Finding their ends from the bytes alone would require parsing every term,
+which is the decode the view exists to avoid, whereas the encoder knows each end as it writes it.
+`encode_continuation_identity_observed_into`
+(`rspace++/src/rspace/serializers/serializers.rs:138-165`) reports the length written after each
+pattern, after the body, and after the last peek word. `encode_continuation_identity_into`
+delegates to it with a no-op observer, so the two cannot emit different bytes.
+`PreparedContinuationRecord::encode_waiting` (`ordered_receive.rs:81-101`) runs that pass once,
+appends the source suffix, and keeps the $`n+2`$ ends in a preallocated
+`ContinuationFieldBounds(Box<[usize]>)` (`ordered_receive.rs:65-72`). The bounds are never
+persisted. A group hydrated from history is encoded once by `set_group`, as it was before this
+task, and each of its records receives its bounds from that same pass.
+
+#### Admission and its refusals
+
+**Algorithm 3 (Ordered receive record admission).** `ContinuationRecordView::admit_record(R, E)`
+(`ordered_receive.rs:128-188`) checks a borrowed record against its bounds. It allocates nothing
+and decodes no term: each check reads a fixed-width field at an offset that the bounds supply.
+Each check either passes or returns one typed refusal, so malformed bytes fail locally and
+deterministically without panics, as the
+[consensus and compatibility invariants](#consensus-and-compatibility-invariants) require. The
+order of the checks determines which refusal a record with several defects reports. In the
+procedure, `le64` reads an unsigned 64-bit little-endian integer.
+
+```pseudocode
+admit_record(R, E):
+    require |R| >= 8                                      else TruncatedRecord
+    require |E| >= 2                                      else MalformedFieldBounds
+    let e_0 .. e_(n-1), e_body, e_id be the entries of E
+    require le64(R[0, 8)) = n                             else MalformedFieldBounds
+    require 8 <= e_0 <= ... <= e_(n-1) <= e_body <= e_id  else MalformedFieldBounds
+    require |R| > e_body                                  else TruncatedRecord
+    require R[e_body] is 0 or 1                           else InvalidPersist(R[e_body])
+    require |R| >= e_body + 9                             else TruncatedRecord
+    k := le64(R[e_body + 1, e_body + 9))
+    t := e_body + 9 + 4 * k in checked usize arithmetic
+    require no step of t overflows                        else PeekCountOverflow
+    require t = e_id                                      else PeekTailMismatch
+    require |R| >= e_id                                   else TruncatedRecord
+    w_0 .. w_(k-1) := R[e_body + 9, e_id) as signed i32 little-endian words
+    require w_0 < w_1 < ... < w_(k-1)                     else NonCanonicalPeeks
+    return view(R, e_0 .. e_(n-1), e_body, e_id, persist = (R[e_body] = 1), w)
+```
+
+The procedure is literate pseudocode for the production function, not a second implementation.
+Three of its checks exclude specific wrong implementations, each of which has a formal causal
+witness in `OrderedReceiveByteViewMutants`:
+
+- **Checked tail arithmetic.** The peek count is an untrusted 64-bit field. Under wrapping
+  arithmetic, a count of $`2^{62}`$ after the empty body of an arity-0 record gives
+  $`8 + 9 + 4 \cdot 2^{62} \equiv 17 \pmod{2^{64}}`$, so a record whose identity ends at offset 17
+  would be admitted with no peek words while declaring $`2^{62}`$ of them (ORV-MUT-02). Checked
+  arithmetic refuses it with `PeekCountOverflow` before any word is read.
+- **Full-width header.** Comparing the header with $`n`$ after narrowing it to 32 bits would let a
+  header of $`2^{32}+1`$ alias a one-pattern record (ORV-MUT-03).
+- **Strict signed peek order.** The peek set is a `BTreeSet<i32>` encoded in ascending signed
+  order, so strictly ascending signed words are its only image. Admitting $`(5, 1)`$ or $`(3, 3)`$
+  would accept identities that no encoder emits (ORV-MUT-07). The order is signed: $`(-1, 1)`$ is
+  canonical although the unsigned word of $`-1`$ exceeds 1.
+
+Admission checks that the bounds are consistent with the record; it cannot check that they are the
+encoder's bounds. A first pattern bound moved one byte earlier is still ordered and still satisfies
+the tail equation, so it is admitted and reads a free count of 773 where the encoder wrote 3
+(ORV-MUT-04). Exactness therefore comes from capture rather than admission: every continuation
+record in the store carries the bounds of its own encoder pass, and ORV-RC-01 proves that encoded
+bounds slice every field exactly.
+
+| Refusal | Raised by | Condition |
+|---|---|---|
+| `TruncatedRecord` | record; LegacyV1 split | The record ends before its header, persist byte, peek count, or last peek word, or the prefix length exceeds the stored path. |
+| `MalformedFieldBounds` | record | There are fewer than two bounds, the header differs from the number of pattern ends, or the bounds are not ordered from offset 8. |
+| `InvalidPersist(b)` | record | The persist byte $`b`$ is neither 0 nor 1. |
+| `PeekCountOverflow` | record | The tail end $`e_{\mathrm{body}} + 9 + 4k`$ is not representable in `usize`. |
+| `PeekTailMismatch` | record | The tail end differs from $`e_{\mathrm{id}}`$. |
+| `NonCanonicalPeeks` | record | The peek words are not strictly ascending as signed integers. |
+| `Path(RhoPathError)` | view | The LegacyV1 group prefix or the RCI2 key is malformed; an empty RCI2 group is `Path(EmptyChannelGroup)`. |
+| `IdentityMismatch` | RCI2 view | The key's identity frame differs from the record identity $`I`$. |
+| `ArityMismatch { channels, patterns }` | view | The group's channel count differs from the record's pattern count $`n`$. |
+| `ProfileMismatch` | `positions` | The query's profile differs from the view's profile. |
+
+#### Channel profiles
+
+A view is admitted under exactly one *channel profile*, which fixes the byte language of the
+channel group and of every query against it:
+
+```text
+LegacyV1 continuation prefix :=
+    "RHP" 0x01 0x02 0x01
+    frame(identity_0) ... frame(identity_(n-1))
+    0x00 0x01
+
+Rci2V2 continuation key :=
+    "RHP" 0x02 0x02 0x01
+    count:u64-BE
+    frame(image_0) ... frame(image_(n-1))
+    0x00 0x01
+    frame(record_identity)
+
+frame(x)          := zero_escape(x) 0x00 0x00
+zero_escape(0x00) := 0x00 0xFF
+```
+
+In both envelopes the `0x02` after the magic is the continuation kind, `0x01` is the collection
+version, and `0x00 0x01` ends the channel group. A LegacyV1 channel identity is the channel's
+`rho_path_identity`, which for `Par` is its stable encoding
+(`models/src/rust/rspace_path.rs:74-78`). An RCI2 image is a `ChannelImageV2`, specified in the
+[next subsection](#channelimagev2-logical-channel-identity).
+
+- **LegacyV1, active.** `OrderedReceiveView::admit_legacy_v1(record_path, prefix_len, bounds)`
+  (`ordered_receive.rs:239-251`) is the store's profile. It splits the stored path $`P \Vert R`$
+  at $`\lvert P\rvert`$, refusing with `TruncatedRecord` if the path is shorter, parses $`P`$ with
+  `RhoPathV1::parse_continuation_group` (`rho_path.rs:1113-1125`), admits $`R`$, and aligns. The
+  group parser shares the frame loop and error order of `RhoPathV1::parse_continuation` but
+  accepts an empty group and requires the prefix to end exactly at the group terminator.
+- **Rci2V2, explicit keys only.** `OrderedReceiveView::admit_rci2_v2(key, record, bounds)`
+  (`ordered_receive.rs:253-264`) parses an explicit V2 key with `RhoPathV2::parse_continuation`
+  (`rho_path.rs:1651-1687`), which refuses an empty group with `EmptyChannelGroup`; admits the
+  record; refuses with `IdentityMismatch` unless the key's identity frame equals $`I`$; and aligns.
+  No store operation calls it, because activating RCI2 keys is task 6021.
+- **Alignment.** `OrderedReceiveView::aligned` (`ordered_receive.rs:266-281`) refuses with
+  `ArityMismatch { channels, patterns }` unless the group has exactly $`n`$ channels, before any
+  position or bind can be observed, and records the group's profile.
+
+Queries are typed by profile: `ReceiveChannelQuery::LegacyV1(raw)` carries V1 identity bytes and
+`ReceiveChannelQuery::Rci2V2(raw)` carries RCI2 image bytes (`rho_path.rs:1416-1420`). A view
+answers only queries of its own profile (`rho_path.rs:1446-1458`) and returns `ProfileMismatch`
+for the other, so bytes from different channel languages are never compared.
+
+#### Positions, peeks and binds
+
+For raw query bytes $`q`$, the positions of $`q`$ in a view are the bind positions whose channel
+is exactly $`q`$, in ascending order:
+
+```math
+\operatorname{positions}(q) \;=\; \bigl[\, i \;:\; 0 \le i < n \;\land\; c_i = q \,\bigr].
+```
+
+`OrderedReceiveView::positions(query)` (`ordered_receive.rs:287-294`) returns the lazy iterator
+`RhoPathChannelPositions` (`rho_path.rs:1461-1497`). It walks the frames once in channel order,
+advances its position counter by checked addition, and yields $`i`$ whenever
+`frame_equals(f_i, q)` holds. `frame_equals` (`rho_path.rs:1499-1524`) matches only when the
+escaped frame decodes to exactly $`q`$ and its terminator follows the last byte of $`q`$. Hence a
+repeated channel yields every one of its positions, and a channel whose bytes are a proper prefix
+of another's, such as `[01]` against `[01 00]`, is never an alias of it.
+
+The effective peek of position $`i`$ is signed membership with an explicit range guard:
+
+```math
+\operatorname{peek}(i) \;=\; \bigl(i \le 2^{31}-1\bigr) \;\land\; \bigl(i \in \{w_0, \dots, w_{k-1}\}\bigr).
+```
+
+Positions are nonnegative while peeks are signed, so a negative peek never makes a position
+peeking, and a position of $`2^{31}`$ or more is never peeking and never wraps onto a small signed
+value. In Rust the position type is `RhoPathReceivePosition(u64)` (`rho_path.rs:1392-1408`).
+`signed_peek_key` converts a position with `i32::try_from` and yields nothing above $`2^{31}-1`$;
+`ContinuationRecordView::effective_peek` (`ordered_receive.rs:213-221`) binary-searches the
+ascending words for that key in $`O(\log k)`$ time; and `index` and `at_index` convert between
+`u64` and `usize` with checked conversions. The coarse flag `coarse_peek` records raw
+nonemptiness, $`k > 0`$, which can hold when no position peeks: the raw set $`\{-1, 7\}`$ at arity
+three is coarse-peeking although none of its positions peeks.
+
+A `ReceiveBind` (`ordered_receive.rs:326-348`) holds a position $`i`$, the channel frame $`f_i`$,
+the pattern slice $`p_i`$, and the effective peek of $`i`$. `binds()` (`ordered_receive.rs:307-323`)
+is an `ExactSizeIterator` over all $`n`$ binds in position order, `bind_at(position)`
+(`ordered_receive.rs:296-305`) addresses one bind, `channel_matches(raw)` applies frame equality
+to the bind's frame, and `pattern()` borrows the pattern bytes. Nothing is copied: a view, its
+iterators and its binds borrow the record and the group prefix.
+
+#### Free-count layout
+
+`ReceiveBind::free_count::<L>()` (`ordered_receive.rs:345-347`) reads the bind's signed
+`free_count` through the layout trait `ReceivePatternLayout` (`ordered_receive.rs:350-352`).
+`rspace_plus_plus` is generic in its pattern type and cannot name `BindPattern`, and `models`
+depends on `rspace_plus_plus`, so the implementation for `BindPattern` lives in
+`models/src/rust/rspace_path.rs:92-100`. The frozen stable encoding of a `BindPattern` is
+
+```text
+BindPattern image := term_count:u64-LE term* remainder_tag:u8 remainder_var? free_count:i32-LE
+```
+
+The free count is therefore always the last four bytes, and the shortest image, with no terms and
+no remainder, has $`8 + 1 + 4 = 13`$ bytes. The implementation returns the trailing little-endian
+`i32` when the image has at least 13 bytes and `None` otherwise, so a short slice is reported
+rather than misread. The formal counterpart is `free_count_is_trailing_signed_word` (ORV-RC-14).
+
+#### Store integration
+
+`HotStore::put_continuation` (`hot_store.rs:997-1043`) encodes each new continuation exactly once:
+
+1. Outside the write lock, it reads the group from history if the group is not loaded.
+2. Under the write lock, if the group is still unloaded, `RSpaceContinuationStore::set_group`
+   (`record_index.rs:1225-1245`) installs the history records, encoding each one once.
+3. `PreparedContinuationRecord::encode_waiting` encodes the new continuation and captures its
+   bounds.
+4. `RSpaceContinuationStore::put_prepared` (`record_index.rs:1247-1295`) inserts it.
+
+Both `set_group` and `put_prepared` derive every identity-dependent value from the admitted view
+returned by `record_view()`, never from a second encoding:
+
+| Derived value | Taken from | Used for |
+|---|---|---|
+| Primary record path $`P \Vert R`$ | the canonical bytes | the live trie key, ordered by canonical record bytes, and the pending `BagDelta` addition |
+| Identity path $`P \Vert \mathrm{frame}(I)`$ | `identity()` | first-representative deduplication and the semantic content journal |
+| Source reference and bytes | `source_suffix()`, wrapped as a `ContinuationSourceV1` canonical blob | the pending content transition and source bytes |
+
+Because $`I`$ excludes the source, two continuations that differ only in source share one identity
+path. The second put returns `Some(false)`, and the first representative's source suffix stays
+observable. Each stored record keeps its bounds in `StoredRecord::field_bounds`
+(`record_index.rs:364-373`). In test builds, `assert_coherent` re-admits every bounded record and
+re-checks that its identity path is $`P \Vert \mathrm{frame}(I)`$ (`record_index.rs:1138-1145`).
+`PreparedContinuationRecord::record_view` treats a refusal of the encoder's own bounds as a broken
+invariant and panics through `expect`. ORV-RC-01 proves in the model that encoded bounds always
+admit, and the 64-case property `prepared_record_bytes_equal_the_frozen_encoders` checks it for
+the Rust encoder.
+
+#### Resting receive visit
+
+**Algorithm 4 (Resting receive visit).** `HotStore::try_visit_resting_receive_views(channels,
+visitor)` (`hot_store.rs:1090-1099`) lends each resting record of a loaded group to a caller's
+visitor as an admitted LegacyV1 view, together with the record's historical orders. It is a
+required, object-safe `HotStore` method (`hot_store.rs:313-317`) that delegates to
+`RSpaceContinuationStore::visit_resting_receive_records` (`record_index.rs:1307-1327`).
+
+```pseudocode
+try_visit_resting_receive_views(channels, visitor):
+    acquire the hot-store read lock and hold it until return
+    P := the RhoPathV1 continuation prefix of channels
+    if the resting group at P is not loaded:
+        return Unloaded
+    visited := 0
+    for each stored record under P, in ascending path order:
+        admission := admit_legacy_v1(record.path, |P|, record.field_bounds)
+        visitor(record.orders, admission)
+        visited := visited + 1, checked
+    return Visited(visited)
+```
+
+An unloaded group returns `Unloaded` without reading history, so a visit never hydrates a group.
+The records come from the store's borrowed PathMap read zipper at $`P`$ (`record_index.rs:626-657`)
+and therefore arrive in ascending primary-path order, which is ascending canonical record order
+because every path in the group begins with $`P`$. That is not the `get_continuations` order.
+Each record carries its orders, and a continuation record carries exactly one: an insertion
+receives a single order (`record_index.rs:852`), and a repeated identity is skipped rather than
+given another (`record_index.rs:548-552`, `816-820`). Larger orders are newer, and
+`get_continuations` lists records by descending order (`record_index.rs:684-703`), so a caller
+that needs the historical order sorts the visited records by descending order. Installed
+continuations live in the separate `installed` trie and are never visited. Admission refusals are
+passed to the visitor rather than raised: a group whose channel count differs from its record's
+pattern count yields `Err(ArityMismatch { .. })` for a direct put and after hydration from
+history alike.
+
+The visitor's type, `&mut dyn FnMut(&[u64], Result<OrderedReceiveView<'_>, OrderedReceiveError>)`,
+is higher-ranked in the view's lifetime. A view therefore cannot outlive the call that receives
+it, which is required because it borrows trie bytes that only the read guard keeps alive.
+
+#### Read-lock contract
+
+The visit holds the `std::sync::RwLock` read guard of the hot-store state from its first record to
+its last (`hot_store.rs:1095`; the lock is declared at `hot_store.rs:856`). Holding the guard is
+what lets the view borrow the authoritative bytes without copying them. The code carries no
+comments, so the contract is stated here:
+
+1. **The visitor must not re-enter the hot store.** The standard library documents that `read`
+   and `write` may panic when the current thread already holds the lock, and that a recursive
+   `read` may deadlock while a writer waits
+   ([`std::sync::RwLock`](https://doc.rust-lang.org/std/sync/struct.RwLock.html)). A visitor that
+   calls a `HotStore` method can therefore panic or deadlock. It should record what it needs and
+   act after the visit returns.
+2. **A visit blocks writers for $`O(N)`$ records.** For a group of $`N`$ resting records, every
+   writer of the hot-store state, such as `put_continuation`, `install_continuation` and
+   `remove_continuation`, waits for all $`N`$ admissions and all $`N`$ visitor calls. A visitor
+   should do bounded work per record.
+
+#### Measured costs
+
+The field-bounds sidecar is the only resident memory this task adds. Review decision 8 required a
+measurement: the requested live bytes per stored continuation at `3d9a9d08b` were compared with
+those of its parent in a release build, and three repeats gave identical results.
+
+| Arity $`n`$ | Added requested bytes | $`16 + 8(n+2)`$ |
+|---:|---:|---:|
+| 1 | 40 | 40 |
+| 3 | 56 | 56 |
+| 16 | 160 | 160 |
+| 65 | 552 | 552 |
+
+The increase is about 2.2 to 2.6 percent of the requested live bytes per stored continuation, and
+it equals $`16 + 8(n+2)`$ exactly. That matches the layout of the new field: a 16-byte
+`Option<ContinuationFieldBounds>` in each `Arc`-allocated `StoredRecord` (a boxed-slice pointer
+and length, with `None` in the pointer's null niche), plus the $`n+2`$ eight-byte offsets of the
+boxed slice. The decomposition is inferred from the types; only the total was measured.
+
+The view's allocation and stack behavior is enforced by tests in
+[`rholang/tests/ordered_receive_view_rholang.rs`](../../../rholang/tests/ordered_receive_view_rholang.rs),
+which count allocations with a counting global allocator:
+
+- `view_admission_and_iteration_do_not_allocate`: admitting a LegacyV1 view of compiled
+  `BindPattern`s and reading its binds, free counts, effective peeks and positions performs zero
+  allocations at arities 1, 65 and 4097.
+- `resting_visit_allocations_do_not_grow_with_group_size`: after a warm-up, a visit that admits and
+  iterates every view performs the same number of allocations for 64 and for 4096 resting records.
+- `deep_pattern_views_fit_a_256_kib_stack`: a pattern nested 20000 levels deep is admitted and
+  iterated on a thread with a 256 KiB stack, because admission never descends into a term.
+
+The cost of each operation follows from the procedures above, where $`\lvert K\rvert`$ is the
+length of the group prefix or RCI2 key:
+
+| Operation | Time | Heap allocation |
+|---|---|---|
+| `encode_waiting` | one encoder pass over $`R`$ | the record buffer and one preallocated $`(n+2)`$-entry bounds slice |
+| `admit_record` | $`O(n + k)`$ | none |
+| `admit_legacy_v1`, `admit_rci2_v2` | $`O(\lvert K\rvert + n + k)`$ | none |
+| full `positions(q)` iteration | $`O\bigl(\sum_{i} \lvert f_i\rvert\bigr)`$ | none |
+| full `binds()` iteration | $`O\bigl(\sum_{i} \lvert f_i\rvert + n \log k\bigr)`$ | none |
+| `bind_at(i)` | $`O\bigl(\sum_{j \le i} \lvert f_j\rvert + \log k\bigr)`$ | none |
+| `effective_peek(i)` | $`O(\log k)`$ | none |
+| `free_count::<BindPattern>()` | $`O(1)`$ | none |
+| visit of $`N`$ resting records | $`N`$ admissions, $`N`$ visitor calls and one zipper walk | independent of $`N`$, as measured above |
+
+#### Formal bindings
+
+[`TwoLevelRSpaceContinuationAuthority.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthority.v),
+module `OrderedReceiveByteView`, models the record over mathematical integers. Each pattern image
+is an arbitrary prefix followed by its signed `free_count` word. `admit_record` checks the bound
+count against the header, bound order from offset 8, a persist byte of at most 1, the tail
+equation computed in $`\mathbb{Z}`$ together with $`e_{\mathrm{id}} \le 2^{64}-1`$, strictly
+ascending signed peeks, and $`e_{\mathrm{id}} \le \lvert R\rvert`$. Channel groups carry an explicit
+profile and use the verified RhoPathV1 zero-escape frame. The module's 15 closed theorems,
+ORV-RC-01 through ORV-RC-15, and the 12 closed causal Examples ORV-MUT-01 through ORV-MUT-12 in
+module `OrderedReceiveByteViewMutants` of
+[`TwoLevelRSpaceContinuationAuthorityMutants.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthorityMutants.v)
+are mapped to their single executable owners and RECEIVE rows in the invariant catalog's
+[TLRS-PROP-11](../pathmap/two-level-rspace-authority-invariant-catalog-2026-09-02.md#tlrs-prop-11--ordered-receive-fields-and-occurrence-identity-2026-09-06).
+The bridge lemma `production_checks_are_admit_record` proves by reflexivity that the parameterized
+admission `admit_with`, instantiated with the production checks, is `admit_record`, so each check
+mutant differs from production in exactly one check.
+
+`scripts/check-stack-safe-pda-proofs.sh` requires 54 closed `Print Assumptions` reports from the
+authority file and 47 from its mutant companion, and `--ordered-receive-view` is its focused flag
+for this family. `scripts/check-ordered-receive-view-obligations.py`, with `--check`, `--write`
+and `--self-test`, maintains the registry `formal/ordered_receive_view_obligations.generated.json`,
+which is the `ordered_receive_view` family of `scripts/build-pathmap-obligation-registry.py`.
+`scripts/generate-ordered-receive-view-mutant.py` produces ORV-RS-01 through ORV-RS-12, the
+production-source analogues of the twelve formal mutants; each is applied to an export of the tree
+and must make one named test fail. The registry and checker establish traceability; the semantic
+evidence is the executable tests named in the catalog.
+
+The proofs do not extract or verify the Rust code, the stable and bincode encoders, PathMap
+traversal, the `RwLock`, or allocation and stack use; those are executable evidence. The model
+also refuses with a single `None`, whereas Rust distinguishes the ten refusals tabulated above.
+
+#### Consensus-visible observations left untouched
+
+Review decision 9 kept three consensus-visible observations unchanged and flagged them to tasks
+8012 and 6021:
+
+1. **Typed versus V1-byte positions.** Candidate selection computes bind positions by typed
+   equality, `channel == bat_channel` in `retained_candidate_selection`
+   (`rspace++/src/rspace/rspace.rs:1154-1158`), whereas a LegacyV1 view compares V1 identity
+   bytes. The models test `ordered_receive_legacy_store_views_match_typed_par_positions` finds the
+   two equal on a fixture that includes channels differing only in root `locally_free`, which are
+   equal both ways, and channels differing only in nested `locally_free`, which are distinct both
+   ways. A universal equality needs a proof, so byte positions are exposed only as a property of
+   the view, and replacing the typed comparison is left to 8012 and 6021.
+2. **RCI2 activation.** `admit_rci2_v2` accepts explicit keys only, and no store operation
+   dispatches to it. Store views stay LegacyV1; activating RCI2 keys would change keys and roots
+   and is the task-6021 stop point.
+3. **The reducer's peek-set cast.** `DebruijnInterpreter::consume_inner` builds the peek set of a
+   peeking receive as `0..sources.len() as i32` (`rholang/src/rust/interpreter/reduce.rs:1460`).
+   The view's checked `signed_peek_key` never wraps, but the reducer is unchanged: the peek set is
+   part of the continuation identity and therefore of the state root, so changing how it is built
+   is consensus-visible.
+
+Task 8012 was also told that the matcher pairs channels with patterns by `zip`
+(`rspace++/src/rspace/space_matcher.rs:636-637` and `:832-833`), which silently truncates when the
+two counts differ. The view refuses that case with `ArityMismatch`, so selection should use the
+view's checked arity once it reads from the view. These flags are pgmcp progress notes 25670 to
+25673. The durable path's `validate_continuation_record`
+(`rspace++/src/rspace/persistence/semantic.rs:1082`) still checks arity after a full decode; it
+belongs to task 7931.
+
+No slice changes a file under `rholang/src`, `casper` or `persistence/`, nor `rspace.rs` or
+`space_matcher.rs`, and no RhoPath `MAGIC`, `KIND` or `VERSION` constant changes. For the first
+three slices this is `git diff --name-only f8f56212a~1 3d9a9d08b`; the fourth changes only scripts,
+registries, one test file and documentation.
+
 ### ChannelImageV2 logical channel identity
 
 The proposed outer RhoPathV2 envelope that will carry this image is specified separately in

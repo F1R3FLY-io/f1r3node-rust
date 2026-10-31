@@ -661,6 +661,60 @@ if [[ "${1:-}" == "--match-preparation" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "--ordered-receive-view" ]]; then
+  export PROPTEST_RNG_SEED="${PROPTEST_RNG_SEED:-41318009}"
+  export TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  python3 "$repo_root/scripts/check-ordered-receive-view-obligations.py" --self-test
+  pushd "$rocq_root" >/dev/null
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/PathMapCanonicalStreamPublicationBase.v
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceAuthority.v 5 \
+    "the exact two-level RSpace logical authority"
+  rocq_compile_with_closed_count theories/RhoPathV1Datum.v 21 "exact datum framing and partition"
+  rocq_reject_placeholders \
+    theories/TwoLevelRSpaceContinuationAuthority.v \
+    theories/TwoLevelRSpaceContinuationAuthorityMutants.v
+  rocq_compile_with_closed_count \
+    theories/TwoLevelRSpaceContinuationAuthority.v 54 \
+    "the exact two-level RSpace continuation and join authority"
+  rocq_compile_with_closed_count \
+    theories/TwoLevelRSpaceContinuationAuthorityMutants.v 47 \
+    "the continuation and join authority causal controls"
+  rocq_check_modules "ordered receive byte view and its causal controls" \
+    StackSafePDA.TwoLevelRSpaceContinuationAuthority \
+    StackSafePDA.TwoLevelRSpaceContinuationAuthorityMutants
+  popd >/dev/null
+  pushd "$repo_root" >/dev/null
+  rspace_preparation_run_tests 2 --lib rspace::ordered_receive::
+  rspace_preparation_run_tests 13 --test ordered_receive_view_spec
+  rspace_preparation_run_tests 20 --lib rspace::record_index::
+  rspace_preparation_run_tests 8 --lib rspace::serializers::
+  rspace_preparation_run_tests 1 --lib catalog_hash_preimages_are_exact_raw_identity_bytes
+  rspace_preparation_run_tests 15 --lib accepted_match_formal_bindings
+  rspace_preparation_run_tests 5 --test serializer_byte_goldens
+  rspace_preparation_run_tests 24 --test rho_path_spec
+  rspace_preparation_run_tests 57 --test hot_store_spec
+  rspace_preparation_run_tests 5 --test consume_arity_refusal
+  rspace_preparation_run_tests 3 --test replay_comm_order
+  rspace_preparation_run_tests 18 --test guarded_matching_tests
+  rspace_preparation_run_tests 1 --test mod continuation_join_lifecycle_equivalence
+  TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+    rpb3_run_tests 6 --release --locked -j4 --test cold_store_records ordered_receive
+  TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+    rpb3_run_tests 7 --release --locked -j4 --test serializer_par_byte_goldens
+  TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+    rpb3_run_tests 11 --release --locked -j4 --test event_hash_bytes_differential
+  TLC_MEMORY_HIGH=4G TLC_RSS=6G TLC_CPU_QUOTA=400% TLC_TASKS_MAX=512 \
+    rpb3_run_tests 5 --release --locked -j4 --test event_hash_encoder_differential
+  rholang_run_tests 4 --test ordered_receive_view_rholang
+  rholang_run_tests 2 --test matching_lifecycle_acceptance
+  rholang_run_tests 1 --test interpreter_spec \
+    interpreter_should_exhaust_budget_when_comm_count_exceeds_token_budget
+  rholang_run_tests 13 --test handwritten_recursion_census
+  popd >/dev/null
+  echo "stack-safe-pda: focused ordered receive view proof and runtime gates passed"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--free-map-journal" ]]; then
   pushd "$rocq_root" >/dev/null
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
@@ -1458,6 +1512,8 @@ do
     exit 1
   fi
 done
+python3 "$repo_root/scripts/check-ordered-receive-view-obligations.py" --check
+python3 "$repo_root/scripts/check-ordered-receive-view-obligations.py" --self-test
 python3 "$repo_root/scripts/check-affine-import-obligations.py" --check
 python3 "$repo_root/scripts/check-affine-import-obligations.py" --self-test
 tlc_run "$tla_metadir" \

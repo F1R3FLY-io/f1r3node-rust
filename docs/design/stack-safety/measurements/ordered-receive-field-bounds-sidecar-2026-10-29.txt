@@ -1,0 +1,29 @@
+exported 5e69f7481c780bf9ae6711159fa8cbf0fd151a83 to target/scratch/idx
+label=head tree=5e69f7481c780bf9ae6711159fa8cbf0fd151a83 binary=field_bounds_memory-fbc694f70a9e423a
+label=head repeat=1 MEASURE arity=1 records=100000 live_bytes=179116822 live_bytes_per_record=1791.17 allocations_per_record=109.48 rss_kib_delta=205352 rss_bytes_per_record=2102.80
+label=head repeat=2 MEASURE arity=1 records=100000 live_bytes=179116822 live_bytes_per_record=1791.17 allocations_per_record=109.48 rss_kib_delta=205500 rss_bytes_per_record=2104.32
+label=head repeat=3 MEASURE arity=1 records=100000 live_bytes=179116822 live_bytes_per_record=1791.17 allocations_per_record=109.48 rss_kib_delta=205476 rss_bytes_per_record=2104.07
+label=head repeat=1 MEASURE arity=3 records=100000 live_bytes=239917658 live_bytes_per_record=2399.18 allocations_per_record=134.55 rss_kib_delta=274324 rss_bytes_per_record=2809.08
+label=head repeat=2 MEASURE arity=3 records=100000 live_bytes=239917658 live_bytes_per_record=2399.18 allocations_per_record=134.55 rss_kib_delta=274132 rss_bytes_per_record=2807.11
+label=head repeat=3 MEASURE arity=3 records=100000 live_bytes=239917658 live_bytes_per_record=2399.18 allocations_per_record=134.55 rss_kib_delta=274252 rss_bytes_per_record=2808.34
+label=head repeat=1 MEASURE arity=16 records=20000 live_bytes=124197024 live_bytes_per_record=6209.85 allocations_per_record=297.22 rss_kib_delta=137312 rss_bytes_per_record=7030.37
+label=head repeat=2 MEASURE arity=16 records=20000 live_bytes=124197024 live_bytes_per_record=6209.85 allocations_per_record=297.22 rss_kib_delta=137328 rss_bytes_per_record=7031.19
+label=head repeat=3 MEASURE arity=16 records=20000 live_bytes=124197024 live_bytes_per_record=6209.85 allocations_per_record=297.22 rss_kib_delta=137268 rss_bytes_per_record=7028.12
+label=head repeat=1 MEASURE arity=65 records=10000 live_bytes=208986116 live_bytes_per_record=20898.61 allocations_per_record=888.60 rss_kib_delta=227160 rss_bytes_per_record=23261.18
+label=head repeat=2 MEASURE arity=65 records=10000 live_bytes=208986116 live_bytes_per_record=20898.61 allocations_per_record=888.60 rss_kib_delta=227168 rss_bytes_per_record=23262.00
+label=head repeat=3 MEASURE arity=65 records=10000 live_bytes=208986116 live_bytes_per_record=20898.61 allocations_per_record=888.60 rss_kib_delta=227152 rss_bytes_per_record=23260.36
+exported 5056f26f6ee7946ff7509669d3aaac00acc10dc5 to target/scratch/idx
+label=slice3 tree=5056f26f6ee7946ff7509669d3aaac00acc10dc5 binary=field_bounds_memory-fbc694f70a9e423a
+label=slice3 repeat=1 MEASURE arity=1 records=100000 live_bytes=183116822 live_bytes_per_record=1831.17 allocations_per_record=108.48 rss_kib_delta=206432 rss_bytes_per_record=2113.86
+label=slice3 repeat=2 MEASURE arity=1 records=100000 live_bytes=183116822 live_bytes_per_record=1831.17 allocations_per_record=108.48 rss_kib_delta=206416 rss_bytes_per_record=2113.70
+label=slice3 repeat=3 MEASURE arity=1 records=100000 live_bytes=183116822 live_bytes_per_record=1831.17 allocations_per_record=108.48 rss_kib_delta=206512 rss_bytes_per_record=2114.68
+label=slice3 repeat=1 MEASURE arity=3 records=100000 live_bytes=245517658 live_bytes_per_record=2455.18 allocations_per_record=133.55 rss_kib_delta=273740 rss_bytes_per_record=2803.10
+label=slice3 repeat=2 MEASURE arity=3 records=100000 live_bytes=245517658 live_bytes_per_record=2455.18 allocations_per_record=133.55 rss_kib_delta=273888 rss_bytes_per_record=2804.61
+label=slice3 repeat=3 MEASURE arity=3 records=100000 live_bytes=245517658 live_bytes_per_record=2455.18 allocations_per_record=133.55 rss_kib_delta=273784 rss_bytes_per_record=2803.55
+label=slice3 repeat=1 MEASURE arity=16 records=20000 live_bytes=127397024 live_bytes_per_record=6369.85 allocations_per_record=297.22 rss_kib_delta=140740 rss_bytes_per_record=7205.89
+label=slice3 repeat=2 MEASURE arity=16 records=20000 live_bytes=127397024 live_bytes_per_record=6369.85 allocations_per_record=297.22 rss_kib_delta=140736 rss_bytes_per_record=7205.68
+label=slice3 repeat=3 MEASURE arity=16 records=20000 live_bytes=127397024 live_bytes_per_record=6369.85 allocations_per_record=297.22 rss_kib_delta=140688 rss_bytes_per_record=7203.23
+label=slice3 repeat=1 MEASURE arity=65 records=10000 live_bytes=214506116 live_bytes_per_record=21450.61 allocations_per_record=888.60 rss_kib_delta=233148 rss_bytes_per_record=23874.36
+label=slice3 repeat=2 MEASURE arity=65 records=10000 live_bytes=214506116 live_bytes_per_record=21450.61 allocations_per_record=888.60 rss_kib_delta=233060 rss_bytes_per_record=23865.34
+label=slice3 repeat=3 MEASURE arity=65 records=10000 live_bytes=214506116 live_bytes_per_record=21450.61 allocations_per_record=888.60 rss_kib_delta=233108 rss_bytes_per_record=23870.26
+memory exit=0

@@ -1,0 +1,67 @@
+@startuml ordered-receive-byte-view
+skinparam backgroundColor #F7FAFC
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam ArrowColor #334155
+skinparam rectangle {
+  BorderColor #334155
+  FontColor #0F172A
+  RoundCorner 10
+}
+skinparam database {
+  BorderColor #334155
+  FontColor #0F172A
+}
+
+rectangle "Write path: hot-store write lock" as write_lock #FFF7ED {
+  rectangle "HotStore::put_continuation\n(channels, continuation)" as put #DBEAFE
+  rectangle "PreparedContinuationRecord::encode_waiting\nsingle encoder pass:\ncanonical record bytes and the <latex>n+2</latex> field bounds\nContinuationFieldBounds, an in-memory sidecar" as encode #FEF3C7
+  rectangle "ContinuationRecordView::admit_record\nborrowed, allocation-free, no term decode\n<latex>e_{\mathrm{body}} + 9 + 4k = e_{\mathrm{id}}</latex> in checked arithmetic" as admit #FCE7F3
+}
+
+database "RSpaceContinuationStore, resting group\nprimary path: continuation_prefix ‖ canonical\nidentity path: continuation_prefix ‖ frame(identity)\nsource blob: ContinuationSourceV1(source suffix)\nStoredRecord keeps its field bounds" as store #DCFCE7
+
+rectangle "Read path: hot-store read lock for the whole visit" as read_lock #EEF2FF {
+  rectangle "HotStore::try_visit_resting_receive_views\n(channels, visitor)\nUnloaded without hydration, or Visited(count)" as visit #DBEAFE
+  rectangle "visitor(&orders, admission)\nmust not re-enter the hot store" as visitor #E0E7FF
+  rectangle "OrderedReceiveView\npositions(query) · binds() · bind_at(position)" as view #CCFBF1
+  rectangle "ReceiveBind\nposition · channel_frame · pattern · effective_peek\nReceiveBind::free_count::<L>()" as bind #CCFBF1
+}
+
+rectangle "ReceivePatternLayout for BindPattern, in models\ntrailing i32-LE free_count of a pattern of at least 13 bytes" as layout #EDE9FE
+
+rectangle "LegacyV1 profile: active\nReceiveChannelQuery::LegacyV1(V1 identity bytes)" as legacy #D9F99D
+rectangle "Rci2V2 profile\nOrderedReceiveView::admit_rci2_v2(key, record, bounds)\nexplicit keys only; activation is task 6021" as rci2 #F1F5F9;line.dashed
+
+rectangle "OrderedReceiveError\nTruncatedRecord · MalformedFieldBounds · InvalidPersist\nPeekCountOverflow · PeekTailMismatch · NonCanonicalPeeks\nArityMismatch · IdentityMismatch · ProfileMismatch · Path" as refusal #FEE2E2
+
+put --> encode : 1 · encode once\n(set_group encodes each history record once)
+encode --> admit : 2 · record_view()
+admit --> store : 3 · keys and source blob from\nidentity() and source_suffix()
+store --> visit : 4 · loaded group in path order;\ninstalled continuations never visited
+visit --> visitor : 5 · per resting record:\nadmit_legacy_v1(path, prefix_len, bounds)
+visitor --> view : 6 · Ok(view)
+view --> bind : 7 · binds() or bind_at(position)
+bind --> layout : 8 · free_count::<BindPattern>()
+legacy --> view : store views
+rci2 ..> view : explicit keys only;\nactivation is task 6021
+admit ..> refusal : Err
+visitor ..> refusal : Err(ArityMismatch)
+view ..> refusal : Err(ProfileMismatch)
+
+legend right
+  |= Color |= Meaning |
+  |<#DBEAFE> blue | HotStore entry point |
+  |<#FEF3C7> amber | single encoder pass and its bounds sidecar |
+  |<#FCE7F3> pink | admission over borrowed bytes |
+  |<#DCFCE7> green | continuation store authority |
+  |<#E0E7FF> indigo | caller-supplied visitor |
+  |<#CCFBF1> teal | borrowed ordered receive view |
+  |<#EDE9FE> violet | pattern layout trait |
+  |<#D9F99D> lime | active channel profile |
+  |<#F1F5F9> slate, dashed | inactive channel profile |
+  |<#FEE2E2> red | typed refusal |
+  |<#FFF7ED> orange frame | under the hot-store write lock |
+  |<#EEF2FF> indigo frame | under the hot-store read lock |
+endlegend
+@enduml
