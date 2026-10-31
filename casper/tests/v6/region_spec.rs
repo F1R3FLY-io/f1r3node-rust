@@ -15,7 +15,7 @@ use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block::state_hash::StateHash;
 use models::rust::casper::protocol::casper_message::{Cosignature, DeployData};
-use rholang::rust::interpreter::accounting::rev_stack::WalletOwner;
+use rholang::rust::interpreter::accounting::rev_stack::{wallet_channel_id, WalletOwner};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
@@ -190,12 +190,14 @@ async fn a_stack_literal_moves_one_unit_per_cell_and_replays() {
 
     assert_eq!(played.gate.admitted(), vec![true]);
     assert!(!played.processed[0].is_failed);
-    assert_eq!(
-        balance(&rm, &played.runs[0].post_root, &alice).await,
-        100_000 - 2
-    );
     assert_eq!(played.merged, vec![true]);
     assert!(played.settlement.is_balanced());
+    let moved: u64 = played.settlement.transfers.iter().map(|t| t.amount).sum();
+    assert_eq!(moved, 2);
+    assert_eq!(
+        balance(&rm, &played.settled_root, &alice).await,
+        100_000 - 2 - played.settlement.debited()
+    );
 
     let again = executor
         .replay(
@@ -210,7 +212,6 @@ async fn a_stack_literal_moves_one_unit_per_cell_and_replays() {
 }
 
 #[tokio::test]
-#[ignore = "the v6 merge drops native REV writes of a run (reported 2026-10-30)"]
 async fn native_rev_writes_of_a_run_survive_the_merge() {
     let (alice, bob, proposer) = (party(), party(), party());
     let (rm, pre) = shard(&[(&alice, 10_000)]).await;
@@ -229,7 +230,6 @@ async fn native_rev_writes_of_a_run_survive_the_merge() {
         )
         .await
         .unwrap();
-    assert_eq!(balance(&rm, &played.runs[0].post_root, &bob).await, 6_000);
     assert_eq!(balance(&rm, &played.settled_root, &bob).await, 6_000);
 }
 
@@ -419,12 +419,18 @@ async fn a_joint_wallet_is_spent_only_by_all_its_signers() {
         .await
         .expect("the block executes");
     assert_eq!(played.gate.admitted(), vec![true]);
-    let run = &played.runs[0].post_root;
+    let settled = &played.settled_root;
+    let paid = played
+        .settlement
+        .debits
+        .get(&wallet_channel_id(&pair))
+        .copied()
+        .unwrap_or(0);
     assert_eq!(
-        read_wallet_balance(&rm, run, &pair).await.unwrap(),
-        50_000 - 700
+        read_wallet_balance(&rm, settled, &pair).await.unwrap(),
+        50_000 - 700 - paid
     );
-    assert_eq!(balance(&rm, run, &bob).await, 700);
+    assert_eq!(balance(&rm, settled, &bob).await, 700);
 
     let leak = r#"new d(`rho:system:deployerId`) in { @"carol"!(*d) }"#;
     let leaked = executor
@@ -449,9 +455,18 @@ async fn a_joint_wallet_is_spent_only_by_all_its_signers() {
         .await
         .expect("the block executes");
     assert_eq!(played.gate.admitted(), vec![true]);
-    let run = &played.runs[0].post_root;
-    assert_eq!(read_wallet_balance(&rm, run, &pair).await.unwrap(), 50_000);
-    assert_eq!(balance(&rm, run, &bob).await, 0);
+    let settled = &played.settled_root;
+    let paid = played
+        .settlement
+        .debits
+        .get(&wallet_channel_id(&pair))
+        .copied()
+        .unwrap_or(0);
+    assert_eq!(
+        read_wallet_balance(&rm, settled, &pair).await.unwrap(),
+        50_000 - paid
+    );
+    assert_eq!(balance(&rm, settled, &bob).await, 0);
 }
 
 #[tokio::test]

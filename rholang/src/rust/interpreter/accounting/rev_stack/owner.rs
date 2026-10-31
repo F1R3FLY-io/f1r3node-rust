@@ -71,6 +71,23 @@ impl WalletOwner {
                     WalletOwner::Unforgeable(body.to_vec())
                 }
             }
+            TAG_COMPOUND => {
+                let count = u32::from_be_bytes(rest.get(..4)?.try_into().ok()?) as usize;
+                let mut at = 4;
+                let mut components = Vec::new();
+                for _ in 0..count {
+                    let len =
+                        u32::from_be_bytes(rest.get(at..at + 4)?.try_into().ok()?) as usize;
+                    components.push(Self::from_canonical_bytes(
+                        rest.get(at + 4..at + 4 + len)?,
+                    )?);
+                    at += 4 + len;
+                }
+                if at != rest.len() {
+                    return None;
+                }
+                WalletOwner::compound(components).ok()?
+            }
             _ => return None,
         };
         (owner.canonical_bytes() == bytes).then_some(owner)
@@ -106,4 +123,23 @@ impl WalletOwner {
 fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
     out.extend_from_slice(bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WalletOwner;
+
+    #[test]
+    fn a_compound_owner_survives_its_canonical_bytes() {
+        let a = WalletOwner::Unforgeable(vec![1; 32]);
+        let b = WalletOwner::Unforgeable(vec![2; 32]);
+        let joint = WalletOwner::compound(vec![b.clone(), a.clone()]).unwrap();
+        let bytes = joint.canonical_bytes();
+        assert_eq!(WalletOwner::from_canonical_bytes(&bytes), Some(joint));
+        assert_eq!(WalletOwner::from_canonical_bytes(&bytes[..bytes.len() - 1]), None);
+        assert_eq!(
+            WalletOwner::from_canonical_bytes(&a.canonical_bytes()),
+            Some(a)
+        );
+    }
 }

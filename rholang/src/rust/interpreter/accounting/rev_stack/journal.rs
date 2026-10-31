@@ -170,6 +170,48 @@ pub fn journaled_transfer(
     record(store, &entry)
 }
 
+pub fn journaled_transfers(
+    store: &dyn CellStore,
+    balance: RevAmount,
+    held: RevAmount,
+    from: &WalletOwner,
+    payees: &[(WalletOwner, RevAmount)],
+) -> Result<(), RevStackError> {
+    let total = payees
+        .iter()
+        .try_fold(0 as RevAmount, |sum, (_, amount)| sum.checked_add(*amount))
+        .filter(|total| *total <= super::MAX_AMOUNT)
+        .ok_or(RevStackError::InvalidAmount(RevAmount::MAX))?;
+    if payees.iter().any(|(_, amount)| *amount == 0) {
+        return Err(RevStackError::InvalidAmount(0));
+    }
+    let _guard = JOURNAL_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (debits, credits) = net(store, from)?;
+    let available = balance
+        .saturating_add(credits)
+        .saturating_sub(debits)
+        .saturating_sub(held);
+    if total > available {
+        return Err(RevStackError::InsufficientFunds {
+            balance: available,
+            requested: total,
+        });
+    }
+    for (to, amount) in payees.iter().filter(|(to, _)| to != from) {
+        record(
+            store,
+            &JournalEntry {
+                from: from.clone(),
+                to: to.clone(),
+                amount: *amount,
+            },
+        )?;
+    }
+    Ok(())
+}
+
 pub fn visible_balance(
     store: &dyn CellStore,
     owner: &WalletOwner,

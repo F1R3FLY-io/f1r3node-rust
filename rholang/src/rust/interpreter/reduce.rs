@@ -51,6 +51,7 @@ use super::accounting::costs::{
     var_eval_cost,
 };
 use super::accounting::rev_stack::kind::{is_stack_body, kind_owner, stack_kind, KindStack};
+use super::accounting::rev_stack::journal::{journal_open, journaled_transfers};
 use super::accounting::rev_stack::region::{admissible, signature_owner};
 use super::accounting::rev_stack::reserve::reservation;
 use super::accounting::rev_stack::{RevAmount, RevStacks, WalletOwner};
@@ -1708,6 +1709,10 @@ impl DebruijnInterpreter {
         let balance = stacks
             .balance(&writer)
             .map_err(|e| refused(e.to_string()))?;
+        if journal_open(stacks.cells()) {
+            return journaled_transfers(stacks.cells(), balance, held, &writer, &payees)
+                .map_err(|e| refused(e.to_string()));
+        }
         if balance < total.saturating_add(held) {
             return Err(refused(format!(
                 "the writer's wallet holds {balance}, of which {held} is committed, and the stack needs {total}"

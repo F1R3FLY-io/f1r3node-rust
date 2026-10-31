@@ -11,6 +11,7 @@ use rholang::rust::interpreter::accounting::rev_stack::reserve::{
 use rholang::rust::interpreter::accounting::rev_stack::{HotStoreCells, RevStacks, WalletOwner};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNumber, RhoString, RhoTuple2};
+use rholang::rust::interpreter::system_processes::DeployData;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -44,7 +45,19 @@ fn stacks(runtime: &RhoRuntimeImpl) -> RevStacks {
     RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
 }
 
+async fn sign_as(runtime: &RhoRuntimeImpl, signer: &Key) {
+    runtime
+        .set_deploy_data(DeployData {
+            timestamp: 1,
+            deployer_id: signer.pk.clone(),
+            deploy_id: vec![1],
+            cosigners: Vec::new(),
+        })
+        .await;
+}
+
 async fn eval_as(runtime: &RhoRuntimeImpl, signer: &Key, term: &str) -> Vec<String> {
+    sign_as(runtime, signer).await;
     let result = runtime
         .evaluate(term, phlo(), with_deployer_id(&signer.pk), rand())
         .await
@@ -176,6 +189,24 @@ async fn an_open_journal_holds_transfers_out_of_the_state() {
     assert_eq!(either(&take(&runtime, "jb").await[0]), (true, RhoNumber::create_par(400)));
     assert!(eval_as(&runtime, &alice, &transfer_term(&bob.address, 401, "j2")).await.is_empty());
     assert!(!either(&take(&runtime, "j2").await[0]).0);
+
+    sign_as(&runtime, &bob).await;
+    let forged = runtime
+        .evaluate(
+            &transfer_term(&bob.address, 100, "j3"),
+            phlo(),
+            with_deployer_id(&alice.pk),
+            rand(),
+        )
+        .await
+        .unwrap();
+    assert!(forged.errors.is_empty());
+    let (ok, why) = either(&take(&runtime, "j3").await[0]);
+    assert!(!ok);
+    assert_eq!(
+        RhoString::unapply(&why).as_deref(),
+        Some("the payer must be a signer of this deployment")
+    );
 
     let journal = close_journal(&cells(&runtime)).unwrap();
     assert_eq!(journal.len(), 1);
