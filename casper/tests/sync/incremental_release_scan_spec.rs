@@ -75,3 +75,64 @@ async fn after_a_block_is_processed_only_the_blocks_it_released_are_examined() {
         "the scan after A examines only B, not the 20 unrelated parked blocks"
     );
 }
+
+#[tokio::test]
+async fn a_chain_of_missing_ancestors_releases_one_level_per_validation() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("Failed to build genesis");
+    let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
+        .await
+        .unwrap();
+    let shard = genesis.genesis_block.shard_id.clone();
+
+    let mut chain = Vec::new();
+    for index in 0..3 {
+        let deploy = construct_deploy::basic_deploy_data(index, None, Some(shard.clone())).unwrap();
+        chain.push(nodes[0].add_block_from_deploys(&[deploy]).await.unwrap());
+    }
+    let (block_a, block_b, block_c) = (chain[0].clone(), chain[1].clone(), chain[2].clone());
+    nodes[1].shutoff().unwrap();
+
+    for parked in [&block_c, &block_b] {
+        let status = nodes[1].add_block(parked.clone()).await.unwrap();
+        assert!(
+            matches!(status, Either::Left(_)),
+            "a block whose parent is missing parks, got {status:?}"
+        );
+    }
+    let before = nodes[1].casper.get_dependency_free_from_buffer().unwrap();
+    assert!(
+        !before
+            .iter()
+            .any(|b| b.block_hash == block_b.block_hash || b.block_hash == block_c.block_hash),
+        "no block of the chain is released while A is missing"
+    );
+
+    let validated_a = nodes[1].add_block(block_a.clone()).await.unwrap();
+    assert!(
+        matches!(validated_a, Either::Right(_)),
+        "A must validate, got {validated_a:?}"
+    );
+    let after_a = nodes[1].casper.get_dependency_free_from_buffer().unwrap();
+    assert!(
+        after_a.iter().any(|b| b.block_hash == block_b.block_hash),
+        "validating A releases B in the next scan"
+    );
+    assert!(
+        !after_a.iter().any(|b| b.block_hash == block_c.block_hash),
+        "C still waits on B, so the same scan does not release it"
+    );
+
+    let validated_b = nodes[1].add_block(block_b.clone()).await.unwrap();
+    assert!(
+        matches!(validated_b, Either::Right(_)),
+        "B must validate, got {validated_b:?}"
+    );
+    let after_b = nodes[1].casper.get_dependency_free_from_buffer().unwrap();
+    assert!(
+        after_b.iter().any(|b| b.block_hash == block_c.block_hash),
+        "validating B releases C in the next scan, with no timer in between"
+    );
+}
