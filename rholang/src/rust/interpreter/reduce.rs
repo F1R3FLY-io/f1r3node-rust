@@ -1319,6 +1319,13 @@ impl DebruijnInterpreter {
             })
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
+        // A join whose channels resolve to one name never matches: the runtime
+        // counterpart of the normalizer's ReceiveOnSameChannelsError.
+        let mut channels = HashSet::with_capacity(binds.len());
+        if !binds.iter().all(|(_, channel)| channels.insert(channel)) {
+            return Ok(());
+        }
+
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
         let subst_body = self.substitute.substitute_no_sort_and_charge(
             receive
