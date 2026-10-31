@@ -75,6 +75,46 @@ pub struct ShardOverrides {
     pub with_read_only_size: Option<usize>,
     pub deploy_lifespan: Option<i64>,
     pub finalization_rate: Option<i32>,
+    pub v6: Option<V6TestConfig>,
+}
+
+#[derive(Clone, Debug)]
+pub struct V6TestConfig {
+    pub start_engine: bool,
+    pub max_user_deploys_per_block: Option<u32>,
+    pub retained_records: usize,
+}
+
+impl Default for V6TestConfig {
+    fn default() -> Self {
+        V6TestConfig {
+            start_engine: true,
+            max_user_deploys_per_block: None,
+            retained_records: casper::rust::casper::V6_RETAINED_RECORDS_DEFAULT,
+        }
+    }
+}
+
+fn v6_engine_for_test(
+    config: &V6TestConfig,
+    genesis: &BlockMessage,
+    runtime_manager: Arc<RuntimeManager>,
+    block_store: KeyValueBlockStore,
+    block_dag_storage: BlockDagKeyValueStorage,
+    deploy_storage: Arc<KeyValueDeployStorage>,
+) -> Arc<casper::rust::v6::V6Engine> {
+    let engine = casper::rust::v6::V6Engine::new(
+        genesis,
+        runtime_manager,
+        block_store,
+        block_dag_storage,
+        deploy_storage,
+        config.retained_records,
+    );
+    if config.start_engine {
+        engine.start();
+    }
+    engine
 }
 
 pub struct TestNode {
@@ -835,6 +875,48 @@ impl TestNode {
         Ok(nodes.into_iter().next().unwrap())
     }
 
+    pub async fn create_v6_network(
+        genesis: GenesisContext,
+        network_size: usize,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_v6_network_with(genesis, network_size, V6TestConfig::default()).await
+    }
+
+    pub async fn create_v6_network_with_block_deploys(
+        genesis: GenesisContext,
+        network_size: usize,
+        max_user_deploys_per_block: u32,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_v6_network_with(genesis, network_size, V6TestConfig {
+            max_user_deploys_per_block: Some(max_user_deploys_per_block),
+            ..V6TestConfig::default()
+        })
+        .await
+    }
+
+    pub async fn create_v6_network_driven(
+        genesis: GenesisContext,
+        network_size: usize,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_v6_network_with(genesis, network_size, V6TestConfig {
+            start_engine: false,
+            ..V6TestConfig::default()
+        })
+        .await
+    }
+
+    pub async fn create_v6_network_with(
+        genesis: GenesisContext,
+        network_size: usize,
+        config: V6TestConfig,
+    ) -> Result<Vec<TestNode>, CasperError> {
+        Self::create_network_with_overrides(genesis, network_size, ShardOverrides {
+            v6: Some(config),
+            ..Default::default()
+        })
+        .await
+    }
+
     /// Creates a network of TestNodes
     pub async fn create_network(
         genesis: GenesisContext,
@@ -1039,6 +1121,7 @@ impl TestNode {
         let max_parent_depth = overrides.max_parent_depth;
         let deploy_lifespan = overrides.deploy_lifespan;
         let finalization_rate = overrides.finalization_rate;
+        let v6_config = overrides.v6.clone();
 
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
@@ -1212,8 +1295,23 @@ impl TestNode {
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
             mergeable_channels_gc_depth_buffer: 10,
+            v6_order_then_execute: v6_config.is_some(),
+            max_user_deploys_per_block: v6_config
+                .as_ref()
+                .and_then(|config| config.max_user_deploys_per_block)
+                .unwrap_or(CasperShardConf::new().max_user_deploys_per_block),
             ..CasperShardConf::new()
         };
+        let v6_engine = v6_config.as_ref().map(|config| {
+            v6_engine_for_test(
+                config,
+                &genesis,
+                Arc::new(runtime_manager.clone()),
+                block_store.clone(),
+                block_dag_storage.clone(),
+                deploy_storage.clone(),
+            )
+        });
 
         let finalized_bond_cache =
             casper::rust::engine::multi_parent_casper::FinalizedBondCache::from_storage(
@@ -1233,7 +1331,7 @@ impl TestNode {
             ),
             deploy_storage: deploy_storage.clone(),
             shard_conf,
-            v6: None,
+            v6: v6_engine.clone(),
         };
         let casper_impl = MultiParentCasperImpl {
             observer: finalization.observer.clone(),
@@ -1257,7 +1355,7 @@ impl TestNode {
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
-            v6: None,
+            v6: v6_engine,
         };
 
         let casper = Arc::new(casper_impl);
