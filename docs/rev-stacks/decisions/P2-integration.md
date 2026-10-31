@@ -58,3 +58,11 @@ Merges 2 to 4 are done in two steps. First, lanes B and C are merged on a local 
 - New: `rev_stack::owner::tests::a_compound_owner_survives_its_canonical_bytes`.
 - New: `v6::offer_screen_spec::a_refused_offer_reports_rejected_and_leaves_the_pool`. On a v6 genesis, an unfunded offer is refused, leaves the pool and is in the rejection log with the attested root, the block number and the reason. This is the state that `offered_pool_status` reports as `rejected`. A funded offer stays.
 - `rholang/tests/rev_reserve_spec.rs::an_open_journal_holds_transfers_out_of_the_state` (decision 18).
+- `casper/tests/util/rholang/system_vault_v6_test.rs` (P2-11): the user runs set their signer first (`eval_signed`), for the same reason as decision 18. The facade transfer failed with "the payer must be a signer of this deployment" in the full run.
+
+## Suites (2026-10-31, release, stable 1.97 with `RUSTC_BOOTSTRAP=1`)
+
+- rholang, all targets: 2,373 passed, 0 failed, 70 ignored.
+- casper lib: 826 passed, 0 failed, 1 ignored.
+- casper `--test mod`: 1,194 passed, 1 failed (`system_vault_v6_test::the_facade_transfers_natively_and_reads_balances`, fixed as above; its spec then passes), 13 ignored.
+- clippy (casper, rholang, with tests): no warning in a file this branch touches.
