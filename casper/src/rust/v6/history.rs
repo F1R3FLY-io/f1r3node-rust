@@ -1,5 +1,6 @@
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
+use rholang::rust::interpreter::accounting::rev_stack::journal::Source;
 use rholang::rust::interpreter::accounting::rev_stack::{wallet_channel_id, RevAmount};
 
 use super::block_record::BlockRecord;
@@ -27,10 +28,13 @@ pub fn transfers(record: &BlockRecord) -> Vec<RevTransfer> {
     };
     let compute = wallet_channel_id(&compute_wallet_owner());
     let mut out = Vec::new();
-    for t in &settlement.transfers {
+    for t in settlement.transfers.iter().filter(|t| t.kind.is_rev()) {
+        let Source::Wallet(from) = &t.from else {
+            continue;
+        };
         out.push(RevTransfer {
             envelope_id: t.envelope_sig.clone(),
-            from: wallet_channel_id(&t.from),
+            from: wallet_channel_id(from),
             to: wallet_channel_id(&t.to),
             amount: t.amount,
             kind: TransferKind::UserTransfer,

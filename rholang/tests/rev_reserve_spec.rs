@@ -172,7 +172,7 @@ async fn a_cleared_reservation_leaves_no_trace_in_the_state() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_open_journal_holds_transfers_out_of_the_state() {
     use rholang::rust::interpreter::accounting::rev_stack::journal::{
-        close_journal, journal_open, open_journal,
+        close_journal, journal_open, open_journal, JournalEntry,
     };
     let (mut runtime, _) = runtimes().await;
     let (alice, bob) = (key(), key());
@@ -209,10 +209,14 @@ async fn an_open_journal_holds_transfers_out_of_the_state() {
     );
 
     let journal = close_journal(&cells(&runtime)).unwrap();
-    assert_eq!(journal.len(), 1);
-    assert_eq!(journal[0].from, alice.owner);
-    assert_eq!(journal[0].to, bob.owner);
-    assert_eq!(journal[0].amount, 600);
+    assert_eq!(
+        journal,
+        vec![JournalEntry::transfer(
+            alice.owner.clone(),
+            bob.owner.clone(),
+            600
+        )]
+    );
     assert!(!journal_open(&cells(&runtime)));
     let _ = before;
 }
@@ -222,24 +226,21 @@ async fn a_journal_closes_to_the_same_entries_in_any_recording_order() {
     use rholang::rust::interpreter::accounting::rev_stack::journal::{
         close_journal, open_journal, record, JournalEntry,
     };
+    use rholang::rust::interpreter::accounting::rev_stack::TokenKind;
     let (play, replay) = runtimes().await;
     let (alice, bob, carol) = (key(), key(), key());
     let moves = [
-        JournalEntry {
-            from: alice.owner.clone(),
-            to: bob.owner.clone(),
-            amount: 300,
-        },
-        JournalEntry {
-            from: alice.owner.clone(),
-            to: carol.owner.clone(),
-            amount: 200,
-        },
-        JournalEntry {
-            from: alice.owner.clone(),
-            to: bob.owner.clone(),
-            amount: 100,
-        },
+        JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 300),
+        JournalEntry::transfer(alice.owner.clone(), carol.owner.clone(), 200),
+        JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 100),
+        JournalEntry::transfer_of(
+            TokenKind::from_name(vec![7; 32]).unwrap(),
+            alice.owner.clone(),
+            bob.owner.clone(),
+            100,
+        ),
+        JournalEntry::mint(TokenKind::from_name(vec![7; 32]).unwrap(), carol.owner.clone(), 5)
+            .unwrap(),
     ];
     open_journal(&cells(&play)).unwrap();
     for m in &moves {
@@ -251,6 +252,6 @@ async fn a_journal_closes_to_the_same_entries_in_any_recording_order() {
     }
     let played = close_journal(&cells(&play)).unwrap();
     let replayed = close_journal(&cells(&replay)).unwrap();
-    assert_eq!(played.len(), 3);
+    assert_eq!(played.len(), 5);
     assert_eq!(played, replayed);
 }

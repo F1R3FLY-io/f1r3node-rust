@@ -333,16 +333,8 @@ async fn a_chain_of_moves_in_one_run_settles_in_any_order() {
     let reader = StoreReader::at(&rm, &pre).await.unwrap();
     let gate = gate_block(&reader, &PhloLimitDemand, &inputs).unwrap();
     let journal = vec![
-        JournalEntry {
-            from: bob.owner.clone(),
-            to: carol.owner.clone(),
-            amount: 40,
-        },
-        JournalEntry {
-            from: alice.owner.clone(),
-            to: bob.owner.clone(),
-            amount: 40,
-        },
+        JournalEntry::transfer(bob.owner.clone(), carol.owner.clone(), 40),
+        JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 40),
     ];
     let mut settled_roots = Vec::new();
     for order in [journal.clone(), journal.into_iter().rev().collect()] {
