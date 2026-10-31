@@ -79,6 +79,7 @@ Given a base state and a set of deploy chains to merge:
   conflict-relevant produce/consume fields, so conflict detection on the split index equals
   detection on the monolithic index. The user/system partition **MUST NOT** hide a
   cross-partition conflict.
+- **R-SIBLING.** Every chain of one block carries the block's pre→post diff on each channel that the chain touches. On a channel that 2 chains of one block share, the diff of each chain thus also holds the effect of the other chain. When the merge removes a chain (any rejection, or a dedup drop of a stale copy), it **MUST** also reject each kept chain of the same source block that shares a non-mergeable datum channel or a continuation key with the removed chain (`reject_siblings_sharing_channels`, `dag_merger.rs`). The rule applies again to each chain that it rejects, until no chain changes. A channel that the kept chain folds as a number channel is exempt, because the merge recomputes it from the per-deploy number diffs. Settled (pinned) chains stay exempt (#341). The result is the least fixed point of a pairwise relation over on-DAG data, so it is a pure function of the chain set (R-DET). Without this rule, a kept sibling applies the effect of a rejected deploy, and the effect applies again when recovery re-proposes the deploy (safety **S8**, issue #873).
 
 ## 3. Determinism (normative — the safety core)
 
@@ -110,6 +111,7 @@ Given a base state and a set of deploy chains to merge:
   unchanged. A hardened node therefore **never disagrees** with a live `v0.4.16` node on
   any input the old comparator ordered deterministically, and is deterministic on **all**
   inputs — safe under a mixed-version (rolling) upgrade.
+- **R-SIBLING is a hard fork.** R-SIBLING changes the merged post-state and the rejected-deploy set of each merge that removes a chain and keeps a sibling that shares a non-mergeable channel with it. A node without R-SIBLING computes a different result for such a merge, so the shard **MUST** upgrade all validators together. A merge that keeps all such siblings, or removes all of them, gives the same result as before.
 
 ## 5. Disclosed algebraic properties (normative)
 
@@ -131,6 +133,7 @@ Given a base state and a set of deploy chains to merge:
   eliminated. Any implementation **MUST NOT** alter the observable merge result under the
   guise of a determinism fix. The determinism guarantee is *byte-identical recomputation of
   the current semantics*, **not** a redefinition of the merge.
+  - **R-SIBLING is a correctness fix, not a determinism fix.** It changes which chains the merge applies, and it does not change the `combine` operator or the fold order. N-SEMANTICS does not apply to it.
   - **Runtime guard (allowed, semantics-preserving).** The *assumption* R-ORDER relies on —
     that no order-dependent survivor pair reaches apply — **MAY** be enforced by a
     detection-only runtime guard (`OrderDependenceGuard`, `conflict_set_merger.rs`) that trips
@@ -153,6 +156,7 @@ Given a base state and a set of deploy chains to merge:
 | **S5** | The user/system event-log split hides a cross-partition conflict (violates R-SPLIT) — **P2**. |
 | **S6** | A comparator hardening breaks agreement with a live `v0.4.16` node on an input the old order already resolved deterministically (violates R-APPEND). |
 | **S7** | A merge persists a **single-value NUMBER cell** holding > 1 datum (a produce-only over-fill), so a later RhoVM read trips the IntegerAdd single-value invariant and **halts finalization** (violates R-SVC) — **§3c**, RCA-asi-devnet-finality-halt. |
+| **S8** | A kept chain applies the effect of a removed sibling chain of the same block on a shared non-mergeable channel. A rejected deploy then has a partial effect, and its effect applies twice after recovery (violates R-SIBLING) — issue #873. |
 
 ## 8. Conformance
 
