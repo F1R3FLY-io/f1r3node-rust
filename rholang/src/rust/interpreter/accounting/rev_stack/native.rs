@@ -6,6 +6,7 @@ use models::rust::rholang::implicits::single_expr;
 use rspace_plus_plus::rspace::hot_store::HotStore;
 
 use super::channel::wallet_channel;
+use super::journal::{journal_open, journaled_transfer, visible_balance, JournalEntry};
 use super::ops::RevStacks;
 use super::owner::WalletOwner;
 use super::reserve::reservation;
@@ -26,13 +27,26 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
             let owner = owner_of(arg)?;
             let balance = stacks.balance(&owner).map_err(|e| e.to_string())?;
             let reserved = reservation(stacks.cells(), &owner).map_err(|e| e.to_string())?;
-            Ok(RhoNumber::create_par(balance.saturating_sub(reserved.visible) as i64))
+            let shown = visible_balance(stacks.cells(), &owner, balance, reserved.visible)
+                .map_err(|e| e.to_string())?;
+            Ok(RhoNumber::create_par(shown as i64))
         }),
         "transfer" => with_stacks(store, |stacks| {
             let (from, to, amount) = transfer_args(arg)?;
             let held = reservation(stacks.cells(), &from)
                 .map_err(|e| e.to_string())?
                 .held;
+            if journal_open(stacks.cells()) {
+                let balance = stacks.balance(&from).map_err(|e| e.to_string())?;
+                return journaled_transfer(
+                    stacks.cells(),
+                    balance,
+                    held,
+                    JournalEntry { from, to, amount },
+                )
+                .map(|_| Par::default())
+                .map_err(transfer_error);
+            }
             stacks
                 .transfer_keeping(&from, &to, amount, held)
                 .map(|_| Par::default())

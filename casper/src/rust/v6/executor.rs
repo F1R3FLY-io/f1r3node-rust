@@ -8,6 +8,9 @@ use models::rhoapi::PCost;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, Event, ProcessedDeploy,
 };
+use rholang::rust::interpreter::accounting::rev_stack::journal::{
+    close_journal, open_journal, JournalEntry,
+};
 use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
 };
@@ -45,10 +48,19 @@ pub struct ExecutedBlock {
     pub settled_root: StateHash,
 }
 
+struct MergedBlock {
+    mid_root: StateHash,
+    runs: Vec<EnvelopeRun>,
+    processed: Vec<ProcessedDeploy>,
+    kept: Vec<bool>,
+    journals: Vec<Vec<JournalEntry>>,
+}
+
 struct EnvelopeEffect {
     run: EnvelopeRun,
     processed: ProcessedDeploy,
     number_channels: NumberChannelsEndVal,
+    journal: Vec<JournalEntry>,
 }
 
 pub fn comm_count(log: &[Event]) -> u64 {
@@ -114,13 +126,16 @@ impl EnvelopeExecutor {
         ops.runtime.set_invalid_blocks(HashMap::new()).await;
         let cells = runtime_cells(&ops.runtime)?;
         hold(&cells, &reservations)?;
+        open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         let (processed, number_channels) = ops.process_deploy_with_mergeable_data(envelope).await?;
+        let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
         let post_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
         Ok(EnvelopeEffect {
             run: envelope_run(&processed, post_root),
             processed,
             number_channels,
+            journal,
         })
     }
 
@@ -142,7 +157,9 @@ impl EnvelopeExecutor {
         runtime.set_invalid_blocks(HashMap::new()).await;
         let cells = runtime_cells(runtime)?;
         hold(&cells, &reservations)?;
+        open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         let number_channels = replay.replay_deploy_e(false, &recorded).await?;
+        let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
         let post_root = replay
             .runtime_ops
@@ -155,6 +172,7 @@ impl EnvelopeExecutor {
             run: envelope_run(&recorded, post_root),
             processed: recorded,
             number_channels,
+            journal,
         })
     }
 
@@ -164,6 +182,7 @@ impl EnvelopeExecutor {
             run: envelope_run(&processed, pre_root.clone()),
             processed,
             number_channels: NumberChannelsEndVal::default(),
+            journal: Vec::new(),
         }
     }
 
@@ -172,10 +191,24 @@ impl EnvelopeExecutor {
         pre_root: &StateHash,
         effects: Vec<EnvelopeEffect>,
         admitted: &[bool],
-    ) -> Result<(StateHash, Vec<EnvelopeRun>, Vec<ProcessedDeploy>, Vec<bool>), CasperError> {
-        let candidates: Vec<usize> = (0..effects.len())
-            .filter(|i| admitted[*i] && !effects[*i].run.failed)
-            .collect();
+    ) -> Result<MergedBlock, CasperError> {
+        let mut debited: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
+        let mut candidates: Vec<usize> = Vec::new();
+        for i in 0..effects.len() {
+            if !admitted[i] || effects[i].run.failed {
+                continue;
+            }
+            let payers: std::collections::BTreeSet<Vec<u8>> = effects[i]
+                .journal
+                .iter()
+                .map(|j| j.from.canonical_bytes())
+                .collect();
+            if payers.iter().any(|p| debited.contains(p)) {
+                continue;
+            }
+            debited.extend(payers);
+            candidates.push(i);
+        }
         let roots = candidates
             .iter()
             .map(|i| root_bytes(&effects[*i].run.post_root))
@@ -196,11 +229,21 @@ impl EnvelopeExecutor {
         for (i, survived) in candidates.iter().zip(&merged.merged) {
             kept[*i] = *survived;
         }
-        let (runs, processed) = effects
-            .into_iter()
-            .map(|effect| (effect.run, effect.processed))
-            .unzip();
-        Ok((merged.mid_root, runs, processed, kept))
+        let mut runs = Vec::with_capacity(effects.len());
+        let mut processed = Vec::with_capacity(effects.len());
+        let mut journals = Vec::with_capacity(effects.len());
+        for effect in effects {
+            runs.push(effect.run);
+            processed.push(effect.processed);
+            journals.push(effect.journal);
+        }
+        Ok(MergedBlock {
+            mid_root: merged.mid_root,
+            runs,
+            processed,
+            kept,
+            journals,
+        })
     }
 
     async fn settle(
@@ -209,6 +252,8 @@ impl EnvelopeExecutor {
         inputs: &[GateInput],
         gate: &GateOutcome,
         runs: &[EnvelopeRun],
+        journals: &[Vec<JournalEntry>],
+        kept: &[bool],
         block_data: &BlockData,
     ) -> Result<(Settlement, StateHash), CasperError> {
         let proposer = WalletOwner::from_public_key(&block_data.sender)
@@ -219,6 +264,8 @@ impl EnvelopeExecutor {
             inputs,
             &gate.entries,
             runs,
+            journals,
+            kept,
             &proposer,
             self.boxcar,
         )
@@ -234,9 +281,17 @@ impl EnvelopeExecutor {
         block_data: &BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
         let admitted = gate.admitted();
-        let (mid_root, runs, processed, merged) = self.merge(pre_root, effects, &admitted)?;
+        let MergedBlock {
+            mid_root,
+            runs,
+            processed,
+            kept: merged,
+            journals,
+        } = self.merge(pre_root, effects, &admitted)?;
         let (settlement, settled_root) = self
-            .settle(&mid_root, &inputs, &gate, &runs, block_data)
+            .settle(
+                &mid_root, &inputs, &gate, &runs, &journals, &merged, block_data,
+            )
             .await?;
         Ok(ExecutedBlock {
             mid_root,

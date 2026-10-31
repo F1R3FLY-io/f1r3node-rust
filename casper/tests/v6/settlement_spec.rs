@@ -105,6 +105,8 @@ async fn comms_are_paid_to_the_proposer_in_the_canonical_form() {
         &inputs,
         &gate.entries,
         &runs,
+        &vec![Vec::new(); runs.len()],
+        &vec![true; runs.len()],
         &proposer.owner,
         Boxcar::unbounded(),
     )
@@ -132,6 +134,8 @@ async fn comms_are_paid_to_the_proposer_in_the_canonical_form() {
         &inputs,
         &gate.entries,
         &runs,
+        &vec![Vec::new(); runs.len()],
+        &vec![true; runs.len()],
         &proposer.owner,
         Boxcar::unbounded(),
     )
@@ -166,6 +170,8 @@ async fn the_box_car_size_never_changes_the_state() {
             &inputs,
             &gate.entries,
             &runs,
+            &vec![Vec::new(); runs.len()],
+            &vec![true; runs.len()],
             &proposer.owner,
             boxcar,
         )
@@ -190,6 +196,8 @@ async fn a_block_with_no_charge_leaves_the_state_alone() {
         &inputs,
         &gate.entries,
         &[run(5)],
+        &[Vec::new()],
+        &[true],
         &proposer.owner,
         Boxcar::unbounded(),
     )
@@ -229,6 +237,8 @@ async fn compute_is_paid_to_the_compute_wallet_and_the_charge_never_passes_delta
             &inputs,
             &gate.entries,
             &runs,
+            &vec![Vec::new(); runs.len()],
+            &vec![true; runs.len()],
             &proposer.owner,
             boxcar,
         )
@@ -272,6 +282,8 @@ async fn settlement_releases_unspent_commitments_and_conserves_the_supply() {
         &inputs,
         &gate.entries,
         &runs,
+        &vec![Vec::new(); runs.len()],
+        &vec![true; runs.len()],
         &proposer.owner,
         Boxcar::unbounded(),
     )

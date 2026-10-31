@@ -56,6 +56,26 @@ impl WalletOwner {
         }
     }
 
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Option<Self> {
+        let (tag, rest) = bytes.split_first()?;
+        let owner = match *tag {
+            TAG_ADDRESS | TAG_UNFORGEABLE => {
+                let len = u32::from_be_bytes(rest.get(..4)?.try_into().ok()?) as usize;
+                let body = rest.get(4..4 + len)?;
+                if rest.len() != 4 + len {
+                    return None;
+                }
+                if *tag == TAG_ADDRESS {
+                    WalletOwner::from_address(std::str::from_utf8(body).ok()?).ok()?
+                } else {
+                    WalletOwner::Unforgeable(body.to_vec())
+                }
+            }
+            _ => return None,
+        };
+        (owner.canonical_bytes() == bytes).then_some(owner)
+    }
+
     pub fn canonical_bytes(&self) -> Vec<u8> {
         match self {
             WalletOwner::Address(address) => {

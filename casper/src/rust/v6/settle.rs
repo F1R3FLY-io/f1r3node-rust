@@ -6,6 +6,7 @@ use models::rust::block::state_hash::StateHash;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
 use rholang::rust::interpreter::accounting::rev_stack::genesis::{genesis_supply, legacy_bonds};
+use rholang::rust::interpreter::accounting::rev_stack::journal::JournalEntry;
 use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id, CellStore, HotStoreCells, RevAmount, RevStacks, WalletOwner,
 };
@@ -56,6 +57,14 @@ pub struct EnvelopeCharge {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeTransfer {
+    pub envelope_sig: Bytes,
+    pub from: WalletOwner,
+    pub to: WalletOwner,
+    pub amount: RevAmount,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settlement {
     pub charges: Vec<EnvelopeCharge>,
     pub debits: BTreeMap<WalletId, RevAmount>,
@@ -63,6 +72,7 @@ pub struct Settlement {
     pub proposer_credit: RevAmount,
     pub compute_credit: RevAmount,
     pub released: BTreeMap<WalletId, RevAmount>,
+    pub transfers: Vec<NativeTransfer>,
 }
 
 impl Settlement {
@@ -137,6 +147,7 @@ pub fn charges(
         proposer_credit: credit,
         compute_credit,
         released: BTreeMap::new(),
+        transfers: Vec::new(),
     })
 }
 
@@ -179,6 +190,9 @@ pub fn apply(
             stacks.combine(owner).map_err(native)?;
         }
     }
+    for t in &settlement.transfers {
+        stacks.transfer(&t.from, &t.to, t.amount).map_err(native)?;
+    }
     stacks
         .deposit(proposer, settlement.proposer_credit)
         .map_err(native)?;
@@ -193,10 +207,13 @@ pub async fn settle_block(
     inputs: &[GateInput],
     entries: &[GateEntry],
     runs: &[EnvelopeRun],
+    journals: &[Vec<JournalEntry>],
+    kept: &[bool],
     proposer: &WalletOwner,
     boxcar: Boxcar,
 ) -> Result<(Settlement, StateHash), CasperError> {
     let mut settlement = charges(inputs, entries, runs, proposer)?;
+    settlement.transfers = kept_transfers(entries, journals, kept)?;
     settlement.released = released(entries, &settlement)?;
     let owners: BTreeMap<WalletId, WalletOwner> = inputs
         .iter()
@@ -215,8 +232,13 @@ pub async fn settle_block(
     let mut touched: Vec<WalletOwner> = owners.values().cloned().collect();
     touched.push(proposer.clone());
     touched.push(compute_wallet_owner());
+    for t in &settlement.transfers {
+        touched.push(t.from.clone());
+        touched.push(t.to.clone());
+    }
     let before = held_by(cells.clone(), &touched)?;
-    if settlement.debited() > 0 {
+    let writes = settlement.debited() > 0 || !settlement.transfers.is_empty();
+    if writes {
         apply(cells.clone(), &settlement, &owners, proposer, boxcar)?;
     }
     match after_settlement(cells.as_ref())? {
@@ -233,11 +255,37 @@ pub async fn settle_block(
             "settlement broke conservation: the settled wallets held {before} and now hold {after}"
         )));
     }
-    if settlement.debited() == 0 {
+    if !writes {
         return Ok((settlement, mid_root.clone()));
     }
     let settled_root = runtime.create_checkpoint().await.root.to_bytes_prost();
     Ok((settlement, settled_root))
+}
+
+fn kept_transfers(
+    entries: &[GateEntry],
+    journals: &[Vec<JournalEntry>],
+    kept: &[bool],
+) -> Result<Vec<NativeTransfer>, CasperError> {
+    if journals.len() != entries.len() || kept.len() != entries.len() {
+        return Err(CasperError::RuntimeError(
+            "settlement needs one journal and one merge verdict per envelope".into(),
+        ));
+    }
+    Ok(entries
+        .iter()
+        .zip(journals)
+        .zip(kept)
+        .filter(|((e, _), k)| e.admitted() && **k)
+        .flat_map(|((e, journal), _)| {
+            journal.iter().map(|j| NativeTransfer {
+                envelope_sig: e.envelope_sig.clone(),
+                from: j.from.clone(),
+                to: j.to.clone(),
+                amount: j.amount,
+            })
+        })
+        .collect())
 }
 
 fn released(
@@ -357,6 +405,20 @@ pub struct SettlementProto {
     pub compute_credit: u64,
     #[prost(message, repeated, tag = "5")]
     pub released: Vec<WalletAmountProto>,
+    #[prost(message, repeated, tag = "6")]
+    pub transfers: Vec<TransferProto>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TransferProto {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub envelope_id: Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub from: Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub to: Bytes,
+    #[prost(uint64, tag = "4")]
+    pub amount: u64,
 }
 
 impl Settlement {
@@ -384,6 +446,16 @@ impl Settlement {
                 .map(|(w, a)| WalletAmountProto {
                     wallet: Bytes::copy_from_slice(w),
                     amount: *a,
+                })
+                .collect(),
+            transfers: self
+                .transfers
+                .iter()
+                .map(|t| TransferProto {
+                    envelope_id: t.envelope_sig.clone(),
+                    from: Bytes::from(t.from.canonical_bytes()),
+                    to: Bytes::from(t.to.canonical_bytes()),
+                    amount: t.amount,
                 })
                 .collect(),
         }
@@ -427,6 +499,25 @@ impl Settlement {
             .into_iter()
             .map(|r| (r.wallet.to_vec(), r.amount))
             .collect();
+        let transfers = proto
+            .transfers
+            .into_iter()
+            .map(|t| {
+                let owner = |b: &Bytes| {
+                    WalletOwner::from_canonical_bytes(b)
+                        .ok_or_else(|| "a recorded transfer names no wallet".to_string())
+                };
+                if t.amount == 0 {
+                    return Err("a recorded transfer moves nothing".to_string());
+                }
+                Ok(NativeTransfer {
+                    envelope_sig: t.envelope_id.clone(),
+                    from: owner(&t.from)?,
+                    to: owner(&t.to)?,
+                    amount: t.amount,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(Settlement {
             charges,
             debits,
@@ -434,6 +525,7 @@ impl Settlement {
             proposer_credit: proto.proposer_credit,
             compute_credit: proto.compute_credit,
             released,
+            transfers,
         })
     }
 
@@ -471,6 +563,12 @@ mod proto_tests {
             proposer_credit: 9,
             compute_credit: 42,
             released: BTreeMap::from([(vec![1; 32], 61)]),
+            transfers: vec![NativeTransfer {
+                envelope_sig: Bytes::from_static(b"a"),
+                from: WalletOwner::Unforgeable(vec![5; 32]),
+                to: WalletOwner::Unforgeable(vec![6; 32]),
+                amount: 7,
+            }],
         }
     }
 

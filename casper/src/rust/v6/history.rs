@@ -9,6 +9,7 @@ use super::gate::WalletId;
 pub enum TransferKind {
     CommCharge,
     ComputeCharge,
+    UserTransfer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +27,15 @@ pub fn transfers(record: &BlockRecord) -> Vec<RevTransfer> {
     };
     let compute = wallet_channel_id(&compute_wallet_owner());
     let mut out = Vec::new();
+    for t in &settlement.transfers {
+        out.push(RevTransfer {
+            envelope_id: t.envelope_sig.clone(),
+            from: wallet_channel_id(&t.from),
+            to: wallet_channel_id(&t.to),
+            amount: t.amount,
+            kind: TransferKind::UserTransfer,
+        });
+    }
     for charge in &settlement.charges {
         if charge.comm_rev > 0 {
             out.push(RevTransfer {

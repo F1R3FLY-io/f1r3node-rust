@@ -155,3 +155,33 @@ async fn a_cleared_reservation_leaves_no_trace_in_the_state() {
     );
     assert_eq!(runtime.create_checkpoint().await.root, before);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_open_journal_holds_transfers_out_of_the_state() {
+    use rholang::rust::interpreter::accounting::rev_stack::journal::{
+        close_journal, journal_open, open_journal,
+    };
+    let (mut runtime, _) = runtimes().await;
+    let (alice, bob) = (key(), key());
+    stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
+    let before = runtime.create_checkpoint().await.root;
+    open_journal(&cells(&runtime)).unwrap();
+    assert!(journal_open(&cells(&runtime)));
+
+    assert!(eval_as(&runtime, &alice, &transfer_term(&bob.address, 600, "j1")).await.is_empty());
+    assert_eq!(either(&take(&runtime, "j1").await[0]), (true, Par::default()));
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 1_000);
+    assert_eq!(stacks(&runtime).balance(&bob.owner).unwrap(), 0);
+    assert!(eval_as(&runtime, &alice, &balance_term(&alice.address, "jb")).await.is_empty());
+    assert_eq!(either(&take(&runtime, "jb").await[0]), (true, RhoNumber::create_par(400)));
+    assert!(eval_as(&runtime, &alice, &transfer_term(&bob.address, 401, "j2")).await.is_empty());
+    assert!(!either(&take(&runtime, "j2").await[0]).0);
+
+    let journal = close_journal(&cells(&runtime)).unwrap();
+    assert_eq!(journal.len(), 1);
+    assert_eq!(journal[0].from, alice.owner);
+    assert_eq!(journal[0].to, bob.owner);
+    assert_eq!(journal[0].amount, 600);
+    assert!(!journal_open(&cells(&runtime)));
+    let _ = before;
+}

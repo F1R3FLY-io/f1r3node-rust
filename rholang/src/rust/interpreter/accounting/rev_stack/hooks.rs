@@ -85,7 +85,7 @@ impl HookAuthority {
         let threshold = u32::try_from(RhoNumber::unapply(&threshold)?).ok()?;
         let members = RhoList::unapply(&members)?
             .iter()
-            .map(|p| RhoByteArray::unapply(p).and_then(|b| owner_from_canonical(&b)))
+            .map(|p| RhoByteArray::unapply(p).and_then(|b| WalletOwner::from_canonical_bytes(&b)))
             .collect::<Option<Vec<_>>>()?;
         HookAuthority::new(members, threshold).ok()
     }
@@ -180,21 +180,6 @@ pub fn replace_rev_hook(
     let channel = rev_hook_channel();
     clear(store, &channel)?;
     write_single(store, &channel, REV_HOOK_TAG, hook.to_par())
-}
-
-fn owner_from_canonical(bytes: &[u8]) -> Option<WalletOwner> {
-    let (tag, rest) = bytes.split_first()?;
-    let len = u32::from_be_bytes(rest.get(..4)?.try_into().ok()?) as usize;
-    let body = rest.get(4..4 + len)?;
-    if rest.len() != 4 + len {
-        return None;
-    }
-    let owner = match tag {
-        0x01 => WalletOwner::from_address(std::str::from_utf8(body).ok()?).ok()?,
-        0x02 => WalletOwner::Unforgeable(body.to_vec()),
-        _ => return None,
-    };
-    (owner.canonical_bytes() == bytes).then_some(owner)
 }
 
 fn domain_channel(domain: &[u8]) -> Par {

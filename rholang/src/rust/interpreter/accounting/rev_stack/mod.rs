@@ -4,6 +4,7 @@ pub mod channel;
 pub mod compute;
 pub mod genesis;
 pub mod hooks;
+pub mod journal;
 pub mod native;
 pub mod ops;
 pub mod owner;

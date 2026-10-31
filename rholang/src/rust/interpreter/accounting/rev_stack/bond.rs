@@ -6,9 +6,11 @@ use models::rhoapi::Par;
 use models::rust::rholang::implicits::single_expr;
 
 use super::compute::compute_wallet_owner;
+use super::journal::{journal_open, journaled_transfer, JournalEntry};
 use super::native::RhoHotStore;
 use super::ops::{CellStore, HotStoreCells, RevStacks};
 use super::owner::WalletOwner;
+use super::reserve::reservation;
 use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployerId, RhoNumber, RhoString, RhoSysAuthToken, RhoTuple2,
@@ -71,7 +73,28 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
             let pk = RhoDeployerId::unapply(&t[0])
                 .ok_or_else(|| "the bonder must be the deployer's own deployer id".to_string())?;
             let amount = positive(&t[1])?;
-            bond(cells()?, &pk, amount)
+            let cells = cells()?;
+            if journal_open(cells.as_ref()) {
+                let from = WalletOwner::from_deployer_id(&pk).map_err(|e| e.to_string())?;
+                let stacks = RevStacks::new(cells.clone());
+                let balance = stacks.balance(&from).map_err(|e| e.to_string())?;
+                let held = reservation(cells.as_ref(), &from)
+                    .map_err(|e| e.to_string())?
+                    .held;
+                return journaled_transfer(
+                    cells.as_ref(),
+                    balance,
+                    held,
+                    JournalEntry {
+                        to: bond_owner(&pk),
+                        from,
+                        amount,
+                    },
+                )
+                .map(|_| Par::default())
+                .map_err(funds_error);
+            }
+            bond(cells, &pk, amount)
                 .map(|_| Par::default())
                 .map_err(funds_error)
         }),

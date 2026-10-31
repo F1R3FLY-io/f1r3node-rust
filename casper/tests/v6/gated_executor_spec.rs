@@ -217,10 +217,12 @@ async fn a_run_cannot_spend_the_rev_its_block_has_committed() {
         .execute(&pre, envelopes, block_data(&proposer))
         .await
         .unwrap();
-    let run = &played.runs[0].post_root;
-    assert_eq!(balance(&rm, run, &bob).await, 6_000);
-    assert_eq!(balance(&rm, run, &alice).await, 4_000);
-    assert!(played.settlement.debited() > 0);
+    let settled = &played.settled_root;
+    assert_eq!(balance(&rm, settled, &bob).await, 6_000);
+    let paid = played.settlement.debited();
+    assert!(paid > 0);
+    assert_eq!(balance(&rm, settled, &alice).await, 4_000 - paid);
+    assert_eq!(played.settlement.transfers.len(), 1);
 }
 
 #[tokio::test]
@@ -431,4 +433,114 @@ async fn the_record_gives_the_block_s_rev_transfers() {
     let proposers = wallet_history([&record], &wallet(&proposer));
     assert_eq!(proposers.len(), 2);
     assert!(balance(&rm, record.post_root(), &proposer).await >= to_proposer);
+}
+
+#[tokio::test]
+async fn a_user_transfer_and_bond_survive_play_and_replay() {
+    use casper::rust::v6::backend::ExecutionBackend;
+    use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
+    use casper::rust::v6::executor::BlockExecutor;
+    use casper::rust::v6::genesis_wallets::read_bond_balance;
+    use casper::rust::v6::history::{transfers, TransferKind};
+    use casper::rust::v6::record::ExecutionRecord;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, F1r3flyState, Header, ProcessedDeploy,
+    };
+    use prost::bytes::Bytes;
+    use rholang::rust::interpreter::rho_type::RhoBoolean;
+
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000)]).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let term = format!(
+        r#"new w(`rho:rev:wallet`), deployerId(`rho:system:deployerId`),
+               rl(`rho:registry:lookup`), posCh, sent, bonded in {{
+             w!("transfer", (*deployerId, "{}", 6000), *sent) |
+             rl!(`rho:system:pos`, *posCh) |
+             for (@(_, PoS) <- posCh) {{ @PoS!("bond", *deployerId, 1000, *bonded) }}
+           }}"#,
+        bob.address
+    );
+    let b = BlockMessage {
+        block_hash: Bytes::from_static(b"v6-transfer-and-bond"),
+        header: Header {
+            parents_hash_list: vec![],
+            timestamp: 1,
+            version: 1,
+            extra_bytes: Bytes::new(),
+        },
+        body: Body {
+            state: F1r3flyState {
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+                bonds: vec![],
+                block_number: 1,
+            },
+            deploys: vec![ProcessedDeploy::empty(envelope(
+                &term, 1, &alice, 50_000, 1,
+            ))],
+            rejected_deploys: vec![],
+            system_deploys: vec![],
+            extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
+        },
+        justifications: vec![],
+        sender: proposer.pk.bytes.clone(),
+        seq_num: 1,
+        sig: Bytes::new(),
+        sig_algorithm: String::new(),
+        shard_id: "root".to_string(),
+        extra_bytes: Bytes::new(),
+    };
+
+    let record = executor
+        .execute(&pre, &b)
+        .await
+        .expect("the block executes");
+    assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::Completed);
+    let post = record.post_root().clone();
+    let settlement = record.settlement().unwrap().clone();
+    assert_eq!(settlement.transfers.len(), 2);
+    assert_eq!(balance(&rm, &post, &bob).await, 6_000);
+    assert_eq!(
+        read_bond_balance(&rm, &post, &alice.pk.bytes)
+            .await
+            .unwrap(),
+        1_000
+    );
+    assert_eq!(
+        balance(&rm, &post, &alice).await,
+        100_000 - 7_000 - settlement.debited()
+    );
+    let users: Vec<_> = transfers(&record)
+        .into_iter()
+        .filter(|t| t.kind == TransferKind::UserTransfer)
+        .collect();
+    assert_eq!(users.iter().map(|t| t.amount).sum::<u64>(), 7_000);
+
+    let bonded = format!(
+        r#"new ret, rl(`rho:registry:lookup`), posCh, bondsCh in {{
+             rl!(`rho:system:pos`, *posCh) |
+             for (@(_, PoS) <- posCh) {{
+               @PoS!("getBonds", *bondsCh) |
+               for (@bonds <- bondsCh) {{ ret!(bonds.contains("{}".hexToBytes())) }}
+             }}
+           }}"#,
+        hex::encode(&alice.pk.bytes)
+    );
+    let (answer, _) = rm
+        .play_exploratory_deploy(bonded, &post, None)
+        .await
+        .unwrap();
+    assert_eq!(RhoBoolean::unapply(&answer[0]), Some(true));
+
+    let decoded = BlockRecord::decode(&record.encode()).unwrap();
+    assert_eq!(executor.replay(&decoded, &b).await.unwrap(), post);
+    let mut forged = settlement.clone();
+    forged.transfers[0].amount += 1;
+    assert!(executor
+        .replay(&decoded.clone().with_settlement(forged), &b)
+        .await
+        .is_err());
 }
