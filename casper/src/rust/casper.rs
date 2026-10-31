@@ -440,6 +440,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             casper_shard_conf.v6_fallback_distance,
             policy,
             casper_shard_conf.v6_retained_records,
+            casper_shard_conf.v6_conservation_audit_interval,
         )?;
         engine.start();
         Some(engine)
@@ -624,6 +625,7 @@ pub struct CasperShardConf {
     pub rejection_search_group_branch_cap: usize,
     pub v6_order_then_execute: bool,
     pub v6_retained_records: usize,
+    pub v6_conservation_audit_interval: u64,
     /// Depth buffer for mergeable channels garbage collection.
     /// Additional safety margin beyond max-parent-depth before deleting data.
     pub mergeable_channels_gc_depth_buffer: i32,
@@ -684,6 +686,8 @@ impl CasperShardConf {
             rejection_search_group_branch_cap: REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT,
             v6_order_then_execute: false,
             v6_retained_records: V6_RETAINED_RECORDS_DEFAULT,
+            v6_conservation_audit_interval:
+                crate::rust::v6::conservation::CONSERVATION_AUDIT_INTERVAL_DEFAULT,
             mergeable_channels_gc_depth_buffer: 10,
             synchrony_recovery_stall_window: Duration::from_secs(60),
             synchrony_recovery_cooldown: Duration::from_secs(20),

@@ -226,6 +226,12 @@ pub struct CasperConf {
     pub v6_retained_records: usize,
 
     #[serde(
+        rename = "v6-conservation-audit-interval",
+        default = "default_v6_conservation_audit_interval"
+    )]
+    pub v6_conservation_audit_interval: u64,
+
+    #[serde(
         rename = "offer-rejection-log-capacity",
         default = "default_offer_rejection_log_capacity"
     )]
@@ -306,6 +312,10 @@ pub fn default_proposal_pacing_floor_distance() -> i64 {
 }
 
 pub fn default_v6_retained_records() -> usize { crate::rust::casper::V6_RETAINED_RECORDS_DEFAULT }
+
+pub fn default_v6_conservation_audit_interval() -> u64 {
+    crate::rust::v6::conservation::CONSERVATION_AUDIT_INTERVAL_DEFAULT
+}
 
 pub fn default_offer_rejection_log_capacity() -> usize {
     block_storage::rust::deploy::offer_rejection::OFFER_REJECTION_LOG_CAPACITY_DEFAULT

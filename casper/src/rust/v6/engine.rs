@@ -17,6 +17,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 use super::backend::ExecutionBackend;
 use super::block_record::BlockRecord;
 use super::body::{Attestation, StateHash, V6Body, V6Records};
+use super::conservation::{AuditSchedule, Conservation, WalletIndex};
 use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore, InclusionCheck};
 use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink, Offence};
 use super::inclusion::{screen_offers, GateScreen, InclusionScreen};
@@ -80,6 +81,7 @@ impl V6Engine<BlockRecord> {
         fallback_distance: usize,
         policy: ShardResourcePolicy,
         retained_records: usize,
+        conservation_audit_interval: u64,
     ) -> Result<Arc<Self>, CasperError> {
         let source: Arc<dyn RecordSource<BlockRecord>> = Arc::new(block_store.clone());
         let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
@@ -108,7 +110,15 @@ impl V6Engine<BlockRecord> {
         let workers = std::thread::available_parallelism()
             .map(|cores| cores.get())
             .unwrap_or(1);
-        let backend = Arc::new(BlockExecutor::new(runtime_manager.clone(), workers));
+        let conservation = Conservation::new(
+            AuditSchedule {
+                interval: conservation_audit_interval,
+            },
+            WalletIndex::from_genesis(genesis),
+        );
+        let backend = Arc::new(
+            BlockExecutor::new(runtime_manager.clone(), workers).with_conservation(conservation),
+        );
         let parts = V6Parts {
             backend,
             validators: Arc::new(AttestedRootValidators::new(runtime_manager.clone())),

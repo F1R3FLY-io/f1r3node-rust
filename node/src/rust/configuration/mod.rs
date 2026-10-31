@@ -1086,6 +1086,10 @@ mod embedded_defaults_tests {
             casper::rust::casper_conf::default_v6_retained_records()
         );
         assert_eq!(
+            cfg.casper.v6_conservation_audit_interval,
+            casper::rust::casper_conf::default_v6_conservation_audit_interval()
+        );
+        assert_eq!(
             cfg.casper.offer_rejection_log_capacity,
             casper::rust::casper_conf::default_offer_rejection_log_capacity()
         );

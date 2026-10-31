@@ -867,6 +867,8 @@ mod tests {
                 rejection_search_group_branch_cap:
                     casper::rust::casper_conf::default_rejection_search_group_branch_cap(),
                 v6_retained_records: casper::rust::casper_conf::default_v6_retained_records(),
+                v6_conservation_audit_interval:
+                    casper::rust::casper_conf::default_v6_conservation_audit_interval(),
                 offer_rejection_log_capacity:
                     casper::rust::casper_conf::default_offer_rejection_log_capacity(),
                 offer_rejection_reason_bytes:

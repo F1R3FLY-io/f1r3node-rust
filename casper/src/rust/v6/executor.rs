@@ -28,6 +28,7 @@ use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 use super::backend::{block_data, close_block, ExecutionBackend};
 use super::block_record::{BlockRecord, EnvelopeOutcome, ExecutedEnvelope, RecordEntry};
 use super::body::StateHash;
+use super::conservation::Conservation;
 use super::gate::{
     check_recorded, gate_block, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
     PhloLimitDemand, StoreReader,
@@ -456,6 +457,7 @@ pub struct BlockExecutor {
     envelopes: EnvelopeExecutor,
     runtime_manager: Arc<RuntimeManager>,
     slashes: Arc<dyn SlashSource>,
+    conservation: Option<Arc<Conservation>>,
 }
 
 impl BlockExecutor {
@@ -464,6 +466,29 @@ impl BlockExecutor {
             envelopes: EnvelopeExecutor::new(Arc::clone(&runtime_manager), workers),
             runtime_manager,
             slashes: Arc::new(NoSlashing),
+            conservation: None,
+        }
+    }
+
+    pub fn with_conservation(mut self, conservation: Arc<Conservation>) -> Self {
+        self.conservation = Some(conservation);
+        self
+    }
+
+    async fn audit(&self, block: &BlockMessage, settlement: &Settlement, post_root: &StateHash) {
+        let Some(conservation) = &self.conservation else {
+            return;
+        };
+        if let Err(error) = conservation
+            .after_block(&self.runtime_manager, block, settlement, post_root)
+            .await
+        {
+            tracing::error!(
+                target: "f1r3fly.v6",
+                block = %hex::encode(&block.block_hash),
+                %error,
+                "v6 conservation audit could not read the post-state"
+            );
         }
     }
 
@@ -550,6 +575,7 @@ impl ExecutionBackend for BlockExecutor {
                 None,
             )
             .await?;
+        self.audit(block, &executed.settlement, &post_root).await;
         BlockRecord::new(
             block.block_hash.clone(),
             pre_root.clone(),
@@ -631,6 +657,7 @@ impl ExecutionBackend for BlockExecutor {
         if post_root != *record.post_root() {
             return Err(mismatch("post-state root"));
         }
+        self.audit(block, &replayed.settlement, &post_root).await;
         Ok(post_root)
     }
 }

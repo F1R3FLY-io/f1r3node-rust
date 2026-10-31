@@ -204,6 +204,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             rejection_search_group_branch_cap: conf.rejection_search_group_branch_cap,
             v6_order_then_execute: false,
             v6_retained_records: conf.v6_retained_records,
+            v6_conservation_audit_interval: conf.v6_conservation_audit_interval,
             mergeable_channels_gc_depth_buffer: conf.mergeable_channels_gc_depth_buffer,
             synchrony_recovery_stall_window: conf.synchrony_recovery_stall_window,
             synchrony_recovery_cooldown: conf.synchrony_recovery_cooldown,
