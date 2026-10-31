@@ -544,3 +544,48 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
         .await
         .is_err());
 }
+
+#[tokio::test]
+async fn one_run_per_block_pays_natively_from_a_wallet() {
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&carol, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let transfer = |to: &Party, amount: u64| {
+        format!(
+            r#"new w(`rho:rev:wallet`), deployerId(`rho:system:deployerId`), out in {{
+                 w!("transfer", (*deployerId, "{}", {amount}), *out)
+               }}"#,
+            to.address
+        )
+    };
+    let envelopes = vec![
+        envelope(&transfer(&bob, 1_000), 1, &alice, 1_000, 1),
+        envelope(&transfer(&bob, 2_000), 2, &alice, 1_000, 1),
+        envelope(&transfer(&bob, 3_000), 3, &carol, 1_000, 1),
+    ];
+    let played = executor
+        .execute(&pre, envelopes, block_data(&proposer))
+        .await
+        .unwrap();
+    assert_eq!(played.gate.admitted(), vec![true, true, true]);
+    assert_eq!(played.merged, vec![true, false, true]);
+    let moved: Vec<u64> = played
+        .settlement
+        .transfers
+        .iter()
+        .map(|t| t.amount)
+        .collect();
+    assert_eq!(moved, vec![1_000, 3_000]);
+    let settled = &played.settled_root;
+    assert_eq!(balance(&rm, settled, &bob).await, 4_000);
+    let debits = &played.settlement.debits;
+    assert_eq!(
+        balance(&rm, settled, &alice).await,
+        100_000 - 1_000 - debits[&wallet(&alice)]
+    );
+
+    let again = replay(&executor, &pre, &played, block_data(&proposer)).await;
+    assert_eq!(again.merged, played.merged);
+    assert_eq!(again.settled_root, played.settled_root);
+    assert_eq!(again.settlement, played.settlement);
+}
