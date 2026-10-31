@@ -4,7 +4,7 @@
 //! the block is gone for good and finality can freeze behind the affected
 //! validator's stake.
 
-use casper::rust::blocks::block_processor::{IntegrityChecked, OfInterestVerdict};
+use casper::rust::blocks::block_processor::{CheckedBlock, OfInterestVerdict};
 use casper::rust::casper::Casper;
 use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::util::construct_deploy;
@@ -50,7 +50,7 @@ async fn a_racing_duplicate_must_not_destroy_dependency_recovery() {
         .block_processor
         .check_if_of_interest(
             nodes[1].casper.clone(),
-            IntegrityChecked::check(&block_b, BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+            &CheckedBlock::check(block_b.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
         )
         .unwrap();
     assert_eq!(verdict, OfInterestVerdict::AlreadyProcessed);
@@ -58,7 +58,7 @@ async fn a_racing_duplicate_must_not_destroy_dependency_recovery() {
         .block_processor
         .dispose_not_of_interest(
             verdict,
-            IntegrityChecked::check(&block_b, BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
+            &CheckedBlock::check(block_b.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap(),
         )
         .await
         .unwrap();

@@ -413,34 +413,39 @@ pub async fn process_block_bypassing_of_interest_filter(
     CasperError,
 > {
     use casper::rust::block_status::BlockStatus;
-    use casper::rust::blocks::block_processor::{
-        IntegrityChecked, IntegrityFailure, SenderAuthorization,
-    };
+    use casper::rust::blocks::block_processor::{CheckedBlock, IntegrityFailure, StoreVerdict};
     use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
-    let checked = match IntegrityChecked::check(&block, BLOCK_PROCESSOR_METRICS_SOURCE) {
+    let checked = match CheckedBlock::check(block.clone(), BLOCK_PROCESSOR_METRICS_SOURCE) {
         Ok(checked) => checked,
-        Err(IntegrityFailure::Malformed) => {
+        Err((_, IntegrityFailure::Malformed)) => {
             return Ok(rspace_plus_plus::rspace::history::Either::Left(
                 BlockStatus::invalid_format(),
             ))
         }
-        Err(IntegrityFailure::HashMismatch) => {
+        Err((_, IntegrityFailure::HashMismatch)) => {
             return Ok(rspace_plus_plus::rspace::history::Either::Left(
                 BlockStatus::invalid_block_hash(),
             ))
         }
     };
-    if node.block_processor.check_sender_authorization(checked)?
-        == SenderAuthorization::Unauthorized
-    {
+    let Some(store_mode) = node
+        .block_processor
+        .check_sender_authorization(&checked)?
+        .store_mode()
+    else {
         return Ok(rspace_plus_plus::rspace::history::Either::Left(
             BlockStatus::invalid_sender(),
         ));
+    };
+    let store_verdict = node.block_processor.store(&checked, store_mode).await?;
+    if store_verdict != StoreVerdict::Stored {
+        return Ok(rspace_plus_plus::rspace::history::Either::Left(
+            BlockStatus::invalid_format(),
+        ));
     }
-    node.block_processor.store(checked).await?;
     let dependencies_ready = node
         .block_processor
-        .check_dependencies_with_effects(node.casper.clone(), &block)
+        .check_dependencies_with_effects(node.casper.clone(), &checked)
         .await?;
     if !dependencies_ready {
         return Ok(rspace_plus_plus::rspace::history::Either::Left(
@@ -448,7 +453,7 @@ pub async fn process_block_bypassing_of_interest_filter(
         ));
     }
     node.block_processor
-        .validate_with_effects(node.casper.clone(), &block, None)
+        .validate_with_effects(node.casper.clone(), &checked, None)
         .await
 }
 
