@@ -98,5 +98,35 @@ fn main() {
         "#[serde(serialize_with = \"crate::rust::serde_helpers::serialize_as_empty_bytes\")]\n    pub locally_free: ::prost::alloc::vec::Vec<u8>,",
     );
 
+    let modified_content = without_derived_serde(&modified_content, "Par");
+    let modified_content = without_derived_serde(&modified_content, "ReceiveBind");
+
     fs::write(file_path, modified_content).expect("Unable to write file");
+}
+
+fn without_derived_serde(content: &str, name: &str) -> String {
+    let derives = "#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]\n#[derive(Eq, Ord, PartialOrd)]\n#[repr(C)]\n#[derive(Clone,  ::prost::Message)]\n";
+    let head = format!("{derives}pub struct {name} {{\n");
+    let start = content
+        .find(&head)
+        .unwrap_or_else(|| panic!("generated struct {name} not found"));
+    let body_start = start + head.len();
+    let body_end = body_start
+        + content[body_start..]
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("end of generated struct {name} not found"));
+    let body = content[body_start..body_end].replace(
+        "#[serde(serialize_with = \"crate::rust::serde_helpers::serialize_as_empty_bytes\")]\n    ",
+        "",
+    );
+    format!(
+        "{}{}{}{}",
+        &content[..start],
+        head.replace(
+            "#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema)]",
+            "#[derive(utoipa::ToSchema)]"
+        ),
+        body,
+        &content[body_end..]
+    )
 }

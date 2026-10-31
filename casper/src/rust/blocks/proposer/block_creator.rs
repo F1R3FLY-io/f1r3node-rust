@@ -3988,6 +3988,7 @@ mod tests {
                     shard_id: "test".to_string(),
                     expiration_timestamp,
                     parameters: Vec::new(),
+                    cosignatures: Vec::new(),
                 },
                 Box::new(Secp256k1),
                 PrivateKey::from_bytes(&[1; 32]),

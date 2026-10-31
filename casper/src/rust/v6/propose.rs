@@ -66,6 +66,7 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: vec![],
+            cosignatures: Vec::new(),
         };
         Signed::create(data, Box::new(Secp256k1), sk).unwrap()
     }

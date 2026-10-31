@@ -1367,6 +1367,7 @@ mod merkle_block_hash_tests {
             shard_id: "test-shard".to_string(),
             expiration_timestamp: None,
             parameters: vec![],
+            cosignatures: Vec::new(),
         };
         let signed = Signed::create(data, Secp256k1.box_clone(), sk).expect("sign deploy");
         ProcessedDeploy {

@@ -5,9 +5,11 @@ pub mod compute;
 pub mod genesis;
 pub mod hooks;
 pub mod journal;
+pub mod kind;
 pub mod native;
 pub mod ops;
 pub mod owner;
+pub mod region;
 pub mod reserve;
 
 #[cfg(test)]

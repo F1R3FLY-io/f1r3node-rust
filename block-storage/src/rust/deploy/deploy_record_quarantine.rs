@@ -259,6 +259,7 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
         })
     }
 
@@ -272,6 +273,7 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: Some(1000),
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
         })
     }
 

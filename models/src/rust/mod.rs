@@ -10,6 +10,7 @@ pub mod host_work;
 pub mod normalizer_env;
 pub mod par_ext;
 pub mod par_map;
+pub mod par_serde;
 pub mod par_map_type_mapper;
 pub mod par_set;
 pub mod par_set_type_mapper;

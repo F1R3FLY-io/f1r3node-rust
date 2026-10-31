@@ -836,6 +836,7 @@ pub struct DeployData {
     pub timestamp: i64,
     pub deployer_id: PublicKey,
     pub deploy_id: Vec<u8>,
+    pub cosigners: Vec<PublicKey>,
 }
 
 impl DeployData {
@@ -844,6 +845,7 @@ impl DeployData {
             timestamp: 0,
             deployer_id: PublicKey::from_bytes(&[0]),
             deploy_id: vec![0],
+            cosigners: Vec::new(),
         }
     }
 
@@ -852,6 +854,8 @@ impl DeployData {
             timestamp: template.data.time_stamp,
             deployer_id: template.pk.clone(),
             deploy_id: template.sig.to_vec(),
+            cosigners: casper_message::Cosignature::verified_cosigners(&template.data)
+                .unwrap_or_default(),
         }
     }
 }
@@ -1142,8 +1146,15 @@ impl SystemProcesses {
             return Err(illegal_argument_error("rev_wallet"));
         };
 
+        let signers = {
+            let data = self.deploy_data.read().await;
+            std::iter::once(&data.deployer_id)
+                .chain(data.cosigners.iter())
+                .filter_map(|pk| rev_stack::WalletOwner::from_public_key(pk).ok())
+                .collect::<Vec<_>>()
+        };
         let Some(response) =
-            rev_stack::native::handle(self.space.hot_store(), &command, second_par)
+            rev_stack::native::handle(self.space.hot_store(), &command, second_par, &signers)
         else {
             return Err(illegal_argument_error("rev_wallet"));
         };

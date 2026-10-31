@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block::state_hash::StateHash;
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::casper::protocol::casper_message::{Cosignature, DeployData};
 use prost::bytes::Bytes;
+use rholang::rust::interpreter::accounting::rev_stack::region::{admissible, paying_owners};
 use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id, CellStore, HotStoreCells, RevAmount, RevStacks, WalletOwner,
 };
@@ -21,6 +22,9 @@ pub struct GateInput {
     pub envelope_sig: Bytes,
     pub deployer: WalletOwner,
     pub named: Vec<WalletOwner>,
+    pub cosigners: Vec<WalletOwner>,
+    pub cosignatures_valid: bool,
+    pub joint: Vec<WalletOwner>,
     pub phlo_limit: i64,
     pub phlo_price: i64,
 }
@@ -32,16 +36,55 @@ impl GateInput {
     ) -> Result<Self, CasperError> {
         let deployer = WalletOwner::from_public_key(&deploy.pk)
             .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
+        let verified = Cosignature::verified_cosigners(&deploy.data);
+        let cosigners = verified
+            .iter()
+            .flatten()
+            .filter_map(|pk| WalletOwner::from_public_key(pk).ok())
+            .collect::<Vec<_>>();
+        let cosignatures_valid = verified
+            .as_ref()
+            .is_some_and(|keys| keys.len() == cosigners.len());
         Ok(GateInput {
             envelope_sig: deploy.sig.clone(),
             deployer,
             named,
+            cosigners,
+            cosignatures_valid,
+            joint: Vec::new(),
             phlo_limit: deploy.data.phlo_limit,
             phlo_price: deploy.data.phlo_price,
         })
     }
 
-    pub fn paying_wallets(&self) -> Vec<WalletOwner> { vec![self.deployer.clone()] }
+    pub fn signers(&self) -> Vec<WalletOwner> {
+        std::iter::once(self.deployer.clone())
+            .chain(self.cosigners.iter().cloned())
+            .collect()
+    }
+
+    pub fn paying_wallets(&self) -> Vec<WalletOwner> {
+        paying_owners(&self.deployer, &self.named, &self.joint)
+    }
+}
+
+pub fn resolve_joint_wallets<R: WalletReader>(
+    reader: &R,
+    inputs: &mut [GateInput],
+) -> Result<(), CasperError> {
+    for input in inputs.iter_mut() {
+        let mut joint = Vec::new();
+        for owner in &input.named {
+            if matches!(owner, WalletOwner::Compound(_))
+                && !joint.contains(owner)
+                && reader.balance(owner)? > 0
+            {
+                joint.push(owner.clone());
+            }
+        }
+        input.joint = joint;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -285,7 +328,11 @@ impl<'a, R: WalletReader, D: Demand> Gate<'a, R, D> {
             verdict: Verdict::Refused(refusal),
             commitments: Vec::new(),
         };
-        if input.named.iter().any(|s| *s != input.deployer) {
+        if !input.cosignatures_valid {
+            return Ok(refuse(0, Refusal::InvalidTerms));
+        }
+        let signers = input.signers();
+        if input.named.iter().any(|s| !admissible(s, &signers)) {
             return Ok(refuse(0, Refusal::ForeignSignature));
         }
         let Ok(price) = u64::try_from(input.phlo_price) else {
@@ -432,6 +479,9 @@ mod tests {
             named: Vec::new(),
             phlo_limit: limit,
             phlo_price: price,
+            cosignatures_valid: true,
+            cosigners: Vec::new(),
+            joint: Vec::new(),
         }
     }
 

@@ -1560,7 +1560,7 @@ async fn setup_reducer(
         block_data_ref,
         invalid_blocks,
         urn_map.clone(),
-        deploy_data_ref,
+        deploy_data_ref.clone(),
         extra_system_processes,
         openai_service,
         ollama_service,
@@ -1586,6 +1586,7 @@ async fn setup_reducer(
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
         filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        deploy_data: deploy_data_ref,
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

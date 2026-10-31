@@ -11,12 +11,15 @@ use models::rust::casper::protocol::casper_message::{
 use rholang::rust::interpreter::accounting::rev_stack::journal::{
     close_journal, open_journal, JournalEntry,
 };
+use models::rust::normalizer_env::normalizer_env_from_deploy;
+use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
 use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
 };
 use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id, HotStoreCells, WalletOwner,
 };
+use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
@@ -26,7 +29,8 @@ use super::backend::{block_data, close_block, ExecutionBackend};
 use super::block_record::{BlockRecord, EnvelopeOutcome, ExecutedEnvelope, RecordEntry};
 use super::body::StateHash;
 use super::gate::{
-    check_recorded, gate_block, GateEntry, GateInput, GateOutcome, PhloLimitDemand, StoreReader,
+    check_recorded, gate_block, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
+    PhloLimitDemand, StoreReader,
 };
 use super::merge::{merge_runs, RunEffect};
 use super::record::ExecutionRecord;
@@ -312,8 +316,9 @@ impl EnvelopeExecutor {
         envelopes: Vec<Signed<DeployData>>,
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        let inputs = gate_inputs(envelopes.iter())?;
+        let mut inputs = gate_inputs(envelopes.iter())?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
+        resolve_joint_wallets(&reader, &mut inputs)?;
         let gate = gate_block(&reader, &PhloLimitDemand, &inputs)?;
         let effects: Vec<EnvelopeEffect> = stream::iter(envelopes.into_iter().enumerate())
             .map(|(i, envelope)| {
@@ -347,8 +352,9 @@ impl EnvelopeExecutor {
         recorded_gate: &[GateEntry],
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        let inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
+        let mut inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
+        resolve_joint_wallets(&reader, &mut inputs)?;
         let gate = check_recorded(&reader, &PhloLimitDemand, &inputs, recorded_gate)
             .map_err(|e| invalid(format!("the recorded gate does not replay: {e}")))?;
         let effects: Vec<EnvelopeEffect> = stream::iter(recorded.into_iter().enumerate())
@@ -381,8 +387,16 @@ fn gate_inputs<'a>(
     deploys: impl Iterator<Item = &'a Signed<DeployData>>,
 ) -> Result<Vec<GateInput>, CasperError> {
     deploys
-        .map(|d| GateInput::from_deploy(d, Vec::new()))
+        .map(|d| GateInput::from_deploy(d, named_signatures(d)))
         .collect()
+}
+
+fn named_signatures(deploy: &Signed<DeployData>) -> Vec<WalletOwner> {
+    normalizer_env_from_deploy(deploy)
+        .ok()
+        .and_then(|env| Compiler::source_to_adt_with_normalizer_env(&deploy.data.term, env).ok())
+        .map(|term| named_owners(&term))
+        .unwrap_or_default()
 }
 
 fn reservations(

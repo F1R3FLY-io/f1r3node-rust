@@ -1314,6 +1314,78 @@ pub struct DeployData {
         deserialize_with = "crate::rust::deploy_parameters::deserialize_parameters"
     )]
     pub parameters: Vec<crate::rust::deploy_parameters::DeployParameter>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cosignatures: Vec<Cosignature>,
+}
+
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    Eq,
+    Hash,
+    utoipa::ToSchema
+)]
+pub struct Cosignature {
+    pub cosigner: Vec<u8>,
+    pub sig: Vec<u8>,
+    pub sig_algorithm: String,
+}
+
+impl Cosignature {
+    pub fn sign(
+        data: &DeployData,
+        sk: &crypto::rust::private_key::PrivateKey,
+        algorithm: &str,
+    ) -> Result<Self, String> {
+        let alg = SignaturesAlgFactory::apply(algorithm)
+            .ok_or_else(|| format!("Unknown signature algorithm: {algorithm}"))?;
+        let hash =
+            Signed::<DeployData>::signature_hash(&alg.name(), data.to_message().encode_to_vec());
+        Ok(Cosignature {
+            cosigner: alg.to_public(sk).bytes.to_vec(),
+            sig: alg.sign(&hash, &sk.bytes),
+            sig_algorithm: alg.name(),
+        })
+    }
+
+    pub fn verified_cosigners(data: &DeployData) -> Option<Vec<PublicKey>> {
+        data.cosignatures
+            .iter()
+            .map(|c| c.verify(data).then(|| PublicKey::from_bytes(&c.cosigner)))
+            .collect()
+    }
+
+    pub fn verify(&self, data: &DeployData) -> bool {
+        match SignaturesAlgFactory::apply(&self.sig_algorithm) {
+            Some(alg) => {
+                let hash = Signed::<DeployData>::signature_hash(
+                    &alg.name(),
+                    data.to_message().encode_to_vec(),
+                );
+                alg.verify(&hash, &self.sig, &self.cosigner)
+            }
+            None => false,
+        }
+    }
+
+    fn to_proto(&self) -> DeployCosignature {
+        DeployCosignature {
+            cosigner: self.cosigner.clone().into(),
+            sig: self.sig.clone().into(),
+            sig_algorithm: self.sig_algorithm.clone(),
+        }
+    }
+
+    fn from_proto(proto: DeployCosignature) -> Self {
+        Cosignature {
+            cosigner: proto.cosigner.to_vec(),
+            sig: proto.sig.to_vec(),
+            sig_algorithm: proto.sig_algorithm,
+        }
+    }
 }
 
 impl ToMessage for DeployData {
@@ -1363,6 +1435,11 @@ impl DeployData {
                 Some(proto.expiration_timestamp)
             },
             parameters,
+            cosignatures: proto
+                .cosignatures
+                .into_iter()
+                .map(Cosignature::from_proto)
+                .collect(),
         })
     }
 
@@ -1419,6 +1496,12 @@ impl DeployData {
                 .parameters
                 .iter()
                 .map(|parameter| parameter.to_proto())
+                .collect(),
+            cosignatures: dd
+                .data
+                .cosignatures
+                .iter()
+                .map(Cosignature::to_proto)
                 .collect(),
             ..Default::default()
         }
@@ -2273,6 +2356,7 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: Some(500),
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
         };
         assert_eq!(
             DeployData::decode(DeployData::encode(with_expiration.clone())).unwrap(),
@@ -2302,6 +2386,7 @@ mod tests {
             shard_id: "root".to_string(),
             expiration_timestamp: None,
             parameters: Vec::new(),
+            cosignatures: Vec::new(),
         };
         assert_eq!(deploy.total_phlo_charge(), 77);
         assert!(!deploy.has_expiration());
@@ -2673,5 +2758,56 @@ mod tests {
             }
             _ => panic!("expected HasWalPayload variant"),
         }
+    }
+}
+
+#[cfg(test)]
+mod cosignature_tests {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    use super::*;
+
+    fn deploy() -> (Signed<DeployData>, crypto::rust::private_key::PrivateKey) {
+        let (sk, _) = Secp256k1.new_key_pair();
+        let (cosigner, _) = Secp256k1.new_key_pair();
+        let data = DeployData {
+            term: "Nil".to_string(),
+            time_stamp: 1,
+            phlo_price: 1,
+            phlo_limit: 10,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            parameters: Vec::new(),
+            cosignatures: Vec::new(),
+        };
+        (
+            Signed::create(data, Box::new(Secp256k1), sk).unwrap(),
+            cosigner,
+        )
+    }
+
+    #[test]
+    fn a_cosignature_signs_the_deployers_preimage_and_survives_the_proto() {
+        let (mut signed, cosigner) = deploy();
+        let preimage = signed.data.to_message().encode_to_vec();
+        let cosignature = Cosignature::sign(&signed.data, &cosigner, &Secp256k1.name()).unwrap();
+        signed.data.cosignatures.push(cosignature);
+        assert_eq!(signed.data.to_message().encode_to_vec(), preimage);
+        let decoded = DeployData::from_proto(DeployData::to_proto_ref(&signed)).unwrap();
+        assert_eq!(decoded.data.cosignatures, signed.data.cosignatures);
+        let keys = Cosignature::verified_cosigners(&decoded.data).unwrap();
+        assert_eq!(keys, vec![Secp256k1.to_public(&cosigner)]);
+    }
+
+    #[test]
+    fn a_tampered_cosignature_does_not_verify() {
+        let (mut signed, cosigner) = deploy();
+        let mut cosignature =
+            Cosignature::sign(&signed.data, &cosigner, &Secp256k1.name()).unwrap();
+        cosignature.sig[3] ^= 1;
+        signed.data.cosignatures.push(cosignature);
+        assert_eq!(Cosignature::verified_cosigners(&signed.data), None);
     }
 }

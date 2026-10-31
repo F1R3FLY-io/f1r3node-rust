@@ -212,6 +212,7 @@ mod tests {
             shard_id: "root".into(),
             expiration_timestamp: None,
             parameters,
+            cosignatures: Vec::new(),
         };
         ProcessedDeploy::empty(
             Signed::create(

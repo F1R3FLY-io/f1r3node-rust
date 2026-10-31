@@ -12,6 +12,7 @@ use crate::rhoapi::{GDeployId, GDeployerId, GUnforgeable, Par};
 
 const SYSTEM_DEPLOY_ID_URI: &str = "rho:system:deployId";
 const SYSTEM_DEPLOYER_ID_URI: &str = "rho:system:deployerId";
+pub const SYSTEM_COSIGNER_ID_URI_PREFIX: &str = "rho:system:cosignerId:";
 const LEGACY_DEPLOY_ID_URI: &str = "rho:rchain:deployId";
 const LEGACY_DEPLOYER_ID_URI: &str = "rho:rchain:deployerId";
 
@@ -85,6 +86,21 @@ pub fn normalizer_env_from_deploy(
         deployer_id_par,
     );
 
+    let cosigners = crate::rust::casper::protocol::casper_message::Cosignature::verified_cosigners(
+        &deploy.data,
+    )
+    .unwrap_or_default();
+    for (index, cosigner) in cosigners.iter().enumerate() {
+        env.insert(
+            format!("{SYSTEM_COSIGNER_ID_URI_PREFIX}{index}"),
+            Par::default().with_unforgeables(vec![GUnforgeable {
+                unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
+                    public_key: cosigner.bytes.to_vec(),
+                })),
+            }]),
+        );
+    }
+
     for (parameter, value) in deploy.data.parameters.iter().zip(parameter_values) {
         env.insert(format!("rho:deploy:param:{}", parameter.name), value);
     }
@@ -110,6 +126,7 @@ mod tests {
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
             },
             pk: PublicKey::from_bytes(&[1, 2, 3, 4]),
             sig: Bytes::from(vec![5, 6, 7, 8]),

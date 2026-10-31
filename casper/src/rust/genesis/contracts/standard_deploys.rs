@@ -134,6 +134,7 @@ fn to_deploy(
         shard_id: shard_id.to_string(),
         expiration_timestamp: None,
         parameters: Vec::new(),
+        cosignatures: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), sk).expect("Failed to create signed deploy")

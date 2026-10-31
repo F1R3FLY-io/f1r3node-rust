@@ -351,6 +351,13 @@ message DeployDataProto {
   string language             = 12;//language (rholang or metta) of the source code
   int64 expirationTimestamp   = 13;//optional millisecond timestamp after which deploy is invalid (0 = no expiration)
   repeated DeployParameter parameters = 14;
+  repeated DeployCosignature cosignatures = 15;
+}
+
+message DeployCosignature {
+  bytes  cosigner     = 1;
+  bytes  sig          = 2;
+  string sigAlgorithm = 3;
 }
 
 message DeployParameter {

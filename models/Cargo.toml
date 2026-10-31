@@ -30,6 +30,9 @@ utoipa = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+bincode = { workspace = true }
+
 [[test]]
 name = "models_tests"
 path = "tests/mod.rs"

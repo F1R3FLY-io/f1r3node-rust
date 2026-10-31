@@ -272,5 +272,14 @@ impl Score {
     pub const CONNECTIVE_URI: i32 = 407;
     pub const CONNECTIVE_BYTEARRAY: i32 = 408;
 
+    pub const COST_SIG_GROUND: i32 = 310;
+    pub const COST_SIG_BOUND: i32 = 311;
+    pub const COST_SIG_QUOTE: i32 = 312;
+    pub const COST_SIG_COMPOUND: i32 = 313;
+    pub const COST_SIGNED_TERM: i32 = 314;
+    pub const COST_STACK: i32 = 315;
+    pub const COST_SIG_NAME: i32 = 316;
+    pub const COST_SIG_UNIT: i32 = 317;
+
     pub const PAR: i32 = 999;
 }
