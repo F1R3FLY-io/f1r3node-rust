@@ -13,8 +13,10 @@ pub struct Ordering;
 
 impl Ordering {
     pub fn sort_pars(ps: &Vec<Par>) -> Vec<Par> {
+        let mut raw: Vec<&Par> = ps.iter().collect();
+        raw.sort_by_cached_key(|p| p.encode_to_vec());
         let mut ps_sorted: Vec<ScoredTerm<Par>> =
-            ps.iter().map(ParSortMatcher::sort_match).collect();
+            raw.into_iter().map(ParSortMatcher::sort_match).collect();
         ScoredTerm::sort_vec(&mut ps_sorted);
         ps_sorted.into_iter().map(|st| st.term).collect()
     }
