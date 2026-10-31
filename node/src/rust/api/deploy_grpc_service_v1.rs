@@ -875,6 +875,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             request.use_pre_state_hash,
             self.dev_mode,
             None,
+            Vec::new(),
         )
         .await
         {

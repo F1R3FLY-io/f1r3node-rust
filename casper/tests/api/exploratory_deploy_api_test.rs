@@ -153,6 +153,7 @@ async fn exploratory_deploy_should_get_data_from_read_only_node() {
         false, // use_pre_state_hash
         false, // dev_mode
         None,  // deployer
+        Vec::new(),
     )
     .await;
 
@@ -266,6 +267,7 @@ async fn unpinned_exploratory_read_does_not_see_unfinalized_state() {
         false,
         false,
         None,
+        Vec::new(),
     )
     .await
     .expect("unpinned exploratory deploy should succeed");
@@ -288,6 +290,7 @@ async fn unpinned_exploratory_read_does_not_see_unfinalized_state() {
         false,
         false,
         None,
+        Vec::new(),
     )
     .await
     .expect("pinned exploratory deploy should succeed");
@@ -353,6 +356,7 @@ async fn exploratory_deploy_should_return_error_on_bonded_validator() {
         false, // use_pre_state_hash
         false, // dev_mode: false means read-only check is enforced
         None,  // deployer
+        Vec::new(),
     )
     .await;
 
@@ -474,6 +478,7 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
         false,
         false,
         Some(DEFAULT_PUB.clone()),
+        Vec::new(),
     )
     .await
     .expect("exploratory deploy with deployer should succeed");
@@ -495,6 +500,7 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
         false,
         false,
         None,
+        Vec::new(),
     )
     .await
     .expect("exploratory deploy without deployer should succeed");
@@ -551,6 +557,7 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
         false,
         false,
         Some(DEFAULT_PUB.clone()),
+        Vec::new(),
     )
     .await
     .expect("exploratory deploy with deployer should succeed");
@@ -576,6 +583,7 @@ async fn estimate_cost_deploy_id_is_64_bytes_on_deployer_path() {
         false,
         false,
         None,
+        Vec::new(),
     )
     .await
     .expect("exploratory deploy without deployer should succeed");
@@ -637,6 +645,7 @@ async fn exploratory_deploy_deploy_id_varies_by_deployer_and_is_stable() {
         false,
         false,
         Some(DEFAULT_PUB.clone()),
+        Vec::new(),
     )
     .await
     .expect("exploratory deploy with deployer A should succeed");
@@ -650,6 +659,7 @@ async fn exploratory_deploy_deploy_id_varies_by_deployer_and_is_stable() {
         false,
         false,
         Some(DEFAULT_PUB2.clone()),
+        Vec::new(),
     )
     .await
     .expect("exploratory deploy with deployer B should succeed");
@@ -670,6 +680,7 @@ async fn exploratory_deploy_deploy_id_varies_by_deployer_and_is_stable() {
         false,
         false,
         Some(DEFAULT_PUB.clone()),
+        Vec::new(),
     )
     .await
     .expect("exploratory deploy with deployer A (repeat) should succeed");

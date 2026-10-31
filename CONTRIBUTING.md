@@ -55,7 +55,8 @@ pipeline, a security patch, a production incident — branches from `master` as
 Name a security patch `hotfix/security-<topic>`, or `fix/security-<topic>` into `dev`. Mergify
 then adds the `security` label, and the pull request goes first in the merge queue. If the
 branch has another name, add the `security` label by hand. Do not describe an undisclosed
-vulnerability in the branch name or the pull request. See [`SECURITY.md`](SECURITY.md).
+vulnerability in the branch name or the pull request. See [`SECURITY.md`](SECURITY.md) and the
+[security advisory process](docs/security-advisory-process.md).
 
 After the hotfix merges, merge `master` back into `dev` so the fix survives the next
 promotion. Skipping that step is how a hotfix silently disappears from the next release.
@@ -125,32 +126,42 @@ A PR is ready for review when:
 - [ ] New behavior has tests
 - [ ] Public API / CLI / config changes are documented
 - [ ] No secrets, credentials, or PII in code, commits, fixtures, or logs
+- [ ] A change to a `cbc=mandatory` file has its CbC evidence (see below)
 
-Green CI on a pull request covers build, lint, unit tests, coverage, and the
-supply-chain audit. It does **not** cover the integration suite: the
-`Integration Tests (amd64)` and `(arm64)` checks pass with a note that coverage
-is deferred, and the suite runs for real in the merge queue. Add the `ci-heavy`
-label to run it on the pull request itself — worth doing for consensus,
-storage, or CI changes rather than discovering a failure at merge time.
+A push to a pull request runs the GitHub-hosted checks: static checks, script tests, and unit
+tests. Mergify adds the `ci-heavy` label to each open, non-draft pull request. The label runs the
+integration suite on Oracle Cloud Infrastructure (OCI) runners. Each push runs the suite again and
+uses a shared daily quota, so push in batches. See [Mergify](docs/ci.md#mergify).
 
 Maintainers review for correctness, test coverage, scope discipline, and consistency with
 documented architecture. Respond to feedback in additional commits rather than force-pushing
 over reviewed history.
 
+### Correct-by-Construction Evidence
+
+Correct by Construction (CbC) is the verification process for mission-critical code. A file is
+mission-critical when Git reports its `cbc` attribute as `mandatory`:
+
+```bash
+git check-attr cbc -- <path>
+```
+
+A change to such a file needs evidence for the correctness claims of that file. The claims are in
+`docs/claims/`, and the evidence is in `docs/cbc-evidence/`. Run `scripts/cbc.sh` to check them.
+See [CbC Verification Tiers](docs/cbc-verification-tiers.md).
+
 ## Merging
 
-`dev` merges through a merge queue. Once review and the required checks are
-done, a maintainer chooses **Merge when ready** instead of Merge, which adds the
-pull request to the queue.
+Mergify merges every pull request into `dev`, `master`, `ca-canary`, and `ca-release`. Do not merge
+a pull request by hand. The `mergify-only` ruleset blocks a manual merge, also for an organization
+admin.
 
-The queue batches several pull requests, applies them on top of `dev`, and runs
-the integration suite against that combined result — the state that will exist
-after merging, which a per-pull-request run never tests. A batch that passes
-merges; a batch that fails removes the offending pull request from the queue and
-re-queues the rest.
+Mergify queues a pull request after it has its approval and its checks pass. It then merges the
+pull request. A push starts the checks again. [Mergify](docs/ci.md#mergify) gives the conditions of
+each queue.
 
-If yours is removed, its timeline records why. Push a fix and queue it again. To
-reproduce the failure on your own head first, add the `ci-heavy` label.
+If Mergify removes your pull request from a queue, its timeline records why. Push a fix, and the
+checks run again.
 
 ---
 
@@ -164,12 +175,12 @@ Upstream access does not bypass review. Protected branches such as `master` and 
 
 ## CI Approval for Fork Pull Requests
 
-Fork pull requests run the GitHub-hosted checks on every push, unprivileged. The
-integration suite does not run per push: like an upstream pull request, a fork
-gets that coverage in the merge queue, or earlier when a maintainer applies the
-`ci-heavy` label. Either path still holds Oracle Cloud Infrastructure capacity
-behind maintainer approval, which protects project CI capacity and runner
-capacity while contributor trust is established.
+Fork pull requests run the GitHub-hosted checks on every push, unprivileged. A fork gets no heavy
+run, so no queue accepts it. This rule protects project CI capacity and runner capacity.
+
+After review, a maintainer pushes the fork head unchanged to a branch of this repository. The
+maintainer then opens a pull request from that branch with the body line
+`Imports fork pull request #<N>.` See [Mergify](docs/ci.md#mergify).
 
 Approval to run CI is not approval to merge. Maintainers may review the code, ask for local validation output, or request changes before approving expensive CI.
 
