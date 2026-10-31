@@ -342,6 +342,7 @@ mod tests {
 
     fn create_test_header(network_id: &str, sender_id: Vec<u8>) -> Header {
         Header {
+            chain_id: Bytes::new(),
             sender: Some(Node {
                 id: Bytes::from(sender_id),
                 host: Bytes::from("127.0.0.1"),
@@ -557,6 +558,7 @@ mod tests {
     #[test]
     fn test_validate_certificate_chain_requires_sender() {
         let header = Header {
+            chain_id: Bytes::new(),
             sender: None,
             network_id: "test_network".to_string(),
         };
