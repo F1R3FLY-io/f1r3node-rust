@@ -525,3 +525,8 @@ pub const DEPLOY_LIFECYCLE_RELEASE_FAILURES_METRIC: &str = "deploy-lifecycle.rel
 // each is retried by the next settle.
 pub const DEPLOY_LIFECYCLE_SETTLE_ROW_FAILURES_METRIC: &str =
     "deploy-lifecycle.settle.row-failures";
+pub const DEPLOY_ADMISSION_ACCEPTED_METRIC: &str = "deploy-admission.accepted";
+pub const DEPLOY_ADMISSION_REFUSED_METRIC: &str = "deploy-admission.refused";
+pub const DEPLOY_ADMISSION_PENDING_AHEAD_METRIC: &str = "deploy-admission.pending-ahead";
+pub const DEPLOY_ADMISSION_CAPACITY_METRIC: &str = "deploy-admission.capacity";
+pub const DEPLOY_ADMISSION_INCLUDED_METRIC: &str = "deploy-admission.first-inclusions";

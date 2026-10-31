@@ -1,7 +1,7 @@
 // Quarantine of undecodable records in the node-local deploy stores. The
 // behavior and the operator procedure are in docs/block-storage/README.md.
 //
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
@@ -9,6 +9,8 @@ use models::rust::casper::protocol::casper_message::DeployData;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::{ByteBuffer, ByteString};
+
+use super::key_value_deploy_storage::DeployMetadata;
 
 pub(super) type DeployTypedStore = KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>;
 
@@ -23,6 +25,23 @@ struct DamagedRecord {
     key: ByteBuffer,
     value: ByteBuffer,
     error: KvStoreError,
+}
+
+#[derive(Clone)]
+pub(super) struct VerifiedMetadata {
+    fingerprint: [u8; 32],
+    metadata: DeployMetadata,
+}
+
+fn record_fingerprint(key: &[u8], value: &[u8]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(8 + key.len() + value.len());
+    input.extend_from_slice(&(key.len() as u64).to_be_bytes());
+    input.extend_from_slice(key);
+    input.extend_from_slice(value);
+    let digest = crypto::rust::hash::blake2b256::Blake2b256::hash(input);
+    let mut result = [0; 32];
+    result.copy_from_slice(&digest);
+    result
 }
 
 #[derive(Clone)]
@@ -55,6 +74,45 @@ impl DeployRecordQuarantine {
         }
         self.isolate(store, damaged)?;
         Ok(deploys)
+    }
+
+    pub(super) fn read_metadata(
+        &self,
+        store: &DeployTypedStore,
+        verified: &mut HashMap<ByteString, VerifiedMetadata>,
+    ) -> Result<(imbl::HashMap<ByteString, DeployMetadata>, usize), KvStoreError> {
+        let raw = store.raw_store().to_map()?;
+        let mut next = HashMap::with_capacity(raw.len());
+        let mut entries = imbl::HashMap::new();
+        let mut damaged = Vec::new();
+        let mut decoded = 0;
+        for (key, value) in raw {
+            let record = store.decode_key(&key).and_then(|signature| {
+                let fingerprint = record_fingerprint(&key, &value);
+                let record = match verified.get(&signature) {
+                    Some(record) if record.fingerprint == fingerprint => record.clone(),
+                    _ => {
+                        let deploy = store.decode_value(&value)?;
+                        decoded += 1;
+                        VerifiedMetadata {
+                            fingerprint,
+                            metadata: DeployMetadata::from(&deploy),
+                        }
+                    }
+                };
+                Ok((signature, record))
+            });
+            match record {
+                Ok((signature, record)) => {
+                    entries.insert(record.metadata.signature.clone(), record.metadata.clone());
+                    next.insert(signature, record);
+                }
+                Err(error) => damaged.push(DamagedRecord { key, value, error }),
+            }
+        }
+        self.isolate(store, damaged)?;
+        *verified = next;
+        Ok((entries, decoded))
     }
 
     pub(super) fn any<F>(
@@ -218,6 +276,18 @@ fn bounded_error(error: &KvStoreError) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn metadata_fingerprint_covers_the_key_and_value_without_ambiguous_boundaries() {
+        assert_ne!(
+            super::record_fingerprint(b"a", b"bc"),
+            super::record_fingerprint(b"ab", b"c")
+        );
+        assert_ne!(
+            super::record_fingerprint(b"key", b"first"),
+            super::record_fingerprint(b"key", b"second")
+        );
+    }
+
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Barrier, Mutex};

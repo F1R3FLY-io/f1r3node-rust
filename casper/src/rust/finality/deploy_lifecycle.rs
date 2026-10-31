@@ -697,6 +697,122 @@ mod tests {
             .expect("block store")
     }
 
+    async fn dropped_deploy_verdict(
+        carry_at: Option<i64>,
+        restart: bool,
+        horizon: Option<i64>,
+    ) -> (Vec<Bytes>, Vec<Bytes>, Option<TerminalState>) {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+        let storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+        let (sig, processed) = processed(1, false);
+        let genesis = block_at(0, Vec::new(), 0);
+        block_store.put_block_message(&genesis).unwrap();
+        storage.insert(&genesis, InsertMode::Approved).unwrap();
+        let mut memo = LineageMemo::default();
+        let dag = storage.get_representation().unwrap();
+        settle(&dag, &block_store, 2, horizon, &mut memo).unwrap();
+        dag.open_dropped_deploy_lifecycle_row(&sig, processed.deploy.data.valid_after_block_number)
+            .unwrap();
+
+        let mut chain = vec![genesis];
+        for height in 1..=6 {
+            let deploys = if carry_at == Some(height) {
+                vec![processed.clone()]
+            } else {
+                Vec::new()
+            };
+            let block = get_random_block(
+                Some(height),
+                Some(height as i32),
+                None,
+                None,
+                None,
+                None,
+                Some(height),
+                Some(vec![chain.last().unwrap().block_hash.clone()]),
+                Some(Vec::new()),
+                Some(deploys),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some("test-shard".to_string()),
+                None,
+            );
+            block_store.put_block_message(&block).unwrap();
+            storage.insert(&block, InsertMode::Normal).unwrap();
+            chain.push(block);
+        }
+        storage
+            .record_directly_finalized(chain[3].block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        let before_bound = settle(&dag, &block_store, 2, horizon, &mut memo)
+            .unwrap()
+            .terminal;
+        if restart {
+            memo = LineageMemo::default();
+        }
+        storage
+            .record_directly_finalized(chain[4].block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        assert!(settle(&dag, &block_store, 2, horizon, &mut memo)
+            .unwrap()
+            .terminal
+            .is_empty());
+        storage
+            .record_directly_finalized(chain[5].block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        let past_bound = settle(&dag, &block_store, 2, horizon, &mut memo)
+            .unwrap()
+            .terminal;
+        let verdict = dag
+            .deploy_terminal(&sig)
+            .unwrap()
+            .map(|record| record.state);
+        (before_bound, past_bound, verdict)
+    }
+
+    #[tokio::test]
+    async fn a_warm_register_expires_a_drop_only_past_the_bound() {
+        let (before, after, verdict) = dropped_deploy_verdict(None, false, Some(2)).await;
+        assert!(before.is_empty());
+        assert_eq!(after.len(), 1);
+        assert_eq!(verdict, Some(TerminalState::Expired));
+    }
+
+    #[tokio::test]
+    async fn a_restarted_register_recovers_a_drop() {
+        let (before, after, verdict) = dropped_deploy_verdict(None, true, Some(2)).await;
+        assert!(before.is_empty());
+        assert_eq!(after.len(), 1);
+        assert_eq!(verdict, Some(TerminalState::Expired));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_deploy_in_another_block_finalizes() {
+        let (before, after, verdict) = dropped_deploy_verdict(Some(2), false, Some(2)).await;
+        assert_eq!(before.len(), 1);
+        assert!(after.is_empty());
+        assert_eq!(verdict, Some(TerminalState::Finalized));
+    }
+
+    #[tokio::test]
+    async fn disabled_depth_checks_preserve_pending_for_a_drop() {
+        let (before, after, verdict) = dropped_deploy_verdict(None, false, None).await;
+        assert!(before.is_empty());
+        assert!(after.is_empty());
+        assert_eq!(verdict, None);
+    }
+
     /// The membership rule over raw block reads, independent of
     /// `walk_lineage` and the block-facts cache: the oracle the batched and
     /// per-sig walks are both checked against.
