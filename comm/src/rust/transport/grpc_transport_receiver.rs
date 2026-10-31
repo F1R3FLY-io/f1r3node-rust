@@ -124,7 +124,6 @@ pub struct TransportLayerService {
     recent_hash_filter: RecentHashFilter,
 }
 
-const GRPC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Default capacity for the recent hash filter
 const RECENT_HASH_FILTER_CAPACITY: usize = 8192;
 /// Inbound per-peer queue sizing tuned for catch-up bursts.
@@ -684,7 +683,7 @@ impl GrpcTransportReceiver {
             let server_result = Server::builder()
                 // Long enough for large block transfers, bounded so a slow
                 // peer cannot hold a request open indefinitely.
-                .timeout(GRPC_REQUEST_TIMEOUT)
+                .timeout(super::GRPC_REQUEST_TIMEOUT)
                 // TCP keepalive - handled by F1r3flyServer configuration above
                 // TCP nodelay - handled by F1r3flyServer configuration above
                 // HTTP/2 keepalive interval - handled by F1r3flyServer configuration above

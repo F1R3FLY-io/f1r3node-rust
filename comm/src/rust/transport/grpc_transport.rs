@@ -61,6 +61,8 @@ impl GrpcTransport {
     /// Error pattern matching: Check if error indicates timeout
     pub fn is_peer_timeout(error: &Status) -> bool {
         matches!(error.code(), tonic::Code::DeadlineExceeded)
+            || (matches!(error.code(), tonic::Code::Cancelled)
+                && error.message() == "Timeout expired")
     }
 
     /// Error pattern matching: Check if error indicates wrong network
@@ -192,6 +194,12 @@ mod tests {
         let timeout_error = Status::deadline_exceeded("Request timeout");
         assert!(GrpcTransport::is_peer_timeout(&timeout_error));
         assert!(!GrpcTransport::is_peer_unavailable(&timeout_error));
+        assert!(GrpcTransport::is_peer_timeout(&Status::cancelled(
+            "Timeout expired"
+        )));
+        assert!(!GrpcTransport::is_peer_timeout(&Status::cancelled(
+            "Request cancelled"
+        )));
 
         // Test permission denied (wrong network)
         let permission_error = Status::permission_denied("Wrong network");
