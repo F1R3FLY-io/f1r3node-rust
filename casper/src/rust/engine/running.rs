@@ -24,6 +24,8 @@ use shared::rust::store::key_value_store::MissingBlockContext;
 use tokio::sync::mpsc;
 
 use crate::rust::blocks::ingest::block_ingest::IngestHandle;
+use crate::rust::blocks::ingest::checked_block::{CheckedBlock, IntegrityFailure};
+use crate::rust::blocks::ingest::peer_reputation::Strike;
 use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
@@ -259,14 +261,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                 Ok(())
             }
             CasperMessage::BlockMessage(b) => {
-                if let Some(id) = self.casper.get_validator() {
-                    if b.sender == id.public_key.bytes {
-                        tracing::warn!(
-                            "There is another node {} proposing using the same private key as you. Or did you restart your node?",
-                            peer
-                        );
-                    }
-                }
                 if self.is_known(&b.block_hash) {
                     tracing::debug!(
                         "Ignoring BlockMessage {} from {}",
@@ -274,12 +268,46 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                 } else {
+                    let checked = match tokio::task::spawn_blocking(move || {
+                        CheckedBlock::check(b, RUNNING_METRICS_SOURCE)
+                    })
+                    .await
+                    .map_err(|err| {
+                        CasperError::RuntimeError(format!(
+                            "Block integrity check failed to run: {}",
+                            err
+                        ))
+                    })? {
+                        Ok(checked) => checked,
+                        Err((refused, failure)) => {
+                            let strike = match failure {
+                                IntegrityFailure::Malformed => Strike::Malformed,
+                                IntegrityFailure::HashMismatch => Strike::HashMismatch,
+                            };
+                            tracing::warn!(
+                                "Refused BlockMessage {} from {}: {:?}",
+                                PrettyPrinter::build_string_bytes(&refused.block_hash),
+                                peer,
+                                failure
+                            );
+                            self.ingest.misbehaved(peer, strike);
+                            return Ok(());
+                        }
+                    };
+                    if let Some(id) = self.casper.get_validator() {
+                        if checked.block().sender == id.public_key.bytes {
+                            tracing::warn!(
+                                "There is another node {} proposing using the same private key as you. Or did you restart your node?",
+                                peer
+                            );
+                        }
+                    }
                     tracing::debug!(
                         "Incoming BlockMessage {} from {}",
-                        PrettyPrinter::build_string_block_message(&b, true),
+                        PrettyPrinter::build_string_block_message(checked.block(), true),
                         peer.endpoint.host
                     );
-                    self.ingest.deliver(b, peer);
+                    self.ingest.deliver(checked, peer);
                 }
                 Ok(())
             }

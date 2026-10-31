@@ -5,6 +5,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStora
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::ingest::block_ingest::{IngestHandle, IngestPorts, Stores};
+use casper::rust::blocks::ingest::checked_block::{CheckedBlock, IntegrityFailure};
 use casper::rust::blocks::ingest::dependency_tracker::Work;
 use casper::rust::blocks::ingest::fetch_scheduler::FetchAction;
 use casper::rust::blocks::ingest::ingest_state::{
@@ -15,8 +16,8 @@ use casper::rust::blocks::ingest::intake_worker::{Intake, SenderAuthorization};
 use casper::rust::blocks::ingest::validation_worker::Validation;
 use casper::rust::casper::Casper;
 use casper::rust::errors::CasperError;
+use casper::rust::metrics_constants::BLOCK_INGEST_METRICS_SOURCE;
 use casper::rust::util::proto_util;
-use casper::rust::validate::Validate;
 use casper::rust::ValidBlockProcessing;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -101,7 +102,14 @@ impl InlineIngest {
     ) -> Result<ValidBlockProcessing, CasperError> {
         self.pump(casper.clone()).await?;
         let target = block.block_hash.clone();
-        let input = self.intake.admit(&block, from)?;
+        let checked = match CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE) {
+            Ok(checked) => checked,
+            Err((_, IntegrityFailure::Malformed)) => return Ok(Either::Left(BlockStatus::invalid_format())),
+            Err((_, IntegrityFailure::HashMismatch)) => {
+                return Ok(Either::Left(BlockStatus::invalid_block_hash()))
+            }
+        };
+        let input = self.intake.admit(&checked, from)?;
         let refused = match &input {
             IngestInput::IntakeRefused(refused) => Some(refusal_status(refused.reason)),
             _ => None,
@@ -121,11 +129,15 @@ impl InlineIngest {
         casper: Arc<dyn Casper + Send + Sync>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
+        let block = match CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE) {
+            Ok(checked) => checked.into_block(),
+            Err((_, IntegrityFailure::Malformed)) => return Ok(Either::Left(BlockStatus::invalid_format())),
+            Err((_, IntegrityFailure::HashMismatch)) => {
+                return Ok(Either::Left(BlockStatus::invalid_block_hash()))
+            }
+        };
         if self.intake.sender_authorization(&block)? == SenderAuthorization::Unauthorized {
             return Ok(Either::Left(BlockStatus::invalid_sender()));
-        }
-        if !(Validate::format_of_fields(&block) && Validate::block_signature(&block)) {
-            return Ok(Either::Left(BlockStatus::invalid_format()));
         }
         let all_held = proto_util::dependencies_hashes_of(&block)
             .iter()
@@ -208,7 +220,13 @@ impl InlineIngest {
     async fn execute(&mut self, effect: Effect, queue: &mut VecDeque<IngestInput>) -> Result<(), CasperError> {
         match effect {
             Effect::Fetch(FetchAction::LookupLocal(hash)) => match self.block_store.get(&hash)? {
-                Some(block) => queue.push_back(self.intake.admit(&block, None)?),
+                Some(block) => match CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE) {
+                    Ok(checked) => queue.push_back(self.intake.admit(&checked, None)?),
+                    Err((refused, _)) => {
+                        self.block_store.discard_copy(&refused)?;
+                        queue.push_back(IngestInput::LocalMiss { hash });
+                    }
+                },
                 None => queue.push_back(IngestInput::LocalMiss { hash }),
             },
             Effect::Fetch(FetchAction::RequestBlock { hash, peer }) => {
@@ -264,7 +282,6 @@ fn refusal_status(reason: Refusal) -> ValidBlockProcessing {
     Either::Left(match reason {
         Refusal::NotOfInterest => BlockStatus::not_of_interest(),
         Refusal::Unauthorized => BlockStatus::invalid_sender(),
-        Refusal::Malformed => BlockStatus::invalid_format(),
         Refusal::Pending(_) => BlockStatus::missing_blocks(),
     })
 }

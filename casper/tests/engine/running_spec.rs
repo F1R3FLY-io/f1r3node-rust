@@ -18,8 +18,11 @@ use casper::rust::engine::engine::Engine;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::engine::running::{update_fork_choice_tips_if_stuck, Running};
 use casper::rust::errors::CasperError;
+use casper::rust::validate::Validate;
 use casper::rust::validator_identity::ValidatorIdentity;
 use comm::rust::peer_node::PeerNode;
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use models::casper::ApprovedBlockRequestProto;
 use models::routing::protocol::Message as ProtocolMessage;
 use models::rust::block_hash::BlockHash;
@@ -523,6 +526,32 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_forged_copy_never_reaches_block_ingest_and_the_honest_block_still_does() {
+        let fixture = TestFixture::new().await;
+        let block_message = get_random_block(
+            None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+        );
+        let honest = fixture.validator_id.sign_block(&block_message);
+
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let attacker = ValidatorIdentity::new(&sk);
+        let mut forged = attacker.sign_block(&honest);
+        forged.seq_num = honest.seq_num + 1;
+        forged.block_hash = honest.block_hash.clone();
+        forged.sig = attacker.signature(honest.block_hash.as_ref()).sig;
+        assert!(Validate::block_signature(&forged));
+
+        for block in [forged, honest.clone()] {
+            fixture
+                .engine
+                .handle(fixture.local.clone(), CasperMessage::BlockMessage(block))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(drain_deliveries(&fixture).await, vec![honest]);
+    }
 
     #[tokio::test]
     async fn block_request_for_an_absent_block_sends_no_response() {
@@ -882,6 +911,17 @@ mod tests {
             self.handle(fixture, IngestInput::Need { hash: hash.clone() });
         }
 
+        /// Take what the engine sent block ingest's owner.
+        async fn absorb(&mut self, fixture: &TestFixture) {
+            let inputs: Vec<IngestInput> = {
+                let mut ports = fixture.ingest_ports.lock().await;
+                std::iter::from_fn(|| ports.inputs.try_recv().ok()).collect()
+            };
+            for input in inputs {
+                self.handle(fixture, input);
+            }
+        }
+
         /// Intake refuses `block` from `peer` as having an unauthorized
         /// sender; a delivery is unsolicited unless the node asked for it.
         fn refuse_unauthorized(&mut self, fixture: &TestFixture, block: &BlockMessage, peer: &PeerNode) {
@@ -900,16 +940,16 @@ mod tests {
         }
     }
 
-    async fn drain_deliveries(fixture: &TestFixture) -> Vec<BlockHash> {
+    async fn drain_deliveries(fixture: &TestFixture) -> Vec<BlockMessage> {
         let mut ports = fixture.ingest_ports.lock().await;
-        let mut hashes = Vec::new();
+        let mut blocks = Vec::new();
         while let Ok(delivery) = ports.awaited.try_recv() {
-            hashes.push(delivery.block.block_hash);
+            blocks.push(delivery.block.into_block());
         }
         while let Ok(delivery) = ports.unsolicited.try_recv() {
-            hashes.push(delivery.block.block_hash);
+            blocks.push(delivery.block.into_block());
         }
-        hashes
+        blocks
     }
 
     async fn drain_announcements(fixture: &TestFixture) -> Vec<(BlockHash, PeerNode)> {
@@ -937,7 +977,7 @@ mod tests {
                 .handle(peer.clone(), CasperMessage::BlockMessage(block.clone()))
                 .await
                 .unwrap();
-            assert_eq!(drain_deliveries(fixture).await, vec![block.block_hash.clone()]);
+            assert_eq!(drain_deliveries(fixture).await, vec![block.clone()]);
             owner.refuse_unauthorized(fixture, &block, peer);
         }
     }
@@ -978,7 +1018,84 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(drain_deliveries(&fixture).await, vec![honest.block_hash]);
+        assert_eq!(drain_deliveries(&fixture).await, vec![honest]);
+    }
+
+    #[tokio::test]
+    async fn engine_should_score_out_a_peer_that_pushes_forged_blocks() {
+        let fixture = TestFixture::new().await;
+        let mut owner = Owner::new(&fixture);
+        let forger_peer = peer_node("forger", 40400);
+        let honest = signed_random_block(&fixture);
+        let (sk, _pk) = Secp256k1.new_key_pair();
+        let forger = ValidatorIdentity::new(&sk);
+        for _ in 0..STRIKE_THRESHOLD {
+            let mut forged = forger.sign_block(&signed_random_block(&fixture));
+            forged.block_hash = honest.block_hash.clone();
+            forged.sig = forger.signature(honest.block_hash.as_ref()).sig;
+            fixture
+                .engine
+                .handle(forger_peer.clone(), CasperMessage::BlockMessage(forged))
+                .await
+                .unwrap();
+        }
+        owner.absorb(&fixture).await;
+        assert!(drain_deliveries(&fixture).await.is_empty());
+        assert!(fixture.ingest.view().is_ignored(&forger_peer));
+
+        fixture
+            .engine
+            .handle(
+                fixture.local.clone(),
+                CasperMessage::BlockMessage(honest.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(drain_deliveries(&fixture).await, vec![honest]);
+        assert!(!fixture.ingest.view().is_ignored(&fixture.local));
+    }
+
+    /// A message that fails the integrity check never reaches block ingest,
+    /// so the need for the hash it claims stays outstanding.
+    async fn refuse_without_touching_the_claimed_hash(foreign_hash: bool) {
+        let fixture = TestFixture::new().await;
+        let mut owner = Owner::new(&fixture);
+        let honest = signed_random_block(&fixture);
+        owner.need(&fixture, &honest.block_hash);
+
+        let mut refused = signed_random_block(&fixture);
+        if foreign_hash {
+            let (sk, _pk) = Secp256k1.new_key_pair();
+            let other = ValidatorIdentity::new(&sk);
+            refused.block_hash = honest.block_hash.clone();
+            refused.sig = other.signature(honest.block_hash.as_ref()).sig;
+            refused.sender = other.public_key.bytes.clone();
+        } else {
+            refused = honest.clone();
+            refused.sig = Bytes::from(vec![0u8; honest.sig.len()]);
+        }
+        fixture
+            .engine
+            .handle(peer_node("sender", 40400), CasperMessage::BlockMessage(refused))
+            .await
+            .unwrap();
+        owner.absorb(&fixture).await;
+
+        assert!(drain_deliveries(&fixture).await.is_empty());
+        assert!(
+            fixture.ingest.view().is_awaited(&honest.block_hash),
+            "a refused message must not end the need for the hash it claims"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_body_signed_under_a_foreign_hash_does_not_touch_that_hash() {
+        refuse_without_touching_the_claimed_hash(true).await;
+    }
+
+    #[tokio::test]
+    async fn a_badly_signed_message_does_not_touch_the_hash_that_it_claims() {
+        refuse_without_touching_the_claimed_hash(false).await;
     }
 
     #[tokio::test]
@@ -994,7 +1111,7 @@ mod tests {
                 .handle(server.clone(), CasperMessage::BlockMessage(block.clone()))
                 .await
                 .unwrap();
-            assert_eq!(drain_deliveries(&fixture).await, vec![block.block_hash.clone()]);
+            assert_eq!(drain_deliveries(&fixture).await, vec![block.clone()]);
             owner.refuse_unauthorized(&fixture, &block, &server);
         }
 
@@ -1004,7 +1121,7 @@ mod tests {
             .handle(server, CasperMessage::BlockMessage(next.clone()))
             .await
             .unwrap();
-        assert_eq!(drain_deliveries(&fixture).await, vec![next.block_hash]);
+        assert_eq!(drain_deliveries(&fixture).await, vec![next]);
     }
 
     #[tokio::test]
@@ -1036,6 +1153,6 @@ mod tests {
             .handle(peer, CasperMessage::BlockMessage(requested.clone()))
             .await
             .unwrap();
-        assert_eq!(drain_deliveries(&fixture).await, vec![requested.block_hash]);
+        assert_eq!(drain_deliveries(&fixture).await, vec![requested]);
     }
 }

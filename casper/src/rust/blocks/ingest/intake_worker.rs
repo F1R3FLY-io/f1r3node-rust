@@ -1,11 +1,12 @@
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use block_storage::rust::pending_blocks::PendingInsert;
+use block_storage::rust::pending_blocks::{PendingClass, PendingInsert};
 use comm::rust::peer_node::PeerNode;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::Message;
 
+use super::checked_block::CheckedBlock;
 use super::dependency_tracker::{BodyAt, HeldMeta};
 use super::ingest_state::{IngestInput, PendingRefusal, Refusal, Refused};
 use super::ingest_step::IngestStep;
@@ -80,9 +81,10 @@ impl Intake {
         }
     }
 
-    /// Check and store `block`, delivered by `from` (none for a block read
+    /// Check and store `checked`, delivered by `from` (none for a block read
     /// from the local block store).
-    pub fn admit(&self, block: &BlockMessage, from: Option<PeerNode>) -> Result<IngestInput, CasperError> {
+    pub fn admit(&self, checked: &CheckedBlock, from: Option<PeerNode>) -> Result<IngestInput, CasperError> {
+        let block = checked.block();
         let hash = block.block_hash.clone();
         let solicited = self.view.is_solicited(&hash);
         let size = block.to_proto().encoded_len();
@@ -117,12 +119,13 @@ impl Intake {
             return Ok(refused(Refusal::Unauthorized));
         }
 
-        if !(Validate::format_of_fields(block) && Validate::block_signature(block)) {
-            tracing::info!("Block {} is malformed. Dropped.", PrettyPrinter::build_string_bytes(&hash));
-            return Ok(refused(Refusal::Malformed));
-        }
-
-        let body = match IngestStep::Storage.time(|| self.store(block, authorization, solicited))? {
+        let trusted = self.bonded_in_last_finalized(block)?;
+        let class = match (solicited, trusted) {
+            (true, _) => PendingClass::Solicited,
+            (false, true) => PendingClass::KnownSender,
+            (false, false) => PendingClass::Unsolicited,
+        };
+        let body = match IngestStep::Storage.time(|| self.store(block, authorization, class))? {
             Ok(body) => body,
             Err(refusal) => {
                 tracing::warn!(
@@ -145,7 +148,7 @@ impl Intake {
             deps,
             body,
             size,
-            trusted: self.bonded_in_last_finalized(block)?,
+            trusted,
             bonded_at_anchor: self
                 .approved_block
                 .body
@@ -165,13 +168,13 @@ impl Intake {
         &self,
         block: &BlockMessage,
         authorization: SenderAuthorization,
-        solicited: bool,
+        class: PendingClass,
     ) -> Result<Result<BodyAt, PendingRefusal>, CasperError> {
         if authorization == SenderAuthorization::Authorized {
             self.block_store.put_block_message(block)?;
             return Ok(Ok(BodyAt::Disk));
         }
-        Ok(match self.block_store.put_pending(block, solicited)? {
+        Ok(match self.block_store.put_pending(block, class)? {
             PendingInsert::Accepted => Ok(BodyAt::Pending),
             PendingInsert::AreaFull => Err(PendingRefusal::AreaFull),
             PendingInsert::SenderLimitReached => Err(PendingRefusal::SenderLimitReached),

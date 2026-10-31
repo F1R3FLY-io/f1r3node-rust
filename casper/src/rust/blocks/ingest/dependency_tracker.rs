@@ -336,7 +336,8 @@ impl DependencyTracker {
 
     /// Held blocks an eviction pass may take, in eviction order: untrusted
     /// before trusted, then highest height first. Blocks being worked on are
-    /// never candidates.
+    /// never candidates. A block that another held block waits on counts as
+    /// solicited, however it arrived.
     pub fn victims(
         &self,
         body: BodyAt,
@@ -348,7 +349,10 @@ impl DependencyTracker {
             .values()
             .filter(|held| held.stage != Stage::Working)
             .filter(|held| held.meta.body == body)
-            .filter(|held| held.meta.solicited == (class == VictimClass::Solicited))
+            .filter(|held| {
+                let solicited = held.meta.solicited || self.waiters.contains_key(&held.meta.hash);
+                solicited == (class == VictimClass::Solicited)
+            })
             .filter(|held| sender.is_none_or(|s| held.meta.sender == *s))
             .collect();
         candidates.sort_unstable_by_key(|held| {
@@ -362,6 +366,10 @@ impl DependencyTracker {
             .into_iter()
             .map(|held| (held.meta.hash.clone(), held.meta.size))
             .collect()
+    }
+
+    pub fn is_trusted(&self, hash: &BlockHash) -> bool {
+        self.held.get(hash).is_some_and(|held| held.meta.trusted)
     }
 
     fn working(&mut self, hash: &BlockHash) -> &mut Held {
@@ -594,6 +602,21 @@ pub(crate) mod tests {
         assert!(t
             .victims(BodyAt::Disk, VictimClass::Unsolicited, None)
             .is_empty());
+    }
+
+    #[test]
+    fn a_held_block_another_held_block_waits_on_counts_as_solicited() {
+        let mut t = tracker();
+        hold(&mut t, 1, 1, &[]);
+        hold(&mut t, 2, 2, &[1]);
+        let hashes = |class| -> Vec<BlockHash> {
+            t.victims(BodyAt::Disk, class, None)
+                .into_iter()
+                .map(|(h, _)| h)
+                .collect()
+        };
+        assert_eq!(hashes(VictimClass::Unsolicited), vec![hash(2)]);
+        assert_eq!(hashes(VictimClass::Solicited), vec![hash(1)]);
     }
 
     #[test]

@@ -503,10 +503,10 @@ impl TestFixture {
             .lock()
             .expect("the delivery record is never poisoned");
         while let Ok(delivery) = ports.awaited.try_recv() {
-            delivered.insert(delivery.block.block_hash);
+            delivered.insert(delivery.block.block().block_hash.clone());
         }
         while let Ok(delivery) = ports.unsolicited.try_recv() {
-            delivered.insert(delivery.block.block_hash);
+            delivered.insert(delivery.block.block().block_hash.clone());
         }
         delivered.contains(hash)
     }

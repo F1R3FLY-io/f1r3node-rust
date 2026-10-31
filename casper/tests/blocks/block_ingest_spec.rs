@@ -12,6 +12,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::blocks::ingest::checked_block::CheckedBlock;
 use casper::rust::blocks::ingest::block_ingest::{
     self, IngestHandle, IngestSetup, OUTBOUND_CAPACITY, OUTBOUND_CONCURRENCY,
 };
@@ -253,6 +254,10 @@ fn block(number: i64, seq: i32, sender: Option<Validator>, parents: &[&BlockMess
     )
 }
 
+fn checked(block: &BlockMessage) -> CheckedBlock {
+    CheckedBlock::check(block.clone(), "block-ingest-spec").expect("the test signs its blocks")
+}
+
 async fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
     let started = Instant::now();
     while !done() {
@@ -270,6 +275,7 @@ struct Node<T> {
     ingest: IngestHandle,
     _tasks: JoinSet<()>,
     dag: BlockDagKeyValueStorage,
+    blocks: KeyValueBlockStore,
     genesis: BlockMessage,
     peer: PeerNode,
     transport: Arc<T>,
@@ -312,7 +318,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Node<T> {
                 approved: genesis.clone(),
                 snapshot: TestCasperWithSnapshot::create_empty_snapshot(),
                 dag: dag.clone(),
-                blocks,
+                blocks: blocks.clone(),
             }))
             .await
             .unwrap();
@@ -320,6 +326,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Node<T> {
             ingest,
             _tasks: tasks,
             dag,
+            blocks,
             genesis,
             peer,
             transport,
@@ -348,7 +355,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Node<T> {
         let unheld: Vec<BlockMessage> = (0..count).map(|_| self.sign(&[&genesis])).collect();
         let waiting: Vec<BlockMessage> = unheld.iter().map(|parent| self.sign(&[parent])).collect();
         for block in &waiting {
-            self.ingest.deliver(block.clone(), self.peer.clone());
+            self.ingest.deliver(checked(block), self.peer.clone());
             assert!(
                 wait_until(Duration::from_secs(10), || self.ingest.view().is_held(&block.block_hash)).await,
                 "a block missing its parent is classified and held"
@@ -391,9 +398,9 @@ async fn blocks_are_classified_validated_and_released_while_every_send_is_stuck(
     let genesis = node.genesis.clone();
     let parent = node.sign(&[&genesis]);
     let child = node.sign(&[&parent]);
-    node.ingest.deliver(child.clone(), node.peer.clone());
+    node.ingest.deliver(checked(&child), node.peer.clone());
     assert!(wait_until(Duration::from_secs(10), || node.ingest.view().is_held(&child.block_hash)).await);
-    node.ingest.deliver(parent.clone(), node.peer.clone());
+    node.ingest.deliver(checked(&parent), node.peer.clone());
 
     assert!(
         wait_until(Duration::from_secs(30), || node.dag.contains(&parent.block_hash)
@@ -414,7 +421,7 @@ async fn no_request_is_sent_once_every_needed_block_has_arrived() {
 
     let parents = node.hold_children_of_unheld_parents(300).await;
     for parent in &parents {
-        node.ingest.deliver(parent.clone(), node.peer.clone());
+        node.ingest.deliver(checked(parent), node.peer.clone());
     }
     assert!(
         wait_until(Duration::from_secs(30), || parents
@@ -431,5 +438,52 @@ async fn no_request_is_sent_once_every_needed_block_has_arrived() {
         transport.requests_sent.load(Ordering::SeqCst) - sent_when_nothing_was_needed,
         0,
         "requests kept going out for blocks the node already holds"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bad_copy_this_node_stored_is_deleted_and_the_block_asked_for() {
+    let mut node = Node::start(SlowTransport {
+        per_send: Duration::from_millis(1),
+        requests_sent: AtomicUsize::new(0),
+    })
+    .await;
+    let transport = node.transport.clone();
+    let genesis = node.genesis.clone();
+    let honest = node.sign(&[&genesis]);
+    let mut bad_copy = honest.clone();
+    bad_copy.seq_num += 1;
+    node.blocks.put(honest.block_hash.clone(), &bad_copy).unwrap();
+
+    node.ingest.need(honest.block_hash.clone()).await.unwrap();
+
+    assert!(
+        wait_until(Duration::from_secs(10), || node
+            .blocks
+            .get(&honest.block_hash)
+            .unwrap()
+            .is_none()
+            && transport.requests_sent.load(Ordering::SeqCst) >= 1)
+        .await,
+        "the stored copy that fails the integrity check is deleted and the block asked for"
+    );
+    assert!(node.ingest.view().is_awaited(&honest.block_hash));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_valid_block_found_in_the_store_is_checked_and_validated() {
+    let mut node = Node::start(StuckTransport {
+        started: AtomicUsize::new(0),
+    })
+    .await;
+    let genesis = node.genesis.clone();
+    let block = node.sign(&[&genesis]);
+    node.blocks.put_block_message(&block).unwrap();
+
+    node.ingest.need(block.block_hash.clone()).await.unwrap();
+
+    assert!(
+        wait_until(Duration::from_secs(10), || node.dag.contains(&block.block_hash)).await,
+        "a block read from the store is admitted and validated"
     );
 }

@@ -11,6 +11,7 @@
 #![warn(clippy::all)]
 
 pub mod block_ingest;
+pub mod checked_block;
 pub mod dependency_tracker;
 pub mod fetch_scheduler;
 pub mod ingest_state;

@@ -13,6 +13,7 @@ One task, the owner, keeps every record of what the node holds and what it needs
 | `FetchScheduler` | `fetch_scheduler.rs` | Needed blocks and state roots, the peers known to hold each block, and the re-request pacing. |
 | `PeerReputation` | `peer_reputation.rs` | Strikes per peer and the list of ignored peers. |
 | `IngestView` | `ingest_view.rs` | Read-only answers for other tasks. Each record writes its own entries. |
+| `CheckedBlock` | `checked_block.rs` | A block whose fields, signature and hash match its contents. `CheckedBlock::check` is the only way to get one. |
 | Intake | `intake_worker.rs` | Checks a block and stores it. It runs outside the owner. |
 | Validation | `validation_worker.rs` | Validates a block or admits settled history. It also announces the block hash to peers. |
 | `BlockIngest` | `block_ingest.rs` | Starts the tasks and gives producers an `IngestHandle`. |
@@ -37,8 +38,8 @@ flowchart LR
     S --> T[Transport]
 ```
 
-1. `Running` gives a block to an intake lane. It does not wait. If the lane is full, the node drops the block. The node asks for a needed block again later.
-2. An intake task checks interest, sender authorization, format and signature. It then stores the block. An authorized block goes to the block store. A block with unknown authorization goes to the pending area.
+1. `Running` drops a block that the node already holds. It then checks the block's integrity off the async runtime: fields, signature, and the hash against the contents. A block that fails is dropped, the sending peer gets a `Malformed` or `HashMismatch` strike, and nothing keyed by the claimed hash changes. `Running` gives a checked block to an intake lane. It does not wait. If the lane is full, the node drops the block. The node asks for a needed block again later.
+2. An intake task checks interest and sender authorization. It then stores the block. An authorized block goes to the block store. A block with unknown authorization goes to the pending area. A block that intake reads from the block store is checked for integrity first. A stored copy that fails is deleted only if it is the same body (compare-and-delete), and the node asks peers for the block.
 3. The owner classifies the block. A block with all dependencies in the DAG is ready. Other blocks wait, and each missing dependency becomes a need.
 4. The owner gives ready blocks to the validation workers, lowest height first. It dispatches only when a worker is free.
 5. The DAG reports each insert to the owner. The owner then releases the blocks that waited on the inserted block.
@@ -76,11 +77,14 @@ A separate task sends the requests, 16 at a time. Its queue holds 1,024 requests
 
 The pending area holds blocks with unknown sender authorization. It has these limits: 8,192 blocks, 256 MiB, and 2,048 blocks for each sender.
 
-- A requested block is refused only at these limits.
-- Any other block is refused above 90 percent of a limit. The top 10 percent is kept for requested blocks.
+Intake gives each block a class. A requested block is `Solicited`. Another block from a known sender is `KnownSender`: its signature checked, and its sender is bonded in the last finalized block. Any other block is `Unsolicited`.
+
+- A `Solicited` block is refused only at these limits.
+- A `KnownSender` block is refused above 90 percent of a limit. The top 10 percent is kept for requested blocks.
+- An `Unsolicited` block is refused above 80 percent of the block and byte limits, and above 90 percent of its sender's limit. New sender keys cannot use the room that known senders use.
 - The area never evicts. The owner decides what leaves.
 
-The owner evicts in two passes. The proactive pass runs on each tick and after each pending block arrives. It evicts only unsolicited blocks, down to 90 percent of each limit. The reactive pass runs when the area refuses a requested block because it is full. It evicts unsolicited blocks first. It evicts requested blocks only when no unsolicited block is left. Untrusted blocks leave before trusted blocks, and higher blocks leave first.
+The owner evicts in two passes. The proactive pass runs on each tick and after each pending block arrives. It evicts unsolicited blocks from unknown senders down to 80 percent of each limit, then any unsolicited block down to 90 percent. The reactive pass runs when the area refuses a requested block because it is full. It evicts unsolicited blocks first. It evicts requested blocks only when no unsolicited block is left. A block that another held block waits on counts as requested. Untrusted blocks leave before trusted blocks, and higher blocks leave first.
 
 An evicted block that others wait on becomes a need again. It keeps the peer that pushed it.
 
@@ -102,10 +106,9 @@ Validation width is the number of CPU cores minus two, with a minimum of three.
 The owner strikes a peer when an unsolicited block from that peer fails one of these checks:
 
 - the sender has no stake in the main parent
-- the block format or signature is not valid
 - validation finds an invalid sender
 
-A requested block never causes a strike. The 16th strike in 10 minutes makes the node ignore the peer's block traffic for one hour. `Running` still accepts a block or a `HasBlock` that the node waits for. Each table tracks at most 1,024 peers.
+These checks are about the block's sender, so a requested block never causes them to strike. A block message that fails the integrity check strikes its peer always, requested or not, because the peer sent a body that does not match its hash or signature. The 16th strike in 10 minutes makes the node ignore the peer's block traffic for one hour. `Running` still accepts a block or a `HasBlock` that the node waits for. Each table tracks at most 1,024 peers.
 
 ## Startup
 
@@ -125,6 +128,8 @@ Block ingest adds gauges and counters with the source `f1r3fly.casper.block-inge
 - `block.ingest.validating` and `block.ingest.inserts-pending`
 - `block.ingest.lane-drops` and `block.ingest.outbound-drops`
 - `block.ingest.peer-reputation.strikes`, `block.ingest.peer-reputation.ignored-peers` and `block.ingest.peer-reputation.dropped-messages`
+
+`block.integrity.rejected` counts block messages that fail the integrity check, by `reason` (`malformed` or `hash-mismatch`).
 
 ## Tests
 

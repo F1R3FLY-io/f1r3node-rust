@@ -10,13 +10,13 @@ use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use futures::StreamExt;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinSet;
 use tokio_stream::wrappers::ReceiverStream;
 
+use super::checked_block::CheckedBlock;
 use super::dependency_tracker::Work;
 use super::fetch_scheduler::FetchAction;
 use super::ingest_state::{
@@ -24,7 +24,7 @@ use super::ingest_state::{
 };
 use super::ingest_view::IngestView;
 use super::intake_worker::Intake;
-use super::peer_reputation::StrikeOutcome;
+use super::peer_reputation::{Strike, StrikeOutcome};
 use super::validation_worker::Validation;
 use crate::rust::casper::{Casper, MultiParentCasper};
 use crate::rust::errors::CasperError;
@@ -53,9 +53,9 @@ pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 pub type SharedCasper = Arc<dyn MultiParentCasper + Send + Sync>;
 
-/// A block a peer sent.
+/// A block a peer sent, checked for integrity.
 pub struct Delivery {
-    pub block: BlockMessage,
+    pub block: CheckedBlock,
     pub from: PeerNode,
 }
 
@@ -150,8 +150,8 @@ impl IngestHandle {
 
     /// A peer sent a block. It never waits: when its lane is full the block
     /// is dropped, and a block the node needs is asked for again.
-    pub fn deliver(&self, block: BlockMessage, from: PeerNode) {
-        let (lane, label) = match self.view.is_awaited(&block.block_hash) {
+    pub fn deliver(&self, block: CheckedBlock, from: PeerNode) {
+        let (lane, label) = match self.view.is_awaited(&block.block().block_hash) {
             true => (&self.awaited, "awaited"),
             false => (&self.unsolicited, "unsolicited"),
         };
@@ -170,6 +170,19 @@ impl IngestHandle {
             .is_err()
         {
             metrics::counter!(BLOCK_INGEST_LANE_DROPS_METRIC, "source" => BLOCK_INGEST_METRICS_SOURCE, "lane" => "announcements")
+                .increment(1);
+        }
+    }
+
+    /// `peer` sent a block message that failed the integrity check. It never
+    /// waits: when the owner's input is full the strike is dropped and counted.
+    pub fn misbehaved(&self, peer: PeerNode, strike: Strike) {
+        if self
+            .inputs
+            .try_send(IngestInput::Misbehaved { peer, strike })
+            .is_err()
+        {
+            metrics::counter!(BLOCK_INGEST_LANE_DROPS_METRIC, "source" => BLOCK_INGEST_METRICS_SOURCE, "lane" => "strikes")
                 .increment(1);
         }
     }
@@ -350,7 +363,21 @@ async fn run_intake(
                 attached.intake.admit(&block, Some(from))
             }
             IntakeJob::Local(hash) => match block_store.get(&hash) {
-                Ok(Some(block)) => attached.intake.admit(&block, None),
+                Ok(Some(block)) => match CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE) {
+                    Ok(checked) => attached.intake.admit(&checked, None),
+                    // A bad copy this node stored would shadow the honest
+                    // block: delete it, and ask the network.
+                    Err((refused, _)) => {
+                        if let Err(error) = block_store.discard_copy(&refused) {
+                            tracing::warn!(
+                                hash = %PrettyPrinter::build_string_bytes(&hash),
+                                %error,
+                                "could not delete a stored copy that failed the integrity check"
+                            );
+                        }
+                        Ok(IngestInput::LocalMiss { hash })
+                    }
+                },
                 Ok(None) => Ok(IngestInput::LocalMiss { hash }),
                 Err(error) => {
                     tracing::warn!(

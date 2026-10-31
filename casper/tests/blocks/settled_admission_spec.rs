@@ -21,12 +21,16 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use block_storage::rust::pending_blocks::PendingClass;
 use casper::rust::blocks::ingest::ingest_state::WorkOutcome;
 use casper::rust::blocks::ingest::validation_worker::Validation;
 use casper::rust::casper::{Casper, CasperSnapshot, DeployError};
 use casper::rust::errors::CasperError;
+use casper::rust::validator_identity::ValidatorIdentity;
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
+use crypto::rust::signatures::secp256k1::Secp256k1;
+use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::get_random_block;
@@ -38,7 +42,6 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 
 use crate::engine::setup;
 use crate::helper::block_dag_storage_fixture::with_storage;
-use crate::helper::block_util::generate_validator;
 
 struct AnchorCasper {
     anchor: BlockMessage,
@@ -110,6 +113,7 @@ struct Fixture {
     block_store: KeyValueBlockStore,
     dag_reader: BlockDagKeyValueStorage,
     casper: Arc<dyn Casper + Send + Sync + 'static>,
+    sender_id: ValidatorIdentity,
     sender: Validator,
     live_head: BlockMessage,
     genesis: BlockMessage,
@@ -141,6 +145,18 @@ fn lean_block(
     )
 }
 
+fn identity() -> ValidatorIdentity { ValidatorIdentity::new(&Secp256k1.new_key_pair().0) }
+
+fn signed_block(
+    signer: &ValidatorIdentity,
+    number: i64,
+    seq: i32,
+    parents: Vec<BlockHash>,
+    bonds: Vec<Bond>,
+) -> BlockMessage {
+    signer.sign_block(&lean_block(number, seq, None, parents, bonds))
+}
+
 impl Fixture {
     async fn new() -> Self {
         let local_peer = setup::peer_node("test-peer", 40400);
@@ -156,7 +172,8 @@ impl Fixture {
         let dag_storage = BlockDagKeyValueStorage::new(&mut dag_kvm).await.unwrap();
         let dag_reader = dag_storage.clone();
 
-        let sender = generate_validator(Some("SharedKeyValidator"));
+        let sender_id = identity();
+        let sender = sender_id.public_key.bytes.clone();
         let bonds = vec![Bond {
             validator: sender.clone(),
             stake: 100,
@@ -193,6 +210,7 @@ impl Fixture {
             block_store,
             dag_reader,
             casper,
+            sender_id,
             sender,
             live_head,
             genesis,
@@ -227,10 +245,10 @@ async fn settled_admission_never_advances_a_latest_message() {
 
     // Foreign block: same sender key, higher seq than the live head, height
     // below the anchor — the observer2 shape.
-    let foreign = lean_block(
+    let foreign = signed_block(
+        &fixture.sender_id,
         6,
         40,
-        Some(fixture.sender.clone()),
         vec![fixture.genesis.block_hash.clone()],
         fixture.bonds.clone(),
     );
@@ -254,7 +272,8 @@ async fn settled_admission_never_advances_a_latest_message() {
 async fn settled_admission_admits_an_unbonded_historic_author() {
     let fixture = Fixture::new().await;
 
-    let departed = generate_validator(Some("DepartedHistoricValidator"));
+    let departed_id = identity();
+    let departed = departed_id.public_key.bytes.clone();
     assert!(
         fixture
             .dag_reader
@@ -265,10 +284,10 @@ async fn settled_admission_admits_an_unbonded_historic_author() {
         "the departed author must have no latest-message slot",
     );
 
-    let historic = lean_block(
+    let historic = signed_block(
+        &departed_id,
         6,
         3,
-        Some(departed.clone()),
         vec![fixture.genesis.block_hash.clone()],
         fixture.bonds.clone(),
     );
@@ -297,10 +316,10 @@ async fn settled_admission_still_admits_a_genuine_straggler() {
 
     // Straggler: same sender, seq strictly below the live head's, height
     // below the anchor — settled history the restore closure missed.
-    let straggler = lean_block(
+    let straggler = signed_block(
+        &fixture.sender_id,
         6,
         2,
-        Some(fixture.sender.clone()),
         vec![fixture.genesis.block_hash.clone()],
         fixture.bonds.clone(),
     );
@@ -329,14 +348,17 @@ async fn settled_admission_still_admits_a_genuine_straggler() {
 async fn settled_admission_persists_a_pending_block() {
     let fixture = Fixture::new().await;
 
-    let straggler = lean_block(
+    let straggler = signed_block(
+        &fixture.sender_id,
         6,
         2,
-        Some(fixture.sender.clone()),
         vec![fixture.genesis.block_hash.clone()],
         fixture.bonds.clone(),
     );
-    fixture.block_store.put_pending(&straggler, true).unwrap();
+    fixture
+        .block_store
+        .put_pending(&straggler, PendingClass::Solicited)
+        .unwrap();
     assert!(fixture.block_store.is_pending(&straggler.block_hash));
 
     let admitted = fixture.admit_settled(&straggler).await;

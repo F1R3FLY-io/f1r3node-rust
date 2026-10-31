@@ -16,6 +16,7 @@ pub const IGNORE_TTL_MS: u64 = 60 * 60 * 1000;
 pub enum Strike {
     UnauthorizedSender,
     Malformed,
+    HashMismatch,
     InvalidSender,
 }
 
@@ -24,6 +25,7 @@ impl Strike {
         match self {
             Strike::UnauthorizedSender => "unauthorized-sender",
             Strike::Malformed => "malformed",
+            Strike::HashMismatch => "hash-mismatch",
             Strike::InvalidSender => "invalid-sender",
         }
     }

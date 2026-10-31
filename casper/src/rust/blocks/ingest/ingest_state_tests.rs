@@ -219,18 +219,26 @@ fn an_announced_hash_is_awaited_but_not_solicited() {
 }
 
 #[test]
-fn an_unsolicited_malformed_block_strikes_its_pusher_and_a_solicited_one_does_not() {
-    let (mut s, _) = state();
+fn a_message_that_fails_the_integrity_check_strikes_its_sender_and_touches_no_need() {
+    let (mut s, view) = state();
     let dag = dag_with(&[0]);
-    let effects = s.handle(refused(1, "p", false, b"v0", Refusal::Malformed), 0, &dag);
-    assert_eq!(effects, vec![Effect::Struck {
-        peer: peer("p"),
-        strike: Strike::Malformed,
-        outcome: StrikeOutcome::Counted
-    }]);
-    assert!(s
-        .handle(refused(1, "p", true, b"v0", Refusal::Malformed), 0, &dag)
-        .is_empty());
+    s.handle(IngestInput::Need { hash: hash(1) }, 0, &dag);
+    for strike in [Strike::Malformed, Strike::HashMismatch] {
+        let effects = s.handle(
+            IngestInput::Misbehaved {
+                peer: peer("p"),
+                strike,
+            },
+            0,
+            &dag,
+        );
+        assert_eq!(effects, vec![Effect::Struck {
+            peer: peer("p"),
+            strike,
+            outcome: StrikeOutcome::Counted
+        }]);
+    }
+    assert!(view.is_awaited(&hash(1)));
 }
 
 #[test]
@@ -325,7 +333,15 @@ fn an_evicted_block_keeps_its_pusher_through_redelivery() {
     );
     s.handle(received(meta(2, 2, &[1])), 0, &dag);
     dag.area = usage(LIMITS.max_blocks, HashMap::new());
-    let effects = tick(&mut s, 0, &[], &dag);
+    assert!(
+        !tick(&mut s, 0, &[], &dag).contains(&Effect::DiscardPending(hash(1))),
+        "a block another held block waits on is not a proactive victim"
+    );
+    let effects = s.handle(
+        refused(50, "q", true, b"v2", Refusal::Pending(PendingRefusal::AreaFull)),
+        0,
+        &dag,
+    );
     dag.area = usage(0, HashMap::new());
     assert!(effects.contains(&Effect::DiscardPending(hash(1))));
     assert!(s.is_needed(&hash(1)) && view.is_solicited(&hash(1)));

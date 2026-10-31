@@ -30,7 +30,6 @@ pub enum PendingRefusal {
 pub enum Refusal {
     NotOfInterest,
     Unauthorized,
-    Malformed,
     Pending(PendingRefusal),
 }
 
@@ -92,6 +91,11 @@ pub enum IngestInput {
         hash: BlockHash,
     },
     IntakeRefused(Refused),
+    /// A peer sent a block message that failed the integrity check.
+    Misbehaved {
+        peer: PeerNode,
+        strike: Strike,
+    },
     LocalMiss {
         hash: BlockHash,
     },
@@ -197,6 +201,7 @@ impl IngestState {
                 }
             }
             IngestInput::IntakeRefused(refused) => self.refused(refused, now_ms, stores, &mut effects),
+            IngestInput::Misbehaved { peer, strike } => self.strike(&peer, strike, now_ms, &mut effects),
             IngestInput::LocalMiss { hash } => self.scheduler.local_miss(&hash, now_ms),
             IngestInput::Inserted { hash } => self.inserted(&hash),
             IngestInput::Outcome { hash, outcome } => {
@@ -296,7 +301,6 @@ impl IngestState {
         if unsolicited {
             let strike = match reason {
                 Refusal::Unauthorized => Some(Strike::UnauthorizedSender),
-                Refusal::Malformed => Some(Strike::Malformed),
                 Refusal::NotOfInterest | Refusal::Pending(_) => None,
             };
             if let (Some(strike), Some(peer)) = (strike, &from) {
@@ -304,7 +308,7 @@ impl IngestState {
             }
         }
         match reason {
-            Refusal::NotOfInterest | Refusal::Unauthorized | Refusal::Malformed => {
+            Refusal::NotOfInterest | Refusal::Unauthorized => {
                 if let Some(peer) = &from {
                     self.scheduler.peer_failed(&hash, peer, now_ms);
                 }
@@ -474,14 +478,31 @@ impl IngestState {
         let limits = area.limits;
         let mut blocks = area.blocks;
         let mut bytes = area.bytes;
-        let block_target = PendingBlockLimits::low_water(limits.max_blocks);
-        let byte_target = PendingBlockLimits::low_water(limits.max_bytes);
-        if blocks > block_target || bytes > byte_target {
+        // Unknown senders' blocks down to their own mark, which keeps room for
+        // known senders; then any unsolicited block down to the low-water mark.
+        let passes = [
+            (
+                false,
+                PendingBlockLimits::unknown_sender_mark(limits.max_blocks),
+                PendingBlockLimits::unknown_sender_mark(limits.max_bytes),
+            ),
+            (
+                true,
+                PendingBlockLimits::low_water(limits.max_blocks),
+                PendingBlockLimits::low_water(limits.max_bytes),
+            ),
+        ];
+        for (trusted_too, block_target, byte_target) in passes {
+            if blocks <= block_target && bytes <= byte_target {
+                continue;
+            }
             for (victim, size) in
                 self.tracker
                     .victims(BodyAt::Pending, VictimClass::Unsolicited, None)
             {
-                if blocks <= block_target && bytes <= byte_target {
+                if (blocks <= block_target && bytes <= byte_target)
+                    || (!trusted_too && self.tracker.is_trusted(&victim))
+                {
                     break;
                 }
                 self.evict(&victim, now_ms, effects);

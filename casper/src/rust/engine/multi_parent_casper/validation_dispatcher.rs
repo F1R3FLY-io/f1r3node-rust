@@ -170,10 +170,9 @@ async fn run_validation_steps(
         if let Either::Left(block_error) = validate_block_checkpoint_result {
             return Ok(Either::Left(block_error));
         }
-        // Right(None) → InvalidTransaction is safe and shares its dispatcher
-        // landing site with the BlockException arm at block_processor.rs:358 —
-        // both flow through dispatch_handle_invalid_block's is_slashable()
-        // catch-all, which mints an EquivocationRecord per T-9.3. See
+        // Right(None) → InvalidTransaction is safe: it flows through
+        // dispatch_handle_invalid_block's is_slashable() catch-all, which
+        // mints an EquivocationRecord per T-9.3. See
         // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
         if let Either::Right(None) = validate_block_checkpoint_result {
             return Ok(Either::Left(BlockError::Invalid(
