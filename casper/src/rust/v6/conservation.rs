@@ -10,8 +10,9 @@ use rholang::rust::interpreter::accounting::rev_stack::bond::bond_owner;
 use rholang::rust::interpreter::accounting::rev_stack::cell::cell_amount;
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
 use rholang::rust::interpreter::accounting::rev_stack::genesis::{genesis_supply, legacy_bonds};
+use rholang::rust::interpreter::accounting::rev_stack::journal::Source;
 use rholang::rust::interpreter::accounting::rev_stack::{
-    wallet_channel_id, CellStore, RevAmount, WalletOwner,
+    wallet_channel_id_of, CellStore, RevAmount, TokenKind, WalletOwner,
 };
 
 use super::gate::WalletId;
@@ -25,38 +26,22 @@ pub const CONSERVATION_AUDIT_INTERVAL_DEFAULT: u64 = 64;
 const AUDIT_FAILURES_METRIC: &str = "v6.conservation.audit.failures";
 const AUDIT_RUNS_METRIC: &str = "v6.conservation.audit.runs";
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TokenKind {
-    Rev,
-    Issued(Vec<u8>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Minted {
-    Recorded(RevAmount),
-    Unrecorded,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KindAudit {
     pub kind: TokenKind,
     pub wallets: usize,
     pub held: u128,
-    pub minted: Minted,
+    pub minted: u128,
 }
 
 impl KindAudit {
-    pub fn conserved(&self) -> Option<bool> {
-        match self.minted {
-            Minted::Recorded(minted) => Some(self.held == minted as u128),
-            Minted::Unrecorded => None,
-        }
-    }
+    pub fn conserved(&self) -> bool { self.held == self.minted }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WalletIndex {
     kinds: BTreeMap<TokenKind, BTreeSet<WalletId>>,
+    mints: BTreeMap<TokenKind, u128>,
 }
 
 impl WalletIndex {
@@ -65,7 +50,7 @@ impl WalletIndex {
     }
 
     pub fn insert_owner(&mut self, kind: TokenKind, owner: &WalletOwner) {
-        self.insert(kind, wallet_channel_id(owner));
+        self.insert(kind.clone(), wallet_channel_id_of(owner, &kind));
     }
 
     pub fn wallets(&self, kind: &TokenKind) -> impl Iterator<Item = &WalletId> {
@@ -76,15 +61,22 @@ impl WalletIndex {
 
     pub fn len(&self, kind: &TokenKind) -> usize { self.kinds.get(kind).map_or(0, BTreeSet::len) }
 
+    pub fn record_mint(&mut self, kind: TokenKind, amount: RevAmount) {
+        let total = self.mints.entry(kind).or_default();
+        *total = total.saturating_add(u128::from(amount));
+    }
+
+    pub fn mints(&self, kind: &TokenKind) -> u128 { self.mints.get(kind).copied().unwrap_or(0) }
+
     pub fn from_genesis(genesis: &BlockMessage) -> Self {
         let mut index = WalletIndex::default();
-        index.insert_owner(TokenKind::Rev, &compute_wallet_owner());
+        index.insert_owner(TokenKind::rev(), &compute_wallet_owner());
         for deploy in &genesis.body.deploys {
             let term = &deploy.deploy.data.term;
             if term.contains("`rho:rev:genesis`") && term.contains("\"mint\"") {
                 for address in quoted_addresses(term) {
                     if let Ok(owner) = WalletOwner::from_address(&address) {
-                        index.insert_owner(TokenKind::Rev, &owner);
+                        index.insert_owner(TokenKind::rev(), &owner);
                     }
                 }
             }
@@ -95,21 +87,24 @@ impl WalletIndex {
 
     pub fn observe_bonds(&mut self, block: &BlockMessage) {
         for bond in &block.body.state.bonds {
-            self.insert_owner(TokenKind::Rev, &bond_owner(&bond.validator));
+            self.insert_owner(TokenKind::rev(), &bond_owner(&bond.validator));
             if let Ok(owner) = WalletOwner::from_deployer_id(&bond.validator) {
-                self.insert_owner(TokenKind::Rev, &owner);
+                self.insert_owner(TokenKind::rev(), &owner);
             }
         }
     }
 
     pub fn observe_settlement(&mut self, settlement: &Settlement) {
         for charge in &settlement.charges {
-            self.insert(TokenKind::Rev, charge.wallet.clone());
+            self.insert(TokenKind::rev(), charge.wallet.clone());
         }
-        self.insert(TokenKind::Rev, settlement.proposer.clone());
+        self.insert(TokenKind::rev(), settlement.proposer.clone());
         for transfer in &settlement.transfers {
-            self.insert_owner(TokenKind::Rev, &transfer.from);
-            self.insert_owner(TokenKind::Rev, &transfer.to);
+            match &transfer.from {
+                Source::Wallet(from) => self.insert_owner(transfer.kind.clone(), from),
+                Source::Mint => self.record_mint(transfer.kind.clone(), transfer.amount),
+            }
+            self.insert_owner(transfer.kind.clone(), &transfer.to);
         }
     }
 }
@@ -146,23 +141,26 @@ fn balance_of(store: &dyn CellStore, wallet: &WalletId) -> Result<RevAmount, Cas
         })
 }
 
-fn minted(store: &dyn CellStore, kind: &TokenKind) -> Result<Minted, CasperError> {
-    let native = |e: rholang::rust::interpreter::accounting::rev_stack::RevStackError| {
-        CasperError::RuntimeError(format!("conservation: {e}"))
-    };
-    match kind {
-        TokenKind::Rev => Ok(Minted::Recorded(genesis_supply(store).map_err(native)?)),
-        TokenKind::Issued(_) => Ok(Minted::Unrecorded),
+fn native(e: rholang::rust::interpreter::accounting::rev_stack::RevStackError) -> CasperError {
+    CasperError::RuntimeError(format!("conservation: {e}"))
+}
+
+fn minted(
+    store: &dyn CellStore,
+    index: &WalletIndex,
+    kind: &TokenKind,
+) -> Result<u128, CasperError> {
+    if kind.is_rev() {
+        return genesis_supply(store).map(u128::from).map_err(native);
     }
+    Ok(index.mints(kind))
 }
 
 fn held_outside_stacks(store: &dyn CellStore, kind: &TokenKind) -> Result<u128, CasperError> {
-    match kind {
-        TokenKind::Rev => legacy_bonds(store)
-            .map(u128::from)
-            .map_err(|e| CasperError::RuntimeError(format!("conservation: {e}"))),
-        TokenKind::Issued(_) => Ok(0),
+    if kind.is_rev() {
+        return legacy_bonds(store).map(u128::from).map_err(native);
     }
+    Ok(0)
 }
 
 pub fn audit_kind(
@@ -178,7 +176,7 @@ pub fn audit_kind(
         kind: kind.clone(),
         wallets: index.len(kind),
         held,
-        minted: minted(store, kind)?,
+        minted: minted(store, index, kind)?,
     })
 }
 
@@ -187,7 +185,7 @@ pub fn audit_all(
     index: &WalletIndex,
 ) -> Result<Vec<KindAudit>, CasperError> {
     let mut kinds: BTreeSet<TokenKind> = index.kinds().cloned().collect();
-    kinds.insert(TokenKind::Rev);
+    kinds.insert(TokenKind::rev());
     kinds
         .iter()
         .map(|kind| audit_kind(store, index, kind))
@@ -258,7 +256,7 @@ impl Conservation {
         let index = self.index();
         let audits = check_at(runtime_manager, post_root, &index).await?;
         metrics::counter!(AUDIT_RUNS_METRIC).increment(1);
-        for audit in audits.iter().filter(|a| a.conserved() == Some(false)) {
+        for audit in audits.iter().filter(|a| !a.conserved()) {
             self.failures.fetch_add(1, Ordering::Relaxed);
             metrics::counter!(AUDIT_FAILURES_METRIC).increment(1);
             tracing::error!(
@@ -267,7 +265,7 @@ impl Conservation {
                 block_number,
                 kind = ?audit.kind,
                 held = audit.held,
-                minted = ?audit.minted,
+                minted = audit.minted,
                 wallets = audit.wallets,
                 "v6 conservation audit failed: the kind's holdings differ from its recorded mints"
             );
@@ -301,31 +299,31 @@ mod tests {
     }
 
     #[test]
-    fn an_issued_kind_without_recorded_mints_is_not_judged() {
+    fn a_kind_is_judged_against_its_observed_mints() {
+        let kind = TokenKind::from_name(vec![1; 32]).unwrap();
+        let mut index = WalletIndex::default();
+        index.record_mint(kind.clone(), 5);
+        index.record_mint(kind.clone(), 4);
+        assert_eq!(index.mints(&kind), 9);
+        assert_eq!(index.mints(&TokenKind::rev()), 0);
         let audit = KindAudit {
-            kind: TokenKind::Issued(vec![1; 32]),
-            wallets: 0,
-            held: 9,
-            minted: Minted::Unrecorded,
-        };
-        assert_eq!(audit.conserved(), None);
-        let rev = KindAudit {
-            kind: TokenKind::Rev,
+            kind,
             wallets: 1,
             held: 9,
-            minted: Minted::Recorded(9),
+            minted: index.mints(&TokenKind::from_name(vec![1; 32]).unwrap()),
         };
-        assert_eq!(rev.conserved(), Some(true));
+        assert!(audit.conserved());
+        assert!(!KindAudit { held: 8, ..audit }.conserved());
     }
 
     #[test]
     fn the_index_keeps_kinds_apart_and_ignores_repeats() {
         let mut index = WalletIndex::default();
-        index.insert(TokenKind::Rev, vec![1]);
-        index.insert(TokenKind::Rev, vec![1]);
-        index.insert(TokenKind::Issued(vec![9]), vec![1]);
-        assert_eq!(index.len(&TokenKind::Rev), 1);
-        assert_eq!(index.len(&TokenKind::Issued(vec![9])), 1);
+        index.insert(TokenKind::rev(), vec![1]);
+        index.insert(TokenKind::rev(), vec![1]);
+        index.insert(TokenKind::from_name(vec![9]).unwrap(), vec![1]);
+        assert_eq!(index.len(&TokenKind::rev()), 1);
+        assert_eq!(index.len(&TokenKind::from_name(vec![9]).unwrap()), 1);
         assert_eq!(index.kinds().count(), 2);
     }
 }
