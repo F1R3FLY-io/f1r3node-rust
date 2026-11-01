@@ -37,9 +37,9 @@ use production::{
 };
 use reference::{
     AcceleratorClass, AcceleratorUnderTest, Answer, ChannelImage, Fault, GroupKey, Lineage,
-    MaintenanceOp, Observation, Occurrence, ReceiveKind, ReceiveTarget, ReferenceWorld, StoreStep,
-    capacity, channel_image, check_trace, derive, derive_all, group_key, observe, occurrences_of,
-    read,
+    MaintenanceOp, Observation, Occurrence, ReceiveKind, ReceiveTarget, ReferenceAccelerator,
+    ReferenceWorld, StoreStep, capacity, channel_groups, channel_image, check_trace, derive,
+    derive_all, group_key, observe, occurrences_of, read,
 };
 
 const IMAGES: [&[u8]; 5] = [&[], &[0x00], &[0x01], &[0x01, 0x00], &[0x01, 0x00, 0xFF]];
@@ -998,6 +998,150 @@ fn hydrated_space(space: &StringSpace, universe: &[Vec<String>]) -> Observation 
     observe(&**space.get_store(), universe, true)
 }
 
+fn assert_exact_groups_are_join_groups_with_targets(
+    space: &StringSpace,
+    universe: &[Vec<String>],
+    channels: &[String],
+) {
+    let observation = hydrated_space(space, universe);
+    let store = space.get_store();
+    assert_eq!(store.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+    let current = store
+        .receive_accelerator()
+        .expect("a rebuilt store publishes its accelerator");
+    for channel in channels {
+        let joined: BTreeSet<GroupKey> = store
+            .get_joins(channel)
+            .iter()
+            .map(|join| group_key(join))
+            .filter(|group| !observation.targets(group).is_empty())
+            .collect();
+        let ReceiveAnswer::Exact(occurrences) = store.receive_occurrences(Some(&current), channel)
+        else {
+            panic!("{channel}: a hydrated, rebuilt store answers exactly");
+        };
+        let exact: BTreeSet<GroupKey> = occurrences
+            .groups()
+            .iter()
+            .map(|group| group_key(group.channels()))
+            .collect();
+        assert_eq!(exact, joined, "{channel}: the exact groups are the join groups with targets");
+        let derived: BTreeSet<GroupKey> = channel_groups(&observation, &channel_image(channel))
+            .into_iter()
+            .map(|(group, _)| group)
+            .collect();
+        assert_eq!(exact, derived, "{channel}: the exact groups are the derived groups");
+    }
+}
+
+fn channel_projected_answer(lineage: &Lineage, world: &ReferenceWorld, image: &[u8]) -> Answer {
+    let holds = |group: &GroupKey| group.iter().any(|channel| channel.as_slice() == image);
+    let mut projected = world.observation.clone();
+    projected.store.0.retain(|group, _| holds(group));
+    projected.installed.retain(|group, _| holds(group));
+    projected.resting.retain(|group, _| holds(group));
+    projected.unloaded.retain(|group| holds(group));
+    let projected_world = lineage.world(projected);
+    let mut reference = ReferenceAccelerator::new();
+    reference.rebuild(&projected_world);
+    reference.answer(&projected_world, image)
+}
+
+fn joins_derivation(
+    store: &RawStore,
+    observation: &Observation,
+    channel: &RawChannel,
+) -> BTreeSet<Occurrence> {
+    let joins = store.get_joins(channel);
+    let mut joined = BTreeSet::new();
+    for join in &joins {
+        let group = group_key(join);
+        assert!(observation.is_loaded(&group), "the joins path reads every join group it names");
+        joined.insert(group);
+    }
+    derive(observation, &channel_image(channel))
+        .into_iter()
+        .filter(|occurrence| joined.contains(&occurrence.group))
+        .collect()
+}
+
+fn assert_production_reads_equal_derivation(
+    accelerator: &ProductionAccelerator<'_>,
+    lineage: &Lineage,
+    world: &ReferenceWorld,
+    complete: &Observation,
+    expected: AcceleratorClass,
+) -> usize {
+    let mut images = probe_images(world);
+    images.extend(complete.channel_images());
+    let mut staged = 0usize;
+    let mut nonempty = 0usize;
+    for image in &images {
+        let derived = derive(complete, image);
+        let answer = accelerator.answer(world, image);
+        let staged_answer = match expected {
+            AcceleratorClass::Coherent => Answer::Exact(derived.clone()),
+            class => Answer::Fallback(class),
+        };
+        match expected {
+            AcceleratorClass::Incomplete | AcceleratorClass::Coherent => assert_eq!(
+                answer,
+                channel_projected_answer(lineage, world, image),
+                "a current handle answers as the reference over the channel-projected world"
+            ),
+            _ => assert_eq!(answer, staged_answer, "a vacant or held handle falls back"),
+        }
+        match answer == staged_answer {
+            true => staged = checked_increment(staged),
+            false => {}
+        }
+        assert_eq!(
+            read(accelerator, world, complete, image),
+            derived,
+            "every accelerator state reads the derivation"
+        );
+        match derived.is_empty() {
+            true => {}
+            false => nonempty = checked_increment(nonempty),
+        }
+    }
+    match expected {
+        AcceleratorClass::Incomplete => assert!(staged > 0, "some probe falls back as incomplete"),
+        _ => assert_eq!(staged, images.len(), "every probe answers in the {expected:?} state"),
+    }
+    nonempty
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ScopeGap {
+    UnloadedJoins,
+    UnloadedJoinGroup,
+    UnloadedInstalledGroup,
+}
+
+fn scope_gap_store() -> (RawStore, [Vec<RawChannel>; 3]) {
+    let resident = raw_channels(&[&[0x01]]);
+    let historical = raw_channels(&[&[0x00], &[0x01, 0x00]]);
+    let installed = raw_channels(&[&[0x01, 0x00, 0xFF]]);
+    let mut history = StubHistory::default();
+    history.put_continuations(historical.clone(), vec![
+        raw_continuation(&historical, "gap-history-first", false, BTreeSet::new()),
+        raw_continuation(&historical, "gap-history-second", true, BTreeSet::from([1])),
+    ]);
+    for channel in &historical {
+        history.put_join(channel.clone(), historical.clone());
+    }
+    let store = raw_hot_store_with_history(RawState::default(), history);
+    let resident_record = raw_continuation(&resident, "gap-resident", false, BTreeSet::new());
+    assert_eq!(store.put_continuation(&resident, resident_record), Some(true));
+    for channel in &resident {
+        assert_eq!(store.put_join(channel, &resident), Some(()));
+    }
+    let installed_record = raw_continuation(&installed, "gap-installed", true, BTreeSet::new());
+    assert_eq!(store.install_continuation(&installed, installed_record), Some(()));
+    (store, [resident, historical, installed])
+}
+
 #[test]
 fn production_answers_equal_the_derivation_over_generated_stores() {
     check_property(STORE_CASES, &store_plan(), |plans| {
@@ -1203,6 +1347,97 @@ fn production_answers_ignore_data_and_authority_orders() {
             "renumbering keeps the answers"
         );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_exact_groups_are_the_join_groups_with_targets() {
+    let space = string_space().await;
+    let left = "join-left".to_owned();
+    let right = "join-right".to_owned();
+    let other = "join-other".to_owned();
+    let pair = vec![left.clone(), other.clone()];
+    let repeated = vec![left.clone(), left.clone(), other.clone()];
+    let single = vec![right.clone()];
+    let installed = vec![other.clone()];
+    rest_wildcard_receive(&space, &pair, "pair").await;
+    rest_wildcard_receive(&space, &repeated, "repeated").await;
+    rest_wildcard_receive(&space, &single, "single").await;
+    let installation = space
+        .install(installed.clone(), vec![Pattern::Wildcard], "installed".to_owned())
+        .await
+        .expect("an in-memory install succeeds");
+    assert!(installation.is_none(), "no datum matches the installed receive");
+    let universe = vec![pair, repeated, single, installed];
+    let channels = [left, right.clone(), other];
+    assert_exact_groups_are_join_groups_with_targets(&space, &universe, &channels);
+    assert_eq!(produce(&space, &right, "fire").await, Some("single".to_owned()));
+    assert_exact_groups_are_join_groups_with_targets(&space, &universe, &channels);
+    assert!(
+        space.get_store().get_joins(&right).is_empty(),
+        "a fired single receive leaves no join"
+    );
+}
+
+#[test]
+fn production_history_groups_without_joins_are_invisible_to_both_paths() {
+    let resident = raw_channels(&[&[0x01]]);
+    let unjoined = raw_channels(&[&[0x00], &[0x01, 0x00]]);
+    let mut history = StubHistory::default();
+    history.put_continuations(unjoined.clone(), vec![
+        raw_continuation(&unjoined, "unjoined-first", false, BTreeSet::new()),
+        raw_continuation(&unjoined, "unjoined-second", true, BTreeSet::from([0])),
+    ]);
+    let store = raw_hot_store_with_history(RawState::default(), history);
+    let resident_record = raw_continuation(&resident, "unjoined-resident", false, BTreeSet::new());
+    assert_eq!(store.put_continuation(&resident, resident_record), Some(true));
+    for channel in &resident {
+        assert_eq!(store.put_join(channel, &resident), Some(()));
+    }
+    let universe = vec![resident.clone(), unjoined.clone()];
+    let lineage = Lineage::new(Vec::new());
+    let unloaded = lineage.world(observe(&*store, &universe, false));
+    assert_eq!(unloaded.observation.unloaded, BTreeSet::from([group_key(&unjoined)]));
+    let blind = BUILDS.map(|build| rebuilt(&store, build, &unloaded));
+    for image in probe_images(&unloaded) {
+        let joined = joins_derivation(&store, &unloaded.observation, &RawChannel(image.clone()));
+        for accelerator in &blind {
+            assert_eq!(
+                accelerator.answer(&unloaded, &image),
+                Answer::Exact(joined.clone()),
+                "an unjoined history group is invisible to the accelerator and to the joins"
+            );
+        }
+    }
+    let revision = current_revision(&store);
+    assert_eq!(store.get_continuations(&unjoined).len(), 2, "an explicit load reads the group");
+    assert!(current_revision(&store) == revision, "a history load issues no new revision");
+    let loaded = lineage.world(observe(&*store, &universe, false));
+    let sighted = BUILDS.map(|build| rebuilt(&store, build, &loaded));
+    let complete = hydrated(&store, &universe);
+    let mut widened = BTreeSet::new();
+    for image in probe_images(&loaded) {
+        let derived = derive(&complete, &image);
+        let joined = joins_derivation(&store, &complete, &RawChannel(image.clone()));
+        assert!(joined.is_subset(&derived), "the joins derivation is part of the occurrences");
+        for accelerator in &sighted {
+            assert_eq!(
+                accelerator.answer(&loaded, &image),
+                Answer::Exact(derived.clone()),
+                "after an explicit load the accelerator answers every occurrence"
+            );
+        }
+        match joined == derived {
+            true => {}
+            false => {
+                widened.insert(image);
+            }
+        }
+    }
+    let unjoined_images: BTreeSet<ChannelImage> = unjoined.iter().map(channel_image).collect();
+    assert_eq!(
+        widened, unjoined_images,
+        "only the unjoined group's channels answer beyond the joins derivation"
+    );
 }
 
 #[test]
@@ -1905,6 +2140,81 @@ fn production_clear_and_set_state_retire_held_handles_and_rebuilds_equal_the_der
 }
 
 #[test]
+fn production_reads_equal_derivation_in_every_accelerator_state() {
+    let resident = raw_channels(&[&[0x01]]);
+    let historical = raw_channels(&[&[0x01], &[0x00]]);
+    let mut history = StubHistory::default();
+    history.put_continuations(historical.clone(), vec![raw_continuation(
+        &historical,
+        "state-history",
+        false,
+        BTreeSet::new(),
+    )]);
+    for channel in &historical {
+        history.put_join(channel.clone(), historical.clone());
+    }
+    let store = raw_hot_store_with_history(RawState::default(), history);
+    let resident_record = raw_continuation(&resident, "state-resident", false, BTreeSet::new());
+    assert_eq!(store.put_continuation(&resident, resident_record), Some(true));
+    for channel in &resident {
+        assert_eq!(store.put_join(channel, &resident), Some(()));
+    }
+    let universe = vec![resident.clone(), historical.clone()];
+    let mut lineage = Lineage::new(Vec::new());
+    let partial = lineage.world(observe(&*store, &universe, false));
+    let incomplete = rebuilt(&store, Build::Published, &partial);
+    let complete = lineage.world(hydrated(&store, &universe));
+    let mut nonempty = assert_production_reads_equal_derivation(
+        &incomplete,
+        &lineage,
+        &partial,
+        &complete.observation,
+        AcceleratorClass::Incomplete,
+    );
+    let absent = ProductionAccelerator::new(&*store, Build::Published);
+    let absent_nonempty = assert_production_reads_equal_derivation(
+        &absent,
+        &lineage,
+        &complete,
+        &complete.observation,
+        AcceleratorClass::Absent,
+    );
+    assert!(absent_nonempty > 0, "the absent state is probed where the derivation is nonempty");
+    nonempty = nonempty
+        .checked_add(absent_nonempty)
+        .expect("the probe tally fits usize");
+    let coherent = rebuilt(&store, Build::Published, &complete);
+    let _ = assert_production_reads_equal_derivation(
+        &coherent,
+        &lineage,
+        &complete,
+        &complete.observation,
+        AcceleratorClass::Coherent,
+    );
+    let stale_record = raw_continuation(&resident, "state-stale", false, BTreeSet::new());
+    assert_eq!(store.put_continuation(&resident, stale_record), Some(true));
+    let stale_world = lineage.world(hydrated(&store, &universe));
+    let _ = assert_production_reads_equal_derivation(
+        &coherent,
+        &lineage,
+        &stale_world,
+        &stale_world.observation,
+        AcceleratorClass::Stale,
+    );
+    store.set_state(store.snapshot());
+    lineage.regenerate();
+    let foreign_world = lineage.world(hydrated(&store, &universe));
+    let _ = assert_production_reads_equal_derivation(
+        &coherent,
+        &lineage,
+        &foreign_world,
+        &foreign_world.observation,
+        AcceleratorClass::Foreign,
+    );
+    assert!(nonempty > 0);
+}
+
+#[test]
 fn production_refused_updates_leave_the_store_and_accelerator_unchanged() {
     let store = raw_hot_store();
     let channels = raw_channels(&[&[0x01], &[0x00]]);
@@ -2098,4 +2408,151 @@ async fn production_held_handles_fall_back_after_every_mutation() {
         Some(ReceiveAcceleratorClass::Stale),
         "comm removal: a held handle falls back as stale"
     );
+}
+
+#[test]
+fn production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated() {
+    let gaps =
+        [ScopeGap::UnloadedJoins, ScopeGap::UnloadedJoinGroup, ScopeGap::UnloadedInstalledGroup];
+    for gap in gaps {
+        let (store, universe) = scope_gap_store();
+        let [_, historical, installed] = &universe;
+        let gap_group = match gap {
+            ScopeGap::UnloadedJoins | ScopeGap::UnloadedJoinGroup => historical,
+            ScopeGap::UnloadedInstalledGroup => installed,
+        };
+        let channel = gap_group
+            .first()
+            .cloned()
+            .expect("a gap group has a first channel");
+        match gap {
+            ScopeGap::UnloadedJoins => {}
+            ScopeGap::UnloadedJoinGroup => {
+                assert_eq!(store.get_joins(&channel), vec![historical.clone()]);
+            }
+            ScopeGap::UnloadedInstalledGroup => {
+                assert!(store.get_joins(&channel).is_empty(), "the install wrote no join");
+            }
+        }
+        assert_eq!(store.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+        let lineage = Lineage::new(Vec::new());
+        let image = channel_image(&channel);
+        let unhydrated = lineage.world(observe(&*store, &universe, false));
+        assert_eq!(
+            channel_projected_answer(&lineage, &unhydrated, &image),
+            Answer::Fallback(AcceleratorClass::Incomplete),
+            "{gap:?}: the channel-projected world is incomplete"
+        );
+        let revision = current_revision(&store);
+        let current = store
+            .receive_accelerator()
+            .expect("a rebuilt store publishes its accelerator");
+        assert_eq!(
+            fallback_class(store.receive_occurrences(Some(&current), &channel)),
+            Some(ReceiveAcceleratorClass::Incomplete),
+            "{gap:?}: a current handle falls back as incomplete"
+        );
+        store.hydrate_receive_scope(&channel);
+        assert!(current_revision(&store) == revision, "{gap:?}: hydration issues no new revision");
+        let hydrated_world = lineage.world(observe(&*store, &universe, false));
+        let fresh = BUILDS.map(|build| rebuilt(&store, build, &hydrated_world));
+        let derived = derive(&hydrated(&store, &universe), &image);
+        assert!(!derived.is_empty(), "{gap:?}: the gap group holds receives at the channel");
+        assert_eq!(
+            channel_projected_answer(&lineage, &hydrated_world, &image),
+            Answer::Exact(derived.clone()),
+            "{gap:?}: hydration completes the channel-projected world"
+        );
+        for accelerator in &fresh {
+            assert_eq!(
+                accelerator.answer(&hydrated_world, &image),
+                Answer::Exact(derived.clone()),
+                "{gap:?}: hydration completes the channel"
+            );
+        }
+    }
+}
+
+#[test]
+fn production_held_handles_never_answer_for_groups_loaded_after_they_were_taken() {
+    let resident = raw_channels(&[&[0x01]]);
+    let first_history = raw_channels(&[&[0x00]]);
+    let second_history = raw_channels(&[&[0x01, 0x00], &[0x01]]);
+    let mut history = StubHistory::default();
+    history.put_continuations(first_history.clone(), vec![raw_continuation(
+        &first_history,
+        "held-first",
+        false,
+        BTreeSet::new(),
+    )]);
+    history.put_continuations(second_history.clone(), vec![raw_continuation(
+        &second_history,
+        "held-second",
+        true,
+        BTreeSet::from([0]),
+    )]);
+    for group in [&first_history, &second_history] {
+        for channel in group {
+            history.put_join(channel.clone(), group.clone());
+        }
+    }
+    let store = raw_hot_store_with_history(RawState::default(), history);
+    let resident_record = raw_continuation(&resident, "held-resident", false, BTreeSet::new());
+    assert_eq!(store.put_continuation(&resident, resident_record), Some(true));
+    for channel in &resident {
+        assert_eq!(store.put_join(channel, &resident), Some(()));
+    }
+    let universe = vec![resident.clone(), first_history.clone(), second_history.clone()];
+    let lineage = Lineage::new(Vec::new());
+    let taken = lineage.world(observe(&*store, &universe, false));
+    let held = rebuilt(&store, Build::Published, &taken);
+    let loads = [&first_history, &second_history];
+    let mut loaded: Vec<GroupKey> = Vec::with_capacity(loads.len());
+    for channels in loads {
+        let channel = channels
+            .first()
+            .expect("a history group has a first channel");
+        store.hydrate_receive_scope(channel);
+        assert_eq!(
+            held.artifact_revisions(),
+            vec![taken.revision.clone()],
+            "a history load issues no new revision, so the held handle stays current"
+        );
+        loaded.push(group_key(channels));
+        let world = lineage.world(observe(&*store, &universe, false));
+        let fresh = BUILDS.map(|build| rebuilt(&store, build, &world));
+        let mut withheld = 0usize;
+        for image in probe_images(&world) {
+            let expected = channel_projected_answer(&lineage, &world, &image);
+            for accelerator in &fresh {
+                assert_eq!(
+                    accelerator.answer(&world, &image),
+                    expected,
+                    "a handle taken after the load answers the channel-projected world"
+                );
+            }
+            let later = loaded
+                .iter()
+                .any(|group| group.iter().any(|member| *member == image));
+            let held_answer = held.answer(&world, &image);
+            match later {
+                true => assert_eq!(
+                    held_answer,
+                    Answer::Fallback(AcceleratorClass::Incomplete),
+                    "a held handle never answers for a group loaded after it was taken"
+                ),
+                false => assert_eq!(
+                    held_answer, expected,
+                    "a held handle answers unchanged where no later load reaches"
+                ),
+            }
+            let withholds =
+                later && matches!(&expected, Answer::Exact(occurrences) if !occurrences.is_empty());
+            match withholds {
+                true => withheld = checked_increment(withheld),
+                false => {}
+            }
+        }
+        assert!(withheld > 0, "the held handle withholds an answer the fresh handles give");
+    }
 }
