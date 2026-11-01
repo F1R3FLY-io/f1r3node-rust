@@ -42,6 +42,18 @@ RUNNER = "scripts/check-stack-safe-pda-proofs.sh"
 UNHASHED = (HOT_STORE, RSPACE, RECEIVE_ACCELERATOR, LIB_MODULES, LIB_ROOT, RSPACE_CARGO, RHOLANG_CARGO, RUNNER)
 HARNESS_SOURCES = (REFERENCE, ADOPTION)
 PRODUCTION_SOURCES = (HOT_STORE, RSPACE)
+PATHMAP_CODEC = "rspace++/src/rspace/pathmap_codec.rs"
+ISOLATED_ROOTS = ("rspace++/src/rspace/persistence", "rspace++/src/rspace/history")
+ISOLATED_FILES = (
+    PATHMAP_CODEC,
+    "rspace++/src/rspace/data_index.rs",
+    "rspace++/src/rspace/hot_store_action.rs",
+    "rspace++/src/rspace/checkpoint.rs",
+)
+ISOLATION_PATTERN = re.compile(
+    r"receive_accelerator|ReceiveAccelerator|ReceiveOccurrence|receive_occurrence|receive_index|ReceiveRevision"
+    r"|ReceiveTarget|ReceiveId|hydrate_receive_scope|occurrence_index"
+)
 FLAG = "--receive-accelerator"
 ROCQ_MODULE = "TwoLevelRSpaceReceiveAccelerator"
 MUTANT_MODULE = "TwoLevelRSpaceReceiveAcceleratorMutants"
@@ -697,6 +709,17 @@ def paths():
     ]
 
 
+def isolated_paths():
+    return [
+        *(
+            path.relative_to(ROOT).as_posix()
+            for root in ISOLATED_ROOTS
+            for path in sorted((ROOT / root).rglob("*.rs"))
+        ),
+        *ISOLATED_FILES,
+    ]
+
+
 def runner_test_line(runner, helper, count, *arguments):
     tail = r"[ \t]+".join(re.escape(argument) for argument in arguments)
     return re.search(rf"{helper}[ \t]+{count}[ \t]+(?:[^\n]*?[ \t]+)?{tail}(?:[ \t]|$)", runner, re.M)
@@ -895,6 +918,23 @@ def extract(sources, configs):
         ),
     ):
         require(mount in sources[host], f"{path} is not compiled into the rspace++ library tests")
+    prefixes = tuple(f"{root}/" for root in ISOLATED_ROOTS)
+    isolated = sorted(
+        path
+        for path in sources
+        if path in ISOLATED_FILES or (path.endswith(".rs") and path.startswith(prefixes))
+    )
+    for root, prefix in zip(ISOLATED_ROOTS, prefixes):
+        require(
+            any(path.startswith(prefix) for path in isolated),
+            f"{root} has no source checked for receive accelerator names",
+        )
+    require(
+        all(path in sources for path in ISOLATED_FILES),
+        "an isolated egress source is not checked for receive accelerator names",
+    )
+    for path in isolated:
+        require(not ISOLATION_PATTERN.search(sources[path]), f"{path} names the receive accelerator")
 
     suites = {}
     for path in SUITE_COUNTS:
@@ -1167,6 +1207,11 @@ def extract(sources, configs):
             "library_filters": LIBRARY_FILTERS,
             "tests": {path: suites[path] for path in SUITE_COUNTS},
         },
+        "accelerator_isolation": {
+            "roots": list(ISOLATED_ROOTS),
+            "files": list(ISOLATED_FILES),
+            "pattern": ISOLATION_PATTERN.pattern,
+        },
     }
 
 
@@ -1396,6 +1441,18 @@ def self_test(sources, configs, baseline):
         "evidence",
     )
     rejected(
+        LIB_ROOT,
+        "use crate::rspace::receive_accelerator::ReceiveRevision;\n" + sources[LIB_ROOT],
+        "receive accelerator import in persistence",
+        f"{LIB_ROOT} names the receive accelerator",
+    )
+    rejected(
+        PATHMAP_CODEC,
+        sources[PATHMAP_CODEC] + "// receive_index\n",
+        "receive accelerator name in the egress codec",
+        f"{PATHMAP_CODEC} names the receive accelerator",
+    )
+    rejected(
         RUNNER,
         sources[RUNNER].replace(f"{STEM}.cfg {STEM}.tla -cleanup", "", 1),
         "base model absent from the focused gate",
@@ -1583,7 +1640,7 @@ def main():
     group.add_argument("--write", action="store_true")
     group.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
-    sources = {path: (ROOT / path).read_text() for path in paths()}
+    sources = {path: (ROOT / path).read_text() for path in (*paths(), *isolated_paths())}
     configs = sorted(path.name for path in (ROOT / TLA_ROOT).glob(f"{STEM}*Mutant.cfg"))
     inventory = extract(sources, configs)
     rendered = json.dumps(inventory, indent=2, sort_keys=True) + "\n"

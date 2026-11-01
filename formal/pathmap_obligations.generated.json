@@ -5709,8 +5709,21 @@
       "checker": "scripts/check-receive-accelerator-obligations.py",
       "family": "receive_accelerator",
       "manifest": "formal/receive_accelerator_obligations.generated.json",
-      "manifest_sha256": "22c3debb1ec091704784d32eca4ddd21d6da0523628c2682133be80fac231f34",
+      "manifest_sha256": "b20973815f253e62797e9b40e3c827d223c91a7a822be147f6da0508adb7b95a",
       "obligations": {
+        "accelerator_isolation": {
+          "files": [
+            "rspace++/src/rspace/pathmap_codec.rs",
+            "rspace++/src/rspace/data_index.rs",
+            "rspace++/src/rspace/hot_store_action.rs",
+            "rspace++/src/rspace/checkpoint.rs"
+          ],
+          "pattern": "receive_accelerator|ReceiveAccelerator|ReceiveOccurrence|receive_occurrence|receive_index|ReceiveRevision|ReceiveTarget|ReceiveId|hydrate_receive_scope|occurrence_index",
+          "roots": [
+            "rspace++/src/rspace/persistence",
+            "rspace++/src/rspace/history"
+          ]
+        },
         "boundary": "The Rocq capstones and the bounded TLA+ invariants specify the derived index; the named tests check a test-only reference oracle over real HotStore and RSpace instances, and the production witnesses check the production receive accelerator of task 8011 against the same obligations. Harness controls RAC-RS-01 to RAC-RS-16 and RAC-RS-25 show that each named test observes its property, and production controls RAC-RS-17 to RAC-RS-24 show that the tests observe the production revision signals. None of this is a formal Rust refinement proof.",
         "channel_scope": {
           "closed_reports": 8,
@@ -6841,7 +6854,7 @@
           "rspace++/tests/support/receive_accelerator_adoption.rs": "2951e1a411f26b6733c18ffd14dc34cb587b17ac1e7f457d873d6a0392304798",
           "rspace++/tests/support/receive_accelerator_production.rs": "8ee93fcc4d0ca7d78c314263e685ecbe6effcd6a99e259a5e7df0ee9f6ef3998",
           "rspace++/tests/support/receive_occurrence_reference.rs": "610ae1a9888a343957f70abe1ed0414a8d1a70e9f47219f38c352a3329d3b9fc",
-          "scripts/check-receive-accelerator-obligations.py": "4fe82a6ed48d5c1508aaf3b7d1c5ce99220b78d714da5a7668d7147ad157e401",
+          "scripts/check-receive-accelerator-obligations.py": "1ab542fed6bade1fc9632815295d32c4fa5f0ca9e40fafb0de991949c1096252",
           "scripts/generate-receive-accelerator-mutant.py": "7eb730b0350d183088d087d23f5c28215c2cfa1f8253031b9fbd84e8ef3eee76"
         },
         "tla": {
