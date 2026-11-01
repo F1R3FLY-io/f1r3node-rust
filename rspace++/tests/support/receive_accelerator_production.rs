@@ -97,8 +97,8 @@ pub fn raw_hot_store_from(state: RawState) -> RawStore {
     HotStoreInstances::create_from_hs_and_hr(state, Box::new(EmptyHistory))
 }
 
-pub fn raw_hot_store_with_history(history: StubHistory) -> RawStore {
-    HotStoreInstances::create_from_hs_and_hr(RawState::default(), Box::new(history))
+pub fn raw_hot_store_with_history(state: RawState, history: StubHistory) -> RawStore {
+    HotStoreInstances::create_from_hs_and_hr(state, Box::new(history))
 }
 
 #[derive(Clone, Copy, Debug)]
