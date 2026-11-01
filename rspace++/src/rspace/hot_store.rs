@@ -1,5 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap};
+use std::convert::Infallible;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,7 +59,7 @@ use crate::rspace::persistence::{
 };
 use crate::rspace::receive_accelerator::{
     ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, ReceiveId, ReceiveTarget,
-    join_scope_class,
+    channel_frame, join_scope_class,
 };
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
@@ -347,6 +348,11 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Absent)
     }
     fn resolve_receive(&self, _id: &ReceiveId<C, P, K>) -> Option<ReceiveTarget<C, P, K>> { None }
+    fn hydrate_receive_scope(&self, channel: &C) {
+        for group in self.get_joins(channel) {
+            self.get_continuations_versioned(&group);
+        }
+    }
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
     fn get_candidate_pool(&self, channel: &C) -> CandidatePool<A>;
@@ -667,6 +673,23 @@ where
             Some(class) => ReceiveAnswer::Fallback(class),
             None => handle.materialize(channel),
         }
+    }
+
+    fn unloaded_installed_groups(&self, channel: &C) -> Vec<Arc<[C]>> {
+        let mut groups = Vec::new();
+        let Some(index) = self.continuations.receive_index() else {
+            return groups;
+        };
+        let Ok(()) = index.try_visit_groups_of::<Infallible>(&channel_frame(channel), |prefix| {
+            if let (false, Some(entry)) = (
+                self.continuations.is_loaded_prefix(prefix),
+                self.continuations.installed_entry(prefix),
+            ) {
+                groups.push(Arc::clone(&entry.0));
+            }
+            Ok(())
+        });
+        groups
     }
 
     fn pending_journal(&self) -> PendingDeltas {
@@ -1224,6 +1247,20 @@ where
     fn resolve_receive(&self, id: &ReceiveId<C, P, K>) -> Option<ReceiveTarget<C, P, K>> {
         let state = self.state.read().expect("hot store state read lock");
         id.resolve(&state.continuations, &state.receive_revision())
+    }
+
+    fn hydrate_receive_scope(&self, channel: &C) {
+        for group in self.get_joins(channel) {
+            self.get_continuations_versioned(&group);
+        }
+        let installed = self
+            .state
+            .read()
+            .expect("hot store state read lock")
+            .unloaded_installed_groups(channel);
+        for group in installed {
+            self.get_continuations_versioned(&group);
+        }
     }
 
     // Data

@@ -534,3 +534,68 @@ fn forged_alias_source_targets_never_resolve_at_current_tokens() {
         .expect("the genuine identifier resolves at the current revision");
     assert!(resolved == *genuine_target);
 }
+
+#[test]
+fn hydration_makes_join_incomplete_channels_exact_at_the_same_revision() {
+    let joined = group(&["a", "c"]);
+    let unloaded_joins = rebuilt();
+    let receiving = channel("c");
+    let kept = revision(&unloaded_joins);
+    assert_eq!(
+        fallback(unloaded_joins.current_receive_occurrences(&receiving)),
+        ReceiveAcceleratorClass::Incomplete
+    );
+    unloaded_joins.hydrate_receive_scope(&receiving);
+    assert_eq!(revision(&unloaded_joins), kept);
+    let answer = exact(unloaded_joins.current_receive_occurrences(&receiving));
+    assert_eq!(answer.revision(), &kept);
+    assert_eq!(group_prefixes(&answer), vec![prefix(&joined)]);
+
+    let unloaded_group = rebuilt();
+    let receiving = channel("a");
+    unloaded_group
+        .put_join(&receiving, &joined)
+        .expect("the in-memory hot store records every join");
+    let kept = revision(&unloaded_group);
+    assert_eq!(
+        fallback(unloaded_group.current_receive_occurrences(&receiving)),
+        ReceiveAcceleratorClass::Incomplete
+    );
+    unloaded_group.hydrate_receive_scope(&receiving);
+    assert_eq!(revision(&unloaded_group), kept);
+    let answer = exact(unloaded_group.current_receive_occurrences(&receiving));
+    assert_eq!(answer.revision(), &kept);
+    assert_eq!(
+        group_prefixes(&answer),
+        prefixes_of(&[group(&["a", "b", "a"]), group(&["a"]), joined])
+    );
+}
+
+#[test]
+fn hydration_loads_installed_only_groups_without_an_installed_join() {
+    let store = rebuilt();
+    let receiving = channel("d");
+    let installed = group(&["d"]);
+    assert_eq!(store.install_continuation(&installed, continuation(8, true)), Some(()));
+    assert!(store.get_joins(&receiving).is_empty());
+    assert!(store.snapshot().installed_joins.is_empty());
+    let kept = revision(&store);
+    assert_eq!(
+        fallback(store.current_receive_occurrences(&receiving)),
+        ReceiveAcceleratorClass::Incomplete
+    );
+
+    store.hydrate_receive_scope(&receiving);
+    assert_eq!(revision(&store), kept);
+    let answer = exact(store.current_receive_occurrences(&receiving));
+    assert_eq!(answer.revision(), &kept);
+    let [occurrence] = answer.groups() else {
+        panic!("the installed group is the channel's only group");
+    };
+    assert_eq!(occurrence.channels(), installed.as_slice());
+    let [target] = occurrence.targets() else {
+        panic!("the installed slot is the group's only target");
+    };
+    assert_eq!(target.kind(), ReceiveKind::Installed);
+    assert_eq!(target.continuation(), &continuation(8, true));
+}
