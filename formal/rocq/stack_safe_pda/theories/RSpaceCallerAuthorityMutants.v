@@ -135,6 +135,38 @@ Example old_journal_reuse_changes_the_restored_value :
   apply_count_delta 3 (rebased_addition 3 2) (rebased_removal 3 2) = 2.
 Proof. split; reflexivity. Qed.
 
+Example copying_old_base_count_journals_misses_the_restored_count :
+  let captured : nat -> option nat := fun _ => Some 2 in
+  apply_count_journal (fun _ => 3) (rebased_count_addition captured (fun _ => 1))
+    (rebased_count_removal captured (fun _ => 1)) 0 = 4 /\
+  apply_count_journal (fun _ => 3) (rebased_count_addition captured (fun _ => 3))
+    (rebased_count_removal captured (fun _ => 3)) 0 = 2 /\
+  count_overlay captured (fun _ => 3) 0 = 2.
+Proof. vm_compute; repeat split. Qed.
+
+Example omitting_count_removals_misses_a_lower_restored_count :
+  let captured : nat -> option nat := fun _ => Some 2 in
+  apply_count_journal (fun _ => 3) (rebased_count_addition captured (fun _ => 3))
+    (fun _ => 0) 0 = 3 /\
+  count_overlay captured (fun _ => 3) 0 = 2.
+Proof. vm_compute; repeat split. Qed.
+
+Example journal_key_only_rebase_misses_a_captured_cell_with_no_old_delta :
+  let captured : nat -> option nat := fun _ => Some 1 in
+  let journal_key key :=
+    negb (Nat.eqb (rebased_count_addition captured (fun _ => 1) key +
+      rebased_count_removal captured (fun _ => 1) key) 0) in
+  let addition key :=
+    if journal_key key then rebased_count_addition captured (fun _ => 3) key else 0 in
+  let removal key :=
+    if journal_key key then rebased_count_removal captured (fun _ => 3) key else 0 in
+  journal_key 0 = false /\
+  apply_count_journal (fun _ => 3) addition removal 0 = 3 /\
+  count_overlay captured (fun _ => 3) 0 = 1 /\
+  apply_count_journal (fun _ => 3) (rebased_count_addition captured (fun _ => 3))
+    (rebased_count_removal captured (fun _ => 3)) 0 = 1.
+Proof. vm_compute; repeat split. Qed.
+
 Print Assumptions generation_blind_aba_is_not_authorized.
 Print Assumptions ready_bit_alone_cannot_revive_closed_permit.
 Print Assumptions fresh_generation_does_not_replace_owner_identity.
@@ -155,6 +187,9 @@ Print Assumptions immediate_predecessor_freshness_allows_reopen_aba.
 Print Assumptions same_domain_forged_alias_catalog_is_not_appointed.
 Print Assumptions foreign_history_is_not_a_receiving_view_history.
 Print Assumptions dropping_one_of_five_journals_refuses_restore.
+Print Assumptions copying_old_base_count_journals_misses_the_restored_count.
+Print Assumptions omitting_count_removals_misses_a_lower_restored_count.
+Print Assumptions journal_key_only_rebase_misses_a_captured_cell_with_no_old_delta.
 
 Set Implicit Arguments.
 

@@ -426,6 +426,95 @@ Print Assumptions payload_transfer_never_transfers_mutation_authority.
 Print Assumptions rebased_journal_reconstructs_exact_restored_count.
 Print Assumptions rebased_journal_has_no_underflow_or_intermediate_overflow.
 
+Section CountJournalRebase.
+
+Context {Key : Type}.
+
+Definition count_overlay (captured : Key -> option nat) (base : Key -> nat) (key : Key) : nat :=
+  match captured key with
+  | Some count => count
+  | None => base key
+  end.
+
+Definition rebased_count_addition (captured : Key -> option nat) (base : Key -> nat)
+    (key : Key) : nat :=
+  rebased_addition (base key) (count_overlay captured base key).
+
+Definition rebased_count_removal (captured : Key -> option nat) (base : Key -> nat)
+    (key : Key) : nat :=
+  rebased_removal (base key) (count_overlay captured base key).
+
+Definition apply_count_journal (base addition removal : Key -> nat) (key : Key) : nat :=
+  apply_count_delta (base key) (addition key) (removal key).
+
+Definition exact_count_journal (base target addition removal : Key -> nat) : Prop :=
+  forall key, addition key = rebased_addition (base key) (target key) /\
+    removal key = rebased_removal (base key) (target key).
+
+Theorem rebased_counts_apply_to_target : forall captured base key,
+  apply_count_journal base (rebased_count_addition captured base)
+    (rebased_count_removal captured base) key = count_overlay captured base key.
+Proof.
+  intros; unfold apply_count_journal, rebased_count_addition, rebased_count_removal.
+  apply rebased_journal_reconstructs_exact_restored_count.
+Qed.
+
+Theorem rebased_counts_are_disjoint : forall captured base key,
+  rebased_count_addition captured base key = 0 \/ rebased_count_removal captured base key = 0.
+Proof.
+  intros; unfold rebased_count_addition, rebased_count_removal, rebased_addition,
+    rebased_removal; lia.
+Qed.
+
+Theorem rebased_counts_bounded : forall captured base limit,
+  (forall key, base key <= limit) ->
+  (forall key count, captured key = Some count -> count <= limit) ->
+  forall key,
+    rebased_count_removal captured base key <= base key /\
+    rebased_count_addition captured base key <= limit /\
+    base key - rebased_count_removal captured base key <= limit /\
+    apply_count_journal base (rebased_count_addition captured base)
+      (rebased_count_removal captured base) key <= limit.
+Proof.
+  intros captured base limit base_bound captured_bound key.
+  unfold apply_count_journal, rebased_count_addition, rebased_count_removal.
+  apply rebased_journal_has_no_underflow_or_intermediate_overflow; [apply base_bound|].
+  unfold count_overlay; destruct (captured key) as [count|] eqn:cell;
+    [exact (captured_bound key count cell)|apply base_bound].
+Qed.
+
+Theorem rebase_is_zero_outside_overlay_domain : forall captured base key,
+  captured key = None ->
+  rebased_count_addition captured base key = 0 /\ rebased_count_removal captured base key = 0.
+Proof.
+  intros captured base key uncaptured.
+  unfold rebased_count_addition, rebased_count_removal, rebased_addition, rebased_removal,
+    count_overlay.
+  rewrite uncaptured; simpl; lia.
+Qed.
+
+Theorem same_base_rebase_is_identity_for_exact_journals :
+  forall captured capture_base receiving_base addition removal,
+  (forall key, receiving_base key = capture_base key) ->
+  exact_count_journal capture_base (count_overlay captured capture_base) addition removal ->
+  forall key,
+    rebased_count_addition captured receiving_base key = addition key /\
+    rebased_count_removal captured receiving_base key = removal key.
+Proof.
+  intros captured capture_base receiving_base addition removal same exact key.
+  destruct (exact key) as [added removed]; rewrite added, removed.
+  unfold rebased_count_addition, rebased_count_removal, count_overlay.
+  destruct (captured key); rewrite (same key); split; reflexivity.
+Qed.
+
+End CountJournalRebase.
+
+Print Assumptions rebased_counts_apply_to_target.
+Print Assumptions rebased_counts_are_disjoint.
+Print Assumptions rebased_counts_bounded.
+Print Assumptions rebase_is_zero_outside_overlay_domain.
+Print Assumptions same_base_rebase_is_identity_for_exact_journals.
+
 Module ScopeBytes := ChannelImage.
 Set Implicit Arguments.
 
