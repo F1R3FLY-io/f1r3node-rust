@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use models::rhoapi::expr::ExprInstance;
@@ -31,7 +31,7 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 #[rustfmt::skip]
 mod reference;
 
-use reference::{GroupKey, Observation, Occurrence, ReceiveKind, ReceiveTarget};
+use reference::{ChannelImage, GroupKey, Observation, Occurrence, ReceiveKind, ReceiveTarget};
 
 type RhoSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 type RhoStore = Arc<Box<dyn HotStore<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>;
@@ -61,6 +61,11 @@ const ASYMMETRIC_PERSISTENT_SOURCE: &str = concat!(
     r#"[p, q, r] => for (@1 <= @p & @x <- @q & @2 <- @r) { Nil } }"#
 );
 const INSTALLED_TWIN_SOURCE: &str = r#"for (@value <= @"installed-twin") { Nil }"#;
+const LIFECYCLE_SINGLE_SOURCE: &str = r#"for (@value <- @"lifecycle-single") { Nil }"#;
+const LIFECYCLE_LATER_SOURCE: &str = r#"for (@value <- @"lifecycle-later") { Nil }"#;
+const DIRECTION_LINEAR_SOURCE: &str = r#"for (@value <- @"direction-linear") { Nil }"#;
+const DIRECTION_DATA_FIRST_SOURCE: &str = r#"for (@value <- @"direction-data-first") { Nil }"#;
+const DIRECTION_PERSISTENT_SOURCE: &str = r#"for (@value <= @"direction-persistent") { Nil }"#;
 
 const ASYMMETRIC_FREE_COUNTS: [i32; 3] = [0, 1, 0];
 
@@ -278,7 +283,7 @@ fn assert_position_bindings(
     bindings: &[RhoBinding],
     channel: &Par,
     expected: &[i64],
-    answered_positions: usize,
+    positions: usize,
 ) {
     let label = receive.label;
     assert_eq!(
@@ -305,8 +310,8 @@ fn assert_position_bindings(
     );
     assert_eq!(
         bound.len(),
-        answered_positions,
-        "{label}: the COMM consumed one datum per position the production accelerator answered"
+        positions,
+        "{label}: the COMM consumed one datum per position of the channel in its join"
     );
 }
 
@@ -874,5 +879,435 @@ async fn production_installed_and_resting_receives_answer_distinct_occurrences()
     assert!(
         answered_occurrences(&store, &current, &absent, "absent").is_empty(),
         "an absent channel has no occurrences"
+    );
+}
+
+fn relation_targets(observation: &Observation) -> BTreeSet<ReceiveTarget> {
+    reference::derive_all(observation)
+        .values()
+        .flatten()
+        .map(|occurrence| occurrence.target.clone())
+        .collect()
+}
+
+fn space_answers(
+    store: &RhoStore,
+    handle: &RhoHandle,
+    probed: &[&Par],
+    label: &str,
+) -> BTreeMap<ChannelImage, BTreeSet<Occurrence>> {
+    probed
+        .iter()
+        .map(|channel| {
+            (
+                reference::channel_image(*channel),
+                answered_occurrences(store, handle, channel, label),
+            )
+        })
+        .collect()
+}
+
+fn derived_answers(
+    observation: &Observation,
+    probed: &[&Par],
+) -> BTreeMap<ChannelImage, BTreeSet<Occurrence>> {
+    probed
+        .iter()
+        .map(|channel| {
+            let image = reference::channel_image(*channel);
+            let derived = reference::derive(observation, &image);
+            (image, derived)
+        })
+        .collect()
+}
+
+fn group_answer(answer: &RhoOccurrences) -> Vec<(GroupKey, Vec<u64>, Vec<ReceiveTarget>)> {
+    let mut groups = Vec::with_capacity(answer.groups().len());
+    for group in answer.groups() {
+        let key = reference::group_key(group.channels());
+        let mut positions = Vec::with_capacity(group.positions().len());
+        positions.extend(group.positions().iter().map(|position| position.get()));
+        let mut targets = Vec::with_capacity(group.targets().len());
+        targets.extend(
+            group
+                .targets()
+                .iter()
+                .map(|target| production_target(&key, target)),
+        );
+        groups.push((key, positions, targets));
+    }
+    groups
+}
+
+fn assert_absent_everywhere(store: &RhoStore, probed: &[&Par], transition: &str) {
+    assert!(
+        store.receive_accelerator().is_none(),
+        "{transition}: the replaced store publishes no accelerator"
+    );
+    for channel in probed {
+        assert_eq!(
+            fallback_class(store.receive_occurrences(None, channel)),
+            Some(ReceiveAcceleratorClass::Absent),
+            "{transition}: a read without a handle falls back as Absent"
+        );
+        assert_eq!(
+            fallback_class(store.current_receive_occurrences(channel)),
+            Some(ReceiveAcceleratorClass::Absent),
+            "{transition}: a read of the current accelerator falls back as Absent"
+        );
+    }
+}
+
+fn assert_foreign_everywhere(
+    store: &RhoStore,
+    handles: &[&RhoHandle],
+    probed: &[&Par],
+    transition: &str,
+) {
+    for handle in handles {
+        for channel in probed {
+            assert_eq!(
+                fallback_class(store.receive_occurrences(Some(*handle), channel)),
+                Some(ReceiveAcceleratorClass::Foreign),
+                "{transition}: a handle taken from a replaced store falls back as Foreign"
+            );
+        }
+    }
+}
+
+fn assert_stale_everywhere(
+    store: &RhoStore,
+    handle: &RhoHandle,
+    probed: &[&Par],
+    transition: &str,
+) {
+    for channel in probed {
+        assert_eq!(
+            fallback_class(store.receive_occurrences(Some(handle), channel)),
+            Some(ReceiveAcceleratorClass::Stale),
+            "{transition}: a handle taken before the receive changed falls back as Stale"
+        );
+    }
+}
+
+fn assert_published_equals_rebuild(
+    store: &RhoStore,
+    handle: &RhoHandle,
+    observation: &Observation,
+    probed: &[&Par],
+    transition: &str,
+) {
+    let detached = store
+        .detached_receive_accelerator()
+        .expect("a detached build over the loaded scope succeeds");
+    for channel in probed {
+        let image = reference::channel_image(*channel);
+        let published = exact_answer(store, handle, channel, transition);
+        let rebuilt = exact_answer(store, &detached, channel, transition);
+        let groups = group_answer(&published);
+        assert_eq!(
+            groups,
+            group_answer(&rebuilt),
+            "{transition}: the published accelerator equals a detached rebuild, group by group"
+        );
+        let answered_groups: BTreeSet<(GroupKey, Vec<u64>)> = groups
+            .into_iter()
+            .map(|(key, positions, _)| (key, positions))
+            .collect();
+        assert_eq!(
+            answered_groups,
+            reference::channel_groups(observation, &image),
+            "{transition}: the published groups are the derived groups"
+        );
+        assert_eq!(
+            production_occurrences(&published, &image),
+            reference::derive(observation, &image),
+            "{transition}: the published accelerator answers the derivation"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_checkpoint_reset_and_soft_revert_rebuild_identical_occurrences() {
+    let join_a = compiled_process("join-a name", JOIN_A_PROCESS);
+    let join_b = compiled_process("join-b name", JOIN_B_PROCESS);
+    let absent = compiled_process("absent name", ABSENT_PROCESS);
+    let join = resolve_case(
+        "lifecycle-join",
+        REPEATED_JOIN_SOURCE,
+        &repeated_env(&join_a, &join_b),
+    );
+    let single = resolve_compiled("lifecycle-single", LIFECYCLE_SINGLE_SOURCE);
+    let later = resolve_compiled("lifecycle-later", LIFECYCLE_LATER_SOURCE);
+    let single_channel = bind_channel(&single, 0).clone();
+    let later_channel = bind_channel(&later, 0).clone();
+    let universe = vec![
+        join.channels.clone(),
+        single.channels.clone(),
+        later.channels.clone(),
+    ];
+    let probed = [&join_a, &join_b, &single_channel, &later_channel, &absent];
+    let space = in_memory_space().await;
+    join.consume_into(&space).await;
+    single.consume_into(&space).await;
+    let original_store = space.get_store();
+    let original = hydrated_space(&space, &universe);
+    let original_relation = reference::derive_all(&original);
+    assert_eq!(
+        relation_targets(&original),
+        BTreeSet::from([
+            join.target(ReceiveKind::Resting),
+            single.target(ReceiveKind::Resting),
+        ]),
+        "the original relation names the join and the single receive"
+    );
+    let original_handle = rebuilt_handle(&original_store);
+    let original_answers = space_answers(&original_store, &original_handle, &probed, "original");
+    assert_eq!(
+        original_answers,
+        derived_answers(&original, &probed),
+        "the published accelerator answers the original derivation"
+    );
+
+    let checkpoint = space
+        .create_checkpoint()
+        .await
+        .expect("an in-memory checkpoint succeeds");
+    let checkpointed_store = space.get_store();
+    assert_absent_everywhere(&checkpointed_store, &probed, "checkpoint");
+    assert_foreign_everywhere(
+        &checkpointed_store,
+        &[&original_handle],
+        &probed,
+        "checkpoint",
+    );
+    let checkpointed = hydrated_space(&space, &universe);
+    assert_eq!(
+        reference::derive_all(&checkpointed),
+        original_relation,
+        "a checkpoint reloads the identical relation from history"
+    );
+    let checkpoint_handle = rebuilt_handle(&checkpointed_store);
+    assert_eq!(
+        space_answers(
+            &checkpointed_store,
+            &checkpoint_handle,
+            &probed,
+            "checkpoint"
+        ),
+        original_answers,
+        "after a checkpoint, a rebuild answers the original occurrences"
+    );
+
+    later.consume_into(&space).await;
+    let extended = hydrated_space(&space, &universe);
+    assert_ne!(
+        reference::derive_all(&extended),
+        original_relation,
+        "the later receive extends the relation"
+    );
+    assert_stale_everywhere(
+        &checkpointed_store,
+        &checkpoint_handle,
+        &probed,
+        "later receive",
+    );
+    let extended_handle = published_handle(&checkpointed_store);
+    assert_eq!(
+        space_answers(
+            &checkpointed_store,
+            &extended_handle,
+            &probed,
+            "later receive"
+        ),
+        derived_answers(&extended, &probed),
+        "the maintained accelerator answers the extended relation"
+    );
+
+    space
+        .reset(&checkpoint.root)
+        .await
+        .expect("an in-memory reset succeeds");
+    let reset_store = space.get_store();
+    assert_absent_everywhere(&reset_store, &probed, "reset");
+    assert_foreign_everywhere(
+        &reset_store,
+        &[&original_handle, &checkpoint_handle, &extended_handle],
+        &probed,
+        "reset",
+    );
+    let reset = hydrated_space(&space, &universe);
+    assert_eq!(
+        reference::derive_all(&reset),
+        original_relation,
+        "a reset discards the uncheckpointed receive"
+    );
+    let reset_handle = rebuilt_handle(&reset_store);
+    assert_eq!(
+        space_answers(&reset_store, &reset_handle, &probed, "reset"),
+        original_answers,
+        "after a reset, a rebuild answers the original occurrences"
+    );
+
+    let single_positions =
+        answered_positions(&reset_store, &reset_handle, &single_channel, single.label);
+    let soft = space.create_soft_checkpoint().await;
+    later.consume_into(&space).await;
+    let fired = produce_comm(&space, &single_channel, 1, &single).await;
+    assert_position_bindings(
+        &single,
+        &fired,
+        &single_channel,
+        &[1],
+        single_positions.len(),
+    );
+    let mutated = hydrated_space(&space, &universe);
+    assert_ne!(
+        reference::derive_all(&mutated),
+        original_relation,
+        "the state after the soft checkpoint was mutated"
+    );
+    let mutated_handle = published_handle(&reset_store);
+    space
+        .revert_to_soft_checkpoint(soft)
+        .await
+        .expect("an in-memory soft revert succeeds");
+    let reverted_store = space.get_store();
+    assert_absent_everywhere(&reverted_store, &probed, "soft revert");
+    assert_foreign_everywhere(
+        &reverted_store,
+        &[&reset_handle, &mutated_handle],
+        &probed,
+        "soft revert",
+    );
+    let reverted = hydrated_space(&space, &universe);
+    assert_eq!(
+        reference::derive_all(&reverted),
+        original_relation,
+        "a soft revert restores the identical relation"
+    );
+    let reverted_handle = rebuilt_handle(&reverted_store);
+    assert_eq!(
+        space_answers(&reverted_store, &reverted_handle, &probed, "soft revert"),
+        original_answers,
+        "after a soft revert, a rebuild answers the original occurrences"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_both_matching_directions_keep_the_published_accelerator_equal_to_a_rebuild() {
+    let linear = resolve_compiled("direction-linear", DIRECTION_LINEAR_SOURCE);
+    let data_first = resolve_compiled("direction-data-first", DIRECTION_DATA_FIRST_SOURCE);
+    let persistent = resolve_compiled("direction-persistent", DIRECTION_PERSISTENT_SOURCE);
+    let absent = compiled_process("absent name", ABSENT_PROCESS);
+    let linear_channel = bind_channel(&linear, 0).clone();
+    let data_channel = bind_channel(&data_first, 0).clone();
+    let persistent_channel = bind_channel(&persistent, 0).clone();
+    let universe = vec![
+        linear.channels.clone(),
+        data_first.channels.clone(),
+        persistent.channels.clone(),
+    ];
+    let probed = [&linear_channel, &data_channel, &persistent_channel, &absent];
+    let linear_target = linear.target(ReceiveKind::Resting);
+    let data_first_target = data_first.target(ReceiveKind::Resting);
+    let persistent_target = persistent.target(ReceiveKind::Resting);
+    let space = in_memory_space().await;
+    linear.consume_into(&space).await;
+    persistent.consume_into(&space).await;
+    let store = space.get_store();
+    let rested = hydrated_space(&space, &universe);
+    assert!(
+        rested.contains_target(&linear_target),
+        "the linear receive rests"
+    );
+    assert!(
+        rested.contains_target(&persistent_target),
+        "the persistent receive rests"
+    );
+    let held = rebuilt_handle(&store);
+    assert_published_equals_rebuild(&store, &held, &rested, &probed, "rested");
+
+    let linear_positions = answered_positions(&store, &held, &linear_channel, linear.label);
+    let produced = produce_comm(&space, &linear_channel, 1, &linear).await;
+    assert_position_bindings(
+        &linear,
+        &produced,
+        &linear_channel,
+        &[1],
+        linear_positions.len(),
+    );
+    let produce_fired = hydrated_space(&space, &universe);
+    assert!(
+        !produce_fired.contains_target(&linear_target),
+        "the produce-triggered COMM removes the linear receive"
+    );
+    assert_eq!(
+        fallback_class(store.receive_occurrences(Some(&held), &linear_channel)),
+        Some(ReceiveAcceleratorClass::Stale),
+        "the removal makes the held handle stale"
+    );
+    let maintained = published_handle(&store);
+    assert_published_equals_rebuild(
+        &store,
+        &maintained,
+        &produce_fired,
+        &probed,
+        "produce-triggered COMM",
+    );
+
+    produce_resting_datum(&space, &data_channel, 2, data_first.label).await;
+    let data_waiting = hydrated_space(&space, &universe);
+    assert_eq!(
+        data_waiting, produce_fired,
+        "a resting datum changes no receive"
+    );
+    assert_published_equals_rebuild(&store, &maintained, &data_waiting, &probed, "resting datum");
+    let consumed = consume_comm(&space, &data_first).await;
+    let data_capacity =
+        reference::capacity(&data_first.key(), &reference::channel_image(&data_channel));
+    assert_position_bindings(&data_first, &consumed, &data_channel, &[2], data_capacity);
+    let consume_fired = hydrated_space(&space, &universe);
+    assert_eq!(
+        consume_fired, data_waiting,
+        "a consume-triggered COMM never rests its receive or replaces a version"
+    );
+    assert!(
+        !consume_fired.contains_target(&data_first_target),
+        "the consume-triggered receive never enters the relation"
+    );
+    assert_published_equals_rebuild(
+        &store,
+        &maintained,
+        &consume_fired,
+        &probed,
+        "consume-triggered COMM",
+    );
+
+    let persistent_positions =
+        answered_positions(&store, &maintained, &persistent_channel, persistent.label);
+    let persisted = produce_comm(&space, &persistent_channel, 3, &persistent).await;
+    assert_position_bindings(
+        &persistent,
+        &persisted,
+        &persistent_channel,
+        &[3],
+        persistent_positions.len(),
+    );
+    let persistent_fired = hydrated_space(&space, &universe);
+    assert_eq!(
+        persistent_fired, consume_fired,
+        "a persistent firing keeps its receive and its group version"
+    );
+    assert!(
+        persistent_fired.contains_target(&persistent_target),
+        "the persistent receive stays in the relation"
+    );
+    assert_published_equals_rebuild(
+        &store,
+        &maintained,
+        &persistent_fired,
+        &probed,
+        "persistent firing",
     );
 }
