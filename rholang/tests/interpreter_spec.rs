@@ -286,8 +286,16 @@ async fn a_join_with_two_channels_on_one_name_never_fires() {
         };
 
         assert_eq!(data_on("fired"), 1, "only the join on distinct names fires");
-        assert_eq!(data_on("ch"), 2, "the join with a repeated name consumes nothing");
-        assert_eq!(data_on("other"), 1, "the join with a repeated name consumes nothing");
+        assert_eq!(
+            data_on("ch"),
+            2,
+            "the join with a repeated name consumes nothing"
+        );
+        assert_eq!(
+            data_on("other"),
+            1,
+            "the join with a repeated name consumes nothing"
+        );
     })
     .await
 }
