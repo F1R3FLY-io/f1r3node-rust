@@ -5,7 +5,7 @@ use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
 use rspace_plus_plus::rspace::hot_store::{HotStore, HotStoreInstances, HotStoreState};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::receive_accelerator::{
-    ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer,
+    ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, ReceiveId,
     ReceiveKind as ProductionKind, ReceiveOccurrences, ReceiveTarget as ProductionTarget,
 };
 use rspace_plus_plus::rspace::rho_path::RhoPathEncode;
@@ -38,6 +38,10 @@ impl ColdStoreDecode for RawChannel {
 
 pub type StringContinuation = WaitingContinuation<String, String>;
 pub type RawStore = Box<dyn HotStore<RawChannel, String, String, String>>;
+pub type RawState = HotStoreState<RawChannel, String, String, String>;
+pub type RawOccurrences = ReceiveOccurrences<RawChannel, String, String>;
+pub type RawTarget = ProductionTarget<RawChannel, String, String>;
+pub type RawId = ReceiveId<RawChannel, String, String>;
 type ProductionHandle = ReceiveAcceleratorHandle<RawChannel, String, String>;
 
 struct EmptyHistory;
@@ -52,8 +56,10 @@ impl HistoryReaderBase<RawChannel, String, String, String> for EmptyHistory {
     fn get_joins_canonical(&self, _channel: &RawChannel) -> Vec<Vec<RawChannel>> { Vec::new() }
 }
 
-pub fn raw_hot_store() -> RawStore {
-    HotStoreInstances::create_from_hs_and_hr(HotStoreState::default(), Box::new(EmptyHistory))
+pub fn raw_hot_store() -> RawStore { raw_hot_store_from(RawState::default()) }
+
+pub fn raw_hot_store_from(state: RawState) -> RawStore {
+    HotStoreInstances::create_from_hs_and_hr(state, Box::new(EmptyHistory))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -92,6 +98,12 @@ impl<'a> ProductionAccelerator<'a> {
             world: world.clone(),
         })
     }
+
+    pub fn occurrences(&self, channel: &RawChannel) -> ReceiveAnswer<RawChannel, String, String> {
+        self.store.get_joins(channel);
+        let held = self.pinned.as_ref().map(|pinned| &pinned.handle);
+        self.store.receive_occurrences(held, channel)
+    }
 }
 
 impl AcceleratorUnderTest for ProductionAccelerator<'_> {
@@ -126,9 +138,7 @@ impl AcceleratorUnderTest for ProductionAccelerator<'_> {
 
     fn answer(&self, _world: &ReferenceWorld, channel: &[u8]) -> Answer {
         let channel = RawChannel(channel.to_vec());
-        self.store.get_joins(&channel);
-        let held = self.pinned.as_ref().map(|pinned| &pinned.handle);
-        match self.store.receive_occurrences(held, &channel) {
+        match self.occurrences(&channel) {
             ReceiveAnswer::Exact(occurrences) => {
                 Answer::Exact(reference_occurrences(&channel, &occurrences))
             }
@@ -164,9 +174,25 @@ fn sentinel_revision() -> Revision {
     }
 }
 
+pub fn ordered_targets(occurrences: &RawOccurrences) -> Vec<(GroupKey, Vec<ReceiveTarget>)> {
+    let mut ordered = Vec::with_capacity(occurrences.groups().len());
+    for group in occurrences.groups() {
+        let key = group_key(group.channels());
+        let mut targets = Vec::with_capacity(group.targets().len());
+        targets.extend(
+            group
+                .targets()
+                .iter()
+                .map(|target| reference_target(&key, target)),
+        );
+        ordered.push((key, targets));
+    }
+    ordered
+}
+
 fn reference_occurrences(
     channel: &RawChannel,
-    occurrences: &ReceiveOccurrences<RawChannel, String, String>,
+    occurrences: &RawOccurrences,
 ) -> BTreeSet<Occurrence> {
     let image = channel.rho_path_identity();
     let mut mapped = BTreeSet::new();
@@ -187,10 +213,7 @@ fn reference_occurrences(
     mapped
 }
 
-fn reference_target(
-    group: &GroupKey,
-    target: &ProductionTarget<RawChannel, String, String>,
-) -> ReceiveTarget {
+pub fn reference_target(group: &GroupKey, target: &RawTarget) -> ReceiveTarget {
     ReceiveTarget {
         kind: reference_kind(target.kind()),
         group: group.clone(),
@@ -199,7 +222,7 @@ fn reference_target(
     }
 }
 
-fn reference_kind(kind: ProductionKind) -> ReceiveKind {
+pub fn reference_kind(kind: ProductionKind) -> ReceiveKind {
     match kind {
         ProductionKind::Installed => ReceiveKind::Installed,
         ProductionKind::Resting => ReceiveKind::Resting,
