@@ -35,9 +35,35 @@ Reports == {Old, New, Terminal("local", 1, "other"),
             [New EXCEPT !.packTail = 3], [New EXCEPT !.indexTail = 3]}
 OpenPhases == {"Captured", "Publishing", "RecoveryRequired", "AwaitingAck"}
 Phases == OpenPhases \union {"Ready", "Done", "Reopened"}
+Views == {"a", "b"}
+Roots == {0, 1}
+MaxSession == 2
+Sessions == 0..MaxSession
+OwnerIncarnations == 0..(2 * MaxSession)
+Requests == {"checkpoint", "reset", "spawn"}
+ViewOutcomes == {"new", "unknown-new", "unknown-old"}
+ViewStages == {"idle", "wait", "retake", "run", "publish", "ack", "apply", "done"}
+ViewResults == {"none", "refused-permit", "refused-incarnation", "refused-base",
+                "uncertain", "acknowledged", "reset", "spawned"}
+PendingPhases == {"Captured", "RecoveryRequired", "AwaitingAck"}
+Other(view) == CHOOSE other \in Views : other # view
+Idle == [stage |-> "idle", op |-> "none", permit |-> "none", root |-> 0, result |-> "none"]
+NoPending == [view |-> "none", permit |-> "none", base |-> 0, phase |-> "none", acks |-> 0]
+Request(op, permit, root) ==
+    [stage |-> "wait", op |-> op, permit |-> permit, root |-> root, result |-> "none"]
 
 VARIABLE state
-vars == <<state>>
+VARIABLES owner, attachment, viewGate, caller, ownerMutex, pending
+viewVars == <<owner, attachment, viewGate, caller, ownerMutex, pending>>
+vars == <<state, owner, attachment, viewGate, caller, ownerMutex, pending>>
+
+ViewInit ==
+    /\ owner = [incarnation |-> 0, live |-> TRUE, root |-> 0, session |-> 0]
+    /\ attachment = [view \in Views |-> [incarnation |-> 0, base |-> 0, session |-> 0]]
+    /\ viewGate = [view \in Views |-> "free"]
+    /\ caller = [view \in Views |-> Idle]
+    /\ ownerMutex = "free"
+    /\ pending = NoPending
 
 Bound(receipt) ==
     /\ receipt.store = "local"
@@ -273,7 +299,7 @@ Next ==
     \/ DuplicatePublish \/ MutationDuringGate
     \/ LoseAcknowledgementMarker \/ CorruptAcknowledgementMarker \/ WrongPreparedWitness
 
-Spec == Init /\ [][Next]_vars
+Spec == Init /\ ViewInit /\ [][Next /\ UNCHANGED viewVars]_vars
 TypeInvariant ==
     /\ state.phase \in Phases
     /\ state.incarnation \in Incarnations
@@ -337,4 +363,257 @@ NeverRetriedAcknowledgementAfterUnwind == ~state.ackRetriedAfterUnwind
 NeverEmptyCheckpointUnderTightenedColdLimits == ~state.emptyCheckpointUnderTightLimits
 NeverAwaitingAckRetryUnderTightenedColdLimits == ~state.acknowledgedUnderTightLimits
 NeverReconciledUnderDecoy == ~(state.decoy /\ state.acceptedRecovery)
+
+FrozenState == Init /\ state.incarnation = 0 /\ state.epoch = 0
+Quiescent ==
+    /\ ownerMutex = "free"
+    /\ pending = NoPending
+    /\ \A view \in Views: caller[view].stage = "idle"
+
+CallCheckpoint(view, permit) ==
+    /\ caller[view].stage = "idle"
+    /\ viewGate[permit] = "free"
+    /\ viewGate' = [viewGate EXCEPT ![permit] = view]
+    /\ caller' = [caller EXCEPT ![view] = Request("checkpoint", permit, 0)]
+    /\ UNCHANGED <<owner, attachment, ownerMutex, pending>>
+
+CallReset(view, target) ==
+    /\ caller[view].stage = "idle"
+    /\ viewGate[view] = "free"
+    /\ viewGate' = [viewGate EXCEPT ![view] = view]
+    /\ caller' = [caller EXCEPT ![view] = Request("reset", view, target)]
+    /\ UNCHANGED <<owner, attachment, ownerMutex, pending>>
+
+CallSpawn(view) ==
+    /\ caller[view].stage = "idle"
+    /\ caller[Other(view)].stage = "idle"
+    /\ \A gate \in Views: viewGate[gate] = "free"
+    /\ viewGate' = [gate \in Views |-> view]
+    /\ caller' = [caller EXCEPT ![view] = Request("spawn", view, 0)]
+    /\ UNCHANGED <<owner, attachment, ownerMutex, pending>>
+
+TakeMutex(view) ==
+    /\ caller[view].stage = "wait"
+    /\ ownerMutex = "free"
+    /\ ownerMutex' = view
+    /\ caller' = [caller EXCEPT ![view].stage =
+           IF Fault = "retake-gate" /\ caller[view].op = "checkpoint" THEN "retake" ELSE "run"]
+    /\ UNCHANGED <<owner, attachment, viewGate, pending>>
+
+OwnerAcquiresGate(view) ==
+    /\ ownerMutex = view
+    /\ caller[view].stage = "retake"
+    /\ viewGate[view] = "free"
+    /\ caller' = [caller EXCEPT ![view].stage = "run"]
+    /\ UNCHANGED <<owner, attachment, viewGate, ownerMutex, pending>>
+
+Resolve ==
+    \/ /\ pending.phase = "RecoveryRequired"
+       /\ owner.root = pending.base
+       /\ viewGate' = [viewGate EXCEPT ![pending.permit] = "free"]
+       /\ pending' = NoPending
+       /\ UNCHANGED attachment
+    \/ /\ pending.phase = "RecoveryRequired"
+       /\ owner.root # pending.base
+       /\ pending' = [pending EXCEPT !.phase = "AwaitingAck"]
+       /\ UNCHANGED <<attachment, viewGate>>
+    \/ /\ pending.phase = "AwaitingAck"
+       /\ attachment' = IF pending.acks = 0
+                        THEN [attachment EXCEPT ![pending.view].base = owner.root]
+                        ELSE attachment
+       /\ viewGate' = [viewGate EXCEPT ![pending.permit] = "free"]
+       /\ pending' = NoPending
+
+ReconcileFirst(view) ==
+    /\ ownerMutex = view
+    /\ caller[view].stage = "run"
+    /\ pending # NoPending
+    /\ Resolve
+    /\ UNCHANGED <<owner, caller, ownerMutex>>
+
+ReconcilePending ==
+    /\ ownerMutex = "free"
+    /\ pending.phase \in {"RecoveryRequired", "AwaitingAck"}
+    /\ Resolve
+    /\ UNCHANGED <<owner, caller, ownerMutex>>
+
+Refuse(view, result) ==
+    /\ caller' = [caller EXCEPT ![view].stage = "done", ![view].result = result]
+    /\ UNCHANGED <<owner, attachment, viewGate, ownerMutex, pending>>
+
+CheckRequest(view) ==
+    /\ ownerMutex = view
+    /\ caller[view].stage = "run"
+    /\ pending = NoPending
+    /\ LET request == caller[view]
+           permitOk == request.permit = view \/ Fault = "foreign-permit"
+           incarnationOk == attachment[view].incarnation = owner.incarnation
+           baseOk == attachment[view].base = owner.root \/ Fault = "skip-base"
+       IN  IF request.op = "checkpoint" /\ ~permitOk THEN Refuse(view, "refused-permit")
+           ELSE IF ~incarnationOk THEN Refuse(view, "refused-incarnation")
+           ELSE IF request.op = "checkpoint" /\ ~baseOk THEN Refuse(view, "refused-base")
+           ELSE IF request.op = "checkpoint"
+           THEN /\ pending' = [view |-> view, permit |-> request.permit,
+                               base |-> attachment[view].base, phase |-> "Captured",
+                               acks |-> 0]
+                /\ viewGate' = [viewGate EXCEPT ![request.permit] = "pending"]
+                /\ caller' = [caller EXCEPT ![view].stage = "publish"]
+                /\ UNCHANGED <<owner, attachment, ownerMutex>>
+           ELSE /\ caller' = [caller EXCEPT ![view].stage = "apply"]
+                /\ UNCHANGED <<owner, attachment, viewGate, ownerMutex, pending>>
+
+PublishView(view, outcome) ==
+    /\ ownerMutex = view
+    /\ caller[view].stage = "publish"
+    /\ pending.phase = "Captured"
+    /\ owner' = IF outcome = "unknown-old" THEN owner ELSE [owner EXCEPT !.root = 1 - @]
+    /\ IF outcome = "new"
+       THEN /\ pending' = [pending EXCEPT !.phase = "AwaitingAck"]
+            /\ caller' = [caller EXCEPT ![view].stage = "ack"]
+       ELSE /\ pending' = [pending EXCEPT !.phase = "RecoveryRequired"]
+            /\ caller' = [caller EXCEPT ![view].stage = "done", ![view].result = "uncertain"]
+    /\ UNCHANGED <<attachment, viewGate, ownerMutex>>
+
+AcknowledgeView(view, completes) ==
+    /\ ownerMutex = view
+    /\ caller[view].stage = "ack"
+    /\ pending.phase = "AwaitingAck"
+    /\ pending.acks = 0
+    /\ attachment' = [attachment EXCEPT ![pending.view].base = owner.root]
+    /\ IF completes
+       THEN /\ viewGate' = [viewGate EXCEPT ![pending.permit] = "free"]
+            /\ pending' = NoPending
+            /\ caller' = [caller EXCEPT ![view].stage = "done", ![view].result = "acknowledged"]
+       ELSE /\ pending' = [pending EXCEPT !.acks = 1]
+            /\ caller' = [caller EXCEPT ![view].stage = "done", ![view].result = "uncertain"]
+            /\ UNCHANGED viewGate
+    /\ UNCHANGED <<owner, ownerMutex>>
+
+ApplyActivation(view) ==
+    /\ ownerMutex = view
+    /\ caller[view].stage = "apply"
+    /\ IF caller[view].op = "reset"
+       THEN /\ owner' = [owner EXCEPT !.root = caller[view].root]
+            /\ attachment' = [attachment EXCEPT ![view] =
+                   [incarnation |-> owner.incarnation, base |-> caller[view].root,
+                    session |-> owner.session]]
+            /\ caller' = [caller EXCEPT ![view].stage = "done", ![view].result = "reset"]
+       ELSE /\ owner' = [owner EXCEPT !.root = attachment[view].base]
+            /\ attachment' = [attachment EXCEPT ![Other(view)] =
+                   [incarnation |-> owner.incarnation, base |-> attachment[view].base,
+                    session |-> owner.session]]
+            /\ caller' = [caller EXCEPT ![view].stage = "done", ![view].result = "spawned"]
+    /\ UNCHANGED <<viewGate, ownerMutex, pending>>
+
+ReturnCall(view) ==
+    /\ ownerMutex = view
+    /\ caller[view].stage = "done"
+    /\ ownerMutex' = "free"
+    /\ viewGate' = [gate \in Views |-> IF viewGate[gate] = view THEN "free" ELSE viewGate[gate]]
+    /\ caller' = [caller EXCEPT ![view] = Idle]
+    /\ UNCHANGED <<owner, attachment, pending>>
+
+CloseOwner ==
+    /\ owner.live
+    /\ owner.session < MaxSession
+    /\ Quiescent
+    /\ owner' = [owner EXCEPT !.live = FALSE,
+                 !.incarnation = IF Fault = "close-no-bump" THEN @ ELSE @ + 1]
+    /\ UNCHANGED <<attachment, viewGate, caller, ownerMutex, pending>>
+
+FreshIncarnation(incarnation) ==
+    IF Fault = "reopen-reuses-incarnation"
+    THEN incarnation # owner.incarnation
+    ELSE incarnation = owner.incarnation + 1
+
+ReopenOwner(view, incarnation) ==
+    /\ ~owner.live
+    /\ Quiescent
+    /\ FreshIncarnation(incarnation)
+    /\ owner' = [owner EXCEPT !.live = TRUE, !.incarnation = incarnation, !.session = @ + 1]
+    /\ attachment' = [attachment EXCEPT ![view] =
+           [incarnation |-> incarnation, base |-> owner.root, session |-> owner.session + 1]]
+    /\ UNCHANGED <<viewGate, caller, ownerMutex, pending>>
+
+OwnerAction ==
+    \E view \in Views:
+        \/ TakeMutex(view)
+        \/ OwnerAcquiresGate(view)
+        \/ ReconcileFirst(view)
+        \/ CheckRequest(view)
+        \/ \E outcome \in ViewOutcomes: PublishView(view, outcome)
+        \/ \E completes \in BOOLEAN: AcknowledgeView(view, completes)
+        \/ ApplyActivation(view)
+        \/ ReturnCall(view)
+
+ViewNext ==
+    /\ \/ \E view \in Views, permit \in Views: CallCheckpoint(view, permit)
+       \/ \E view \in Views, target \in Roots: CallReset(view, target)
+       \/ \E view \in Views: CallSpawn(view)
+       \/ OwnerAction
+       \/ ReconcilePending
+       \/ CloseOwner
+       \/ \E view \in Views, incarnation \in OwnerIncarnations: ReopenOwner(view, incarnation)
+    /\ UNCHANGED state
+
+ViewSpec ==
+    /\ FrozenState
+    /\ ViewInit
+    /\ [][ViewNext]_vars
+    /\ WF_vars(OwnerAction /\ UNCHANGED state)
+    /\ WF_vars(ReconcilePending /\ UNCHANGED state)
+
+ViewTypeInvariant ==
+    /\ owner \in [incarnation : OwnerIncarnations, live : BOOLEAN, root : Roots,
+                  session : Sessions]
+    /\ attachment \in [Views -> [incarnation : OwnerIncarnations, base : Roots,
+                                 session : Sessions]]
+    /\ viewGate \in [Views -> Views \union {"free", "pending"}]
+    /\ ownerMutex \in Views \union {"free"}
+    /\ caller \in [Views -> [stage : ViewStages, op : Requests \union {"none"},
+                             permit : Views \union {"none"}, root : Roots,
+                             result : ViewResults]]
+    /\ \/ pending = NoPending
+       \/ pending \in [view : Views, permit : Views, base : Roots, phase : PendingPhases,
+                       acks : 0..1]
+ExactBaseOrRefuse ==
+    /\ pending.phase = "Captured" => pending.base = owner.root
+    /\ \A view \in Views:
+           caller[view].result = "refused-base" => attachment[view].base # owner.root
+NoViewMutationWhilePending ==
+    pending # NoPending => viewGate[pending.view] = "pending"
+AckOnce ==
+    /\ pending.acks <= 1
+    /\ pending.acks = 1 =>
+           /\ pending.phase = "AwaitingAck"
+           /\ attachment[pending.view].base = owner.root
+StaleIncarnationRefused ==
+    \A view \in Views:
+        (ownerMutex = view /\ caller[view].stage \in {"publish", "ack", "apply"})
+            => owner.live /\ attachment[view].session = owner.session
+PermitProvenance ==
+    pending # NoPending => pending.permit = pending.view
+LockOrder ==
+    \A view \in Views: ~(ownerMutex = view /\ caller[view].stage = "retake")
+SpawnSharesOwner ==
+    \A view \in Views:
+        caller[view].result = "spawned" =>
+            /\ owner.incarnation = attachment[view].incarnation
+            /\ attachment[Other(view)].incarnation = attachment[view].incarnation
+            /\ attachment[Other(view)].session = attachment[view].session
+            /\ attachment[Other(view)].base = attachment[view].base
+            /\ owner.root = attachment[view].base
+PendingResolves == pending # NoPending ~> pending = NoPending
+NeverRefusedStaleBase == \A view \in Views: caller[view].result # "refused-base"
+NeverRefusedRetainedIncarnation ==
+    ~\E view \in Views:
+        /\ caller[view].result = "refused-incarnation"
+        /\ owner.live
+        /\ attachment[view].session < owner.session
+NeverReconciledByOtherView ==
+    ~\E view \in Views:
+        /\ ownerMutex = view
+        /\ caller[view].stage = "run"
+        /\ pending # NoPending
+        /\ pending.view # view
 =============================================================================

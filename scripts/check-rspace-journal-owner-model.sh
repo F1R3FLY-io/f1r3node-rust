@@ -61,4 +61,38 @@ do
     exit 1
   fi
 done
-echo "journal-owner: control, nineteen causal mutants and eleven reachability witnesses passed"
+view_output="$(tlc_run "$metadir" "${model}Views.cfg" "$model.tla" -cleanup 2>&1)" || {
+  printf '%s\n' "$view_output"
+  echo "journal-owner: the view-gate control failed" >&2
+  exit 1
+}
+printf '%s\n' "$view_output"
+if ! rg -q 'temporal properties for the complete state space' <<<"$view_output"; then
+  echo "journal-owner: the view-gate control did not check PendingResolves" >&2
+  exit 1
+fi
+for control in \
+  "RetakeGateMutant:Invariant LockOrder is violated" \
+  "RetakeGateDeadlockMutant:Deadlock reached" \
+  "SkipBaseMutant:Invariant ExactBaseOrRefuse is violated" \
+  "ForeignPermitMutant:Invariant PermitProvenance is violated" \
+  "CloseNoBumpMutant:Invariant StaleIncarnationRefused is violated" \
+  "ReopenReusesIncarnationMutant:Invariant StaleIncarnationRefused is violated" \
+  "NeverRefusedStaleBase:Invariant NeverRefusedStaleBase is violated" \
+  "NeverRefusedRetainedIncarnation:Invariant NeverRefusedRetainedIncarnation is violated" \
+  "NeverReconciledByOtherView:Invariant NeverReconciledByOtherView is violated"
+do
+  config="${control%%:*}"
+  expected="${control#*:}"
+  if output="$(tlc_run "$metadir" "$model$config.cfg" "$model.tla" -cleanup 2>&1)"; then
+    printf '%s\n' "$output"
+    echo "journal-owner: expected counterexample was absent: $config" >&2
+    exit 1
+  fi
+  printf '%s\n' "$output"
+  if ! rg -qF "$expected" <<<"$output"; then
+    echo "journal-owner: $config failed without its expected text: $expected" >&2
+    exit 1
+  fi
+done
+echo "journal-owner: control, view-gate control with liveness, twenty-four causal mutants (nineteen plus five) and fourteen reachability witnesses (eleven plus three) passed"
