@@ -325,8 +325,15 @@ impl GenesisBuilder {
                 rholang::rust::interpreter::external_services::ExternalServices::noop(),
             );
 
-            let genesis =
-                Genesis::create_genesis_block(&runtime_manager, &genesis_parameters).await?;
+            let policy = (genesis_parameters.version
+                == casper::rust::v6::resource_policy::PROTOCOL_V6)
+                .then(casper::rust::v6::resource_policy::ShardResourcePolicy::default);
+            let genesis = Genesis::create_genesis_block_with_policy(
+                &runtime_manager,
+                &genesis_parameters,
+                policy.as_ref(),
+            )
+            .await?;
             let block_store = KeyValueBlockStore::create_from_kvm(&mut *kvs_manager).await?;
             block_store.put(genesis.block_hash.clone(), &genesis)?;
 
