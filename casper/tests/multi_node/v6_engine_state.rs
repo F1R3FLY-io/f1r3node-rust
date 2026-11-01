@@ -131,6 +131,7 @@ async fn a_restarted_engine_resumes_its_canonical_prefix_without_replaying_it() 
             limits: Limits::default(),
             params: Default::default(),
             lag_threshold: casper::rust::v6::lag::DEFAULT_LAG_THRESHOLD,
+            conservation: None,
         },
         node.block_store.clone(),
         node.block_dag_storage.clone(),
@@ -219,4 +220,72 @@ async fn a_long_run_keeps_executor_memory_flat_and_old_receipts_available() {
             engine(node).evidence()
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_validator_audits_conservation_on_its_schedule() {
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use rholang::rust::interpreter::accounting::rev_stack::{wallet_channel_id, TokenKind, WalletOwner};
+
+    let genesis = genesis().await;
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_v6_network_with(
+        genesis,
+        3,
+        crate::helper::test_node::V6TestConfig {
+            audit_interval: Some(2),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let (_, bob) = crypto::rust::signatures::secp256k1::Secp256k1.new_key_pair();
+    let address = rholang::rust::interpreter::util::vault_address::VaultAddress::from_public_key(&bob)
+        .unwrap()
+        .to_base58();
+    let transfer = offer(
+        &shard_id,
+        &format!(
+            r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`) in {{ w!("transfer", (*d, "{address}", 700), "out") }}"#
+        ),
+        now(),
+    );
+    let audited_from = |node: &TestNode| {
+        engine(node)
+            .conservation()
+            .and_then(|c| c.last())
+            .map(|(number, _)| number)
+    };
+    for round in 0..30 {
+        let deploys = if round == 0 { vec![transfer.clone()] } else { Vec::new() };
+        propose_and_broadcast(&mut nodes, round % 3, &deploys).await;
+        settle(&nodes, Duration::from_millis(300)).await;
+        if nodes.iter().all(|n| audited_from(n).is_some_and(|number| number >= 6)) {
+            break;
+        }
+    }
+    let bob_wallet = wallet_channel_id(&WalletOwner::from_public_key(&bob).unwrap());
+    for node in &nodes {
+        let conservation = engine(node).conservation().expect("a v6 node audits");
+        let (number, audits) = conservation.last().expect("an audit ran");
+        assert!(number >= 6, "the last audit was at block {number}");
+        assert!(audits.iter().all(|a| a.conserved()), "{audits:?}");
+        assert_eq!(conservation.failures(), 0);
+        assert!(conservation
+            .index()
+            .wallets(&TokenKind::rev())
+            .any(|w| *w == bob_wallet));
+    }
+
+    let node = &nodes[0];
+    let reopened = casper::rust::v6::conservation::Conservation::open(
+        casper::rust::v6::conservation::AuditSchedule { interval: 2 },
+        &node.genesis,
+        node.block_dag_storage.v6_executor_state(),
+    )
+    .unwrap();
+    assert!(reopened
+        .index()
+        .wallets(&TokenKind::rev())
+        .any(|w| *w == bob_wallet));
 }

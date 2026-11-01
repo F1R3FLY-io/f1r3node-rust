@@ -17,7 +17,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 use super::backend::ExecutionBackend;
 use super::block_record::BlockRecord;
 use super::body::{Attestation, StateHash, V6Body, V6Records};
-use super::conservation::{AuditSchedule, Conservation, WalletIndex};
+use super::conservation::{AuditSchedule, Conservation};
 use super::core::{Action, CoreParams, EmittedBlock, ExecutorCore, InclusionCheck};
 use super::evidence::{Evidence, EvidenceSink, MemoryEvidenceSink, Offence};
 use super::inclusion::{screen_offers, GateScreen, InclusionScreen};
@@ -50,6 +50,7 @@ pub struct V6Parts<R: ExecutionRecord> {
     pub limits: Limits,
     pub params: CoreParams,
     pub lag_threshold: u64,
+    pub conservation: Option<Arc<Conservation>>,
 }
 
 pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
@@ -68,6 +69,7 @@ pub struct V6Engine<R: ExecutionRecord = BlockRecord> {
     wake: tokio::sync::Notify,
     started: AtomicBool,
     held: parking_lot::Mutex<Option<BlockHash>>,
+    conservation: Option<Arc<Conservation>>,
 }
 
 impl V6Engine<BlockRecord> {
@@ -110,14 +112,16 @@ impl V6Engine<BlockRecord> {
         let workers = std::thread::available_parallelism()
             .map(|cores| cores.get())
             .unwrap_or(1);
-        let conservation = Conservation::new(
+        let conservation = Conservation::open(
             AuditSchedule {
                 interval: conservation_audit_interval,
             },
-            WalletIndex::from_genesis(genesis),
-        );
+            genesis,
+            dag_storage.v6_executor_state(),
+        )?;
         let backend = Arc::new(
-            BlockExecutor::new(runtime_manager.clone(), workers).with_conservation(conservation),
+            BlockExecutor::new(runtime_manager.clone(), workers)
+                .with_conservation(conservation.clone()),
         );
         let parts = V6Parts {
             backend,
@@ -132,6 +136,7 @@ impl V6Engine<BlockRecord> {
                 ..CoreParams::default()
             },
             lag_threshold,
+            conservation: Some(conservation),
         };
         Ok(Self::with_parts(
             genesis,
@@ -160,6 +165,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             limits,
             params,
             lag_threshold,
+            conservation,
         } = parts;
         let store = store.unwrap_or_else(|| {
             Box::new(MemoryRecordStore::new(
@@ -187,8 +193,11 @@ impl<R: ExecutionRecord> V6Engine<R> {
             wake: tokio::sync::Notify::new(),
             started: AtomicBool::new(false),
             held: parking_lot::Mutex::new(None),
+            conservation,
         })
     }
+
+    pub fn conservation(&self) -> Option<Arc<Conservation>> { self.conservation.clone() }
 
     pub fn start(self: &Arc<Self>) {
         if self.started.swap(true, Ordering::SeqCst) {

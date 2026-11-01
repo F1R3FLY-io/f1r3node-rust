@@ -279,3 +279,99 @@ async fn a_minted_kind_is_audited_against_its_mints() {
     assert_eq!(kind.wallets, 2);
     assert!(kind.conserved());
 }
+
+async fn memory_store() -> Arc<dyn shared::rust::store::key_value_store::KeyValueStore> {
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager::new()
+        .store("v6-executor-state".to_string())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn replaying_a_minting_block_counts_its_mints_once() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[(&alice, 100_000)]).await;
+    let conservation = Conservation::new(
+        AuditSchedule { interval: 1 },
+        WalletIndex::from_genesis(&genesis),
+    );
+    let executor = BlockExecutor::new(rm.clone(), 2).with_conservation(conservation.clone());
+    let mint = r#"new k, d(`rho:system:deployerId`) in { {% d :: d :: d :: () %}[k] }"#;
+    let first = block(&proposer, vec![deploy(&alice, mint.to_string(), 1)], 1);
+    let record = executor
+        .execute(&genesis.body.state.post_state_hash, &first)
+        .await
+        .expect("the mint executes");
+    executor
+        .replay(&record, &first)
+        .await
+        .expect("the mint replays");
+    let (_, audits) = conservation.last().expect("the audit ran");
+    let kind = audits
+        .iter()
+        .find(|a| !a.kind.is_rev())
+        .expect("the minted kind is audited");
+    assert_eq!(kind.minted, 3);
+    assert!(kind.conserved(), "{kind:?}");
+    assert_eq!(conservation.failures(), 0);
+}
+
+#[tokio::test]
+async fn the_wallet_index_survives_a_restart() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, genesis) = shard(&[(&alice, 100_000)]).await;
+    let store = memory_store().await;
+    let schedule = AuditSchedule { interval: 1 };
+    let conservation = Conservation::open(schedule, &genesis, store.clone()).unwrap();
+    let executor = BlockExecutor::new(rm.clone(), 2).with_conservation(conservation.clone());
+    let paid = block(&proposer, vec![transfer(&alice, &bob, 700)], 1);
+    executor
+        .execute(&genesis.body.state.post_state_hash, &paid)
+        .await
+        .expect("the transfer executes");
+    let bob_wallet = wallet_channel_id(&owner(&bob));
+    assert!(conservation
+        .index()
+        .wallets(&TokenKind::rev())
+        .any(|w| *w == bob_wallet));
+
+    let reopened = Conservation::open(schedule, &genesis, store).unwrap();
+    assert_eq!(reopened.index(), {
+        let mut index = conservation.index();
+        index.take_fresh();
+        index
+    });
+    assert!(reopened
+        .index()
+        .wallets(&TokenKind::rev())
+        .any(|w| *w == bob_wallet));
+    let fresh = Conservation::open(schedule, &genesis, memory_store().await).unwrap();
+    assert!(!fresh
+        .index()
+        .wallets(&TokenKind::rev())
+        .any(|w| *w == bob_wallet));
+}
+
+#[tokio::test]
+#[ignore = "measurement: the audit's cost by index size"]
+async fn audit_time_by_index_size() {
+    let alice = party();
+    let (rm, genesis) = shard(&[(&alice, 100_000)]).await;
+    for size in [100usize, 1_000, 10_000] {
+        let mut index = WalletIndex::from_genesis(&genesis);
+        for i in 0..size {
+            index.insert(TokenKind::rev(), (i as u64).to_be_bytes().repeat(4));
+        }
+        let started = std::time::Instant::now();
+        let audits = check_at(&rm, &genesis.body.state.post_state_hash, &index)
+            .await
+            .unwrap();
+        println!(
+            "wallets={} audit={:?}",
+            index.len(&TokenKind::rev()),
+            started.elapsed()
+        );
+        assert!(rev(&audits).conserved());
+    }
+}

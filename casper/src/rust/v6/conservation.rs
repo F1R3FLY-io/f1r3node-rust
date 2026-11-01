@@ -15,6 +15,8 @@ use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id_of, CellStore, RevAmount, TokenKind, WalletOwner,
 };
 
+use shared::rust::store::key_value_store::KeyValueStore;
+
 use super::gate::WalletId;
 use super::genesis_wallets::cells_at;
 use super::settle::Settlement;
@@ -41,12 +43,21 @@ impl KindAudit {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WalletIndex {
     kinds: BTreeMap<TokenKind, BTreeSet<WalletId>>,
-    mints: BTreeMap<TokenKind, u128>,
+    mints: BTreeMap<TokenKind, BTreeMap<Vec<u8>, u128>>,
+    fresh: Vec<IndexEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IndexEntry {
+    Wallet(TokenKind, WalletId),
+    Mint(TokenKind, Vec<u8>, u128),
 }
 
 impl WalletIndex {
     pub fn insert(&mut self, kind: TokenKind, wallet: WalletId) {
-        self.kinds.entry(kind).or_default().insert(wallet);
+        if self.kinds.entry(kind.clone()).or_default().insert(wallet.clone()) {
+            self.fresh.push(IndexEntry::Wallet(kind, wallet));
+        }
     }
 
     pub fn insert_owner(&mut self, kind: TokenKind, owner: &WalletOwner) {
@@ -62,11 +73,39 @@ impl WalletIndex {
     pub fn len(&self, kind: &TokenKind) -> usize { self.kinds.get(kind).map_or(0, BTreeSet::len) }
 
     pub fn record_mint(&mut self, kind: TokenKind, amount: RevAmount) {
-        let total = self.mints.entry(kind).or_default();
+        let total = self.mints.entry(kind).or_default().entry(Vec::new()).or_default();
         *total = total.saturating_add(u128::from(amount));
     }
 
-    pub fn mints(&self, kind: &TokenKind) -> u128 { self.mints.get(kind).copied().unwrap_or(0) }
+    pub fn set_block_mints(&mut self, kind: TokenKind, block: &[u8], amount: u128) {
+        let previous = self
+            .mints
+            .entry(kind.clone())
+            .or_default()
+            .insert(block.to_vec(), amount);
+        if previous != Some(amount) {
+            self.fresh.push(IndexEntry::Mint(kind, block.to_vec(), amount));
+        }
+    }
+
+    pub fn mints(&self, kind: &TokenKind) -> u128 {
+        self.mints
+            .get(kind)
+            .map_or(0, |by_block| by_block.values().fold(0u128, |t, m| t.saturating_add(*m)))
+    }
+
+    pub fn take_fresh(&mut self) -> Vec<IndexEntry> { std::mem::take(&mut self.fresh) }
+
+    pub fn apply(&mut self, entry: IndexEntry) {
+        match entry {
+            IndexEntry::Wallet(kind, wallet) => {
+                self.kinds.entry(kind).or_default().insert(wallet);
+            }
+            IndexEntry::Mint(kind, block, amount) => {
+                self.mints.entry(kind).or_default().insert(block, amount);
+            }
+        }
+    }
 
     pub fn from_genesis(genesis: &BlockMessage) -> Self {
         let mut index = WalletIndex::default();
@@ -94,7 +133,8 @@ impl WalletIndex {
         }
     }
 
-    pub fn observe_settlement(&mut self, settlement: &Settlement) {
+    pub fn observe_settlement(&mut self, block: &[u8], settlement: &Settlement) {
+        let mut minted: BTreeMap<TokenKind, u128> = BTreeMap::new();
         for charge in &settlement.charges {
             self.insert(TokenKind::rev(), charge.wallet.clone());
         }
@@ -102,11 +142,75 @@ impl WalletIndex {
         for transfer in &settlement.transfers {
             match &transfer.from {
                 Source::Wallet(from) => self.insert_owner(transfer.kind.clone(), from),
-                Source::Mint => self.record_mint(transfer.kind.clone(), transfer.amount),
+                Source::Mint => {
+                    let total = minted.entry(transfer.kind.clone()).or_default();
+                    *total = total.saturating_add(u128::from(transfer.amount));
+                }
             }
             self.insert_owner(transfer.kind.clone(), &transfer.to);
         }
+        for (kind, amount) in minted {
+            self.set_block_mints(kind, block, amount);
+        }
     }
+}
+
+const WALLET_KEY: &[u8] = b"conservation/wallet/";
+const MINT_KEY: &[u8] = b"conservation/mint/";
+
+fn kind_prefixed(prefix: &[u8], kind: &TokenKind, rest: &[u8]) -> Vec<u8> {
+    let name = kind.name();
+    let mut key = Vec::with_capacity(prefix.len() + 4 + name.len() + rest.len());
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(&(name.len() as u32).to_be_bytes());
+    key.extend_from_slice(name);
+    key.extend_from_slice(rest);
+    key
+}
+
+fn split_kind(rest: &[u8]) -> Option<(TokenKind, Vec<u8>)> {
+    let len = u32::from_be_bytes(rest.get(..4)?.try_into().ok()?) as usize;
+    let kind = TokenKind::from_name(rest.get(4..4 + len)?.to_vec())?;
+    Some((kind, rest.get(4 + len..)?.to_vec()))
+}
+
+fn entry_key(entry: &IndexEntry) -> (Vec<u8>, Vec<u8>) {
+    match entry {
+        IndexEntry::Wallet(kind, wallet) => (kind_prefixed(WALLET_KEY, kind, wallet), Vec::new()),
+        IndexEntry::Mint(kind, block, amount) => (
+            kind_prefixed(MINT_KEY, kind, block),
+            amount.to_be_bytes().to_vec(),
+        ),
+    }
+}
+
+fn parse_entry(key: &[u8], value: &[u8]) -> Option<IndexEntry> {
+    if let Some(rest) = key.strip_prefix(WALLET_KEY) {
+        let (kind, wallet) = split_kind(rest)?;
+        return Some(IndexEntry::Wallet(kind, wallet));
+    }
+    let rest = key.strip_prefix(MINT_KEY)?;
+    let (kind, block) = split_kind(rest)?;
+    let amount = u128::from_be_bytes(value.try_into().ok()?);
+    Some(IndexEntry::Mint(kind, block, amount))
+}
+
+fn load_entries(store: &dyn KeyValueStore) -> Result<Vec<IndexEntry>, CasperError> {
+    Ok(store
+        .to_map()
+        .map_err(|e| CasperError::RuntimeError(format!("conservation: {e}")))?
+        .iter()
+        .filter_map(|(key, value)| parse_entry(key, value))
+        .collect())
+}
+
+fn write_entries(store: &dyn KeyValueStore, entries: &[IndexEntry]) -> Result<(), CasperError> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    store
+        .put(entries.iter().map(entry_key).collect())
+        .map_err(|e| CasperError::RuntimeError(format!("conservation: {e}")))
 }
 
 fn quoted_addresses(term: &str) -> Vec<String> {
@@ -214,6 +318,7 @@ impl AuditSchedule {
 
 pub struct Conservation {
     schedule: AuditSchedule,
+    store: Option<Arc<dyn KeyValueStore>>,
     index: parking_lot::Mutex<WalletIndex>,
     last: parking_lot::Mutex<Option<(i64, Vec<KindAudit>)>>,
     failures: AtomicU64,
@@ -223,10 +328,32 @@ impl Conservation {
     pub fn new(schedule: AuditSchedule, index: WalletIndex) -> Arc<Self> {
         Arc::new(Conservation {
             schedule,
+            store: None,
             index: parking_lot::Mutex::new(index),
             last: parking_lot::Mutex::new(None),
             failures: AtomicU64::new(0),
         })
+    }
+
+    pub fn open(
+        schedule: AuditSchedule,
+        genesis: &BlockMessage,
+        store: Arc<dyn KeyValueStore>,
+    ) -> Result<Arc<Self>, CasperError> {
+        let mut index = WalletIndex::from_genesis(genesis);
+        let stored = load_entries(store.as_ref())?;
+        let fresh = index.take_fresh();
+        for entry in stored {
+            index.apply(entry);
+        }
+        write_entries(store.as_ref(), &fresh)?;
+        Ok(Arc::new(Conservation {
+            schedule,
+            store: Some(store),
+            index: parking_lot::Mutex::new(index),
+            last: parking_lot::Mutex::new(None),
+            failures: AtomicU64::new(0),
+        }))
     }
 
     pub fn index(&self) -> WalletIndex { self.index.lock().clone() }
@@ -238,7 +365,18 @@ impl Conservation {
     pub fn observe(&self, block: &BlockMessage, settlement: &Settlement) {
         let mut index = self.index.lock();
         index.observe_bonds(block);
-        index.observe_settlement(settlement);
+        index.observe_settlement(&block.block_hash, settlement);
+        let fresh = index.take_fresh();
+        drop(index);
+        if let Some(store) = &self.store {
+            if let Err(error) = write_entries(store.as_ref(), &fresh) {
+                tracing::error!(
+                    target: "f1r3fly.v6",
+                    %error,
+                    "v6 conservation could not persist its wallet index"
+                );
+            }
+        }
     }
 
     pub async fn after_block(
