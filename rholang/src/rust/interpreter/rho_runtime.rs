@@ -44,7 +44,7 @@ use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
-    Remainder, RhoDispatchMap,
+    Remainder, RhoDispatchMap, UrnPhase,
 };
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
@@ -401,6 +401,18 @@ impl RhoRuntimeImpl {
         }
     }
 
+    pub fn enter_genesis_phase(&self) -> GenesisPhase {
+        let flag = self.reducer.genesis_phase.clone();
+        let prev = flag.swap(true, std::sync::atomic::Ordering::AcqRel);
+        GenesisPhase { flag, prev }
+    }
+
+    pub fn in_genesis_phase(&self) -> bool {
+        self.reducer
+            .genesis_phase
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Introspection helper for tests and diagnostics.  Returns
     /// `true` iff `rho:io:fs:native:*` URN resolution is blocked
     /// in `eval_new`.
@@ -708,6 +720,15 @@ impl HasCost for RhoRuntimeImpl {
 #[must_use = "the exemption ends when the guard is dropped; letting it drop \
               immediately after construction re-enables the filter and \
               the enclosed code sees the filter ON"]
+pub struct GenesisPhase {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+    prev: bool,
+}
+
+impl Drop for GenesisPhase {
+    fn drop(&mut self) { self.flag.store(self.prev, std::sync::atomic::Ordering::Release); }
+}
+
 pub struct FsNativeUrnFilterExemption {
     flag: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -1392,6 +1413,7 @@ fn dispatch_table_creator(
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     fs_handles: super::io::handle_table::FileHandleTable,
+    urn_phase: UrnPhase,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1459,6 +1481,7 @@ fn dispatch_table_creator(
             ollama_service.clone(),
             grpc_client_service.clone(),
             chromadb_service.clone(),
+            urn_phase.clone(),
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -1541,6 +1564,10 @@ async fn setup_reducer(
     cost: _cost,
     fs_handles: super::io::handle_table::FileHandleTable,
 ) -> Arc<DebruijnInterpreter> {
+    let urn_phase = UrnPhase {
+        fs_native_filtered: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        genesis: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
     let temp_dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1567,6 +1594,7 @@ async fn setup_reducer(
         grpc_client_service,
         chromadb_service,
         fs_handles,
+        urn_phase.clone(),
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1585,7 +1613,8 @@ async fn setup_reducer(
         single_term_evaluations: Arc::new(AtomicU64::new(0)),
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
-        filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        filter_fs_native_urns: urn_phase.fs_native_filtered.clone(),
+        genesis_phase: urn_phase.genesis.clone(),
         deploy_data: deploy_data_ref,
     });
 

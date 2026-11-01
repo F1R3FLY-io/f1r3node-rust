@@ -129,6 +129,7 @@ impl ReplayRuntimeOps {
         } else {
             None
         };
+        let _genesis = is_genesis.then(|| self.runtime_ops.runtime.enter_genesis_phase());
 
         self.replay_deploys(start_hash, terms, system_deploys, !is_genesis, block_data)
             .await

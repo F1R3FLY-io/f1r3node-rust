@@ -86,7 +86,7 @@ async fn a_user_deploy_cannot_bind_the_genesis_mint() {
 #[tokio::test]
 async fn genesis_mints_one_stack_per_wallet_and_records_the_supply() {
     let runtime = runtime().await;
-    runtime.disable_fs_native_urn_filter();
+    let _genesis = runtime.enter_genesis_phase();
     let (genesis, alice, bob) = (key(), key(), key());
     let term = mint_term(&[
         (&alice.address, 700),
@@ -131,7 +131,7 @@ async fn genesis_installs_the_hook_authority_and_a_noop_rev_hook() {
     );
     let refused = eval_as(&runtime, &genesis, &term).await;
     assert!(refused[0].contains("reserved for genesis"), "{refused:?}");
-    runtime.disable_fs_native_urn_filter();
+    let _genesis = runtime.enter_genesis_phase();
     assert!(eval_as(&runtime, &genesis, &term).await.is_empty());
     let cells = HotStoreCells(runtime.reducer.space.hot_store().unwrap());
     let authority = hook_authority(&cells).unwrap().unwrap();
@@ -144,7 +144,7 @@ async fn genesis_installs_the_hook_authority_and_a_noop_rev_hook() {
 #[tokio::test]
 async fn a_malformed_line_mints_nothing() {
     let runtime = runtime().await;
-    runtime.disable_fs_native_urn_filter();
+    let _genesis = runtime.enter_genesis_phase();
     let (genesis, alice) = (key(), key());
     let term = mint_term(&[(&alice.address, 10), ("not-an-address", 5)]);
     assert!(eval_as(&runtime, &genesis, &term).await.is_empty());
@@ -160,7 +160,7 @@ async fn genesis_mints_the_bonds_onto_native_bond_stacks_once() {
     use rholang::rust::interpreter::accounting::rev_stack::bond::bond_balance;
     use rholang::rust::interpreter::accounting::rev_stack::genesis::legacy_bonds;
     let runtime = runtime().await;
-    runtime.disable_fs_native_urn_filter();
+    let _genesis = runtime.enter_genesis_phase();
     let (genesis, alice, v1, v2) = (key(), key(), key(), key());
     assert!(
         eval_as(&runtime, &genesis, &mint_term(&[(&alice.address, 100)]))
@@ -181,4 +181,102 @@ async fn genesis_mints_the_bonds_onto_native_bond_stacks_once() {
     assert_eq!(bond_balance(store, &v2.pk.bytes).unwrap(), 10);
     assert!(eval_as(&runtime, &genesis, &bonds).await.is_empty());
     assert_eq!(supply(&runtime), 140);
+}
+
+fn through_lookup(urn: &str, command: &str, arg: &str) -> String {
+    format!(
+        r#"new lookup(`rho:internal:registry_lookup`), ret in {{
+             lookup!("{urn}", *ret) |
+             for (target <- ret) {{ @"found"!(true) | target!("{command}", {arg}, "out") }}
+           }}"#
+    )
+}
+
+#[tokio::test]
+async fn a_user_deploy_cannot_mint_through_the_registry_lookup() {
+    let runtime = runtime().await;
+    let alice = key();
+    let term = through_lookup(
+        "rho:rev:genesis",
+        "mint",
+        &format!(r#"[("{}", 1000000)]"#, alice.address),
+    );
+    let errors = eval_as(&runtime, &alice, &term).await;
+    assert!(take(&runtime, "found").await.is_empty(), "{errors:?}");
+    assert!(!errors.is_empty());
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 0);
+    assert_eq!(supply(&runtime), 0);
+}
+
+#[tokio::test]
+async fn a_user_deploy_cannot_mint_bonds_through_the_registry_lookup() {
+    let runtime = runtime().await;
+    let alice = key();
+    let term = through_lookup(
+        "rho:rev:genesis",
+        "bonds",
+        &format!(r#"[("{}".hexToBytes(), 1000000)]"#, hex::encode(&alice.pk.bytes)),
+    );
+    let errors = eval_as(&runtime, &alice, &term).await;
+    assert!(take(&runtime, "found").await.is_empty(), "{errors:?}");
+    assert!(!errors.is_empty());
+    assert_eq!(supply(&runtime), 0);
+}
+
+#[tokio::test]
+async fn a_user_deploy_cannot_reach_an_fs_native_urn_through_the_registry_lookup() {
+    let runtime = runtime().await;
+    let alice = key();
+    let urn = format!(
+        "{}removeDir",
+        rholang::rust::interpreter::io::FS_NATIVE_URN_PREFIX_VERSIONED
+    );
+    let errors = eval_as(&runtime, &alice, &through_lookup(&urn, "x", "Nil")).await;
+    assert!(take(&runtime, "found").await.is_empty(), "{errors:?}");
+    assert!(!errors.is_empty());
+}
+
+#[tokio::test]
+async fn lifting_the_fs_filter_alone_does_not_expose_the_genesis_mint() {
+    let runtime = runtime().await;
+    runtime.disable_fs_native_urn_filter();
+    let alice = key();
+    let errors = eval_as(&runtime, &alice, &mint_term(&[(&alice.address, 1_000)])).await;
+    assert!(errors.iter().any(|e| e.contains("reserved for genesis")), "{errors:?}");
+    let term = through_lookup(
+        "rho:rev:genesis",
+        "mint",
+        &format!(r#"[("{}", 1000)]"#, alice.address),
+    );
+    let errors = eval_as(&runtime, &alice, &term).await;
+    assert!(errors.iter().any(|e| e.contains("reserved for genesis")), "{errors:?}");
+    assert!(take(&runtime, "found").await.is_empty());
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 0);
+    assert_eq!(supply(&runtime), 0);
+}
+
+#[tokio::test]
+async fn a_genesis_handle_kept_past_genesis_is_refused_by_the_handler() {
+    let runtime = runtime().await;
+    let alice = key();
+    {
+        let _genesis = runtime.enter_genesis_phase();
+        let errors = eval_as(
+            &runtime,
+            &alice,
+            r#"new g(`rho:rev:genesis`) in { @"kept"!(*g) }"#,
+        )
+        .await;
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    assert!(!runtime.in_genesis_phase());
+    let term = format!(
+        r#"for (g <- @"kept") {{ g!("mint", [("{}", 1000)], "out") }}"#,
+        alice.address
+    );
+    let errors = eval_as(&runtime, &alice, &term).await;
+    assert!(errors.iter().any(|e| e.contains("only during genesis")), "{errors:?}");
+    assert!(take(&runtime, "out").await.is_empty());
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 0);
+    assert_eq!(supply(&runtime), 0);
 }
