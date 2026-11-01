@@ -1649,6 +1649,22 @@ fn setup_maps_and_refs(
         proc_defs.push((fixed_channel, 5 as Arity, None, BodyRefs::FS_REMOVE_DIR));
     }
 
+    // Wildcard URNs (`rho:lib:*:…`, `rho:registry:1.*`, …) have no stable
+    // static binding — their resolution depends on registry state that is
+    // not known at genesis time. The `new chan(URI)` sugar compiles them to
+    // a dynamic `registry_lookup` round-trip; registering one here would
+    // short-circuit that path and silently freeze "latest" at genesis.
+    // Fail loudly instead.
+    for urn in urn_map.keys() {
+        if super::registry::versioned_urn::is_wildcard_urn(urn) {
+            panic!(
+                "wildcard URN `{urn}` registered in urn_map; wildcard URNs \
+                 must be resolved dynamically via `new chan(`URN`)` sugar \
+                 and cannot be registered as static Definitions"
+            );
+        }
+    }
+
     (
         block_data_ref,
         invalid_blocks,
