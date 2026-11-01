@@ -376,6 +376,11 @@ SOURCE_MUTANT_EVIDENCE = {
     "RAC-RS-38": ("assert!(faulted.receive_index().is_none());",),
     "RAC-RS-39": ('"{step:?}: the accelerator never changes a selection or a checkpoint"',),
     "RAC-RS-40": ("assert!(store.resolve_receive(&forged).is_none());",),
+    "RAC-RS-41": ('"a prior-revision id never resolves"',),
+    "RAC-RS-42": ('"persist, peeks and the continuation each keep a distinct identity"',),
+    "RAC-RS-43": ('"a cleared group leaves no occurrence group, not even an empty one"',),
+    "RAC-RS-44": ('"a history load extends the maintained scope"',),
+    "RAC-RS-45": ("assert_eq!(keys, expected_keys(every_group.iter().copied()));",),
 }
 PRODUCTION_WITNESSES = {
     "production_answers_equal_the_derivation_over_generated_stores": (

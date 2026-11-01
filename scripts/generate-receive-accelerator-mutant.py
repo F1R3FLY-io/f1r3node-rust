@@ -628,6 +628,88 @@ MUTATIONS = {
         "test_file": ACCELERATOR_BINDING_TESTS,
         "test": "forged_alias_source_targets_never_resolve_at_current_tokens",
     },
+    "RAC-RS-41": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-13",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "resolve skips the revision check, so an id from a prior revision resolves while its target is still "
+            "stored (production analogue of RAC-RS-14)"
+        ),
+        "before": "        let found = match self.revision == *current {\n",
+        "after": "        let found = match true {\n",
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_ids_and_handles_from_a_prior_revision_or_generation_never_answer",
+    },
+    "RAC-RS-42": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-11",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "a resting target's identity is its continuation body, which erases the persist flag and peeks "
+            "(production analogue of RAC-RS-15)"
+        ),
+        "before": "                (Cow::Borrowed(view.identity()), Cow::Borrowed(view.source_suffix()))\n",
+        "after": "                (Cow::Borrowed(view.body()), Cow::Borrowed(view.source_suffix()))\n",
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_metadata_distinct_records_keep_distinct_ids",
+    },
+    "RAC-RS-43": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-17",),
+        "source": RECORD_INDEX,
+        "description": (
+            "a final removal keeps the group's occurrence keys in the published index "
+            "(production analogue of RAC-RS-16)"
+        ),
+        "before": "                (true, false) => replacement.remove_group(prefix).is_ok(),\n",
+        "after": "                (true, false) => true,\n",
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_final_removal_clears_the_maintained_group",
+    },
+    "RAC-RS-44": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-19",),
+        "source": RECORD_INDEX,
+        "description": (
+            "a history load skips occurrence index maintenance, so the loaded group is missing from the published "
+            "index (a production control with no harness analogue)"
+        ),
+        "before": (
+            "        self.count_load();\n"
+            "        self.maintain_receive_index(&prefix, receive_support);\n"
+        ),
+        "after": (
+            "        self.count_load();\n"
+            "        let _ = receive_support;\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_history_loads_extend_the_maintained_scope",
+    },
+    "RAC-RS-45": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-06",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "an occurrence key is built from the decoded raw channel image instead of its escaped frame "
+            "(production analogue of RAC-CSMUT-03)"
+        ),
+        "before": "    key.extend_from_slice(frame);\n",
+        "after": (
+            "    let escaped = &frame[..frame.len().saturating_sub(2)];\n"
+            "    let mut raw = Vec::with_capacity(escaped.len());\n"
+            "    let mut bytes = escaped.iter();\n"
+            "    while let Some(byte) = bytes.next() {\n"
+            "        raw.push(*byte);\n"
+            "        if *byte == 0x00 {\n"
+            "            bytes.next();\n"
+            "        }\n"
+            "    }\n"
+            "    key.extend_from_slice(&raw);\n"
+        ),
+        "test_file": OCCURRENCE_INDEX_TESTS,
+        "test": "occurrence_keys_are_exact_under_prefix_aliased_images",
+    },
 }
 
 

@@ -1280,6 +1280,61 @@
         "source": "rspace++/src/rspace/receive_accelerator.rs",
         "test_source": "rspace++/tests/hot_store/receive_accelerator_bindings.rs",
         "test_target": "forged_alias_source_targets_never_resolve_at_current_tokens"
+      },
+      {
+        "description": "resolve skips the revision check, so an id from a prior revision resolves while its target is still stored (production analogue of RAC-RS-14)",
+        "formal": [
+          "RAC-RC-13"
+        ],
+        "id": "RAC-RS-41",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/receive_accelerator.rs",
+        "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+        "test_target": "production_ids_and_handles_from_a_prior_revision_or_generation_never_answer"
+      },
+      {
+        "description": "a resting target's identity is its continuation body, which erases the persist flag and peeks (production analogue of RAC-RS-15)",
+        "formal": [
+          "RAC-RC-11"
+        ],
+        "id": "RAC-RS-42",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/receive_accelerator.rs",
+        "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+        "test_target": "production_metadata_distinct_records_keep_distinct_ids"
+      },
+      {
+        "description": "a final removal keeps the group's occurrence keys in the published index (production analogue of RAC-RS-16)",
+        "formal": [
+          "RAC-RC-17"
+        ],
+        "id": "RAC-RS-43",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/record_index.rs",
+        "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+        "test_target": "production_final_removal_clears_the_maintained_group"
+      },
+      {
+        "description": "a history load skips occurrence index maintenance, so the loaded group is missing from the published index (a production control with no harness analogue)",
+        "formal": [
+          "RAC-RC-19"
+        ],
+        "id": "RAC-RS-44",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/record_index.rs",
+        "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+        "test_target": "production_history_loads_extend_the_maintained_scope"
+      },
+      {
+        "description": "an occurrence key is built from the decoded raw channel image instead of its escaped frame (production analogue of RAC-CSMUT-03)",
+        "formal": [
+          "RAC-RC-06"
+        ],
+        "id": "RAC-RS-45",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/receive_accelerator.rs",
+        "test_source": "rspace++/tests/receive_accelerator/occurrence_index.rs",
+        "test_target": "occurrence_keys_are_exact_under_prefix_aliased_images"
       }
     ]
   },
@@ -1312,8 +1367,8 @@
     "rspace++/tests/support/receive_accelerator_adoption.rs": "2951e1a411f26b6733c18ffd14dc34cb587b17ac1e7f457d873d6a0392304798",
     "rspace++/tests/support/receive_accelerator_production.rs": "8ee93fcc4d0ca7d78c314263e685ecbe6effcd6a99e259a5e7df0ee9f6ef3998",
     "rspace++/tests/support/receive_occurrence_reference.rs": "610ae1a9888a343957f70abe1ed0414a8d1a70e9f47219f38c352a3329d3b9fc",
-    "scripts/check-receive-accelerator-obligations.py": "c99454a37a3e95584e720487cfb8a98976c969e8a7db609e403ebd9813914ffb",
-    "scripts/generate-receive-accelerator-mutant.py": "7caed63b513c491395997abbca1f3f07a68cad6e1203fa7bbcec9c528af6cbfb"
+    "scripts/check-receive-accelerator-obligations.py": "7a03da17637cd308988edb736d84fcf3a28a1081a2cf1782a5b995214507bb06",
+    "scripts/generate-receive-accelerator-mutant.py": "0db8b254a94e23715a781865bc1d3df767d952f433d4b2139b9025d78550734b"
   },
   "tla": {
     "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.cfg",
