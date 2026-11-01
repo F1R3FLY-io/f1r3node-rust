@@ -957,3 +957,61 @@ async fn a_grant_settles_draws_inside_its_window_in_play_and_replay() {
         late.settled_root
     );
 }
+
+#[tokio::test]
+async fn a_user_deploy_cannot_reach_the_genesis_mint_through_the_registry_lookup() {
+    use casper::rust::v6::genesis_wallets::read_genesis_supply;
+
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[(&alice, 100_000)]).await;
+    let supply = read_genesis_supply(&rm, &genesis).await.unwrap();
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let leak = |command: &str, arg: String| {
+        format!(
+            r#"new lookup(`rho:internal:registry_lookup`), ret in {{
+                 lookup!("rho:rev:genesis", *ret) |
+                 for (g <- ret) {{ g!("{command}", {arg}, "out") }}
+               }}"#
+        )
+    };
+    let played = executor
+        .execute(
+            &genesis,
+            vec![
+                envelope(
+                    &leak("mint", format!(r#"[("{}", 1000000)]"#, alice.address)),
+                    1,
+                    &alice,
+                    50_000,
+                    1,
+                ),
+                envelope(
+                    &leak(
+                        "bonds",
+                        format!(
+                            r#"[("{}".hexToBytes(), 1000000)]"#,
+                            hex::encode(&alice.pk.bytes)
+                        ),
+                    ),
+                    2,
+                    &alice,
+                    50_000,
+                    1,
+                ),
+            ],
+            block_data(&proposer),
+        )
+        .await
+        .unwrap();
+    assert!(played.runs.iter().all(|r| r.failed));
+    let post = played.settled_root.clone();
+    assert_eq!(read_genesis_supply(&rm, &post).await.unwrap(), supply);
+    assert_eq!(
+        balance(&rm, &post, &alice).await,
+        100_000 - played.settlement.debited()
+    );
+    assert_eq!(
+        replay(&executor, &genesis, &played, block_data(&proposer)).await.settled_root,
+        post
+    );
+}

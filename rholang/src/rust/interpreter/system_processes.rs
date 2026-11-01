@@ -693,6 +693,7 @@ impl ProcessContext {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        urn_phase: UrnPhase,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -711,6 +712,7 @@ impl ProcessContext {
                 ollama_service,
                 grpc_client_service,
                 chromadb_service,
+                urn_phase,
             ),
         }
     }
@@ -860,6 +862,41 @@ impl DeployData {
     }
 }
 
+#[derive(Clone)]
+pub struct UrnPhase {
+    pub fs_native_filtered: Arc<std::sync::atomic::AtomicBool>,
+    pub genesis: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl UrnPhase {
+    pub fn refusal(&self, urn: &str) -> Option<String> {
+        urn_refusal(
+            urn,
+            self.fs_native_filtered
+                .load(std::sync::atomic::Ordering::Acquire),
+            self.genesis.load(std::sync::atomic::Ordering::Acquire),
+        )
+    }
+
+    pub fn is_genesis(&self) -> bool { self.genesis.load(std::sync::atomic::Ordering::Acquire) }
+}
+
+pub fn urn_refusal(urn: &str, fs_native_filtered: bool, genesis: bool) -> Option<String> {
+    if fs_native_filtered && urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
+        return Some(format!(
+            "urn `{urn}` is not resolvable in this phase; \
+             rho:io:fs:native:* URNs are reserved for the \
+             genesis-blessed FsGenesis deploy — user code \
+             must instead go through the Fs cap published \
+             at genesis"
+        ));
+    }
+    if !genesis && rev_stack::genesis::is_genesis_only_urn(urn) {
+        return Some(format!("urn `{urn}` is reserved for genesis"));
+    }
+    None
+}
+
 // TODO: Remove Clone
 #[derive(Clone)]
 pub struct SystemProcesses {
@@ -872,6 +909,7 @@ pub struct SystemProcesses {
     /// legacy URNs.
     pub urn_map: Arc<HashMap<String, Par>>,
     openai_service: SharedOpenAIService,
+    urn_phase: UrnPhase,
     ollama_service: SharedOllamaService,
     grpc_client_service: GrpcClientService,
     pretty_printer: PrettyPrinter,
@@ -890,6 +928,7 @@ impl SystemProcesses {
         ollama_service: SharedOllamaService,
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
+        urn_phase: UrnPhase,
     ) -> Self {
         SystemProcesses {
             dispatcher,
@@ -902,6 +941,7 @@ impl SystemProcesses {
             grpc_client_service,
             pretty_printer: PrettyPrinter::new(),
             chromadb_service,
+            urn_phase,
         }
     }
 
@@ -1200,6 +1240,12 @@ impl SystemProcesses {
             return Err(illegal_argument_error("rev_genesis"));
         };
 
+        if !self.urn_phase.is_genesis() {
+            return Err(InterpreterError::ReduceError(
+                "rho:rev:genesis runs only during genesis".to_string(),
+            ));
+        }
+
         let [first_par, second_par, ack] = args.as_slice() else {
             return Err(illegal_argument_error("rev_genesis"));
         };
@@ -1339,6 +1385,10 @@ impl SystemProcesses {
             .ok_or_else(|| {
                 illegal_argument_error("registry_lookup: urn arg must be a String or Uri")
             })?;
+
+        if let Some(reason) = self.urn_phase.refusal(&urn_str) {
+            return Err(InterpreterError::ReduceError(reason));
+        }
 
         // 1. Legacy URN: serve directly from urn_map.
         if let Some(stored) = self.urn_map.get(&urn_str) {

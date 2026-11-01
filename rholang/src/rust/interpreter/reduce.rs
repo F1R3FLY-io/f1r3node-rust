@@ -264,6 +264,7 @@ pub struct DebruijnInterpreter {
     /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
     /// system-process closures that clone the reducer.
     pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
+    pub genesis_phase: Arc<std::sync::atomic::AtomicBool>,
     pub deploy_data: Arc<RwLock<DeployData>>,
 }
 
@@ -1521,25 +1522,17 @@ impl DebruijnInterpreter {
         // Genesis composition toggles the flag off (yet-to-land
         // runtime slice) so FsGenesis can bind `fsRead`/`fsWrite`/...
         // directly in its outer new-scope.
-        if self
+        let fs_native_filtered = self
             .filter_fs_native_urns
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            for urn in &new.uri {
-                if urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
-                    return Err(InterpreterError::ReduceError(format!(
-                        "urn `{urn}` is not resolvable in this phase; \
-                         rho:io:fs:native:* URNs are reserved for the \
-                         genesis-blessed FsGenesis deploy — user code \
-                         must instead go through the Fs cap published \
-                         at genesis"
-                    )));
-                }
-                if super::accounting::rev_stack::genesis::is_genesis_only_urn(urn) {
-                    return Err(InterpreterError::ReduceError(format!(
-                        "urn `{urn}` is reserved for genesis"
-                    )));
-                }
+            .load(std::sync::atomic::Ordering::Acquire);
+        let genesis = self
+            .genesis_phase
+            .load(std::sync::atomic::Ordering::Acquire);
+        for urn in &new.uri {
+            if let Some(reason) =
+                super::system_processes::urn_refusal(urn, fs_native_filtered, genesis)
+            {
+                return Err(InterpreterError::ReduceError(reason));
             }
         }
 
@@ -7932,6 +7925,7 @@ impl DebruijnInterpreter {
             // Default: reject fs native URNs.  Genesis composition
             // flips the flag off via a yet-to-land runtime slice.
             filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            genesis_phase: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             deploy_data: Arc::new(RwLock::new(DeployData::empty())),
         });
 
