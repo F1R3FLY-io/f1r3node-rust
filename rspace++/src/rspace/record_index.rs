@@ -1689,14 +1689,14 @@ where
         if let Some(current) = &self.receive_index {
             let mut replacement = current.clone();
             let maintained = match (before, after) {
-                (false, true) => replacement.insert_group(prefix),
-                (true, false) => replacement.remove_group(prefix),
-                (false, false) | (true, true) => Ok(()),
+                (false, true) => replacement.insert_group(prefix).is_ok(),
+                (true, false) => replacement.remove_group(prefix).is_ok(),
+                (false, false) | (true, true) => true,
             };
-            self.receive_index = match maintained {
-                Ok(()) => Some(replacement),
-                Err(_) => None,
-            };
+            #[cfg(test)]
+            let maintained = maintained &&
+                !super::receive_accelerator::injected_maintenance_fault(before, after);
+            self.receive_index = maintained.then_some(replacement);
         }
         #[cfg(test)]
         self.assert_receive_index_coherent();

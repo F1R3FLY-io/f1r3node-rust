@@ -96,5 +96,18 @@ pub(crate) fn channel_frame<C: RhoPathEncode>(channel: &C) -> Vec<u8> {
 }
 
 #[cfg(test)]
+thread_local! {
+    static MAINTENANCE_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn arm_maintenance_fault() { MAINTENANCE_FAULT.with(|armed| armed.set(true)); }
+
+#[cfg(test)]
+pub(crate) fn injected_maintenance_fault(before: bool, after: bool) -> bool {
+    before != after && MAINTENANCE_FAULT.with(|armed| armed.replace(false))
+}
+
+#[cfg(test)]
 #[path = "../../tests/receive_accelerator/occurrence_index.rs"]
 mod occurrence_index_tests;

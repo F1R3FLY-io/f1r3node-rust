@@ -7801,7 +7801,7 @@
       "checker": "scripts/check-split-index-authority-obligations.py",
       "family": "split_index_authority",
       "manifest": "formal/split_index_authority_obligations.generated.json",
-      "manifest_sha256": "53ce4854aa4976fe5061ab01b39654f9a322818fc956135463e5f533a0d52417",
+      "manifest_sha256": "f956e30de786f3d93dabd59fb4f20329c687f7b4be7412d387abd563bba846ae",
       "obligations": {
         "causal_mutants": [
           {
@@ -7899,7 +7899,7 @@
           }
         ],
         "runtime": "rspace++/src/rspace/record_index.rs",
-        "runtime_sha256": "a794e59a17b3d6021a1b04cf190c4cbe903a0e1df1e66d4b0256cf869b9800f3"
+        "runtime_sha256": "2cbe821dd73c33bf1564e6fb8e0daa431d2a9444f963efc607c0c080959ae8c9"
       }
     },
     {

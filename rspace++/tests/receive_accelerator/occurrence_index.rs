@@ -230,6 +230,18 @@ fn mutate_scripted(store: &mut TestStore, groups: &[Vec<RawChannel>]) {
     assert!(remove_slot(store, &groups[8], 0));
 }
 
+type Mutation = fn(&mut TestStore, &[Vec<RawChannel>]);
+
+fn assert_same_authority(left: &TestStore, right: &TestStore) {
+    assert_eq!(left.loaded_records(), right.loaded_records());
+    assert_eq!(left.installed_records(), right.installed_records());
+    assert_eq!(canonical_groups(left), canonical_groups(right));
+    assert!(left.pending_delta() == right.pending_delta());
+    assert_eq!(content_journal(left), content_journal(right));
+    assert_eq!(source_journal(left), source_journal(right));
+    assert_eq!(left.loads(), right.loads());
+}
+
 #[test]
 fn occurrence_keys_are_exact_under_prefix_aliased_images() {
     let groups = universe();
@@ -519,6 +531,56 @@ fn published_snapshot_builds_are_maintained_like_rebuilt_indexes() {
     assert!(put(&mut store, &groups[4], continuation("h", 9, false)));
     assert!(remove_slot(&mut store, &groups[0], 0));
     assert_index_matches_support(&store, &groups);
+}
+
+#[test]
+fn faulted_maintenance_publishes_nothing() {
+    let groups = universe();
+    let scenarios: [(Mutation, Mutation); 4] = [
+        (
+            |store, groups| assert!(put(store, &groups[5], continuation("resident", 1, false))),
+            |store, groups| {
+                assert!(!put(store, &groups[5], continuation("resident", 9, false)));
+                assert!(store.receive_index().is_some());
+                assert!(put(store, &groups[7], continuation("inserted", 2, false)));
+            },
+        ),
+        (
+            |store, groups| assert!(put(store, &groups[8], continuation("only", 3, false))),
+            |store, groups| assert!(remove_slot(store, &groups[8], 0)),
+        ),
+        (|_, _| {}, |store, groups| store.install(&groups[6], continuation("installed", 4, true))),
+        (
+            |_, _| {},
+            |store, groups| {
+                store.set_group(groups[9].clone(), vec![continuation("loaded", 5, false)])
+            },
+        ),
+    ];
+    for (setup, step) in scenarios {
+        let mut faulted = TestStore::new();
+        let mut maintained = TestStore::new();
+        for store in [&mut faulted, &mut maintained] {
+            assert!(store.rebuild_receive_index());
+            setup(store, &groups);
+        }
+        arm_maintenance_fault();
+        step(&mut faulted, &groups);
+        assert!(faulted.receive_index().is_none());
+        assert!(!injected_maintenance_fault(false, true));
+        step(&mut maintained, &groups);
+        assert_index_matches_support(&maintained, &groups);
+        assert_same_authority(&faulted, &maintained);
+        for store in [&mut faulted, &mut maintained] {
+            assert!(put(store, &groups[4], continuation("after", 6, false)));
+        }
+        assert!(faulted.receive_index().is_none());
+        assert_index_matches_support(&maintained, &groups);
+        assert_same_authority(&faulted, &maintained);
+        assert!(faulted.rebuild_receive_index());
+        assert!(index_of(&faulted).same_keys(index_of(&maintained)));
+        assert_index_matches_support(&faulted, &groups);
+    }
 }
 
 #[test]
