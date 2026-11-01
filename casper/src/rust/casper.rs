@@ -326,6 +326,15 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     // using. The ppm remains the sole DECISION input; this f32 is display-only.
     casper_shard_conf.fault_tolerance_threshold = (onchain_ppm as f64 / 1_000_000.0) as f32;
 
+    if approved_block.header.version == crate::rust::v6::resource_policy::PROTOCOL_V6 {
+        tracing::info!(
+            target: "f1r3fly.v6",
+            "the approved block is protocol 6: this node runs the v6 executor"
+        );
+        casper_shard_conf.v6_order_then_execute = true;
+        casper_shard_conf.casper_version = approved_block.header.version;
+    }
+
     // Same adoption, same reasoning, for the parameters the VALIDITY rules
     // fork on: parent spread (max-parent-depth), expiry and repeat-deploy
     // windows (deploy-lifespan), and the phlo floor (min-phlo-price). The

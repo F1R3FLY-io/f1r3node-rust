@@ -843,6 +843,7 @@ mod tests {
                     native_token_name: "F1R3CAP".to_string(),
                     native_token_symbol: "F1R3".to_string(),
                     native_token_decimals: 8,
+                    protocol_version: casper::rust::casper_conf::default_protocol_version(),
                 },
                 genesis_ceremony: casper::rust::casper_conf::GenesisCeremony {
                     required_signatures: 0,

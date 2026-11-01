@@ -9,7 +9,7 @@ use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::v6::backend::ExecutionBackend;
 use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
 use casper::rust::v6::body::{Attestation, StateHash, V6Body, V6Records};
-use casper::rust::v6::executor::BlockExecutor;
+use casper::rust::v6::executor::{BlockExecutor, BlockTimings};
 use casper::rust::v6::record::ExecutionRecord;
 use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 use casper::rust::v6::validity::check_structure;
@@ -243,23 +243,42 @@ async fn phase_timings_by_block_size() {
             .map(|index| offer(&payer(index), &format!("@\"timed-{index}\"!({index})"), index as i64 + 1))
             .collect();
         let block = block(&host, 1, deploys);
-        let mut best = Duration::MAX;
+        let mut best: Option<(Duration, BlockTimings, usize)> = None;
         for _ in 0..3 {
             let started = Instant::now();
-            let record = host
+            let (record, timings) = host
                 .executor
-                .execute(&pre_root(&host), &block)
+                .execute_timed(&pre_root(&host), &block)
                 .await
                 .expect("the block executes");
-            best = best.min(started.elapsed());
+            let total = started.elapsed();
             assert!(outcomes(&record)
                 .iter()
                 .all(|outcome| *outcome == EnvelopeOutcome::Completed));
+            if best.as_ref().is_none_or(|(b, _, _)| total < *b) {
+                best = Some((total, timings, record.encode().len()));
+            }
         }
+        let (total, t, record_bytes) = best.expect("three runs");
+        let e = t.envelopes;
+        let execution = e.gate + e.runs + e.merge + e.settlement;
         println!(
-            "envelopes={size} block={best:?} per_envelope={:?} envelopes_per_second={:.2}",
-            best / size as u32,
-            size as f64 / best.as_secs_f64(),
+            "envelopes={size} block={total:?} gate={:?} runs={:?} (spawn={:?} setup={:?} eval={:?} checkpoint={:?}, summed over runs) merge={:?} settlement={:?} close_block={:?} audit={:?} record={:?} record_bytes={record_bytes} settlement_share={:.2}% execution_per_envelope={:?} envelopes_per_second={:.2} execution_envelopes_per_second={:.2}",
+            e.gate,
+            e.runs,
+            e.run_spawn,
+            e.run_setup,
+            e.run_eval,
+            e.run_checkpoint,
+            e.merge,
+            e.settlement,
+            t.close_block,
+            t.audit,
+            t.record,
+            100.0 * e.settlement.as_secs_f64() / total.as_secs_f64(),
+            execution / size as u32,
+            size as f64 / total.as_secs_f64(),
+            size as f64 / execution.as_secs_f64(),
         );
     }
 }
@@ -326,4 +345,112 @@ async fn record_bytes_per_envelope_and_validation_at_the_byte_cap() {
         started.elapsed()
     );
     assert!(checked.is_ok(), "{:?}", checked.err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "measurement: where one envelope's run time goes"]
+async fn one_envelope_profile() {
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    let rm = mk_runtime_manager("v6-profile", Some(Genesis::default_mergeable_tags_arc())).await;
+    let host = launch(1).await;
+    let root = Blake2b256Hash::from_bytes_prost(&pre_root(&host));
+    let n = 32u32;
+    let mut spawn = Duration::ZERO;
+    let mut reset = Duration::ZERO;
+    let mut checkpoint = Duration::ZERO;
+    let mut compile = Duration::ZERO;
+    for i in 0..n {
+        let started = Instant::now();
+        let mut runtime = rm.spawn_runtime().await.unwrap();
+        spawn += started.elapsed();
+        let started = Instant::now();
+        let _ = runtime.reset(&root).await;
+        reset += started.elapsed();
+        let started = Instant::now();
+        let _ = runtime.create_checkpoint().await;
+        checkpoint += started.elapsed();
+        let started = Instant::now();
+        Compiler::source_to_adt(&format!("@\"one-{i}\"!({i})")).unwrap();
+        compile += started.elapsed();
+    }
+    println!(
+        "per envelope: spawn_runtime={:?} reset={:?} empty_checkpoint={:?} compile_one_send={:?}",
+        spawn / n,
+        reset / n,
+        checkpoint / n,
+        compile / n
+    );
+
+    let empty = block(&host, 1, vec![]);
+    let mut close = Duration::MAX;
+    for _ in 0..3 {
+        let (_, t) = host
+            .executor
+            .execute_timed(&pre_root(&host), &empty)
+            .await
+            .unwrap();
+        close = close.min(t.close_block);
+    }
+    println!("empty block: close_block={close:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "measurement: the compute charge of representative terms"]
+async fn compute_charge_corpus() {
+    let host = launch(1).await;
+    let other = VaultAddress::from_public_key(&Secp256k1.to_public(&payer(5)))
+        .unwrap()
+        .to_base58();
+    let corpus: Vec<(&str, String)> = vec![
+        ("nil", "Nil".to_string()),
+        ("one send", "@\"c\"!(1)".to_string()),
+        ("one receive", "for (_ <- @\"r\") { Nil }".to_string()),
+        ("one COMM", "new x in { x!(1) | for (_ <- x) { Nil } }".to_string()),
+        ("ten COMMs", "new x in { contract x(@n) = { Nil } | x!(0) | x!(1) | x!(2) | x!(3) | x!(4) | x!(5) | x!(6) | x!(7) | x!(8) | x!(9) }".to_string()),
+        ("join", "new x, y in { x!(1) | y!(2) | for (_ <- x & _ <- y) { Nil } }".to_string()),
+        ("peek", "new x in { x!(1) | for (_ <<- x) { Nil } }".to_string()),
+        ("arithmetic", "new x in { x!(1 + 2 * 3 - 4) | for (_ <- x) { Nil } }".to_string()),
+        ("list of 100", format!("@\"l\"!({:?})", (0..100).collect::<Vec<_>>())),
+        ("string of 1000", format!("@\"s\"!(\"{}\")", "a".repeat(1000))),
+        (
+            "native transfer",
+            format!("new w(`rho:rev:wallet`), d(`rho:system:deployerId`) in {{ w!(\"transfer\", (*d, \"{other}\", 10), \"out\") }}"),
+        ),
+        ("stack literal", "new d(`rho:system:deployerId`), slot in { slot :: slot :: d :: () }".to_string()),
+    ];
+    println!("| term | outcome | COMM phlo | compute phlo | log events |");
+    for (i, (name, term)) in corpus.iter().enumerate() {
+        let block = block(&host, 1, vec![offer(&payer(0), term, i as i64 + 1)]);
+        let record = host
+            .executor
+            .execute(&pre_root(&host), &block)
+            .await
+            .expect("the corpus block executes");
+        let e = &record.entries()[0].executed;
+        println!(
+            "| {name} | {:?} | {} | {} | {} |",
+            e.outcome,
+            e.comm_phlo,
+            e.compute_phlo,
+            e.user_log.len()
+        );
+    }
+}
+
+#[test]
+#[ignore = "prints the keys and addresses of the CLI end-to-end run"]
+fn cli_end_to_end_keys() {
+    for (name, byte) in [("validator", 0x11u8), ("payer", 0x22), ("payee", 0x33)] {
+        let sk = PrivateKey::from_bytes(&[byte; 32]);
+        let pk = Secp256k1.to_public(&sk);
+        println!(
+            "{name} sk={} pk={} address={}",
+            hex::encode(sk.bytes.as_ref()),
+            hex::encode(pk.bytes.as_ref()),
+            VaultAddress::from_public_key(&pk).unwrap().to_base58()
+        );
+    }
 }

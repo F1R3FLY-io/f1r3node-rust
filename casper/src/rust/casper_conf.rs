@@ -395,7 +395,12 @@ pub struct GenesisBlockData {
     /// `native-token-name`. Operators MUST set this in config before genesis.
     #[serde(rename = "native-token-decimals")]
     pub native_token_decimals: u32,
+
+    #[serde(rename = "protocol-version", default = "default_protocol_version")]
+    pub protocol_version: i64,
 }
+
+pub fn default_protocol_version() -> i64 { crate::rust::casper::CASPER_PROTOCOL_VERSION }
 
 /// Maximum decimal places accepted for native token. Matches the de-facto
 /// ERC-20 standard (ETH uses 18). Values above 18 exceed IEEE-754 double
@@ -679,6 +684,7 @@ mod native_token_validation_tests {
             native_token_name: "F1R3FLY".into(),
             native_token_symbol: "F1R3".into(),
             native_token_decimals: 8,
+            protocol_version: default_protocol_version(),
         }
     }
 

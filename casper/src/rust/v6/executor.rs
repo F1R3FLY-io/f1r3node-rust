@@ -52,6 +52,27 @@ pub struct ExecutedBlock {
     pub gate: GateOutcome,
     pub settlement: Settlement,
     pub settled_root: StateHash,
+    pub timings: PhaseTimings,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PhaseTimings {
+    pub gate: std::time::Duration,
+    pub runs: std::time::Duration,
+    pub run_spawn: std::time::Duration,
+    pub run_setup: std::time::Duration,
+    pub run_eval: std::time::Duration,
+    pub run_checkpoint: std::time::Duration,
+    pub merge: std::time::Duration,
+    pub settlement: std::time::Duration,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BlockTimings {
+    pub envelopes: PhaseTimings,
+    pub close_block: std::time::Duration,
+    pub audit: std::time::Duration,
+    pub record: std::time::Duration,
 }
 
 struct MergedBlock {
@@ -67,6 +88,7 @@ struct EnvelopeEffect {
     processed: ProcessedDeploy,
     number_channels: NumberChannelsEndVal,
     journal: Vec<JournalEntry>,
+    timing: [std::time::Duration; 4],
 }
 
 pub fn comm_count(log: &[Event]) -> u64 {
@@ -123,7 +145,9 @@ impl EnvelopeExecutor {
         block_data: BlockData,
         reservations: Vec<(WalletOwner, Reservation)>,
     ) -> Result<EnvelopeEffect, CasperError> {
+        let started = std::time::Instant::now();
         let mut ops = RuntimeOps::new(self.runtime_manager.spawn_runtime().await?);
+        let spawned = started.elapsed();
         ops.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(pre_root))
             .await
@@ -134,7 +158,9 @@ impl EnvelopeExecutor {
         let cells = runtime_cells(&ops.runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
+        let setup = started.elapsed();
         let (processed, number_channels) = ops.process_deploy_with_mergeable_data(envelope).await?;
+        let evaluated = started.elapsed();
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
         let post_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
@@ -143,6 +169,12 @@ impl EnvelopeExecutor {
             processed,
             number_channels,
             journal,
+            timing: [
+                spawned,
+                setup - spawned,
+                evaluated - setup,
+                started.elapsed() - evaluated,
+            ],
         })
     }
 
@@ -181,6 +213,7 @@ impl EnvelopeExecutor {
             processed: recorded,
             number_channels,
             journal,
+            timing: Default::default(),
         })
     }
 
@@ -191,6 +224,7 @@ impl EnvelopeExecutor {
             processed,
             number_channels: NumberChannelsEndVal::default(),
             journal: Vec::new(),
+            timing: Default::default(),
         }
     }
 
@@ -290,8 +324,16 @@ impl EnvelopeExecutor {
         gate: GateOutcome,
         effects: Vec<EnvelopeEffect>,
         block_data: &BlockData,
+        mut timings: PhaseTimings,
     ) -> Result<ExecutedBlock, CasperError> {
         let admitted = gate.admitted();
+        for effect in &effects {
+            timings.run_spawn += effect.timing[0];
+            timings.run_setup += effect.timing[1];
+            timings.run_eval += effect.timing[2];
+            timings.run_checkpoint += effect.timing[3];
+        }
+        let started = std::time::Instant::now();
         let MergedBlock {
             mid_root,
             runs,
@@ -299,11 +341,14 @@ impl EnvelopeExecutor {
             kept: merged,
             journals,
         } = self.merge(pre_root, effects, &admitted)?;
+        timings.merge = started.elapsed();
+        let started = std::time::Instant::now();
         let (settlement, settled_root) = self
             .settle(
                 &mid_root, &inputs, &gate, &runs, &journals, &merged, block_data,
             )
             .await?;
+        timings.settlement = started.elapsed();
         Ok(ExecutedBlock {
             mid_root,
             runs,
@@ -312,6 +357,7 @@ impl EnvelopeExecutor {
             gate,
             settlement,
             settled_root,
+            timings,
         })
     }
 
@@ -321,10 +367,12 @@ impl EnvelopeExecutor {
         envelopes: Vec<Signed<DeployData>>,
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
+        let started = std::time::Instant::now();
         let mut inputs = gate_inputs(envelopes.iter())?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
         let gate = gate_block(&reader, &PhloLimitDemand, &inputs)?;
+        let gate_time = started.elapsed();
         let effects: Vec<EnvelopeEffect> = stream::iter(envelopes.into_iter().enumerate())
             .map(|(i, envelope)| {
                 let gate = &gate;
@@ -346,7 +394,12 @@ impl EnvelopeExecutor {
             .buffered(self.workers)
             .try_collect()
             .await?;
-        self.finish(pre_root, inputs, gate, effects, &block_data)
+        let timings = PhaseTimings {
+            gate: gate_time,
+            runs: started.elapsed() - gate_time,
+            ..PhaseTimings::default()
+        };
+        self.finish(pre_root, inputs, gate, effects, &block_data, timings)
             .await
     }
 
@@ -383,7 +436,7 @@ impl EnvelopeExecutor {
             .buffered(self.workers)
             .try_collect()
             .await?;
-        self.finish(pre_root, inputs, gate, effects, &block_data)
+        self.finish(pre_root, inputs, gate, effects, &block_data, PhaseTimings::default())
             .await
     }
 }
@@ -470,6 +523,58 @@ impl BlockExecutor {
         }
     }
 
+    pub async fn execute_timed(
+        &self,
+        pre_root: &StateHash,
+        block: &BlockMessage,
+    ) -> Result<(BlockRecord, BlockTimings), CasperError> {
+        require_no_slashes(&self.slashes.slashes(block)?)?;
+        let envelopes = block
+            .body
+            .deploys
+            .iter()
+            .map(|processed| processed.deploy.clone())
+            .collect();
+        let executed = self
+            .envelopes
+            .execute(pre_root, envelopes, block_data(block))
+            .await?;
+        let started = std::time::Instant::now();
+        let (post_root, _, system_deploys) = self
+            .runtime_manager
+            .compute_state(
+                &executed.settled_root,
+                vec![],
+                vec![close_block(block)],
+                block_data(block),
+                None,
+            )
+            .await?;
+        let close_block_time = started.elapsed();
+        let started = std::time::Instant::now();
+        self.audit(block, &executed.settlement, &post_root).await;
+        let audit = started.elapsed();
+        let started = std::time::Instant::now();
+        let record = BlockRecord::new(
+            block.block_hash.clone(),
+            pre_root.clone(),
+            executed.mid_root.clone(),
+            post_root,
+            entries(&executed),
+            system_deploys,
+        )
+        .and_then(|record| record.with_gate(executed.gate.entries.clone()))
+        .map(|record| record.with_settlement(executed.settlement.clone()))
+        .map_err(CasperError::RuntimeError)?;
+        let timings = BlockTimings {
+            envelopes: executed.timings,
+            close_block: close_block_time,
+            audit,
+            record: started.elapsed(),
+        };
+        Ok((record, timings))
+    }
+
     pub fn with_conservation(mut self, conservation: Arc<Conservation>) -> Self {
         self.conservation = Some(conservation);
         self
@@ -554,39 +659,9 @@ impl ExecutionBackend for BlockExecutor {
         pre_root: &StateHash,
         block: &BlockMessage,
     ) -> Result<BlockRecord, CasperError> {
-        require_no_slashes(&self.slashes.slashes(block)?)?;
-        let envelopes = block
-            .body
-            .deploys
-            .iter()
-            .map(|processed| processed.deploy.clone())
-            .collect();
-        let executed = self
-            .envelopes
-            .execute(pre_root, envelopes, block_data(block))
-            .await?;
-        let (post_root, _, system_deploys) = self
-            .runtime_manager
-            .compute_state(
-                &executed.settled_root,
-                vec![],
-                vec![close_block(block)],
-                block_data(block),
-                None,
-            )
-            .await?;
-        self.audit(block, &executed.settlement, &post_root).await;
-        BlockRecord::new(
-            block.block_hash.clone(),
-            pre_root.clone(),
-            executed.mid_root.clone(),
-            post_root,
-            entries(&executed),
-            system_deploys,
-        )
-        .and_then(|record| record.with_gate(executed.gate.entries.clone()))
-        .map(|record| record.with_settlement(executed.settlement.clone()))
-        .map_err(CasperError::RuntimeError)
+        self.execute_timed(pre_root, block)
+            .await
+            .map(|(record, _)| record)
     }
 
     async fn replay(

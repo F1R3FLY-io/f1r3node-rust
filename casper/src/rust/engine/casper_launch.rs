@@ -794,6 +794,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
             self.conf.genesis_block_data.native_token_name.clone(),
             self.conf.genesis_block_data.native_token_symbol.clone(),
             self.conf.genesis_block_data.native_token_decimals,
+            self.conf.genesis_block_data.protocol_version,
             self.fs_bundle.clone(),
             &self.runtime_manager,
             self.last_approved_block.clone(),

@@ -19,7 +19,12 @@ pub fn genesis_authority(pos: &ProofOfStake) -> Result<HookAuthority, CasperErro
         .pos_multi_sig_public_keys
         .iter()
         .map(|hex_key| {
-            let bytes = hex::decode(hex_key).map_err(|e| {
+            let padded = if hex_key.len() % 2 == 1 {
+                format!("0{hex_key}")
+            } else {
+                hex_key.clone()
+            };
+            let bytes = hex::decode(&padded).map_err(|e| {
                 CasperError::RuntimeError(format!("hook authority key {hex_key}: {e}"))
             })?;
             WalletOwner::from_deployer_id(&bytes)
