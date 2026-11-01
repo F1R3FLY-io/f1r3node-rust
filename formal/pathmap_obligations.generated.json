@@ -5709,7 +5709,7 @@
       "checker": "scripts/check-receive-accelerator-obligations.py",
       "family": "receive_accelerator",
       "manifest": "formal/receive_accelerator_obligations.generated.json",
-      "manifest_sha256": "79c877e13a1c2e53ed35f5397953a88eca557e2a1c7eea1ee5d390c091e92bce",
+      "manifest_sha256": "3027eb389ec97cb2a20f4d3bf3b701a40899fd7b2e009d4273e2ec2ba09de58e",
       "obligations": {
         "boundary": "The Rocq capstones and the bounded TLA+ invariants specify the derived index; the named tests check a test-only reference oracle over real HotStore and RSpace instances. Harness controls RAC-RS-01 to RAC-RS-16 and RAC-RS-25 show that each named test observes its property, and production controls RAC-RS-17 to RAC-RS-24 show that the tests observe the production revision signals. No production accelerator exists yet, and none of this is a formal Rust refinement proof.",
         "channel_scope": {
@@ -5970,8 +5970,21 @@
         },
         "normal_suite": {
           "library_filter": "receive_accelerator_manifest_binding",
+          "library_filters": {
+            "rspace++/tests/hot_store/receive_accelerator_bindings.rs": "rspace::hot_store::receive_accelerator_bindings_tests::",
+            "rspace++/tests/hot_store/receive_revision_tokens.rs": "rspace::hot_store::receive_revision_tokens_tests::",
+            "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs": "receive_accelerator_manifest_binding",
+            "rspace++/tests/receive_accelerator/occurrence_index.rs": "rspace::receive_accelerator::"
+          },
           "runner_flag": "--receive-accelerator",
           "tests": {
+            "rholang/tests/receive_accelerator_production_rholang.rs": [
+              "production_compiled_repeated_joins_answer_exact_occurrences",
+              "production_compiled_join_capacity_agrees_with_occurrence_multiplicity",
+              "production_installed_and_resting_receives_answer_distinct_occurrences",
+              "production_checkpoint_reset_and_soft_revert_rebuild_identical_occurrences",
+              "production_both_matching_directions_keep_the_published_accelerator_equal_to_a_rebuild"
+            ],
             "rholang/tests/receive_accelerator_rholang.rs": [
               "compiled_repeated_joins_derive_exact_occurrences",
               "compiled_join_capacity_agrees_with_occurrence_multiplicity",
@@ -5979,9 +5992,85 @@
               "checkpoint_reset_and_soft_revert_rebuild_identical_occurrences",
               "both_matching_directions_maintain_the_derived_relation"
             ],
+            "rspace++/tests/hot_store/receive_accelerator_bindings.rs": [
+              "absent_accelerators_fall_back_without_an_empty_answer",
+              "held_handles_become_stale_after_a_continuation_change_and_foreign_after_a_reset",
+              "unloaded_joins_make_the_channel_incomplete",
+              "join_groups_outside_the_handle_scope_make_the_channel_incomplete",
+              "installed_only_groups_outside_the_handle_scope_make_the_channel_incomplete",
+              "held_handles_never_answer_for_groups_loaded_after_they_were_taken",
+              "repeated_channels_report_every_position_of_the_channel",
+              "targets_list_the_installed_slot_then_resting_records_in_get_continuations_order",
+              "answers_carry_the_revision_of_the_handle_that_produced_them",
+              "receive_ids_resolve_to_their_current_resting_and_installed_records",
+              "receive_ids_from_before_a_sigma_or_gamma_change_never_resolve",
+              "forged_alias_source_targets_never_resolve_at_current_tokens",
+              "hydration_makes_join_incomplete_channels_exact_at_the_same_revision",
+              "hydration_loads_installed_only_groups_without_an_installed_join",
+              "open_builds_report_building_until_they_publish",
+              "publication_refuses_a_stale_base_or_a_history_load",
+              "detached_handles_answer_without_publishing",
+              "rebuilds_publish_optimistically_and_fall_back_under_the_lock"
+            ],
+            "rspace++/tests/hot_store/receive_revision_tokens.rs": [
+              "fresh_states_issue_their_base_epoch_as_the_store_token",
+              "every_continuation_change_issues_the_bumped_group_epoch_as_a_fresh_store_token",
+              "history_loads_duplicates_refusals_datum_and_join_operations_keep_the_receive_revision",
+              "clear_and_set_state_issue_a_fresh_generation_whose_base_epoch_is_the_store_token",
+              "store_token_equality_implies_equal_receive_state_across_generated_traces"
+            ],
             "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs": [
               "persisted_accelerator_adoption_requires_the_bound_semantic_manifest",
               "production_adoption_requires_the_stored_bound_semantic_manifest"
+            ],
+            "rspace++/tests/receive_accelerator/occurrence_index.rs": [
+              "occurrence_keys_are_exact_under_prefix_aliased_images",
+              "malformed_group_prefixes_are_refused_without_touching_the_index",
+              "repeated_channels_contribute_one_occurrence_key_per_distinct_channel",
+              "installed_only_groups_stay_indexed_across_resting_changes",
+              "final_resting_removal_without_an_installed_slot_drops_the_group_keys",
+              "set_group_transitions_toggle_group_support",
+              "clear_leaves_the_occurrence_index_absent_until_rebuilt",
+              "alias_and_duplicate_puts_leave_the_occurrence_keys_unchanged",
+              "canonical_plans_snapshots_and_journals_are_identical_with_the_index_on_and_off",
+              "loads_count_history_loads_and_clears_only",
+              "published_snapshot_builds_are_maintained_like_rebuilt_indexes",
+              "faulted_maintenance_publishes_nothing",
+              "prefix_accessors_read_the_authoritative_tries_by_group_prefix",
+              "maintained_index_equals_a_fresh_build_across_generated_mutator_sequences"
+            ],
+            "rspace++/tests/receive_accelerator_production_spec.rs": [
+              "production_answers_equal_the_derivation_over_generated_stores",
+              "production_positions_come_from_the_group_prefix",
+              "production_repeated_channels_yield_one_occurrence_per_target",
+              "production_prefix_aliased_images_never_share_occurrences",
+              "production_answers_ignore_data_and_authority_orders",
+              "production_exact_groups_are_the_join_groups_with_targets",
+              "production_history_groups_without_joins_are_invisible_to_both_paths",
+              "production_construction_order_does_not_change_answers_or_ids",
+              "production_receive_ids_resolve_only_to_byte_identical_records",
+              "production_metadata_distinct_records_keep_distinct_ids",
+              "production_ids_and_handles_from_a_prior_revision_or_generation_never_answer",
+              "production_alias_puts_keep_the_revision_answers_and_first_source",
+              "production_insertions_maintain_the_published_accelerator",
+              "production_nonfinal_removals_maintain_the_published_accelerator",
+              "production_final_removal_clears_the_maintained_group",
+              "production_installs_maintain_and_set_state_retires_the_published_accelerator",
+              "production_history_loads_extend_the_maintained_scope",
+              "production_clear_and_set_state_retire_held_handles_and_rebuilds_equal_the_derivation",
+              "production_equal_group_versions_imply_equal_group_answers",
+              "production_reads_equal_derivation_in_every_accelerator_state",
+              "production_refused_updates_leave_the_store_and_accelerator_unchanged",
+              "production_index_and_catalog_publish_at_one_revision",
+              "production_same_count_group_replacement_never_reuses_a_stale_answer_or_handle",
+              "production_stale_tickets_ids_and_handles_never_commit",
+              "production_accelerator_never_changes_semantic_identity",
+              "production_maintenance_equals_rebuild_over_generated_traces",
+              "production_answers_never_name_absent_receives",
+              "production_held_handles_fall_back_after_every_mutation",
+              "production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated",
+              "production_held_handles_never_answer_for_groups_loaded_after_they_were_taken",
+              "production_foreign_generation_or_manifest_accelerators_are_never_adopted"
             ],
             "rspace++/tests/receive_accelerator_spec.rs": [
               "reference_occurrences_are_sound_over_generated_groups",
@@ -6545,12 +6634,18 @@
           "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceStaleAnswerMutant.cfg": "a71c6c2e8bffb5583a25ed49f304409081e75713ae89348ebf386d7ad3d12ecd",
           "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceStaleCandidateCommitMutant.cfg": "7501f8caea56dabe95cc6822657505718825a5ed41696435996df6a16638996e",
           "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceUnsoundAnswerMutant.cfg": "e7bad44a21a477ee00147e0bb29a65f06f98365567a7dcc922e86b4af516ef17",
+          "rholang/tests/receive_accelerator_production_rholang.rs": "4a94e65e4d85b32ec77f869a6687929d0723ba5b152fb988c8bb346da66d172c",
           "rholang/tests/receive_accelerator_rholang.rs": "ddc29e65936a99bf37cca7aff46730020a495723665d1f093ea5ba8c6c46cbd5",
+          "rspace++/tests/hot_store/receive_accelerator_bindings.rs": "04e8c5c5cffb6b875966bcf75aa6096858bb437891c3f1651343848d14140337",
+          "rspace++/tests/hot_store/receive_revision_tokens.rs": "0b1b1a8f9c94b5f4fb75187733e6ce14ad85e2bb97a327cff9f7dc6625fe17e4",
           "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs": "08087833d9078df13452218c7a2f5f1b82e9c0832fa8c70eda4bbae1581af124",
+          "rspace++/tests/receive_accelerator/occurrence_index.rs": "99fdfdf8e369c52b0a63d5f2d45a48fe6d921e335669ec5d7b014b5693755180",
+          "rspace++/tests/receive_accelerator_production_spec.rs": "6648d504d86a8b95b4cf5b5c9923cfd44a29c16832cc0bb3f1648ea45541678f",
           "rspace++/tests/receive_accelerator_spec.rs": "e9006a8767fdf5745f34a8470c029d1ec576b325330bb8c639e9298df06738ef",
           "rspace++/tests/support/receive_accelerator_adoption.rs": "2951e1a411f26b6733c18ffd14dc34cb587b17ac1e7f457d873d6a0392304798",
+          "rspace++/tests/support/receive_accelerator_production.rs": "8ee93fcc4d0ca7d78c314263e685ecbe6effcd6a99e259a5e7df0ee9f6ef3998",
           "rspace++/tests/support/receive_occurrence_reference.rs": "610ae1a9888a343957f70abe1ed0414a8d1a70e9f47219f38c352a3329d3b9fc",
-          "scripts/check-receive-accelerator-obligations.py": "896e41fe7479c3c98b98644aafd40616b62080963a11b74fa8aa6940316335de",
+          "scripts/check-receive-accelerator-obligations.py": "c516e32c7b8e2603f5f152c66e7aa03f267e6799c23aba9ffb08c9ab5e237232",
           "scripts/generate-receive-accelerator-mutant.py": "7eb730b0350d183088d087d23f5c28215c2cfa1f8253031b9fbd84e8ef3eee76"
         },
         "tla": {

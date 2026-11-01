@@ -24,15 +24,22 @@ ADOPTION = "rspace++/tests/support/receive_accelerator_adoption.rs"
 SPEC = "rspace++/tests/receive_accelerator_spec.rs"
 RHOLANG = "rholang/tests/receive_accelerator_rholang.rs"
 LIB = "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs"
+PRODUCTION_SPEC = "rspace++/tests/receive_accelerator_production_spec.rs"
+PRODUCTION_RHOLANG = "rholang/tests/receive_accelerator_production_rholang.rs"
+PRODUCTION_SUPPORT = "rspace++/tests/support/receive_accelerator_production.rs"
+OCCURRENCE_TESTS = "rspace++/tests/receive_accelerator/occurrence_index.rs"
+BINDING_TESTS = "rspace++/tests/hot_store/receive_accelerator_bindings.rs"
+TOKEN_TESTS = "rspace++/tests/hot_store/receive_revision_tokens.rs"
 GENERATOR = "scripts/generate-receive-accelerator-mutant.py"
 HOT_STORE = "rspace++/src/rspace/hot_store.rs"
 RSPACE = "rspace++/src/rspace/rspace.rs"
+RECEIVE_ACCELERATOR = "rspace++/src/rspace/receive_accelerator.rs"
 LIB_MODULES = "rspace++/tests/persistence/mod.rs"
 LIB_ROOT = "rspace++/src/rspace/persistence/mod.rs"
 RSPACE_CARGO = "rspace++/Cargo.toml"
 RHOLANG_CARGO = "rholang/Cargo.toml"
 RUNNER = "scripts/check-stack-safe-pda-proofs.sh"
-UNHASHED = (HOT_STORE, RSPACE, LIB_MODULES, LIB_ROOT, RSPACE_CARGO, RHOLANG_CARGO, RUNNER)
+UNHASHED = (HOT_STORE, RSPACE, RECEIVE_ACCELERATOR, LIB_MODULES, LIB_ROOT, RSPACE_CARGO, RHOLANG_CARGO, RUNNER)
 HARNESS_SOURCES = (REFERENCE, ADOPTION)
 PRODUCTION_SOURCES = (HOT_STORE, RSPACE)
 FLAG = "--receive-accelerator"
@@ -45,7 +52,22 @@ CHANNEL_SCOPE_BRIDGE = "channel_scope_implementation_with_correct_switches_is_th
 DECLARATIONS = "Theorem|Lemma|Corollary|Proposition|Fact|Remark|Example|Definition|Fixpoint"
 CLOSED_REPORTS = {ROCQ: 26, MUTANTS: 16, CHANNEL_SCOPE: 8, CHANNEL_SCOPE_MUTANTS: 5}
 LIB_FILTER = "receive_accelerator_manifest_binding"
-SUITE_COUNTS = {SPEC: 31, RHOLANG: 5, LIB: 2}
+LIBRARY_FILTERS = {
+    LIB: LIB_FILTER,
+    OCCURRENCE_TESTS: "rspace::receive_accelerator::",
+    BINDING_TESTS: "rspace::hot_store::receive_accelerator_bindings_tests::",
+    TOKEN_TESTS: "rspace::hot_store::receive_revision_tokens_tests::",
+}
+SUITE_COUNTS = {
+    SPEC: 31,
+    RHOLANG: 5,
+    LIB: 2,
+    PRODUCTION_SPEC: 31,
+    PRODUCTION_RHOLANG: 5,
+    OCCURRENCE_TESTS: 14,
+    BINDING_TESTS: 18,
+    TOKEN_TESTS: 5,
+}
 CATALOG_ROW = "TLRS-RECEIVE-28"
 PERSISTED_WITNESS = (LIB, "persisted_accelerator_adoption_requires_the_bound_semantic_manifest")
 PERSISTED_REFINES = ("RAC-RC-20", "RAC-TLA-08")
@@ -464,6 +486,12 @@ def paths():
         SPEC,
         RHOLANG,
         LIB,
+        PRODUCTION_SPEC,
+        PRODUCTION_RHOLANG,
+        PRODUCTION_SUPPORT,
+        OCCURRENCE_TESTS,
+        BINDING_TESTS,
+        TOKEN_TESTS,
         GENERATOR,
         CHECKER,
         *UNHASHED,
@@ -619,7 +647,12 @@ def extract(sources, configs):
         "the normal or focused mutant loop is not exactly the registered loop",
     )
 
-    for path, cargo in ((SPEC, RSPACE_CARGO), (RHOLANG, RHOLANG_CARGO)):
+    for path, cargo in (
+        (SPEC, RSPACE_CARGO),
+        (RHOLANG, RHOLANG_CARGO),
+        (PRODUCTION_SPEC, RSPACE_CARGO),
+        (PRODUCTION_RHOLANG, RHOLANG_CARGO),
+    ):
         require(
             not re.search(r"(?m)^autotests[ \t]*=[ \t]*false\b", sources[cargo]),
             f"{path} absent from Cargo's normal test discovery",
@@ -637,9 +670,35 @@ def extract(sources, configs):
         and '#[path = "../support/receive_accelerator_adoption.rs"]' in sources[LIB],
         "the reference oracle or its adoption rule is not compiled into its suites",
     )
+    require(
+        '#[path = "support/receive_occurrence_reference.rs"]' in sources[PRODUCTION_SPEC]
+        and '#[path = "support/receive_accelerator_production.rs"]' in sources[PRODUCTION_SPEC]
+        and '#[path = "../../rspace++/tests/support/receive_occurrence_reference.rs"]'
+        in sources[PRODUCTION_RHOLANG],
+        "the reference oracle or the production adapter is not compiled into the production suites",
+    )
+    for path, host, mount in (
+        (
+            OCCURRENCE_TESTS,
+            RECEIVE_ACCELERATOR,
+            '#[cfg(test)]\n#[path = "../../tests/receive_accelerator/occurrence_index.rs"]\nmod occurrence_index_tests;',
+        ),
+        (
+            BINDING_TESTS,
+            HOT_STORE,
+            '#[cfg(test)]\n#[path = "../../tests/hot_store/receive_accelerator_bindings.rs"]\n'
+            "mod receive_accelerator_bindings_tests;",
+        ),
+        (
+            TOKEN_TESTS,
+            HOT_STORE,
+            '#[cfg(test)]\n#[path = "../../tests/hot_store/receive_revision_tokens.rs"]\nmod receive_revision_tokens_tests;',
+        ),
+    ):
+        require(mount in sources[host], f"{path} is not compiled into the rspace++ library tests")
 
     suites = {}
-    for path in (SPEC, RHOLANG, LIB):
+    for path in SUITE_COUNTS:
         found = tests_in(sources[path], path)
         require(len(found) == SUITE_COUNTS[path], f"{path} normal-suite count changed")
         suites[path] = found
@@ -655,6 +714,17 @@ def extract(sources, configs):
         runner_test_line(focused, "rholang_run_tests", SUITE_COUNTS[RHOLANG], "--test", "receive_accelerator_rholang"),
         "focused gate does not run receive_accelerator_rholang with its count",
     )
+    for path, helper, kind, target in (
+        (PRODUCTION_SPEC, "rspace_preparation_run_tests", "--test", "receive_accelerator_production_spec"),
+        (OCCURRENCE_TESTS, "rspace_preparation_run_tests", "--lib", LIBRARY_FILTERS[OCCURRENCE_TESTS]),
+        (BINDING_TESTS, "rspace_preparation_run_tests", "--lib", LIBRARY_FILTERS[BINDING_TESTS]),
+        (TOKEN_TESTS, "rspace_preparation_run_tests", "--lib", LIBRARY_FILTERS[TOKEN_TESTS]),
+        (PRODUCTION_RHOLANG, "rholang_run_tests", "--test", "receive_accelerator_production_rholang"),
+    ):
+        require(
+            runner_test_line(focused, helper, SUITE_COUNTS[path], kind, target),
+            f"focused gate does not run {target} with its count",
+        )
     aggregate = runner.find('python3 "$repo_root/scripts/build-pathmap-obligation-registry.py" --check')
     require(0 <= aggregate < start, "the aggregate registry check does not precede the focused gate")
     invocation = 'python3 "$repo_root/scripts/check-receive-accelerator-obligations.py"'
@@ -874,7 +944,8 @@ def extract(sources, configs):
         "normal_suite": {
             "runner_flag": FLAG,
             "library_filter": LIB_FILTER,
-            "tests": {path: suites[path] for path in (SPEC, RHOLANG, LIB)},
+            "library_filters": LIBRARY_FILTERS,
+            "tests": {path: suites[path] for path in SUITE_COUNTS},
         },
     }
 
@@ -1047,6 +1118,44 @@ def self_test(sources, configs, baseline):
         ),
         "wrong focused library test count",
         "does not run the manifest-binding library test with its count",
+    )
+    for helper, count, kind, target in (
+        ("rspace_preparation_run_tests", 31, "--test", "receive_accelerator_production_spec"),
+        ("rspace_preparation_run_tests", 14, "--lib", "rspace::receive_accelerator::"),
+        ("rspace_preparation_run_tests", 18, "--lib", "rspace::hot_store::receive_accelerator_bindings_tests::"),
+        ("rspace_preparation_run_tests", 5, "--lib", "rspace::hot_store::receive_revision_tokens_tests::"),
+        ("rholang_run_tests", 5, "--test", "receive_accelerator_production_rholang"),
+    ):
+        rejected(
+            RUNNER,
+            sources[RUNNER].replace(
+                f"{helper} {count} {kind} {target}\n", f"{helper} {count - 1} {kind} {target}\n", 1
+            ),
+            f"wrong focused {target} count",
+            f"does not run {target} with its count",
+        )
+    rejected(
+        PRODUCTION_SPEC,
+        sources[PRODUCTION_SPEC].replace(
+            '#[tokio::test(flavor = "current_thread")]\n'
+            "async fn production_foreign_generation_or_manifest_accelerators_are_never_adopted(",
+            "async fn production_foreign_generation_or_manifest_accelerators_are_never_adopted(",
+            1,
+        ),
+        "dropped production spec test",
+        f"{PRODUCTION_SPEC} normal-suite count changed",
+    )
+    rejected(
+        RECEIVE_ACCELERATOR,
+        sources[RECEIVE_ACCELERATOR].replace("mod occurrence_index_tests;\n", "", 1),
+        "unmounted occurrence index tests",
+        f"{OCCURRENCE_TESTS} is not compiled into the rspace++ library tests",
+    )
+    rejected(
+        PRODUCTION_SPEC,
+        sources[PRODUCTION_SPEC].replace('#[path = "support/receive_accelerator_production.rs"]\n', "", 1),
+        "unmounted production adapter",
+        "the production adapter is not compiled into the production suites",
     )
     rejected(
         RUNNER,
