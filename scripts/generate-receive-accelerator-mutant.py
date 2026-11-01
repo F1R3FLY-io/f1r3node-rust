@@ -5,8 +5,10 @@ rule. RAC-RS-01 to RAC-RS-15 are the executable analogues of the Rocq refutation
 RAC-MUT-15, RAC-RS-16 leaves a removal unmaintained, and RAC-RS-25 makes adoption ignore the bound
 semantic manifest. They are concrete witnesses that each named test observes the property it owns,
 not production evidence. Production controls RAC-RS-17 to RAC-RS-24 change production source that
-the derived receive relation depends on and are executable refinement evidence. Every control must
-make its named test fail. The generator refuses to mutate the checkout that contains it.
+the derived receive relation depends on and are executable refinement evidence. Production
+accelerator controls from RAC-RS-26 on fault the production accelerator and are killed by its
+production witnesses. Every control must make its named test fail. The generator refuses to mutate
+the checkout that contains it.
 """
 
 import argparse
@@ -20,6 +22,9 @@ HOT_STORE = "rspace++/src/rspace/hot_store.rs"
 RSPACE = "rspace++/src/rspace/rspace.rs"
 SPEC = "rspace++/tests/receive_accelerator_spec.rs"
 BINDING = "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs"
+RECEIVE_ACCELERATOR = "rspace++/src/rspace/receive_accelerator.rs"
+RECORD_INDEX = "rspace++/src/rspace/record_index.rs"
+PRODUCTION_SPEC = "rspace++/tests/receive_accelerator_production_spec.rs"
 HARNESS = "concrete_witness"
 PRODUCTION = "executable_refinement"
 
@@ -346,6 +351,100 @@ MUTATIONS = {
         ),
         "test_file": BINDING,
         "test": "persisted_accelerator_adoption_requires_the_bound_semantic_manifest",
+    },
+    "RAC-RS-26": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-10", "RAC-RC-12"),
+        "source": RECEIVE_ACCELERATOR,
+        "description": "resolve accepts a target of equal identity length (production analogue of RAC-RS-01)",
+        "before": "        (found == self.target).then_some(found)\n",
+        "after": (
+            "        let accepted = found.identity_bytes().len() == self.target.identity_bytes().len();\n"
+            "        accepted.then_some(found)\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_receive_ids_resolve_only_to_byte_identical_records",
+    },
+    "RAC-RS-27": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-16",),
+        "source": HOT_STORE,
+        "description": (
+            "a removal of the first ordered record is treated as final and clears the published group "
+            "(production analogue of RAC-RS-02)"
+        ),
+        "before": "                Some(path) => state.continuations.remove_path(channels, &path).map(|_| ()),\n",
+        "after": (
+            "                Some(path) => {\n"
+            "                    let removed = state.continuations.remove_path(channels, &path).map(|_| ());\n"
+            "                    let prefix = RhoPathV1::continuation_prefix(channels);\n"
+            "                    let treated_as_final = match (removed_index, state.continuations.receive_index()) {\n"
+            "                        (0, Some(published)) => {\n"
+            "                            let mut published = published.clone();\n"
+            "                            published.remove_group(&prefix).ok().map(|()| published)\n"
+            "                        }\n"
+            "                        _ => None,\n"
+            "                    };\n"
+            "                    if let Some(published) = treated_as_final {\n"
+            "                        state.continuations.publish_receive_index(published);\n"
+            "                    }\n"
+            "                    removed\n"
+            "                }\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_nonfinal_removals_maintain_the_published_accelerator",
+    },
+    "RAC-RS-28": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-22", "RAC-TLA-05"),
+        "source": HOT_STORE,
+        "description": "an absent accelerator answers the exact empty set (production analogue of RAC-RS-03)",
+        "before": (
+            "            Some(handle) => state.read_receive_occurrences(handle, channel),\n"
+            "            None => ReceiveAnswer::Fallback(state.vacant_receive_class()),\n"
+        ),
+        "after": (
+            "            Some(handle) => state.read_receive_occurrences(handle, channel),\n"
+            "            None => {\n"
+            "                let mut vacant = RSpaceContinuationStore::<C, P, K>::new();\n"
+            "                match (state.vacant_receive_class(), vacant.rebuild_receive_index()) {\n"
+            "                    (ReceiveAcceleratorClass::Absent, true) => {\n"
+            "                        ReceiveAcceleratorHandle::new(state.receive_revision(), vacant)\n"
+            '                            .expect("an empty rebuilt continuation store is indexed")\n'
+            "                            .materialize(channel)\n"
+            "                    }\n"
+            "                    (class, _) => ReceiveAnswer::Fallback(class),\n"
+            "                }\n"
+            "            }\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_reads_equal_derivation_in_every_accelerator_state",
+    },
+    "RAC-RS-29": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-TLA-06",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "handle classification ignores the store revision, so a stale handle answers from its old index "
+            "(production analogue of RAC-RS-04)"
+        ),
+        "before": "            (true, false) => Some(ReceiveAcceleratorClass::Stale),\n",
+        "after": "            (true, false) => None,\n",
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_held_handles_fall_back_after_every_mutation",
+    },
+    "RAC-RS-30": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-20",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "handle classification ignores the generation, so a handle of a foreign generation is taken for "
+            "a current or stale one (production analogue of RAC-RS-05)"
+        ),
+        "before": "        match (self.revision.shares_generation(current), self.revision == *current) {\n",
+        "after": "        match (true, self.revision == *current) {\n",
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_clear_and_set_state_retire_held_handles_and_rebuilds_equal_the_derivation",
     },
 }
 

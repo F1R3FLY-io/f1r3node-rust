@@ -34,14 +34,25 @@ GENERATOR = "scripts/generate-receive-accelerator-mutant.py"
 HOT_STORE = "rspace++/src/rspace/hot_store.rs"
 RSPACE = "rspace++/src/rspace/rspace.rs"
 RECEIVE_ACCELERATOR = "rspace++/src/rspace/receive_accelerator.rs"
+RECORD_INDEX = "rspace++/src/rspace/record_index.rs"
 LIB_MODULES = "rspace++/tests/persistence/mod.rs"
 LIB_ROOT = "rspace++/src/rspace/persistence/mod.rs"
 RSPACE_CARGO = "rspace++/Cargo.toml"
 RHOLANG_CARGO = "rholang/Cargo.toml"
 RUNNER = "scripts/check-stack-safe-pda-proofs.sh"
-UNHASHED = (HOT_STORE, RSPACE, RECEIVE_ACCELERATOR, LIB_MODULES, LIB_ROOT, RSPACE_CARGO, RHOLANG_CARGO, RUNNER)
+UNHASHED = (
+    HOT_STORE,
+    RSPACE,
+    RECEIVE_ACCELERATOR,
+    RECORD_INDEX,
+    LIB_MODULES,
+    LIB_ROOT,
+    RSPACE_CARGO,
+    RHOLANG_CARGO,
+    RUNNER,
+)
 HARNESS_SOURCES = (REFERENCE, ADOPTION)
-PRODUCTION_SOURCES = (HOT_STORE, RSPACE)
+PRODUCTION_SOURCES = (HOT_STORE, RSPACE, RECEIVE_ACCELERATOR, RECORD_INDEX)
 PATHMAP_CODEC = "rspace++/src/rspace/pathmap_codec.rs"
 ISOLATED_ROOTS = ("rspace++/src/rspace/persistence", "rspace++/src/rspace/history")
 ISOLATED_FILES = (
@@ -153,10 +164,12 @@ TLA_MUTANTS = {
     "FailedUpdateLeak": ("failed-update-leak", "FailedUpdateIsNonMutating"),
     "SemanticPollution": ("semantic-pollution", "SemanticIdentityIsAcceleratorFree"),
 }
+ACCELERATOR_CONTROLS = tuple(f"RAC-RS-{index:02d}" for index in range(26, 51))
 REFINEMENT = (
     *(f"RAC-RC-{index:02d}" for index in range(1, len(THEOREMS) + 1)),
     *(f"RAC-TLA-{index:02d}" for index in range(2, len(INVARIANTS) + 1)),
     *(f"RAC-RS-{index:02d}" for index in range(17, 25)),
+    *ACCELERATOR_CONTROLS,
 )
 PROOF_ONLY = (
     "RAC-TLA-01",
@@ -348,6 +361,11 @@ SOURCE_MUTANT_EVIDENCE = {
         '"{name}: adoption requires the bound semantic manifest to equal the current one"',
         'assert_eq!(foreign, 4, "four bindings are foreign to the current manifest");',
     ),
+    "RAC-RS-26": ('"a forged id never resolves"',),
+    "RAC-RS-27": ("assert_maintained_equals_rebuild(&store, &maintained, &after);",),
+    "RAC-RS-28": ('"the absent state is probed where the derivation is nonempty"',),
+    "RAC-RS-29": ("assert_stale_fallback(&held, &held_answers, &after, name);",),
+    "RAC-RS-30": ("assert_generation_retires_held_handles(",),
 }
 PRODUCTION_WITNESSES = {
     "production_answers_equal_the_derivation_over_generated_stores": (
@@ -1028,8 +1046,8 @@ def extract(sources, configs):
 
     mutations = generator_mutations(sources[GENERATOR])
     require(
-        list(mutations) == list(SOURCE_MUTANT_EVIDENCE),
-        "source mutants are not RAC-RS-01 to RAC-RS-25 in order",
+        list(mutations) == list(SOURCE_MUTANT_EVIDENCE) == identifiers("RS", len(mutations)),
+        "source mutants are not numbered contiguously from RAC-RS-01",
     )
     formals = [tuple(mutation["formal"]) for mutation in mutations.values()]
     require(
@@ -1061,11 +1079,17 @@ def extract(sources, configs):
         killer = (mutation["test_file"], mutation["test"])
         if formal[0] not in refutations:
             require(set(formal) <= {*capstones, *bindings}, f"{name} refines an unregistered obligation")
-            require(
-                killer in {owned.get(identifier) for identifier in formal}
-                or (formal == PERSISTED_REFINES and killer == PERSISTED_WITNESS),
-                f"{name} is not killed by an owner of {', '.join(formal)}",
-            )
+            if name in ACCELERATOR_CONTROLS:
+                require(
+                    all(list(killer) in production_owned.get(identifier, []) for identifier in formal),
+                    f"{name} is not killed by a production witness of {', '.join(formal)}",
+                )
+            else:
+                require(
+                    killer in {owned.get(identifier) for identifier in formal}
+                    or (formal == PERSISTED_REFINES and killer == PERSISTED_WITNESS),
+                    f"{name} is not killed by an owner of {', '.join(formal)}",
+                )
         body = test_body(sources[mutation["test_file"]], mutation["test"])
         require(
             all(fragment in body for fragment in SOURCE_MUTANT_EVIDENCE[name]),
@@ -1096,7 +1120,7 @@ def extract(sources, configs):
 
     return {
         "scope": "Generation-bound receive occurrence index: the receive relation derived from the semantic roots and the versioned installed input, exact receive identifiers, revision-bound accelerator classes, artifact publication, failure atomicity and candidate commit (designs 8010 and 8011)",
-        "boundary": "The Rocq capstones and the bounded TLA+ invariants specify the derived index; the named tests check a test-only reference oracle over real HotStore and RSpace instances, and the production witnesses check the production receive accelerator of task 8011 against the same obligations. Harness controls RAC-RS-01 to RAC-RS-16 and RAC-RS-25 show that each named test observes its property, and production controls RAC-RS-17 to RAC-RS-24 show that the tests observe the production revision signals. None of this is a formal Rust refinement proof.",
+        "boundary": "The Rocq capstones and the bounded TLA+ invariants specify the derived index; the named tests check a test-only reference oracle over real HotStore and RSpace instances, and the production witnesses check the production receive accelerator of task 8011 against the same obligations. Harness controls RAC-RS-01 to RAC-RS-16 and RAC-RS-25 show that each named test observes its property, and production controls RAC-RS-17 to RAC-RS-24 show that the tests observe the production revision signals. Production accelerator controls from RAC-RS-26 on fault the production accelerator and are killed by its production witnesses. None of this is a formal Rust refinement proof.",
         "sources_sha256": {
             path: hashlib.sha256(sources[path].encode()).hexdigest()
             for path in paths()
@@ -1606,7 +1630,7 @@ def self_test(sources, configs, baseline):
         GENERATOR,
         sources[GENERATOR][:dropped] + sources[GENERATOR][retained:],
         "dropped source mutant",
-        "source mutants are not RAC-RS-01 to RAC-RS-25 in order",
+        "source mutants are not numbered contiguously from RAC-RS-01",
     )
     rejected(
         GENERATOR,
@@ -1629,6 +1653,28 @@ def self_test(sources, configs, baseline):
         ),
         "production control killed by a non-owner",
         "RAC-RS-24 is not killed by an owner of RAC-RC-24",
+    )
+    rejected(
+        GENERATOR,
+        sources[GENERATOR].replace(
+            '"test": "production_receive_ids_resolve_only_to_byte_identical_records",',
+            '"test": "production_positions_come_from_the_group_prefix",',
+            1,
+        ),
+        "accelerator control killed by a non-witness",
+        "RAC-RS-26 is not killed by a production witness of RAC-RC-10, RAC-RC-12",
+    )
+    rejected(
+        GENERATOR,
+        sources[GENERATOR].replace('"source": RECEIVE_ACCELERATOR,', '"source": REFERENCE,', 1),
+        "accelerator control mutating the oracle",
+        "RAC-RS-26 mutates an unregistered source",
+    )
+    rejected(
+        PRODUCTION_SPEC,
+        sources[PRODUCTION_SPEC].replace('"a forged id never resolves"', '""', 1),
+        "accelerator control killer without its assertion",
+        "RAC-RS-26 killing test production_receive_ids_resolve_only_to_byte_identical_records lost its assertion",
     )
     require(extract(sources, configs) == baseline, "nondeterministic receive accelerator registry")
 
