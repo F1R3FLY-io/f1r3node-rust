@@ -1150,6 +1150,12 @@ rocq_compile_with_closed_count \
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceContinuationAuthorityMutants.v 47 \
   "the continuation and join authority causal controls"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceReceiveAccelerator.v 26 \
+  "the generation-bound receive occurrence index"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceReceiveAcceleratorMutants.v 16 \
+  "the receive occurrence index causal controls"
 match_preparation_proof_clients
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceMatchTransaction.v 25 \
@@ -1181,6 +1187,8 @@ rocq_reject_placeholders \
   theories/RhoPathV1Datum.v \
   theories/TwoLevelRSpaceContinuationAuthority.v \
   theories/TwoLevelRSpaceContinuationAuthorityMutants.v \
+  theories/TwoLevelRSpaceReceiveAccelerator.v \
+  theories/TwoLevelRSpaceReceiveAcceleratorMutants.v \
   theories/TwoLevelRSpaceMatchPreparation.v \
   theories/EncodedRSpaceCandidateCatalog.v \
   theories/TwoLevelRSpaceFlatDeltaTrace.v \
@@ -1207,6 +1215,8 @@ rocq_check_modules "two-level RSpace authority and RBA1 checkpoint recovery" \
   StackSafePDA.RhoPathV1Datum \
   StackSafePDA.TwoLevelRSpaceContinuationAuthority \
   StackSafePDA.TwoLevelRSpaceContinuationAuthorityMutants \
+  StackSafePDA.TwoLevelRSpaceReceiveAccelerator \
+  StackSafePDA.TwoLevelRSpaceReceiveAcceleratorMutants \
   StackSafePDA.TwoLevelRSpaceMatchPreparation \
   StackSafePDA.EncodedRSpaceCandidateCatalog \
   StackSafePDA.TwoLevelRSpaceFlatDeltaTrace \
