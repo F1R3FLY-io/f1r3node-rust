@@ -56,6 +56,9 @@ use crate::rspace::persistence::{
     ImmutableObjectStore, MutationError, OpenDagTransaction, RSpaceMutationBatchV1,
     RSpaceSemanticProfile, SemanticNamespace, SemanticProfile, StateVersionV1,
 };
+use crate::rspace::receive_accelerator::{
+    ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, join_scope_class,
+};
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
@@ -316,6 +319,32 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         visitor: &mut dyn FnMut(&[u64], Result<OrderedReceiveView<'_>, OrderedReceiveError>),
     ) -> RestingReceiveVisit;
     fn receive_revision(&self) -> Option<ReceiveRevision> { None }
+    fn rebuild_receive_accelerator(&self) -> ReceiveAcceleratorClass {
+        ReceiveAcceleratorClass::Absent
+    }
+    fn receive_accelerator(&self) -> Option<ReceiveAcceleratorHandle<C, P, K>>
+    where
+        C: Send + Sync,
+        P: Send + Sync,
+        K: Send + Sync,
+    {
+        None
+    }
+    fn receive_occurrences(
+        &self,
+        _held: Option<&ReceiveAcceleratorHandle<C, P, K>>,
+        _channel: &C,
+    ) -> ReceiveAnswer<C, P, K>
+    where
+        C: Send + Sync,
+        P: Send + Sync,
+        K: Send + Sync,
+    {
+        ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Absent)
+    }
+    fn current_receive_occurrences(&self, _channel: &C) -> ReceiveAnswer<C, P, K> {
+        ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Absent)
+    }
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
     fn get_candidate_pool(&self, channel: &C) -> CandidatePool<A>;
@@ -618,6 +647,24 @@ where
             continuation_epochs: PathMap::new(),
             durable_journal: None,
         })
+    }
+
+    fn receive_handle(&self) -> Option<ReceiveAcceleratorHandle<C, P, K>> {
+        ReceiveAcceleratorHandle::new(self.receive_revision(), self.continuations.clone())
+    }
+
+    fn read_receive_occurrences(
+        &self,
+        handle: &ReceiveAcceleratorHandle<C, P, K>,
+        channel: &C,
+    ) -> ReceiveAnswer<C, P, K> {
+        let class = handle
+            .token_class(&self.receive_revision())
+            .or_else(|| join_scope_class(handle.scope(), &self.joins, channel));
+        match class {
+            Some(class) => ReceiveAnswer::Fallback(class),
+            None => handle.materialize(channel),
+        }
     }
 
     fn pending_journal(&self) -> PendingDeltas {
@@ -1137,6 +1184,39 @@ where
     fn receive_revision(&self) -> Option<ReceiveRevision> {
         let state = self.state.read().expect("hot store state read lock");
         Some(state.receive_revision())
+    }
+
+    fn rebuild_receive_accelerator(&self) -> ReceiveAcceleratorClass {
+        let mut state = hot_state_write(&self.state);
+        match state.continuations.rebuild_receive_index() {
+            true => ReceiveAcceleratorClass::Coherent,
+            false => ReceiveAcceleratorClass::Absent,
+        }
+    }
+
+    fn receive_accelerator(&self) -> Option<ReceiveAcceleratorHandle<C, P, K>> {
+        let state = self.state.read().expect("hot store state read lock");
+        state.receive_handle()
+    }
+
+    fn receive_occurrences(
+        &self,
+        held: Option<&ReceiveAcceleratorHandle<C, P, K>>,
+        channel: &C,
+    ) -> ReceiveAnswer<C, P, K> {
+        let state = self.state.read().expect("hot store state read lock");
+        match held {
+            Some(handle) => state.read_receive_occurrences(handle, channel),
+            None => ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Absent),
+        }
+    }
+
+    fn current_receive_occurrences(&self, channel: &C) -> ReceiveAnswer<C, P, K> {
+        let state = self.state.read().expect("hot store state read lock");
+        match state.receive_handle() {
+            Some(handle) => state.read_receive_occurrences(&handle, channel),
+            None => ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Absent),
+        }
     }
 
     // Data
@@ -2298,6 +2378,10 @@ mod journal_commit_tests;
 #[cfg(test)]
 #[path = "../../tests/hot_store/receive_revision_tokens.rs"]
 mod receive_revision_tokens_tests;
+
+#[cfg(test)]
+#[path = "../../tests/hot_store/receive_accelerator_bindings.rs"]
+mod receive_accelerator_bindings_tests;
 
 #[cfg(feature = "accepted-match-transition-experiment")]
 #[doc(hidden)]

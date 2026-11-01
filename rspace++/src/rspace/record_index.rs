@@ -1544,13 +1544,6 @@ where
         Ok(index)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "built only by library tests until task 12002 adds the HotStore read path"
-        )
-    )]
     pub(crate) fn rebuild_receive_index(&mut self) -> bool {
         match self.build_receive_index() {
             Ok(index) => {
@@ -1577,13 +1570,6 @@ where
         self.assert_receive_index_coherent();
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read only by library tests until task 12002 adds the HotStore read path"
-        )
-    )]
     pub(crate) fn receive_index(&self) -> Option<&ReceiveOccurrenceIndex> {
         self.receive_index.as_ref()
     }
@@ -1597,33 +1583,12 @@ where
     )]
     pub(crate) fn loads(&self) -> u64 { self.loads }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read only by library tests until task 12002 adds the HotStore read path"
-        )
-    )]
     pub(crate) fn is_loaded_prefix(&self, prefix: &[u8]) -> bool { self.resting.is_loaded(prefix) }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read only by library tests until task 12002 adds the HotStore read path"
-        )
-    )]
     pub(crate) fn loaded_group_channels(&self, prefix: &[u8]) -> Option<&Arc<[C]>> {
         self.resting.groups.get(prefix).map(|group| &group.key)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read only by library tests until task 12002 adds the HotStore read path"
-        )
-    )]
     pub(crate) fn installed_entry(
         &self,
         prefix: &[u8],
@@ -1631,13 +1596,6 @@ where
         self.installed.get(prefix)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read only by library tests until task 12002 adds the HotStore read path"
-        )
-    )]
     pub(crate) fn ordered_resting_records(
         &self,
         prefix: &[u8],
@@ -1837,6 +1795,23 @@ where C: Clone + RhoPathEncode + Send + Sync
         self.installed
             .group_values(&RhoPathV1::join_prefix(channel))
             .unwrap_or_default()
+    }
+
+    pub(crate) fn try_visit_join_groups<E>(
+        &self,
+        channel: &C,
+        mut visitor: impl FnMut(&[C]) -> Result<(), E>,
+    ) -> Option<Result<(), E>> {
+        let prefix = RhoPathV1::join_prefix(channel);
+        self.resting.is_loaded(&prefix).then(|| {
+            self.installed
+                .try_visit_group_records(&prefix, |_, record| visitor(record.value().as_slice()))
+                .and_then(|()| {
+                    self.resting.try_visit_group_records(&prefix, |_, record| {
+                        visitor(record.value().as_slice())
+                    })
+                })
+        })
     }
 
     pub(crate) fn remove(&mut self, channel: &C, join: &[C]) -> Option<Vec<C>> {
