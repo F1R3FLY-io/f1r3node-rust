@@ -315,6 +315,7 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         channels: &[C],
         visitor: &mut dyn FnMut(&[u64], Result<OrderedReceiveView<'_>, OrderedReceiveError>),
     ) -> RestingReceiveVisit;
+    fn receive_revision(&self) -> Option<ReceiveRevision> { None }
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
     fn get_candidate_pool(&self, channel: &C) -> CandidatePool<A>;
@@ -472,6 +473,26 @@ impl ContinuationVersion {
 }
 
 #[derive(Clone, Debug)]
+pub struct ReceiveRevision {
+    generation: Arc<ContinuationEpoch>,
+    store: Arc<ContinuationEpoch>,
+}
+
+impl PartialEq for ReceiveRevision {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.generation, &other.generation) && Arc::ptr_eq(&self.store, &other.store)
+    }
+}
+
+impl Eq for ReceiveRevision {}
+
+impl ReceiveRevision {
+    pub fn shares_generation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.generation, &other.generation)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct ContinuationAddress {
     pub(crate) version: Option<ContinuationVersion>,
     pub(crate) index: i32,
@@ -554,6 +575,7 @@ where
     data: RSpaceDataStore<C, A>,
     joins: RSpaceJoinStore<C>,
     continuation_base_epoch: Arc<ContinuationEpoch>,
+    continuation_store_epoch: Arc<ContinuationEpoch>,
     continuation_epochs: PathMap<Arc<ContinuationEpoch>>,
     durable_journal: Option<Box<DurableJournalStateV1>>,
 }
@@ -586,11 +608,13 @@ where
                 joins.set_installed_channel(channel, values);
             }
         }
+        let continuation_base_epoch = Arc::new(ContinuationEpoch);
         Ok(Self {
             continuations,
             data,
             joins,
-            continuation_base_epoch: Arc::new(ContinuationEpoch),
+            continuation_store_epoch: Arc::clone(&continuation_base_epoch),
+            continuation_base_epoch,
             continuation_epochs: PathMap::new(),
             durable_journal: None,
         })
@@ -735,11 +759,13 @@ where
     K: Clone + Send + Sync,
 {
     fn default() -> Self {
+        let continuation_base_epoch = Arc::new(ContinuationEpoch);
         Self {
             continuations: RSpaceContinuationStore::default(),
             data: RSpaceDataStore::new(),
             joins: RSpaceJoinStore::default(),
-            continuation_base_epoch: Arc::new(ContinuationEpoch),
+            continuation_store_epoch: Arc::clone(&continuation_base_epoch),
+            continuation_base_epoch,
             continuation_epochs: PathMap::new(),
             durable_journal: None,
         }
@@ -766,13 +792,23 @@ where
     fn bump_continuation_revision(&mut self, channels: &[C])
     where C: RhoPathEncode {
         self.advance_journal_version();
+        let epoch = Arc::new(ContinuationEpoch);
+        self.continuation_store_epoch = Arc::clone(&epoch);
         self.continuation_epochs
-            .insert(RhoPathV1::continuation_prefix(channels), Arc::new(ContinuationEpoch));
+            .insert(RhoPathV1::continuation_prefix(channels), epoch);
     }
 
     fn bump_continuation_generation(&mut self) {
         self.continuation_base_epoch = Arc::new(ContinuationEpoch);
+        self.continuation_store_epoch = Arc::clone(&self.continuation_base_epoch);
         self.continuation_epochs = PathMap::new();
+    }
+
+    fn receive_revision(&self) -> ReceiveRevision {
+        ReceiveRevision {
+            generation: Arc::clone(&self.continuation_base_epoch),
+            store: Arc::clone(&self.continuation_store_epoch),
+        }
     }
 
     fn advance_journal_version(&mut self) {
@@ -1096,6 +1132,11 @@ where
         state
             .continuations
             .visit_resting_receive_records(channels, visitor)
+    }
+
+    fn receive_revision(&self) -> Option<ReceiveRevision> {
+        let state = self.state.read().expect("hot store state read lock");
+        Some(state.receive_revision())
     }
 
     // Data
@@ -2253,6 +2294,10 @@ mod accepted_match_formal_bindings_tests;
 #[cfg(test)]
 #[path = "../../tests/hot_store/journal_commit.rs"]
 mod journal_commit_tests;
+
+#[cfg(test)]
+#[path = "../../tests/hot_store/receive_revision_tokens.rs"]
+mod receive_revision_tokens_tests;
 
 #[cfg(feature = "accepted-match-transition-experiment")]
 #[doc(hidden)]
