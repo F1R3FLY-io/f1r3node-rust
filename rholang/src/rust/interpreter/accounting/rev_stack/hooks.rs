@@ -163,19 +163,32 @@ pub fn rev_hook(store: &dyn CellStore) -> Result<Option<RevHook>, RevStackError>
     Ok(read_single(store, &rev_hook_channel(), REV_HOOK_TAG)?.map(RevHook::from_par))
 }
 
-pub fn replace_rev_hook(
-    store: &dyn CellStore,
-    signers: &[WalletOwner],
-    hook: RevHook,
-) -> Result<(), RevStackError> {
+pub fn seal_authorizes(store: &dyn CellStore, seal: &WalletOwner) -> Result<bool, RevStackError> {
     let authority = hook_authority(store)?
         .ok_or_else(|| RevStackError::CorruptWallet("no hook authority at genesis".into()))?;
-    if !authority.authorizes(signers) {
-        return Err(RevStackError::InvalidOwner(format!(
-            "replacing a hook needs at least {} of the {} genesis hook addresses",
-            authority.threshold(),
-            authority.members().len()
-        )));
+    let components = match seal {
+        WalletOwner::Compound(components) => components.clone(),
+        single => vec![single.clone()],
+    };
+    if authority.authorizes(&components) {
+        return Ok(true);
+    }
+    Ok(match rev_hook(store)? {
+        Some(RevHook::Contract(installed)) => *seal == super::process::process_owner(&installed),
+        _ => false,
+    })
+}
+
+pub fn replace_rev_hook(
+    store: &dyn CellStore,
+    seal: &WalletOwner,
+    hook: RevHook,
+) -> Result<(), RevStackError> {
+    if !seal_authorizes(store, seal)? {
+        return Err(RevStackError::InvalidOwner(
+            "replacing a hook needs a seal of the hook authority's quorum or of the installed hook"
+                .into(),
+        ));
     }
     let channel = rev_hook_channel();
     clear(store, &channel)?;
@@ -333,14 +346,15 @@ mod tests {
         let outsider = keys(1).remove(0);
         install_genesis_hooks(&store, &HookAuthority::new(ks.clone(), 2).unwrap()).unwrap();
         let hook = RevHook::Contract(RhoNumber::create_par(7));
-        assert!(replace_rev_hook(&store, &ks[..1], hook.clone()).is_err());
-        assert!(replace_rev_hook(&store, &[ks[0].clone(), ks[0].clone()], hook.clone()).is_err());
-        assert!(replace_rev_hook(&store, &[ks[0].clone(), outsider], hook.clone()).is_err());
+        let seal = |owners: &[WalletOwner]| WalletOwner::compound(owners.to_vec()).unwrap();
+        assert!(replace_rev_hook(&store, &seal(&ks[..1]), hook.clone()).is_err());
+        assert!(replace_rev_hook(&store, &seal(&[ks[0].clone(), ks[0].clone()]), hook.clone()).is_err());
+        assert!(replace_rev_hook(&store, &seal(&[ks[0].clone(), outsider]), hook.clone()).is_err());
         assert_eq!(rev_hook(&store).unwrap(), Some(RevHook::Noop));
-        replace_rev_hook(&store, &[ks[2].clone(), ks[0].clone()], hook.clone()).unwrap();
+        replace_rev_hook(&store, &seal(&[ks[2].clone(), ks[0].clone()]), hook.clone()).unwrap();
         assert_eq!(rev_hook(&store).unwrap(), Some(hook));
         assert_eq!(store.get_data(&rev_hook_channel()).len(), 1);
-        replace_rev_hook(&store, &ks, RevHook::Noop).unwrap();
+        replace_rev_hook(&store, &seal(&ks), RevHook::Noop).unwrap();
         assert_eq!(rev_hook(&store).unwrap(), Some(RevHook::Noop));
     }
 
@@ -349,7 +363,7 @@ mod tests {
         use std::sync::Arc;
 
         use super::super::compute::{
-            compute_balance, compute_wallet_owner, deposit_compute, spend_compute, ComputeSpender,
+            compute_balance, compute_wallet_owner, deposit_compute, spend_compute,
         };
         use super::super::ops::RevStacks;
 
@@ -362,18 +376,23 @@ mod tests {
         deposit_compute(store.clone(), 30).unwrap();
         assert_eq!(compute_balance(store.clone()).unwrap(), 100);
 
-        let one = ComputeSpender::Authority(ks[..1].to_vec());
+        use super::super::process::process_owner;
+        let seal = |owners: &[WalletOwner]| WalletOwner::compound(owners.to_vec()).unwrap();
+        let one = seal(&ks[..1]);
         assert!(spend_compute(store.clone(), &one, &payee, 10).is_err());
-        let outsider = ComputeSpender::Authority(vec![ks[0].clone(), payee.clone()]);
+        let outsider = seal(&[ks[0].clone(), payee.clone()]);
         assert!(spend_compute(store.clone(), &outsider, &payee, 10).is_err());
-        let two = ComputeSpender::Authority(ks[1..].to_vec());
+        let two = seal(&ks[1..]);
         assert!(spend_compute(store.clone(), &two, &compute_wallet_owner(), 10).is_err());
         assert!(spend_compute(store.clone(), &two, &payee, 101).is_err());
         assert_eq!(spend_compute(store.clone(), &two, &payee, 40).unwrap(), 60);
-        assert_eq!(
-            spend_compute(store.clone(), &ComputeSpender::InstalledHook, &payee, 60).unwrap(),
-            0
-        );
+        let installed = RhoNumber::create_par(7);
+        let as_hook = process_owner(&installed);
+        assert!(spend_compute(store.clone(), &as_hook, &payee, 10).is_err());
+        replace_rev_hook(store.as_ref(), &two, RevHook::Contract(installed)).unwrap();
+        let called = process_owner(&RhoNumber::create_par(8));
+        assert!(spend_compute(store.clone(), &called, &payee, 10).is_err());
+        assert_eq!(spend_compute(store.clone(), &as_hook, &payee, 60).unwrap(), 0);
         assert_eq!(RevStacks::new(store.clone()).balance(&payee).unwrap(), 100);
         assert_eq!(compute_balance(store).unwrap(), 0);
     }

@@ -2,18 +2,12 @@ use std::sync::Arc;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 
-use super::hooks::hook_authority;
+use super::hooks::seal_authorizes;
 use super::ops::{CellStore, RevStacks};
 use super::owner::WalletOwner;
 use super::{RevAmount, RevStackError};
 
 pub const COMPUTE_WALLET_DOMAIN: &[u8] = b"f1r3fly/rev-stack/compute-wallet/v1";
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ComputeSpender {
-    Authority(Vec<WalletOwner>),
-    InstalledHook,
-}
 
 pub fn compute_wallet_owner() -> WalletOwner {
     WalletOwner::Unforgeable(Blake2b256::hash(COMPUTE_WALLET_DOMAIN.to_vec()))
@@ -29,20 +23,15 @@ pub fn deposit_compute(store: Arc<dyn CellStore>, amount: RevAmount) -> Result<(
 
 pub fn spend_compute(
     store: Arc<dyn CellStore>,
-    spender: &ComputeSpender,
+    seal: &WalletOwner,
     to: &WalletOwner,
     amount: RevAmount,
 ) -> Result<RevAmount, RevStackError> {
-    if let ComputeSpender::Authority(signers) = spender {
-        let authority = hook_authority(store.as_ref())?
-            .ok_or_else(|| RevStackError::CorruptWallet("no hook authority at genesis".into()))?;
-        if !authority.authorizes(signers) {
-            return Err(RevStackError::InvalidOwner(format!(
-                "spending from the compute wallet needs at least {} of the {} genesis hook addresses",
-                authority.threshold(),
-                authority.members().len()
-            )));
-        }
+    if !seal_authorizes(store.as_ref(), seal)? {
+        return Err(RevStackError::InvalidOwner(
+            "spending from the compute wallet needs a seal of the hook authority's quorum or of the installed hook"
+                .into(),
+        ));
     }
     if *to == compute_wallet_owner() {
         return Err(RevStackError::InvalidOwner(
