@@ -1,6 +1,6 @@
-# A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9
+# A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -389,6 +389,97 @@ F14, F15 and F17 have one root. The reducer has no record of which seal encloses
 - The gate still refuses an envelope that names `# P` (decision 5), so no draw on a process wallet is reachable before M-9.
 - A kind mint needs the unforgeable name of the kind in the signature after substitution. The public form `bundle0{*k}` transfers and never mints. REV mints are refused in the journal, in settlement and in the record decoder (P3-07b decisions 6 and 7).
 - Kind moves go through the journal and settle per kind. Conservation is checked per kind over the touched wallets (F9 fixed, F10 partly fixed).
+
+## Revision 3 (action A-7): re-audit of patch/FX-1 and patch/FX-4
+
+- **Branches audited:** `patch/FX-1` at `8886c8c9a` (lane B, cut from `patch/P2-integration`, `3b5a7e90a`). `patch/FX-4` at `0fbf80c85` (lane B, cut from `patch/P3-05`, `685627c28`, with FX-1 merged in at `67104a363`).
+- **Findings re-audited:** F1, F8 (FX-1). F7, F13, F16, F18, F20 (FX-4).
+- **Method:** a code reading of each fix and of the fixing lane's tests against the A-6 test plans. The fixing lanes own the tests (decision of 2026-11-01). This revision runs no tests and adds none. A gap between a test plan and the lane's tests is recorded as a finding.
+- **Files read:** `system_processes.rs` (`urn_refusal`, `UrnPhase`, `registry_lookup`, `rev_genesis`, `rev_bond_admin`), `reduce.rs` (`eval_new`, `check_region_signature`), `rho_runtime.rs` (`enter_genesis_phase`, `setup_reducer`, `setup_maps_and_refs`), `casper` `runtime.rs`, `replay_runtime.rs`, `reporting_casper.rs`, `rev_stack/{genesis,bond,process,hooks,compute}.rs`, `PoSV6.rhox`, the FX-1 and FX-4 decision logs, and the tests that those logs name.
+
+### Results
+
+| # | Fix | Result | New findings |
+|---|---|---|---|
+| F1 | FX-1 decisions 1 to 4 | **Closed.** Lane B confirmed the leak on `3b5a7e90a` (mint, bonds and an fs-native URN through the lookup). `eval_new` and `registry_lookup` now apply one refusal, `urn_refusal`, before the lookup reads `urn_map` or the versioned registry. The `rho:rev:genesis` handler also refuses every call outside the genesis phase, so a handle kept from genesis is refused when used. | F24 (Low) |
+| F8 | FX-1 decisions 1 and 5 | **Closed.** The genesis phase has its own flag, entered only by genesis play, genesis replay and reporting of a parentless block. Lifting the fs-native filter no longer exposes the genesis URNs. | — |
+| F7 | FX-4 decisions 8 to 10 | **Closed.** `release` and `slash` moved to `rho:rev:bondAdmin`. Holding that name is the authority, and the name is genesis-only. `PoSV6.rhox` binds it in its top-level `new` and uses it only as a channel, never as data. The calls sit inside `closeBlock` and `slash`, which check the system auth token before they reach it. | F25 (Low) |
+| F16 | FX-4 decisions 5 to 7 | **Closed for the API.** `ComputeSpender` and `InstalledHook` are gone. `spend_compute` takes a seal and admits only the authority's quorum or `# H` of the installed hook. The function stays unwired until FX-2 supplies the seal record. | F23 (Low), F26 (gap) |
+| F13 | FX-4 decisions 5 to 7 | **Closed for the API**, with the same condition as F16. | F23 (Low), F26 (gap) |
+| F18 | FX-4 decisions 1 to 3 | **Closed.** The seal and the body are substituted before the check. `# Q` is admitted only when both are closed and equal in sorted form, and the wallet is keyed on that closed process. The gate's self-sealed check uses the same function, `hash_seal_admissible`. | — |
+| F20 | FX-4 decision 4 | **Partly closed.** See F22. The rule searches the body's encoding for five URN strings. Four of them are bound by the author, not by the runner. Two names that do resolve from the runner are not covered. | F22 (Low) |
+
+**The check you asked for, `rho:rev:bondAdmin` through the registry lookup:** covered. `is_genesis_only_urn` returns true for `rho:rev:genesis` and `rho:rev:bondAdmin` (`genesis.rs`, FX-4). `registry_lookup` calls `urn_phase.refusal` on the URN string before it reads `urn_map` or delegates a versioned URN, and it reads the string from either a `String` or a `Uri` argument. Outside the genesis phase the lookup therefore refuses `rho:rev:bondAdmin` with "reserved for genesis". `rev_bond_spec::only_a_holder_of_the_bond_admin_name_can_release_or_slash_a_bond` checks this case, the direct `new`, and the old route through `rho:rev:bond`. Two conditions apply:
+
+1. The coverage exists only on FX-4. `patch/FX-1` alone has no `rho:rev:bondAdmin`. FX-4 must merge with FX-1 or after it, which its history already does.
+2. The filter matches the exact string. F24 records the hardening for other spellings.
+
+### Correction to revision 1
+
+F8 listed the reporting replay (`!with_cost_accounting`) as a place that keyed on cost accounting rather than on genesis. In `reporting_casper.rs`, `with_cost_accounting(parents)` is `!parents.is_empty()`. The condition is therefore "the block has no parents", which is the genesis test. That row was not a leak. FX-1 makes the meaning explicit with its own `is_genesis` argument.
+
+### Coverage of the A-6 test plans by the lanes' tests
+
+| Plan | Lane tests | Covered | Gap |
+|---|---|---|---|
+| F1: mint, bonds and an fs-native URN through the lookup after genesis | `rev_genesis_spec`: `a_user_deploy_cannot_mint_through_the_registry_lookup`, `..._mint_bonds_...`, `..._reach_an_fs_native_urn_...`, `a_genesis_handle_kept_past_genesis_is_refused_by_the_handler`. `gated_executor_spec::a_user_deploy_cannot_reach_the_genesis_mint_through_the_registry_lookup` (v6 shard, supply and balance unchanged, replay agrees). | Yes, with a case added for a kept handle | — |
+| F8: reporting of a non-genesis block | `lifting_the_fs_filter_alone_does_not_expose_the_genesis_mint` | Yes for the shared flag | The reporting case cannot occur (see the correction above). No test needed. |
+| F7: a user deploy calls release and slash, with and without a token | `rev_bond_spec::only_a_holder_of_the_bond_admin_name_can_release_or_slash_a_bond` | Yes | F25: no test that a system deploy other than PoS's own path cannot reach `rho:rev:bondAdmin`, and no end-to-end test through `PoSV6.rhox` (the FX-4 log defers it to v6 slashing). |
+| F16: a contract that the hook calls asks for a compute spend, and a term equal to H but not installed | `hooks::tests::the_compute_wallet_starts_empty_and_spends_only_under_the_authority` | At unit level only | F26: the plan's cases are tested as owner values passed to `spend_compute`, not through the reducer, because nothing is wired. |
+| F13: replacement by enough members whose redex is not sealed by them | `hooks::tests::replacing_the_rev_hook_needs_the_threshold_of_genesis_addresses` | At unit level only | F26, as above. |
+| F18: a template fired with x = 1 and x = 2 | `hash_seal_spec::each_instance_of_a_hash_sealed_template_has_its_own_wallet`, `a_hash_seal_is_checked_on_the_substituted_process` | Yes | — |
+| F20: a self-sealed P that pays "the deployer" | `hash_seal_spec::a_hash_sealed_body_may_not_read_the_running_deployment` | No | F22: the test binds `rho:system:deployerId`, which the normalizer fills with the author's id. It tests the over-broad part of the rule and not a name that resolves from the runner. |
+
+### F22 — Low: the F20 rule refuses author context and misses runner context
+
+**Code:** `reads_runner_context` (`process.rs`, FX-4) searches the encoding of a `# P` body for `rho:system:deployerId`, `rho:rchain:deployerId`, `rho:system:deployId`, `rho:system:cosignerId:` and `rho:deploy:data`. The gate's `self_sealed_envelope` and the reducer's `check_region_signature` both apply it.
+
+**What the rule gets wrong:**
+
+1. **Over-refusal.** The first four URNs are normalizer injections (`normalizer_env.rs`). `eval_new` resolves an injected URN from `New.injections`, which the normalizer filled when the term was compiled (`reduce.rs`, `add_urn`, the branch for a URN that is not in `urn_map`). The value is the id of the deployment that wrote P, fixed in P. It does not change with the runner. Refusing it is safe but refuses legitimate terms. Revision 2's proposal for F20 named "`rho:system:deployerId`, `rho:deploy:data` or `rho:system:cosignerId:<i>`" as names that resolve to the running deployment. For the injected URNs, that statement was wrong. The error came from the audit, and the fix followed it.
+2. **Under-refusal.** Two system processes in `urn_map` do answer from the running block or deployment: `rho:deploy:data` (in the list) and `rho:block:data` (not in the list). The URN filter does not refuse either one, so `registry_lookup` serves both. A `# P` body can therefore reach `rho:deploy:data` through the lookup with a URN string built at run time, which a search of the encoding cannot find. It can reach `rho:block:data` directly.
+
+**Effect today:** bounded. Under the interim payer rule (P3-04 decision 21), settlement debits a process wallet only for the charges of P's own work. A runner-context read cannot redirect the wallet's funds. The finding becomes Medium when FX-2 makes the enclosing seal the payer of stacks and native draws, because a `# P` body could then pay "whoever runs this" from P's wallet.
+
+**Proposed fix:** refuse by resolution, not by encoding. With FX-2's seal record, the reducer knows when it evaluates inside a `# P` region. Pass that state to `urn_refusal`, and refuse `rho:deploy:data`, `rho:block:data` and any later URN that answers from the runner, in `eval_new` and in `registry_lookup` alike. Drop the four injected URNs from the refusal, or keep them refused by an explicit decision that says why. Until FX-2 lands, add `rho:block:data` to the list, and record the registry-lookup route as a known gap.
+
+**Test plan for lane B:** inside a self-sealed P, (a) bind `rho:block:data`, and (b) obtain `rho:deploy:data` through `rho:internal:registry_lookup` with a URN string that does not appear literally in P. *Expected after the fix:* both refused. A third case binds `rho:system:deployerId` in P. *Expected:* the value equals the author's id whoever fires P, so the decision on item 1 decides whether it is admitted.
+
+### F23 — Low: the installed hook can replace itself
+
+**Code:** `replace_rev_hook` (`hooks.rs`, FX-4) admits a seal that `seal_authorizes` accepts, and `seal_authorizes` accepts `# H` for the installed hook H. H can therefore install its successor without the authority's quorum, and the successor can do the same.
+
+**Effect:** the authority approves H's code, which includes any successor logic. But replacement then leaves the authority's review after the first step. Revision 2 proposed this rule for F13 ("apply the same rule to `replace_rev_hook`"), so the gap came from the audit.
+
+**Proposed fix:** `replace_rev_hook` admits the authority's quorum only. `spend_compute` keeps both cases. Recorded for the FX-2 wiring, since the function is not wired yet.
+
+### F24 — Low: genesis-only URNs match one exact spelling
+
+**Code:** `is_genesis_only_urn` compares the URN string with `rho:rev:genesis` and `rho:rev:bondAdmin` exactly. A versioned spelling such as `rho:rev:bondAdmin:1.0.0` is not refused. Today it resolves nowhere: `eval_new` finds no `urn_map` entry or injection, and the lookup's versioned branch asks the registry, which holds no entry for it.
+
+**Effect:** none today. A future registration of a versioned genesis-only URN, or a second `urn_map` key for the same fixed channel, would bypass the filter.
+
+**Proposed fix:** key the refusal on the fixed channel rather than the string. Refuse any URN whose `urn_map` value is the bundle of `FixedChannels::rev_genesis()` or `rev_bond_admin()`, and refuse their versioned forms by prefix. Add an assertion at runtime setup that no other `urn_map` key maps to either channel.
+
+### F25 — Low: genesis is the only barrier around `rho:rev:bondAdmin`, and no test covers the PoS path
+
+**Code:** any deploy that runs while the genesis phase is on can bind `rho:rev:bondAdmin` or `rho:rev:genesis`. FX-4 decision 9 relies on PoSV6 being the only genesis deploy that binds the name. No check enforces that.
+
+**Effect:** the genesis deploys are composed by the node from blessed contracts, so the assumption holds today. A genesis composition that adds a deploy from configuration (for example, a future use of the genesis fs bundle) would inherit both names.
+
+**Proposed fix:** record the assumption in the genesis composition. Add a test that lists the genesis deploys whose terms bind either URN and asserts that the list is exactly `PoSV6` for `rho:rev:bondAdmin` and the REV genesis deploys for `rho:rev:genesis`. Add the end-to-end release test through `PoSV6.rhox` when v6 slashing lands, as the FX-4 log says.
+
+### F26 — Gap: the F13 and F16 plans are tested only at unit level
+
+The lane's tests pass owner values to `spend_compute` and `replace_rev_hook` directly. The A-6 plans need a seal that the reducer derives from a region, which exists only after FX-2. This is not a defect in FX-4, because decision 7 keeps both functions unwired. The reducer-level tests must arrive with the wiring patch, and that patch needs re-audit under A-7.
+
+### What remains open after FX-1 and FX-4
+
+- F2/F14, F3/F15, F5, F6, F17: FX-2 (lane C, then lane B).
+- F4: FX-3 (lane C).
+- F12, F19: FX-5 (lane C).
+- F9, F10, F11: as in revision 2. F10's whole-state audit per kind is in `patch/P2-09`.
+- F22 to F26: above. F22 and F23 depend on FX-2.
 
 ## Open questions for review
 
