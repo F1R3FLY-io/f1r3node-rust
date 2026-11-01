@@ -727,7 +727,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     }
 }
 
-
 #[async_trait]
 impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunch for CasperLaunchImpl<T> {
     async fn launch(&self) -> Result<(), CasperError> {

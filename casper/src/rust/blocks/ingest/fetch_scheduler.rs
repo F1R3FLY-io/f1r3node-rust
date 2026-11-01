@@ -140,9 +140,9 @@ impl BlockNeed {
     /// Ask again as soon as one base interval has passed since the last
     /// request, if that is sooner than the pacing allows.
     fn hasten(&mut self, now_ms: u64) {
-        let earliest = self
-            .last_requested_ms
-            .map_or(now_ms, |last| now_ms.max(last + UNRESOLVED_REREQUEST_ANCHOR_MS));
+        let earliest = self.last_requested_ms.map_or(now_ms, |last| {
+            now_ms.max(last + UNRESOLVED_REREQUEST_ANCHOR_MS)
+        });
         self.next_due_ms = self.next_due_ms.min(earliest);
     }
 
@@ -222,7 +222,13 @@ impl FetchScheduler {
 
     /// Need `hash` for `origin`. An existing need keeps its peers and pacing
     /// and is promoted from `Announced`.
-    pub fn need_block(&mut self, hash: &BlockHash, origin: NeedOrigin, facts: NeedFacts, now_ms: u64) {
+    pub fn need_block(
+        &mut self,
+        hash: &BlockHash,
+        origin: NeedOrigin,
+        facts: NeedFacts,
+        now_ms: u64,
+    ) {
         if let Some(need) = self.blocks.get_mut(hash) {
             need.facts.merge(&facts);
             if need.origin != NeedOrigin::Cited && origin != NeedOrigin::Announced {

@@ -1,9 +1,10 @@
 const MIN_VALIDATION_WIDTH: usize = 3;
 
 fn derive_validation_width(cpu_cores: usize) -> usize {
-    cpu_cores
-        .saturating_sub(2)
-        .clamp(MIN_VALIDATION_WIDTH, tokio::sync::Semaphore::MAX_PERMITS - 2)
+    cpu_cores.saturating_sub(2).clamp(
+        MIN_VALIDATION_WIDTH,
+        tokio::sync::Semaphore::MAX_PERMITS - 2,
+    )
 }
 
 /// How many blocks block ingest validates at once: every core but two, at

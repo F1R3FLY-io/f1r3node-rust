@@ -608,9 +608,13 @@ mod tests {
 
         let first = started[0].clone();
         deliver(&mut core, chunk(first.clone(), first, 1), true);
-        assert!(core.fill_window().is_empty(), "a present root is not fetched");
         assert!(
-            core.take_outcomes().contains(&(queued, StateFetchResult::Imported)),
+            core.fill_window().is_empty(),
+            "a present root is not fetched"
+        );
+        assert!(
+            core.take_outcomes()
+                .contains(&(queued, StateFetchResult::Imported)),
             "the blocks waiting on a queued root are released when it is present"
         );
     }

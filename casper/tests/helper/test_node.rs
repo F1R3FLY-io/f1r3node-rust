@@ -571,7 +571,9 @@ impl TestNode {
     }
 
     /// Checks if this node's DAG holds a block (equivalent to Scala contains, line 346).
-    pub fn contains(&self, block_hash: &BlockHash) -> bool { self.block_dag_storage.contains(block_hash) }
+    pub fn contains(&self, block_hash: &BlockHash) -> bool {
+        self.block_dag_storage.contains(block_hash)
+    }
 
     /// The block is in the DAG, held by block ingest, or needed (equivalent to Scala knowsAbout, line 347-348).
     pub fn knows_about(&self, block_hash: &BlockHash) -> bool {
@@ -648,7 +650,9 @@ impl TestNode {
                                                 .await
                                                 .process(casper.clone(), block, Some(peer))
                                                 .await
-                                                .map_err(|e| CommError::CasperError(e.to_string()))?;
+                                                .map_err(|e| {
+                                                    CommError::CasperError(e.to_string())
+                                                })?;
 
                                             return Ok(
                                                 CommunicationResponse::handled_without_message(),

@@ -14,8 +14,8 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    self, ApprovedBlock, ApprovedBlockCandidate, BlockRequest, CasperMessage,
-    FinalizedFloorSeed, HasBlock, HasBlockRequest,
+    self, ApprovedBlock, ApprovedBlockCandidate, BlockRequest, CasperMessage, FinalizedFloorSeed,
+    HasBlock, HasBlockRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;

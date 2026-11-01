@@ -8,10 +8,10 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
+use futures::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use futures::StreamExt;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinSet;
 use tokio_stream::wrappers::ReceiverStream;
@@ -29,12 +29,13 @@ use super::validation_worker::Validation;
 use crate::rust::casper::{Casper, MultiParentCasper};
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_INGEST_DISK_ENTRIES_METRIC, BLOCK_INGEST_HELD_METRIC, BLOCK_INGEST_INSERTS_PENDING_METRIC,
-    BLOCK_INGEST_LANE_DROPS_METRIC, BLOCK_INGEST_METRICS_SOURCE, BLOCK_INGEST_NEEDS_METRIC,
-    BLOCK_INGEST_OUTBOUND_DROPS_METRIC, BLOCK_INGEST_PEER_REPUTATION_IGNORED_PEERS_METRIC,
-    BLOCK_INGEST_PEER_REPUTATION_STRIKES_METRIC,
-    BLOCK_INGEST_ROOT_NEEDS_METRIC, BLOCK_INGEST_UNCITED_NEEDS_METRIC, BLOCK_INGEST_VALIDATING_METRIC,
-    BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
+    BLOCK_INGEST_DISK_ENTRIES_METRIC, BLOCK_INGEST_HELD_METRIC,
+    BLOCK_INGEST_INSERTS_PENDING_METRIC, BLOCK_INGEST_LANE_DROPS_METRIC,
+    BLOCK_INGEST_METRICS_SOURCE, BLOCK_INGEST_NEEDS_METRIC, BLOCK_INGEST_OUTBOUND_DROPS_METRIC,
+    BLOCK_INGEST_PEER_REPUTATION_IGNORED_PEERS_METRIC, BLOCK_INGEST_PEER_REPUTATION_STRIKES_METRIC,
+    BLOCK_INGEST_ROOT_NEEDS_METRIC, BLOCK_INGEST_UNCITED_NEEDS_METRIC,
+    BLOCK_INGEST_VALIDATING_METRIC, BLOCK_PROCESSING_PARALLEL_LIMIT_METRIC,
+    BLOCK_PROCESSOR_METRICS_SOURCE,
 };
 use crate::rust::util::proto_util;
 
@@ -137,11 +138,9 @@ impl IngestHandle {
             self.view.clone(),
             approved_block,
         ));
-        *self
-            .attached
-            .write()
-            .map_err(|_| CasperError::RuntimeError("block ingest casper slot poisoned".to_string()))? =
-            Some(Attached { casper, intake });
+        *self.attached.write().map_err(|_| {
+            CasperError::RuntimeError("block ingest casper slot poisoned".to_string())
+        })? = Some(Attached { casper, intake });
         self.inputs
             .send(IngestInput::Attached { anchor_height })
             .await
@@ -158,7 +157,10 @@ impl IngestHandle {
         if let Err(error) = lane.try_send(Delivery { block, from }) {
             metrics::counter!(BLOCK_INGEST_LANE_DROPS_METRIC, "source" => BLOCK_INGEST_METRICS_SOURCE, "lane" => label)
                 .increment(1);
-            tracing::debug!(lane = label, "block ingest lane refused a delivery: {error}");
+            tracing::debug!(
+                lane = label,
+                "block ingest lane refused a delivery: {error}"
+            );
         }
     }
 
@@ -413,7 +415,10 @@ async fn run_validation<T: TransportLayer + Send + Sync + 'static>(
         let outcome = match (attached(&slot), validation.block_store().get(&hash)) {
             (Some(attached), Ok(Some(block))) => {
                 let casper = attached.casper.clone() as Arc<dyn Casper + Send + Sync>;
-                tracing::info!("Block {} processing started.", PrettyPrinter::build_string_bytes(&hash));
+                tracing::info!(
+                    "Block {} processing started.",
+                    PrettyPrinter::build_string_bytes(&hash)
+                );
                 match kind {
                     Work::Validate => validation.validate(casper, &block).await,
                     Work::AdmitSettled => validation.admit_settled(casper, &block).await,
@@ -469,7 +474,9 @@ async fn run_outbound<T: TransportLayer + Send + Sync>(
                     return;
                 }
                 let result = match request {
-                    Outbound::Request { hash, peer } => transport.request_for_block(conf, &peer, hash).await,
+                    Outbound::Request { hash, peer } => {
+                        transport.request_for_block(conf, &peer, hash).await
+                    }
                     Outbound::Broadcast(hash) => {
                         transport
                             .broadcast_has_block_request(connections, conf, &hash)
@@ -648,7 +655,10 @@ impl Owner {
             (BLOCK_INGEST_HELD_METRIC, self.state.held()),
             (BLOCK_INGEST_DISK_ENTRIES_METRIC, self.state.disk_entries()),
             (BLOCK_INGEST_NEEDS_METRIC, self.state.block_needs()),
-            (BLOCK_INGEST_UNCITED_NEEDS_METRIC, self.state.uncited_needs()),
+            (
+                BLOCK_INGEST_UNCITED_NEEDS_METRIC,
+                self.state.uncited_needs(),
+            ),
             (BLOCK_INGEST_ROOT_NEEDS_METRIC, self.state.root_needs()),
             (BLOCK_INGEST_VALIDATING_METRIC, self.validating),
             (

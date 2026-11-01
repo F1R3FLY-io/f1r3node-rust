@@ -83,7 +83,11 @@ impl Intake {
 
     /// Check and store `checked`, delivered by `from` (none for a block read
     /// from the local block store).
-    pub fn admit(&self, checked: &CheckedBlock, from: Option<PeerNode>) -> Result<IngestInput, CasperError> {
+    pub fn admit(
+        &self,
+        checked: &CheckedBlock,
+        from: Option<PeerNode>,
+    ) -> Result<IngestInput, CasperError> {
         let block = checked.block();
         let hash = block.block_hash.clone();
         let solicited = self.view.is_solicited(&hash);
@@ -193,7 +197,10 @@ impl Intake {
         )
     }
 
-    pub fn sender_authorization(&self, block: &BlockMessage) -> Result<SenderAuthorization, CasperError> {
+    pub fn sender_authorization(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<SenderAuthorization, CasperError> {
         let Some(main_parent) = block.header.parents_hash_list.first() else {
             return Ok(SenderAuthorization::Unknown);
         };
@@ -212,10 +219,11 @@ impl Intake {
         let Some(last_finalized) = self.dag.last_finalized_block() else {
             return Ok(false);
         };
-        Ok(self
-            .dag
-            .lookup(&last_finalized)?
-            .is_some_and(|meta| meta.weight_map.get(&block.sender).is_some_and(|stake| *stake > 0)))
+        Ok(self.dag.lookup(&last_finalized)?.is_some_and(|meta| {
+            meta.weight_map
+                .get(&block.sender)
+                .is_some_and(|stake| *stake > 0)
+        }))
     }
 }
 

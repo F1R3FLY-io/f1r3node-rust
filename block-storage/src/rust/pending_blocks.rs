@@ -232,7 +232,10 @@ mod tests {
     fn inserted_block_is_readable_and_removable() {
         let area = PendingBlocks::new(PendingBlockLimits::default());
         let b = block(1, 1);
-        assert_eq!(area.insert(&b, PendingClass::Unsolicited), PendingInsert::Accepted);
+        assert_eq!(
+            area.insert(&b, PendingClass::Unsolicited),
+            PendingInsert::Accepted
+        );
         assert_eq!(area.get(&b.block_hash), Some(b.clone()));
         assert_eq!(area.len(), 1);
         assert!(area.bytes() > 0);
@@ -246,13 +249,31 @@ mod tests {
     fn each_class_is_refused_at_its_own_share_of_the_area() {
         let area = PendingBlocks::new(limits(10, usize::MAX, 100));
         for i in 0..8 {
-            assert_eq!(area.insert(&block(i, i), PendingClass::Unsolicited), PendingInsert::Accepted);
+            assert_eq!(
+                area.insert(&block(i, i), PendingClass::Unsolicited),
+                PendingInsert::Accepted
+            );
         }
-        assert_eq!(area.insert(&block(8, 8), PendingClass::Unsolicited), PendingInsert::AreaFull);
-        assert_eq!(area.insert(&block(8, 8), PendingClass::KnownSender), PendingInsert::Accepted);
-        assert_eq!(area.insert(&block(9, 9), PendingClass::KnownSender), PendingInsert::AreaFull);
-        assert_eq!(area.insert(&block(9, 9), PendingClass::Solicited), PendingInsert::Accepted);
-        assert_eq!(area.insert(&block(10, 10), PendingClass::Solicited), PendingInsert::AreaFull);
+        assert_eq!(
+            area.insert(&block(8, 8), PendingClass::Unsolicited),
+            PendingInsert::AreaFull
+        );
+        assert_eq!(
+            area.insert(&block(8, 8), PendingClass::KnownSender),
+            PendingInsert::Accepted
+        );
+        assert_eq!(
+            area.insert(&block(9, 9), PendingClass::KnownSender),
+            PendingInsert::AreaFull
+        );
+        assert_eq!(
+            area.insert(&block(9, 9), PendingClass::Solicited),
+            PendingInsert::Accepted
+        );
+        assert_eq!(
+            area.insert(&block(10, 10), PendingClass::Solicited),
+            PendingInsert::AreaFull
+        );
         assert_eq!(area.len(), 10, "the area never evicts");
     }
 
@@ -260,11 +281,23 @@ mod tests {
     fn the_byte_marks_reserve_room_for_known_senders_and_requested_blocks() {
         let area = PendingBlocks::new(limits(100, size() * 10, 100));
         for i in 0..8 {
-            assert_eq!(area.insert(&block(i, i), PendingClass::Unsolicited), PendingInsert::Accepted);
+            assert_eq!(
+                area.insert(&block(i, i), PendingClass::Unsolicited),
+                PendingInsert::Accepted
+            );
         }
-        assert_eq!(area.insert(&block(8, 8), PendingClass::Unsolicited), PendingInsert::AreaFull);
-        assert_eq!(area.insert(&block(8, 8), PendingClass::KnownSender), PendingInsert::Accepted);
-        assert_eq!(area.insert(&block(9, 9), PendingClass::Solicited), PendingInsert::Accepted);
+        assert_eq!(
+            area.insert(&block(8, 8), PendingClass::Unsolicited),
+            PendingInsert::AreaFull
+        );
+        assert_eq!(
+            area.insert(&block(8, 8), PendingClass::KnownSender),
+            PendingInsert::Accepted
+        );
+        assert_eq!(
+            area.insert(&block(9, 9), PendingClass::Solicited),
+            PendingInsert::Accepted
+        );
         assert!(area.bytes() <= size() * 10);
     }
 
@@ -272,7 +305,10 @@ mod tests {
     fn a_flood_from_unknown_senders_never_evicts_a_known_sender_block() {
         let area = PendingBlocks::new(limits(20, usize::MAX, 10));
         let known = block(200, 200);
-        assert_eq!(area.insert(&known, PendingClass::KnownSender), PendingInsert::Accepted);
+        assert_eq!(
+            area.insert(&known, PendingClass::KnownSender),
+            PendingInsert::Accepted
+        );
         for i in 0..=150u8 {
             area.insert(&block(i, i), PendingClass::Unsolicited);
         }
@@ -286,17 +322,29 @@ mod tests {
         for i in 0..=150u8 {
             area.insert(&block(i, i), PendingClass::Unsolicited);
         }
-        assert_eq!(area.insert(&block(200, 200), PendingClass::Unsolicited), PendingInsert::AreaFull);
-        assert_eq!(area.insert(&block(200, 200), PendingClass::KnownSender), PendingInsert::Accepted);
+        assert_eq!(
+            area.insert(&block(200, 200), PendingClass::Unsolicited),
+            PendingInsert::AreaFull
+        );
+        assert_eq!(
+            area.insert(&block(200, 200), PendingClass::KnownSender),
+            PendingInsert::Accepted
+        );
     }
 
     #[test]
     fn an_unknown_sender_cannot_displace_known_sender_blocks() {
         let area = PendingBlocks::new(limits(10, usize::MAX, 100));
         for i in 0..9 {
-            assert_eq!(area.insert(&block(i, i), PendingClass::KnownSender), PendingInsert::Accepted);
+            assert_eq!(
+                area.insert(&block(i, i), PendingClass::KnownSender),
+                PendingInsert::Accepted
+            );
         }
-        assert_eq!(area.insert(&block(9, 9), PendingClass::Unsolicited), PendingInsert::AreaFull);
+        assert_eq!(
+            area.insert(&block(9, 9), PendingClass::Unsolicited),
+            PendingInsert::AreaFull
+        );
         assert!((0..9).all(|i| area.contains(&block(i, i).block_hash)));
     }
 
@@ -304,7 +352,10 @@ mod tests {
     fn a_sender_above_its_low_water_mark_is_refused_unsolicited_blocks_only() {
         let area = PendingBlocks::new(limits(100, usize::MAX, 10));
         for i in 0..9 {
-            assert_eq!(area.insert(&block(i, 7), PendingClass::KnownSender), PendingInsert::Accepted);
+            assert_eq!(
+                area.insert(&block(i, 7), PendingClass::KnownSender),
+                PendingInsert::Accepted
+            );
         }
         assert_eq!(
             area.insert(&block(9, 7), PendingClass::KnownSender),
@@ -314,8 +365,14 @@ mod tests {
             area.insert(&block(9, 7), PendingClass::Unsolicited),
             PendingInsert::SenderLimitReached
         );
-        assert_eq!(area.insert(&block(9, 8), PendingClass::Unsolicited), PendingInsert::Accepted);
-        assert_eq!(area.insert(&block(10, 7), PendingClass::Solicited), PendingInsert::Accepted);
+        assert_eq!(
+            area.insert(&block(9, 8), PendingClass::Unsolicited),
+            PendingInsert::Accepted
+        );
+        assert_eq!(
+            area.insert(&block(10, 7), PendingClass::Solicited),
+            PendingInsert::Accepted
+        );
         assert_eq!(
             area.insert(&block(11, 7), PendingClass::Solicited),
             PendingInsert::SenderLimitReached
@@ -326,7 +383,8 @@ mod tests {
     #[test]
     fn a_block_larger_than_the_area_is_too_large() {
         assert_eq!(
-            PendingBlocks::new(limits(100, size() - 1, 100)).insert(&block(1, 1), PendingClass::Solicited),
+            PendingBlocks::new(limits(100, size() - 1, 100))
+                .insert(&block(1, 1), PendingClass::Solicited),
             PendingInsert::TooLarge
         );
     }
@@ -338,7 +396,10 @@ mod tests {
         area.insert(&block(2, 2), PendingClass::Unsolicited);
         area.set_limits(limits(1, usize::MAX, 10));
         assert_eq!(area.len(), 2);
-        assert_eq!(area.insert(&block(3, 3), PendingClass::Solicited), PendingInsert::AreaFull);
+        assert_eq!(
+            area.insert(&block(3, 3), PendingClass::Solicited),
+            PendingInsert::AreaFull
+        );
         assert_eq!(area.limits().max_blocks, 1);
     }
 
@@ -346,7 +407,10 @@ mod tests {
     fn a_duplicate_insert_is_accepted_without_a_second_entry() {
         let area = PendingBlocks::new(limits(10, usize::MAX, 10));
         area.insert(&block(1, 1), PendingClass::Unsolicited);
-        assert_eq!(area.insert(&block(1, 1), PendingClass::Solicited), PendingInsert::Accepted);
+        assert_eq!(
+            area.insert(&block(1, 1), PendingClass::Solicited),
+            PendingInsert::Accepted
+        );
         assert_eq!(area.len(), 1);
     }
 

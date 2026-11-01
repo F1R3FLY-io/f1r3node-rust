@@ -386,10 +386,7 @@ pub(crate) async fn dispatch_validate(
 
 /// Measured against the live frontier after replay, not the pre-replay
 /// snapshot: a slow replay is what carries a block past the parent-depth limit.
-fn record_arrival_depth(
-    this: &MultiParentCasperImpl,
-    block: &BlockMessage,
-) {
+fn record_arrival_depth(this: &MultiParentCasperImpl, block: &BlockMessage) {
     let frontier = match this.block_dag_storage.get_representation() {
         Ok(dag) => dag.latest_block_number(),
         Err(error) => {

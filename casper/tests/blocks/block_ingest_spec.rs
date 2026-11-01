@@ -12,10 +12,10 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use casper::rust::blocks::ingest::checked_block::CheckedBlock;
 use casper::rust::blocks::ingest::block_ingest::{
     self, IngestHandle, IngestSetup, OUTBOUND_CAPACITY, OUTBOUND_CONCURRENCY,
 };
+use casper::rust::blocks::ingest::checked_block::CheckedBlock;
 use casper::rust::casper::test_helpers::TestCasperWithSnapshot;
 use casper::rust::casper::{
     Casper, CasperShardConf, CasperSnapshot, DeployError, MultiParentCasper,
@@ -144,17 +144,25 @@ struct AcceptingCasper {
 
 #[async_trait]
 impl Casper for AcceptingCasper {
-    async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> { Ok(self.snapshot.clone()) }
+    async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
+        Ok(self.snapshot.clone())
+    }
 
     fn dag_contains(&self, hash: &BlockHash) -> bool { self.dag.contains(hash) }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> { Ok(&self.approved) }
 
-    fn deploy(&self, _deploy: Signed<DeployData>) -> Result<Either<DeployError, DeployId>, CasperError> {
+    fn deploy(
+        &self,
+        _deploy: Signed<DeployData>,
+    ) -> Result<Either<DeployError, DeployId>, CasperError> {
         unreachable!("the node under test receives no deploys")
     }
 
-    async fn estimator(&self, _dag: &mut KeyValueDagRepresentation) -> Result<Vec<BlockHash>, CasperError> {
+    async fn estimator(
+        &self,
+        _dag: &mut KeyValueDagRepresentation,
+    ) -> Result<Vec<BlockHash>, CasperError> {
         unreachable!("the node under test does not propose")
     }
 
@@ -178,7 +186,10 @@ impl Casper for AcceptingCasper {
         unreachable!("the node under test does not propose")
     }
 
-    async fn handle_valid_block(&self, block: &BlockMessage) -> Result<KeyValueDagRepresentation, CasperError> {
+    async fn handle_valid_block(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<KeyValueDagRepresentation, CasperError> {
         self.blocks.persist_block(block)?;
         Ok(self.dag.insert(block, InsertMode::Normal)?)
     }
@@ -202,7 +213,9 @@ impl MultiParentCasper for AcceptingCasper {
         unreachable!("the node under test does not finalize")
     }
 
-    async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> { Ok(self.approved.clone()) }
+    async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
+        Ok(self.approved.clone())
+    }
 
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError> {
         Ok(self.dag.get_representation()?)
@@ -227,7 +240,13 @@ impl MultiParentCasper for AcceptingCasper {
     async fn has_pending_deploys_in_storage(&self) -> Result<bool, CasperError> { Ok(false) }
 }
 
-fn block(number: i64, seq: i32, sender: Option<Validator>, parents: &[&BlockMessage], bonds: &[Bond]) -> BlockMessage {
+fn block(
+    number: i64,
+    seq: i32,
+    sender: Option<Validator>,
+    parents: &[&BlockMessage],
+    bonds: &[Bond],
+) -> BlockMessage {
     get_random_block(
         Some(number),
         Some(seq),
@@ -293,7 +312,9 @@ impl<T: TransportLayer + Send + Sync + 'static> Node<T> {
         }];
         let genesis = block(0, 0, None, &[], &bonds);
         let mut manager = InMemoryStoreManager::new();
-        let blocks = KeyValueBlockStore::create_from_kvm(&mut manager).await.unwrap();
+        let blocks = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
         let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
         blocks.put_block_message(&genesis).unwrap();
         dag.insert(&genesis, InsertMode::Approved).unwrap();
@@ -305,7 +326,9 @@ impl<T: TransportLayer + Send + Sync + 'static> Node<T> {
             dag: dag.clone(),
             transport: transport.clone(),
             connections: ConnectionsCell {
-                peers: Arc::new(std::sync::Mutex::new(Connections::from_vec(vec![peer.clone()]))),
+                peers: Arc::new(std::sync::Mutex::new(Connections::from_vec(vec![
+                    peer.clone()
+                ]))),
             },
             conf: create_rp_conf_ask(setup::peer_node("ingest-local", 40401), None, None),
             validation_width: 3,
@@ -338,7 +361,12 @@ impl<T: TransportLayer + Send + Sync + 'static> Node<T> {
 
     fn sign(&mut self, parents: &[&BlockMessage]) -> BlockMessage {
         self.seq += 1;
-        let number = parents.iter().map(|p| p.body.state.block_number).max().unwrap_or(0) + 1;
+        let number = parents
+            .iter()
+            .map(|p| p.body.state.block_number)
+            .max()
+            .unwrap_or(0)
+            + 1;
         self.validator.sign_block(&block(
             number,
             self.seq,
@@ -357,12 +385,18 @@ impl<T: TransportLayer + Send + Sync + 'static> Node<T> {
         for block in &waiting {
             self.ingest.deliver(checked(block), self.peer.clone());
             assert!(
-                wait_until(Duration::from_secs(10), || self.ingest.view().is_held(&block.block_hash)).await,
+                wait_until(Duration::from_secs(10), || self
+                    .ingest
+                    .view()
+                    .is_held(&block.block_hash))
+                .await,
                 "a block missing its parent is classified and held"
             );
         }
         assert!(
-            unheld.iter().all(|parent| self.ingest.view().is_awaited(&parent.block_hash)),
+            unheld
+                .iter()
+                .all(|parent| self.ingest.view().is_awaited(&parent.block_hash)),
             "every missing parent is needed"
         );
         unheld
@@ -379,7 +413,8 @@ async fn blocks_are_classified_validated_and_released_while_every_send_is_stuck(
 
     // More needs than the outbound queue holds, each asked of a peer whose
     // sends never return.
-    node.hold_children_of_unheld_parents(OUTBOUND_CAPACITY + 200).await;
+    node.hold_children_of_unheld_parents(OUTBOUND_CAPACITY + 200)
+        .await;
     assert!(
         wait_until(Duration::from_secs(10), || {
             transport.started.load(Ordering::SeqCst) >= OUTBOUND_CONCURRENCY
@@ -399,11 +434,19 @@ async fn blocks_are_classified_validated_and_released_while_every_send_is_stuck(
     let parent = node.sign(&[&genesis]);
     let child = node.sign(&[&parent]);
     node.ingest.deliver(checked(&child), node.peer.clone());
-    assert!(wait_until(Duration::from_secs(10), || node.ingest.view().is_held(&child.block_hash)).await);
+    assert!(
+        wait_until(Duration::from_secs(10), || node
+            .ingest
+            .view()
+            .is_held(&child.block_hash))
+        .await
+    );
     node.ingest.deliver(checked(&parent), node.peer.clone());
 
     assert!(
-        wait_until(Duration::from_secs(30), || node.dag.contains(&parent.block_hash)
+        wait_until(Duration::from_secs(30), || node
+            .dag
+            .contains(&parent.block_hash)
             && node.dag.contains(&child.block_hash))
         .await,
         "a ready block is validated and its waiting child released while every send is stuck"
@@ -430,7 +473,9 @@ async fn no_request_is_sent_once_every_needed_block_has_arrived() {
         .await,
         "every needed block is delivered and validated"
     );
-    assert!(parents.iter().all(|parent| !node.ingest.view().is_awaited(&parent.block_hash)));
+    assert!(parents
+        .iter()
+        .all(|parent| !node.ingest.view().is_awaited(&parent.block_hash)));
 
     let sent_when_nothing_was_needed = transport.requests_sent.load(Ordering::SeqCst);
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -453,7 +498,9 @@ async fn a_bad_copy_this_node_stored_is_deleted_and_the_block_asked_for() {
     let honest = node.sign(&[&genesis]);
     let mut bad_copy = honest.clone();
     bad_copy.seq_num += 1;
-    node.blocks.put(honest.block_hash.clone(), &bad_copy).unwrap();
+    node.blocks
+        .put(honest.block_hash.clone(), &bad_copy)
+        .unwrap();
 
     node.ingest.need(honest.block_hash.clone()).await.unwrap();
 
@@ -483,7 +530,10 @@ async fn a_valid_block_found_in_the_store_is_checked_and_validated() {
     node.ingest.need(block.block_hash.clone()).await.unwrap();
 
     assert!(
-        wait_until(Duration::from_secs(10), || node.dag.contains(&block.block_hash)).await,
+        wait_until(Duration::from_secs(10), || node
+            .dag
+            .contains(&block.block_hash))
+        .await,
         "a block read from the store is admitted and validated"
     );
 }

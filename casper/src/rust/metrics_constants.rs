@@ -31,7 +31,8 @@ pub const BLOCK_INGEST_VALIDATING_METRIC: &str = "block.ingest.validating";
 pub const BLOCK_INGEST_INSERTS_PENDING_METRIC: &str = "block.ingest.inserts-pending";
 pub const BLOCK_INGEST_LANE_DROPS_METRIC: &str = "block.ingest.lane-drops";
 pub const BLOCK_INGEST_OUTBOUND_DROPS_METRIC: &str = "block.ingest.outbound-drops";
-pub const BLOCK_INGEST_PEER_REPUTATION_STRIKES_METRIC: &str = "block.ingest.peer-reputation.strikes";
+pub const BLOCK_INGEST_PEER_REPUTATION_STRIKES_METRIC: &str =
+    "block.ingest.peer-reputation.strikes";
 pub const BLOCK_INGEST_PEER_REPUTATION_IGNORED_PEERS_METRIC: &str =
     "block.ingest.peer-reputation.ignored-peers";
 pub const BLOCK_INGEST_PEER_REPUTATION_DROPPED_MESSAGES_METRIC: &str =

@@ -61,7 +61,11 @@ impl InlineIngest {
             dag: &dag,
             block_store: &block_store,
         };
-        state.handle(IngestInput::Attached { anchor_height }, view.now_ms(), &stores);
+        state.handle(
+            IngestInput::Attached { anchor_height },
+            view.now_ms(),
+            &stores,
+        );
         Ok(Self {
             intake: Intake::new(block_store.clone(), dag.clone(), view, approved_block),
             validation: Validation::new(
@@ -104,7 +108,9 @@ impl InlineIngest {
         let target = block.block_hash.clone();
         let checked = match CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE) {
             Ok(checked) => checked,
-            Err((_, IntegrityFailure::Malformed)) => return Ok(Either::Left(BlockStatus::invalid_format())),
+            Err((_, IntegrityFailure::Malformed)) => {
+                return Ok(Either::Left(BlockStatus::invalid_format()))
+            }
             Err((_, IntegrityFailure::HashMismatch)) => {
                 return Ok(Either::Left(BlockStatus::invalid_block_hash()))
             }
@@ -131,7 +137,9 @@ impl InlineIngest {
     ) -> Result<ValidBlockProcessing, CasperError> {
         let block = match CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE) {
             Ok(checked) => checked.into_block(),
-            Err((_, IntegrityFailure::Malformed)) => return Ok(Either::Left(BlockStatus::invalid_format())),
+            Err((_, IntegrityFailure::Malformed)) => {
+                return Ok(Either::Left(BlockStatus::invalid_format()))
+            }
             Err((_, IntegrityFailure::HashMismatch)) => {
                 return Ok(Either::Left(BlockStatus::invalid_block_hash()))
             }
@@ -217,7 +225,11 @@ impl InlineIngest {
         Ok(())
     }
 
-    async fn execute(&mut self, effect: Effect, queue: &mut VecDeque<IngestInput>) -> Result<(), CasperError> {
+    async fn execute(
+        &mut self,
+        effect: Effect,
+        queue: &mut VecDeque<IngestInput>,
+    ) -> Result<(), CasperError> {
         match effect {
             Effect::Fetch(FetchAction::LookupLocal(hash)) => match self.block_store.get(&hash)? {
                 Some(block) => match CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE) {
@@ -264,7 +276,8 @@ impl InlineIngest {
             }
             Work::AdmitSettled => {
                 let outcome = self.validation.admit_settled(casper, &block).await;
-                let verdict = (outcome == WorkOutcome::Settled).then(|| Either::Right(BlockStatus::valid()));
+                let verdict =
+                    (outcome == WorkOutcome::Settled).then(|| Either::Right(BlockStatus::valid()));
                 (verdict, outcome)
             }
         })

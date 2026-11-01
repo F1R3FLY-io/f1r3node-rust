@@ -282,10 +282,20 @@ pub(crate) mod tests {
         let view = IngestView::new();
         let mut reputation = PeerReputation::new(view.clone());
         for i in 0..MAX_TRACKED_PEERS {
-            strike_n(&mut reputation, &peer(&format!("id{i}")), STRIKE_THRESHOLD, i as u64);
+            strike_n(
+                &mut reputation,
+                &peer(&format!("id{i}")),
+                STRIKE_THRESHOLD,
+                i as u64,
+            );
         }
         assert!(view.is_ignored_at(&peer("id0"), MAX_TRACKED_PEERS as u64));
-        strike_n(&mut reputation, &peer("bad"), STRIKE_THRESHOLD, MAX_TRACKED_PEERS as u64);
+        strike_n(
+            &mut reputation,
+            &peer("bad"),
+            STRIKE_THRESHOLD,
+            MAX_TRACKED_PEERS as u64,
+        );
         assert!(view.is_ignored_at(&peer("bad"), MAX_TRACKED_PEERS as u64));
         assert!(!view.is_ignored_at(&peer("id0"), MAX_TRACKED_PEERS as u64));
     }

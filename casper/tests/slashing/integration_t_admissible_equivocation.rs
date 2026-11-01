@@ -71,7 +71,11 @@ async fn integration_t_admissible_equivocation() {
         .process_block(b1p.clone())
         .await
         .expect("nodes[2] process b1p");
-    assert!(matches!(s0, Either::Right(_)), "b1p valid on nodes[2], got: {:?}", s0);
+    assert!(
+        matches!(s0, Either::Right(_)),
+        "b1p valid on nodes[2], got: {:?}",
+        s0
+    );
     let d3 = construct_deploy::basic_deploy_data(2, None, Some(shard_id.clone())).expect("d3");
     let c2 = nodes[2]
         .add_block_from_deploys(&[d3])
@@ -81,10 +85,7 @@ async fn integration_t_admissible_equivocation() {
         c2.header.parents_hash_list.contains(&b1p.block_hash),
         "c2 must cite b1p"
     );
-    nodes[1]
-        .process_block(c2)
-        .await
-        .expect("nodes[1] holds c2");
+    nodes[1].process_block(c2).await.expect("nodes[1] holds c2");
     assert!(
         nodes[1].ingest_view.has_waiters(&b1p.block_hash),
         "a held block must wait on b1p"

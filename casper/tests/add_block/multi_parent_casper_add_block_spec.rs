@@ -3,9 +3,9 @@
 use block_storage::rust::dag::block_dag_key_value_storage::DeployId;
 use block_storage::rust::pending_blocks::{PendingBlockLimits, PendingClass};
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
+use casper::rust::blocks::ingest::peer_reputation::STRIKE_THRESHOLD;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
-use casper::rust::blocks::ingest::peer_reputation::STRIKE_THRESHOLD;
 use casper::rust::errors::CasperError;
 use casper::rust::util::rholang::tools::Tools;
 use casper::rust::util::{construct_deploy, proto_util, rspace_util};

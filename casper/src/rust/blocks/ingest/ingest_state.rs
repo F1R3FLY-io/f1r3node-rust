@@ -160,7 +160,9 @@ impl IngestState {
     }
 
     /// The local lookup for `hash` could not be issued; issue it again.
-    pub fn defer_local_lookup(&mut self, hash: &BlockHash) { self.scheduler.defer_local_lookup(hash); }
+    pub fn defer_local_lookup(&mut self, hash: &BlockHash) {
+        self.scheduler.defer_local_lookup(hash);
+    }
 
     pub fn held(&self) -> usize { self.tracker.held() }
 
@@ -184,7 +186,12 @@ impl IngestState {
     /// The next block for a free worker: the lowest ready block.
     pub fn next_dispatch(&mut self) -> Option<(BlockHash, Work)> { self.tracker.next_ready() }
 
-    pub fn handle(&mut self, input: IngestInput, now_ms: u64, stores: &dyn StoreReads) -> Vec<Effect> {
+    pub fn handle(
+        &mut self,
+        input: IngestInput,
+        now_ms: u64,
+        stores: &dyn StoreReads,
+    ) -> Vec<Effect> {
         let mut effects = Vec::new();
         match input {
             IngestInput::Attached { anchor_height } => self.anchor_height = Some(anchor_height),
@@ -196,12 +203,20 @@ impl IngestState {
             }
             IngestInput::Need { hash } => {
                 if !stores.in_dag(&hash) && !self.tracker.contains(&hash) {
-                    self.scheduler
-                        .need_block(&hash, NeedOrigin::Requested, NeedFacts::default(), now_ms);
+                    self.scheduler.need_block(
+                        &hash,
+                        NeedOrigin::Requested,
+                        NeedFacts::default(),
+                        now_ms,
+                    );
                 }
             }
-            IngestInput::IntakeRefused(refused) => self.refused(refused, now_ms, stores, &mut effects),
-            IngestInput::Misbehaved { peer, strike } => self.strike(&peer, strike, now_ms, &mut effects),
+            IngestInput::IntakeRefused(refused) => {
+                self.refused(refused, now_ms, stores, &mut effects)
+            }
+            IngestInput::Misbehaved { peer, strike } => {
+                self.strike(&peer, strike, now_ms, &mut effects)
+            }
             IngestInput::LocalMiss { hash } => self.scheduler.local_miss(&hash, now_ms),
             IngestInput::Inserted { hash } => self.inserted(&hash),
             IngestInput::Outcome { hash, outcome } => {
@@ -289,7 +304,13 @@ impl IngestState {
         }
     }
 
-    fn refused(&mut self, refused: Refused, now_ms: u64, stores: &dyn StoreReads, effects: &mut Vec<Effect>) {
+    fn refused(
+        &mut self,
+        refused: Refused,
+        now_ms: u64,
+        stores: &dyn StoreReads,
+        effects: &mut Vec<Effect>,
+    ) {
         let Refused {
             hash,
             from,
@@ -530,7 +551,13 @@ impl IngestState {
 
     /// A requested block was refused for room: evict unsolicited blocks, then
     /// requested ones only once no unsolicited block remains, until it fits.
-    fn reactive_pass(&mut self, area: &PendingUsage, size: usize, now_ms: u64, effects: &mut Vec<Effect>) {
+    fn reactive_pass(
+        &mut self,
+        area: &PendingUsage,
+        size: usize,
+        now_ms: u64,
+        effects: &mut Vec<Effect>,
+    ) {
         let limits = area.limits;
         let mut blocks = area.blocks;
         let mut bytes = area.bytes;

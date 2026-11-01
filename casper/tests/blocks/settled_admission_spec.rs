@@ -20,8 +20,8 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, InsertMode, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use block_storage::rust::pending_blocks::PendingClass;
+use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::blocks::ingest::ingest_state::WorkOutcome;
 use casper::rust::blocks::ingest::validation_worker::Validation;
 use casper::rust::casper::{Casper, CasperSnapshot, DeployError};

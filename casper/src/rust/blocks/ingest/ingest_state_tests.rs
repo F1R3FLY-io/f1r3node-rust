@@ -82,7 +82,13 @@ fn pending(
 
 fn received(meta: HeldMeta) -> IngestInput { IngestInput::Received(meta) }
 
-fn refused(i: u32, from: &str, solicited: bool, sender: &'static [u8], reason: Refusal) -> IngestInput {
+fn refused(
+    i: u32,
+    from: &str,
+    solicited: bool,
+    sender: &'static [u8],
+    reason: Refusal,
+) -> IngestInput {
     IngestInput::IntakeRefused(Refused {
         hash: hash(i),
         from: Some(peer(from)),
@@ -159,7 +165,11 @@ fn a_block_received_twice_is_held_and_dispatched_once() {
     assert_eq!(s.held(), 1);
     assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
     s.handle(received(meta(1, 1, &[0])), 0, &dag);
-    assert_eq!(s.next_dispatch(), None, "a block being validated is not dispatched again");
+    assert_eq!(
+        s.next_dispatch(),
+        None,
+        "a block being validated is not dispatched again"
+    );
 }
 
 #[test]
@@ -246,7 +256,11 @@ fn the_sixteenth_strike_ignores_the_peer_in_the_view() {
     let (mut s, view) = state();
     let dag = dag_with(&[0]);
     for i in 0..STRIKE_THRESHOLD as u32 {
-        s.handle(refused(i, "bad", false, b"v0", Refusal::Unauthorized), 0, &dag);
+        s.handle(
+            refused(i, "bad", false, b"v0", Refusal::Unauthorized),
+            0,
+            &dag,
+        );
     }
     assert!(view.is_ignored_at(&peer("bad"), 0));
     assert!(!view.is_ignored_at(&peer("good"), 0));
@@ -338,7 +352,13 @@ fn an_evicted_block_keeps_its_pusher_through_redelivery() {
         "a block another held block waits on is not a proactive victim"
     );
     let effects = s.handle(
-        refused(50, "q", true, b"v2", Refusal::Pending(PendingRefusal::AreaFull)),
+        refused(
+            50,
+            "q",
+            true,
+            b"v2",
+            Refusal::Pending(PendingRefusal::AreaFull),
+        ),
         0,
         &dag,
     );
@@ -542,13 +562,21 @@ fn a_refused_requested_block_evicts_unsolicited_before_requested_blocks() {
         &dag,
     );
     dag.area = usage(LIMITS.max_blocks, HashMap::new());
-    let area_full = || refused(50, "q", true, b"v2", Refusal::Pending(PendingRefusal::AreaFull));
-    assert_eq!(s.handle(area_full(), 0, &dag), vec![Effect::DiscardPending(
-        hash(2)
-    )]);
-    assert_eq!(s.handle(area_full(), 0, &dag), vec![Effect::DiscardPending(
-        hash(1)
-    )]);
+    let area_full = || {
+        refused(
+            50,
+            "q",
+            true,
+            b"v2",
+            Refusal::Pending(PendingRefusal::AreaFull),
+        )
+    };
+    assert_eq!(s.handle(area_full(), 0, &dag), vec![
+        Effect::DiscardPending(hash(2))
+    ]);
+    assert_eq!(s.handle(area_full(), 0, &dag), vec![
+        Effect::DiscardPending(hash(1))
+    ]);
 }
 
 #[test]
@@ -570,7 +598,10 @@ fn a_sender_at_its_quota_loses_only_its_own_unsolicited_blocks() {
         0,
         &dag,
     );
-    dag.area = usage(3, [(Bytes::from_static(b"v1"), LIMITS.max_per_sender)].into());
+    dag.area = usage(
+        3,
+        [(Bytes::from_static(b"v1"), LIMITS.max_per_sender)].into(),
+    );
     let effects = s.handle(
         refused(
             50,
@@ -591,7 +622,13 @@ fn a_block_too_large_for_the_area_expires_its_need_and_its_waiters() {
     let dag = dag_with(&[0]);
     s.handle(received(meta(10, 2, &[1])), 0, &dag);
     s.handle(
-        refused(1, "q", true, b"v1", Refusal::Pending(PendingRefusal::TooLarge)),
+        refused(
+            1,
+            "q",
+            true,
+            b"v1",
+            Refusal::Pending(PendingRefusal::TooLarge),
+        ),
         0,
         &dag,
     );
@@ -891,7 +928,10 @@ fn all_tips_announced(sim: &mut Sim) {
     for i in 1..=n {
         if !(1..=n).any(|child| sim.chain.parents_of(child).contains(&i)) {
             let peer = sim.peers[2].clone();
-            sim.handle(IngestInput::Announced { hash: hash(i), peer });
+            sim.handle(IngestInput::Announced {
+                hash: hash(i),
+                peer,
+            });
         }
     }
 }

@@ -48,7 +48,10 @@ pub const ANNOUNCE_MAX_IN_FLIGHT: usize = 128;
 /// anchor has nothing below it. A genesis-rooted node (approved block at
 /// height zero) holds every block and root it ever needed, so a missing one is
 /// local corruption and the block is judged.
-pub(crate) fn guard_deferral(status: ValidBlockProcessing, approved_block_number: i64) -> ValidBlockProcessing {
+pub(crate) fn guard_deferral(
+    status: ValidBlockProcessing,
+    approved_block_number: i64,
+) -> ValidBlockProcessing {
     match status {
         Either::Left(BlockError::Undecidable(hash)) if approved_block_number == 0 => {
             Either::Left(BlockError::BlockException(CasperError::BlockNotHeld(
@@ -170,7 +173,11 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
     pub fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
     /// Validate `block` and carry out the verdict's effects.
-    pub async fn validate(&self, casper: Arc<dyn Casper + Send + Sync>, block: &BlockMessage) -> WorkOutcome {
+    pub async fn validate(
+        &self,
+        casper: Arc<dyn Casper + Send + Sync>,
+        block: &BlockMessage,
+    ) -> WorkOutcome {
         match self.judge(casper, block).await {
             Ok((_, outcome)) => outcome,
             Err(error) => {
@@ -261,7 +268,12 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
                     PrettyPrinter::build_string_bytes(&block.block_hash),
                     error
                 );
-                self.judge_invalid(casper.as_ref(), block, &InvalidBlock::InvalidTransaction, &snapshot)?
+                self.judge_invalid(
+                    casper.as_ref(),
+                    block,
+                    &InvalidBlock::InvalidTransaction,
+                    &snapshot,
+                )?
             }
             Either::Left(other) => {
                 tracing::warn!(
@@ -304,7 +316,11 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
     /// Admit `block` unjudged as settled history, or report that it does not
     /// qualify. Block ingest dispatches this only for a block cited by a
     /// validator bonded at the anchor.
-    pub async fn admit_settled(&self, casper: Arc<dyn Casper + Send + Sync>, block: &BlockMessage) -> WorkOutcome {
+    pub async fn admit_settled(
+        &self,
+        casper: Arc<dyn Casper + Send + Sync>,
+        block: &BlockMessage,
+    ) -> WorkOutcome {
         match self.try_admit_settled(casper, block) {
             Ok(true) => WorkOutcome::Settled,
             Ok(false) => WorkOutcome::NotSettledHistory,
@@ -319,7 +335,11 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
         }
     }
 
-    fn try_admit_settled(&self, casper: Arc<dyn Casper + Send + Sync>, block: &BlockMessage) -> Result<bool, CasperError> {
+    fn try_admit_settled(
+        &self,
+        casper: Arc<dyn Casper + Send + Sync>,
+        block: &BlockMessage,
+    ) -> Result<bool, CasperError> {
         let approved_block_number = proto_util::block_number(casper.get_approved_block()?);
         let seq_below_senders_latest = match self.dag.latest_message_hash(&block.sender)? {
             Some(latest_hash) => match self.dag.lookup(&latest_hash)? {
@@ -338,9 +358,11 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
         }
         // Reserve the budget slot atomically, so concurrent admissions cannot
         // overshoot the bound.
-        let Ok(reserved) = self.settled_admissions.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |admitted| {
-            (admitted < SETTLED_ADMISSION_BUDGET).then_some(admitted + 1)
-        }) else {
+        let Ok(reserved) = self.settled_admissions.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |admitted| (admitted < SETTLED_ADMISSION_BUDGET).then_some(admitted + 1),
+        ) else {
             return Ok(false);
         };
         let admitted = self
@@ -374,7 +396,10 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
         );
         // A settled block is a legal parent whose state its children's replay
         // reads; fetch its declared roots before a child asks for them.
-        for root in [&block.body.state.post_state_hash, &block.body.state.pre_state_hash] {
+        for root in [
+            &block.body.state.post_state_hash,
+            &block.body.state.pre_state_hash,
+        ] {
             self.request_state_root(Blake2b256Hash::from_bytes_prost(root));
         }
         Ok(true)
@@ -387,7 +412,9 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
                     tracing::warn!(%root, "state requester queue full or closed; the eager root fetch is skipped");
                 }
             }
-            None => tracing::debug!(%root, "no state requester wired; the eager root fetch is skipped"),
+            None => {
+                tracing::debug!(%root, "no state requester wired; the eager root fetch is skipped")
+            }
         }
     }
 }
@@ -399,10 +426,19 @@ mod tests {
     #[test]
     fn settled_history_admission_needs_every_condition() {
         assert!(admit_as_settled(5, 10, true, true));
-        assert!(!admit_as_settled(5, 0, true, true), "a genesis-rooted node holds all history");
-        assert!(!admit_as_settled(11, 10, true, true), "above the anchor is live material");
+        assert!(
+            !admit_as_settled(5, 0, true, true),
+            "a genesis-rooted node holds all history"
+        );
+        assert!(
+            !admit_as_settled(11, 10, true, true),
+            "above the anchor is live material"
+        );
         assert!(!admit_as_settled(5, 10, false, true), "the budget is spent");
-        assert!(!admit_as_settled(5, 10, true, false), "at or above the sender's latest message");
+        assert!(
+            !admit_as_settled(5, 10, true, false),
+            "at or above the sender's latest message"
+        );
     }
 
     #[test]

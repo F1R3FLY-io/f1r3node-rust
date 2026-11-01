@@ -926,7 +926,9 @@ impl BlockDagKeyValueStorage {
         })
     }
 
-    pub fn contains(&self, hash: &BlockHash) -> bool { self.block_metadata_index.read().contains(hash) }
+    pub fn contains(&self, hash: &BlockHash) -> bool {
+        self.block_metadata_index.read().contains(hash)
+    }
 
     /// A block that depends on `hash` need not wait for it: the block is in
     /// the DAG, or it was detected as an equivocation.
@@ -946,7 +948,10 @@ impl BlockDagKeyValueStorage {
         self.block_metadata_index.read().get(hash)
     }
 
-    pub fn latest_message_hash(&self, validator: &Validator) -> Result<Option<BlockHash>, KvStoreError> {
+    pub fn latest_message_hash(
+        &self,
+        validator: &Validator,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
         Ok(self
             .latest_messages_index
             .get_one(&ValidatorSerde(validator.clone()))?

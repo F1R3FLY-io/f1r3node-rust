@@ -924,7 +924,12 @@ mod tests {
 
         /// Intake refuses `block` from `peer` as having an unauthorized
         /// sender; a delivery is unsolicited unless the node asked for it.
-        fn refuse_unauthorized(&mut self, fixture: &TestFixture, block: &BlockMessage, peer: &PeerNode) {
+        fn refuse_unauthorized(
+            &mut self,
+            fixture: &TestFixture,
+            block: &BlockMessage,
+            peer: &PeerNode,
+        ) {
             let unsolicited = !fixture.ingest.view().is_solicited(&block.block_hash);
             self.handle(
                 fixture,
@@ -969,7 +974,12 @@ mod tests {
         ))
     }
 
-    async fn push_refused_blocks(fixture: &TestFixture, owner: &mut Owner, peer: &PeerNode, count: usize) {
+    async fn push_refused_blocks(
+        fixture: &TestFixture,
+        owner: &mut Owner,
+        peer: &PeerNode,
+        count: usize,
+    ) {
         for _ in 0..count {
             let block = signed_random_block(fixture);
             fixture
@@ -1076,7 +1086,10 @@ mod tests {
         }
         fixture
             .engine
-            .handle(peer_node("sender", 40400), CasperMessage::BlockMessage(refused))
+            .handle(
+                peer_node("sender", 40400),
+                CasperMessage::BlockMessage(refused),
+            )
             .await
             .unwrap();
         owner.absorb(&fixture).await;
@@ -1144,7 +1157,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(drain_announcements(&fixture).await, vec![(announced, peer.clone())]);
+        assert_eq!(drain_announcements(&fixture).await, vec![(
+            announced,
+            peer.clone()
+        )]);
 
         let requested = signed_random_block(&fixture);
         owner.need(&fixture, &requested.block_hash);

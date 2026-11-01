@@ -30,14 +30,16 @@ async fn a_has_block_for_an_unknown_hash_is_announced_to_block_ingest() {
 
     fixture
         .engine
-        .handle(sender.clone(), CasperMessage::HasBlock(HasBlock { hash: hash.clone() }))
+        .handle(
+            sender.clone(),
+            CasperMessage::HasBlock(HasBlock { hash: hash.clone() }),
+        )
         .await
         .unwrap();
 
-    assert_eq!(announcements(&fixture).await, vec![IngestInput::Announced {
-        hash,
-        peer: sender
-    }]);
+    assert_eq!(announcements(&fixture).await, vec![
+        IngestInput::Announced { hash, peer: sender }
+    ]);
     assert_eq!(
         fixture.transport_layer.request_count(),
         0,
@@ -74,7 +76,10 @@ async fn a_has_block_for_a_held_block_is_ignored() {
 
     fixture
         .engine
-        .handle(peer_node("some_peer", 40400), CasperMessage::HasBlock(HasBlock { hash }))
+        .handle(
+            peer_node("some_peer", 40400),
+            CasperMessage::HasBlock(HasBlock { hash }),
+        )
         .await
         .unwrap();
 

@@ -2,7 +2,9 @@
 mod glibc {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crate::rust::metrics_constants::{ALLOCATOR_TRIM_TOTAL_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE};
+    use crate::rust::metrics_constants::{
+        ALLOCATOR_TRIM_TOTAL_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
+    };
 
     const TRIM_INTERVAL_BLOCKS: u64 = 64;
     static BLOCKS_SINCE_START: AtomicU64 = AtomicU64::new(0);

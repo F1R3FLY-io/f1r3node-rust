@@ -1326,7 +1326,8 @@ mod tests {
     fn persist_block_writes_a_block_that_the_pending_area_no_longer_holds() {
         let (bs, disk) = in_mem_store();
         let discarded = models::rust::block_implicits::get_random_block_default();
-        bs.put_pending(&discarded, PendingClass::Unsolicited).unwrap();
+        bs.put_pending(&discarded, PendingClass::Unsolicited)
+            .unwrap();
         assert!(bs.discard_pending(&discarded.block_hash));
         assert!(bs.get(&discarded.block_hash).unwrap().is_none());
 
