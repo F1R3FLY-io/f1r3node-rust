@@ -31,7 +31,7 @@ The fixes follow the proposals in A-6 (`docs/rev-stacks/audits/authority-P10.md`
 | # | Decision | Alternatives | Reason | Reversible |
 |---|----------|--------------|--------|------------|
 | 8 | `release` and `slash` move from `rho:rev:bond` to a new system process, `rho:rev:bondAdmin` (fixed channel 72). Neither takes the system auth token any longer. `rho:rev:bond` keeps `bond` and `balance`. | Keep the token check on the public process. | §6.9 and A-6 F7: holding the name is the authority. The token is a fieldless singleton that any system deploy holds. | Yes, before a v6 shard runs |
-| 9 | `rho:rev:bondAdmin` is genesis-only: `eval_new` and the registry lookup refuse it outside genesis (FX-1). Unlike `rho:rev:genesis`, its handler runs after genesis, for the holder of the name. | Refuse after genesis. | PoS needs it at every close block. | Yes |
+| 9 | `rho:rev:bondAdmin` is genesis-only: `eval_new` and the registry lookup refuse it outside genesis (FX-1). `is_genesis_only_urn` lists it beside `rho:rev:genesis`, and `urn_refusal`, which both `eval_new` and `registry_lookup` call, refuses every genesis-only URN while the genesis flag is off. `rev_bond_spec` checks both routes: binding it with `new` and asking the lookup for it are each refused. Unlike `rho:rev:genesis`, its handler runs after genesis, for the holder of the name. | Refuse after genesis. | PoS needs it at every close block. | Yes |
 | 10 | `PoSV6.rhox` binds `rho:rev:bondAdmin` in its top-level `new`, which runs during genesis, so only PoS's code holds the name. Its `slash` and `closeBlock` contracts still check the system auth token for calls from system deploys. | — | A-6 open question 3: the token stays only for the system deploys' own calls into PoS. | Yes |
 
 ## Tests
