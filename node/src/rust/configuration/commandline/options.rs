@@ -115,6 +115,7 @@ pub enum OptionsSubCommand {
     },
     Transfer(TransferOptions),
     WalletBalance(WalletBalanceOptions),
+    Cosign(CosignOptions),
     Propose(ProposeOptions),
     ShowBlock {
         hash: String,
@@ -759,6 +760,76 @@ pub struct TransferOptions {
 }
 
 #[derive(Args, Debug, Clone)]
+pub struct CosignOptions {
+    #[command(subcommand)]
+    pub action: CosignAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum CosignAction {
+    /// Sign a deploy as its deployer and write it to an envelope file
+    Prepare {
+        #[arg(long = "phlo-limit", help = "Most phlo the deploy may spend")]
+        phlo_limit: i64,
+
+        #[arg(long = "phlo-price", help = "REV paid per phlo")]
+        phlo_price: i64,
+
+        #[arg(
+            long = "valid-after-block-number",
+            default_value_t = 0,
+            help = "Block number after which the deploy is valid"
+        )]
+        valid_after_block_number: i64,
+
+        #[arg(
+            long = "private-key",
+            value_parser = ValueParser::new(PrivateKeyConverter::parse),
+            help = "The deployer's secp256k1 private key encoded as Base16"
+        )]
+        private_key: Option<PrivateKey>,
+
+        #[arg(
+            long = "private-key-path",
+            help = "File with the deployer's encrypted private key"
+        )]
+        private_key_path: Option<PathBuf>,
+
+        #[arg(long = "shard-id", default_value = "", help = "The name of the shard")]
+        shard_id: String,
+
+        #[arg(long = "envelope", help = "Envelope file to write")]
+        envelope: String,
+
+        /// Location of the Rholang file to deploy
+        location: String,
+    },
+    /// Add a cosignature to an envelope file
+    Sign {
+        #[arg(long = "envelope", help = "Envelope file to cosign in place")]
+        envelope: String,
+
+        #[arg(
+            long = "private-key",
+            value_parser = ValueParser::new(PrivateKeyConverter::parse),
+            help = "The cosigner's secp256k1 private key encoded as Base16"
+        )]
+        private_key: Option<PrivateKey>,
+
+        #[arg(
+            long = "private-key-path",
+            help = "File with the cosigner's encrypted private key"
+        )]
+        private_key_path: Option<PathBuf>,
+    },
+    /// Submit a cosigned envelope file
+    Submit {
+        #[arg(long = "envelope", help = "Envelope file to submit")]
+        envelope: String,
+    },
+}
+
+#[derive(Args, Debug, Clone)]
 pub struct WalletBalanceOptions {
     #[arg(long = "address", help = "REV address of the wallet")]
     pub address: String,
@@ -1031,5 +1102,68 @@ mod wallet_clap_tests {
         };
         assert_eq!(q.address, "abc");
         assert!(q.block_hash.is_none());
+    }
+
+    #[test]
+    fn cosign_prepare_sign_and_submit_parse() {
+        let opts = Options::try_parse_from([
+            "f1r3fly",
+            "cosign",
+            "prepare",
+            "--phlo-limit",
+            "1000",
+            "--phlo-price",
+            "2",
+            "--private-key",
+            KEY,
+            "--envelope",
+            "e.hex",
+            "deploy.rho",
+        ])
+        .expect("clap parse must succeed");
+        let Some(OptionsSubCommand::Cosign(c)) = opts.subcommand else {
+            panic!("expected Cosign subcommand");
+        };
+        let CosignAction::Prepare {
+            phlo_limit,
+            phlo_price,
+            envelope,
+            location,
+            ..
+        } = c.action
+        else {
+            panic!("expected prepare");
+        };
+        assert_eq!((phlo_limit, phlo_price), (1000, 2));
+        assert_eq!(
+            (envelope.as_str(), location.as_str()),
+            ("e.hex", "deploy.rho")
+        );
+
+        let opts = Options::try_parse_from([
+            "f1r3fly",
+            "cosign",
+            "sign",
+            "--envelope",
+            "e.hex",
+            "--private-key",
+            KEY,
+        ])
+        .expect("clap parse must succeed");
+        assert!(matches!(
+            opts.subcommand,
+            Some(OptionsSubCommand::Cosign(CosignOptions {
+                action: CosignAction::Sign { .. }
+            }))
+        ));
+
+        let opts = Options::try_parse_from(["f1r3fly", "cosign", "submit", "--envelope", "e.hex"])
+            .expect("clap parse must succeed");
+        assert!(matches!(
+            opts.subcommand,
+            Some(OptionsSubCommand::Cosign(CosignOptions {
+                action: CosignAction::Submit { .. }
+            }))
+        ));
     }
 }
