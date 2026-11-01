@@ -11,8 +11,9 @@ use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::ordered_receive::{PreparedContinuationRecord, RestingReceiveVisit};
 use rspace_plus_plus::rspace::receive_accelerator::{
-    ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, ReceiveId,
-    ReceiveKind as ProductionKind, ReceiveOccurrences, ReceiveTarget as ProductionTarget,
+    ReceiveAcceleratorAdoption, ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer,
+    ReceiveId, ReceiveKind as ProductionKind, ReceiveOccurrences,
+    ReceiveTarget as ProductionTarget, receive_accelerator_adoption,
 };
 use rspace_plus_plus::rspace::rho_path::ReceiveChannelQuery;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -3387,4 +3388,160 @@ fn production_held_handles_never_answer_for_groups_loaded_after_they_were_taken(
         }
         assert!(withheld > 0, "the held handle withholds an answer the fresh handles give");
     }
+}
+
+fn hydrated_adoption_scope(
+    space: &StringSpace,
+    universe: &[Vec<String>],
+    probed: &[String],
+) -> Observation {
+    let store = space.get_store();
+    for channel in probed {
+        store.hydrate_receive_scope(channel);
+    }
+    hydrated_space(space, universe)
+}
+
+fn rebuilt_space_handle(space: &StringSpace) -> SpaceHandle {
+    let store = space.get_store();
+    assert_eq!(store.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+    store
+        .receive_accelerator()
+        .expect("a rebuilt store publishes its accelerator")
+}
+
+fn space_answers(
+    space: &StringSpace,
+    handle: &SpaceHandle,
+    probed: &[String],
+) -> BTreeMap<ChannelImage, BTreeSet<Occurrence>> {
+    let mut answers = BTreeMap::new();
+    for channel in probed {
+        let image = channel_image(channel);
+        let occurrences = space_occurrences(&exact_space_answer(space, handle, channel), &image);
+        answers.insert(image, occurrences);
+    }
+    answers
+}
+
+fn derived_answers(
+    observation: &Observation,
+    probed: &[String],
+) -> BTreeMap<ChannelImage, BTreeSet<Occurrence>> {
+    let mut answers = BTreeMap::new();
+    for channel in probed {
+        let image = channel_image(channel);
+        let derived = derive(observation, &image);
+        answers.insert(image, derived);
+    }
+    answers
+}
+
+fn assert_foreign_everywhere(
+    space: &StringSpace,
+    handle: &SpaceHandle,
+    probed: &[String],
+    why: &str,
+) {
+    for channel in probed {
+        assert_eq!(
+            space_fallback(space, handle, channel),
+            Some(ReceiveAcceleratorClass::Foreign),
+            "{channel}: {why}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_foreign_generation_or_manifest_accelerators_are_never_adopted() {
+    let space = string_space().await;
+    let first = vec!["adoption-first".to_owned()];
+    let second = vec!["adoption-second".to_owned()];
+    let universe = vec![first.clone(), second.clone()];
+    let probed = ["adoption-first", "adoption-second", "adoption-absent"].map(str::to_owned);
+    rest_wildcard_receive(&space, &first, "first-receive").await;
+    let first_root = space
+        .create_checkpoint()
+        .await
+        .expect("an in-memory checkpoint succeeds")
+        .root;
+    let first_world = hydrated_adoption_scope(&space, &universe, &probed);
+    let held = rebuilt_space_handle(&space);
+    let persisted = space_answers(&space, &held, &probed);
+    assert_eq!(
+        persisted,
+        derived_answers(&first_world, &probed),
+        "the held handle answers the first state"
+    );
+    let first_image = channel_image(&"adoption-first".to_owned());
+    assert_eq!(
+        persisted.get(&first_image).map(BTreeSet::len),
+        Some(1),
+        "the first state rests the first receive"
+    );
+    let store = space.get_store();
+    store.set_state(store.snapshot());
+    assert_foreign_everywhere(&space, &held, &probed, "set_state makes the held handle foreign");
+    rest_wildcard_receive(&space, &second, "second-receive").await;
+    let second_root = space
+        .create_checkpoint()
+        .await
+        .expect("an in-memory checkpoint succeeds")
+        .root;
+    assert_ne!(first_root, second_root, "the second receive moves the root");
+    let current = space.get_history_repository().root();
+    assert_eq!(current, second_root, "the checkpoint publishes the second root");
+    assert_eq!(
+        receive_accelerator_adoption(&first_root, &current),
+        ReceiveAcceleratorAdoption::Foreign,
+        "an accelerator bound to another manifest is never adopted"
+    );
+    let second_world = hydrated_adoption_scope(&space, &universe, &probed);
+    let candidate = rebuilt_space_handle(&space);
+    let derived = derived_answers(&second_world, &probed);
+    assert_eq!(
+        space_answers(&space, &candidate, &probed),
+        derived,
+        "the rebuild after the refusal answers the current state"
+    );
+    let mut distinguishing = 0usize;
+    for (image, occurrences) in &derived {
+        match persisted.get(image) == Some(occurrences) {
+            true => {}
+            false => distinguishing = checked_increment(distinguishing),
+        }
+    }
+    assert!(distinguishing > 0, "adopting the foreign accelerator would answer wrongly");
+    assert_foreign_everywhere(
+        &space,
+        &held,
+        &probed,
+        "the held handle is foreign to the new store",
+    );
+    space
+        .reset(&first_root)
+        .await
+        .expect("an in-memory reset succeeds");
+    let reset = space.get_history_repository().root();
+    assert_eq!(reset, first_root, "the reset restores the first root");
+    assert_eq!(
+        receive_accelerator_adoption(&first_root, &reset),
+        ReceiveAcceleratorAdoption::Adopted,
+        "an accelerator bound to the current manifest is adopted"
+    );
+    let reset_world = hydrated_adoption_scope(&space, &universe, &probed);
+    let adopted = rebuilt_space_handle(&space);
+    let adopted_answers = space_answers(&space, &adopted, &probed);
+    assert_eq!(
+        adopted_answers,
+        derived_answers(&reset_world, &probed),
+        "the adopted rebuild answers the reset state"
+    );
+    assert_eq!(adopted_answers, persisted, "the adopted rebuild equals the persisted derivation");
+    assert_foreign_everywhere(
+        &space,
+        &held,
+        &probed,
+        "the held accelerator of an earlier generation stays foreign",
+    );
 }
