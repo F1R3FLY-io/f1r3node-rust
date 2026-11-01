@@ -50,7 +50,7 @@ pub struct HistoryRepositoryImpl<C, P, A, K> {
     _marker: PhantomData<(C, P, A, K)>,
 }
 
-type ColdAction = Option<(ColdLeafAddress, Vec<u8>)>;
+pub(crate) type ColdAction = Option<(ColdLeafAddress, Vec<u8>)>;
 const CHECKPOINT_PARALLEL_ACTIONS_THRESHOLD: usize = 256;
 
 /// Hash the frozen bincode-1 representation of a leaf whose sole field is a
@@ -222,294 +222,295 @@ where
             })
             .collect()
     }
+}
 
-    fn calculate_storage_actions(
-        &self,
-        action: HotStoreTrieAction<C, P, A, K>,
-    ) -> Result<(ColdAction, HistoryAction), HistoryError> {
-        let (kind, digest, encoded, history_action) = match action {
-            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(i)) => {
-                let data = encode_datums(&i.data);
-                let data_leaf = DataLeaf { bytes: data };
-                let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
-                let encoded = PersistedData::Data(data_leaf).into_legacy_bincode();
+pub(crate) fn calculate_storage_actions<C, P, A, K>(
+    action: HotStoreTrieAction<C, P, A, K>,
+) -> Result<(ColdAction, HistoryAction), HistoryError>
+where
+    C: Clone + Send + Sync + StableHashSerialize,
+    P: Clone + Send + Sync + StableHashSerialize,
+    A: Clone + Send + Sync + StableHashSerialize,
+    K: Clone + Send + Sync + StableHashSerialize,
+{
+    let (kind, digest, encoded, history_action) = match action {
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(i)) => {
+            let data = encode_datums(&i.data);
+            let data_leaf = DataLeaf { bytes: data };
+            let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
+            let encoded = PersistedData::Data(data_leaf).into_legacy_bincode();
 
-                (
-                    Some(PersistedDataKind::Data),
-                    data_hash.clone(),
-                    Some(encoded),
-                    HistoryAction::Insert(InsertAction {
-                        key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
-                        hash: data_hash,
-                    }),
-                )
-            }
-            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertCanonicalProduce(
-                i,
-            )) => {
-                let encoded = i.encoded_persisted_data;
-                let view = PersistedRecordSequenceView::parse_canonical(
-                    &encoded,
-                    PersistedDataKind::Data,
-                    Some(i.datum_count),
-                )
+            (
+                Some(PersistedDataKind::Data),
+                data_hash.clone(),
+                Some(encoded),
+                HistoryAction::Insert(InsertAction {
+                    key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
+                    hash: data_hash,
+                }),
+            )
+        }
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertCanonicalProduce(i)) => {
+            let encoded = i.encoded_persisted_data;
+            let view = PersistedRecordSequenceView::parse_canonical(
+                &encoded,
+                PersistedDataKind::Data,
+                Some(i.datum_count),
+            )
+            .map_err(|error| HistoryError::ActionError(error.to_string()))?;
+            let data_hash = Blake2b256Hash::new(view.leaf_encoding());
+
+            (
+                Some(PersistedDataKind::Data),
+                data_hash.clone(),
+                Some(encoded),
+                HistoryAction::Insert(InsertAction {
+                    key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
+                    hash: data_hash,
+                }),
+            )
+        }
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertCanonicalCollection(
+            i,
+        )) => {
+            let encoded = i.encoded_persisted_data;
+            let view = PersistedRecordSequenceView::parse_canonical(
+                &encoded,
+                i.kind.persisted_kind(),
+                Some(i.record_count),
+            )
+            .map_err(|error| HistoryError::ActionError(error.to_string()))?;
+            let leaf_hash = Blake2b256Hash::new(view.leaf_encoding());
+
+            (
+                Some(i.kind.persisted_kind()),
+                leaf_hash.clone(),
+                Some(encoded),
+                HistoryAction::Insert(InsertAction {
+                    key: prepend_bytes(canonical_collection_prefix(i.kind), &i.hash.bytes()),
+                    hash: leaf_hash,
+                }),
+            )
+        }
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertConsume(i)) => {
+            let data = encode_continuations(&i.continuations);
+            let continuations_leaf = ContinuationsLeaf { bytes: data };
+            let continuations_hash = hash_single_byte_vec_leaf(&continuations_leaf.bytes);
+            let encoded = PersistedData::Continuations(continuations_leaf).into_legacy_bincode();
+
+            (
+                Some(PersistedDataKind::Continuations),
+                continuations_hash.clone(),
+                Some(encoded),
+                HistoryAction::Insert(InsertAction {
+                    key: prepend_bytes(PREFIX_KONT, &i.hash.bytes()),
+                    hash: continuations_hash,
+                }),
+            )
+        }
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertJoins(i)) => {
+            let data = encode_joins(&i.joins);
+            let joins_leaf = JoinsLeaf { bytes: data };
+            let joins_hash = hash_single_byte_vec_leaf(&joins_leaf.bytes);
+            let encoded = PersistedData::Joins(joins_leaf).into_legacy_bincode();
+
+            (
+                Some(PersistedDataKind::Joins),
+                joins_hash.clone(),
+                Some(encoded),
+                HistoryAction::Insert(InsertAction {
+                    key: prepend_bytes(PREFIX_JOINS, &i.hash.bytes()),
+                    hash: joins_hash,
+                }),
+            )
+        }
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(i)) => {
+            // Sort data before serializing for deterministic hashing regardless of
+            // insertion order
+            let mut sorted_data = i.data;
+            sorted_data.sort();
+            let data = bincode::serialize(&sorted_data)
                 .map_err(|error| HistoryError::ActionError(error.to_string()))?;
-                let data_hash = Blake2b256Hash::new(view.leaf_encoding());
+            let data_leaf = DataLeaf { bytes: data };
+            let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
+            let encoded = PersistedData::Data(data_leaf).into_legacy_bincode();
 
-                (
-                    Some(PersistedDataKind::Data),
-                    data_hash.clone(),
-                    Some(encoded),
-                    HistoryAction::Insert(InsertAction {
-                        key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
-                        hash: data_hash,
-                    }),
-                )
-            }
-            HotStoreTrieAction::TrieInsertAction(
-                TrieInsertAction::TrieInsertCanonicalCollection(i),
-            ) => {
-                let encoded = i.encoded_persisted_data;
-                let view = PersistedRecordSequenceView::parse_canonical(
-                    &encoded,
-                    i.kind.persisted_kind(),
-                    Some(i.record_count),
-                )
+            (
+                Some(PersistedDataKind::Data),
+                data_hash.clone(),
+                Some(encoded),
+                HistoryAction::Insert(InsertAction {
+                    key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
+                    hash: data_hash,
+                }),
+            )
+        }
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(i)) => {
+            // Sort continuations before serializing for deterministic hashing regardless of
+            // insertion order
+            let mut sorted_continuations = i.continuations;
+            sorted_continuations.sort();
+            let data = bincode::serialize(&sorted_continuations)
                 .map_err(|error| HistoryError::ActionError(error.to_string()))?;
-                let leaf_hash = Blake2b256Hash::new(view.leaf_encoding());
+            let continuations_leaf = ContinuationsLeaf { bytes: data };
+            let continuations_hash = hash_single_byte_vec_leaf(&continuations_leaf.bytes);
+            let encoded = PersistedData::Continuations(continuations_leaf).into_legacy_bincode();
 
-                (
-                    Some(i.kind.persisted_kind()),
-                    leaf_hash.clone(),
-                    Some(encoded),
-                    HistoryAction::Insert(InsertAction {
-                        key: prepend_bytes(canonical_collection_prefix(i.kind), &i.hash.bytes()),
-                        hash: leaf_hash,
-                    }),
-                )
-            }
-            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertConsume(i)) => {
-                let data = encode_continuations(&i.continuations);
-                let continuations_leaf = ContinuationsLeaf { bytes: data };
-                let continuations_hash = hash_single_byte_vec_leaf(&continuations_leaf.bytes);
-                let encoded =
-                    PersistedData::Continuations(continuations_leaf).into_legacy_bincode();
-
-                (
-                    Some(PersistedDataKind::Continuations),
-                    continuations_hash.clone(),
-                    Some(encoded),
-                    HistoryAction::Insert(InsertAction {
-                        key: prepend_bytes(PREFIX_KONT, &i.hash.bytes()),
-                        hash: continuations_hash,
-                    }),
-                )
-            }
-            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertJoins(i)) => {
-                let data = encode_joins(&i.joins);
-                let joins_leaf = JoinsLeaf { bytes: data };
-                let joins_hash = hash_single_byte_vec_leaf(&joins_leaf.bytes);
-                let encoded = PersistedData::Joins(joins_leaf).into_legacy_bincode();
-
-                (
-                    Some(PersistedDataKind::Joins),
-                    joins_hash.clone(),
-                    Some(encoded),
-                    HistoryAction::Insert(InsertAction {
-                        key: prepend_bytes(PREFIX_JOINS, &i.hash.bytes()),
-                        hash: joins_hash,
-                    }),
-                )
-            }
-            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryProduce(i)) => {
-                // Sort data before serializing for deterministic hashing regardless of
-                // insertion order
-                let mut sorted_data = i.data;
-                sorted_data.sort();
-                let data = bincode::serialize(&sorted_data)
-                    .map_err(|error| HistoryError::ActionError(error.to_string()))?;
-                let data_leaf = DataLeaf { bytes: data };
-                let data_hash = hash_single_byte_vec_leaf(&data_leaf.bytes);
-                let encoded = PersistedData::Data(data_leaf).into_legacy_bincode();
-
-                (
-                    Some(PersistedDataKind::Data),
-                    data_hash.clone(),
-                    Some(encoded),
-                    HistoryAction::Insert(InsertAction {
-                        key: prepend_bytes(PREFIX_DATUM, &i.hash.bytes()),
-                        hash: data_hash,
-                    }),
-                )
-            }
-            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryConsume(i)) => {
-                // Sort continuations before serializing for deterministic hashing regardless of
-                // insertion order
-                let mut sorted_continuations = i.continuations;
-                sorted_continuations.sort();
-                let data = bincode::serialize(&sorted_continuations)
-                    .map_err(|error| HistoryError::ActionError(error.to_string()))?;
-                let continuations_leaf = ContinuationsLeaf { bytes: data };
-                let continuations_hash = hash_single_byte_vec_leaf(&continuations_leaf.bytes);
-                let encoded =
-                    PersistedData::Continuations(continuations_leaf).into_legacy_bincode();
-
-                (
-                    Some(PersistedDataKind::Continuations),
-                    continuations_hash.clone(),
-                    Some(encoded),
-                    HistoryAction::Insert(InsertAction {
-                        key: prepend_bytes(PREFIX_KONT, &i.hash.bytes()),
-                        hash: continuations_hash,
-                    }),
-                )
-            }
-            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(i)) => {
-                // Sort joins before serializing for deterministic hashing regardless of
-                // insertion order
-                let mut sorted_joins = i.joins;
-                sorted_joins.sort();
-                let data = bincode::serialize(&sorted_joins)
-                    .map_err(|error| HistoryError::ActionError(error.to_string()))?;
-                let joins_leaf = JoinsLeaf { bytes: data };
-                let joins_hash = hash_single_byte_vec_leaf(&joins_leaf.bytes);
-                let encoded = PersistedData::Joins(joins_leaf).into_legacy_bincode();
-
-                (
-                    Some(PersistedDataKind::Joins),
-                    joins_hash.clone(),
-                    Some(encoded),
-                    HistoryAction::Insert(InsertAction {
-                        key: prepend_bytes(PREFIX_JOINS, &i.hash.bytes()),
-                        hash: joins_hash,
-                    }),
-                )
-            }
-            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(d)) => (
-                None,
-                d.hash.clone(),
-                None,
-                HistoryAction::Delete(DeleteAction {
-                    key: prepend_bytes(PREFIX_DATUM, &d.hash.bytes()),
+            (
+                Some(PersistedDataKind::Continuations),
+                continuations_hash.clone(),
+                Some(encoded),
+                HistoryAction::Insert(InsertAction {
+                    key: prepend_bytes(PREFIX_KONT, &i.hash.bytes()),
+                    hash: continuations_hash,
                 }),
-            ),
-            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(d)) => (
-                None,
-                d.hash.clone(),
-                None,
-                HistoryAction::Delete(DeleteAction {
-                    key: prepend_bytes(PREFIX_KONT, &d.hash.bytes()),
-                }),
-            ),
-            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(d)) => (
-                None,
-                d.hash.clone(),
-                None,
-                HistoryAction::Delete(DeleteAction {
-                    key: prepend_bytes(PREFIX_JOINS, &d.hash.bytes()),
-                }),
-            ),
-            HotStoreTrieAction::TrieDeleteAction(
-                TrieDeleteAction::TrieDeleteCanonicalCollection(d),
-            ) => (
-                None,
-                d.hash.clone(),
-                None,
-                HistoryAction::Delete(DeleteAction {
-                    key: prepend_bytes(canonical_collection_prefix(d.kind), &d.hash.bytes()),
-                }),
-            ),
-        };
-        let cold_action = match (kind, encoded) {
-            (Some(kind), Some(encoded)) => Some((
-                ColdLeafAddress::new(kind, digest).map_err(cold_leaf_history_error)?,
-                encoded,
-            )),
-            (None, None) => None,
-            _ => {
-                return Err(HistoryError::ActionError(
-                    "cold-leaf action kind and bytes disagree".to_string(),
-                ));
-            }
-        };
-        Ok((cold_action, history_action))
-    }
+            )
+        }
+        HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertBinaryJoins(i)) => {
+            // Sort joins before serializing for deterministic hashing regardless of
+            // insertion order
+            let mut sorted_joins = i.joins;
+            sorted_joins.sort();
+            let data = bincode::serialize(&sorted_joins)
+                .map_err(|error| HistoryError::ActionError(error.to_string()))?;
+            let joins_leaf = JoinsLeaf { bytes: data };
+            let joins_hash = hash_single_byte_vec_leaf(&joins_leaf.bytes);
+            let encoded = PersistedData::Joins(joins_leaf).into_legacy_bincode();
 
-    fn transform(
-        &self,
-        hot_store_action: HotStoreAction<C, P, A, K>,
-    ) -> HotStoreTrieAction<C, P, A, K> {
-        match hot_store_action {
-            HotStoreAction::Insert(InsertData(i)) => {
-                let key = hash(&i.channel);
-                HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(
-                    TrieInsertProduce::new(key, i.data),
-                ))
-            }
-            HotStoreAction::Insert(InsertCanonicalData(i)) => HotStoreTrieAction::TrieInsertAction(
-                TrieInsertAction::TrieInsertCanonicalProduce({
-                    let (hash, encoded_persisted_data, datum_count) = i.into_parts();
-                    TrieInsertCanonicalProduce {
-                        hash,
-                        encoded_persisted_data,
-                        datum_count,
-                    }
+            (
+                Some(PersistedDataKind::Joins),
+                joins_hash.clone(),
+                Some(encoded),
+                HistoryAction::Insert(InsertAction {
+                    key: prepend_bytes(PREFIX_JOINS, &i.hash.bytes()),
+                    hash: joins_hash,
                 }),
-            ),
-            HotStoreAction::Insert(InsertCanonicalCollection(i)) => {
-                let (kind, hash, encoded_persisted_data, record_count) = i.into_parts();
-                HotStoreTrieAction::TrieInsertAction(
-                    TrieInsertAction::TrieInsertCanonicalCollection(
-                        TrieInsertCanonicalCollection {
-                            kind,
-                            hash,
-                            encoded_persisted_data,
-                            record_count,
-                        },
-                    ),
-                )
-            }
-            HotStoreAction::Insert(InsertContinuations(i)) => {
-                let key = hash_from_vec(&i.channels);
-                HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertConsume(
-                    TrieInsertConsume::new(key, i.continuations),
-                ))
-            }
-            HotStoreAction::Insert(InsertJoins(i)) => {
-                let key = hash(&i.channel);
-                HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertJoins(
-                    TrieInsertJoins::new(key, i.joins),
-                ))
-            }
-            HotStoreAction::Delete(DeleteData(d)) => {
-                let key = hash(&d.channel);
-                HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(
-                    TrieDeleteProduce::new(key),
-                ))
-            }
-            HotStoreAction::Delete(DeleteCanonicalData(d)) => HotStoreTrieAction::TrieDeleteAction(
-                TrieDeleteAction::TrieDeleteProduce(TrieDeleteProduce::new(d.into_hash())),
-            ),
-            HotStoreAction::Delete(DeleteCanonicalCollection(d)) => {
-                let (kind, hash) = d.into_parts();
-                HotStoreTrieAction::TrieDeleteAction(
-                    TrieDeleteAction::TrieDeleteCanonicalCollection(
-                        TrieDeleteCanonicalCollection { kind, hash },
-                    ),
-                )
-            }
-            HotStoreAction::Delete(DeleteContinuations(d)) => {
-                let key = hash_from_vec(&d.channels);
-                HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(
-                    TrieDeleteConsume::new(key),
-                ))
-            }
-            HotStoreAction::Delete(DeleteJoins(d)) => {
-                let key = hash(&d.channel);
-                HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(
-                    TrieDeleteJoins::new(key),
-                ))
-            }
+            )
+        }
+        HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(d)) => (
+            None,
+            d.hash.clone(),
+            None,
+            HistoryAction::Delete(DeleteAction {
+                key: prepend_bytes(PREFIX_DATUM, &d.hash.bytes()),
+            }),
+        ),
+        HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(d)) => (
+            None,
+            d.hash.clone(),
+            None,
+            HistoryAction::Delete(DeleteAction {
+                key: prepend_bytes(PREFIX_KONT, &d.hash.bytes()),
+            }),
+        ),
+        HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(d)) => (
+            None,
+            d.hash.clone(),
+            None,
+            HistoryAction::Delete(DeleteAction {
+                key: prepend_bytes(PREFIX_JOINS, &d.hash.bytes()),
+            }),
+        ),
+        HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteCanonicalCollection(
+            d,
+        )) => (
+            None,
+            d.hash.clone(),
+            None,
+            HistoryAction::Delete(DeleteAction {
+                key: prepend_bytes(canonical_collection_prefix(d.kind), &d.hash.bytes()),
+            }),
+        ),
+    };
+    let cold_action = match (kind, encoded) {
+        (Some(kind), Some(encoded)) => {
+            Some((ColdLeafAddress::new(kind, digest).map_err(cold_leaf_history_error)?, encoded))
+        }
+        (None, None) => None,
+        _ => {
+            return Err(HistoryError::ActionError(
+                "cold-leaf action kind and bytes disagree".to_string(),
+            ));
+        }
+    };
+    Ok((cold_action, history_action))
+}
+
+pub(crate) fn transform<C, P, A, K>(
+    hot_store_action: HotStoreAction<C, P, A, K>,
+) -> HotStoreTrieAction<C, P, A, K>
+where
+    C: Clone + Send + Sync + StableHashSerialize,
+    P: Clone + Send + Sync + StableHashSerialize,
+    A: Clone + Send + Sync + StableHashSerialize,
+    K: Clone + Send + Sync + StableHashSerialize,
+{
+    match hot_store_action {
+        HotStoreAction::Insert(InsertData(i)) => {
+            let key = hash(&i.channel);
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertProduce(
+                TrieInsertProduce::new(key, i.data),
+            ))
+        }
+        HotStoreAction::Insert(InsertCanonicalData(i)) => {
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertCanonicalProduce({
+                let (hash, encoded_persisted_data, datum_count) = i.into_parts();
+                TrieInsertCanonicalProduce {
+                    hash,
+                    encoded_persisted_data,
+                    datum_count,
+                }
+            }))
+        }
+        HotStoreAction::Insert(InsertCanonicalCollection(i)) => {
+            let (kind, hash, encoded_persisted_data, record_count) = i.into_parts();
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertCanonicalCollection(
+                TrieInsertCanonicalCollection {
+                    kind,
+                    hash,
+                    encoded_persisted_data,
+                    record_count,
+                },
+            ))
+        }
+        HotStoreAction::Insert(InsertContinuations(i)) => {
+            let key = hash_from_vec(&i.channels);
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertConsume(
+                TrieInsertConsume::new(key, i.continuations),
+            ))
+        }
+        HotStoreAction::Insert(InsertJoins(i)) => {
+            let key = hash(&i.channel);
+            HotStoreTrieAction::TrieInsertAction(TrieInsertAction::TrieInsertJoins(
+                TrieInsertJoins::new(key, i.joins),
+            ))
+        }
+        HotStoreAction::Delete(DeleteData(d)) => {
+            let key = hash(&d.channel);
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteProduce(
+                TrieDeleteProduce::new(key),
+            ))
+        }
+        HotStoreAction::Delete(DeleteCanonicalData(d)) => HotStoreTrieAction::TrieDeleteAction(
+            TrieDeleteAction::TrieDeleteProduce(TrieDeleteProduce::new(d.into_hash())),
+        ),
+        HotStoreAction::Delete(DeleteCanonicalCollection(d)) => {
+            let (kind, hash) = d.into_parts();
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteCanonicalCollection(
+                TrieDeleteCanonicalCollection { kind, hash },
+            ))
+        }
+        HotStoreAction::Delete(DeleteContinuations(d)) => {
+            let key = hash_from_vec(&d.channels);
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteConsume(
+                TrieDeleteConsume::new(key),
+            ))
+        }
+        HotStoreAction::Delete(DeleteJoins(d)) => {
+            let key = hash(&d.channel);
+            HotStoreTrieAction::TrieDeleteAction(TrieDeleteAction::TrieDeleteJoins(
+                TrieDeleteJoins::new(key),
+            ))
         }
     }
 }
@@ -532,15 +533,9 @@ where
         self.measure(&actions);
 
         let trie_actions: Vec<_> = if Self::should_parallelize_checkpoint_actions(actions.len()) {
-            actions
-                .into_par_iter()
-                .map(|action| self.transform(action))
-                .collect()
+            actions.into_par_iter().map(transform).collect()
         } else {
-            actions
-                .into_iter()
-                .map(|action| self.transform(action))
-                .collect()
+            actions.into_iter().map(transform).collect()
         };
 
         self.do_checkpoint(trie_actions)
@@ -581,12 +576,12 @@ where
             if Self::should_parallelize_checkpoint_actions(trie_actions.len()) {
                 trie_actions
                     .into_par_iter()
-                    .map(|a| self.calculate_storage_actions(a))
+                    .map(calculate_storage_actions)
                     .collect::<Result<Vec<_>, _>>()?
             } else {
                 trie_actions
                     .into_iter()
-                    .map(|a| self.calculate_storage_actions(a))
+                    .map(calculate_storage_actions)
                     .collect::<Result<Vec<_>, _>>()?
             };
 
