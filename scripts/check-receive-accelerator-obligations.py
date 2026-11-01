@@ -371,6 +371,11 @@ SOURCE_MUTANT_EVIDENCE = {
     "RAC-RS-33": ('"{gap:?}: a current handle falls back as incomplete"',),
     "RAC-RS-34": ("assert_eq!(accelerator.answer(&world, a), Answer::Exact(expected_a.clone()));",),
     "RAC-RS-35": ('"persist, peeks, the continuation and the kind each keep a target"',),
+    "RAC-RS-36": ('assert_construction_order_invariance(&fixed).expect("the fixed plan is order invariant");',),
+    "RAC-RS-37": ("assert_one_revision(&store, &accelerator, &after);",),
+    "RAC-RS-38": ("assert!(faulted.receive_index().is_none());",),
+    "RAC-RS-39": ('"{step:?}: the accelerator never changes a selection or a checkpoint"',),
+    "RAC-RS-40": ("assert!(store.resolve_receive(&forged).is_none());",),
 }
 PRODUCTION_WITNESSES = {
     "production_answers_equal_the_derivation_over_generated_stores": (

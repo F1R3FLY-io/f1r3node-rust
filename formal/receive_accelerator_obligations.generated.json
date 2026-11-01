@@ -1222,6 +1222,64 @@
         "source": "rspace++/src/rspace/receive_accelerator.rs",
         "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
         "test_target": "production_metadata_distinct_records_keep_distinct_ids"
+      },
+      {
+        "description": "resting targets are answered in reverse historical order (production analogue of RAC-RS-09)",
+        "formal": [
+          "RAC-RC-09"
+        ],
+        "id": "RAC-RS-36",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/receive_accelerator.rs",
+        "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+        "test_target": "production_construction_order_does_not_change_answers_or_ids"
+      },
+      {
+        "description": "the published handle is stamped with the pre-maintenance store revision (production analogue of RAC-RS-10)",
+        "formal": [
+          "RAC-RC-24",
+          "RAC-TLA-02"
+        ],
+        "id": "RAC-RS-37",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/hot_store.rs",
+        "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+        "test_target": "production_index_and_catalog_publish_at_one_revision"
+      },
+      {
+        "description": "a faulted maintenance publishes its partially maintained index (production analogue of RAC-RS-11)",
+        "formal": [
+          "RAC-RC-23",
+          "RAC-TLA-10"
+        ],
+        "id": "RAC-RS-38",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/record_index.rs",
+        "test_source": "rspace++/tests/receive_accelerator/occurrence_index.rs",
+        "test_target": "faulted_maintenance_publishes_nothing"
+      },
+      {
+        "description": "a rebuild clears the pending journals, so building the accelerator changes the pending deltas (production analogue of RAC-RS-12)",
+        "formal": [
+          "RAC-RC-26",
+          "RAC-TLA-11"
+        ],
+        "id": "RAC-RS-39",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/hot_store.rs",
+        "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+        "test_target": "production_accelerator_never_changes_semantic_identity"
+      },
+      {
+        "description": "target equality ignores the source bytes, so a forged alias-source id resolves (production analogue of RAC-RS-13)",
+        "formal": [
+          "RAC-RC-10"
+        ],
+        "id": "RAC-RS-40",
+        "mode": "executable_refinement",
+        "source": "rspace++/src/rspace/receive_accelerator.rs",
+        "test_source": "rspace++/tests/hot_store/receive_accelerator_bindings.rs",
+        "test_target": "forged_alias_source_targets_never_resolve_at_current_tokens"
       }
     ]
   },
@@ -1254,8 +1312,8 @@
     "rspace++/tests/support/receive_accelerator_adoption.rs": "2951e1a411f26b6733c18ffd14dc34cb587b17ac1e7f457d873d6a0392304798",
     "rspace++/tests/support/receive_accelerator_production.rs": "8ee93fcc4d0ca7d78c314263e685ecbe6effcd6a99e259a5e7df0ee9f6ef3998",
     "rspace++/tests/support/receive_occurrence_reference.rs": "610ae1a9888a343957f70abe1ed0414a8d1a70e9f47219f38c352a3329d3b9fc",
-    "scripts/check-receive-accelerator-obligations.py": "bab9837347ceb28a7cb8c362851d3949987a24f3b33a1081f3a78ddc816338b3",
-    "scripts/generate-receive-accelerator-mutant.py": "dbce4d502076765bb17b6cbd364d640fece4daee699389bdc1467c54ae20dcc1"
+    "scripts/check-receive-accelerator-obligations.py": "c99454a37a3e95584e720487cfb8a98976c969e8a7db609e403ebd9813914ffb",
+    "scripts/generate-receive-accelerator-mutant.py": "7caed63b513c491395997abbca1f3f07a68cad6e1203fa7bbcec9c528af6cbfb"
   },
   "tla": {
     "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.cfg",

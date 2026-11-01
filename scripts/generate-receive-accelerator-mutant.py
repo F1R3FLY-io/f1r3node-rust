@@ -25,6 +25,8 @@ BINDING = "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs"
 RECEIVE_ACCELERATOR = "rspace++/src/rspace/receive_accelerator.rs"
 RECORD_INDEX = "rspace++/src/rspace/record_index.rs"
 PRODUCTION_SPEC = "rspace++/tests/receive_accelerator_production_spec.rs"
+OCCURRENCE_INDEX_TESTS = "rspace++/tests/receive_accelerator/occurrence_index.rs"
+ACCELERATOR_BINDING_TESTS = "rspace++/tests/hot_store/receive_accelerator_bindings.rs"
 HARNESS = "concrete_witness"
 PRODUCTION = "executable_refinement"
 
@@ -552,6 +554,79 @@ MUTATIONS = {
         ),
         "test_file": PRODUCTION_SPEC,
         "test": "production_metadata_distinct_records_keep_distinct_ids",
+    },
+    "RAC-RS-36": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-09",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": "resting targets are answered in reverse historical order (production analogue of RAC-RS-09)",
+        "before": "        targets.extend(resting.into_iter().map(|record| ReceiveTarget {\n",
+        "after": "        targets.extend(resting.into_iter().rev().map(|record| ReceiveTarget {\n",
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_construction_order_does_not_change_answers_or_ids",
+    },
+    "RAC-RS-37": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-24", "RAC-TLA-02"),
+        "source": HOT_STORE,
+        "description": (
+            "the published handle is stamped with the pre-maintenance store revision "
+            "(production analogue of RAC-RS-10)"
+        ),
+        "before": "        ReceiveAcceleratorHandle::new(self.receive_revision(), self.continuations.clone())\n",
+        "after": (
+            "        let stamped = ReceiveRevision {\n"
+            "            generation: Arc::clone(&self.continuation_base_epoch),\n"
+            "            store: Arc::clone(&self.continuation_base_epoch),\n"
+            "        };\n"
+            "        ReceiveAcceleratorHandle::new(stamped, self.continuations.clone())\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_index_and_catalog_publish_at_one_revision",
+    },
+    "RAC-RS-38": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-23", "RAC-TLA-10"),
+        "source": RECORD_INDEX,
+        "description": (
+            "a faulted maintenance publishes its partially maintained index (production analogue of RAC-RS-11)"
+        ),
+        "before": "            self.receive_index = maintained.then_some(replacement);\n",
+        "after": "            self.receive_index = Some(replacement);\n",
+        "test_file": OCCURRENCE_INDEX_TESTS,
+        "test": "faulted_maintenance_publishes_nothing",
+    },
+    "RAC-RS-39": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-26", "RAC-TLA-11"),
+        "source": HOT_STORE,
+        "description": (
+            "a rebuild clears the pending journals, so building the accelerator changes the pending deltas "
+            "(production analogue of RAC-RS-12)"
+        ),
+        "before": "        let opened = hot_state_write(&self.state).begin_receive_build();\n",
+        "after": (
+            "        hot_state_write(&self.state).clear_pending_journal();\n"
+            "        let opened = hot_state_write(&self.state).begin_receive_build();\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_accelerator_never_changes_semantic_identity",
+    },
+    "RAC-RS-40": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-10",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "target equality ignores the source bytes, so a forged alias-source id resolves "
+            "(production analogue of RAC-RS-13)"
+        ),
+        "before": (
+            "            identity == other_identity &&\n"
+            "            source == other_source\n"
+        ),
+        "after": "            identity == other_identity\n",
+        "test_file": ACCELERATOR_BINDING_TESTS,
+        "test": "forged_alias_source_targets_never_resolve_at_current_tokens",
     },
 }
 
