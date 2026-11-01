@@ -118,7 +118,7 @@ pub(super) struct ScalingFixture {
 pub(super) struct ScalingChain<'fixture> {
     pub(super) root: PathBuf,
     pub(super) lease: DurableWriterLeaseV1,
-    pub(super) core: DurableAuthorityCoreV1<TestSemanticProfile>,
+    pub(super) core: Arc<DurableAuthorityCoreV1<TestSemanticProfile>>,
     pub(super) fixture: &'fixture ScalingFixture,
     pub(super) model: ModelState,
     pub(super) state: StateVersionV1,
@@ -188,7 +188,7 @@ pub(super) fn admit_scaling_directory(
     root: &Path,
     writer: RetentionFormat,
     limits: DurableLimits,
-) -> (DurableWriterLeaseV1, DurableAuthorityCoreV1<TestSemanticProfile>) {
+) -> (DurableWriterLeaseV1, Arc<DurableAuthorityCoreV1<TestSemanticProfile>>) {
     let (lease, source) = DurableDirectoryV1::open(root)
         .expect("open the scaling trial directory")
         .with_retention_reader_for_test(RetentionReader::Dual)
@@ -531,7 +531,7 @@ impl<'fixture> ScalingChain<'fixture> {
         fixture: &'fixture ScalingFixture,
         root: PathBuf,
         lease: DurableWriterLeaseV1,
-        core: DurableAuthorityCoreV1<TestSemanticProfile>,
+        core: Arc<DurableAuthorityCoreV1<TestSemanticProfile>>,
     ) -> Self {
         assert_eq!(core.authority().slot().state(), fixture.state);
         Self {
@@ -899,7 +899,7 @@ impl<'fixture> ScalingChain<'fixture> {
             "the root multiplicities changed beyond the commit's root deltas"
         );
 
-        self.core = core;
+        self.core = Arc::new(core);
         self.stored.extend(fresh.into_keys());
         self.union.extend(planned.closure.keys().copied());
         self.historical = historical;

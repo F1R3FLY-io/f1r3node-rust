@@ -6,7 +6,7 @@ use std::mem::MaybeUninit;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 use shared::rust::test_scratch;
@@ -954,9 +954,9 @@ fn live_packs(slot: CatalogSlotV1) -> u64 {
 
 fn checkpoint_core(
     mut lease: DurableWriterLeaseV1,
-    core: Core,
+    core: Arc<Core>,
     limits: DurableLimits,
-) -> (DurableWriterLeaseV1, Core) {
+) -> (DurableWriterLeaseV1, Arc<Core>) {
     let source = acquire_cold_checked(
         &mut lease,
         &core,
@@ -1200,7 +1200,7 @@ fn run_timed(
     cell: ScaleCell,
     root: &Path,
     limits: DurableLimits,
-    (mut lease, mut core): (DurableWriterLeaseV1, Core),
+    (mut lease, mut core): (DurableWriterLeaseV1, Arc<Core>),
     admission_ns: u64,
 ) -> TimedRun {
     let schedule = Schedule::new(cell);
@@ -1256,14 +1256,16 @@ fn run_timed(
             .prepare_transaction(&lease, &bound, sequence, LogPackDecodeLimits::UNBOUNDED)
             .expect("prepare the timed commit");
         let publishing = Reading::now(epoch);
-        let published = publish_trusted_incremental_v1(
-            &mut lease,
-            &core,
-            &prepared,
-            TrustedSuccessorPolicyV1::UNBOUNDED,
-            |_| {},
-        )
-        .expect("publish the timed commit");
+        let published = Arc::new(
+            publish_trusted_incremental_v1(
+                &mut lease,
+                &core,
+                &prepared,
+                TrustedSuccessorPolicyV1::UNBOUNDED,
+                |_| {},
+            )
+            .expect("publish the timed commit"),
+        );
         let releasing = Reading::now(epoch);
         drop(prepared);
         drop(bound);

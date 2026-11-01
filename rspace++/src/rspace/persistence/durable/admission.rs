@@ -8,6 +8,7 @@
 
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use blake2::digest::consts::U32;
@@ -1587,7 +1588,7 @@ impl<P: SemanticProfile> DurableAuthorityCoreV1<P> {
 /// new pack/index files, without reopening the store, cloning the closure, or
 /// introducing aliasing escape hatches.
 pub(crate) struct AdmittedCheckpointSourceV1<P: SemanticProfile> {
-    core: DurableAuthorityCoreV1<P>,
+    core: Arc<DurableAuthorityCoreV1<P>>,
     retention: AdmittedRetention,
     semantic: SemanticallyAdmittedStateV1,
     report: DurableAdmissionReportV1,
@@ -1595,9 +1596,9 @@ pub(crate) struct AdmittedCheckpointSourceV1<P: SemanticProfile> {
 }
 
 impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
-    pub(crate) const fn core(&self) -> &DurableAuthorityCoreV1<P> { &self.core }
+    pub(crate) fn core(&self) -> &DurableAuthorityCoreV1<P> { &self.core }
 
-    pub(crate) fn into_core(self) -> DurableAuthorityCoreV1<P> { self.core }
+    pub(crate) fn into_core(self) -> Arc<DurableAuthorityCoreV1<P>> { self.core }
 
     pub(super) fn preflight_writer(
         &self,
@@ -1617,7 +1618,7 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
 
     pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.report }
 
-    pub(crate) const fn shape(&self) -> &CurrentShapeSummaryV1 { self.core.shape() }
+    pub(crate) fn shape(&self) -> &CurrentShapeSummaryV1 { self.core.shape() }
 
     pub(crate) fn preflight_checkpoint_admission(
         &self,
@@ -1626,19 +1627,17 @@ impl<P: SemanticProfile> AdmittedCheckpointSourceV1<P> {
         self.admission_requirements.preflight(limits)
     }
 
-    pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { self.core.authority() }
+    pub(crate) fn authority(&self) -> &CatalogAuthorityTokenV1 { self.core.authority() }
 
-    pub(crate) const fn retention_manifest_bytes(&self) -> &[u8] {
-        self.core.retention_manifest_bytes()
-    }
+    pub(crate) fn retention_manifest_bytes(&self) -> &[u8] { self.core.retention_manifest_bytes() }
 
-    pub(crate) const fn retention_format(&self) -> RetentionFormat { self.core.retention_format() }
+    pub(crate) fn retention_format(&self) -> RetentionFormat { self.core.retention_format() }
 
     pub(crate) const fn retention_metadata_v2(&self) -> Option<&AdmittedRetentionMetadataV2> {
         self.retention.metadata_v2()
     }
 
-    pub(crate) const fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
+    pub(crate) fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
         self.core.retained_closure()
     }
 
@@ -2054,7 +2053,11 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
     /// Compaction and reader-retention layers must compare this exact image,
     /// rather than re-open the catalog by pathname, before treating a
     /// generation as still authoritative.
-    pub(crate) const fn catalog(&self) -> CatalogSlotV1 { self.source.authority().slot() }
+    pub(crate) fn catalog(&self) -> CatalogSlotV1 { self.source.authority().slot() }
+
+    pub(crate) fn shared_core(&self) -> Arc<DurableAuthorityCoreV1<P>> {
+        Arc::clone(&self.source.core)
+    }
 
     pub(crate) fn publish_incremental_transaction_v1(
         self,
@@ -2085,11 +2088,11 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
 
     pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.source.report() }
 
-    pub(crate) const fn shape(&self) -> &CurrentShapeSummaryV1 { self.source.shape() }
+    pub(crate) fn shape(&self) -> &CurrentShapeSummaryV1 { self.source.shape() }
 
-    pub(crate) const fn authority(&self) -> &CatalogAuthorityTokenV1 { self.source.authority() }
+    pub(crate) fn authority(&self) -> &CatalogAuthorityTokenV1 { self.source.authority() }
 
-    pub(crate) const fn retention_manifest_bytes(&self) -> &[u8] {
+    pub(crate) fn retention_manifest_bytes(&self) -> &[u8] {
         self.source.retention_manifest_bytes()
     }
 
@@ -2097,7 +2100,7 @@ impl<P: SemanticProfile> SemanticallyAdmittedDurableWriterV1<P> {
         dead_code,
         reason = "no code in the crate, unit tests included, calls this closure accessor yet"
     )]
-    pub(crate) const fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
+    pub(crate) fn retained_closure(&self) -> &StructuralClosureLedgerV1 {
         self.source.retained_closure()
     }
 
@@ -2655,7 +2658,7 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
         object_read_bytes: report.object_read_bytes,
     };
     Ok(AdmittedCheckpointSourceV1 {
-        core: DurableAuthorityCoreV1 {
+        core: Arc::new(DurableAuthorityCoreV1 {
             store,
             registry: lease.generation_leases(),
             authority,
@@ -2672,7 +2675,7 @@ pub(crate) fn admit_physical_source<P: SemanticProfile>(
             },
             retention_writer,
             profile: PhantomData,
-        },
+        }),
         retention: admitted_retention,
         semantic,
         report,

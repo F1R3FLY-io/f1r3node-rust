@@ -6669,6 +6669,113 @@ either `.unwrap()` restored, the test panics instead.
 |---|---|---|
 | OG-39 | Constructor refusal. Over a store whose history repository cannot be opened, `RSpace::create` and `RSpace::create_with_replay` each return `Err` holding the repository's own error instead of panicking. For an in-memory authority whose current-root record is malformed, that error is `HistoryRepositoryError::RootError(RootError::CorruptRootCatalog(..))` with the message `current-root value has an unknown version or invalid length`. | `rspace_constructors_propagate_a_failing_store_as_an_error` |
 
+### Generation-leased durable read handle (2026-11-01)
+
+Task 7931 reads a durable generation lazily, one channel at a time, while the
+owner goes on publishing successors. The view seam that provides those reads
+is task N2. Before this slice the only reader of an admitted generation was
+`DurableAuthorityViewV1` in
+[`mod.rs`](../../../rspace++/src/rspace/persistence/durable/mod.rs), and
+`into_rspace_authority` consumes the view. Once the owner took over, nothing
+could read the generation that the view had admitted.
+
+This slice, the first leaf of the view seam, separates reading from owning.
+The admitted checkpoint source in
+[`admission.rs`](../../../rspace++/src/rspace/persistence/durable/admission.rs)
+now keeps its `DurableAuthorityCoreV1` in an `Arc`. The core holds, among
+other things:
+
+- the pinned object index;
+- open handles to every pack that the catalog names;
+- the catalog authority token;
+- the semantic validity token.
+
+The view, the owner and any number of read handles share this one core, and
+nothing is copied. Publication still borrows the core as
+`&DurableAuthorityCoreV1`, so it is unchanged. The owner's `source` field and
+its pending successor are `Arc`s too. The successor that publication returns
+is wrapped once, when the owner records it as pending acknowledgement.
+
+`DurableAuthorityViewV1::read_handle` returns a `DurableViewReadHandleV1`. The
+handle holds a clone of the `Arc` and its own `GenerationLeaseV1` for the
+view's exact catalog generation, and it releases the lease when it is
+dropped. The two parts do different jobs:
+
+| Part | What it keeps | Who relies on it |
+|---|---|---|
+| The shared core | The pinned index and the open pack handles of one generation, in this process. | The handle's own reads. |
+| The generation lease | A registry entry that names the generation's pack range. | Reclamation. `reclaim_reclamation_candidate` deletes a superseded generation's packs and index only after `retire_pack_range_if_unleased` finds no lease that overlaps their range. That one registry operation also refuses every later lease on the range. |
+
+The `Arc` alone therefore keeps the core alive, but only the lease keeps its
+generation from being reclaimed. Without the lease, reclamation could delete
+the generation's files, and no later reader could lease the generation again.
+
+`read_handle` also carries a compile-time assertion that the handle is
+`Send + Sync + 'static` for every semantic profile. A handle can therefore
+move to another thread or task and outlive both the view and the owner.
+
+None of the remaining changes alters behavior:
+
+- The accessors that now dereference the `Arc` are no longer `const fn`:
+  - the admitted source's `core`, `shape`, `authority`,
+    `retention_manifest_bytes`, `retention_format` and `retained_closure`;
+  - the admitted writer's `catalog`, `shape`, `authority`,
+    `retention_manifest_bytes` and `retained_closure`;
+  - the view's `catalog`.
+- `into_core` returns the `Arc`. Five test modules that kept an owned core
+  now keep the `Arc`, and wrap the successor that publication returns:
+  `shape_summary_properties`, `trusted_history_production`,
+  `trusted_scaling_properties`, `trusted_scaling_resource` and
+  `trusted_successor_production`.
+- The lease registry exposes no count of live leases. It gains a test-only
+  `active_lease_count_for_test`.
+
+No persisted byte, root or wire message changes.
+
+**Relation to the caller registry.** VR-01 is the first executable witness,
+through the durable view, of two capstones of the caller-authority contract
+below:
+
+- CA-21, `pinned_generation_cannot_be_reclaimed`;
+- CA-22, `owner_teardown_preserves_retained_readers`.
+
+Its derivation row is nevertheless executable-only, like the OG rows. Listing
+`RSpaceCallerAuthority.v` among the manifest test's Rocq sources would oblige
+a derivation row here for every capstone of that file, and those capstones
+belong to the caller registry, not to this matrix.
+
+`read_handle_pins_its_generation_across_a_successor_and_owner_teardown`
+proceeds as follows:
+
+1. It recovers a view of an installed checkpoint image and takes a handle
+   before `into_rspace_authority`.
+2. The owner then publishes and acknowledges a successor that adds a datum, a
+   continuation and a join.
+3. The owner is dropped, and a second recovery reads the successor's roots.
+4. Reclamation's registry decision is then made for the old generation.
+
+It requires all of the following:
+
+- the handle adds exactly one lease;
+- the handle reads the old semantic roots both after the successor and after
+  teardown, and those roots differ from the successor's;
+- the old generation's exact lease key stays active after the owner's own
+  lease has moved to the successor;
+- reclamation refuses the old pack range;
+- the handle's lease is the only one left, and none is left after the handle
+  is dropped.
+
+The red control is a handle whose lease is released as soon as it is
+acquired. That handle leaves the lease count unchanged, loses the old key and
+lets the range be retired. One assertion compares the three observations, so
+the control's failure reports all of them.
+
+**The VR row.** VR is the view seam's family.
+
+| ID | Required property | Test |
+|---|---|---|
+| VR-01 | Generation-leased read handle. A handle taken from a durable view before `into_rspace_authority` adds exactly one lease to the directory's lease registry. After the owner publishes and acknowledges a successor, the handle still reads its own generation's semantic roots, which differ from the successor's, and that generation's exact lease key is still active although the owner's lease has moved to the successor. After the owner is torn down, `retire_pack_range_if_unleased` refuses the generation's pack range, and the handle's lease is the only one left. Once the handle is dropped, none is left. | `read_handle_pins_its_generation_across_a_successor_and_owner_teardown` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -6904,6 +7011,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | SW-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 11989): the measurement harness's record contract, schedule and fail-closed probes. No model states a property of the harness; the trusted commit's work that it measures is SW-01 to SW-03's. |
 | OG-12 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result types of the legacy facet accessors and the conversion of an unavailable facet into each caller's error type. No model states a property of Rust accessor results or error types. |
 | OG-39 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result of the RSpace constructors when the history repository refuses the store. No model states a property of Rust constructor results or panics. |
+| VR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12397): the lease count, lease key activity and reclamation decision of a durable read handle across a successor and owner teardown. It witnesses the caller registry's CA-21, `pinned_generation_cannot_be_reclaimed`, and CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite: listing `RSpaceCallerAuthority.v` among its Rocq sources would oblige a row here for every capstone of that file. |
 
 ## Generator discipline
 
@@ -7331,6 +7439,26 @@ regenerated, and the PathMap aggregate takes their new manifest digests. No
 successful construction, persisted byte, root, identity or wire message
 changed. See the fallible RSpace constructors section and pgmcp artifacts 1572
 and 1573 for the gate and measurement logs.
+
+The 2026-11-01 durable read handle slice of task 12396 adds VR-01, the first VR
+row, so the catalog/derivation/binding registry now contains **230** IDs. On
+an export of the candidate tree, VR-01, the 20 durable owner tests, the 21
+trusted-chain tests and the two shape-summary tests passed in release, and
+VR-01 and the owner tests passed in debug. One production control released
+the handle's lease as soon as it was acquired. It made VR-01, and only VR-01,
+fail among the 128 tests of the durable persistence modules, with the
+observations `(0, false, true)` against the required `(1, true, false)`: no
+added lease, the old key no longer active, and the old pack range retirable.
+The library tests passed with 895 tests in release (10 ignored), the `mod`
+target with 179, and every rspace++ test target with 1,455 tests in 28
+binaries (13 ignored); the manifest test passed. `cargo check` of every
+workspace target passed, with the same eight warnings as before, all in files
+this slice does not touch, and clippy passed on `rspace_plus_plus` with
+warnings denied. The workspace-regression registry hashes the manifest test's
+file and the persistence test module, so it was regenerated, and the PathMap
+aggregate takes its new manifest digest. No persisted byte, root, identity or
+wire message changed. See the generation-leased durable read handle section
+and pgmcp artifacts 1576 and 1577 for the gate and measurement logs.
 
 ## Caller-authority contract (2026-09-06)
 

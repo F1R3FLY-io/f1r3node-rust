@@ -310,7 +310,7 @@ struct Adopted {
 
 struct Writer {
     lease: DurableWriterLeaseV1,
-    core: Core,
+    core: Arc<Core>,
 }
 
 struct Reader {
@@ -706,7 +706,7 @@ fn cold_admit(root: &Path, format: RetentionFormat) -> Result<Writer, DurableAdm
     })
 }
 
-fn recovered(writer: &mut Writer) -> Result<Core, DurableAdmissionErrorV1> {
+fn recovered(writer: &mut Writer) -> Result<Arc<Core>, DurableAdmissionErrorV1> {
     let physical = recover_physical_from_lease_v1(
         &mut writer.lease,
         limits(),
@@ -2083,8 +2083,9 @@ impl Trial {
         let writer = self.reference.writer_mut();
         let (published, effects) = attempt(writer, change, UNBOUNDED);
         prop_assert_eq!(effects, PublicationEffects::trusted());
-        writer.core =
-            published.map_err(|error| failure("the reference publication failed", error))?;
+        writer.core = Arc::new(
+            published.map_err(|error| failure("the reference publication failed", error))?,
+        );
         Ok(writer.core.authority().slot())
     }
 
@@ -2173,7 +2174,7 @@ impl Trial {
         prop_assert_eq!((cold_admissions, index_constructions), (0, 0));
         let class = match (published, expected_failure) {
             (Ok(core), None) => {
-                self.live.writer_mut().core = core;
+                self.live.writer_mut().core = Arc::new(core);
                 None
             }
             (Err(error), Some(kind)) => {
@@ -2739,8 +2740,10 @@ impl Trial {
     fn retry_prepared(&mut self, retry: &Retry<'_>) -> Result<(), TestCaseError> {
         let (published, effects) = retry(self.live.writer_mut());
         prop_assert_eq!(effects, PublicationEffects::trusted());
-        self.live.writer_mut().core = published
-            .map_err(|error| failure("the retry of the prepared successor failed", error))?;
+        self.live.writer_mut().core = Arc::new(
+            published
+                .map_err(|error| failure("the retry of the prepared successor failed", error))?,
+        );
         Ok(())
     }
 
@@ -2748,7 +2751,8 @@ impl Trial {
         let writer = self.live.writer_mut();
         let (published, effects) = attempt(writer, change, UNBOUNDED);
         prop_assert_eq!(effects, PublicationEffects::trusted());
-        writer.core = published.map_err(|error| failure("the rebound retry failed", error))?;
+        writer.core =
+            Arc::new(published.map_err(|error| failure("the rebound retry failed", error))?);
         Ok(())
     }
 
@@ -3481,8 +3485,9 @@ fn kill_scenario(index: usize, hooks: &[usize]) -> Result<Vec<usize>, TestCaseEr
             );
             let (published, effects) = attempt(&mut writer, change, UNBOUNDED);
             prop_assert_eq!(effects, PublicationEffects::trusted());
-            writer.core =
-                published.map_err(|error| failure("the publication after a kill failed", error))?;
+            writer.core = Arc::new(
+                published.map_err(|error| failure("the publication after a kill failed", error))?,
+            );
         }
         prop_assert_eq!(&core_observation(&writer.core), &successor);
         same_files(

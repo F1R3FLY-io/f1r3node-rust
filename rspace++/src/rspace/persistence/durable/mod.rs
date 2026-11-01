@@ -154,7 +154,7 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     /// identify the pack/index generation it is reading.  Compaction must use
     /// that identity when deciding whether an obsolete generation is eligible
     /// for reclamation; a freshly re-read pathname is not a sufficient lease.
-    pub(crate) const fn catalog(&self) -> CatalogSlotV1 { self.writer.catalog() }
+    pub(crate) fn catalog(&self) -> CatalogSlotV1 { self.writer.catalog() }
 
     pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 {
         self.writer.generation_leases()
@@ -163,16 +163,29 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     /// Acquire a lease for this exact recovered physical generation. The
     /// caller must retain the returned token for as long as any pack/index
     /// handle or decoded view may still be used.
-    #[expect(
-        dead_code,
-        reason = "no code in the crate, unit tests included, calls this lease accessor yet"
-    )]
     pub(crate) fn acquire_generation_lease(
         &self,
     ) -> Result<GenerationLeaseV1, GenerationLeaseError> {
         self.writer
             .generation_leases()
             .acquire(GenerationLeaseKeyV1::from_catalog(self.catalog()))
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests take a read handle until task 7931 reads durable views \
+                      through it"
+        )
+    )]
+    pub(crate) fn read_handle(&self) -> Result<DurableViewReadHandleV1<P>, GenerationLeaseError> {
+        const { require_shareable_read_handle::<DurableViewReadHandleV1<P>>() };
+        let lease = self.acquire_generation_lease()?;
+        Ok(DurableViewReadHandleV1 {
+            core: self.writer.shared_core(),
+            _lease: lease,
+        })
     }
 
     pub(crate) fn state(&self) -> crate::rspace::persistence::StateVersionV1 {
@@ -508,6 +521,32 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
 
     pub(crate) const fn report(&self) -> DurableAdmissionReportV1 { self.writer.report() }
 }
+
+pub(crate) struct DurableViewReadHandleV1<P: SemanticProfile> {
+    core: std::sync::Arc<admission::DurableAuthorityCoreV1<P>>,
+    _lease: GenerationLeaseV1,
+}
+
+impl<P: SemanticProfile> DurableViewReadHandleV1<P> {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only unit tests read through a handle until task 7931 reads durable views \
+                      through it"
+        )
+    )]
+    pub(crate) fn semantic_roots(
+        &self,
+    ) -> Result<SemanticRoots, ClosureError<DurableObjectReadErrorV1>> {
+        self.core
+            .verified_state()
+            .semantic_manifest()
+            .map(|manifest| manifest.roots())
+    }
+}
+
+const fn require_shareable_read_handle<T: Send + Sync + 'static>() {}
 
 pub(crate) fn recover_read_authority<P: SemanticProfile>(
     path: impl Into<std::path::PathBuf>,

@@ -602,6 +602,15 @@ impl GenerationLeaseRegistryV1 {
         std::mem::replace(&mut self.state.lock().unwrap().next_lease_id, counter)
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_lease_count_for_test(&self) -> usize {
+        self.state
+            .lock()
+            .expect("generation lease registry lock")
+            .leases
+            .len()
+    }
+
     pub(crate) fn shares_registry(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.state, &other.state)
     }

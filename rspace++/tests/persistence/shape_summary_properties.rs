@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use proptest::prelude::*;
 use proptest::test_runner::{TestCaseError, TestRunner};
@@ -378,7 +379,7 @@ fn check_trusted_durable_chain(states: &[ModelState]) {
         );
         let (_, cold) = cold_shape(&oracle, install(&oracle, to));
         assert_eq!(predicted, cold, "the trusted durable summary disagrees with the model state");
-        core = successor;
+        core = Arc::new(successor);
         expected = predicted;
     }
     drop((lease, core));

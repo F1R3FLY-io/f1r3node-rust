@@ -108,7 +108,7 @@ pub(crate) struct DurableRSpaceAuthorityV1<P: SemanticProfile>
 where P::Channel: Clone + Hash + Eq
 {
     lease: DurableWriterLeaseV1,
-    source: DurableAuthorityCoreV1<P>,
+    source: Arc<DurableAuthorityCoreV1<P>>,
     generation_lease: GenerationLeaseV1,
     hot: Arc<Box<dyn HotStore<P::Channel, P::Pattern, P::Datum, P::Continuation>>>,
     operation_gate: Arc<RwLock<()>>,
@@ -127,7 +127,7 @@ enum PendingJournalPhaseV1<P: SemanticProfile> {
     Captured,
     RecoveryRequired,
     AwaitingAck {
-        successor: DurableAuthorityCoreV1<P>,
+        successor: Arc<DurableAuthorityCoreV1<P>>,
         generation_lease: Option<GenerationLeaseV1>,
     },
 }
@@ -282,7 +282,7 @@ where P::Channel: Clone + Hash + Eq
             });
         }
         pending.phase = PendingJournalPhaseV1::AwaitingAck {
-            successor,
+            successor: Arc::new(successor),
             generation_lease: None,
         };
         Ok(())

@@ -692,7 +692,7 @@ fn fixture() -> (PersistenceTrialDir, Store, Arc<RwLock<()>>, DurableRSpaceAutho
     (scratch, hot, gate, owner)
 }
 
-fn populate(hot: &Store) {
+pub(super) fn populate(hot: &Store) {
     let channels = vec!["channel".to_owned(), "channel".to_owned()];
     hot.put_datum(&channels[0], Datum::create(&channels[0], "datum".to_owned(), false));
     let continuation = WaitingContinuation::create(

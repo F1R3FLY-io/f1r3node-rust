@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use proptest::prelude::*;
 use proptest::test_runner::TestRunner;
@@ -678,7 +679,7 @@ fn measure_successor<P: SemanticProfile>(
 struct TrustedChain {
     directory: PersistenceTrialDir,
     lease: DurableWriterLeaseV1,
-    core: DurableAuthorityCoreV1<TestSemanticProfile>,
+    core: Arc<DurableAuthorityCoreV1<TestSemanticProfile>>,
     counts: [u8; 4],
 }
 
@@ -760,9 +761,9 @@ impl TrustedChain {
         let (published, effects) = observed_effects(|| {
             publish_trusted_incremental_v1(&mut self.lease, &self.core, &prepared, policy, |_| {})
         });
-        self.core = published.map_err(|error| {
+        self.core = Arc::new(published.map_err(|error| {
             TestCaseError::fail(format!("the trusted publication failed: {error:?}"))
-        })?;
+        })?);
         self.counts[usize::from(identity)] = after;
         Ok(effects)
     }
