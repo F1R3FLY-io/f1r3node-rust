@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReaderBase;
@@ -56,10 +56,49 @@ impl HistoryReaderBase<RawChannel, String, String, String> for EmptyHistory {
     fn get_joins_canonical(&self, _channel: &RawChannel) -> Vec<Vec<RawChannel>> { Vec::new() }
 }
 
+#[derive(Default)]
+pub struct StubHistory {
+    continuations: HashMap<Vec<RawChannel>, Vec<StringContinuation>>,
+    joins: HashMap<RawChannel, Vec<Vec<RawChannel>>>,
+}
+
+impl StubHistory {
+    pub fn put_continuations(
+        &mut self,
+        channels: Vec<RawChannel>,
+        continuations: Vec<StringContinuation>,
+    ) {
+        self.continuations.insert(channels, continuations);
+    }
+
+    pub fn put_join(&mut self, channel: RawChannel, join: Vec<RawChannel>) {
+        self.joins.entry(channel).or_default().push(join);
+    }
+}
+
+impl HistoryReaderBase<RawChannel, String, String, String> for StubHistory {
+    fn get_data_canonical(&self, _channel: &RawChannel) -> Vec<Datum<String>> { Vec::new() }
+
+    fn get_continuations_canonical(&self, channels: &[RawChannel]) -> Vec<StringContinuation> {
+        self.continuations
+            .get(channels)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn get_joins_canonical(&self, channel: &RawChannel) -> Vec<Vec<RawChannel>> {
+        self.joins.get(channel).cloned().unwrap_or_default()
+    }
+}
+
 pub fn raw_hot_store() -> RawStore { raw_hot_store_from(RawState::default()) }
 
 pub fn raw_hot_store_from(state: RawState) -> RawStore {
     HotStoreInstances::create_from_hs_and_hr(state, Box::new(EmptyHistory))
+}
+
+pub fn raw_hot_store_with_history(history: StubHistory) -> RawStore {
+    HotStoreInstances::create_from_hs_and_hr(RawState::default(), Box::new(history))
 }
 
 #[derive(Clone, Copy, Debug)]

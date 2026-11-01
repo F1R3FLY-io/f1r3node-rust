@@ -5,7 +5,9 @@ use proptest::test_runner::{Config, RngSeed, TestRunner};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::ordered_receive::{PreparedContinuationRecord, RestingReceiveVisit};
-use rspace_plus_plus::rspace::receive_accelerator::{ReceiveAnswer, ReceiveKind as ProductionKind};
+use rspace_plus_plus::rspace::receive_accelerator::{
+    ReceiveAcceleratorClass, ReceiveAnswer, ReceiveKind as ProductionKind,
+};
 use rspace_plus_plus::rspace::rho_path::ReceiveChannelQuery;
 
 #[path = "support/receive_occurrence_reference.rs"]
@@ -17,13 +19,13 @@ mod production;
 
 use production::{
     Build, ProductionAccelerator, RawChannel, RawId, RawOccurrences, RawState, RawStore, RawTarget,
-    StringContinuation, ordered_targets, raw_hot_store, raw_hot_store_from, reference_kind,
-    reference_target,
+    StringContinuation, StubHistory, ordered_targets, raw_hot_store, raw_hot_store_from,
+    raw_hot_store_with_history, reference_kind, reference_target,
 };
 use reference::{
-    AcceleratorClass, AcceleratorUnderTest, Answer, ChannelImage, GroupKey, Lineage, Observation,
-    Occurrence, ReceiveKind, ReceiveTarget, ReferenceWorld, capacity, derive, group_key, observe,
-    occurrences_of,
+    AcceleratorClass, AcceleratorUnderTest, Answer, ChannelImage, GroupKey, Lineage, MaintenanceOp,
+    Observation, Occurrence, ReceiveKind, ReceiveTarget, ReferenceWorld, capacity, derive,
+    group_key, observe, occurrences_of,
 };
 
 const IMAGES: [&[u8]; 5] = [&[], &[0x00], &[0x01], &[0x01, 0x00], &[0x01, 0x00, 0xFF]];
@@ -615,6 +617,56 @@ fn assert_construction_order_invariance(plans: &[GroupPlan]) -> Result<(), TestC
     Ok(())
 }
 
+fn fixed_groups() -> [Vec<RawChannel>; 3] {
+    [
+        raw_channels(&[&[0x01]]),
+        raw_channels(&[&[0x01], &[0x00], &[0x01]]),
+        raw_channels(&[&[], &[0x01, 0x00]]),
+    ]
+}
+
+fn answer_structure(
+    answer: ReceiveAnswer<RawChannel, String, String>,
+) -> Result<Vec<(GroupKey, Vec<ReceiveTarget>)>, ReceiveAcceleratorClass> {
+    match answer {
+        ReceiveAnswer::Exact(occurrences) => Ok(ordered_targets(&occurrences)),
+        ReceiveAnswer::Fallback(class) => Err(class),
+    }
+}
+
+fn answer_under_join_premise(world: &ReferenceWorld, image: &[u8]) -> Answer {
+    let unloaded = world
+        .observation
+        .unloaded
+        .iter()
+        .any(|group| group.iter().any(|channel| channel.as_slice() == image));
+    match unloaded {
+        true => Answer::Fallback(AcceleratorClass::Incomplete),
+        false => Answer::Exact(derive(&world.observation, image)),
+    }
+}
+
+fn assert_maintained_equals_rebuild(
+    store: &RawStore,
+    maintained: &ProductionAccelerator<'_>,
+    world: &ReferenceWorld,
+) {
+    let detached = rebuilt(store, Build::Detached, world);
+    for image in probes() {
+        let channel = RawChannel(image.clone());
+        assert_eq!(
+            answer_structure(maintained.occurrences(&channel)),
+            answer_structure(detached.occurrences(&channel)),
+            "the maintained accelerator answers the groups and targets of a fresh build"
+        );
+        assert_eq!(
+            maintained.answer(world, &image),
+            answer_under_join_premise(world, &image),
+            "the maintained accelerator answers the derivation"
+        );
+    }
+}
+
 #[test]
 fn production_answers_equal_the_derivation_over_generated_stores() {
     check_property(STORE_CASES, &store_plan(), |plans| {
@@ -1101,5 +1153,341 @@ fn production_alias_puts_keep_the_revision_answers_and_first_source() {
             answers,
             "a rebuild after an alias put answers unchanged"
         );
+    }
+}
+
+#[test]
+fn production_insertions_maintain_the_published_accelerator() {
+    let strategy = proptest::collection::vec((0..3usize, record_plan()), 1..=8);
+    check_property(STORE_CASES, &strategy, |insertions| {
+        let store = raw_hot_store();
+        let groups = fixed_groups();
+        let lineage = Lineage::new(Vec::new());
+        let mut maintained = ProductionAccelerator::new(&*store, Build::Published);
+        maintained.rebuild(&lineage.world(hydrated(&store, &groups)));
+        let mut inserted_count = 0usize;
+        for (group_index, plan) in &insertions {
+            let channels = groups
+                .get(*group_index)
+                .expect("a generated group index addresses the fixed groups");
+            let continuation = planned_continuation(channels, plan);
+            let key = group_key(channels);
+            let before = lineage.world(hydrated(&store, &groups));
+            let inserted = store
+                .put_continuation(channels, continuation.clone())
+                .expect("an in-memory put reports whether it inserted");
+            let after = lineage.world(hydrated(&store, &groups));
+            match inserted {
+                true => {
+                    prop_assert_ne!(
+                        before.observation.version(&key),
+                        after.observation.version(&key),
+                        "an insertion replaces the group version"
+                    );
+                    for answer in answers_at(&maintained, &after) {
+                        prop_assert_eq!(
+                            answer,
+                            Answer::Fallback(AcceleratorClass::Stale),
+                            "a handle from before an insertion never answers"
+                        );
+                    }
+                    inserted_count = checked_increment(inserted_count);
+                }
+                false => prop_assert_eq!(&after, &before, "a duplicate put keeps the world"),
+            }
+            maintained
+                .apply(
+                    &MaintenanceOp::PutResting(expected_target(
+                        ReceiveKind::Resting,
+                        channels,
+                        &continuation,
+                    )),
+                    &before,
+                    &after,
+                )
+                .expect("a published accelerator maintains an insertion");
+            assert_maintained_equals_rebuild(&store, &maintained, &after);
+        }
+        prop_assert!(inserted_count > 0, "every generated trace inserts at least once");
+        Ok(())
+    });
+}
+
+#[test]
+fn production_nonfinal_removals_maintain_the_published_accelerator() {
+    for index in 0..3usize {
+        let store = raw_hot_store();
+        let channels = raw_channels(&[&[0x01], &[0x00], &[0x01]]);
+        let universe = vec![channels.clone()];
+        let key = group_key(&channels);
+        for body in ["removal-first", "removal-second", "removal-third"] {
+            let record = raw_continuation(&channels, body, false, BTreeSet::new());
+            assert_eq!(store.put_continuation(&channels, record), Some(true));
+        }
+        let lineage = Lineage::new(Vec::new());
+        let before = lineage.world(hydrated(&store, &universe));
+        let mut maintained = ProductionAccelerator::new(&*store, Build::Published);
+        maintained.rebuild(&before);
+        let named = before
+            .observation
+            .ordered_targets(&key)
+            .get(index)
+            .cloned()
+            .expect("the group orders three receives");
+        let position = i32::try_from(index).expect("a removal index fits i32");
+        assert_eq!(store.remove_continuation(&channels, position), Some(()));
+        let after = lineage.world(hydrated(&store, &universe));
+        assert_ne!(
+            before.observation.version(&key),
+            after.observation.version(&key),
+            "a removal replaces the group version"
+        );
+        for answer in answers_at(&maintained, &after) {
+            assert_eq!(
+                answer,
+                Answer::Fallback(AcceleratorClass::Stale),
+                "a handle from before a removal never answers"
+            );
+        }
+        assert!(!after.observation.contains_target(&named));
+        assert_eq!(after.observation.targets(&key).len(), 2);
+        maintained
+            .apply(&MaintenanceOp::RemoveResting(named), &before, &after)
+            .expect("a published accelerator maintains a removal");
+        assert_maintained_equals_rebuild(&store, &maintained, &after);
+    }
+}
+
+#[test]
+fn production_final_removal_clears_the_maintained_group() {
+    let store = raw_hot_store();
+    let emptied = raw_channels(&[&[0x01]]);
+    let neighbour = raw_channels(&[&[0x01], &[0x00]]);
+    let universe = vec![emptied.clone(), neighbour.clone()];
+    let emptied_key = group_key(&emptied);
+    let neighbour_key = group_key(&neighbour);
+    let only = raw_continuation(&emptied, "final-only", false, BTreeSet::new());
+    let neighbour_record = raw_continuation(&neighbour, "final-neighbour", false, BTreeSet::new());
+    assert_eq!(store.put_continuation(&emptied, only), Some(true));
+    assert_eq!(store.put_continuation(&neighbour, neighbour_record), Some(true));
+    let lineage = Lineage::new(Vec::new());
+    let before = lineage.world(hydrated(&store, &universe));
+    let mut maintained = ProductionAccelerator::new(&*store, Build::Published);
+    maintained.rebuild(&before);
+    let named = before
+        .observation
+        .ordered_targets(&emptied_key)
+        .first()
+        .cloned()
+        .expect("the emptied group holds one receive");
+    assert_eq!(store.remove_continuation(&emptied, 0), Some(()));
+    let after = lineage.world(hydrated(&store, &universe));
+    maintained
+        .apply(&MaintenanceOp::RemoveResting(named), &before, &after)
+        .expect("a published accelerator maintains a final removal");
+    assert_maintained_equals_rebuild(&store, &maintained, &after);
+    assert!(!after.observation.support().contains(&emptied_key));
+    for image in probes() {
+        assert!(
+            ordered_targets(&exact_production(&maintained, &image))
+                .iter()
+                .all(|(group, _)| *group != emptied_key),
+            "a cleared group leaves no occurrence group, not even an empty one"
+        );
+    }
+    assert_eq!(
+        after.observation.targets(&neighbour_key),
+        before.observation.targets(&neighbour_key)
+    );
+    assert_eq!(
+        after.observation.version(&neighbour_key),
+        before.observation.version(&neighbour_key),
+        "a group sharing a channel keeps its version"
+    );
+    let shared = ordered_targets(&exact_production(&maintained, &[0x01]));
+    assert_eq!(shared.len(), 1, "only the neighbour answers at the shared channel");
+    assert!(shared.iter().all(|(group, _)| *group == neighbour_key));
+}
+
+#[test]
+fn production_installs_maintain_and_set_state_retires_the_published_accelerator() {
+    let store = raw_hot_store();
+    let channels = raw_channels(&[&[0x01], &[0x00]]);
+    let universe = vec![channels.clone()];
+    let key = group_key(&channels);
+    let twin = raw_continuation(&channels, "install-twin", true, BTreeSet::new());
+    assert_eq!(store.put_continuation(&channels, twin.clone()), Some(true));
+    let mut lineage = Lineage::new(Vec::new());
+    let resting_only = lineage.world(hydrated(&store, &universe));
+    let mut maintained = ProductionAccelerator::new(&*store, Build::Published);
+    maintained.rebuild(&resting_only);
+    assert_eq!(store.install_continuation(&channels, twin.clone()), Some(()));
+    lineage.reinstall();
+    let installed = lineage.world(hydrated(&store, &universe));
+    assert_ne!(
+        resting_only.observation.version(&key),
+        installed.observation.version(&key),
+        "an install replaces the group version"
+    );
+    for answer in answers_at(&maintained, &installed) {
+        assert_eq!(
+            answer,
+            Answer::Fallback(AcceleratorClass::Stale),
+            "a handle from before an install never answers"
+        );
+    }
+    assert_eq!(
+        installed.observation.targets(&key),
+        BTreeSet::from([
+            expected_target(ReceiveKind::Resting, &channels, &twin),
+            expected_target(ReceiveKind::Installed, &channels, &twin),
+        ]),
+        "a byte-identical installed twin keeps a distinct target"
+    );
+    maintained
+        .apply(
+            &MaintenanceOp::Install(expected_target(ReceiveKind::Installed, &channels, &twin)),
+            &resting_only,
+            &installed,
+        )
+        .expect("a published accelerator maintains an install");
+    assert_maintained_equals_rebuild(&store, &maintained, &installed);
+    for image in [&[0x01][..], &[0x00][..]] {
+        assert_eq!(exact(maintained.answer(&installed, image)).len(), 2);
+    }
+    let replacement = raw_continuation(&channels, "install-replacement", true, BTreeSet::new());
+    assert_eq!(store.install_continuation(&channels, replacement.clone()), Some(()));
+    lineage.reinstall();
+    let reinstalled = lineage.world(hydrated(&store, &universe));
+    assert_ne!(installed.observation.version(&key), reinstalled.observation.version(&key));
+    maintained
+        .apply(
+            &MaintenanceOp::Install(expected_target(
+                ReceiveKind::Installed,
+                &channels,
+                &replacement,
+            )),
+            &installed,
+            &reinstalled,
+        )
+        .expect("a published accelerator maintains a reinstall");
+    assert_maintained_equals_rebuild(&store, &maintained, &reinstalled);
+    assert_eq!(
+        reinstalled.observation.targets(&key),
+        BTreeSet::from([
+            expected_target(ReceiveKind::Resting, &channels, &twin),
+            expected_target(ReceiveKind::Installed, &channels, &replacement),
+        ])
+    );
+    let mut uninstalled_state = store.snapshot();
+    uninstalled_state.installed_continuations.clear();
+    store.set_state(uninstalled_state);
+    lineage.regenerate();
+    let uninstalled = lineage.world(hydrated(&store, &universe));
+    for answer in answers_at(&maintained, &uninstalled) {
+        assert_eq!(
+            answer,
+            Answer::Fallback(AcceleratorClass::Foreign),
+            "set_state retires the maintained handle"
+        );
+    }
+    maintained.rebuild(&uninstalled);
+    assert_maintained_equals_rebuild(&store, &maintained, &uninstalled);
+    assert_eq!(
+        uninstalled.observation.targets(&key),
+        BTreeSet::from([expected_target(ReceiveKind::Resting, &channels, &twin)])
+    );
+}
+
+#[test]
+fn production_history_loads_extend_the_maintained_scope() {
+    let resident = raw_channels(&[&[0x01]]);
+    let first_history = raw_channels(&[&[0x00]]);
+    let second_history = raw_channels(&[&[0x01, 0x00], &[0x01]]);
+    let historical_first = raw_continuation(&first_history, "load-first", false, BTreeSet::new());
+    let mut history = StubHistory::default();
+    history.put_continuations(first_history.clone(), vec![
+        historical_first.clone(),
+        raw_continuation(&first_history, "load-second", true, BTreeSet::from([0])),
+    ]);
+    history.put_continuations(second_history.clone(), vec![raw_continuation(
+        &second_history,
+        "load-third",
+        false,
+        BTreeSet::new(),
+    )]);
+    for group in [&first_history, &second_history] {
+        for channel in group {
+            history.put_join(channel.clone(), group.clone());
+        }
+    }
+    let store = raw_hot_store_with_history(history);
+    let resident_record = raw_continuation(&resident, "load-resident", false, BTreeSet::new());
+    assert_eq!(store.put_continuation(&resident, resident_record.clone()), Some(true));
+    for channel in &resident {
+        assert_eq!(store.put_join(channel, &resident), Some(()));
+    }
+    let universe = vec![resident.clone(), first_history.clone(), second_history.clone()];
+    let resident_key = group_key(&resident);
+    let lineage = Lineage::new(Vec::new());
+    let partial = lineage.world(observe(&*store, &universe, false));
+    assert_eq!(
+        partial.observation.unloaded,
+        BTreeSet::from([group_key(&first_history), group_key(&second_history)])
+    );
+    let mut maintained = ProductionAccelerator::new(&*store, Build::Published);
+    maintained.rebuild(&partial);
+    assert_maintained_equals_rebuild(&store, &maintained, &partial);
+    let mut before = partial;
+    for channels in [&first_history, &second_history] {
+        let probe = channels
+            .first()
+            .expect("a history group has a first channel")
+            .0
+            .clone();
+        assert_eq!(
+            maintained.answer(&before, &probe),
+            Answer::Fallback(AcceleratorClass::Incomplete),
+            "a channel joined to an unloaded history group falls back"
+        );
+        let loaded = store.get_continuations(channels);
+        let after = lineage.world(observe(&*store, &universe, false));
+        assert_eq!(
+            before.observation.version(&resident_key),
+            after.observation.version(&resident_key),
+            "a history load keeps every resident version"
+        );
+        let operation = MaintenanceOp::LoadHistory {
+            group: group_key(channels),
+            targets: loaded
+                .iter()
+                .map(|continuation| expected_target(ReceiveKind::Resting, channels, continuation))
+                .collect(),
+        };
+        maintained
+            .apply(&operation, &before, &after)
+            .expect("a published accelerator maintains a history load");
+        assert_maintained_equals_rebuild(&store, &maintained, &after);
+        let extended = derive(&after.observation, &probe);
+        assert!(!extended.is_empty(), "the loaded group holds receives at its first channel");
+        assert_eq!(
+            maintained.answer(&after, &probe),
+            Answer::Exact(extended),
+            "a history load extends the maintained scope"
+        );
+        before = after;
+    }
+    assert!(before.observation.is_complete());
+    let neutral = answers_at(&maintained, &before);
+    let revision = store.receive_revision();
+    let duplicates: [(&Vec<RawChannel>, StringContinuation); 3] = [
+        (&resident, resident_record.clone()),
+        (&resident, alias_of(&resident_record)),
+        (&first_history, historical_first),
+    ];
+    for (channels, continuation) in duplicates {
+        assert_eq!(store.put_continuation(channels, continuation), Some(false));
+        assert!(store.receive_revision() == revision, "a duplicate put keeps the receive revision");
+        assert_eq!(answers_at(&maintained, &before), neutral, "a duplicate put keeps every answer");
     }
 }
