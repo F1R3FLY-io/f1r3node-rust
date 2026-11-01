@@ -163,7 +163,7 @@ async fn each_instance_of_a_hash_sealed_template_has_its_own_wallet() {
         let errors = run_as(&runtime, &ALICE, template).await;
         assert!(errors.is_empty(), "{errors:?}");
         let mut out = sent(&runtime, "out").await;
-        out.sort_by_key(|p| RhoNumber::unapply(p));
+        out.sort_by_key(RhoNumber::unapply);
         assert_eq!(out, vec![RhoNumber::create_par(1), RhoNumber::create_par(2)]);
         let errors = run_as(&runtime, &ALICE, r#"# { @"out"!(1) } :: ()"#).await;
         assert!(errors.is_empty(), "{errors:?}");

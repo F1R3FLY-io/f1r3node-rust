@@ -13,10 +13,11 @@ use super::owner::WalletOwner;
 use super::reserve::reservation;
 use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployerId, RhoNumber, RhoString, RhoSysAuthToken, RhoTuple2,
+    RhoBoolean, RhoByteArray, RhoDeployerId, RhoNumber, RhoString, RhoTuple2,
 };
 
 pub const REV_BOND_URN: &str = "rho:rev:bond";
+pub const REV_BOND_ADMIN_URN: &str = "rho:rev:bondAdmin";
 
 pub const BOND_DOMAIN: &[u8] = b"f1r3fly/rev-stack/bond/v1";
 
@@ -94,21 +95,6 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
                 .map(|_| Par::default())
                 .map_err(funds_error)
         }),
-        "release" => tuple(arg, 3).and_then(|t| {
-            system(&t[0])?;
-            let pk = bytes(&t[1])?;
-            let amount = positive(&t[2])?;
-            release(cells()?, &pk, amount)
-                .map(|_| Par::default())
-                .map_err(funds_error)
-        }),
-        "slash" => tuple(arg, 2).and_then(|t| {
-            system(&t[0])?;
-            let pk = bytes(&t[1])?;
-            slash(cells()?, &pk)
-                .map(|held| RhoNumber::create_par(held as i64))
-                .map_err(|e| e.to_string())
-        }),
         "balance" => bytes(arg).and_then(|pk| {
             bond_balance(cells()?, &pk)
                 .map(|b| RhoNumber::create_par(b as i64))
@@ -132,12 +118,6 @@ fn tuple(arg: &Par, n: usize) -> Result<Vec<Par>, String> {
     }
 }
 
-fn system(par: &Par) -> Result<(), String> {
-    RhoSysAuthToken::unapply(par)
-        .map(|_| ())
-        .ok_or_else(|| "this operation needs the system auth token".to_string())
-}
-
 fn bytes(par: &Par) -> Result<Vec<u8>, String> {
     RhoByteArray::unapply(par).ok_or_else(|| "expected a public key as bytes".to_string())
 }
@@ -154,4 +134,35 @@ fn funds_error(e: RevStackError) -> String {
         RevStackError::InsufficientFunds { .. } => "Insufficient funds".to_string(),
         other => other.to_string(),
     }
+}
+
+pub fn admin_handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Par> {
+    let cells = || -> Result<Arc<dyn CellStore>, String> {
+        let store = store
+            .clone()
+            .ok_or_else(|| "native REV layer unavailable".to_string())?;
+        Ok(Arc::new(HotStoreCells(store)))
+    };
+    let result = match command {
+        "release" => tuple(arg, 2).and_then(|t| {
+            let pk = bytes(&t[0])?;
+            let amount = positive(&t[1])?;
+            release(cells()?, &pk, amount)
+                .map(|_| Par::default())
+                .map_err(funds_error)
+        }),
+        "slash" => bytes(arg).and_then(|pk| {
+            slash(cells()?, &pk)
+                .map(|held| RhoNumber::create_par(held as i64))
+                .map_err(|e| e.to_string())
+        }),
+        _ => return None,
+    };
+    Some(match result {
+        Ok(value) => RhoTuple2::create_par((RhoBoolean::create_par(true), value)),
+        Err(message) => RhoTuple2::create_par((
+            RhoBoolean::create_par(false),
+            RhoString::create_par(message),
+        )),
+    })
 }

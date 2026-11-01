@@ -2,16 +2,15 @@ use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use models::rhoapi::GSysAuthToken;
 use models::rhoapi::Par;
 use models::rust::normalizer_env::with_deployer_id;
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::rev_stack::bond::{bond_balance, bond_owner, handle};
+use rholang::rust::interpreter::accounting::rev_stack::bond::{bond_balance, bond_owner};
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
 use rholang::rust::interpreter::accounting::rev_stack::{HotStoreCells, RevStacks, WalletOwner};
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::{
-    RhoBoolean, RhoByteArray, RhoNumber, RhoString, RhoSysAuthToken, RhoTuple2,
+    RhoBoolean, RhoString, RhoTuple2,
 };
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -69,8 +68,6 @@ fn cells(runtime: &RhoRuntimeImpl) -> std::sync::Arc<HotStoreCells> {
     std::sync::Arc::new(HotStoreCells(runtime.reducer.space.hot_store().unwrap()))
 }
 
-fn system_token() -> Par { RhoSysAuthToken::create_par(GSysAuthToken::default()) }
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_deployer_bonds_its_own_rev_natively() {
     let (runtime, _) = runtimes().await;
@@ -89,68 +86,54 @@ async fn a_deployer_bonds_its_own_rev_natively() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn only_the_system_can_release_or_slash_a_bond() {
+async fn only_a_holder_of_the_bond_admin_name_can_release_or_slash_a_bond() {
     let (runtime, _) = runtimes().await;
     let (alice, mallory) = (key(), key());
     stacks(&runtime)
         .deposit(&bond_owner(&alice.pk.bytes), 500)
         .unwrap();
-    let store = runtime.reducer.space.hot_store();
-    let pk = RhoByteArray::create_par(alice.pk.bytes.to_vec());
-    let tuple = |ps: Vec<Par>| {
-        Par::default().with_exprs(vec![models::rhoapi::Expr {
-            expr_instance: Some(models::rhoapi::expr::ExprInstance::ETupleBody(
-                models::rhoapi::ETuple {
-                    ps,
-                    locally_free: Vec::new(),
-                    connective_used: false,
-                },
-            )),
-        }])
-    };
+    let pk = hex::encode(&alice.pk.bytes);
 
-    let term = format!(
-        r#"new b(`rho:rev:bond`) in {{ b!("slash", ("not a token", "{}".hexToBytes()), "out") }}"#,
-        hex::encode(&alice.pk.bytes)
+    let public = format!(
+        r#"new b(`rho:rev:bond`) in {{ b!("slash", "{pk}".hexToBytes(), "out") }}"#
     );
-    assert!(eval_as(&runtime, &mallory, &term).await.is_empty());
-    let (ok, _) = either(&take(&runtime, "out").await[0]);
-    assert!(!ok);
+    assert!(!eval_as(&runtime, &mallory, &public).await.is_empty());
+    let direct = format!(
+        r#"new a(`rho:rev:bondAdmin`) in {{ a!("slash", "{pk}".hexToBytes(), "out") }}"#
+    );
+    let errors = eval_as(&runtime, &mallory, &direct).await;
+    assert!(errors.iter().any(|e| e.contains("reserved for genesis")), "{errors:?}");
+    let looked_up = format!(
+        r#"new lookup(`rho:internal:registry_lookup`), ret in {{
+             lookup!("rho:rev:bondAdmin", *ret) |
+             for (a <- ret) {{ a!("slash", "{pk}".hexToBytes(), "out") }}
+           }}"#
+    );
+    let errors = eval_as(&runtime, &mallory, &looked_up).await;
+    assert!(errors.iter().any(|e| e.contains("reserved for genesis")), "{errors:?}");
+    assert!(take(&runtime, "out").await.is_empty());
     assert_eq!(bond_balance(cells(&runtime), &alice.pk.bytes).unwrap(), 500);
 
-    let forged = handle(
-        store.clone(),
-        "release",
-        &tuple(vec![
-            RhoString::create_par("x".into()),
-            pk.clone(),
-            RhoNumber::create_par(5),
-        ]),
-    )
-    .unwrap();
-    assert!(!either(&forged).0);
-
-    let released = handle(
-        store.clone(),
-        "release",
-        &tuple(vec![system_token(), pk.clone(), RhoNumber::create_par(200)]),
-    )
-    .unwrap();
-    assert!(either(&released).0);
+    {
+        let _genesis = runtime.enter_genesis_phase();
+        let held = r#"new a(`rho:rev:bondAdmin`) in { @"pos-held"!(*a) }"#;
+        assert!(eval_as(&runtime, &alice, held).await.is_empty());
+    }
+    let release = format!(
+        r#"for (a <- @"pos-held") {{
+             new r in {{
+               a!("release", ("{pk}".hexToBytes(), 200), *r) |
+               for (@res <- r) {{ @"released"!(res) | a!("slash", "{pk}".hexToBytes(), "slashed") }}
+             }}
+           }}"#
+    );
+    assert!(eval_as(&runtime, &mallory, &release).await.is_empty());
+    assert!(either(&take(&runtime, "released").await[0]).0);
+    assert!(either(&take(&runtime, "slashed").await[0]).0);
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 200);
-
-    let slashed = handle(
-        store.clone(),
-        "slash",
-        &tuple(vec![system_token(), pk.clone()]),
-    )
-    .unwrap();
-    assert_eq!(either(&slashed), (true, RhoNumber::create_par(300)));
     assert_eq!(bond_balance(cells(&runtime), &alice.pk.bytes).unwrap(), 0);
     assert_eq!(
         stacks(&runtime).balance(&compute_wallet_owner()).unwrap(),
         300
     );
-    let again = handle(store, "slash", &tuple(vec![system_token(), pk])).unwrap();
-    assert_eq!(either(&again), (true, RhoNumber::create_par(0)));
 }
