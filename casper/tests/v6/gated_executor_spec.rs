@@ -957,3 +957,116 @@ async fn a_grant_settles_draws_inside_its_window_in_play_and_replay() {
         late.settled_root
     );
 }
+
+#[tokio::test]
+async fn an_expired_grant_returns_its_funders_shares_in_play_and_replay() {
+    use rholang::rust::interpreter::accounting::rev_stack::journal::Source;
+
+    let (sponsor, carol, newcomer, anyone, proposer) =
+        (party(), party(), party(), party(), party());
+    let (rm, genesis) = shard(&[
+        (&sponsor, 100_000),
+        (&carol, 100_000),
+        (&newcomer, 100_000),
+        (&anyone, 100_000),
+    ])
+    .await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let at = |block_number: i64| BlockData {
+        time_stamp: 1,
+        block_number,
+        sender: proposer.pk.clone(),
+        seq_num: 1,
+    };
+    let step = |pre: StateHash, envelope: Signed<DeployData>, block: i64| {
+        let (executor, rm) = (&executor, rm.clone());
+        async move {
+            let played = executor.execute(&pre, vec![envelope], at(block)).await.unwrap();
+            let again = replay(executor, &pre, &played, at(block)).await;
+            assert_eq!(again.settled_root, played.settled_root);
+            let _ = rm;
+            played
+        }
+    };
+    let first = step(
+        genesis.clone(),
+        envelope(
+            r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), slot, funded in {
+                 w!("fundGrant", (*d, (*slot, 2, 5), 3000), *funded) |
+                 for (_ <- funded) { @"grant-slot"!!(*slot) }
+               }"#,
+            1,
+            &sponsor,
+            50_000,
+            1,
+        ),
+        1,
+    )
+    .await;
+    let second = step(
+        first.settled_root.clone(),
+        envelope(
+            r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), out in {
+                 for (@slot <<- @"grant-slot") { w!("fundGrant", (*d, (slot, 2, 5), 1000), *out) }
+               }"#,
+            2,
+            &carol,
+            50_000,
+            1,
+        ),
+        2,
+    )
+    .await;
+    assert_eq!(second.settlement.transfers.len(), 1);
+    let draw = format!(
+        r#"new w(`rho:rev:wallet`), out in {{
+             for (@slot <<- @"grant-slot") {{ w!("drawGrant", ((slot, 2, 5), "{}", 1000), *out) }}
+           }}"#,
+        newcomer.address
+    );
+    let third = step(
+        second.settled_root.clone(),
+        envelope(&draw, 3, &newcomer, 50_000, 1),
+        3,
+    )
+    .await;
+    assert_eq!(third.settlement.transfers.len(), 1);
+    let back = format!(
+        r#"new w(`rho:rev:wallet`), a, b in {{
+             for (@slot <<- @"grant-slot") {{
+               w!("returnGrant", ((slot, 2, 5), "{}"), *a) |
+               w!("returnGrant", ((slot, 2, 5), "{}"), *b)
+             }}
+           }}"#,
+        sponsor.address, carol.address
+    );
+    let early = step(
+        third.settled_root.clone(),
+        envelope(&back, 4, &anyone, 50_000, 1),
+        5,
+    )
+    .await;
+    assert!(early.settlement.transfers.is_empty());
+    let late = step(
+        third.settled_root.clone(),
+        envelope(&back, 5, &anyone, 50_000, 1),
+        9,
+    )
+    .await;
+    let mut returned: Vec<(bool, u64)> = late
+        .settlement
+        .transfers
+        .iter()
+        .map(|t| (matches!(t.from, Source::Share { .. }), t.amount))
+        .collect();
+    returned.sort();
+    assert_eq!(returned, vec![(true, 750), (true, 2_250)]);
+    assert_eq!(
+        balance(&rm, &late.settled_root, &sponsor).await,
+        balance(&rm, &third.settled_root, &sponsor).await + 2_250
+    );
+    assert_eq!(
+        balance(&rm, &late.settled_root, &carol).await,
+        balance(&rm, &third.settled_root, &carol).await + 750
+    );
+}

@@ -79,6 +79,38 @@ pub fn handle(
             }
             move_rev(stacks, grant.owner(), owner_of(&payee)?, amount_of(&amount)?)
         }),
+        "returnGrant" => with_stacks(store, |stacks| {
+            let usage = "returnGrant expects ((slot, opens, closes), funder)";
+            let [grant, funder] = tuple_of(arg, usage)?.try_into().map_err(|_| usage)?;
+            let grant = grant_of(&grant)?;
+            if block_number <= grant.closes {
+                return Err(format!(
+                    "the grant closes at block {}, so its shares return only after it",
+                    grant.closes
+                ));
+            }
+            let (owner, funder) = (grant.owner(), owner_of(&funder)?);
+            let share = funders::share(stacks.cells(), &owner, &funder).map_err(|e| e.to_string())?;
+            if share == 0 {
+                return Err("the funder holds no share of this grant".to_string());
+            }
+            if journal_open(stacks.cells()) {
+                let balance = stacks.balance(&owner).map_err(|e| e.to_string())?;
+                return journaled_transfer(
+                    stacks.cells(),
+                    balance,
+                    0,
+                    JournalEntry::refusal(owner, funder, share),
+                )
+                .map(|_| Par::default())
+                .map_err(transfer_error);
+            }
+            stacks
+                .transfer_keeping(&owner, &funder, share, 0)
+                .map_err(transfer_error)?;
+            funders::refuse(stacks.cells(), &owner, &funder, share).map_err(|e| e.to_string())?;
+            Ok(Par::default())
+        }),
         "grantBalance" => with_stacks(store, |stacks| {
             let balance = stacks
                 .balance(&grant_of(arg)?.owner())
@@ -351,6 +383,12 @@ fn move_rev(
     }
     stacks
         .transfer_keeping(&from, &to, amount, held)
-        .map(|_| Par::default())
-        .map_err(transfer_error)
+        .map_err(transfer_error)?;
+    if to.has_funders() {
+        funders::credit(stacks.cells(), &to, &from, amount).map_err(|e| e.to_string())?;
+    }
+    if from.has_funders() {
+        funders::draw(stacks.cells(), &from, amount).map_err(|e| e.to_string())?;
+    }
+    Ok(Par::default())
 }
