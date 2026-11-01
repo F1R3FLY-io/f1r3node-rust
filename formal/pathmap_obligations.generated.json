@@ -2,7 +2,7 @@
   "classified_obligations": {
     "concrete_witness": 106,
     "executable_only": 9,
-    "executable_refinement": 199,
+    "executable_refinement": 204,
     "proof_only": 543
   },
   "families": [
@@ -5709,7 +5709,7 @@
       "checker": "scripts/check-receive-accelerator-obligations.py",
       "family": "receive_accelerator",
       "manifest": "formal/receive_accelerator_obligations.generated.json",
-      "manifest_sha256": "0bd7979041163b0e8413f56be615786ed9b1fb341a60cd4d2d495981139371f3",
+      "manifest_sha256": "12e2c3a151c0af7ab4a28fd7ee5a629cd4dba2beff85f9094659f148b673e5f7",
       "obligations": {
         "accelerator_isolation": {
           "files": [
@@ -6879,6 +6879,61 @@
               "source": "rspace++/src/rspace/receive_accelerator.rs",
               "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
               "test_target": "production_clear_and_set_state_retire_held_handles_and_rebuilds_equal_the_derivation"
+            },
+            {
+              "description": "join groups outside the handle's loaded scope are skipped, so an unloaded join group leaves the channel answering (production analogue of RAC-RS-06)",
+              "formal": [
+                "RAC-TLA-07"
+              ],
+              "id": "RAC-RS-31",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/receive_accelerator.rs",
+              "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+              "test_target": "production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated"
+            },
+            {
+              "description": "an installed-only group outside the handle's loaded scope is skipped, so the channel answers without it (production analogue of RAC-CSMUT-02)",
+              "formal": [
+                "RAC-TLA-07"
+              ],
+              "id": "RAC-RS-32",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/receive_accelerator.rs",
+              "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+              "test_target": "production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated"
+            },
+            {
+              "description": "a channel whose joins are not loaded is treated as having no join groups, so it answers instead of falling back as incomplete (a production control with no harness analogue)",
+              "formal": [
+                "RAC-TLA-07"
+              ],
+              "id": "RAC-RS-33",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/receive_accelerator.rs",
+              "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+              "test_target": "production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated"
+            },
+            {
+              "description": "a repeated channel keeps only its first position (production analogue of RAC-RS-07)",
+              "formal": [
+                "RAC-RC-04"
+              ],
+              "id": "RAC-RS-34",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/receive_accelerator.rs",
+              "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+              "test_target": "production_repeated_channels_yield_one_occurrence_per_target"
+            },
+            {
+              "description": "an installed target is dropped beside a resting record with the same identity and source bytes (production analogue of RAC-RS-08)",
+              "formal": [
+                "RAC-RC-11"
+              ],
+              "id": "RAC-RS-35",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/receive_accelerator.rs",
+              "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+              "test_target": "production_metadata_distinct_records_keep_distinct_ids"
             }
           ]
         },
@@ -6911,8 +6966,8 @@
           "rspace++/tests/support/receive_accelerator_adoption.rs": "2951e1a411f26b6733c18ffd14dc34cb587b17ac1e7f457d873d6a0392304798",
           "rspace++/tests/support/receive_accelerator_production.rs": "8ee93fcc4d0ca7d78c314263e685ecbe6effcd6a99e259a5e7df0ee9f6ef3998",
           "rspace++/tests/support/receive_occurrence_reference.rs": "610ae1a9888a343957f70abe1ed0414a8d1a70e9f47219f38c352a3329d3b9fc",
-          "scripts/check-receive-accelerator-obligations.py": "7e3915537ba699cf645113edad83f321116c85647df8d40195cf83ef5f288c3c",
-          "scripts/generate-receive-accelerator-mutant.py": "5d54f2c1c2623a450b46e8b1b2fb3bbd206cdd9f3d99ddd8714aa7b26fbfb130"
+          "scripts/check-receive-accelerator-obligations.py": "bab9837347ceb28a7cb8c362851d3949987a24f3b33a1081f3a78ddc816338b3",
+          "scripts/generate-receive-accelerator-mutant.py": "dbce4d502076765bb17b6cbd364d640fece4daee699389bdc1467c54ae20dcc1"
         },
         "tla": {
           "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.cfg",
@@ -8831,6 +8886,6 @@
       }
     }
   ],
-  "global_obligation_ids": 872,
+  "global_obligation_ids": 877,
   "scope": "PathMap integration formal obligations and normal-suite refinement bindings"
 }

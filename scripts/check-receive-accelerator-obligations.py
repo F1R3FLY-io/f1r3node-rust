@@ -366,6 +366,11 @@ SOURCE_MUTANT_EVIDENCE = {
     "RAC-RS-28": ('"the absent state is probed where the derivation is nonempty"',),
     "RAC-RS-29": ("assert_stale_fallback(&held, &held_answers, &after, name);",),
     "RAC-RS-30": ("assert_generation_retires_held_handles(",),
+    "RAC-RS-31": ('"{gap:?}: a current handle falls back as incomplete"',),
+    "RAC-RS-32": ('"{gap:?}: the channel-projected world is incomplete"',),
+    "RAC-RS-33": ('"{gap:?}: a current handle falls back as incomplete"',),
+    "RAC-RS-34": ("assert_eq!(accelerator.answer(&world, a), Answer::Exact(expected_a.clone()));",),
+    "RAC-RS-35": ('"persist, peeks, the continuation and the kind each keep a target"',),
 }
 PRODUCTION_WITNESSES = {
     "production_answers_equal_the_derivation_over_generated_stores": (

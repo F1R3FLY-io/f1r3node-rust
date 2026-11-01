@@ -446,6 +446,113 @@ MUTATIONS = {
         "test_file": PRODUCTION_SPEC,
         "test": "production_clear_and_set_state_retire_held_handles_and_rebuilds_equal_the_derivation",
     },
+    "RAC-RS-31": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-TLA-07",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "join groups outside the handle's loaded scope are skipped, so an unloaded join group leaves the channel "
+            "answering (production analogue of RAC-RS-06)"
+        ),
+        "before": (
+            "        scope\n"
+            "            .is_loaded_prefix(&RhoPathV1::continuation_prefix(group))\n"
+            "            .then_some(())\n"
+            "            .ok_or(())\n"
+        ),
+        "after": (
+            "        let _ = (scope, group);\n"
+            "        Ok(())\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated",
+    },
+    "RAC-RS-32": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-TLA-07",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "an installed-only group outside the handle's loaded scope is skipped, so the channel answers without it "
+            "(production analogue of RAC-CSMUT-02)"
+        ),
+        "before": "                None => Err(ReceiveAcceleratorClass::Incomplete),\n",
+        "after": "                None => Ok(()),\n",
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated",
+    },
+    "RAC-RS-33": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-TLA-07",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "a channel whose joins are not loaded is treated as having no join groups, so it answers instead of "
+            "falling back as incomplete (a production control with no harness analogue)"
+        ),
+        "before": (
+            "        Some(Ok(())) => None,\n"
+            "        Some(Err(())) | None => Some(ReceiveAcceleratorClass::Incomplete),\n"
+        ),
+        "after": (
+            "        Some(Ok(())) | None => None,\n"
+            "        Some(Err(())) => Some(ReceiveAcceleratorClass::Incomplete),\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated",
+    },
+    "RAC-RS-34": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-04",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": "a repeated channel keeps only its first position (production analogue of RAC-RS-07)",
+        "before": "            .map(|(index, _)| RhoPathReceivePosition::at_index(index)),\n",
+        "after": (
+            "            .map(|(index, _)| RhoPathReceivePosition::at_index(index))\n"
+            "            .take(1),\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_repeated_channels_yield_one_occurrence_per_target",
+    },
+    "RAC-RS-35": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-11",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "an installed target is dropped beside a resting record with the same identity and source bytes "
+            "(production analogue of RAC-RS-08)"
+        ),
+        "before": (
+            "        targets.extend(installed.map(|entry| ReceiveTarget {\n"
+            "            prefix: Arc::clone(&shared_prefix),\n"
+            "            record: ReceiveRecord::Installed(Arc::clone(entry)),\n"
+            "        }));\n"
+            "        targets.extend(resting.into_iter().map(|record| ReceiveTarget {\n"
+            "            prefix: Arc::clone(&shared_prefix),\n"
+            "            record: ReceiveRecord::Resting(record),\n"
+            "        }));\n"
+        ),
+        "after": (
+            "        let installed_target = installed.map(|entry| ReceiveTarget {\n"
+            "            prefix: Arc::clone(&shared_prefix),\n"
+            "            record: ReceiveRecord::Installed(Arc::clone(entry)),\n"
+            "        });\n"
+            "        let resting_targets: Vec<ReceiveTarget<C, P, K>> = resting\n"
+            "            .into_iter()\n"
+            "            .map(|record| ReceiveTarget {\n"
+            "                prefix: Arc::clone(&shared_prefix),\n"
+            "                record: ReceiveRecord::Resting(record),\n"
+            "            })\n"
+            "            .collect();\n"
+            "        targets.extend(installed_target.filter(|candidate| {\n"
+            "            !resting_targets.iter().any(|twin| {\n"
+            "                twin.identity_bytes() == candidate.identity_bytes() &&\n"
+            "                    twin.source_bytes() == candidate.source_bytes()\n"
+            "            })\n"
+            "        }));\n"
+            "        targets.extend(resting_targets);\n"
+        ),
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_metadata_distinct_records_keep_distinct_ids",
+    },
 }
 
 
