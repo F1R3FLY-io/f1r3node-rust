@@ -1,0 +1,92 @@
+@startuml receive-accelerator-states
+skinparam backgroundColor #F7FAFC
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam ArrowColor #334155
+skinparam rectangle {
+  BorderColor #334155
+  FontColor #0F172A
+  RoundCorner 10
+}
+skinparam database {
+  BorderColor #334155
+  FontColor #0F172A
+}
+skinparam hexagon {
+  BorderColor #334155
+  FontColor #0F172A
+}
+
+database "Persisted AcceleratorManifestV1\nsemantic_manifest: ObjectRefV1\n(BLAKE2b-256 digest, encoded length)" as persisted #DBEAFE
+rectangle "Reset · checkpoint · soft revert · clear\nfresh <latex>\gamma</latex>, <latex>\sigma</latex> and <latex>v</latex>;\nthe lineage becomes the target manifest <latex>m_w</latex>" as reset #E0E7FF
+
+rectangle "Published accelerator <latex>A</latex>: bound revision <latex>r_A = (\gamma_A, \sigma_A, v_A)</latex>, lineage <latex>m_A</latex>, scope, entries,\nand the catalog, occurrence and automaton artifacts, all stamped with <latex>r_A</latex>.\nCLASSIFY(w, A) asks the three questions in order, and the first yes decides the class." as published #FFFFFF {
+  hexagon "lineage or generation differs?\n<latex>m_A \neq m_w \;\lor\; \gamma_A \neq \gamma_w</latex>" as q_foreign #E2E8F0
+  hexagon "store or installed token differs?\n<latex>\sigma_A \neq \sigma_w \;\lor\; v_A \neq v_w</latex>" as q_stale #E2E8F0
+  hexagon "scope misses a support group?\n<latex>\mathrm{supp}(\rho_w, \iota_w) \not\subseteq \mathrm{scope}_A</latex>" as q_incomplete #E2E8F0
+  rectangle "6 · Coherent\nevery check passes;\na maintained update in the\nsame commit keeps it Coherent" as coherent #DCFCE7
+  rectangle "3 · Foreign\nbuilt for other roots\nor an earlier generation" as foreign #FEE2E2
+  rectangle "4 · Stale\nthe roots or the installed\ninput changed after its build" as stale #FFEDD5
+  rectangle "5 · Incomplete\na group with a target, such as\none still only in history,\nis not indexed" as incomplete #EDE9FE
+}
+
+rectangle "1 · Absent\nno accelerator exists" as absent #F1F5F9
+rectangle "2 · Building\nprivate build: a base revision\nand a growing scope;\ninvisible to readers" as building #FEF3C7
+
+rectangle "READ answers exactly\nLOOKUP(A, c) <latex>= \mathrm{Occ}_w(c)</latex>\n(RAC-RC-22)" as exact #CCFBF1
+rectangle "READ falls back: DERIVE(w, c)\nrebuild from the roots or fail closed;\nnever the empty answer by default" as fallback #FCE7F3
+
+persisted -[hidden]right-> reset
+
+q_foreign -[#64748B]right-> foreign : yes
+q_foreign -[#64748B]down-> q_stale : no
+q_stale -[#64748B]right-> stale : yes
+q_stale -[#64748B]down-> q_incomplete : no
+q_incomplete -[#64748B]right-> incomplete : yes
+q_incomplete -[#64748B]down-> coherent : no
+
+foreign -right-> building : rebuild
+stale -right-> building : rebuild
+incomplete -right-> building : rebuild
+absent -down-> building : BeginBuild
+building -down-> building : BuildGroup(g)
+building -up-> absent : AbortBuild, crash\nor refused publication
+building -[#0F172A]-> q_foreign : PublishBuild: the base is\nstill the current revision\n(RAC-RC-23)
+
+coherent -[norank]-> stale : a mutation left\nunmaintained
+incomplete -left-> coherent : HistoryLoad(g)\nextends the scope
+
+published -up-> reset : a reset of\nthe space
+reset -down-> foreign : every prior\naccelerator
+
+persisted -[#1D4ED8]down-> q_foreign : adoption at reset: semantic_manifest\nequals the target's; bound to the\nfresh revision (RAC-RC-20)
+persisted -[#B91C1C,dashed]down-> foreign : manifest differs:\nnever adopted
+
+coherent -[#0F766E]down-> exact : READ
+absent -[#BE185D,dashed]down-> fallback : READ
+building -[#BE185D,dashed]down-> fallback : READ
+foreign -[#BE185D,dashed]down-> fallback : READ
+stale -[#BE185D,dashed]down-> fallback : READ
+incomplete -[#BE185D,dashed]down-> fallback : READ
+
+legend right
+  |= Color |= Meaning |
+  |<#F1F5F9> slate | no accelerator |
+  |<#FEF3C7> amber | private build, never visible to readers |
+  |<#E2E8F0> grey hexagon | a CLASSIFY test, asked in order |
+  |<#FEE2E2> red | Foreign class |
+  |<#FFEDD5> orange | Stale class |
+  |<#EDE9FE> violet | Incomplete class |
+  |<#DCFCE7> green | Coherent class, the only class that answers |
+  |<#E0E7FF> indigo | operations that replace the roots |
+  |<#DBEAFE> blue | persisted accelerator manifest |
+  |<#CCFBF1> teal | exact answer from the accelerator |
+  |<#FCE7F3> pink | fail-closed answer from the roots |
+  | dark arrow | lifecycle operation or rebuild |
+  | grey arrow | outcome of a CLASSIFY test |
+  | blue arrow | adoption of a persisted accelerator |
+  | red dashed arrow | refused adoption |
+  | teal arrow | READ of a Coherent accelerator |
+  | pink dashed arrow | READ of any other class |
+endlegend
+@enduml

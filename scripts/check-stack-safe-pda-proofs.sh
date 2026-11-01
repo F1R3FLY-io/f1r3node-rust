@@ -715,6 +715,84 @@ if [[ "${1:-}" == "--ordered-receive-view" ]]; then
   exit 0
 fi
 
+if [[ "${1:-}" == "--receive-accelerator" ]]; then
+  export PROPTEST_RNG_SEED="${PROPTEST_RNG_SEED:-41318010}"
+  export TLC_MEMORY_HIGH=1G TLC_RSS=2G TLC_CPU_QUOTA=200% TLC_TASKS_MAX=128
+  python3 "$repo_root/scripts/check-receive-accelerator-obligations.py" --self-test
+  pushd "$rocq_root" >/dev/null
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/PathMapCanonicalStreamPublicationBase.v
+  rocq_compile_with_closed_count theories/TwoLevelRSpaceAuthority.v 5 \
+    "the exact two-level RSpace logical authority"
+  rocq_compile_with_closed_count theories/RhoPathV1Datum.v 21 "exact datum framing and partition"
+  tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/TwoLevelRSpaceContinuationAuthority.v
+  rocq_reject_placeholders \
+    theories/TwoLevelRSpaceReceiveAccelerator.v \
+    theories/TwoLevelRSpaceReceiveAcceleratorMutants.v
+  rocq_compile_with_closed_count \
+    theories/TwoLevelRSpaceReceiveAccelerator.v 26 \
+    "the generation-bound receive occurrence index"
+  rocq_compile_with_closed_count \
+    theories/TwoLevelRSpaceReceiveAcceleratorMutants.v 16 \
+    "the receive occurrence index causal controls"
+  rocq_check_modules "receive occurrence index and its causal controls" \
+    StackSafePDA.TwoLevelRSpaceReceiveAccelerator \
+    StackSafePDA.TwoLevelRSpaceReceiveAcceleratorMutants
+  popd >/dev/null
+  tla_root="$repo_root/formal/tlaplus/stack_safe_pda"
+  tla_metadir="$(tlc_metadir receive-accelerator)"
+  pushd "$tla_root" >/dev/null
+  tlc_run "$tla_metadir" \
+    RSpaceReceiveAcceleratorCoherence.cfg RSpaceReceiveAcceleratorCoherence.tla -cleanup
+  for receive_accelerator_mutant in \
+    "split-publication:RSpaceReceiveAcceleratorCoherenceSplitPublicationMutant.cfg:PublishedArtifactsShareOneRevision" \
+    "partial-rebuild:RSpaceReceiveAcceleratorCoherencePartialRebuildMutant.cfg:CoherentAcceleratorEqualsDerivation" \
+    "unsound-answer:RSpaceReceiveAcceleratorCoherenceUnsoundAnswerMutant.cfg:AnswerIsSound" \
+    "absent-as-empty:RSpaceReceiveAcceleratorCoherenceAbsentAsEmptyMutant.cfg:NoEnabledReceiveHidden" \
+    "stale-answer:RSpaceReceiveAcceleratorCoherenceStaleAnswerMutant.cfg:StaleAcceleratorNeverAnswers" \
+    "incomplete-answer:RSpaceReceiveAcceleratorCoherenceIncompleteAnswerMutant.cfg:IncompleteAcceleratorNeverAnswers" \
+    "foreign-adoption:RSpaceReceiveAcceleratorCoherenceForeignAdoptionMutant.cfg:ForeignAcceleratorNeverAdopted" \
+    "stale-candidate-commit:RSpaceReceiveAcceleratorCoherenceStaleCandidateCommitMutant.cfg:StaleCandidateNeverCommits" \
+    "failed-update-leak:RSpaceReceiveAcceleratorCoherenceFailedUpdateLeakMutant.cfg:FailedUpdateIsNonMutating" \
+    "semantic-pollution:RSpaceReceiveAcceleratorCoherenceSemanticPollutionMutant.cfg:SemanticIdentityIsAcceleratorFree"
+  do
+    receive_accelerator_label="${receive_accelerator_mutant%%:*}"
+    receive_accelerator_tail="${receive_accelerator_mutant#*:}"
+    receive_accelerator_cfg="${receive_accelerator_tail%%:*}"
+    receive_accelerator_invariant="${receive_accelerator_tail#*:}"
+    if receive_accelerator_output="$({
+      tlc_run "$tla_metadir" \
+        "$receive_accelerator_cfg" RSpaceReceiveAcceleratorCoherenceMutants.tla -cleanup
+    } 2>&1)"; then
+      printf '%s\n' "$receive_accelerator_output"
+      echo "stack-safe-pda: ${receive_accelerator_label} receive-accelerator mutant unexpectedly passed" >&2
+      exit 1
+    fi
+    printf '%s\n' "$receive_accelerator_output"
+    if ! grep -q "Invariant ${receive_accelerator_invariant} is violated" \
+        <<<"$receive_accelerator_output"; then
+      echo "stack-safe-pda: ${receive_accelerator_label} receive-accelerator mutant failed without ${receive_accelerator_invariant}" >&2
+      exit 1
+    fi
+  done
+  popd >/dev/null
+  pushd "$repo_root" >/dev/null
+  rspace_preparation_run_tests 31 --test receive_accelerator_spec
+  rspace_preparation_run_tests 1 --lib receive_accelerator_manifest_binding
+  rspace_preparation_run_tests 57 --test hot_store_spec
+  rspace_preparation_run_tests 13 --test ordered_receive_view_spec
+  rspace_preparation_run_tests 20 --lib rspace::record_index::
+  rspace_preparation_run_tests 15 --lib accepted_match_formal_bindings
+  rspace_preparation_run_tests 1 --test mod continuation_join_lifecycle_equivalence
+  rspace_preparation_run_tests 18 --test guarded_matching_tests
+  rspace_preparation_run_tests 3 --test replay_comm_order
+  rholang_run_tests 5 --test receive_accelerator_rholang
+  rholang_run_tests 4 --test ordered_receive_view_rholang
+  rholang_run_tests 2 --test matching_lifecycle_acceptance
+  popd >/dev/null
+  echo "stack-safe-pda: focused receive accelerator proof, model and runtime gates passed"
+  exit 0
+fi
+
 if [[ "${1:-}" == "--free-map-journal" ]]; then
   pushd "$rocq_root" >/dev/null
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/StackSafePDA.v
@@ -1526,6 +1604,8 @@ python3 "$repo_root/scripts/check-ordered-receive-view-obligations.py" --check
 python3 "$repo_root/scripts/check-ordered-receive-view-obligations.py" --self-test
 tlc_run "$tla_metadir" \
   RSpaceReceiveAcceleratorCoherence.cfg RSpaceReceiveAcceleratorCoherence.tla -cleanup
+python3 "$repo_root/scripts/check-receive-accelerator-obligations.py" --check
+python3 "$repo_root/scripts/check-receive-accelerator-obligations.py" --self-test
 for receive_accelerator_mutant in \
   "split-publication:RSpaceReceiveAcceleratorCoherenceSplitPublicationMutant.cfg:PublishedArtifactsShareOneRevision" \
   "partial-rebuild:RSpaceReceiveAcceleratorCoherencePartialRebuildMutant.cfg:CoherentAcceleratorEqualsDerivation" \

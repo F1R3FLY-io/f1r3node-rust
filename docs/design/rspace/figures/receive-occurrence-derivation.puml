@@ -1,0 +1,83 @@
+@startuml receive-occurrence-derivation
+skinparam backgroundColor #F7FAFC
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam ArrowColor #334155
+skinparam rectangle {
+  BorderColor #334155
+  FontColor #0F172A
+  RoundCorner 10
+}
+skinparam database {
+  BorderColor #334155
+  FontColor #0F172A
+}
+skinparam note {
+  BorderColor #334155
+  FontColor #0F172A
+  BackgroundColor #FFFBEB
+}
+
+rectangle "Semantic roots <latex>\rho = (D, K, J)</latex>, named by the lineage manifest <latex>m</latex>" as roots #FFFFFF {
+  database "DataBag <latex>D</latex> · namespace 1\nresting data\nnot an input (RAC-RC-07)" as databag #F1F5F9;line.dashed
+  database "ContinuationMap <latex>K</latex> · namespace 2\nresting records <latex>x = (I_x, s_x)</latex> of each group <latex>g</latex>;\nthe first source of an identity is kept (RAC-RC-14)" as cmap #DCFCE7
+  database "JoinBag <latex>J</latex> · namespace 3\nthe groups listed under each channel;\nexact projection under coverage (RAC-RC-08)" as joinbag #D9F99D
+}
+database "Installed input <latex>\iota = (v_\iota, S_\iota)</latex>\nat most one installed record <latex>y</latex> per group;\nruntime configuration, not a fourth root" as installed #FEF9C3
+
+rectangle "Targets <latex>T_{\rho,\iota}(g)</latex>\n<latex>(\mathsf{inst}, g, I_y, s_y)</latex> for the installed record <latex>y</latex>\n<latex>(\mathsf{rest}, g, I_x, s_x)</latex> for each resting record <latex>x</latex>\nfull identity and source bytes; never a digest or an ordinal" as targets #FEF3C7
+rectangle "Support <latex>\mathrm{supp}(\rho, \iota)</latex>\nthe groups with at least one target" as support #DBEAFE
+rectangle "Positions <latex>\pi_g(c) = [\, i : 0 \le i < |g|,\ c_i = c \,]</latex>\nexact frame equality (tasks 8008 and 8009);\na byte prefix of a channel is never an alias (RAC-RC-06)" as positions #CCFBF1
+rectangle "Groups of channel <latex>c</latex>\n<latex>G_{\rho,\iota}(c) = \{ (g, \pi_g(c)) : g \in \mathrm{supp}(\rho, \iota),\ \pi_g(c) \neq [\,] \}</latex>" as groups #E0E7FF
+rectangle "Occurrences of channel <latex>c</latex>\n<latex>\mathrm{Occ}_{\rho,\iota}(c) = \bigcup_{(g,p) \in G_{\rho,\iota}(c)} \{ (g, p, t) : t \in T_{\rho,\iota}(g) \}</latex>\none occurrence per target, carrying every position of <latex>c</latex>;\ncapacity <latex>\kappa_g(c) = |\pi_g(c)|</latex> (RAC-RC-03 to RAC-RC-05)" as occurrences #FCE7F3
+
+rectangle "Revision <latex>r_w = (\gamma_w, \sigma_w, v_w)</latex>: each token is drawn fresh from the issued set <latex>\mathcal{I}_w</latex>" as revision #FFF7ED {
+  rectangle "generation <latex>\gamma</latex>\nreset · checkpoint ·\nsoft revert · clear" as gamma #FFEDD5
+  rectangle "store <latex>\sigma</latex>\nevery change of <latex>K</latex>\nor of <latex>S_\iota</latex>" as sigma #FFEDD5
+  rectangle "installed version <latex>v</latex>\ninstall · uninstall" as version #FFEDD5
+}
+
+rectangle "ReceiveId <latex>(r, t)</latex>\n<latex>\mathrm{resolve}_w(r, t)</latex> yields a record only when <latex>r = r_w</latex>\nand its kind, group, identity and source equal those of <latex>t</latex>;\notherwise <latex>\bot</latex> (RAC-RC-10 to RAC-RC-13)" as receive_id #EDE9FE
+
+note right of occurrences
+  Worked example, with byte strings <latex>a = [1]</latex> and <latex>b = [1, 0]</latex>:
+  <latex>g_1 = [a, b, a]</latex> holds resting <latex>x_1, x_2</latex> and installed <latex>y</latex>, byte-equal to <latex>x_1</latex>;
+  <latex>g_2 = [b]</latex> holds resting <latex>x_3</latex>.
+  <latex>\pi_{g_1}(a) = [0, 2]</latex>, so <latex>a</latex> has 3 occurrences of capacity 2;
+  <latex>\pi_{g_1}(b) = [1]</latex> and <latex>\pi_{g_2}(b) = [0]</latex>, so <latex>b</latex> has 3 + 1 = 4.
+end note
+
+cmap --> targets : resting records
+installed --> targets : installed slot
+targets --> support : groups that\nhave a target
+support --> groups
+positions --> groups : <latex>\pi_g(c) \neq [\,]</latex>
+groups --> occurrences : factor through\nthe groups
+targets --> occurrences : one occurrence\nper target
+joinbag ..> groups : lists the same groups\nwhen joins cover targets
+
+cmap ..> sigma : a change issues\na fresh <latex>\sigma</latex>
+installed ..> version : a change issues\nfresh <latex>v</latex> and <latex>\sigma</latex>
+roots ..> gamma : a replacement issues\nfresh <latex>\gamma</latex>, <latex>\sigma</latex>, <latex>v</latex>
+
+revision --> receive_id : bound revision
+occurrences --> receive_id : each target is\nnamed by a ReceiveId
+
+legend right
+  |= Color |= Meaning |
+  |<#F1F5F9> slate, dashed | semantic root that is not an input |
+  |<#DCFCE7> green | ContinuationMap, the receive authority |
+  |<#D9F99D> lime | JoinBag, a checked projection |
+  |<#FEF9C3> yellow | versioned installed runtime input |
+  |<#FEF3C7> amber | receive targets |
+  |<#DBEAFE> blue | support |
+  |<#CCFBF1> teal | ordered positions |
+  |<#E0E7FF> indigo | groups of a channel |
+  |<#FCE7F3> pink | derived occurrences |
+  |<#FFEDD5> orange | revision tokens |
+  |<#EDE9FE> violet | revision-bound receive identifier |
+  |<#FFFBEB> cream note | worked example |
+  | solid arrow | data the derivation reads |
+  | dashed arrow | a check, or the binding of a token to the data it versions |
+endlegend
+@enduml

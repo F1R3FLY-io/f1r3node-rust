@@ -19,6 +19,7 @@ FAMILIES = (
     "ordered_receive_view",
     "parbag_egress",
     "rci2_channel_image",
+    "receive_accelerator",
     "retained_set_automaton",
     "rho_path_v2",
     "rmp2",

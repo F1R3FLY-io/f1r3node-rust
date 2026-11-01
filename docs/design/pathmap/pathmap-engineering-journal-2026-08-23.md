@@ -21795,6 +21795,439 @@ recipe remain required.
 - The view's later consumers are tasks 8011 (the PathMap-derived catalogs), 8012
   (selection) and 7931 (the durable path).
 
+### J-255 — 2026-11-01: the generation-bound receive occurrence index (task 8010)
+
+**DERIVED.** Task 8010 is the proof-and-specification leaf of task 5686 that
+the continuation table of
+[J-068](#j-068--2026-09-06-preserve-ordered-receive-positions-in-derived-channel-indexes)
+states as "Prove generation-bound occurrence-index derivation, publication,
+reconstruction and identity neutrality". Tasks 8011 to
+8013 will build PathMap-derived catalogs, an occurrence index and set automata
+over the continuation store, select COMMs through them and qualify the result.
+Before any of that exists, three questions need exact answers. Which relation
+must every derived receive index equal? To which authoritative revision is a
+copy of the index bound? Under which read rule can no copy, whether missing,
+stale, incomplete or built for other roots, hide an enabled receive?
+
+The decision is to define the relation over the ContinuationMap root and the
+versioned installed input, bind every copy to a revision of three fresh tokens,
+sort every copy into one of six classes, and let only a Coherent copy answer.
+The task proves this in Rocq and checks the lifecycle in TLA+. It then checks a
+test-only reference oracle against real `HotStore` and `RSpace` instances, and
+it shows with 25 negative controls that the tests observe what they claim. It
+adds no production source. The reviewed plan
+(pgmcp artifact 1280) found ten gaps, G1 to
+G10, and built the task in four slices, each a child task of 8010, committed in
+order (decision R7). This entry records all four.
+
+| Slice | Task | Commit |
+|---|---|---|
+| The Rocq model `TwoLevelRSpaceReceiveAccelerator.v` with 26 capstones, RAC-RC-01 to RAC-RC-26, and `TwoLevelRSpaceReceiveAcceleratorMutants.v` with a bridge lemma and 15 refutations, RAC-MUT-01 to RAC-MUT-15 | 11995 | `b9b34f56b` |
+| The TLA+ lifecycle model `RSpaceReceiveAcceleratorCoherence` with 11 invariants, RAC-TLA-01 to RAC-TLA-11, and 10 mutant configurations, RAC-TMUT-01 to RAC-TMUT-10 | 11996 | `1c59adbd9` |
+| The reference oracle, 31 specification tests, five Rholang tests, the persisted-manifest library test, and the generator of the 25 source controls | 11997 | `c8971c915` |
+| The obligation registry and its checker, the runner's `--receive-accelerator` flag, the catalog rows, the integration subsection and its two figures, and this entry | 11998 | the commit that adds this entry |
+
+The invariant catalog maps the 26 capstones, the 11 invariants and the 25
+controls to their tests in
+[TLRS-PROP-11](two-level-rspace-authority-invariant-catalog-2026-09-02.md#tlrs-prop-11--ordered-receive-fields-and-occurrence-identity-2026-09-06),
+rows TLRS-RECEIVE-18 to TLRS-RECEIVE-28, and lists the controls with their
+killing tests in its receive accelerator control table. The design, with its
+notation, algorithms, lifecycle table and two figures, is the integration doc's
+[receive occurrence index coherence](../rspace/pathmap-bag-rspace-integration.md#receive-occurrence-index-coherence-task-8010)
+subsection.
+
+**THE MODEL.** The identifiers of this family begin with RAC, for *receive
+accelerator*: RC is a Rocq capstone, MUT a Rocq refutation, TLA a TLA+
+invariant, TMUT a TLA+ mutant configuration and RS a source control. A
+*token* is an opaque value compared only by identity, `EqualityEpoch.t` in Rocq
+and an `Arc` compared with `Arc::ptr_eq` in Rust.
+
+Write $`\rho = (D, K, J)`$ for the three semantic roots of journal entry
+[J-034](#j-034--2026-08-27-persist-logical-pathmap-tries-not-an-act-implementation-snapshot):
+the DataBag $`D`$, the ContinuationMap $`K`$ and the JoinBag $`J`$, namespaces
+1, 2 and 3 of `SemanticNamespace` (`rspace++/src/rspace/persistence/manifest.rs:75-79`).
+A group key $`g = [c_0, \dots, c_{n-1}]`$ is the ordered list of the channel
+identity images of one receive group, and $`K(g)`$ holds the group's resting
+records. A record $`x = (I_x, s_x)`$ consists of its source-free identity bytes
+$`I_x`$ and its source bytes $`s_x`$, and a group keeps the first source of each
+identity. The installed input $`\iota = (v_\iota, S_\iota)`$ is a version token
+$`v_\iota`$ and the installed slots $`S_\iota`$, at most one installed record
+per group. It is runtime configuration, not a fourth root.
+
+For a channel image $`c`$, its positions in $`g`$ are the ascending list
+$`\pi_g(c) = [\, i : 0 \le i < n,\ c_i = c \,]`$, the exact frame equality of
+tasks 8008 and 8009. A target $`t = (\theta, g, I, s)`$ has a kind $`\theta`$,
+which is $`\mathsf{inst}`$ or $`\mathsf{rest}`$, a group and the full identity
+and source bytes of its record. The targets $`T_{\rho,\iota}(g)`$ of a group are
+one $`\mathsf{inst}`$ target for its installed record, if it has one, and one
+$`\mathsf{rest}`$ target for each record of $`K(g)`$. The support
+$`\mathrm{supp}(\rho, \iota)`$ is the set of groups that have a target. The
+occurrence relation of $`c`$ is
+
+```math
+\mathrm{Occ}_{\rho,\iota}(c) \;=\; \bigl\{\, (g, \pi_g(c), t) \;:\; g \in \mathrm{supp}(\rho, \iota),\ \pi_g(c) \neq [\,],\ t \in T_{\rho,\iota}(g) \,\bigr\},
+```
+
+so each target of a group that mentions $`c`$ gives one occurrence, which
+carries every position of $`c`$, and the capacity of the occurrence is
+$`\kappa_g(c) = \lvert \pi_g(c) \rvert`$.
+
+A world $`w`$ has roots $`\rho_w`$, an installed input $`\iota_w`$, a lineage
+manifest $`m_w`$, an issued token set $`\mathcal{I}_w`$ and a revision
+$`r_w = (\gamma_w, \sigma_w, v_w)`$. The generation $`\gamma`$ is issued fresh by
+a reset, a checkpoint, a soft revert or a clear; the store token $`\sigma`$ by
+every change of $`K`$ or of $`S_\iota`$; and the installed version $`v`$ by
+every install and uninstall. Every fresh token comes from
+`EqualityEpoch.fresh_from` applied to $`\mathcal{I}_w`$ and joins it, and
+`fresh_from_rejects_every_prior`
+(`formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceContinuationAuthority.v:68`)
+proves that it differs from every token issued before. A receive identifier is
+a pair $`(r, t)`$, and $`\mathrm{resolve}_w(r, t)`$ yields a record only when
+$`r = r_w`$ and the record's kind, group, identity and source equal those of
+$`t`$; otherwise it yields $`\bot`$.
+
+A published accelerator $`A`$ carries a bound revision
+$`r_A = (\gamma_A, \sigma_A, v_A)`$, a lineage $`m_A`$, a scope, which is the
+set of groups it has indexed, its entries, and three artifacts: the catalog,
+the occurrence relation and the set automata. `CLASSIFY` tests six classes in a
+fixed order: Absent, when no accelerator exists; Building, when only a private
+build exists; Foreign, when $`m_A \neq m_w`$ or $`\gamma_A \neq \gamma_w`$;
+Stale, when $`\sigma_A \neq \sigma_w`$ or $`v_A \neq v_w`$; Incomplete, when
+$`\mathrm{supp}(\rho_w, \iota_w) \not\subseteq \mathrm{scope}_A`$; and Coherent
+otherwise. `READ` answers from the accelerator only when the class is Coherent,
+and otherwise derives the relation from the roots. It never answers the empty
+set by default.
+
+Two theorems carry the design. Write $`w_0 \to^{*} w`$ when $`w`$ is reached
+from $`w_0`$ by zero or more operations. RAC-RC-21,
+`same_revision_same_derivation`, proves
+
+```math
+w_0 \to^{*} w \;\land\; \sigma_{w_0} \in \mathcal{I}_{w_0} \;\land\; \sigma_w = \sigma_{w_0}
+\;\;\Longrightarrow\;\; \rho_w = \rho_{w_0} \;\land\; S_{\iota_w} = S_{\iota_{w_0}},
+```
+
+which the task-6013 authority file takes as the hypothesis
+`reachable_same_epoch_group` (`TwoLevelRSpaceContinuationAuthority.v:266-270`).
+RAC-RC-22, `read_never_hides_an_enabled_receive`, proves that for every pair
+$`(w, A)`$ reachable from $`(w_0, \mathsf{Absent})`$ and every channel image
+$`c`$, `READ` returns exactly $`\mathrm{Occ}_{w}(c)`$, and that an answer from
+the accelerator implies the class Coherent. The other 24 capstones state the
+relation's soundness, completeness, factoring through groups and capacity;
+exact identifiers; maintenance equal to a rebuild for every operation; failure
+atomicity; publication of the three artifacts at one revision; commit only
+through `resolve_exact_continuation` of task 6013; and a semantic successor that
+does not depend on the accelerator.
+
+TLA+ is the specification language of the Temporal Logic of Actions (Lamport,
+1994), and TLC is its explicit-state model checker (Yu, Manolios and Lamport,
+1999). The TLA+ model keeps the same state and adds what the functional model
+abstracts away: readers that hold snapshots, private builds, aborts, crashes,
+adoption of a persisted accelerator at a reset, and per-group tickets. Its
+constants are `Records = {r1, r2}`, `NoRecord`, `MaxToken = 6` and
+`MaxSteps = 5`, over the channels `"a"` and `"b"` and the groups `"aba"` and
+`"b"`. TLA+ indexes from 1, so its positions $`\{1, 3\}`$ of `"a"` in `"aba"`
+are the positions $`[0, 2]`$ above.
+
+The reference oracle,
+[`rspace++/tests/support/receive_occurrence_reference.rs`](../../../rspace++/tests/support/receive_occurrence_reference.rs),
+implements the relation, the classes and the read rule over the public
+`HotStore` API. Production has epochs per group but no store-level revision,
+so its observation revision is the complete map from each group to its
+`ContinuationVersion`, read from a full snapshot (decision R2). The
+specification tests are property-based tests in the style of QuickCheck
+(Claessen and Hughes, 2000), written with the `proptest` crate.
+
+**GAPS.** Each gap the plan found is closed as follows.
+
+| Gap | What was missing | Closed by | Witness |
+|---|---|---|---|
+| G1 | a definition that makes the receive relation a function of the three semantic roots | $`\mathrm{Occ}`$ over the ContinuationMap and the versioned installed input; the DataBag is not an input and the JoinBag is a checked projection; no new namespace | RAC-RC-01, RAC-RC-02, RAC-RC-07, RAC-RC-08; specification tests 1, 2, 6 and 7 |
+| G2 | adoption and foreign-binding semantics for `AcceleratorManifestV1`, whose tests use synthetic references | the classes Foreign and Stale and the adoption rule: adopt only when the bound `semantic_manifest` equals the target manifest | RAC-RC-20, RAC-TLA-08; tests 19 and 31; controls RAC-RS-05 and RAC-RS-21 |
+| G3 | identifiers independent of the task-6079 split index, whose orders renumber on overflow and whose groups, records, identities and counters are internal copy-on-write roots | targets that carry the full identity and source bytes and never an order | RAC-RC-09 to RAC-RC-13; tests 8 to 12; controls RAC-RS-01, RAC-RS-02 and RAC-RS-09 |
+| G4 | a store-level revision; production has only per-group epochs, so a channel-level observation cannot see a new group | the model's store token $`\sigma`$ and the theorem RAC-RC-21; the reference observes the whole group universe (decision R2); each of eight production controls removes a per-group signal or a check that reads it | RAC-RC-13, RAC-RC-21, RAC-RC-25; tests 12, 14, 15, 17, 19, 20 and 25; controls RAC-RS-17 to RAC-RS-24 |
+| G5 | a channel-to-group-to-receive relation; positions existed per receive only | the factoring of $`\mathrm{Occ}`$ through the groups of a channel, one occurrence per target, and the capacity $`\kappa_g(c)`$ | RAC-RC-03 to RAC-RC-06; tests 3, 4 and 5; Rholang tests 1 and 2; control RAC-RS-07 |
+| G6 | any test or control of the retained-set automaton cache predicate (`rspace++/src/rspace/rspace.rs:1165-1167`) | the one-revision artifact invariant | RAC-RC-24, RAC-TLA-02; tests 23 and 24; controls RAC-RS-10 and RAC-RS-24 |
+| G7 | installed continuations in the revision | the installed version $`v`$ and the kinds $`\mathsf{inst}`$ and $`\mathsf{rest}`$, with no fourth root | RAC-RC-11, RAC-RC-18; tests 10 and 17; Rholang test 3; controls RAC-RS-08 and RAC-RS-18 |
+| G8 | nothing: the datum-side candidate index indexes data, not receives | reuse by reference only | none |
+| G9 | a registry family, checker, control generator and runner flag | the `receive_accelerator` family, `scripts/check-receive-accelerator-obligations.py`, `scripts/generate-receive-accelerator-mutant.py` and `--receive-accelerator` | the checker's `--check` and `--self-test`; the aggregate registry's `--check` |
+| G10 | a real persisted-manifest witness; synthetic manifest references and opaque-byte equality are insufficient (decision R1) | the library test module `rspace++/tests/persistence/receive_accelerator_manifest_binding.rs` | catalog row TLRS-RECEIVE-28; control RAC-RS-25 |
+
+**DECISIONS.** The review of the plan settled eight points that shaped the
+work:
+
+1. *The real persisted-manifest witness belongs to 8010* (decision R1). The plan
+   had proposed deferring it to task 8011. The task body calls synthetic
+   manifest references and opaque-byte equality insufficient concrete
+   witnesses, and the goal forbids deferral. The witness is a library test
+   module included by one `mod` line in `rspace++/tests/persistence/mod.rs`. It
+   adds control RAC-RS-25 and catalog row TLRS-RECEIVE-28, which takes the
+   family from 86 to 87 identifiers. The workspace-regression registry hashes
+   that `mod.rs`, so it is regenerated inside the export and staged index-only,
+   and its foreign working-tree copy stays untouched.
+2. *The reference observes the whole group universe* (decision R2). Its
+   observation revision is the map from every group to its
+   `ContinuationVersion`, read from a full snapshot, so a newly created group is
+   detected although production keeps no store-level revision.
+3. *Documentation follows the pgmcp guidelines* (decision R3): MathJax for every
+   formula, fully coloured PlantUML figures with LaTeX labels, rendered and
+   checked, literate pseudocode, and repository-relative links.
+4. *All 26 capstones are kept* (decision R4). A stalled proof is split into
+   lemmas, and no capstone is merged or dropped.
+5. *Journal numbering* (decision R5). Task 8010 takes the next free J-number at
+   its completion commit, expected J-255, and task 7929's entry takes the next.
+6. *The open questions are settled as recommended* (decision R6). Task 8011 is
+   advised to implement $`\sigma`$ as a store-level `Arc<ContinuationEpoch>`;
+   the catalog rows continue as TLRS-RECEIVE-18 to TLRS-RECEIVE-28 under
+   TLRS-PROP-11; `formal/rocq/stack_safe_pda/_CoqProject`, which another task
+   has modified, is left alone, and the runner compiles the two theories with
+   `coqc -Q theories StackSafePDA`; RAC-RS-24 and test 24 are kept; and the
+   focused flag replaces the full main suite, whose strings the checker
+   verifies.
+7. *Execution* (decision R7). Agents drafted the TLA+ slice, the Rust
+   reference, the tests, the generator, the registry checker and the
+   documentation, ran no heavy job, and every draft was reviewed before its
+   commit. The heavy gates ran one at a time on cores 16 to 31, and
+   the slices were committed in order.
+8. *Concrete receive integration* (decision R8). The Rholang tests compile real
+   Rholang through the production normalizer and reducer, the specification
+   tests run over real `HotStore` and `RSpace` instances, and the reference
+   target always keeps the full identity and source bytes.
+
+The slices added five decisions:
+
+- *The TLA+ builder has no coverage guard* (slice 8010.2). `PublishBuild`
+  checks only the base revision and the lineage. This over-approximates the
+  Rocq builder of RAC-RC-23, which refuses an incomplete scope, and keeps the
+  Incomplete class reachable, so RAC-TMUT-06 and specification test 30 have a
+  state to refute. Every other action is shared, so the states the Rocq builder
+  reaches are among those TLC checks.
+- *TLA+ maintenance never widens a scope* (slice 8010.2). A mutation that gives
+  an out-of-scope group its first target leaves the accelerator Incomplete,
+  which is more conservative than the Rocq `maintained_view` of RAC-RC-15 and
+  RAC-RC-18, which widens the scope.
+- *The raw-byte channel double decodes its whole identity* (slice 8010.3). The
+  `RawChannel` double, copied from the ordered-receive specification, decoded
+  its cold bytes as a bincode `Vec<u8>`, although its `rho_path_identity` is the
+  raw bytes. `RSpaceDataIndex::loaded_records` decodes every data channel from
+  that identity, so specification test 6 panicked on the bincode size limit.
+  The decoder now takes the whole slice, which is the contract production's
+  two decode sites rely on; no assertion changed.
+- *The new test files are clippy-clean* (slice 8010.3). The eleven findings in
+  them were fixed before the commit, as in task 8009: one-armed matches became
+  `if` and `if let`, a function-pointer tuple got a type name, and the
+  reference's built phase is boxed.
+- *The checker pins print order, not declaration order* (slice 8010.4).
+  RAC-RC-09 is declared after RAC-RC-10 to RAC-RC-13, so the checker requires
+  the `Print Assumptions` lines in capstone order and compares only the set of
+  declared theorem names. It matches the bridge as a `Theorem`, where the
+  ordered-receive checker expects a `Lemma`.
+
+**HYPOTHESES.** The entry tests five hypotheses. H1 and H2 state what the
+formal slices must show, H3 and H4 what the executable slice must show, and H5
+what the task must leave unchanged.
+
+- *H1.* The Rocq model closes with nothing assumed. The model file reports 26
+  capstones closed under the global context and the mutants file 16, its bridge
+  lemma and 15 refutations; both modules pass independent kernel checking; and
+  a count control that requires 25 reports from the model file fails.
+- *H2.* TLC finds no violation of the eleven invariants in the base model at
+  the preregistered bound, and each of the ten mutant configurations violates
+  its own target invariant.
+- *H3.* Over real stores, the 31 specification tests, the five Rholang tests and
+  the persisted-manifest library test pass, and the same specification tests
+  fail against a skeleton reference whose read returns the empty set for every
+  class other than Coherent.
+- *H4.* Each of the 25 source controls is killed by its named test.
+- *H5.* No slice changes a production source file, a persisted byte, a root or
+  an identity, and every pin of the focused flag passes unchanged.
+
+**MEASURED.** The evidence of slice 8010.4 ran on tree `04f12116`, which is
+HEAD `c8971c915` plus this slice's sources and its regenerated aggregate
+registry, exported to `target/scratch/idx`. The rows H1 to H3 come from the
+exports of slices 8010.1 to 8010.3, and the 25 source controls ran on tree
+`1199984c`, the tree of `c8971c915`.
+
+| Claim | Command or artifact | Result | Uncertainty | Decision |
+|---|---|---|---|---|
+| H1 | `rocq_focus.sh 8010a theories/TwoLevelRSpaceReceiveAccelerator.v=26 theories/TwoLevelRSpaceReceiveAcceleratorMutants.v=16` | `closed=26 expected=26` and `closed=16 expected=16`; `KERNEL ok` for both modules; `RESULT fail=0` | the theorems describe the model; the tests and the production controls tie the reference and the production signals to it | confirmed |
+| H1, red | `rocq_focus.sh 8010a-red theories/TwoLevelRSpaceReceiveAccelerator.v=25` | `closed=26 expected=25`, `RESULT fail=1` | none | the count check is live |
+| H2 | the TLC driver `tlc-11996.sh` in the export, which runs the runner's block through `scripts/lib/tlc-run.sh` with the runner's defaults: one worker, `-Xmx512m`, `MemoryHigh=768M`, `MemoryMax=1G`, no swap, `CPUQuota=100%` and `RuntimeMaxSec=900` | base model: no error, 202,406 distinct states (534,006 generated, search depth 6) in 10 s at `MaxSteps = 5` | the model is checked only up to its bound: two records, two channels, two groups and six tokens | confirmed at the preregistered bound; the rule allowed 1800 s with two workers and a 1 GiB heap, and the run needed 10 s with one worker and a 512 MiB heap, so the rule did not apply |
+| H2, red | the same driver, ten mutant configurations | 10 of 10 violate their own target; the counterexamples take 2, 2, 3, 1, 4, 4, 1, 3, 1 and 1 steps | each mutant adds one wrong action | confirmed |
+| H3 | `cargo test --locked --release -p rspace_plus_plus --test receive_accelerator_spec -- --test-threads=4`; `cargo test --locked --release -p rholang --test receive_accelerator_rholang -- --test-threads=4`; the library test `rspace::persistence::tests::receive_accelerator_manifest_binding` | 31 of 31, 5 of 5 and 1 of 1 | the property cases come from seed 41318010: 256 for each store-level property and 64 for each `RSpace` trace | confirmed |
+| H3, red | the specification tests against the skeleton reference, never committed | 9 of 31 fail: `reference_reads_equal_derivation_in_every_accelerator_state`, `stale_accelerators_fall_back_after_every_mutation`, `unloaded_history_groups_make_the_accelerator_incomplete`, `foreign_generation_or_manifest_accelerators_are_never_adopted`, `failed_update_leaves_store_and_accelerator_unchanged`, `enabled_and_disabled_acceleration_select_identically`, `incremental_insertion_equals_rebuild`, `install_and_generation_uninstall_equal_rebuild` and `incremental_maintenance_equals_rebuild_over_generated_traces` | none | the specification tests observe the read rule |
+| H4 | `scripts/generate-receive-accelerator-mutant.py`, each control applied in the export alone, debug build, seed 41318010 | 25 of 25: harness 17 of 17, production 8 of 8 | each control is one fault, and a fault not modelled could survive; the seventeen harness controls exercise the reference, not production | confirmed |
+| H5 | `git diff --name-only cb49a78e4` to the commit that adds this entry, and the flag's pins | 35 entries: 7 documentation files, 3 registries, 15 Rocq and TLA+ model files, 6 test files and 4 scripts; none under `rholang/src`, `rspace++/src`, `models/src` or `casper`, and no manifest or lock file. The flag's pins passed: `hot_store_spec` 57, `ordered_receive_view_spec` 13, `rspace::record_index` 20, `accepted_match_formal_bindings` 15, `continuation_join_lifecycle_equivalence` 1, `guarded_matching_tests` 18, `replay_comm_order` 3, `ordered_receive_view_rholang` 4 and `matching_lifecycle_acceptance` 2 | none | confirmed |
+| the registry | `scripts/build-pathmap-obligation-registry.py --check` and `--self-test` | 17 families and 856 global identifiers: the 769 of the 16 families at HEAD and the 87 of the receive accelerator family; every family registry's `--check` and `--self-test` passed, then the aggregate's. With the receive accelerator registry removed from the export, its checker's `--check` failed (rc 1), and `--write` reproduced the staged registry byte for byte | the aggregate totals are recomputed by the builder, not assumed | confirmed |
+
+**THE NEGATIVE CONTROLS.** A property that cannot fail proves nothing, so each
+control is a single fault that its named test must detect, in the sense of
+mutation testing (DeMillo, Lipton and Sayward, 1978). Each control applies one
+change in the export, rebuilds in a debug build, runs its named test, records
+every failing test, and restores the file from the tree. The harness controls
+change the test-only reference oracle; the production controls change
+production source that the relation already depends on. The unmutated tree
+passed 31 of 31 specification tests and the library test in the release gate,
+and each of the 22 distinct named tests alone in the debug baseline.
+
+| Control | Class | Formal counterpart | Change | Named test | Failed | Log SHA-256 |
+|---|---|---|---|---|---|---|
+| RAC-RS-01 | harness | RAC-MUT-01 | a receive identifier resolves by its hash bucket alone | `colliding_buckets_resolve_by_full_bytes` | `colliding_buckets_resolve_by_full_bytes` | `f43ea07c5a216e303c379af962e7780192fb3313b0697604696119ddb8b4cb06` |
+| RAC-RS-02 | harness | RAC-MUT-02 | a receive identifier is the record's ordinal in its group | `incremental_nonfinal_removal_equals_rebuild` | `incremental_nonfinal_removal_equals_rebuild` | `15282d3978e5c8dd8658dc0f4c7e3010ad117d87ded38e54b58668499d3206bb` |
+| RAC-RS-03 | harness | RAC-MUT-03 | an absent accelerator answers the empty set | `reference_reads_equal_derivation_in_every_accelerator_state` | `reference_reads_equal_derivation_in_every_accelerator_state` | `bf00779b0d3ffa51e6e451934c6c5f9a68165598fa193bf81da823ec65ef3f5c` |
+| RAC-RS-04 | harness | RAC-MUT-04 | a stale accelerator answers from its old entries | `stale_accelerators_fall_back_after_every_mutation` | `stale_accelerators_fall_back_after_every_mutation` | `87cd48e982a84c52d82f14ae72dbbf18e6516fa525245dd990612f3609c6edde` |
+| RAC-RS-05 | harness | RAC-MUT-05 | an accelerator of a foreign generation or manifest is adopted | `foreign_generation_or_manifest_accelerators_are_never_adopted` | `foreign_generation_or_manifest_accelerators_are_never_adopted` | `883538a16dfc82c78a79dc6a5dbcfccfe5c5ddef5ce634bafaa4531c25c69c8c` |
+| RAC-RS-06 | harness | RAC-MUT-06 | an incomplete accelerator answers | `unloaded_history_groups_make_the_accelerator_incomplete` | `unloaded_history_groups_make_the_accelerator_incomplete` | `d658ed6eff1cfb900e30a9881039a8817082c382366a55d5c58a2285afd28a1a` |
+| RAC-RS-07 | harness | RAC-MUT-07 | a repeated channel keeps only its first position | `repeated_channels_yield_one_occurrence_with_every_position` | `repeated_channels_yield_one_occurrence_with_every_position` | `1239da0c142ac69b7454be56a08db18a93c39745998bba7365f3d2be70611500` |
+| RAC-RS-08 | harness | RAC-MUT-08 | an installed record and a byte-identical resting record share one target | `install_and_generation_uninstall_equal_rebuild` | `install_and_generation_uninstall_equal_rebuild` | `32ba5d5a38334781f1677599151ed4fe4ff21c67550b6f186ab2301338104334` |
+| RAC-RS-09 | harness | RAC-MUT-09 | the derivation depends on construction order | `construction_order_does_not_change_the_relation_or_ids` | `construction_order_does_not_change_the_relation_or_ids` | `5c8a7915d46f6b50404ac8bef0f274bebb59a6b84322ee7fcf82667f0e1b3f06` |
+| RAC-RS-10 | harness | RAC-MUT-10 | the automaton artifact keeps the previous revision | `catalog_occurrence_and_automaton_publish_at_one_revision` | `catalog_occurrence_and_automaton_publish_at_one_revision` | `d2d5f3cc1f9b50ab8a9907e800729666523633402e61932e813bd860e228aabe` |
+| RAC-RS-11 | harness | RAC-MUT-11 | a failed update changes the roots and leaves the accelerator marked current | `failed_update_leaves_store_and_accelerator_unchanged` | `failed_update_leaves_store_and_accelerator_unchanged` | `a0017a67b8570cf7f0ee2d6ca395abe39c1b9987f5d5ac21b3f39060ff67aa0a` |
+| RAC-RS-12 | harness | RAC-MUT-12 | the semantic identity includes the accelerator | `enabled_and_disabled_acceleration_select_identically` | `enabled_and_disabled_acceleration_select_identically` | `8cd9febe02a2049809073564a810fc30c92965a8c276bc92f8bad6fb790d41fc` |
+| RAC-RS-13 | harness | RAC-MUT-13 | an alias insertion replaces the first source | `first_source_representative_survives_alias_insertion` | `first_source_representative_survives_alias_insertion` | `1b2189f81a3fdec5d7e1e955fa8ce1ac37d40f5e7c2ec47f2aeba2b2581e54ab` |
+| RAC-RS-14 | harness | RAC-MUT-14 | a candidate commits without the epoch check | `stale_accelerator_candidates_never_commit` | `stale_accelerator_candidates_never_commit` | `8e9193336223023e696d0ddc3e8ec7b4eafe7cb1dcad68ffef800fe02ba96199` |
+| RAC-RS-15 | harness | RAC-MUT-15 | the target erases the peeks | `metadata_distinct_records_keep_distinct_ids` | `metadata_distinct_records_keep_distinct_ids` | `4b3a4f3c1a8e3d2077f02d9dab4426c8804de376e1d88d285db8a2ce81042d03` |
+| RAC-RS-16 | harness | RAC-TLA-04 | a removal leaves its occurrences in a current accelerator | `reference_answers_never_include_absent_receives` | `reference_answers_never_include_absent_receives` | `1de1668b94f728723af90e1c5eb19b5412a326dd84fe5d091ba175a8b4ae0681` |
+| RAC-RS-17 | production | RAC-RC-15 | `put_continuation` keeps the group's epoch after an insertion (`hot_store.rs:1034-1035`) | `incremental_insertion_equals_rebuild` | `incremental_insertion_equals_rebuild` | `3760c1d7f376266954c892692636253fb6b29ec54e4a2b8e4ab1989572c959d8` |
+| RAC-RS-18 | production | RAC-RC-18 | `install_continuation` keeps the group's epoch (`hot_store.rs:1047-1048`) | `install_and_generation_uninstall_equal_rebuild` | `install_and_generation_uninstall_equal_rebuild` | `6e0956879db1b272724ee8986d96440af4e4b05404ae167f15bb2357974f64ae` |
+| RAC-RS-19 | production | RAC-RC-16 | `remove_continuation` keeps the group's epoch (`hot_store.rs:1084-1086`) | `incremental_nonfinal_removal_equals_rebuild` | `incremental_nonfinal_removal_equals_rebuild` | `a254bd6c48b217c51a398c2757d314bce3db0733156791c76b2827abce3ed757` |
+| RAC-RS-20 | production | RAC-RC-21 | an accepted ordinary removal keeps the group's epoch (`hot_store.rs:1593`) | `equal_versions_imply_equal_group_relation` | `equal_versions_imply_equal_group_relation` | `1fcf586a324ae2348fafd4259b07165e86ad650b0463b48cf7cf57b14393e9a1` |
+| RAC-RS-21 | production | RAC-RC-20 | `clear` keeps the generation (`hot_store.rs:1972-1973`) | `clear_and_set_state_invalidate_every_held_version_and_rebuild_equal` | `clear_and_set_state_invalidate_every_held_version_and_rebuild_equal` | `85815c5f0c9aaaa1d8ffe9eb17f0b4698743bf800a91c85a09fbb4011a314025` |
+| RAC-RS-22 | production | RAC-RC-13 | `set_state` copies the old base epoch into its replacement (after `hot_store.rs:2027`) | `ids_from_a_prior_revision_or_generation_never_resolve` | `ids_from_a_prior_revision_or_generation_never_resolve` | `50790601a39369db6513c009915349f7a77f62e72d1e7d10b9e0c4601401105c` |
+| RAC-RS-23 | production | RAC-RC-25 | the stale-ticket check accepts a changed version (`hot_store.rs:1518`) | `stale_accelerator_candidates_never_commit` | `stale_accelerator_candidates_never_commit` | `816ef243b283a8474ab7120b9ba7fa228d75f890124c9401ba3dab9e812dac7a` |
+| RAC-RS-24 | production | RAC-RC-24 | the retained-set automaton cache ignores the version (`rspace.rs:1166-1167`) | `same_count_group_replacement_never_reuses_a_stale_automaton` | `same_count_group_replacement_never_reuses_a_stale_automaton` | `5733fb7a1c6d15c87afe4cfdfb7c952b62ba4bd53826db3e95f98fc572b8cfd0` |
+| RAC-RS-25 | harness | adoption clause of RAC-RC-20 and RAC-TLA-08 | adoption ignores the bound semantic manifest | the persisted-manifest library test | `rspace::persistence::tests::receive_accelerator_manifest_binding::persisted_accelerator_adoption_requires_the_bound_semantic_manifest` | `4808eead86469d379cf1c95621f108f3d15edf5ab238deb8fd68906c5e8efb36` |
+
+The TLA+ controls are the ten mutant configurations of
+`RSpaceReceiveAcceleratorCoherenceMutants.tla`. Each keeps every real action,
+adds one wrong action, and checks `TypeInvariant` and its single target.
+
+| TLA+ control | Wrong action | Target invariant | Result |
+|---|---|---|---|
+| RAC-TMUT-01 `SplitPublication` | a build publishes its automaton artifact at the revision of the accelerator it replaces | RAC-TLA-02 `PublishedArtifactsShareOneRevision` | `Invariant PublishedArtifactsShareOneRevision is violated` after 2 steps |
+| RAC-TMUT-02 `PartialRebuild` | the maintained update of an insert re-indexes only the channel at the group's first position | RAC-TLA-03 `CoherentAcceleratorEqualsDerivation` | `Invariant CoherentAcceleratorEqualsDerivation is violated` after 2 steps |
+| RAC-TMUT-03 `UnsoundAnswer` | a read adds every entry of the held snapshot to its answer | RAC-TLA-04 `AnswerIsSound` | `Invariant AnswerIsSound is violated` after 3 steps |
+| RAC-TMUT-04 `AbsentAsEmpty` | an absent accelerator answers the empty set | RAC-TLA-05 `NoEnabledReceiveHidden` | `Invariant NoEnabledReceiveHidden is violated` after 1 step |
+| RAC-TMUT-05 `StaleAnswer` | a read answers from a held snapshot whose store or installed-version token is behind the current one | RAC-TLA-06 `StaleAcceleratorNeverAnswers` | `Invariant StaleAcceleratorNeverAnswers is violated` after 4 steps |
+| RAC-TMUT-06 `IncompleteAnswer` | a read answers from a current snapshot whose scope misses a group that has targets | RAC-TLA-07 `IncompleteAcceleratorNeverAnswers` | `Invariant IncompleteAcceleratorNeverAnswers is violated` after 4 steps |
+| RAC-TMUT-07 `ForeignAdoption` | a reset adopts the persisted accelerator although its manifest differs from the reset target | RAC-TLA-08 `ForeignAcceleratorNeverAdopted` | `Invariant ForeignAcceleratorNeverAdopted is violated` after 1 step |
+| RAC-TMUT-08 `StaleCandidateCommit` | a resting candidate commits without comparing its ticket with its group's epoch | RAC-TLA-09 `StaleCandidateNeverCommits` | `Invariant StaleCandidateNeverCommits is violated` after 3 steps |
+| RAC-TMUT-09 `FailedUpdateLeak` | a failed insert leaks its record and joins into the semantic state while the revision, the epochs and the accelerator stay as they were | RAC-TLA-10 `FailedUpdateIsNonMutating` | `Invariant FailedUpdateIsNonMutating is violated` after 1 step |
+| RAC-TMUT-10 `SemanticPollution` | an insert computes the semantic identity from the accelerator's scope instead of the semantic roots | RAC-TLA-11 `SemanticIdentityIsAcceleratorFree` | `Invariant SemanticIdentityIsAcceleratorFree is violated` after 1 step |
+
+**VERIFICATION BOUNDARY.** The evidence of slice 8010.4 ran on tree
+`04f12116`, exported to `target/scratch/idx`. It differs from the commit that
+adds this entry only in documentation written after the runs, all of it in this
+entry. One heavy job ran at a time, each in a user scope with zero swap on
+cores 16 to 31 and their siblings.
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| the runner's `--receive-accelerator` flag | the slice 8010.4 export, `TLC_RUNTIME_MAX_SEC=3600` | passed in 322 s with the final line "stack-safe-pda: focused receive accelerator proof, model and runtime gates passed": the checker's self-test passed; the four imports printed 0, 5, 21 and 54 closed reports and the two new files 26 and 16, and the counts 5, 21, 26 and 16 are checked; no placeholder; `coqchk`: "Modules were successfully checked"; TLC: the base model with no error, 202,406 distinct states (534,006 generated, search depth 6), and each of the ten mutants violated its own target; the suites passed 31, 1 and 5 and the nine pins as H5 lists | `target/perf/logs/8010/flag-11998-20261101T042016Z.log` (pgmcp artifacts 1366 to 1369, split at line boundaries) | `006bc5e15f0384a1311a8e1b051b7ee031002bca20a9ef55a3decd864acbaf7d` |
+| the Rocq focus of slice 8010.1 and its count control | the slice 8010.1 export | as H1 | `target/perf/logs/phase0/8010a-rocq-20261101T024643Z.log` and `target/perf/logs/phase0/8010a-red-rocq-20261101T024717Z.log` (pgmcp artifacts 1306 and 1307) | `a2e8bab48068c66221c9c0f149e36ab9855cbd05465334647d5d9415539952e8` and `4da12dfbc1ee3f42728843e9cc44a3105aee35279ae565d09cdeb0680bde9556` |
+| the TLC driver of slice 8010.2 | the slice 8010.2 export | as H2 | `target/perf/logs/8010/tlc-11996-20261101T031141Z.log` (sanitized copy: pgmcp artifact 1305) | `fa5bb66db56cd53ef737c2fa5cfa6a9d6c011dc136a469abda6451135c24005f` |
+| the specification, Rholang and library tests of slice 8010.3, and the skeleton red run | the slice 8010.3 export | as H3 | `target/perf/logs/8010/gate-11997-20261101T034547Z.log` (pgmcp artifact 1308) and `target/perf/logs/8010/red-11997-20261101T035318Z.log` (pgmcp artifact 1309) | `5bd92d8e8e2c4183a5a67d59d4dad92c8d756e0988c7d7a5824e1e9f317f4cee` and `005818573afb7041700e09cb344821ea77872c7be73b34255c4adc8af821c2fb` |
+| the 25 source controls | tree `1199984c`; debug | as the table above | `target/perf/logs/8010/red-11997-20261101T035318Z.log` (pgmcp artifact 1309) | `005818573afb7041700e09cb344821ea77872c7be73b34255c4adc8af821c2fb` |
+| the controls re-run at the completion commit (criterion 2561) | the tree of the commit that adds this entry; debug | required to kill 25 of 25 before the commit was made; the run postdates this entry, so pgmcp task 11998 records its result | pgmcp task 11998 | recorded there |
+| `cargo fmt --all -- --check` and `scripts/check-fmt.sh` | in the export | both passed: `cargo fmt` exited 0, and `check-fmt.sh` reported CLEAN with 0 diffs | `target/perf/logs/8010/gate-11998-20261101T041957Z.log` (pgmcp artifact 1365) | `1e106748f060361953bababcb446a3987079dc10c24ffabeff5a4ae79e4f077e` |
+| `cargo clippy` | not re-run in the export | slice 8010.4 changes no Rust source; slice 8010.3's run over the three new test targets reported nothing in a touched file, and the pre-commit hook ran `cargo clippy --workspace -- -D warnings` on the working tree of this commit | `target/perf/logs/8010/clippy-11997-20261101T035254Z.log` (pgmcp artifact 1310) | `fa71f96d67d1d42cd8ae2bfdda07d537f1ad693487720c1729a15523c1157751` |
+| every obligation registry's `--check` and `--self-test`, then the aggregate's | in the export | every family registry and the aggregate current, and every `--self-test` passed: 17 families, 856 identifiers; the log also holds the red step | `target/perf/logs/8010/final-11998-evidence-20261101T041849Z.log` (pgmcp artifact 1364) | `48c29502fc2c9b7f19409417807b513c7578b72d115181a5f60342e860dde067` |
+
+The logs live under `target/`, which is not durable; pgmcp holds copies as the
+artifacts named above. The copies of slices 8010.3 and 8010.4 are sanitized,
+with the repository root written as `.` and the home directory as `~`, and
+artifacts 1363 and 1371 map each of their logs to its raw and sanitized SHA-256
+and its artifacts.
+These are agent-run results; independent review and the approved pgmcp
+verification recipe remain required.
+
+**RESIDUAL UNCERTAINTY.**
+
+- *The manifest is idealized in the model.* Rocq treats `ObjectRefV1` identity
+  as equality of the roots. The real binding, a BLAKE2b-256 digest together with
+  the encoded length, is exercised only by the persisted-manifest library test,
+  and only against the reference adoption rule; no production adoption path
+  exists before task 8011.
+- *There is no production store revision.* The reference compares the complete
+  map of group versions. A production accelerator needs a store-level
+  $`\sigma`$, which is task 8011's first obligation.
+- *Harness controls are not production evidence.* The seventeen harness
+  controls show that the tests can observe each property in the reference. Only
+  the eight production controls change production source, and they test the
+  signals the relation depends on, not an accelerator.
+- *The JoinBag can lag the ContinuationMap.* `remove_continuation` does not
+  remove joins, so RAC-RC-08 assumes that the joins cover the targets, and test
+  7 compares only groups that have targets.
+- *An install always issues fresh tokens.* A byte-equal reinstall bumps the
+  group's epoch. This costs a rebuild or an update and is never unsafe.
+- *Uninstall exists only by replacement.* Production has no uninstall
+  operation; the only ways to remove an installed record are `set_state`,
+  `clear` and a revert, all of which issue a fresh generation. The model's
+  uninstall step is therefore more general than production.
+- *The TLA+ model is bounded.* TLC checks two records, two channels, two groups
+  and six tokens up to `MaxSteps`. A violation that needs a longer run or more
+  records is outside its reach.
+- *Generated cases are finite.* The properties run 256 cases for each
+  store-level property and 64 for each `RSpace` trace from one seed.
+- *Test 24 depends on engagement.* It is meaningful only if the retained path
+  is taken, which the `rspace.retained_automaton.cache_hit` metric confirms in
+  the same run.
+- *The two models publish differently.* The Rocq `publish_build` refuses a
+  scope that misses the support (RAC-RC-23), whereas the TLA+ `PublishBuild`
+  checks only the base revision and the lineage and can publish an Incomplete
+  accelerator, which RAC-TLA-07 keeps from answering. Both are safe because
+  `CLASSIFY` decides whether an accelerator answers; neither model fixes which
+  rule the production builder of task 8011 must follow.
+
+**BOUNDARY.**
+
+- No production source file, persisted byte, identity, format, root, wire
+  message or production outcome changes, so the consensus-change register gets
+  no note. The production controls exist only in exports of the tree.
+- The stack-safety report receives no new claim. The reference oracle is
+  iterative and lives in test support.
+- These consensus-visible observations are unchanged and flagged to the tasks
+  that own them (pgmcp progress notes 25869 on task 8012, 25870 on task 6021 and 25871 on task 7931):
+  - the bind positions of retained selection, found by typed channel equality
+    (`rspace++/src/rspace/rspace.rs:1154-1158`), for tasks 8012 and 6021;
+  - the retained selection filter, which keeps a candidate only when
+    `selection.get(index)` is `Some(true)` through `unwrap_or(false)`
+    (`rspace.rs:1093-1101`), so a short selection vector drops candidates
+    silently, for task 8012;
+  - the reducer's peek keys `0..sources.len() as i32`
+    (`rholang/src/rust/interpreter/reduce.rs:1460`), which are part of the
+    continuation identity and therefore of the state root;
+  - the matcher's pairing of channels with patterns by `zip`
+    (`rspace++/src/rspace/space_matcher.rs:636-637` and `:832-833`), which
+    truncates silently when the counts differ;
+  - RCI2 activation, which remains the task-6021 stop point;
+  - the durable path's `validate_continuation_record`
+    (`rspace++/src/rspace/persistence/semantic.rs:1082-1221`), which still
+    checks arity after a full decode, for task 7931;
+  - the bytes of `AcceleratorManifestV1`, which are unchanged.
+- The J-number is the one free at the completion commit (decision R5): J-254
+  was the last entry, so this entry is J-255, and task 7929's entry takes the
+  next number.
+- The index's later consumers are tasks 8011 (the production accelerator, which
+  must implement `AcceleratorUnderTest` and pass the same tests), 8012
+  (selection through the read rule and `apply_accepted_match`) and 8013
+  (qualification).
+
+Cited works: K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for
+random testing of Haskell programs", *Proceedings of the Fifth ACM SIGPLAN
+International Conference on Functional Programming (ICFP '00)*, 268–279, 2000,
+[doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266);
+R. A. DeMillo, R. J. Lipton and F. G. Sayward, "Hints on test data selection:
+help for the practicing programmer", *Computer* 11(4):34–41, 1978,
+[doi:10.1109/C-M.1978.218136](https://doi.org/10.1109/C-M.1978.218136);
+L. Lamport, "The temporal logic of actions", *ACM Transactions on Programming
+Languages and Systems* 16(3):872–923, 1994,
+[doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726); Y. Yu,
+P. Manolios and L. Lamport, "Model checking TLA+ specifications", *Correct
+Hardware Design and Verification Methods (CHARME 1999)*, Lecture Notes in
+Computer Science 1703, 54–66, 1999,
+[doi:10.1007/3-540-48153-2_6](https://doi.org/10.1007/3-540-48153-2_6).
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

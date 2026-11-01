@@ -1,9 +1,9 @@
 {
   "classified_obligations": {
-    "concrete_witness": 74,
+    "concrete_witness": 128,
     "executable_only": 9,
-    "executable_refinement": 150,
-    "proof_only": 521
+    "executable_refinement": 172,
+    "proof_only": 532
   },
   "families": [
     {
@@ -5706,6 +5706,943 @@
       }
     },
     {
+      "checker": "scripts/check-receive-accelerator-obligations.py",
+      "family": "receive_accelerator",
+      "manifest": "formal/receive_accelerator_obligations.generated.json",
+      "manifest_sha256": "c74db3bdcd892fdb7e6eb707065cc827478899abded56d0746261861bc96e8ce",
+      "obligations": {
+        "boundary": "The Rocq capstones and the bounded TLA+ invariants specify the derived index; the named tests check a test-only reference oracle over real HotStore and RSpace instances. Harness controls RAC-RS-01 to RAC-RS-16 and RAC-RS-25 show that each named test observes its property, and production controls RAC-RS-17 to RAC-RS-24 show that the tests observe the production revision signals. No production accelerator exists yet, and none of this is a formal Rust refinement proof.",
+        "mutants": {
+          "bridge": "implementation_with_correct_switches_is_the_model",
+          "closed_reports": 16,
+          "module": "TwoLevelRSpaceReceiveAcceleratorMutants",
+          "obligations": [
+            {
+              "id": "RAC-MUT-01",
+              "mode": "concrete_witness",
+              "obligation": "hash_only_receive_id_is_refuted",
+              "source_mutant": "RAC-RS-01",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "colliding_buckets_resolve_by_full_bytes"
+            },
+            {
+              "id": "RAC-MUT-02",
+              "mode": "concrete_witness",
+              "obligation": "ordinal_receive_id_is_refuted",
+              "source_mutant": "RAC-RS-02",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "incremental_nonfinal_removal_equals_rebuild"
+            },
+            {
+              "id": "RAC-MUT-03",
+              "mode": "concrete_witness",
+              "obligation": "absent_as_empty_is_refuted",
+              "source_mutant": "RAC-RS-03",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "reference_reads_equal_derivation_in_every_accelerator_state"
+            },
+            {
+              "id": "RAC-MUT-04",
+              "mode": "concrete_witness",
+              "obligation": "stale_snapshot_answer_is_refuted",
+              "source_mutant": "RAC-RS-04",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "stale_accelerators_fall_back_after_every_mutation"
+            },
+            {
+              "id": "RAC-MUT-05",
+              "mode": "concrete_witness",
+              "obligation": "foreign_accelerator_adoption_is_refuted",
+              "source_mutant": "RAC-RS-05",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "foreign_generation_or_manifest_accelerators_are_never_adopted"
+            },
+            {
+              "id": "RAC-MUT-06",
+              "mode": "concrete_witness",
+              "obligation": "incomplete_scope_answer_is_refuted",
+              "source_mutant": "RAC-RS-06",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "unloaded_history_groups_make_the_accelerator_incomplete"
+            },
+            {
+              "id": "RAC-MUT-07",
+              "mode": "concrete_witness",
+              "obligation": "collapsed_repeated_positions_are_refuted",
+              "source_mutant": "RAC-RS-07",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "repeated_channels_yield_one_occurrence_with_every_position"
+            },
+            {
+              "id": "RAC-MUT-08",
+              "mode": "concrete_witness",
+              "obligation": "installed_resting_collapse_is_refuted",
+              "source_mutant": "RAC-RS-08",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "install_and_generation_uninstall_equal_rebuild"
+            },
+            {
+              "id": "RAC-MUT-09",
+              "mode": "concrete_witness",
+              "obligation": "order_sensitive_derivation_is_refuted",
+              "source_mutant": "RAC-RS-09",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "construction_order_does_not_change_the_relation_or_ids"
+            },
+            {
+              "id": "RAC-MUT-10",
+              "mode": "concrete_witness",
+              "obligation": "split_artifact_publication_is_refuted",
+              "source_mutant": "RAC-RS-10",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "catalog_occurrence_and_automaton_publish_at_one_revision"
+            },
+            {
+              "id": "RAC-MUT-11",
+              "mode": "concrete_witness",
+              "obligation": "failed_update_leak_is_refuted",
+              "source_mutant": "RAC-RS-11",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "failed_update_leaves_store_and_accelerator_unchanged"
+            },
+            {
+              "id": "RAC-MUT-12",
+              "mode": "concrete_witness",
+              "obligation": "accelerator_in_semantic_identity_is_refuted",
+              "source_mutant": "RAC-RS-12",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "enabled_and_disabled_acceleration_select_identically"
+            },
+            {
+              "id": "RAC-MUT-13",
+              "mode": "concrete_witness",
+              "obligation": "last_source_wins_is_refuted",
+              "source_mutant": "RAC-RS-13",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "first_source_representative_survives_alias_insertion"
+            },
+            {
+              "id": "RAC-MUT-14",
+              "mode": "concrete_witness",
+              "obligation": "unchecked_candidate_commit_is_refuted",
+              "source_mutant": "RAC-RS-14",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "stale_accelerator_candidates_never_commit"
+            },
+            {
+              "id": "RAC-MUT-15",
+              "mode": "concrete_witness",
+              "obligation": "metadata_erasing_target_is_refuted",
+              "source_mutant": "RAC-RS-15",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "metadata_distinct_records_keep_distinct_ids"
+            }
+          ],
+          "print_assumptions": [
+            "implementation_with_correct_switches_is_the_model",
+            "hash_only_receive_id_is_refuted",
+            "ordinal_receive_id_is_refuted",
+            "absent_as_empty_is_refuted",
+            "stale_snapshot_answer_is_refuted",
+            "foreign_accelerator_adoption_is_refuted",
+            "incomplete_scope_answer_is_refuted",
+            "collapsed_repeated_positions_are_refuted",
+            "installed_resting_collapse_is_refuted",
+            "order_sensitive_derivation_is_refuted",
+            "split_artifact_publication_is_refuted",
+            "failed_update_leak_is_refuted",
+            "accelerator_in_semantic_identity_is_refuted",
+            "last_source_wins_is_refuted",
+            "unchecked_candidate_commit_is_refuted",
+            "metadata_erasing_target_is_refuted"
+          ],
+          "source": "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorMutants.v"
+        },
+        "normal_suite": {
+          "library_filter": "receive_accelerator_manifest_binding",
+          "runner_flag": "--receive-accelerator",
+          "tests": {
+            "rholang/tests/receive_accelerator_rholang.rs": [
+              "compiled_repeated_joins_derive_exact_occurrences",
+              "compiled_join_capacity_agrees_with_occurrence_multiplicity",
+              "installed_and_resting_receives_derive_distinct_occurrences",
+              "checkpoint_reset_and_soft_revert_rebuild_identical_occurrences",
+              "both_matching_directions_maintain_the_derived_relation"
+            ],
+            "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs": [
+              "persisted_accelerator_adoption_requires_the_bound_semantic_manifest"
+            ],
+            "rspace++/tests/receive_accelerator_spec.rs": [
+              "reference_occurrences_are_sound_over_generated_groups",
+              "reference_occurrences_are_complete_over_generated_groups",
+              "occurrence_positions_factor_through_the_group",
+              "repeated_channels_yield_one_occurrence_with_every_position",
+              "prefix_aliased_channel_images_never_share_occurrences",
+              "derivation_ignores_data_and_authority_orders",
+              "join_bag_projection_matches_derived_groups",
+              "construction_order_does_not_change_the_relation_or_ids",
+              "receive_ids_resolve_only_to_byte_identical_records",
+              "metadata_distinct_records_keep_distinct_ids",
+              "colliding_buckets_resolve_by_full_bytes",
+              "ids_from_a_prior_revision_or_generation_never_resolve",
+              "first_source_representative_survives_alias_insertion",
+              "incremental_insertion_equals_rebuild",
+              "incremental_nonfinal_removal_equals_rebuild",
+              "incremental_final_removal_equals_rebuild_and_clears_the_group",
+              "install_and_generation_uninstall_equal_rebuild",
+              "history_load_and_duplicate_put_are_relation_and_version_neutral",
+              "clear_and_set_state_invalidate_every_held_version_and_rebuild_equal",
+              "equal_versions_imply_equal_group_relation",
+              "reference_reads_equal_derivation_in_every_accelerator_state",
+              "failed_update_leaves_store_and_accelerator_unchanged",
+              "catalog_occurrence_and_automaton_publish_at_one_revision",
+              "same_count_group_replacement_never_reuses_a_stale_automaton",
+              "stale_accelerator_candidates_never_commit",
+              "enabled_and_disabled_acceleration_select_identically",
+              "incremental_maintenance_equals_rebuild_over_generated_traces",
+              "reference_answers_never_include_absent_receives",
+              "stale_accelerators_fall_back_after_every_mutation",
+              "unloaded_history_groups_make_the_accelerator_incomplete",
+              "foreign_generation_or_manifest_accelerators_are_never_adopted"
+            ]
+          }
+        },
+        "persisted_manifest_witness": {
+          "catalog_row": "TLRS-RECEIVE-28",
+          "refines": [
+            "RAC-RC-20",
+            "RAC-TLA-08"
+          ],
+          "source_mutant": "RAC-RS-25",
+          "test_source": "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs",
+          "test_target": "persisted_accelerator_adoption_requires_the_bound_semantic_manifest"
+        },
+        "rocq": {
+          "closed_reports": 26,
+          "module": "TwoLevelRSpaceReceiveAccelerator",
+          "obligations": [
+            {
+              "id": "RAC-RC-01",
+              "mode": "concrete_witness",
+              "obligation": "derived_occurrence_is_sound",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "reference_occurrences_are_sound_over_generated_groups"
+            },
+            {
+              "id": "RAC-RC-02",
+              "mode": "concrete_witness",
+              "obligation": "derived_occurrence_is_complete",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "reference_occurrences_are_complete_over_generated_groups"
+            },
+            {
+              "id": "RAC-RC-03",
+              "mode": "concrete_witness",
+              "obligation": "derived_positions_factor_through_group",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "occurrence_positions_factor_through_the_group"
+            },
+            {
+              "id": "RAC-RC-04",
+              "mode": "concrete_witness",
+              "obligation": "repeated_channel_is_one_occurrence_with_all_positions",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "repeated_channels_yield_one_occurrence_with_every_position"
+            },
+            {
+              "id": "RAC-RC-05",
+              "mode": "executable_refinement",
+              "obligation": "occurrence_capacity_is_position_multiplicity",
+              "test_source": "rholang/tests/receive_accelerator_rholang.rs",
+              "test_target": "compiled_join_capacity_agrees_with_occurrence_multiplicity"
+            },
+            {
+              "id": "RAC-RC-06",
+              "mode": "concrete_witness",
+              "obligation": "prefix_aliased_channels_have_disjoint_occurrences",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "prefix_aliased_channel_images_never_share_occurrences"
+            },
+            {
+              "id": "RAC-RC-07",
+              "mode": "executable_refinement",
+              "obligation": "derivation_ignores_data_and_runtime_order",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "derivation_ignores_data_and_authority_orders"
+            },
+            {
+              "id": "RAC-RC-08",
+              "mode": "executable_refinement",
+              "obligation": "join_root_projection_is_exact",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "join_bag_projection_matches_derived_groups"
+            },
+            {
+              "id": "RAC-RC-09",
+              "mode": "executable_refinement",
+              "obligation": "derivation_is_order_neutral",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "construction_order_does_not_change_the_relation_or_ids"
+            },
+            {
+              "id": "RAC-RC-10",
+              "mode": "concrete_witness",
+              "obligation": "receive_id_resolution_is_exact",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "receive_ids_resolve_only_to_byte_identical_records"
+            },
+            {
+              "id": "RAC-RC-11",
+              "mode": "concrete_witness",
+              "obligation": "distinct_records_have_distinct_receive_ids",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "metadata_distinct_records_keep_distinct_ids"
+            },
+            {
+              "id": "RAC-RC-12",
+              "mode": "concrete_witness",
+              "obligation": "hash_bucket_resolution_is_collision_checked",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "colliding_buckets_resolve_by_full_bytes"
+            },
+            {
+              "id": "RAC-RC-13",
+              "mode": "concrete_witness",
+              "obligation": "stale_revision_never_resolves",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "ids_from_a_prior_revision_or_generation_never_resolve"
+            },
+            {
+              "id": "RAC-RC-14",
+              "mode": "executable_refinement",
+              "obligation": "first_identity_representative_is_preserved",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "first_source_representative_survives_alias_insertion"
+            },
+            {
+              "id": "RAC-RC-15",
+              "mode": "executable_refinement",
+              "obligation": "insertion_update_equals_rebuild",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "incremental_insertion_equals_rebuild"
+            },
+            {
+              "id": "RAC-RC-16",
+              "mode": "executable_refinement",
+              "obligation": "nonfinal_removal_update_equals_rebuild",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "incremental_nonfinal_removal_equals_rebuild"
+            },
+            {
+              "id": "RAC-RC-17",
+              "mode": "executable_refinement",
+              "obligation": "final_removal_update_equals_rebuild",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "incremental_final_removal_equals_rebuild_and_clears_the_group"
+            },
+            {
+              "id": "RAC-RC-18",
+              "mode": "executable_refinement",
+              "obligation": "install_and_uninstall_update_equals_rebuild",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "install_and_generation_uninstall_equal_rebuild"
+            },
+            {
+              "id": "RAC-RC-19",
+              "mode": "executable_refinement",
+              "obligation": "history_load_and_byte_equal_replacement_preserve_derivation",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "history_load_and_duplicate_put_are_relation_and_version_neutral"
+            },
+            {
+              "id": "RAC-RC-20",
+              "mode": "executable_refinement",
+              "obligation": "reset_issues_fresh_generation_and_rebuilds",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "clear_and_set_state_invalidate_every_held_version_and_rebuild_equal"
+            },
+            {
+              "id": "RAC-RC-21",
+              "mode": "executable_refinement",
+              "obligation": "same_revision_same_derivation",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "equal_versions_imply_equal_group_relation"
+            },
+            {
+              "id": "RAC-RC-22",
+              "mode": "concrete_witness",
+              "obligation": "read_never_hides_an_enabled_receive",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "reference_reads_equal_derivation_in_every_accelerator_state"
+            },
+            {
+              "id": "RAC-RC-23",
+              "mode": "concrete_witness",
+              "obligation": "failed_or_stale_update_publishes_nothing",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "failed_update_leaves_store_and_accelerator_unchanged"
+            },
+            {
+              "id": "RAC-RC-24",
+              "mode": "executable_refinement",
+              "obligation": "published_artifacts_share_one_revision",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "same_count_group_replacement_never_reuses_a_stale_automaton"
+            },
+            {
+              "id": "RAC-RC-25",
+              "mode": "executable_refinement",
+              "obligation": "accelerator_candidate_commit_refines_accepted_match",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "stale_accelerator_candidates_never_commit"
+            },
+            {
+              "id": "RAC-RC-26",
+              "mode": "concrete_witness",
+              "obligation": "semantic_successor_is_accelerator_free",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "enabled_and_disabled_acceleration_select_identically"
+            }
+          ],
+          "print_assumptions": [
+            "derived_occurrence_is_sound",
+            "derived_occurrence_is_complete",
+            "derived_positions_factor_through_group",
+            "repeated_channel_is_one_occurrence_with_all_positions",
+            "occurrence_capacity_is_position_multiplicity",
+            "prefix_aliased_channels_have_disjoint_occurrences",
+            "derivation_ignores_data_and_runtime_order",
+            "join_root_projection_is_exact",
+            "derivation_is_order_neutral",
+            "receive_id_resolution_is_exact",
+            "distinct_records_have_distinct_receive_ids",
+            "hash_bucket_resolution_is_collision_checked",
+            "stale_revision_never_resolves",
+            "first_identity_representative_is_preserved",
+            "insertion_update_equals_rebuild",
+            "nonfinal_removal_update_equals_rebuild",
+            "final_removal_update_equals_rebuild",
+            "install_and_uninstall_update_equals_rebuild",
+            "history_load_and_byte_equal_replacement_preserve_derivation",
+            "reset_issues_fresh_generation_and_rebuilds",
+            "same_revision_same_derivation",
+            "read_never_hides_an_enabled_receive",
+            "failed_or_stale_update_publishes_nothing",
+            "published_artifacts_share_one_revision",
+            "accelerator_candidate_commit_refines_accepted_match",
+            "semantic_successor_is_accelerator_free"
+          ],
+          "source": "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAccelerator.v"
+        },
+        "scope": "Generation-bound receive occurrence index: the receive relation derived from the semantic roots and the versioned installed input, exact receive identifiers, revision-bound accelerator classes, artifact publication, failure atomicity and candidate commit (design 8010)",
+        "source_mutants": {
+          "generator": "scripts/generate-receive-accelerator-mutant.py",
+          "obligations": [
+            {
+              "description": "a receive identifier resolves by its hash bucket alone",
+              "formal": [
+                "RAC-MUT-01"
+              ],
+              "id": "RAC-RS-01",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "colliding_buckets_resolve_by_full_bytes"
+            },
+            {
+              "description": "a receive identifier is the record's ordinal in its group, so a maintained removal deletes the catalog entry at ordinal 0 instead of the named target",
+              "formal": [
+                "RAC-MUT-02"
+              ],
+              "id": "RAC-RS-02",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "incremental_nonfinal_removal_equals_rebuild"
+            },
+            {
+              "description": "an absent accelerator answers the empty set",
+              "formal": [
+                "RAC-MUT-03"
+              ],
+              "id": "RAC-RS-03",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "reference_reads_equal_derivation_in_every_accelerator_state"
+            },
+            {
+              "description": "a stale accelerator answers from its old entries",
+              "formal": [
+                "RAC-MUT-04"
+              ],
+              "id": "RAC-RS-04",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "stale_accelerators_fall_back_after_every_mutation"
+            },
+            {
+              "description": "the classifier ignores the generation, so an accelerator of a foreign generation is taken for a current or stale one",
+              "formal": [
+                "RAC-MUT-05"
+              ],
+              "id": "RAC-RS-05",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "foreign_generation_or_manifest_accelerators_are_never_adopted"
+            },
+            {
+              "description": "an incomplete accelerator is classified as coherent and answers",
+              "formal": [
+                "RAC-MUT-06"
+              ],
+              "id": "RAC-RS-06",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "unloaded_history_groups_make_the_accelerator_incomplete"
+            },
+            {
+              "description": "a repeated channel keeps only its first position",
+              "formal": [
+                "RAC-MUT-07"
+              ],
+              "id": "RAC-RS-07",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "repeated_channels_yield_one_occurrence_with_every_position"
+            },
+            {
+              "description": "the observation records an installed receive as resting, so it shares one target with a byte-identical resting record",
+              "formal": [
+                "RAC-MUT-08"
+              ],
+              "id": "RAC-RS-08",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "install_and_generation_uninstall_equal_rebuild"
+            },
+            {
+              "description": "the derivation keeps only the first receive of each group's ordered lookup, so it depends on construction order",
+              "formal": [
+                "RAC-MUT-09"
+              ],
+              "id": "RAC-RS-09",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "construction_order_does_not_change_the_relation_or_ids"
+            },
+            {
+              "description": "the automaton artifact keeps the previous revision",
+              "formal": [
+                "RAC-MUT-10"
+              ],
+              "id": "RAC-RS-10",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "catalog_occurrence_and_automaton_publish_at_one_revision"
+            },
+            {
+              "description": "a failed update publishes its partially updated catalog while the accelerator stays marked current",
+              "formal": [
+                "RAC-MUT-11"
+              ],
+              "id": "RAC-RS-11",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "failed_update_leaves_store_and_accelerator_unchanged"
+            },
+            {
+              "description": "the accelerator's occurrences carry a target that differs from the derived one, so the receive identity depends on whether the accelerator answered",
+              "formal": [
+                "RAC-MUT-12"
+              ],
+              "id": "RAC-RS-12",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "enabled_and_disabled_acceleration_select_identically"
+            },
+            {
+              "description": "an alias insertion replaces the first source",
+              "formal": [
+                "RAC-MUT-13"
+              ],
+              "id": "RAC-RS-13",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "first_source_representative_survives_alias_insertion"
+            },
+            {
+              "description": "a candidate commits without the revision check",
+              "formal": [
+                "RAC-MUT-14"
+              ],
+              "id": "RAC-RS-14",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "stale_accelerator_candidates_never_commit"
+            },
+            {
+              "description": "the target identity is the continuation body, which erases the persist flag and peeks",
+              "formal": [
+                "RAC-MUT-15"
+              ],
+              "id": "RAC-RS-15",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "metadata_distinct_records_keep_distinct_ids"
+            },
+            {
+              "description": "a removal leaves its occurrences in a current accelerator",
+              "formal": [
+                "RAC-TLA-04"
+              ],
+              "id": "RAC-RS-16",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_occurrence_reference.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "reference_answers_never_include_absent_receives"
+            },
+            {
+              "description": "put_continuation keeps the group's epoch after an insertion",
+              "formal": [
+                "RAC-RC-15"
+              ],
+              "id": "RAC-RS-17",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "incremental_insertion_equals_rebuild"
+            },
+            {
+              "description": "install_continuation keeps the group's epoch",
+              "formal": [
+                "RAC-RC-18"
+              ],
+              "id": "RAC-RS-18",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "install_and_generation_uninstall_equal_rebuild"
+            },
+            {
+              "description": "remove_continuation keeps the group's epoch",
+              "formal": [
+                "RAC-RC-16"
+              ],
+              "id": "RAC-RS-19",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "incremental_nonfinal_removal_equals_rebuild"
+            },
+            {
+              "description": "an accepted ordinary removal keeps the group's epoch",
+              "formal": [
+                "RAC-RC-21"
+              ],
+              "id": "RAC-RS-20",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "equal_versions_imply_equal_group_relation"
+            },
+            {
+              "description": "clear keeps the generation",
+              "formal": [
+                "RAC-RC-20"
+              ],
+              "id": "RAC-RS-21",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "clear_and_set_state_invalidate_every_held_version_and_rebuild_equal"
+            },
+            {
+              "description": "set_state copies the old base epoch into its replacement",
+              "formal": [
+                "RAC-RC-13"
+              ],
+              "id": "RAC-RS-22",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "ids_from_a_prior_revision_or_generation_never_resolve"
+            },
+            {
+              "description": "the stale-ticket check accepts a changed version",
+              "formal": [
+                "RAC-RC-25"
+              ],
+              "id": "RAC-RS-23",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "stale_accelerator_candidates_never_commit"
+            },
+            {
+              "description": "the retained-set automaton cache ignores the version",
+              "formal": [
+                "RAC-RC-24"
+              ],
+              "id": "RAC-RS-24",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/rspace.rs",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "same_count_group_replacement_never_reuses_a_stale_automaton"
+            },
+            {
+              "description": "adoption ignores the bound semantic manifest",
+              "formal": [
+                "RAC-RC-20",
+                "RAC-TLA-08"
+              ],
+              "id": "RAC-RS-25",
+              "mode": "concrete_witness",
+              "source": "rspace++/tests/support/receive_accelerator_adoption.rs",
+              "test_source": "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs",
+              "test_target": "persisted_accelerator_adoption_requires_the_bound_semantic_manifest"
+            }
+          ]
+        },
+        "sources_sha256": {
+          "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAccelerator.v": "48a60daa9439582d824da37ee2fdcb42e23e5ce131c0b0aa9d69058f6b8d1e48",
+          "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorMutants.v": "5c1b0eb4f1313f5ee63fbdec870ec911be359d50e8a324b305911c7f7f522e57",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.cfg": "038190d48c9b0a7b97927475fefe24689d23d92f1c485155831af1a84ce32283",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.tla": "f942fbcc68aa49023c72fdbf0df50bdc65d1da6aa3d5e1d2d06466bdd8b2184d",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceAbsentAsEmptyMutant.cfg": "6e83df9205dc91581a75aef1bb6bfcd0a923a9e5f75a87a5dcd24395e035ccfd",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceFailedUpdateLeakMutant.cfg": "bb6ad5cf5984b75305b091a1147fb7b71a7c890160ba896e84e04407dfc241c7",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceForeignAdoptionMutant.cfg": "58f95e83547d8e73e7624c8939ea48cd93596ced50fc9ce8a78e5a6297ac3915",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceIncompleteAnswerMutant.cfg": "fdeb90f176bc76cd6a64e9b6f2cb8c2a993937518adbcb5baca2b8e2c5362688",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceMutants.tla": "2e7894bfd4f342668ce93cd6d4671154006fa8bf6638027db44a05f8b61bef83",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherencePartialRebuildMutant.cfg": "2fdaecaaa5549911594cd64afd558a85d7ec8b6486c0e5c4c3f20a70503e78cd",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceSemanticPollutionMutant.cfg": "81ed043988f802f93c3e46b2f037446bf23144eb4f86052cf411f5c614228acd",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceSplitPublicationMutant.cfg": "d4a08dbd6028f5da72099ae808f4992ac70296fee02faaf4213d31db64b484cc",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceStaleAnswerMutant.cfg": "a71c6c2e8bffb5583a25ed49f304409081e75713ae89348ebf386d7ad3d12ecd",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceStaleCandidateCommitMutant.cfg": "7501f8caea56dabe95cc6822657505718825a5ed41696435996df6a16638996e",
+          "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceUnsoundAnswerMutant.cfg": "e7bad44a21a477ee00147e0bb29a65f06f98365567a7dcc922e86b4af516ef17",
+          "rholang/tests/receive_accelerator_rholang.rs": "ddc29e65936a99bf37cca7aff46730020a495723665d1f093ea5ba8c6c46cbd5",
+          "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs": "e6ac470d915bf2a54e65bd8454be68bd647b0c52d7664a17fdaa331567fcacec",
+          "rspace++/tests/receive_accelerator_spec.rs": "e9006a8767fdf5745f34a8470c029d1ec576b325330bb8c639e9298df06738ef",
+          "rspace++/tests/support/receive_accelerator_adoption.rs": "2951e1a411f26b6733c18ffd14dc34cb587b17ac1e7f457d873d6a0392304798",
+          "rspace++/tests/support/receive_occurrence_reference.rs": "610ae1a9888a343957f70abe1ed0414a8d1a70e9f47219f38c352a3329d3b9fc",
+          "scripts/check-receive-accelerator-obligations.py": "96120ce761e5641d08abb53805db13fd65fdc657e631c2273b490c83f4cdaf84",
+          "scripts/generate-receive-accelerator-mutant.py": "7eb730b0350d183088d087d23f5c28215c2cfa1f8253031b9fbd84e8ef3eee76"
+        },
+        "tla": {
+          "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.cfg",
+          "model": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.tla",
+          "obligations": [
+            {
+              "id": "RAC-TLA-01",
+              "mode": "proof_only",
+              "obligation": "TypeInvariant",
+              "test_source": null,
+              "test_target": null,
+              "tla_mutant": null
+            },
+            {
+              "id": "RAC-TLA-02",
+              "mode": "concrete_witness",
+              "obligation": "PublishedArtifactsShareOneRevision",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "catalog_occurrence_and_automaton_publish_at_one_revision",
+              "tla_mutant": "RAC-TMUT-01"
+            },
+            {
+              "id": "RAC-TLA-03",
+              "mode": "concrete_witness",
+              "obligation": "CoherentAcceleratorEqualsDerivation",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "incremental_maintenance_equals_rebuild_over_generated_traces",
+              "tla_mutant": "RAC-TMUT-02"
+            },
+            {
+              "id": "RAC-TLA-04",
+              "mode": "concrete_witness",
+              "obligation": "AnswerIsSound",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "reference_answers_never_include_absent_receives",
+              "tla_mutant": "RAC-TMUT-03"
+            },
+            {
+              "id": "RAC-TLA-05",
+              "mode": "concrete_witness",
+              "obligation": "NoEnabledReceiveHidden",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "reference_reads_equal_derivation_in_every_accelerator_state",
+              "tla_mutant": "RAC-TMUT-04"
+            },
+            {
+              "id": "RAC-TLA-06",
+              "mode": "concrete_witness",
+              "obligation": "StaleAcceleratorNeverAnswers",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "stale_accelerators_fall_back_after_every_mutation",
+              "tla_mutant": "RAC-TMUT-05"
+            },
+            {
+              "id": "RAC-TLA-07",
+              "mode": "concrete_witness",
+              "obligation": "IncompleteAcceleratorNeverAnswers",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "unloaded_history_groups_make_the_accelerator_incomplete",
+              "tla_mutant": "RAC-TMUT-06"
+            },
+            {
+              "id": "RAC-TLA-08",
+              "mode": "concrete_witness",
+              "obligation": "ForeignAcceleratorNeverAdopted",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "foreign_generation_or_manifest_accelerators_are_never_adopted",
+              "tla_mutant": "RAC-TMUT-07"
+            },
+            {
+              "id": "RAC-TLA-09",
+              "mode": "concrete_witness",
+              "obligation": "StaleCandidateNeverCommits",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "stale_accelerator_candidates_never_commit",
+              "tla_mutant": "RAC-TMUT-08"
+            },
+            {
+              "id": "RAC-TLA-10",
+              "mode": "concrete_witness",
+              "obligation": "FailedUpdateIsNonMutating",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "failed_update_leaves_store_and_accelerator_unchanged",
+              "tla_mutant": "RAC-TMUT-09"
+            },
+            {
+              "id": "RAC-TLA-11",
+              "mode": "concrete_witness",
+              "obligation": "SemanticIdentityIsAcceleratorFree",
+              "test_source": "rspace++/tests/receive_accelerator_spec.rs",
+              "test_target": "enabled_and_disabled_acceleration_select_identically",
+              "tla_mutant": "RAC-TMUT-10"
+            }
+          ],
+          "specification": "Spec"
+        },
+        "tla_mutants": {
+          "model": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceMutants.tla",
+          "obligations": [
+            {
+              "action": "SplitPublication",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceSplitPublicationMutant.cfg",
+              "expected_invariant": "PublishedArtifactsShareOneRevision",
+              "id": "RAC-TMUT-01",
+              "mode": "proof_only",
+              "obligation": "SplitPublicationSpec",
+              "refutes": "RAC-TLA-02",
+              "runner_label": "split-publication"
+            },
+            {
+              "action": "PartialRebuild",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherencePartialRebuildMutant.cfg",
+              "expected_invariant": "CoherentAcceleratorEqualsDerivation",
+              "id": "RAC-TMUT-02",
+              "mode": "proof_only",
+              "obligation": "PartialRebuildSpec",
+              "refutes": "RAC-TLA-03",
+              "runner_label": "partial-rebuild"
+            },
+            {
+              "action": "UnsoundAnswer",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceUnsoundAnswerMutant.cfg",
+              "expected_invariant": "AnswerIsSound",
+              "id": "RAC-TMUT-03",
+              "mode": "proof_only",
+              "obligation": "UnsoundAnswerSpec",
+              "refutes": "RAC-TLA-04",
+              "runner_label": "unsound-answer"
+            },
+            {
+              "action": "AbsentAsEmpty",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceAbsentAsEmptyMutant.cfg",
+              "expected_invariant": "NoEnabledReceiveHidden",
+              "id": "RAC-TMUT-04",
+              "mode": "proof_only",
+              "obligation": "AbsentAsEmptySpec",
+              "refutes": "RAC-TLA-05",
+              "runner_label": "absent-as-empty"
+            },
+            {
+              "action": "StaleAnswer",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceStaleAnswerMutant.cfg",
+              "expected_invariant": "StaleAcceleratorNeverAnswers",
+              "id": "RAC-TMUT-05",
+              "mode": "proof_only",
+              "obligation": "StaleAnswerSpec",
+              "refutes": "RAC-TLA-06",
+              "runner_label": "stale-answer"
+            },
+            {
+              "action": "IncompleteAnswer",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceIncompleteAnswerMutant.cfg",
+              "expected_invariant": "IncompleteAcceleratorNeverAnswers",
+              "id": "RAC-TMUT-06",
+              "mode": "proof_only",
+              "obligation": "IncompleteAnswerSpec",
+              "refutes": "RAC-TLA-07",
+              "runner_label": "incomplete-answer"
+            },
+            {
+              "action": "ForeignAdoption",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceForeignAdoptionMutant.cfg",
+              "expected_invariant": "ForeignAcceleratorNeverAdopted",
+              "id": "RAC-TMUT-07",
+              "mode": "proof_only",
+              "obligation": "ForeignAdoptionSpec",
+              "refutes": "RAC-TLA-08",
+              "runner_label": "foreign-adoption"
+            },
+            {
+              "action": "StaleCandidateCommit",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceStaleCandidateCommitMutant.cfg",
+              "expected_invariant": "StaleCandidateNeverCommits",
+              "id": "RAC-TMUT-08",
+              "mode": "proof_only",
+              "obligation": "StaleCandidateCommitSpec",
+              "refutes": "RAC-TLA-09",
+              "runner_label": "stale-candidate-commit"
+            },
+            {
+              "action": "FailedUpdateLeak",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceFailedUpdateLeakMutant.cfg",
+              "expected_invariant": "FailedUpdateIsNonMutating",
+              "id": "RAC-TMUT-09",
+              "mode": "proof_only",
+              "obligation": "FailedUpdateLeakSpec",
+              "refutes": "RAC-TLA-10",
+              "runner_label": "failed-update-leak"
+            },
+            {
+              "action": "SemanticPollution",
+              "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceSemanticPollutionMutant.cfg",
+              "expected_invariant": "SemanticIdentityIsAcceleratorFree",
+              "id": "RAC-TMUT-10",
+              "mode": "proof_only",
+              "obligation": "SemanticPollutionSpec",
+              "refutes": "RAC-TLA-11",
+              "runner_label": "semantic-pollution"
+            }
+          ]
+        }
+      }
+    },
+    {
       "checker": "scripts/check-retained-set-automaton-obligations.py",
       "family": "retained_set_automaton",
       "manifest": "formal/retained_set_automaton_obligations.generated.json",
@@ -7339,6 +8276,6 @@
       }
     }
   ],
-  "global_obligation_ids": 769,
+  "global_obligation_ids": 856,
   "scope": "PathMap integration formal obligations and normal-suite refinement bindings"
 }
