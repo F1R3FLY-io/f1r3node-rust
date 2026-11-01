@@ -1524,6 +1524,39 @@ do
 done
 python3 "$repo_root/scripts/check-ordered-receive-view-obligations.py" --check
 python3 "$repo_root/scripts/check-ordered-receive-view-obligations.py" --self-test
+tlc_run "$tla_metadir" \
+  RSpaceReceiveAcceleratorCoherence.cfg RSpaceReceiveAcceleratorCoherence.tla -cleanup
+for receive_accelerator_mutant in \
+  "split-publication:RSpaceReceiveAcceleratorCoherenceSplitPublicationMutant.cfg:PublishedArtifactsShareOneRevision" \
+  "partial-rebuild:RSpaceReceiveAcceleratorCoherencePartialRebuildMutant.cfg:CoherentAcceleratorEqualsDerivation" \
+  "unsound-answer:RSpaceReceiveAcceleratorCoherenceUnsoundAnswerMutant.cfg:AnswerIsSound" \
+  "absent-as-empty:RSpaceReceiveAcceleratorCoherenceAbsentAsEmptyMutant.cfg:NoEnabledReceiveHidden" \
+  "stale-answer:RSpaceReceiveAcceleratorCoherenceStaleAnswerMutant.cfg:StaleAcceleratorNeverAnswers" \
+  "incomplete-answer:RSpaceReceiveAcceleratorCoherenceIncompleteAnswerMutant.cfg:IncompleteAcceleratorNeverAnswers" \
+  "foreign-adoption:RSpaceReceiveAcceleratorCoherenceForeignAdoptionMutant.cfg:ForeignAcceleratorNeverAdopted" \
+  "stale-candidate-commit:RSpaceReceiveAcceleratorCoherenceStaleCandidateCommitMutant.cfg:StaleCandidateNeverCommits" \
+  "failed-update-leak:RSpaceReceiveAcceleratorCoherenceFailedUpdateLeakMutant.cfg:FailedUpdateIsNonMutating" \
+  "semantic-pollution:RSpaceReceiveAcceleratorCoherenceSemanticPollutionMutant.cfg:SemanticIdentityIsAcceleratorFree"
+do
+  receive_accelerator_label="${receive_accelerator_mutant%%:*}"
+  receive_accelerator_tail="${receive_accelerator_mutant#*:}"
+  receive_accelerator_cfg="${receive_accelerator_tail%%:*}"
+  receive_accelerator_invariant="${receive_accelerator_tail#*:}"
+  if receive_accelerator_output="$({
+    tlc_run "$tla_metadir" \
+      "$receive_accelerator_cfg" RSpaceReceiveAcceleratorCoherenceMutants.tla -cleanup
+  } 2>&1)"; then
+    printf '%s\n' "$receive_accelerator_output"
+    echo "stack-safe-pda: ${receive_accelerator_label} receive-accelerator mutant unexpectedly passed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$receive_accelerator_output"
+  if ! grep -q "Invariant ${receive_accelerator_invariant} is violated" \
+      <<<"$receive_accelerator_output"; then
+    echo "stack-safe-pda: ${receive_accelerator_label} receive-accelerator mutant failed without ${receive_accelerator_invariant}" >&2
+    exit 1
+  fi
+done
 python3 "$repo_root/scripts/check-affine-import-obligations.py" --check
 python3 "$repo_root/scripts/check-affine-import-obligations.py" --self-test
 tlc_run "$tla_metadir" \
