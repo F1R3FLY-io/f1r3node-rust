@@ -1311,7 +1311,11 @@ impl RuntimeManager {
     }
 
     pub fn cached_block_index(&self, block_hash: &BlockHash) -> Option<BlockIndex> {
-        Self::get_cached_value(&self.block_index_cache, &self.block_index_cache_order, block_hash)
+        Self::get_cached_value(
+            &self.block_index_cache,
+            &self.block_index_cache_order,
+            block_hash,
+        )
     }
 
     /// Get or compute BlockIndex with caching
