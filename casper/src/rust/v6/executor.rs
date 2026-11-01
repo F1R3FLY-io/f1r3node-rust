@@ -122,6 +122,8 @@ pub struct EnvelopeExecutor {
     runtime_manager: Arc<RuntimeManager>,
     workers: usize,
     boxcar: Boxcar,
+    play_pool: parking_lot::Mutex<Vec<RhoRuntimeImpl>>,
+    replay_pool: parking_lot::Mutex<Vec<RhoRuntimeImpl>>,
 }
 
 impl EnvelopeExecutor {
@@ -130,6 +132,31 @@ impl EnvelopeExecutor {
             runtime_manager,
             workers: workers.max(1),
             boxcar: Boxcar::unbounded(),
+            play_pool: parking_lot::Mutex::new(Vec::new()),
+            replay_pool: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn play_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
+        let pooled = self.play_pool.lock().pop();
+        match pooled {
+            Some(runtime) => Ok(runtime),
+            None => self.runtime_manager.spawn_runtime().await,
+        }
+    }
+
+    async fn replay_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
+        let pooled = self.replay_pool.lock().pop();
+        match pooled {
+            Some(runtime) => Ok(runtime),
+            None => self.runtime_manager.spawn_replay_runtime().await,
+        }
+    }
+
+    fn give_back(&self, pool: &parking_lot::Mutex<Vec<RhoRuntimeImpl>>, runtime: RhoRuntimeImpl) {
+        let mut pool = pool.lock();
+        if pool.len() < self.workers {
+            pool.push(runtime);
         }
     }
 
@@ -146,7 +173,7 @@ impl EnvelopeExecutor {
         reservations: Vec<(WalletOwner, Reservation)>,
     ) -> Result<EnvelopeEffect, CasperError> {
         let started = std::time::Instant::now();
-        let mut ops = RuntimeOps::new(self.runtime_manager.spawn_runtime().await?);
+        let mut ops = RuntimeOps::new(self.play_runtime().await?);
         let spawned = started.elapsed();
         ops.runtime
             .reset(&Blake2b256Hash::from_bytes_prost(pre_root))
@@ -155,6 +182,7 @@ impl EnvelopeExecutor {
         ops.runtime.set_block_data(block_data).await;
         ops.runtime.set_invalid_blocks(HashMap::new()).await;
         ops.runtime.cost.charge_storage_left_in_space();
+        ops.runtime.cost.comm_ledger().reset();
         let cells = runtime_cells(&ops.runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
@@ -164,6 +192,8 @@ impl EnvelopeExecutor {
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
         let post_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+        let checkpointed = started.elapsed();
+        self.give_back(&self.play_pool, ops.runtime);
         Ok(EnvelopeEffect {
             run: envelope_run(&processed, post_root),
             processed,
@@ -173,7 +203,7 @@ impl EnvelopeExecutor {
                 spawned,
                 setup - spawned,
                 evaluated - setup,
-                started.elapsed() - evaluated,
+                checkpointed - evaluated,
             ],
         })
     }
@@ -185,8 +215,7 @@ impl EnvelopeExecutor {
         block_data: BlockData,
         reservations: Vec<(WalletOwner, Reservation)>,
     ) -> Result<EnvelopeEffect, CasperError> {
-        let mut replay =
-            ReplayRuntimeOps::new_from_runtime(self.runtime_manager.spawn_replay_runtime().await?);
+        let mut replay = ReplayRuntimeOps::new_from_runtime(self.replay_runtime().await?);
         let runtime = &mut replay.runtime_ops.runtime;
         runtime
             .reset(&Blake2b256Hash::from_bytes_prost(pre_root))
@@ -195,6 +224,7 @@ impl EnvelopeExecutor {
         runtime.set_block_data(block_data).await;
         runtime.set_invalid_blocks(HashMap::new()).await;
         runtime.cost.charge_storage_left_in_space();
+        runtime.cost.comm_ledger().reset();
         let cells = runtime_cells(runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
@@ -208,6 +238,7 @@ impl EnvelopeExecutor {
             .await
             .root
             .to_bytes_prost();
+        self.give_back(&self.replay_pool, replay.runtime_ops.runtime);
         Ok(EnvelopeEffect {
             run: envelope_run(&recorded, post_root),
             processed: recorded,

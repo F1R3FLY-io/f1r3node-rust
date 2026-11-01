@@ -454,3 +454,47 @@ fn cli_end_to_end_keys() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pooled_runtimes_give_the_records_of_fresh_ones() {
+    let host = launch(4).await;
+    let first = block(&host, 1, vec![
+        offer(&payer(0), "new x in { x!(1) | for (_ <- x) { @\"a\"!(1) } }", 1),
+        offer(&payer(1), "@\"race\"!(1)", 2),
+        offer(&payer(2), "for (@v <- @\"race\") { @\"won\"!(v) }", 3),
+    ]);
+    let second = block(&host, 2, vec![
+        offer(&payer(3), "new x in { contract x(@n) = { Nil } | x!(1) | x!(2) }", 4),
+        offer(&payer(0), "@\"b\"!(\"x\")", 5),
+    ]);
+    let pooled = &host.executor;
+    let a1 = pooled.execute(&pre_root(&host), &first).await.unwrap();
+    let b1 = pooled.execute(&pre_root(&host), &second).await.unwrap();
+    let a2 = pooled.execute(&pre_root(&host), &first).await.unwrap();
+    for (x, y) in a1.entries().iter().zip(a2.entries()) {
+        assert_eq!(x.executed.outcome, y.executed.outcome);
+        assert_eq!(x.executed.comm_phlo, y.executed.comm_phlo, "comm");
+        assert_eq!(x.executed.compute_phlo, y.executed.compute_phlo, "compute");
+        let sorted = |log: &[models::rust::casper::protocol::casper_message::Event]| {
+            let mut events: Vec<String> = log.iter().map(|e| format!("{e:?}")).collect();
+            events.sort();
+            events
+        };
+        assert_eq!(sorted(&x.executed.user_log), sorted(&y.executed.user_log), "log");
+    }
+    assert_eq!(a1.gate(), a2.gate(), "gate");
+    assert_eq!(a1.settlement(), a2.settlement(), "settlement");
+    assert_eq!(a1.mid_root(), a2.mid_root());
+    assert_eq!(a1.post_root(), a2.post_root());
+    for record in [&a1, &b1] {
+        let target = if record == &a1 { &first } else { &second };
+        assert_eq!(
+            pooled.replay(record, target).await.unwrap(),
+            *record.post_root()
+        );
+    }
+    let fresh = replica(&host.genesis).await;
+    let b2 = fresh.executor.execute(&pre_root(&host), &second).await.unwrap();
+    assert_eq!(b2.post_root(), b1.post_root());
+    assert_eq!(b2.settlement(), b1.settlement());
+}
