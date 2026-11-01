@@ -1,5 +1,115 @@
 {
   "boundary": "The Rocq capstones and the bounded TLA+ invariants specify the derived index; the named tests check a test-only reference oracle over real HotStore and RSpace instances. Harness controls RAC-RS-01 to RAC-RS-16 and RAC-RS-25 show that each named test observes its property, and production controls RAC-RS-17 to RAC-RS-24 show that the tests observe the production revision signals. No production accelerator exists yet, and none of this is a formal Rust refinement proof.",
+  "channel_scope": {
+    "closed_reports": 8,
+    "module": "TwoLevelRSpaceReceiveAcceleratorChannelScope",
+    "obligations": [
+      {
+        "id": "RAC-CS-01",
+        "mode": "proof_only",
+        "obligations": [
+          "join_coverage_completes_the_channel_scope"
+        ]
+      },
+      {
+        "id": "RAC-CS-02",
+        "mode": "proof_only",
+        "obligations": [
+          "complete_channel_scope_lookup_is_derivation"
+        ]
+      },
+      {
+        "id": "RAC-CS-03",
+        "mode": "proof_only",
+        "obligations": [
+          "exact_channel_read_is_current_sound_and_group_complete",
+          "covered_exact_channel_read_is_the_derivation"
+        ]
+      },
+      {
+        "id": "RAC-CS-04",
+        "mode": "proof_only",
+        "obligations": [
+          "global_coherence_implies_channel_coherence"
+        ]
+      },
+      {
+        "id": "RAC-CS-05",
+        "mode": "proof_only",
+        "obligations": [
+          "exact_channel_read_contains_the_joins_derivation"
+        ]
+      },
+      {
+        "id": "RAC-CS-06",
+        "mode": "proof_only",
+        "obligations": [
+          "framed_occurrence_keys_enumerate_exactly_the_channel_groups"
+        ]
+      },
+      {
+        "id": "RAC-CS-07",
+        "mode": "proof_only",
+        "obligations": [
+          "equal_store_tokens_imply_equal_revisions"
+        ]
+      }
+    ],
+    "print_assumptions": [
+      "join_coverage_completes_the_channel_scope",
+      "complete_channel_scope_lookup_is_derivation",
+      "exact_channel_read_is_current_sound_and_group_complete",
+      "covered_exact_channel_read_is_the_derivation",
+      "global_coherence_implies_channel_coherence",
+      "exact_channel_read_contains_the_joins_derivation",
+      "framed_occurrence_keys_enumerate_exactly_the_channel_groups",
+      "equal_store_tokens_imply_equal_revisions"
+    ],
+    "source": "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v"
+  },
+  "channel_scope_mutants": {
+    "bridge": "channel_scope_implementation_with_correct_switches_is_the_model",
+    "closed_reports": 5,
+    "module": "TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants",
+    "obligations": [
+      {
+        "id": "RAC-CSMUT-01",
+        "mode": "proof_only",
+        "obligations": [
+          "skipped_join_scope_check_is_refuted"
+        ]
+      },
+      {
+        "id": "RAC-CSMUT-02",
+        "mode": "proof_only",
+        "obligations": [
+          "skipped_lookup_scope_check_is_refuted"
+        ]
+      },
+      {
+        "id": "RAC-CSMUT-03",
+        "mode": "proof_only",
+        "obligations": [
+          "unframed_occurrence_keys_are_refuted"
+        ]
+      },
+      {
+        "id": "RAC-CSMUT-04",
+        "mode": "proof_only",
+        "obligations": [
+          "live_scope_join_check_is_refuted"
+        ]
+      }
+    ],
+    "print_assumptions": [
+      "channel_scope_implementation_with_correct_switches_is_the_model",
+      "skipped_join_scope_check_is_refuted",
+      "skipped_lookup_scope_check_is_refuted",
+      "unframed_occurrence_keys_are_refuted",
+      "live_scope_join_check_is_refuted"
+    ],
+    "source": "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v"
+  },
   "mutants": {
     "bridge": "implementation_with_correct_switches_is_the_model",
     "closed_reports": 16,
@@ -707,6 +817,8 @@
   },
   "sources_sha256": {
     "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAccelerator.v": "48a60daa9439582d824da37ee2fdcb42e23e5ce131c0b0aa9d69058f6b8d1e48",
+    "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v": "02e0aa48c93e5b7a25df9d77f1d451038b486da8ee084f64ed1a05b93bb9ee6d",
+    "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v": "e0c32f4745031739c2d3b56314b39649bf2edc8621c40aaebf737d59e82efe48",
     "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorMutants.v": "5c1b0eb4f1313f5ee63fbdec870ec911be359d50e8a324b305911c7f7f522e57",
     "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.cfg": "038190d48c9b0a7b97927475fefe24689d23d92f1c485155831af1a84ce32283",
     "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.tla": "f942fbcc68aa49023c72fdbf0df50bdc65d1da6aa3d5e1d2d06466bdd8b2184d",
@@ -726,7 +838,7 @@
     "rspace++/tests/receive_accelerator_spec.rs": "e9006a8767fdf5745f34a8470c029d1ec576b325330bb8c639e9298df06738ef",
     "rspace++/tests/support/receive_accelerator_adoption.rs": "2951e1a411f26b6733c18ffd14dc34cb587b17ac1e7f457d873d6a0392304798",
     "rspace++/tests/support/receive_occurrence_reference.rs": "610ae1a9888a343957f70abe1ed0414a8d1a70e9f47219f38c352a3329d3b9fc",
-    "scripts/check-receive-accelerator-obligations.py": "b776304c75ff6a1e623fcb7d13e509039f04f9a21bdc8097ef4b1d72a1daa1ed",
+    "scripts/check-receive-accelerator-obligations.py": "896e41fe7479c3c98b98644aafd40616b62080963a11b74fa8aa6940316335de",
     "scripts/generate-receive-accelerator-mutant.py": "7eb730b0350d183088d087d23f5c28215c2cfa1f8253031b9fbd84e8ef3eee76"
   },
   "tla": {

@@ -12,6 +12,8 @@ OUTPUT = "formal/receive_accelerator_obligations.generated.json"
 CHECKER = "scripts/check-receive-accelerator-obligations.py"
 ROCQ = "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAccelerator.v"
 MUTANTS = "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorMutants.v"
+CHANNEL_SCOPE = "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v"
+CHANNEL_SCOPE_MUTANTS = "formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v"
 TLA_ROOT = "formal/tlaplus/stack_safe_pda"
 STEM = "RSpaceReceiveAcceleratorCoherence"
 MODEL = f"{TLA_ROOT}/{STEM}.tla"
@@ -37,8 +39,11 @@ FLAG = "--receive-accelerator"
 ROCQ_MODULE = "TwoLevelRSpaceReceiveAccelerator"
 MUTANT_MODULE = "TwoLevelRSpaceReceiveAcceleratorMutants"
 BRIDGE = "implementation_with_correct_switches_is_the_model"
+CHANNEL_SCOPE_MODULE = "TwoLevelRSpaceReceiveAcceleratorChannelScope"
+CHANNEL_SCOPE_MUTANT_MODULE = "TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants"
+CHANNEL_SCOPE_BRIDGE = "channel_scope_implementation_with_correct_switches_is_the_model"
 DECLARATIONS = "Theorem|Lemma|Corollary|Proposition|Fact|Remark|Example|Definition|Fixpoint"
-CLOSED_REPORTS = {ROCQ: 26, MUTANTS: 16}
+CLOSED_REPORTS = {ROCQ: 26, MUTANTS: 16, CHANNEL_SCOPE: 8, CHANNEL_SCOPE_MUTANTS: 5}
 LIB_FILTER = "receive_accelerator_manifest_binding"
 SUITE_COUNTS = {SPEC: 31, RHOLANG: 5, LIB: 2}
 CATALOG_ROW = "TLRS-RECEIVE-28"
@@ -75,6 +80,24 @@ accelerator_in_semantic_identity_is_refuted last_source_wins_is_refuted
 unchecked_candidate_commit_is_refuted metadata_erasing_target_is_refuted
 """,
 )
+CHANNEL_SCOPE_CAPSTONES = {
+    "RAC-CS-01": ("join_coverage_completes_the_channel_scope",),
+    "RAC-CS-02": ("complete_channel_scope_lookup_is_derivation",),
+    "RAC-CS-03": (
+        "exact_channel_read_is_current_sound_and_group_complete",
+        "covered_exact_channel_read_is_the_derivation",
+    ),
+    "RAC-CS-04": ("global_coherence_implies_channel_coherence",),
+    "RAC-CS-05": ("exact_channel_read_contains_the_joins_derivation",),
+    "RAC-CS-06": ("framed_occurrence_keys_enumerate_exactly_the_channel_groups",),
+    "RAC-CS-07": ("equal_store_tokens_imply_equal_revisions",),
+}
+CHANNEL_SCOPE_REFUTATIONS = {
+    "RAC-CSMUT-01": ("skipped_join_scope_check_is_refuted",),
+    "RAC-CSMUT-02": ("skipped_lookup_scope_check_is_refuted",),
+    "RAC-CSMUT-03": ("unframed_occurrence_keys_are_refuted",),
+    "RAC-CSMUT-04": ("live_scope_join_check_is_refuted",),
+}
 INVARIANTS = re.findall(
     r"\S+",
     """
@@ -104,7 +127,12 @@ RAC-RC-19 RAC-RC-20 RAC-RC-21 RAC-RC-24 RAC-RC-25 RAC-RS-17 RAC-RS-18 RAC-RS-19 
 RAC-RS-21 RAC-RS-22 RAC-RS-23 RAC-RS-24
 """,
 )
-PROOF_ONLY = ("RAC-TLA-01", *(f"RAC-TMUT-{index:02d}" for index in range(1, len(TLA_MUTANTS) + 1)))
+PROOF_ONLY = (
+    "RAC-TLA-01",
+    *(f"RAC-TMUT-{index:02d}" for index in range(1, len(TLA_MUTANTS) + 1)),
+    *CHANNEL_SCOPE_CAPSTONES,
+    *CHANNEL_SCOPE_REFUTATIONS,
+)
 
 OWNERS = {
     "reference_occurrences_are_sound_over_generated_groups": (SPEC, ("RAC-RC-01",)),
@@ -331,6 +359,20 @@ def names(source, pattern, label):
     return found
 
 
+def ordered_closure(source, path, module, expected):
+    text = module_text(source, module, path)
+    theorems = names(text, r"^Theorem[ \t]+([A-Za-z_][A-Za-z_0-9]*)[ \t]*:", f"{module} theorem")
+    require(sorted(theorems) == sorted(expected), f"missing or added {module} theorem")
+    require(theorems == expected, f"reordered {module} theorem")
+    printed = names(
+        text,
+        r"^Print Assumptions[ \t]+([A-Za-z_][A-Za-z_0-9.]*)\.$",
+        f"{module} closed-assumption target",
+    )
+    require(printed == expected, f"missing, added, or reordered {module} closure")
+    return printed
+
+
 def directives(source, name):
     found = re.findall(rf"(?m)^{name}[ \t]+([A-Za-z][A-Za-z0-9_]*)[ \t]*$", source)
     require(
@@ -411,6 +453,8 @@ def paths():
     return [
         ROCQ,
         MUTANTS,
+        CHANNEL_SCOPE,
+        CHANNEL_SCOPE_MUTANTS,
         MODEL,
         CONFIG,
         MUTANT_MODEL,
@@ -436,7 +480,7 @@ def extract(sources, configs):
     mutants = sources[MUTANTS]
     runner = re.sub(r"\\\n", " ", sources[RUNNER])
 
-    for path in (ROCQ, MUTANTS):
+    for path in (ROCQ, MUTANTS, CHANNEL_SCOPE, CHANNEL_SCOPE_MUTANTS):
         require(
             not re.search(r"\b(?:Admitted|admit|Axiom|Axioms|Parameter|Parameters)\b", sources[path]),
             f"{path} contains an admitted or axiomatic declaration",
@@ -475,7 +519,21 @@ def extract(sources, configs):
         mutant_prints == [BRIDGE, *MUTANT_EXAMPLES],
         f"missing, added, or reordered {MUTANT_MODULE} closure",
     )
-    for path, declared in ((ROCQ, THEOREMS), (MUTANTS, [BRIDGE, *MUTANT_EXAMPLES])):
+    scope_theorems = [name for held in CHANNEL_SCOPE_CAPSTONES.values() for name in held]
+    scope_mutants = [
+        CHANNEL_SCOPE_BRIDGE,
+        *(name for held in CHANNEL_SCOPE_REFUTATIONS.values() for name in held),
+    ]
+    scope_prints = ordered_closure(sources[CHANNEL_SCOPE], CHANNEL_SCOPE, CHANNEL_SCOPE_MODULE, scope_theorems)
+    scope_mutant_prints = ordered_closure(
+        sources[CHANNEL_SCOPE_MUTANTS], CHANNEL_SCOPE_MUTANTS, CHANNEL_SCOPE_MUTANT_MODULE, scope_mutants
+    )
+    for path, declared in (
+        (ROCQ, THEOREMS),
+        (MUTANTS, [BRIDGE, *MUTANT_EXAMPLES]),
+        (CHANNEL_SCOPE, scope_theorems),
+        (CHANNEL_SCOPE_MUTANTS, scope_mutants),
+    ):
         for name in declared:
             require(
                 len(re.findall(rf"(?m)^(?:{DECLARATIONS})[ \t]+{name}\b", sources[path])) == 1,
@@ -495,7 +553,7 @@ def extract(sources, configs):
             len(re.findall(compilation, runner)) == 2 and len(re.findall(compilation, focused)) == 1,
             f"{theory} {expected}-closure compilation absent from the normal or focused proof runner",
         )
-    for theory in (ROCQ_MODULE, MUTANT_MODULE):
+    for theory in (ROCQ_MODULE, MUTANT_MODULE, CHANNEL_SCOPE_MODULE, CHANNEL_SCOPE_MUTANT_MODULE):
         require(
             re.search(rf"rocq_reject_placeholders[^\n]*theories/{theory}\.v", focused),
             f"focused gate does not reject placeholders in {theory}.v",
@@ -750,6 +808,27 @@ def extract(sources, configs):
                 for identifier, name in zip(refutations, examples)
             ],
         },
+        "channel_scope": {
+            "source": CHANNEL_SCOPE,
+            "module": CHANNEL_SCOPE_MODULE,
+            "closed_reports": CLOSED_REPORTS[CHANNEL_SCOPE],
+            "print_assumptions": scope_prints,
+            "obligations": [
+                {"id": identifier, "obligations": list(held), "mode": mode(identifier)}
+                for identifier, held in CHANNEL_SCOPE_CAPSTONES.items()
+            ],
+        },
+        "channel_scope_mutants": {
+            "source": CHANNEL_SCOPE_MUTANTS,
+            "module": CHANNEL_SCOPE_MUTANT_MODULE,
+            "closed_reports": CLOSED_REPORTS[CHANNEL_SCOPE_MUTANTS],
+            "bridge": CHANNEL_SCOPE_BRIDGE,
+            "print_assumptions": scope_mutant_prints,
+            "obligations": [
+                {"id": identifier, "obligations": list(held), "mode": mode(identifier)}
+                for identifier, held in CHANNEL_SCOPE_REFUTATIONS.items()
+            ],
+        },
         "tla": {
             "model": MODEL,
             "config": CONFIG,
@@ -866,6 +945,42 @@ def self_test(sources, configs, baseline):
         f"reordered {MUTANT_MODULE} example",
     )
     rejected(
+        CHANNEL_SCOPE,
+        sources[CHANNEL_SCOPE].replace(
+            "Theorem equal_store_tokens_imply_equal_revisions :",
+            "Theorem equal_store_tokens_imply_equal_generations :",
+            1,
+        ),
+        "renamed channel-scope capstone",
+        f"missing or added {CHANNEL_SCOPE_MODULE} theorem",
+    )
+    rejected(
+        CHANNEL_SCOPE,
+        sources[CHANNEL_SCOPE].replace("Print Assumptions equal_store_tokens_imply_equal_revisions.\n", "", 1),
+        "omitted channel-scope closure",
+        f"reordered {CHANNEL_SCOPE_MODULE} closure",
+    )
+    rejected(
+        CHANNEL_SCOPE,
+        sources[CHANNEL_SCOPE].replace(
+            "Print Assumptions equal_store_tokens_imply_equal_revisions.\n",
+            "Axiom channel_scope_shortcut : True.\nPrint Assumptions equal_store_tokens_imply_equal_revisions.\n",
+            1,
+        ),
+        "axiomatic channel-scope dependency",
+        "admitted or axiomatic declaration",
+    )
+    rejected(
+        CHANNEL_SCOPE_MUTANTS,
+        sources[CHANNEL_SCOPE_MUTANTS].replace(
+            "Theorem live_scope_join_check_is_refuted :",
+            "Theorem live_join_check_is_refuted :",
+            1,
+        ),
+        "renamed channel-scope refutation",
+        f"missing or added {CHANNEL_SCOPE_MUTANT_MODULE} theorem",
+    )
+    rejected(
         RUNNER,
         sources[RUNNER].replace(
             "theories/TwoLevelRSpaceReceiveAcceleratorMutants.v 16",
@@ -874,6 +989,22 @@ def self_test(sources, configs, baseline):
         ),
         "wrong runner closed count",
         "TwoLevelRSpaceReceiveAcceleratorMutants.v 16-closure compilation absent",
+    )
+    rejected(
+        RUNNER,
+        sources[RUNNER].replace(
+            "theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v 8",
+            "theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v 7",
+            1,
+        ),
+        "wrong channel-scope runner closed count",
+        "TwoLevelRSpaceReceiveAcceleratorChannelScope.v 8-closure compilation absent",
+    )
+    rejected(
+        RUNNER,
+        sources[RUNNER].replace(f"StackSafePDA.{CHANNEL_SCOPE_MUTANT_MODULE}", "", 1),
+        "channel-scope refutations absent from the focused kernel check",
+        f"focused gate does not kernel-check {CHANNEL_SCOPE_MUTANT_MODULE}",
     )
     rejected(
         RUNNER,
@@ -1121,6 +1252,8 @@ def main():
     print(
         f"receive accelerator registry {'mutations passed' if args.self_test else 'current'}: "
         f"{len(THEOREMS)} capstones, {len(MUTANT_EXAMPLES)} Rocq mutants, "
+        f"{len(CHANNEL_SCOPE_CAPSTONES)} channel-scope capstones, "
+        f"{len(CHANNEL_SCOPE_REFUTATIONS)} channel-scope refutations, "
         f"{len(INVARIANTS)} TLA+ invariants, {len(TLA_MUTANTS)} TLA+ mutants, "
         f"{len(inventory['source_mutants']['obligations'])} source mutants, "
         f"{sum(SUITE_COUNTS.values())} executable tests"
