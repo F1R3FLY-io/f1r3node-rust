@@ -107,7 +107,13 @@ pub async fn collect_garbage(
     let mut collected = Vec::new();
 
     for block_hash in sweep.pending.iter() {
-        if is_safe_to_delete(dag, block_hash, &floor, casper_shard_conf, moved_past.as_ref())? {
+        if is_safe_to_delete(
+            dag,
+            block_hash,
+            &floor,
+            casper_shard_conf,
+            moved_past.as_ref(),
+        )? {
             collected.push(block_hash.clone());
         }
     }
@@ -671,14 +677,21 @@ mod tests {
             (named_hash(b"a"), (1, vec![named_hash(b"genesis")])),
             (named_hash(b"b"), (2, vec![named_hash(b"a")])),
             (named_hash(b"side"), (2, vec![named_hash(b"a")])),
-            (named_hash(b"c"), (3, vec![named_hash(b"b"), named_hash(b"side")])),
+            (
+                named_hash(b"c"),
+                (3, vec![named_hash(b"b"), named_hash(b"side")]),
+            ),
         ])
     }
 
     fn lookup_in(
         dag: &std::collections::HashMap<BlockHash, (i64, Vec<BlockHash>)>,
     ) -> impl Fn(&BlockHash) -> Result<(i64, Vec<BlockHash>), String> + '_ {
-        |h| dag.get(h).cloned().ok_or_else(|| format!("{h:?} is not in the DAG"))
+        |h| {
+            dag.get(h)
+                .cloned()
+                .ok_or_else(|| format!("{h:?} is not in the DAG"))
+        }
     }
 
     #[test]
