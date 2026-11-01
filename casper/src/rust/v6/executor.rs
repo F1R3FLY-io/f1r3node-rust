@@ -9,7 +9,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, Event, ProcessedDeploy,
 };
 use rholang::rust::interpreter::accounting::rev_stack::journal::{
-    close_journal, journal_overdrawn, open_journal, JournalEntry, Source,
+    close_journal, journal_overdrawn, open_journal, JournalEntry,
 };
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use rholang::rust::interpreter::accounting::rev_stack::process::self_sealed_envelope;
@@ -219,10 +219,7 @@ impl EnvelopeExecutor {
             let payers: std::collections::BTreeSet<Vec<u8>> = effects[i]
                 .journal
                 .iter()
-                .filter_map(|j| match &j.from {
-                    Source::Wallet(from) => Some(wallet_channel_id_of(from, &j.kind)),
-                    Source::Mint => None,
-                })
+                .filter_map(|j| j.from.payer().map(|from| wallet_channel_id_of(from, &j.kind)))
                 .collect();
             if payers.iter().any(|p| debited.contains(p)) {
                 continue;

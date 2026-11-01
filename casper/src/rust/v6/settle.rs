@@ -5,6 +5,7 @@ use std::sync::Arc;
 use models::rust::block::state_hash::StateHash;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
+use rholang::rust::interpreter::accounting::rev_stack::funders;
 use rholang::rust::interpreter::accounting::rev_stack::genesis::{genesis_supply, legacy_bonds};
 use rholang::rust::interpreter::accounting::rev_stack::journal::{JournalEntry, Source};
 use rholang::rust::interpreter::accounting::rev_stack::{
@@ -164,7 +165,7 @@ pub fn apply(
             "a settlement must move as much REV as it takes".into(),
         ));
     }
-    let stacks = RevStacks::new(store);
+    let stacks = RevStacks::new(store.clone());
     let native = |e: rholang::rust::interpreter::accounting::rev_stack::RevStackError| {
         CasperError::RuntimeError(format!("settlement: {e}"))
     };
@@ -203,13 +204,14 @@ pub fn apply(
             .map_err(native)?;
     }
     for t in &settlement.transfers {
-        if let Source::Wallet(from) = &t.from {
+        if let Some(from) = t.from.payer() {
             stacks
                 .of_kind(&t.kind)
                 .spend(from, t.amount)
                 .map_err(native)?;
         }
     }
+    settle_funders(store.as_ref(), settlement, owners).map_err(native)?;
     stacks
         .deposit(proposer, settlement.proposer_credit)
         .map_err(native)?;
@@ -255,9 +257,9 @@ pub async fn settle_block(
     for t in &settlement.transfers {
         let wallets = touched.entry(t.kind.clone()).or_default();
         wallets.push(t.to.clone());
-        match &t.from {
-            Source::Wallet(from) => wallets.push(from.clone()),
-            Source::Mint => *minted.entry(t.kind.clone()).or_default() += t.amount as u128,
+        match t.from.payer() {
+            Some(from) => wallets.push(from.clone()),
+            None => *minted.entry(t.kind.clone()).or_default() += t.amount as u128,
         }
     }
     if minted.contains_key(&TokenKind::rev()) {
@@ -477,6 +479,8 @@ pub struct TransferProto {
     pub kind: Bytes,
     #[prost(bool, tag = "6")]
     pub mint: bool,
+    #[prost(bytes = "bytes", tag = "7")]
+    pub share_funder: Bytes,
 }
 
 impl Settlement {
@@ -511,10 +515,10 @@ impl Settlement {
                 .iter()
                 .map(|t| TransferProto {
                     envelope_id: t.envelope_sig.clone(),
-                    from: match &t.from {
-                        Source::Wallet(from) => Bytes::from(from.canonical_bytes()),
-                        Source::Mint => Bytes::new(),
-                    },
+                    from: t
+                        .from
+                        .payer()
+                        .map_or_else(Bytes::new, |p| Bytes::from(p.canonical_bytes())),
                     to: Bytes::from(t.to.canonical_bytes()),
                     amount: t.amount,
                     kind: if t.kind.is_rev() {
@@ -523,6 +527,10 @@ impl Settlement {
                         Bytes::copy_from_slice(t.kind.name())
                     },
                     mint: t.from == Source::Mint,
+                    share_funder: match &t.from {
+                        Source::Share { funder, .. } => Bytes::from(funder.canonical_bytes()),
+                        _ => Bytes::new(),
+                    },
                 })
                 .collect(),
         }
@@ -587,8 +595,16 @@ impl Settlement {
                     (true, true) => return Err("a recorded transfer mints REV".to_string()),
                     (true, false) if t.from.is_empty() => Source::Mint,
                     (true, false) => return Err("a recorded mint names a payer".to_string()),
-                    (false, _) => Source::Wallet(owner(&t.from)?),
+                    (false, _) if t.share_funder.is_empty() => Source::Wallet(owner(&t.from)?),
+                    (false, true) => Source::Share {
+                        process: owner(&t.from)?,
+                        funder: owner(&t.share_funder)?,
+                    },
+                    (false, false) => return Err("a recorded refusal is not REV".to_string()),
                 };
+                if t.mint && !t.share_funder.is_empty() {
+                    return Err("a recorded mint names a share".to_string());
+                }
                 Ok(NativeTransfer {
                     envelope_sig: t.envelope_id.clone(),
                     kind,
@@ -691,4 +707,27 @@ mod proto_tests {
             Bytes::from(WalletOwner::Unforgeable(vec![5; 32]).canonical_bytes());
         assert!(Settlement::from_proto(bad).is_err());
     }
+}
+
+fn settle_funders(
+    store: &dyn CellStore,
+    settlement: &Settlement,
+    owners: &BTreeMap<WalletId, WalletOwner>,
+) -> Result<(), rholang::rust::interpreter::accounting::rev_stack::RevStackError> {
+    for t in &settlement.transfers {
+        if let Source::Share { process, funder } = &t.from {
+            funders::refuse(store, process, funder, t.amount)?;
+        }
+    }
+    for charge in &settlement.charges {
+        if let Some(process @ WalletOwner::Process(_)) = owners.get(&charge.wallet) {
+            funders::draw(store, process, charge.comm_rev + charge.compute_rev)?;
+        }
+    }
+    for t in settlement.transfers.iter().filter(|t| t.kind.is_rev()) {
+        if let (Source::Wallet(funder), WalletOwner::Process(_)) = (&t.from, &t.to) {
+            funders::credit(store, &t.to, funder, t.amount)?;
+        }
+    }
+    Ok(())
 }

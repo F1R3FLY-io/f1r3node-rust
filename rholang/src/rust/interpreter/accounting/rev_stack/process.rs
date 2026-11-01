@@ -14,7 +14,7 @@ fn canonical(process: &Par) -> Par { ParSortMatcher::sort_match(process).term }
 pub fn process_owner(process: &Par) -> WalletOwner {
     let mut input = PROCESS_WALLET_DOMAIN.to_vec();
     input.extend(canonical(process).encode_to_vec());
-    WalletOwner::Unforgeable(Blake2b256::hash(input))
+    WalletOwner::Process(Blake2b256::hash(input))
 }
 
 pub fn seals_itself(quoted: &Par, body: &Par) -> bool { canonical(quoted) == canonical(body) }

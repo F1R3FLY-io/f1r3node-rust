@@ -8,6 +8,9 @@ use models::rust::rholang::implicits::single_expr;
 use rspace_plus_plus::rspace::hot_store::HotStore;
 
 use super::channel::wallet_channel;
+use super::funders;
+use super::hooks::hook_authority;
+use super::process::process_owner;
 use super::journal::{journal_open, journaled_transfer, visible_balance, JournalEntry};
 use super::kind::{stack_kind, TokenKind};
 use super::ops::RevStacks;
@@ -69,6 +72,68 @@ pub fn handle(
                 .transfer_keeping(&from, &to, amount, held)
                 .map(|_| Par::default())
                 .map_err(transfer_error)
+        }),
+        "fund" => with_stacks(store, |stacks| {
+            let (from, process, amount) = fund_args(arg)?;
+            if !admissible(&from, signers) {
+                return Err("the payer must be a signer of this deployment".to_string());
+            }
+            let held = reservation(stacks.cells(), &from)
+                .map_err(|e| e.to_string())?
+                .held;
+            if journal_open(stacks.cells()) {
+                let balance = stacks.balance(&from).map_err(|e| e.to_string())?;
+                return journaled_transfer(
+                    stacks.cells(),
+                    balance,
+                    held,
+                    JournalEntry::transfer(from, process, amount),
+                )
+                .map(|_| Par::default())
+                .map_err(transfer_error);
+            }
+            stacks
+                .transfer_keeping(&from, &process, amount, held)
+                .map_err(transfer_error)?;
+            funders::credit(stacks.cells(), &process, &from, amount).map_err(|e| e.to_string())?;
+            Ok(Par::default())
+        }),
+        "share" => with_stacks(store, |stacks| {
+            let (process, funder) = share_args(arg)?;
+            let share = funders::share(stacks.cells(), &process, &funder).map_err(|e| e.to_string())?;
+            Ok(RhoNumber::create_par(share as i64))
+        }),
+        "refuse" => with_stacks(store, |stacks| {
+            let (process, funder) = share_args(arg)?;
+            let authority = hook_authority(stacks.cells())
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "this shard has no hook authority".to_string())?;
+            if !authority.authorizes(signers) {
+                return Err("only the hook authority may refuse a funder's share".to_string());
+            }
+            let share = funders::share(stacks.cells(), &process, &funder).map_err(|e| e.to_string())?;
+            if share == 0 {
+                return Err("the funder holds no share of this process".to_string());
+            }
+            let held = reservation(stacks.cells(), &process)
+                .map_err(|e| e.to_string())?
+                .held;
+            if journal_open(stacks.cells()) {
+                let balance = stacks.balance(&process).map_err(|e| e.to_string())?;
+                return journaled_transfer(
+                    stacks.cells(),
+                    balance,
+                    held,
+                    JournalEntry::refusal(process, funder, share),
+                )
+                .map(|_| Par::default())
+                .map_err(transfer_error);
+            }
+            stacks
+                .transfer_keeping(&process, &funder, share, held)
+                .map_err(transfer_error)?;
+            funders::refuse(stacks.cells(), &process, &funder, share).map_err(|e| e.to_string())?;
+            Ok(Par::default())
         }),
         _ => return None,
     };
@@ -213,4 +278,26 @@ fn checked_address(address: &str) -> Result<(), String> {
     VaultAddress::parse(address)
         .map(|_| ())
         .map_err(|e| format!("invalid REV address: {e}"))
+}
+
+fn tuple_of(arg: &Par, usage: &str) -> Result<Vec<Par>, String> {
+    match single_expr(arg).and_then(|e| e.expr_instance) {
+        Some(ExprInstance::ETupleBody(tuple)) => Ok(tuple.ps),
+        _ => Err(usage.to_string()),
+    }
+}
+
+fn fund_args(arg: &Par) -> Result<(WalletOwner, WalletOwner, RevAmount), String> {
+    let usage = "fund expects (deployerId, process, amount)";
+    let [deployer_id, process, amount] = tuple_of(arg, usage)?.try_into().map_err(|_| usage)?;
+    let amount = RhoNumber::unapply(&amount)
+        .filter(|a| *a > 0)
+        .ok_or_else(|| "Amount must be positive value".to_string())?;
+    Ok((payer_of(&deployer_id)?, process_owner(&process), amount as RevAmount))
+}
+
+fn share_args(arg: &Par) -> Result<(WalletOwner, WalletOwner), String> {
+    let usage = "expects (process, funder)";
+    let [process, funder] = tuple_of(arg, usage)?.try_into().map_err(|_| usage)?;
+    Ok((process_owner(&process), owner_of(&funder)?))
 }

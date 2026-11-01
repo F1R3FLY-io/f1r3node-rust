@@ -19,12 +19,27 @@ pub const JOURNAL_MARKER_DOMAIN: &[u8] = b"f1r3fly/rev-stack/journal-marker/v1";
 
 const TRANSFER_TAG: &str = "transfer";
 const MINT_TAG: &str = "mint";
+const REFUSE_TAG: &str = "refuse";
 const MARKER_TAG: &str = "journal";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
     Mint,
     Wallet(WalletOwner),
+    Share {
+        process: WalletOwner,
+        funder: WalletOwner,
+    },
+}
+
+impl Source {
+    pub fn payer(&self) -> Option<&WalletOwner> {
+        match self {
+            Source::Mint => None,
+            Source::Wallet(from) => Some(from),
+            Source::Share { process, .. } => Some(process),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +55,9 @@ impl JournalEntry {
         let source = match &self.from {
             Source::Mint => vec![0],
             Source::Wallet(from) => [vec![1], from.canonical_bytes()].concat(),
+            Source::Share { process, funder } => {
+                [vec![2], process.canonical_bytes(), funder.canonical_bytes()].concat()
+            }
         };
         (
             self.kind.name().to_vec(),
@@ -82,6 +100,18 @@ impl JournalEntry {
         Ok(entry)
     }
 
+    pub fn refusal(process: WalletOwner, funder: WalletOwner, amount: RevAmount) -> Self {
+        JournalEntry {
+            kind: TokenKind::rev(),
+            from: Source::Share {
+                process,
+                funder: funder.clone(),
+            },
+            to: funder,
+            amount,
+        }
+    }
+
     pub fn is_mint(&self) -> bool { self.from == Source::Mint }
 
     pub fn check(&self) -> Result<(), RevStackError> {
@@ -90,6 +120,13 @@ impl JournalEntry {
         }
         if self.is_mint() && self.kind.is_rev() {
             return Err(RevStackError::RevMint);
+        }
+        if let Source::Share { funder, .. } = &self.from {
+            if !self.kind.is_rev() || *funder != self.to {
+                return Err(RevStackError::InvalidOwner(
+                    "a refused share returns REV to its funder".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -151,6 +188,11 @@ pub fn record(store: &dyn CellStore, entry: &JournalEntry) -> Result<(), RevStac
     match &entry.from {
         Source::Mint => items[0] = RhoString::create_par(MINT_TAG.into()),
         Source::Wallet(from) => items.push(RhoByteArray::create_par(from.canonical_bytes())),
+        Source::Share { process, funder } => {
+            items[0] = RhoString::create_par(REFUSE_TAG.into());
+            items.push(RhoByteArray::create_par(process.canonical_bytes()));
+            items.push(RhoByteArray::create_par(funder.canonical_bytes()));
+        }
     }
     items.push(RhoByteArray::create_par(entry.to.canonical_bytes()));
     items.push(RhoNumber::create_par(entry.amount as i64));
@@ -183,6 +225,19 @@ pub fn entries(store: &dyn CellStore) -> Result<Vec<JournalEntry>, RevStackError
             {
                 (kind, Source::Mint, to, amount)
             }
+            [tag, kind, process, funder, to, amount]
+                if RhoString::unapply(tag).as_deref() == Some(REFUSE_TAG) =>
+            {
+                (
+                    kind,
+                    Source::Share {
+                        process: owner(process)?,
+                        funder: owner(funder)?,
+                    },
+                    to,
+                    amount,
+                )
+            }
             _ => return Err(malformed()),
         };
         let kind = RhoByteArray::unapply(kind)
@@ -212,7 +267,7 @@ pub fn net(
     let mut debits: RevAmount = 0;
     let mut credits: RevAmount = 0;
     for e in entries(store)?.into_iter().filter(|e| &e.kind == kind) {
-        if e.from == Source::Wallet(owner.clone()) {
+        if e.from.payer() == Some(owner) {
             debits = debits.saturating_add(e.amount);
         }
         if &e.to == owner {
@@ -247,7 +302,7 @@ pub fn journaled_transfer(
     entry: JournalEntry,
 ) -> Result<(), RevStackError> {
     entry.check()?;
-    if let Source::Wallet(_) = &entry.from {
+    if entry.from.payer().is_some() {
         spendable(balance, held, entry.amount)?;
     }
     record(store, &entry)
@@ -298,7 +353,7 @@ fn totals_of<'a>(
 pub fn journal_overdrawn(store: Arc<dyn CellStore>) -> Result<bool, RevStackError> {
     let mut totals = Totals::new();
     for e in entries(store.as_ref())? {
-        if let Source::Wallet(from) = &e.from {
+        if let Some(from) = e.from.payer() {
             totals_of(&mut totals, &e.kind, from).2 += e.amount as u128;
         }
         totals_of(&mut totals, &e.kind, &e.to).3 += e.amount as u128;
