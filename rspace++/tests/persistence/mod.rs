@@ -32,6 +32,7 @@ mod path_exact_closure_properties;
 mod path_provenance;
 mod property_support;
 mod generation_checkpoint_properties;
+mod receive_accelerator_manifest_binding;
 mod retention_manifest;
 mod retention_v2_editor_properties;
 mod retention_v2_format_properties;
