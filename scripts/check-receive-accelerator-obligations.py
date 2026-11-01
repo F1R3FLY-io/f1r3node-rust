@@ -381,6 +381,11 @@ SOURCE_MUTANT_EVIDENCE = {
     "RAC-RS-43": ('"a cleared group leaves no occurrence group, not even an empty one"',),
     "RAC-RS-44": ('"a history load extends the maintained scope"',),
     "RAC-RS-45": ("assert_eq!(keys, expected_keys(every_group.iter().copied()));",),
+    "RAC-RS-46": ('"{disturbance} during a build refuses its publication"',),
+    "RAC-RS-47": ('"an accelerator bound to another manifest is never adopted"',),
+    "RAC-RS-48": ('"{name}: production adoption requires the bound manifest to equal the current one"',),
+    "RAC-RS-49": ("assert_fresh_revision(&store, &mut issued, &resting);",),
+    "RAC-RS-50": ('"a held handle never answers for a group loaded after it was taken"',),
 }
 PRODUCTION_WITNESSES = {
     "production_answers_equal_the_derivation_over_generated_stores": (

@@ -2,7 +2,7 @@
   "classified_obligations": {
     "concrete_witness": 106,
     "executable_only": 9,
-    "executable_refinement": 214,
+    "executable_refinement": 219,
     "proof_only": 543
   },
   "families": [
@@ -5709,7 +5709,7 @@
       "checker": "scripts/check-receive-accelerator-obligations.py",
       "family": "receive_accelerator",
       "manifest": "formal/receive_accelerator_obligations.generated.json",
-      "manifest_sha256": "f0c1b486ce549bb00aace233dc7ff333ef2539f02a02dcc7488336a536743964",
+      "manifest_sha256": "2ab05513a9c9f6e4807b7c575880c3b715cd2db175dd622967614ea315677047",
       "obligations": {
         "accelerator_isolation": {
           "files": [
@@ -7047,6 +7047,63 @@
               "source": "rspace++/src/rspace/receive_accelerator.rs",
               "test_source": "rspace++/tests/receive_accelerator/occurrence_index.rs",
               "test_target": "occurrence_keys_are_exact_under_prefix_aliased_images"
+            },
+            {
+              "description": "a build's publication ignores the history-load count, so an index built before a history load is published (a production control with no harness analogue; review decision D4)",
+              "formal": [
+                "RAC-RC-23",
+                "RAC-TLA-10"
+              ],
+              "id": "RAC-RS-46",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/hot_store/receive_accelerator_bindings.rs",
+              "test_target": "publication_refuses_a_stale_base_or_a_history_load"
+            },
+            {
+              "description": "adoption ignores the bound manifest, so an accelerator bound to another manifest is adopted (production analogue of RAC-RS-25)",
+              "formal": [
+                "RAC-TLA-08"
+              ],
+              "id": "RAC-RS-47",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/receive_accelerator.rs",
+              "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+              "test_target": "production_foreign_generation_or_manifest_accelerators_are_never_adopted"
+            },
+            {
+              "description": "persisted adoption compares only the manifest digests, so a bound manifest with a forged length is adopted (a production control with no harness analogue)",
+              "formal": [
+                "RAC-RC-20",
+                "RAC-TLA-08"
+              ],
+              "id": "RAC-RS-48",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/receive_accelerator.rs",
+              "test_source": "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs",
+              "test_target": "production_adoption_requires_the_stored_bound_semantic_manifest"
+            },
+            {
+              "description": "a continuation change bumps its group epoch but keeps the previous store epoch, so the store token is not fresh (a production control with no harness analogue)",
+              "formal": [
+                "RAC-RC-21"
+              ],
+              "id": "RAC-RS-49",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/hot_store/receive_revision_tokens.rs",
+              "test_target": "every_continuation_change_issues_the_bumped_group_epoch_as_a_fresh_store_token"
+            },
+            {
+              "description": "J2 checks the live store's loaded scope instead of the handle's, so a held handle answers for a group loaded after it was taken (review decision D3; production analogue of RAC-CSMUT-04)",
+              "formal": [
+                "RAC-TLA-07"
+              ],
+              "id": "RAC-RS-50",
+              "mode": "executable_refinement",
+              "source": "rspace++/src/rspace/hot_store.rs",
+              "test_source": "rspace++/tests/receive_accelerator_production_spec.rs",
+              "test_target": "production_held_handles_never_answer_for_groups_loaded_after_they_were_taken"
             }
           ]
         },
@@ -7079,8 +7136,8 @@
           "rspace++/tests/support/receive_accelerator_adoption.rs": "2951e1a411f26b6733c18ffd14dc34cb587b17ac1e7f457d873d6a0392304798",
           "rspace++/tests/support/receive_accelerator_production.rs": "8ee93fcc4d0ca7d78c314263e685ecbe6effcd6a99e259a5e7df0ee9f6ef3998",
           "rspace++/tests/support/receive_occurrence_reference.rs": "610ae1a9888a343957f70abe1ed0414a8d1a70e9f47219f38c352a3329d3b9fc",
-          "scripts/check-receive-accelerator-obligations.py": "7a03da17637cd308988edb736d84fcf3a28a1081a2cf1782a5b995214507bb06",
-          "scripts/generate-receive-accelerator-mutant.py": "0db8b254a94e23715a781865bc1d3df767d952f433d4b2139b9025d78550734b"
+          "scripts/check-receive-accelerator-obligations.py": "779938eb35acf4e189659ebc2e692df42ef7fd32f6459bd765413805b9130cad",
+          "scripts/generate-receive-accelerator-mutant.py": "1a821cb2da7fa57af3fb90e3870a04cf6ebeaacf7f3ca8e5ef7a8379a7cd259f"
         },
         "tla": {
           "config": "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherence.cfg",
@@ -8999,6 +9056,6 @@
       }
     }
   ],
-  "global_obligation_ids": 887,
+  "global_obligation_ids": 892,
   "scope": "PathMap integration formal obligations and normal-suite refinement bindings"
 }

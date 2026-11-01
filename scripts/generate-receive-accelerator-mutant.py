@@ -27,6 +27,7 @@ RECORD_INDEX = "rspace++/src/rspace/record_index.rs"
 PRODUCTION_SPEC = "rspace++/tests/receive_accelerator_production_spec.rs"
 OCCURRENCE_INDEX_TESTS = "rspace++/tests/receive_accelerator/occurrence_index.rs"
 ACCELERATOR_BINDING_TESTS = "rspace++/tests/hot_store/receive_accelerator_bindings.rs"
+REVISION_TOKEN_TESTS = "rspace++/tests/hot_store/receive_revision_tokens.rs"
 HARNESS = "concrete_witness"
 PRODUCTION = "executable_refinement"
 
@@ -709,6 +710,76 @@ MUTATIONS = {
         ),
         "test_file": OCCURRENCE_INDEX_TESTS,
         "test": "occurrence_keys_are_exact_under_prefix_aliased_images",
+    },
+    "RAC-RS-46": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-23", "RAC-TLA-10"),
+        "source": HOT_STORE,
+        "description": (
+            "a build's publication ignores the history-load count, so an index built before a history load is "
+            "published (a production control with no harness analogue; review decision D4)"
+        ),
+        "before": "        let same_loads = base.loads == self.continuations.loads();\n",
+        "after": "        let same_loads = true;\n",
+        "test_file": ACCELERATOR_BINDING_TESTS,
+        "test": "publication_refuses_a_stale_base_or_a_history_load",
+    },
+    "RAC-RS-47": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-TLA-08",),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "adoption ignores the bound manifest, so an accelerator bound to another manifest is adopted "
+            "(production analogue of RAC-RS-25)"
+        ),
+        "before": "        false => ReceiveAcceleratorAdoption::Foreign,\n",
+        "after": "        false => ReceiveAcceleratorAdoption::Adopted,\n",
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_foreign_generation_or_manifest_accelerators_are_never_adopted",
+    },
+    "RAC-RS-48": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-20", "RAC-TLA-08"),
+        "source": RECEIVE_ACCELERATOR,
+        "description": (
+            "persisted adoption compares only the manifest digests, so a bound manifest with a forged length is "
+            "adopted (a production control with no harness analogue)"
+        ),
+        "before": "        Ok(view) => receive_accelerator_adoption(&view.semantic_manifest(), &current),\n",
+        "after": (
+            "        Ok(view) => receive_accelerator_adoption(&view.semantic_manifest().digest(), &current.digest()),\n"
+        ),
+        "test_file": BINDING,
+        "test": "production_adoption_requires_the_stored_bound_semantic_manifest",
+    },
+    "RAC-RS-49": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-RC-21",),
+        "source": HOT_STORE,
+        "description": (
+            "a continuation change bumps its group epoch but keeps the previous store epoch, so the store token "
+            "is not fresh (a production control with no harness analogue)"
+        ),
+        "before": (
+            "        let epoch = Arc::new(ContinuationEpoch);\n"
+            "        self.continuation_store_epoch = Arc::clone(&epoch);\n"
+        ),
+        "after": "        let epoch = Arc::new(ContinuationEpoch);\n",
+        "test_file": REVISION_TOKEN_TESTS,
+        "test": "every_continuation_change_issues_the_bumped_group_epoch_as_a_fresh_store_token",
+    },
+    "RAC-RS-50": {
+        "mode": PRODUCTION,
+        "formal": ("RAC-TLA-07",),
+        "source": HOT_STORE,
+        "description": (
+            "J2 checks the live store's loaded scope instead of the handle's, so a held handle answers for a group "
+            "loaded after it was taken (review decision D3; production analogue of RAC-CSMUT-04)"
+        ),
+        "before": "            .or_else(|| join_scope_class(handle.scope(), &self.joins, channel));\n",
+        "after": "            .or_else(|| join_scope_class(&self.continuations, &self.joins, channel));\n",
+        "test_file": PRODUCTION_SPEC,
+        "test": "production_held_handles_never_answer_for_groups_loaded_after_they_were_taken",
     },
 }
 
