@@ -599,3 +599,139 @@ fn hydration_loads_installed_only_groups_without_an_installed_join() {
     assert_eq!(target.kind(), ReceiveKind::Installed);
     assert_eq!(target.continuation(), &continuation(8, true));
 }
+
+type TestBuild = ReceiveBuild<String, String, String>;
+type Disturbance = fn(&TestStore);
+
+fn open_build(store: &TestStore) -> TestBuild {
+    store
+        .state
+        .write()
+        .expect("hot store state write lock")
+        .begin_receive_build()
+        .expect("an Absent slot with no open build admits a build")
+}
+
+fn finish_build(store: &TestStore, build: TestBuild) -> bool {
+    let built = build.snapshot.build_receive_index();
+    store
+        .state
+        .write()
+        .expect("hot store state write lock")
+        .finish_receive_build(&build.base, built)
+}
+
+#[test]
+fn open_builds_report_building_until_they_publish() {
+    let store = store_from(fixture_snapshot(), fixture_history());
+    let receiving = channel("a");
+    let build = open_build(&store);
+    assert_eq!(
+        fallback(store.receive_occurrences(None, &receiving)),
+        ReceiveAcceleratorClass::Building
+    );
+    assert_eq!(
+        fallback(store.current_receive_occurrences(&receiving)),
+        ReceiveAcceleratorClass::Building
+    );
+    assert!(store.receive_accelerator().is_none());
+    assert!(
+        store
+            .state
+            .write()
+            .expect("hot store state write lock")
+            .begin_receive_build()
+            .is_none()
+    );
+
+    assert!(finish_build(&store, build));
+    assert_eq!(
+        group_prefixes(&exact(store.current_receive_occurrences(&receiving))),
+        prefixes_of(&[group(&["a", "b", "a"]), group(&["a"])])
+    );
+    assert_eq!(
+        fallback(store.receive_occurrences(None, &receiving)),
+        ReceiveAcceleratorClass::Absent
+    );
+}
+
+#[test]
+fn publication_refuses_a_stale_base_or_a_history_load() {
+    let disturbances: [(&str, Disturbance); 3] = [
+        ("a revision bump", |store| {
+            assert_eq!(store.install_continuation(&group(&["d"]), continuation(8, true)), Some(()));
+        }),
+        ("a clear", |store| store.clear()),
+        ("a history load", |store| {
+            assert_eq!(store.get_continuations(&group(&["a", "c"])), vec![continuation(6, false)]);
+        }),
+    ];
+    for (disturbance, disturb) in disturbances {
+        let store = store_from(fixture_snapshot(), fixture_history());
+        let build = open_build(&store);
+        disturb(&store);
+        assert!(
+            !finish_build(&store, build),
+            "{disturbance} during a build refuses its publication"
+        );
+        assert!(store.receive_accelerator().is_none(), "{disturbance} leaves the slot Absent");
+        assert_eq!(
+            fallback(store.current_receive_occurrences(&channel("a"))),
+            ReceiveAcceleratorClass::Absent,
+            "{disturbance} closes the build"
+        );
+        assert_eq!(store.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+        assert!(store.receive_accelerator().is_some(), "a rebuild after {disturbance} publishes");
+    }
+}
+
+#[test]
+fn detached_handles_answer_without_publishing() {
+    let store = store_from(fixture_snapshot(), fixture_history());
+    let receiving = channel("a");
+    let detached = store
+        .detached_receive_accelerator()
+        .expect("the fixture state builds an occurrence index");
+    assert!(store.receive_accelerator().is_none());
+    assert_eq!(
+        fallback(store.current_receive_occurrences(&receiving)),
+        ReceiveAcceleratorClass::Absent
+    );
+    assert_eq!(detached.revision(), &revision(&store));
+    assert_eq!(
+        group_prefixes(&exact(store.receive_occurrences(Some(&detached), &receiving))),
+        prefixes_of(&[group(&["a", "b", "a"]), group(&["a"])])
+    );
+
+    assert_eq!(store.put_continuation(&group(&["a"]), continuation(9, false)), Some(true));
+    assert_eq!(
+        fallback(store.receive_occurrences(Some(&detached), &receiving)),
+        ReceiveAcceleratorClass::Stale
+    );
+    assert!(store.receive_accelerator().is_none());
+}
+
+#[test]
+fn rebuilds_publish_optimistically_and_fall_back_under_the_lock() {
+    let store = store_from(fixture_snapshot(), fixture_history());
+    assert_eq!(store.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+    assert!(
+        store
+            .state
+            .read()
+            .expect("hot store state read lock")
+            .receive_build
+            .is_none()
+    );
+    assert_eq!(handle(&store).revision(), &revision(&store));
+
+    let contended = store_from(fixture_snapshot(), fixture_history());
+    let build = open_build(&contended);
+    assert_eq!(contended.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+    assert!(!finish_build(&contended, build));
+    let survivor = handle(&contended);
+    assert_eq!(
+        group_prefixes(&exact(contended.receive_occurrences(Some(&survivor), &channel("a")))),
+        prefixes_of(&[group(&["a", "b", "a"]), group(&["a"])])
+    );
+}

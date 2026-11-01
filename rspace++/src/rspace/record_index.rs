@@ -1558,13 +1558,6 @@ where
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "published only by library tests until task 12002 adds the two-phase build"
-        )
-    )]
     pub(crate) fn publish_receive_index(&mut self, index: ReceiveOccurrenceIndex) {
         self.receive_index = Some(index);
         #[cfg(test)]
@@ -1575,13 +1568,6 @@ where
         self.receive_index.as_ref()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read only by library tests until task 12002 adds the two-phase build"
-        )
-    )]
     pub(crate) fn loads(&self) -> u64 { self.loads }
 
     pub(crate) fn is_loaded_prefix(&self, prefix: &[u8]) -> bool { self.resting.is_loaded(prefix) }

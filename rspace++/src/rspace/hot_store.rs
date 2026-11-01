@@ -58,11 +58,11 @@ use crate::rspace::persistence::{
     RSpaceSemanticProfile, SemanticNamespace, SemanticProfile, StateVersionV1,
 };
 use crate::rspace::receive_accelerator::{
-    ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, ReceiveId, ReceiveTarget,
-    channel_frame, join_scope_class,
+    ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, ReceiveId,
+    ReceiveOccurrenceIndex, ReceiveTarget, channel_frame, join_scope_class,
 };
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
-use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
+use crate::rspace::rho_path::{RhoPathEncode, RhoPathError, RhoPathV1};
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use crate::rspace::trace::event::Consume;
 
@@ -325,6 +325,14 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
         ReceiveAcceleratorClass::Absent
     }
     fn receive_accelerator(&self) -> Option<ReceiveAcceleratorHandle<C, P, K>>
+    where
+        C: Send + Sync,
+        P: Send + Sync,
+        K: Send + Sync,
+    {
+        None
+    }
+    fn detached_receive_accelerator(&self) -> Option<ReceiveAcceleratorHandle<C, P, K>>
     where
         C: Send + Sync,
         P: Send + Sync,
@@ -601,6 +609,22 @@ where
     pub installed_joins: HashMap<C, Vec<Vec<C>>>,
 }
 
+#[derive(Clone, PartialEq)]
+struct ReceiveBuildBase {
+    revision: ReceiveRevision,
+    loads: u64,
+}
+
+struct ReceiveBuild<C, P, K>
+where
+    C: Clone + Send + Sync,
+    P: Clone + Send + Sync,
+    K: Clone + Send + Sync,
+{
+    base: ReceiveBuildBase,
+    snapshot: RSpaceContinuationStore<C, P, K>,
+}
+
 struct InMemHotStoreState<C, P, A, K>
 where
     C: Clone + Eq + Hash + Send + Sync,
@@ -615,6 +639,7 @@ where
     continuation_store_epoch: Arc<ContinuationEpoch>,
     continuation_epochs: PathMap<Arc<ContinuationEpoch>>,
     durable_journal: Option<Box<DurableJournalStateV1>>,
+    receive_build: Option<ReceiveBuildBase>,
 }
 
 impl<C, P, A, K> InMemHotStoreState<C, P, A, K>
@@ -654,6 +679,7 @@ where
             continuation_base_epoch,
             continuation_epochs: PathMap::new(),
             durable_journal: None,
+            receive_build: None,
         })
     }
 
@@ -672,6 +698,59 @@ where
         match class {
             Some(class) => ReceiveAnswer::Fallback(class),
             None => handle.materialize(channel),
+        }
+    }
+
+    fn vacant_receive_class(&self) -> ReceiveAcceleratorClass {
+        match self.receive_build {
+            Some(_) => ReceiveAcceleratorClass::Building,
+            None => ReceiveAcceleratorClass::Absent,
+        }
+    }
+
+    fn begin_receive_build(&mut self) -> Option<ReceiveBuild<C, P, K>> {
+        match (self.continuations.receive_index(), &self.receive_build) {
+            (None, None) => {
+                let base = ReceiveBuildBase {
+                    revision: self.receive_revision(),
+                    loads: self.continuations.loads(),
+                };
+                self.receive_build = Some(base.clone());
+                Some(ReceiveBuild {
+                    base,
+                    snapshot: self.continuations.clone(),
+                })
+            }
+            (Some(_), _) | (None, Some(_)) => None,
+        }
+    }
+
+    fn finish_receive_build(
+        &mut self,
+        base: &ReceiveBuildBase,
+        built: Result<ReceiveOccurrenceIndex, RhoPathError>,
+    ) -> bool {
+        let open = self
+            .receive_build
+            .take_if(|marker| *marker == *base)
+            .is_some();
+        let same_revision = base.revision == self.receive_revision();
+        let same_loads = base.loads == self.continuations.loads();
+        let vacant = self.continuations.receive_index().is_none();
+        match (open && same_revision && same_loads && vacant, built) {
+            (true, Ok(index)) => {
+                self.continuations.publish_receive_index(index);
+                true
+            }
+            (true, Err(_)) | (false, _) => false,
+        }
+    }
+
+    fn rebuild_receive_index_locked(&mut self) -> ReceiveAcceleratorClass {
+        self.receive_build = None;
+        match self.continuations.rebuild_receive_index() {
+            true => ReceiveAcceleratorClass::Coherent,
+            false => ReceiveAcceleratorClass::Absent,
         }
     }
 
@@ -840,6 +919,7 @@ where
             continuation_base_epoch,
             continuation_epochs: PathMap::new(),
             durable_journal: None,
+            receive_build: None,
         }
     }
 }
@@ -1212,16 +1292,31 @@ where
     }
 
     fn rebuild_receive_accelerator(&self) -> ReceiveAcceleratorClass {
-        let mut state = hot_state_write(&self.state);
-        match state.continuations.rebuild_receive_index() {
+        let opened = hot_state_write(&self.state).begin_receive_build();
+        let published = opened.is_some_and(|build| {
+            let built = build.snapshot.build_receive_index();
+            hot_state_write(&self.state).finish_receive_build(&build.base, built)
+        });
+        match published {
             true => ReceiveAcceleratorClass::Coherent,
-            false => ReceiveAcceleratorClass::Absent,
+            false => hot_state_write(&self.state).rebuild_receive_index_locked(),
         }
     }
 
     fn receive_accelerator(&self) -> Option<ReceiveAcceleratorHandle<C, P, K>> {
         let state = self.state.read().expect("hot store state read lock");
         state.receive_handle()
+    }
+
+    fn detached_receive_accelerator(&self) -> Option<ReceiveAcceleratorHandle<C, P, K>> {
+        let (revision, mut snapshot) = {
+            let state = self.state.read().expect("hot store state read lock");
+            (state.receive_revision(), state.continuations.clone())
+        };
+        match snapshot.rebuild_receive_index() {
+            true => ReceiveAcceleratorHandle::new(revision, snapshot),
+            false => None,
+        }
     }
 
     fn receive_occurrences(
@@ -1232,7 +1327,7 @@ where
         let state = self.state.read().expect("hot store state read lock");
         match held {
             Some(handle) => state.read_receive_occurrences(handle, channel),
-            None => ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Absent),
+            None => ReceiveAnswer::Fallback(state.vacant_receive_class()),
         }
     }
 
@@ -1240,7 +1335,7 @@ where
         let state = self.state.read().expect("hot store state read lock");
         match state.receive_handle() {
             Some(handle) => state.read_receive_occurrences(&handle, channel),
-            None => ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Absent),
+            None => ReceiveAnswer::Fallback(state.vacant_receive_class()),
         }
     }
 
@@ -2139,6 +2234,7 @@ where
         state.continuations.clear();
         state.data.clear();
         state.joins.clear();
+        state.receive_build = None;
         drop(state);
 
         let mut history_cache = self
