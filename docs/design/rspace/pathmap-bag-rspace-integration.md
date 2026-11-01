@@ -2191,6 +2191,871 @@ falls back. It commits every candidate through `apply_accepted_match`, so a stal
 in the existing `Stale` outcome. It also owns the consensus-visible observations below. Task 8013
 qualifies the shared lifecycle, positional, metadata, identity and resource corpus.
 
+#### Production receive accelerator (task 8011)
+
+Task 8011 implements the receive accelerator that task 8010 specified and shows that the
+implementation refines the specification. The accelerator is a PathMap set of *occurrence keys*,
+one for each channel of each continuation group that holds a receive. It lives inside the
+continuation store, and the store's five mutators maintain it in the same critical section as the
+mutation. A reader takes a *handle*, which pairs an $`O(1)`$ persistent snapshot of the continuation
+store with the store's revision tokens, and asks it for the occurrences of one channel. The handle
+answers `Exact` only when its tokens are current and every group that could hold a receive on that
+channel lies inside its snapshot. Otherwise it answers `Fallback` with the class that refused, and
+the caller derives the answer from authority, as RSpace does today. Nothing in production builds
+the accelerator yet, so it is Absent by default and production behaviour is unchanged. Task 8012
+will decide when to build it and will select COMMs through it.
+
+The review of the task-8011 plan fixed the decisions below, which this subsection names where they
+apply. A seventh, D7, governs only how the evidence was produced.
+
+- **D1, one store token.** The store revision $`\sigma`$ is the fresh epoch allocation that a
+  continuation change gives its group
+  ([production revision tokens](#production-revision-tokens)).
+- **D2, no installed token.** An install bumps $`\sigma`$ like every other continuation change, so
+  the model's installed-version token $`v`$ has no production field, and a refinement mapping
+  supplies it.
+- **D3, a handle answers only for its own scope.** The scope test of a read inspects the groups
+  loaded in the handle's snapshot, never those of the live store
+  ([channel-scoped classification and read](#channel-scoped-classification-and-read)).
+- **D4, the load count.** A private build is published only if no history load happened while it
+  was built ([two-phase publication and maintenance](#two-phase-publication-and-maintenance)).
+- **D5, Absent by default.** Task 8011 adds no production caller that builds the accelerator, so
+  it runs no performance experiment; measurement belongs with selection in task 8012.
+- **D6, channel scope.** Task 8010's global Incomplete test becomes a test of the read channel's
+  groups, proved in Rocq, and the TLA+ model stays unchanged
+  ([why the TLA+ model is unchanged](#why-the-tla-model-is-unchanged)).
+
+Task 8011 was delivered in seven slices:
+
+| Slice | Deliverable | Commits |
+|---|---|---|
+| 8011.1 | The channel-scope Rocq model [`TwoLevelRSpaceReceiveAcceleratorChannelScope.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v), capstones RAC-CS-01 to RAC-CS-07, and its companion [`TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v), a bridge theorem and refutations RAC-CSMUT-01 to RAC-CSMUT-04 | `101a6db47` |
+| 8011.2 | The store revision token $`\sigma`$ and its five library tests | `ce366d25e` |
+| 8011.3 | The framed occurrence index inside the continuation store, maintained by its five mutators and left Absent when maintenance fails | `6221a8271`, `26457c364` |
+| 8011.4 | Handles, channel-scoped reads, receive identifiers, scope hydration and two-phase publication | `7fc00fab4`, `445b62acc`, `b58ec3bb3`, `1724e5671` |
+| 8011.5 | The production adapter of the 8010 harness and the 31 production specification tests | `9c7d95270`, `11c1b9eb0`, `4129b4fb5`, `2556105e6`, `ab8df3f38`, `7c433958d` |
+| 8011.6 | Adoption bound to the semantic manifest, and the five production Rholang tests | `bfd6aad90`, `c5dc35be4`, `6743154da`, `8f806951b` |
+| 8011.7 | The runner flag, the registry entries and their checker, the isolation check, the production controls RAC-RS-26 to RAC-RS-50, the two figures, this subsection, the catalog rows and the journal entry | `8dfacd194` to `a0217225b`, the commit that adds this subsection, and the two that follow it |
+
+Task 8011 adds no semantic root, persisted format, history key, state root, RhoPath version or
+wire message, and `AcceleratorManifestV1` keeps its bytes. The evidence for this identity
+neutrality is listed under [discharge of the 8010 obligations](#discharge-of-the-8010-obligations).
+
+##### Production placement and API
+
+The accelerator is confined to five production files, which form the whole production difference
+between `a95dd3a06`, the commit that completed task 8010, and task 8011:
+
+| File | Role |
+|---|---|
+| `rspace++/src/rspace/receive_accelerator.rs` (new) | The occurrence index `ReceiveOccurrenceIndex` (`receive_accelerator.rs:15-75`); the classes, handles, targets, receive identifiers and answers (`receive_accelerator.rs:77-358`); the join-scope test (`receive_accelerator.rs:360-380`); adoption (`receive_accelerator.rs:382-407`); and the key helpers (`receive_accelerator.rs:409-441`) |
+| `rspace++/src/rspace/hot_store.rs` | The trait methods and their fail-closed defaults (`hot_store.rs:323-363`); `ReceiveRevision` (`hot_store.rs:520-538`); the store token and the build marker (`hot_store.rs:628-643`); handles, reads and two-phase publication (`hot_store.rs:686-772`); and the overrides of `InMemHotStore` (`hot_store.rs:1289-1359`) |
+| `rspace++/src/rspace/record_index.rs` | The index slot and the load count of `RSpaceContinuationStore` (`record_index.rs:1192-1206`); maintenance inside its mutators; build and publication (`record_index.rs:1531-1654`) |
+| `rspace++/src/rspace/mod.rs` | Declares the new module (`rspace++/src/rspace/mod.rs:42`) |
+| `rspace++/src/rspace/persistence/mod.rs` | Makes `AcceleratorManifestView` visible to the crate, so that adoption can parse a persisted manifest (`rspace++/src/rspace/persistence/mod.rs:54`) |
+
+`HotStore` gains eight methods. Every default reports that no accelerator exists, except the
+default of hydration, which loads the join groups of the channel, so an implementor that does not
+override them always reads through the authoritative path. `InMemHotStore`, the trait's only
+implementor (`hot_store.rs:1101`), overrides all eight:
+
+| Method | Default | `InMemHotStore` |
+|---|---|---|
+| `receive_revision()` | `None` | the current $`(\gamma, \sigma)`$ (`hot_store.rs:1289-1292`) |
+| `rebuild_receive_accelerator()` | `Absent` | Algorithm 10: an optimistic build, else a rebuild under the write lock (`hot_store.rs:1294-1304`) |
+| `receive_accelerator()` | `None` | a handle on the published index (`hot_store.rs:1306-1309`) |
+| `detached_receive_accelerator()` | `None` | a handle on a private index, built from a snapshot and never published (`hot_store.rs:1311-1320`) |
+| `receive_occurrences(held, c)` | `Fallback(Absent)` | Algorithm 9 on the held handle, or `Fallback(Building)` or `Fallback(Absent)` without one (`hot_store.rs:1322-1332`) |
+| `current_receive_occurrences(c)` | `Fallback(Absent)` | Algorithm 9 on a handle taken under the same lock (`hot_store.rs:1334-1340`) |
+| `resolve_receive(id)` | `None` | the current byte-identical target, if there is one (`hot_store.rs:1342-1345`) |
+| `hydrate_receive_scope(c)` | load the join groups of the channel (`hot_store.rs:359-363`) | also load the installed groups of the channel that are not loaded, which it finds through the published index (`hot_store.rs:1347-1359`) |
+
+**Absent by default (D5).** No production code outside these files calls a method that builds or
+reads the accelerator, so every production read still takes the authoritative path. While the
+index is Absent, a mutation pays for the accelerator two `Option` tests, in `receive_support`
+(`record_index.rs:1608-1612`) and in the early return of `maintain_receive_index`
+(`record_index.rs:1622-1625`), and a history load or a `clear` also increments the load counter.
+
+**Handles.** `ReceiveAcceleratorHandle` (`receive_accelerator.rs:99-108`) holds a
+`ReceiveRevision` and a clone of the continuation store, and its constructor refuses a store that
+has no published index (`receive_accelerator.rs:116-122`). Taking a handle costs $`O(1)`$: the
+revision is two `Arc` clones, and cloning the store copies the root reference of each of its
+PathMap tries, so the clone shares every node. A later mutation of the store copies the nodes it
+changes and leaves the handle's version intact; this is persistence by path copying (Driscoll et
+al., 1989). A handle therefore reads one fixed version without holding a lock between calls.
+
+**Targets.** A `ReceiveTarget` (`receive_accelerator.rs:192-202`) refers to a resting record by its
+`Arc<StoredRecord>` or to an installed slot by that slot's `Arc`, and it shares the group prefix as
+an `Arc<[u8]>`. No body is copied. `identity_bytes` and `source_bytes` return the full bytes,
+borrowed from the admitted record view for a resting record and encoded on demand for an
+installed one (`receive_accelerator.rs:227-248`).
+
+##### Production revision tokens
+
+Task 8010's revision is the triple $`r = (\gamma, \sigma, v)`$. Production keeps two of its
+tokens. `ReceiveRevision` (`hot_store.rs:520-538`) holds the generation $`\gamma`$, which is
+`continuation_base_epoch`, and the store token $`\sigma`$, which is the new field
+`continuation_store_epoch` (`hot_store.rs:639`). Both are `Arc<ContinuationEpoch>` values compared
+with `Arc::ptr_eq`, that is, by allocation identity, and `shares_generation` compares $`\gamma`$
+alone (`hot_store.rs:535-537`). Decision D1 issues $`\sigma`$ exactly where the 8010 model issues a
+fresh store token:
+
+| Event | Production code | $`\gamma`$ | $`\sigma`$ | Group epochs | Model step |
+|---|---|---|---|---|---|
+| A fresh state, which every `set_state` and every new hot store creates | `Default` (`hot_store.rs:905-925`) and `from_snapshot` (`hot_store.rs:652-684`) | a fresh epoch $`e`$ | $`e`$ | every group uses $`\gamma`$ | `reset_world`: one fresh token for $`\gamma`$, $`\sigma`$ and $`v`$ |
+| A continuation change: an insertion (`hot_store.rs:1223`), an install (`hot_store.rs:1236`), a removal (`hot_store.rs:1273`) or an accepted removal (`hot_store.rs:1853`) | `bump_continuation_revision` (`hot_store.rs:944-951`) | unchanged | a fresh epoch $`e`$ | the changed group's epoch becomes $`e`$ | `bump_group`: one fresh token for $`\sigma`$ and the group's epoch |
+| `clear` (`hot_store.rs:2233`) | `bump_continuation_generation` (`hot_store.rs:953-957`) | a fresh epoch $`e`$ | $`e`$ | every group falls back to $`\gamma`$ | `reset_world` |
+| A history load, a duplicate put, a refused removal, a datum operation or a join operation | none | unchanged | unchanged | unchanged | a stutter |
+
+`bump_continuation_revision` stores one fresh allocation both as $`\sigma`$ and as the epoch of
+the changed group, just as the model's `bump_group` gives both one fresh token
+(`TwoLevelRSpaceReceiveAccelerator.v:1164-1174`), and `reset_world` gives all three tokens one fresh
+token (`TwoLevelRSpaceReceiveAccelerator.v:1176-1183`). The library tests of
+`rspace++/tests/hot_store/receive_revision_tokens.rs`, compiled as the module
+`rspace::hot_store::receive_revision_tokens_tests`, check the rows of the table:
+`fresh_states_issue_their_base_epoch_as_the_store_token`,
+`every_continuation_change_issues_the_bumped_group_epoch_as_a_fresh_store_token`,
+`clear_and_set_state_issue_a_fresh_generation_whose_base_epoch_is_the_store_token` and
+`history_loads_duplicates_refusals_datum_and_join_operations_keep_the_receive_revision`.
+RAC-RS-49 deletes the assignment of $`\sigma`$ in `bump_continuation_revision`
+(`hot_store.rs:947-948`), so a continuation change bumps its group epoch but keeps the previous
+store token, and `every_continuation_change_issues_the_bumped_group_epoch_as_a_fresh_store_token`
+fails.
+
+**No ABA under pointer equality.** Each `Arc::new(ContinuationEpoch)` allocates a new block. The
+block holds the reference counts, so it is not empty even though `ContinuationEpoch` has no
+fields. An allocator cannot hand out a block while an `Arc` to it lives, and every holder of a
+token (a handle, an answer, a `ReceiveId` or a `ContinuationVersion` ticket) holds such an `Arc`.
+A token issued later is therefore never pointer-equal to a token that is still held, so the
+comparison cannot suffer the ABA problem, in which a reused address makes a stale value look
+current. The documentation comment of `ContinuationEpoch` makes the same argument for group epochs
+(`hot_store.rs:477-484`).
+
+**The refinement mapping for the missing token (D2).** The model's installed-version token $`v`$
+changes on an install, an uninstall and a reset. Production stores no such token, and it never
+uninstalls outside a reset: the installed trie changes only through `install` and `clear`
+(`record_index.rs:1422-1428`, `record_index.rs:1521-1529`), and `set_state` and a soft-checkpoint
+revert replace the whole state, which issues a fresh generation. Define the *history variable*
+$`\hat v`$, which production does not store, as the value of $`\sigma`$ just after the last install
+or generation change, so that a step updates it by
+
+```math
+\hat v' \;=\; \begin{cases} \sigma' & \text{if the step is an install or changes } \gamma, \\ \hat v & \text{otherwise,} \end{cases}
+```
+
+where a primed symbol is the value after the step. A history variable is the standard device that
+makes a refinement mapping exist when a specification records more than its implementation
+(Abadi and Lamport, 1991). The mapping sends a production state with tokens $`(\gamma, \sigma)`$
+and history variable $`\hat v`$ to the model revision $`(\gamma, \sigma, \hat v)`$, and it maps
+each production step to a model step:
+
+1. An install sets $`\sigma'`$ to a fresh token and $`\hat v' = \sigma'`$. This is the model's
+   `bump_group` with `installed_changed` true, which gives $`\sigma`$ and $`v`$ the same fresh
+   token.
+2. An insertion or a removal sets $`\sigma'`$ to a fresh token and keeps $`\hat v`$. This is
+   `bump_group` with `installed_changed` false.
+3. `clear` and a fresh state set $`\gamma' = \sigma' = \hat v'`$ to one fresh token. This is
+   `reset_world`, which also covers every uninstall that production performs.
+4. Every other step keeps all three tokens. This is a stutter.
+
+Production compares $`(\gamma, \sigma)`$ where the model compares $`(\gamma, \sigma, v)`$, and the
+two comparisons agree on every pair of revisions of one run. Equal triples have equal pairs.
+Conversely, let a revision $`r_1`$ be taken before a revision $`r_2`$ of the same run, with
+$`\sigma_1 = \sigma_2`$. Every store token is a fresh allocation and the holder of $`r_1`$ keeps
+$`\sigma_1`$ alive, so no step between them issued a store token. Every install and every
+generation change issues one, so none happened, and therefore $`\gamma_1 = \gamma_2`$ and
+$`\hat v_1 = \hat v_2`$. RAC-CS-07, `equal_store_tokens_imply_equal_revisions`
+(`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:600`), proves this converse in the model: along a
+`WorldRun` from a world whose store token has been issued, an equal store token implies an equal
+revision. Its executable counterpart,
+`store_token_equality_implies_equal_receive_state_across_generated_traces`, checks on generated
+traces that an equal store token implies equal resting records, installed slots and group
+versions. The model's Foreign test also compares the lineage manifest, but a handle needs no
+lineage: every change of lineage is a reset, which issues a fresh $`\gamma`$ and so fails the
+generation test. The lineage matters only when a persisted accelerator is adopted.
+
+##### Framed occurrence keys
+
+The index is a `PathMap<()>` of keys (`receive_accelerator.rs:15-18`). It stores no positions,
+targets, orders, identities, sources or typed channels. Write $`x \mathbin{+\!\!+} y`$ for the
+concatenation of byte strings $`x`$ and $`y`$, and `00`, `01`, `FF` and so on for bytes in
+hexadecimal. For a channel identity image $`x`$, the escape $`\mathrm{esc}(x)`$ replaces every byte
+`00` of $`x`$ by the pair `00 FF`, and the frame of $`x`$ is
+
+```math
+\mathrm{frame}(x) \;=\; \mathrm{esc}(x) \mathbin{+\!\!+} [\mathtt{00}, \mathtt{00}],
+```
+
+which is what `append_frame` writes (`rho_path.rs:1710-1723`). The group prefix of
+$`g = [c_0, \dots, c_{n-1}]`$ is the existing RhoPath continuation prefix (`continuation_prefix`,
+`rho_path.rs:1047-1057`):
+
+```math
+\mathrm{prefix}(g) \;=\; [\mathtt{52}, \mathtt{48}, \mathtt{50}, \mathtt{01}, \mathtt{02}, \mathtt{01}] \mathbin{+\!\!+} \mathrm{frame}(c_0) \mathbin{+\!\!+} \cdots \mathbin{+\!\!+} \mathrm{frame}(c_{n-1}) \mathbin{+\!\!+} [\mathtt{00}, \mathtt{01}],
+```
+
+that is, the magic `RHP\x01`, the continuation kind `02`, the byte `01`, the channel frames and the
+group terminator `00 01` (`rho_path.rs:7-17`). The *occurrence key* of position $`i`$ of $`g`$ is
+
+```math
+\kappa(c_i, g) \;=\; \mathrm{frame}(c_i) \mathbin{+\!\!+} \mathrm{prefix}(g).
+```
+
+`insert_group` parses the group prefix and inserts the key of every position
+(`receive_accelerator.rs:27-33`, with the key built by `occurrence_key` at
+`receive_accelerator.rs:409-414`), and `remove_group` removes them (`receive_accelerator.rs:35-41`).
+The parser yields each frame together with its terminator (`take_frame`, `rho_path.rs:1725-1744`),
+and `channel_frame` takes the one frame of a one-channel prefix (`receive_accelerator.rs:434-441`),
+so both sides of every comparison are complete frames.
+A channel that is repeated in a group yields the same key again, which leaves the set unchanged,
+so the index holds one key for each distinct channel of each indexed group. With the images
+$`a = [\mathtt{01}]`$ and $`b = [\mathtt{01}, \mathtt{00}]`$, the group $`g = [a, b, a]`$ is
+indexed as follows:
+
+```text
+frame(a)  = 01 00 00
+frame(b)  = 01 00 FF 00 00
+prefix(g) = 52 48 50 01 02 01 | 01 00 00 | 01 00 FF 00 00 | 01 00 00 | 00 01
+key(a, g) = 01 00 00       ++ prefix(g)      positions of a in g: [0, 2]
+key(b, g) = 01 00 FF 00 00 ++ prefix(g)      positions of b in g: [1]
+```
+
+**Why the lookup is exact.** The image $`a`$ is a prefix of the image $`b`$, but
+$`\mathrm{frame}(a)`$ is not a prefix of $`\mathrm{frame}(b)`$: the two part at their third byte,
+`00` against `FF`. In general, frames are prefix-free, because inside $`\mathrm{esc}(x)`$ every
+byte `00` is followed by `FF`, so the pair `00 00` first occurs at the end of the frame. RAC-CS-06,
+`framed_occurrence_keys_enumerate_exactly_the_channel_groups`
+(`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:550`), proves both halves of the consequence for
+valid identity bytes. First, $`\mathrm{frame}(c) \mathbin{+\!\!+} u = \mathrm{frame}(c') \mathbin{+\!\!+} u'`$
+implies $`c = c'`$ and $`u = u'`$. Second, a key $`\mathrm{frame}(c) \mathbin{+\!\!+} u`$ belongs
+to the keys built from a list of pairs $`(c_i, u_i)`$ exactly when $`u`$ is the suffix of a pair
+whose channel is $`c`$. So the keys under $`\mathrm{frame}(c)`$ are exactly the keys of $`c`$, and
+their suffixes are the prefixes of the indexed groups that contain $`c`$.
+
+`try_visit_groups_of` (`receive_accelerator.rs:43-59`) opens a read zipper at
+$`\mathrm{frame}(c)`$ and walks every key below it in trie order (Fredkin, 1960); each path
+relative to $`\mathrm{frame}(c)`$ is one group prefix. `positions_of`
+(`receive_accelerator.rs:416-432`) recovers every position of $`c`$ by comparing the frames of the
+group prefix with $`\mathrm{frame}(c)`$, so positions are never stored. RAC-RC-06 states that
+prefix-aliased images never share occurrences; its production witnesses are
+`production_prefix_aliased_images_never_share_occurrences` and the library test
+`occurrence_keys_are_exact_under_prefix_aliased_images`, which checks that every key has exactly
+one owning pair of channel and group and that the zipper visit of every probe channel equals a
+brute-force selection of its groups. RAC-CSMUT-03, `unframed_occurrence_keys_are_refuted`
+(`TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v:561`), refutes raw keys in the model: with
+$`a = [1]`$ and $`b = [1, 0]`$, the raw key of an occurrence of $`b`$ begins with the raw image of
+$`a`$, so a read of $`a`$ answers an occurrence of a group that does not contain $`a`$. RAC-RS-45
+applies the same fault to production by building the key from the decoded raw channel image
+instead of its escaped frame (`receive_accelerator.rs:411`), and the library test fails.
+
+##### Channel-scoped classification and read
+
+Task 8010's Incomplete test is global: a published accelerator answers only when its scope contains
+the whole support. Production refines the test to the channel being read (D6). The symbols below
+extend the [occurrence index notation](#occurrence-index-notation):
+
+| Symbol | Meaning |
+|---|---|
+| $`s`$ | The state of one `InMemHotStore` (`InMemHotStoreState`, `hot_store.rs:628-643`), read and written only under the store's lock. |
+| $`r_s = (\gamma_s, \sigma_s)`$ | The receive revision of $`s`$, as `receive_revision()` returns it. |
+| $`S`$ | A continuation store, that is, an `RSpaceContinuationStore`. $`S_s`$ is the live store of $`s`$; a snapshot is a clone of it. |
+| $`h = (r_h, S_h)`$ | A handle: a revision and a snapshot taken together under one lock. |
+| $`L(S)`$ | The groups *loaded* in $`S`$: those whose prefix is a key of the `groups` trie of its resting store (`is_loaded_prefix`, `record_index.rs:1573`). Every resting record of a loaded group is in $`S`$; a group that is not loaded may have resting records in history only. |
+| $`\mathrm{sup}(S)`$ | The groups *supported* in $`S`$: the loaded groups that hold a resting record, and the groups that hold an installed slot (`supports_receive_group`, `record_index.rs:1614-1620`). |
+| $`X(S)`$ | The key set of the index published in $`S`$, when there is one. |
+| $`V_s(c)`$ | The live join view of a channel $`c`$: the installed and resting join groups that the join store of $`s`$ lists for $`c`$, or $`\mathsf{unloaded}`$ when the resting join prefix of $`c`$ is not loaded (`try_visit_join_groups`, `record_index.rs:1780-1795`). |
+
+**Index invariant $`I_{\mathrm{idx}}`$.** Whenever a store $`S`$ has a published index, its keys
+are exactly the occurrence keys of its supported groups:
+
+```math
+X(S) \;=\; \bigl\{\, \kappa(c_i, g) \;:\; g = [c_0, \dots, c_{n-1}] \in \mathrm{sup}(S),\ 0 \le i < n \,\bigr\}.
+```
+
+`build_receive_index` establishes the invariant: it inserts the keys of every loaded group that
+holds a resting record and of every installed slot (`record_index.rs:1531-1546`). The maintenance
+of Algorithm 11 preserves it. In test builds, `assert_receive_index_coherent`
+(`record_index.rs:1643-1654`) rebuilds the index after every maintained mutation and every
+publication and asserts that the two key sets are equal. A snapshot never changes, so the
+snapshot of a handle keeps the invariant it had when the handle was taken.
+
+Besides the tokens, a read tests three scope conditions:
+
+- **J1.** $`V_s(c) \neq \mathsf{unloaded}`$: the live join view knows the join groups of $`c`$.
+- **J2.** Every group of $`V_s(c)`$ is loaded in the handle's snapshot, $`V_s(c) \subseteq L(S_h)`$.
+  By decision D3 the scope is the handle's, never the live $`L(S_s)`$.
+- **J3.** Every group visited under $`\mathrm{frame}(c)`$ in $`X(S_h)`$ is loaded in $`S_h`$. A
+  supported group that is not loaded holds an installed slot, and its resting records may still
+  be in history.
+
+Algorithms 9 to 11 are written as literate pseudocode in Knuth's sense (Knuth, 1984), like the
+algorithms of task 8010: each procedure is introduced by its purpose, and the prose after it names
+the production function that implements each step and the theorem or test that justifies it.
+
+**Algorithm 9 (Channel-scoped read).** `READ_C` answers the occurrences of one channel from a
+handle, and `CLASSIFY_C` decides whether the handle may answer for that channel. `READ_C` runs
+under one read lock of the hot store, so it reads the tokens, the join view and the snapshot at
+one instant, and no mutation can intervene.
+
+```pseudocode
+READ_C(s, h, c):                                   -- under one read lock of s
+    if h is None:
+        return Fallback(VACANT(s))                 -- Building while a marker is open, else Absent
+    k := CLASSIFY_C(s, h, c)
+    if k != None:
+        return Fallback(k)
+    return MATERIALIZE(h, c)                       -- applies J3 while it visits
+
+CLASSIFY_C(s, h, c):
+    k := TOKEN_CLASS(h.revision, s.revision)
+    if k = None:
+        k := JOIN_SCOPE_CLASS(h.snapshot, s.joins, c)
+    return k
+
+TOKEN_CLASS(rh, rs):
+    if rh.generation is not rs.generation:         -- pointer inequality of the Arcs
+        return Foreign
+    if rh.store is not rs.store:
+        return Stale
+    return None
+
+JOIN_SCOPE_CLASS(S, joins, c):
+    view := the join groups of c in joins          -- installed groups first, then resting ones
+    if view = unloaded:
+        return Incomplete                          -- J1
+    for j in view:
+        if prefix(j) is not loaded in S:
+            return Incomplete                      -- J2, against the snapshot S of the handle
+    return None
+
+MATERIALIZE(h, c):
+    groups := []
+    for each key under frame(c) in the index of h.snapshot, in trie order:
+        p := the key's path relative to frame(c)    -- a group prefix
+        if p is not loaded in h.snapshot:
+            return Fallback(Incomplete)            -- J3
+        targets := the installed slot of p, if any, then the resting records of p
+                   in get_continuations order
+        groups.append((the channels of p, p, POSITIONS(p, frame(c)), targets))
+    return Exact(h.revision, groups)
+```
+
+`READ_C` is `receive_occurrences` (`hot_store.rs:1322-1332`) followed by
+`read_receive_occurrences` (`hot_store.rs:690-702`), and `current_receive_occurrences`
+(`hot_store.rs:1334-1340`) runs it on the handle that `receive_handle()` takes under the same lock.
+`VACANT` is `vacant_receive_class` (`hot_store.rs:704-709`), and `CLASSIFY_C` is the chain of the
+two tests in `read_receive_occurrences` (`hot_store.rs:695-697`). `TOKEN_CLASS` is `token_class`
+(`receive_accelerator.rs:128-134`); it tests Foreign before Stale for the reason given under
+[accelerator classes](#accelerator-classes). `JOIN_SCOPE_CLASS` is `join_scope_class`
+(`receive_accelerator.rs:360-380`):
+`try_visit_join_groups` answers `None` for an unloaded join prefix, which is J1, and the visitor
+stops at the first join group whose continuation prefix is not loaded in the handle's snapshot,
+which is J2. `MATERIALIZE` is `materialize` (`receive_accelerator.rs:136-159`), with J3 at
+`receive_accelerator.rs:144-149`; `occurrence_group` builds the targets
+(`receive_accelerator.rs:161-189`), and `POSITIONS` is `positions_of`. Every answer carries the
+handle's revision. `receive_id` pairs a target with that revision
+(`receive_accelerator.rs:346-352`), and `resolve` succeeds only at an equal revision and for a
+current record whose kind, prefix, identity bytes and source bytes are all equal to the target's
+(`receive_accelerator.rs:251-264`, `receive_accelerator.rs:306-316`).
+
+**The model.** The Rocq channel-scope model refines the 8010 classification for one channel.
+`channel_scope_check` (`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:64`) is J1, J2 and J3 over a
+join view, a scope and the published entries, and `channel_classify`
+(`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:80`) applies it after the 8010 Foreign and Stale
+tests. The entries that a production build publishes are modelled by `production_index`
+(`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:36`): the occurrences of every group in the scope
+and of every installed group outside it, which is what $`I_{\mathrm{idx}}`$ gives for the scope
+$`L(S_h)`$. The capstones are:
+
+| ID | Theorem | Statement |
+|---|---|---|
+| RAC-CS-01 | `join_coverage_completes_the_channel_scope` (`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:357`) | Under `joins_cover`, a scope that contains every join group of $`c`$ contains every group of $`c`$ that has a target. |
+| RAC-CS-02 | `complete_channel_scope_lookup_is_derivation` (`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:378`) | Over production entries and a scope that is complete for $`c`$, the lookup of $`c`$ stays inside the scope and has exactly the members of $`\mathrm{Occ}_w(c)`$. |
+| RAC-CS-03 | `exact_channel_read_is_current_sound_and_group_complete` (`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:409`) and `covered_exact_channel_read_is_the_derivation` (`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:441`) | An `Exact` answer is bound to the current revision and lineage. Over production entries it is sound, and it contains every occurrence of each group it answers. Under `joins_cover` and an exact join view it equals $`\mathrm{Occ}_w(c)`$. |
+| RAC-CS-04 | `global_coherence_implies_channel_coherence` (`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:466`) | Under `joins_cover`, with an exact join view that knows $`c`$, an accelerator that satisfies the 8010 invariant and that the 8010 rule calls Coherent is channel-Coherent for $`c`$ and gives the same answer, so the channel rule never refuses where the global rule answers. |
+| RAC-CS-05 | `exact_channel_read_contains_the_joins_derivation` (`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:518`) | Without `joins_cover`: an `Exact` answer over production entries and an exact join view contains every occurrence of $`c`$ in every join group of $`c`$. |
+| RAC-CS-06 | `framed_occurrence_keys_enumerate_exactly_the_channel_groups` (`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:550`) | Frames are prefix-free, and the keys under $`\mathrm{frame}(c)`$ enumerate exactly the groups of $`c`$ ([framed occurrence keys](#framed-occurrence-keys)). |
+| RAC-CS-07 | `equal_store_tokens_imply_equal_revisions` (`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:600`) | Along a run, an equal store token implies an equal revision ([production revision tokens](#production-revision-tokens)). |
+
+`Print Assumptions` reports every one of the eight theorems closed
+(`TwoLevelRSpaceReceiveAcceleratorChannelScope.v:621-628`).
+
+**Premise $`P_J`$ (joins cover targets).** For every channel $`c`$ with
+$`V_s(c) \neq \mathsf{unloaded}`$, every group that contains $`c`$ and holds a resting record lies
+in $`V_s(c)`$. This is the cover direction of the model's `joins_cover`
+(`TwoLevelRSpaceReceiveAccelerator.v:904-907`), and it is the only direction that the proof of
+RAC-CS-01 uses: that proof reaches `joins_cover` only through the forward half of
+`join_root_projection_is_exact` (`TwoLevelRSpaceReceiveAccelerator.v:909`), and the forward half
+applies only this direction. RSpace maintains $`P_J`$:
+
+- `store_waiting_continuation` writes the group's join for each of its channels after it stores
+  the continuation (`rspace.rs:1485-1495`), and an install writes its joins through
+  `install_join` (`rspace.rs:1630-1632`);
+- `remove_join` removes a join only when its group holds no installed or resting continuation,
+  history included (`hot_store.rs:1956-1997`);
+- an accepted removal removes a group's joins only when the group is left without a target, in the
+  critical section of the removal (`hot_store.rs:1855-1872`).
+
+The converse direction, that every listed group holds a target, fails transiently, because
+`remove_continuation` removes no join. A listed group without a target only adds a J2 requirement,
+which can make a read fall back but never makes it answer. $`P_J`$ itself fails only inside
+`store_waiting_continuation`, for the group just stored, between `put_continuation` and the joins
+written after it. That group is loaded in every handle that is current at that moment, because a
+handle taken before the put is Stale, and the argument below uses $`P_J`$ only for groups outside
+the handle's snapshot.
+
+**Why an Exact answer is the derivation.** Let `READ_C(s, h, c)` return `Exact`, and let $`w`$ be
+the world that $`s`$ represents.
+
+1. *The snapshot is current.* `TOKEN_CLASS` returned `None`, so $`r_h = r_s`$, and by the
+   refinement argument of the previous section no continuation change happened after $`h`$ was
+   taken. Only history loads can separate $`S_h`$ from $`S_s`$, and a history load adds a loaded
+   group without changing any resting record or installed slot (RAC-RC-19). So every group loaded
+   in $`S_h`$ holds in $`S_h`$ exactly its targets in $`w`$, and every installed slot of $`S_h`$
+   is current.
+2. *Soundness and group completeness* (RAC-CS-03, RAC-CS-06). Every answered group was visited
+   under $`\mathrm{frame}(c)`$, so by $`I_{\mathrm{idx}}`$ and RAC-CS-06 it is a supported group of
+   $`S_h`$ that contains $`c`$. J3 makes it loaded in $`S_h`$, so by step 1 its listed targets are
+   all of its targets in $`w`$, and `positions_of` gives every position of $`c`$ in it.
+3. *Completeness* (RAC-CS-01, RAC-CS-02). Let a group $`g`$ contain $`c`$ and have a target in
+   $`w`$.
+   - If $`g \in L(S_h)`$, step 1 makes $`g`$ supported in $`S_h`$, so
+     $`\kappa(c, g) \in X(S_h)`$, `MATERIALIZE` visits $`g`$, and step 2 lists all of its targets.
+   - If $`g \notin L(S_h)`$ and $`g`$ holds a resting record, then J1 holds and $`P_J`$ puts $`g`$
+     in $`V_s(c)`$, so J2 would have failed. This case cannot occur.
+   - If $`g \notin L(S_h)`$ and $`g`$ holds only an installed slot, then $`g`$ is supported in
+     $`S_h`$, so `MATERIALIZE` visits it and J3 would have failed. This case cannot occur either.
+
+So the answer lists exactly $`\mathrm{Occ}_w(c)`$. Without $`P_J`$, steps 1 and 2 still hold, and
+the first case of step 3 still covers every join group of $`c`$, because J2 makes it loaded. The
+answer therefore contains everything that the joins-based derivation finds, which is the current
+RSpace path of joins followed by continuations. That is RAC-CS-05: even a broken $`P_J`$ could not
+make the accelerator hide a receive that production finds today.
+
+**Decision D3 and its counterexample.** Suppose J2 inspected the live store's loaded groups
+$`L(S_s)`$ instead of $`L(S_h)`$. Take the images $`a = [\mathtt{01}]`$ and
+$`b = [\mathtt{01}, \mathtt{00}]`$, a resident group $`g_1 = [a]`$ with one record, and a group
+$`g_2 = [b, a]`$ whose only record is in history; the joins of $`a`$ list $`g_1`$ and $`g_2`$. A
+handle $`h`$ is taken while only $`g_1`$ is loaded, so $`X(S_h)`$ holds $`\kappa(a, g_1)`$ and no
+key of $`g_2`$. Then `hydrate_receive_scope(a)` loads $`g_2`$. A history load issues no token, so
+$`r_h = r_s`$ still holds and $`h`$ passes `TOKEN_CLASS`. With the live scope, J2 would pass,
+because $`g_2 \in L(S_s)`$, and `MATERIALIZE` would visit only $`\kappa(a, g_1)`$ in the handle's
+index and answer `Exact` without the record of $`g_2`$: an enabled receive would be hidden. With
+the handle's own scope, J2 finds $`g_2 \notin L(S_h)`$, and the read answers
+`Fallback(Incomplete)`; a handle taken after the load answers `Exact` with both groups.
+RAC-CSMUT-04 refutes the live-scope variant in the model with the smallest such world: the
+snapshot is published over an empty scope, one group is then loaded, and the variant answers
+`Exact []` while the derivation is not empty. RAC-RS-50 applies the fault to production
+(`hot_store.rs:697`), and
+`production_held_handles_never_answer_for_groups_loaded_after_they_were_taken` fails. The library
+test `held_handles_never_answer_for_groups_loaded_after_they_were_taken` shows the channel scoping
+directly: after a join group of $`a`$ is loaded behind a held handle at an unchanged revision, the
+held handle falls back as Incomplete for $`a`$, still answers `Exact` for another channel, and a
+handle taken after the load answers `Exact` for $`a`$ with the loaded group.
+
+**Refutations.** The companion file states each scope test's failure as a wrong implementation
+with one switch flipped. `channel_scope_implementation_with_correct_switches_is_the_model`
+(`TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v:229`) shows that the implementation with
+every switch off is the model and that each mutant flips exactly one switch:
+
+| ID | Theorem | Wrong implementation | Counterexample | Production control |
+|---|---|---|---|---|
+| RAC-CSMUT-01 | `skipped_join_scope_check_is_refuted` (`TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v:467`) | J2 is skipped | under `joins_cover` and an exact join view, a group outside the scope holds a target of the channel, and the mutant answers `Exact` without it | RAC-RS-31 |
+| RAC-CSMUT-02 | `skipped_lookup_scope_check_is_refuted` (`TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v:503`) | J3 is skipped | the join view omits a group outside the scope that holds an installed slot; the mutant answers one occurrence of that group and misses another occurrence of the same group | RAC-RS-32 |
+| RAC-CSMUT-03 | `unframed_occurrence_keys_are_refuted` (`TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v:561`) | keys use raw images | a read of $`a`$ answers an occurrence of a group of $`b`$ | RAC-RS-45 |
+| RAC-CSMUT-04 | `live_scope_join_check_is_refuted` (`TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v:607`) | J2 inspects the live scope | after a history load, the mutant answers `Exact []` while the derivation is not empty | RAC-RS-50 |
+
+RAC-RS-33 has no model counterpart: it treats an unloaded join view as one without join groups
+(`receive_accelerator.rs:377-378`), whereas the model's check rejects an unloaded view by
+definition. RAC-RS-31 skips the join groups outside the handle's scope
+(`receive_accelerator.rs:371-374`), and RAC-RS-32 skips an installed-only group outside it instead
+of refusing (`receive_accelerator.rs:149`). The production test
+`production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated` kills all three. It
+builds a fresh store for each of three gaps: `UnloadedJoins` reads a channel whose joins are not
+loaded (J1), `UnloadedJoinGroup` reads a channel whose joins are loaded but whose join group is
+only in history (J2), and `UnloadedInstalledGroup` reads a channel whose only group is an installed
+slot that was never loaded and that wrote no join (J3). Each read is Incomplete for a current
+handle. The library tests
+`unloaded_joins_make_the_channel_incomplete`,
+`join_groups_outside_the_handle_scope_make_the_channel_incomplete` and
+`installed_only_groups_outside_the_handle_scope_make_the_channel_incomplete` check the three
+conditions one at a time.
+
+**Hydration.** `hydrate_receive_scope(c)` (`hot_store.rs:1347-1359`) is the caller's remedy for
+Incomplete. It loads the join groups of $`c`$, and the installed groups of $`c`$ that are not loaded
+(`unloaded_installed_groups`, `hot_store.rs:757-772`), through `get_continuations_versioned`, whose
+history fill calls `set_group` (`hot_store.rs:1160-1164`). These are history loads, so they issue
+no token, and a reader that retries with a fresh handle at the same revision gets `Exact`. The
+production scope-gap test checks, after each gap, that hydration leaves the revision unchanged and
+that fresh published and detached handles then answer `Exact` with the derivation, and the library
+tests
+`hydration_makes_join_incomplete_channels_exact_at_the_same_revision` and
+`hydration_loads_installed_only_groups_without_an_installed_join` check the two kinds of load.
+
+![Channel-scoped receive read: the token classes, the join scope tests J1 and J2, the visit of the framed keys, J3 and the Exact answer](figures/receive-accelerator-channel-read.svg)
+
+The figure follows one read through Algorithm 9 under one read lock. The red and orange exits are
+the two token tests, the violet exits are the scope tests J1, J2 and J3, and the green exit is the
+only answer that the accelerator gives. The note beside the read records the fallback when there is
+no handle or no published index. The floating note records that hydration issues no new revision,
+which is why J2 and J3 must inspect the handle's own snapshot.
+
+##### Two-phase publication and maintenance
+
+A store's index becomes published in one of two ways. Algorithm 10 builds it from a snapshot outside
+the lock and validates the result under the write lock before publishing it. This is optimistic
+concurrency control in the sense of Kung and Robinson (1981): a read phase on a private copy, a
+validation phase, and a write phase. If validation refuses, the store falls back to a build under
+the write lock, which always publishes unless a group prefix fails to parse.
+
+**Algorithm 10 (Two-phase publication).** `REBUILD` publishes an index for the store's current
+version. `BEGIN` and `FINISH` each run under the write lock; the build between them runs on the
+snapshot with no lock held.
+
+```pseudocode
+REBUILD(store):
+    build := BEGIN(store.state)                    -- under the write lock
+    if build is not None:
+        index := BUILD_INDEX(build.snapshot)       -- no lock held
+        if FINISH(store.state, build.base, index): -- under the write lock
+            return Coherent
+    return REBUILD_LOCKED(store.state)             -- under the write lock
+
+BEGIN(state):
+    if state.continuations.index is None and state.marker is None:
+        base := (state.revision, state.continuations.loads)
+        state.marker := base
+        return (base, a clone of state.continuations)
+    return None
+
+FINISH(state, base, index):
+    open := (state.marker = base)
+    if open:
+        state.marker := None                       -- the marker is consumed only when it matches
+    if open
+       and base.revision = state.revision          -- no continuation change and no reset
+       and base.loads = state.continuations.loads  -- no history load (D4)
+       and state.continuations.index is None       -- no other publication
+       and index is not a failure:
+        state.continuations.index := index
+        return true
+    return false
+
+REBUILD_LOCKED(state):
+    state.marker := None
+    state.continuations.index := BUILD_INDEX(state.continuations), or None if it fails
+    return Coherent if state.continuations.index is not None, else Absent
+```
+
+`REBUILD` is `rebuild_receive_accelerator` (`hot_store.rs:1294-1304`). `BEGIN` is
+`begin_receive_build` (`hot_store.rs:711-726`), `FINISH` is `finish_receive_build`
+(`hot_store.rs:728-747`), `REBUILD_LOCKED` is `rebuild_receive_index_locked`
+(`hot_store.rs:749-755`), and `BUILD_INDEX` is `build_receive_index` (`record_index.rs:1531-1546`).
+While the marker is open the store's index is Absent, so readers get `Fallback(Building)`. Each
+validation of `FINISH` has a reason:
+
+- **The revision.** A continuation change or a reset during the build would make the built index
+  describe an older version, and a stale base must publish nothing (RAC-RC-23). `clear` also drops
+  the marker (`hot_store.rs:2237`).
+- **The load count (D4).** A history load issues no token but adds a loaded group whose keys the
+  build did not insert. Publishing such a build would break $`I_{\mathrm{idx}}`$: a handle taken
+  afterwards would pass J2 for the loaded group, which is loaded in its snapshot, and would answer
+  without that group's receives. The private counter `loads` (`record_index.rs:1205`) counts every
+  `set_group` and every `clear` with checked arithmetic (`count_load`,
+  `record_index.rs:1601-1606`). RAC-RS-46 makes the comparison always succeed
+  (`hot_store.rs:738`), and `publication_refuses_a_stale_base_or_a_history_load` fails at the
+  coherence assertion that `publish_receive_index` runs in test builds
+  (`record_index.rs:1649-1652`), which shows that the published index lacks the loaded group.
+- **Vacancy.** No other index may have been published in the meantime. A rebuild under the lock,
+  the only other publisher, also drops the marker, so this test guards the same case a second time.
+- **The marker.** It identifies this build; `clear` and a rebuild under the lock drop it.
+
+Publication assigns the index in one step, and `receive_handle` (`hot_store.rs:686-688`) pairs it
+with the revision that is current at that moment, so the index that a handle answers from and the
+revision it reports always belong to one version (RAC-RC-24, RAC-TLA-02). RAC-RS-37 stamps every
+handle with the generation's base epoch as its store token (`hot_store.rs:687`), and
+`production_index_and_catalog_publish_at_one_revision` fails. `detached_receive_accelerator`
+(`hot_store.rs:1311-1320`) builds an index on a clone and returns a handle over the clone without
+publishing it, and the production adapter can run a property with either kind of handle
+(`enum Build`, `rspace++/tests/support/receive_accelerator_production.rs:105`). The library tests
+`open_builds_report_building_until_they_publish`,
+`publication_refuses_a_stale_base_or_a_history_load`, which disturbs a build with a continuation
+change, a `clear` and a history load, `detached_handles_answer_without_publishing` and
+`rebuilds_publish_optimistically_and_fall_back_under_the_lock` check the protocol.
+
+**Algorithm 11 (Maintained mutation).** `MUTATE` is the frame that each of the four group mutators
+of `RSpaceContinuationStore` puts around its change to the authoritative tries; `SUPPORTED` decides
+membership in $`\mathrm{sup}(S)`$.
+
+```pseudocode
+MUTATE(S, op, g):                                  -- op is set_group, put_prepared, remove_path or install
+    before := SUPPORTED(S, g) if S.index is not None, else None
+    apply op to the authoritative tries of S       -- the semantic effect, never rolled back
+    if op = set_group:
+        S.loads := S.loads + 1                     -- checked; a history load issues no token
+    if before is None:
+        return                                     -- Absent: nothing to maintain
+    after := SUPPORTED(S, g)
+    replacement := a clone of S.index              -- O(1); it shares every node
+    ok := match (before, after):
+              (false, true): INSERT_GROUP(replacement, prefix(g))
+              (true, false): REMOVE_GROUP(replacement, prefix(g))
+              otherwise:     true
+    S.index := replacement if ok, else None        -- a failed maintenance leaves the index Absent
+
+SUPPORTED(S, g):
+    return (g is loaded in S and holds a resting record) or (g holds an installed slot)
+```
+
+The fifth mutator, `clear`, empties the tries, sets the index to `None` and counts a load
+(`record_index.rs:1521-1529`). `SUPPORTED` is `supports_receive_group`, `before` is
+`receive_support` (`record_index.rs:1608-1612`), and the rest of `MUTATE` is
+`maintain_receive_index` (`record_index.rs:1622-1641`). Maintenance runs inside the mutator, so it
+runs in the same write-lock critical section as the mutation and the token bump that follows it,
+and it follows the clone-then-assign pattern of task 6079: the replacement is assigned only after
+every step has succeeded. A failed maintenance, which is a group prefix that does not parse or the
+fault that test builds can inject (`receive_accelerator.rs:443-454`), leaves the index Absent
+instead of rolling the mutation back. A rollback would make the semantic state depend on the
+accelerator (RAC-RC-26), whereas an Absent index only makes readers fall back. RAC-RS-38 publishes
+the replacement even when maintenance failed (`record_index.rs:1637`), and
+`faulted_maintenance_publishes_nothing` fails.
+
+The five mutators are the only code that changes the continuation tries, and the hot store calls
+them at eleven sites:
+
+| Mutator | Call sites | Support transition | Effect on the index |
+|---|---|---|---|
+| `set_group` (`record_index.rs:1240-1263`) | `from_snapshot` (`hot_store.rs:655`), `get_continuations_versioned` (`hot_store.rs:1163`), `put_continuation` (`hot_store.rs:1208`), `remove_continuation` (`hot_store.rs:1246`), `create_from_durable` (`hot_store.rs:2665`) | the group's support before and after the load | insert or remove the group's keys; `loads` grows by one and no token moves (RAC-RC-19) |
+| `put_prepared` (`record_index.rs:1265-1315`) | `put_continuation` (`hot_store.rs:1219`) | unsupported to supported when the first resting record arrives and the group has no installed slot | insert the group's keys; a known identity changes nothing (RAC-RC-14, RAC-RC-15) |
+| `remove_path` (`record_index.rs:1388-1420`) | `remove_continuation` (`hot_store.rs:1265`), `apply_accepted_match` (`hot_store.rs:1851`) | supported to unsupported when the last resting record leaves and the group has no installed slot | remove the group's keys (RAC-RC-16, RAC-RC-17) |
+| `install` (`record_index.rs:1422-1428`) | `from_snapshot` (`hot_store.rs:658`), `install_continuation` (`hot_store.rs:1235`) | unsupported to supported when the group had no slot and no loaded resting record | insert the group's keys; a reinstall replaces the slot and leaves the keys unchanged (RAC-RC-18) |
+| `clear` (`record_index.rs:1521-1529`) | `clear` (`hot_store.rs:2234`) | every group | the index becomes Absent and `loads` grows by one (RAC-RC-20) |
+
+Because maintenance lives in the mutators, every site maintains the index by construction, and so
+will any future site that calls them. The production tests
+`production_insertions_maintain_the_published_accelerator`,
+`production_nonfinal_removals_maintain_the_published_accelerator`,
+`production_final_removal_clears_the_maintained_group`,
+`production_installs_maintain_and_set_state_retires_the_published_accelerator`,
+`production_history_loads_extend_the_maintained_scope` and
+`production_maintenance_equals_rebuild_over_generated_traces`, and the library test
+`maintained_index_equals_a_fresh_build_across_generated_mutator_sequences`, compare the maintained
+index with a rebuild. RAC-RS-27 treats the removal of a group's first ordered record as final
+(`hot_store.rs:1265`), RAC-RS-43 keeps a group's keys after its final removal
+(`record_index.rs:1631`), and RAC-RS-44 skips maintenance on a history load
+(`record_index.rs:1261-1262`); each makes its named test fail.
+
+![Production receive accelerator lifecycle: Absent, Building, Coherent and the rebuild under the lock, with maintenance, token bumps and history loads](figures/receive-accelerator-production-lifecycle.svg)
+
+The figure shows the states of a store's published index. A build opened by
+`rebuild_receive_accelerator` moves from Absent to Building, and its validation either publishes it
+(green) or refuses it (red, dashed) and falls back to the rebuild under the lock. The four group
+mutators keep a Coherent index Coherent unless their maintenance fails, and `clear` or `set_state`
+drops the index and the marker. The three notes give the effect on a handle that was taken before
+each event: a $`\sigma`$ bump makes it Stale, a $`\gamma`$ bump makes it Foreign, and a history load
+makes it answer Incomplete for the loaded group.
+
+##### Why the TLA+ model is unchanged
+
+Decision D6 keeps `RSpaceReceiveAcceleratorCoherence` and its ten mutant configurations exactly as
+task 8010 left them. The model checks the global protocol over a bounded state space: publication,
+maintenance, adoption, resets, held snapshots, reads and commits. Production changes nothing that
+its invariants can observe, for five reasons.
+
+1. **Two tokens instead of three.** The refinement mapping with the history variable $`\hat v`$
+   maps every production step to a model step or a stutter, and the production comparisons agree
+   with the model's (RAC-CS-07). A TLA+ specification is invariant under stuttering (Lamport,
+   1994), so the model's behaviours include the image of every production behaviour.
+2. **The channel rule refines only the Incomplete test.** The model's `Class` calls an accelerator
+   Incomplete when the support is not a subset of its scope, which is a global test; production's
+   J1, J2 and J3 test only the groups of the channel being read. An `Exact` answer nevertheless has
+   the content that the model answers: it equals $`\mathrm{Occ}_w(c)`$ (RAC-CS-02, RAC-CS-03 and
+   RAC-CS-05), which is the model's `Answer(c)` result in every class, the derivation in a fallback
+   and the entries of a coherent snapshot otherwise, which equal the derivation by RAC-TLA-03. So
+   production refines the model's answers, and `AnswerIsSound` and `NoEnabledReceiveHidden`
+   (RAC-TLA-04, RAC-TLA-05) hold for it, but it does not refine the model's class tags: production
+   may answer for one channel where the model's global test calls the snapshot Incomplete.
+   RAC-TLA-07's production counterpart is accordingly channel-scoped: no answer comes from a handle
+   that is Incomplete for the channel read, and its production witnesses check exactly that.
+3. **Held snapshots are classified against their own scope.** The model's `Answer(c)` classifies the
+   reader's snapshot, whose scope a later `HistoryLoad` does not extend, since only the live
+   accelerator's scope grows. The model therefore already embodies decision D3, and production's
+   J2 applies the same rule per channel.
+4. **`loads` and failed maintenance only remove answers.** The load-count validation refuses
+   publications that the model would allow. That removes transitions, and removing transitions
+   preserves every invariant, because an invariant is a predicate on reachable states. A failed
+   maintenance is the one production step without an exact model counterpart. The mutation stands,
+   as RAC-RC-26 requires, and the store's index becomes Absent, whereas the model's `FailUpdate`
+   changes nothing and the Rocq model's faulted `COMMIT` returns the old world (Algorithm 7,
+   step 1). The production result is closest to step 5 of Algorithm 7, which commits the world and
+   leaves the accelerator unmaintained, except that the index is Absent instead of Stale. In both,
+   every read of the live store falls back. A handle taken earlier keeps its own snapshot, which
+   the failure does not touch, and the argument for `Exact` above uses only that snapshot and its
+   invariant $`I_{\mathrm{idx}}`$, the tokens, J1 to J3 and $`P_J`$. So the answer invariants
+   RAC-TLA-04 to RAC-TLA-08 still hold,
+   RAC-TLA-02 and RAC-TLA-03 constrain only published accelerators, and RAC-TLA-10's production
+   witnesses check what production promises instead: a refused update changes nothing, and a
+   failed maintenance publishes nothing.
+5. **Commits are unchanged.** A candidate still commits only through `apply_accepted_match`, so
+   RAC-TLA-09 keeps its production witness, and `resolve_receive` adds a check that refuses an
+   identifier of another revision.
+
+So the bounded model needs no new variable or action. The step from the model's global
+classification to the per-channel classification is proved in Rocq (RAC-CS-01 to RAC-CS-05) rather
+than model-checked.
+
+##### Production accelerator complexity
+
+These are the bounds of the code as built. For a channel $`c`$, $`f_c = \lvert\mathrm{frame}(c)\rvert`$
+is the length of its frame. For a group $`g = [c_0, \dots, c_{n_g - 1}]`$:
+
+- $`n_g`$ is its arity and $`d_g \le n_g`$ the number of distinct channels among its positions;
+- $`P_g = \lvert\mathrm{prefix}(g)\rvert = 8 + \sum_{i < n_g} f_{c_i}`$ is the length of its prefix;
+- $`T_g`$ is the number of its targets;
+- $`R_g`$ is the total length of the paths of its resting records in the `records` trie, which a
+  visit of the group materializes.
+
+For a read of $`c`$, $`J(c)`$ is the set of join groups in $`V_s(c)`$, and for $`j \in J(c)`$,
+$`B_j`$ is the length of its frozen join record, an 8-byte channel count followed by the frozen
+encoding of each channel (`encode_join_record`). $`G_h(c)`$ is the set of groups whose keys lie
+under $`\mathrm{frame}(c)`$ in $`X(S_h)`$, and $`I`$ and $`\mathit{src}`$ are the identity and
+source bytes of a target. The bounds rest on four assumptions:
+
+- **A1.** Computing a channel's identity image, and so its frame, takes time linear in its length.
+- **A2.** A PathMap lookup, insertion or removal of a key of length $`k`$ takes $`O(k)`$ time,
+  including the copy-on-write copying of the shared nodes on its path.
+- **A3.** A read-zipper walk takes time linear in the number of path bytes it materializes.
+- **A4.** Cloning a PathMap copies one root reference.
+
+| Operation | Bound | Where the cost comes from |
+|---|---|---|
+| Build | $`O\bigl(\sum_{g \in L(S)} P_g + \sum_{g \in \mathrm{sup}(S)} n_g P_g\bigr)`$ | `build_receive_index` walks every loaded group, then parses each supported prefix and inserts one key per position, each of length $`f_{c_i} + P_g \le 2 P_g`$ |
+| Index space | $`\sum_{g \in \mathrm{sup}(S)} \sum_{c \in g} (f_c + P_g) < \sum_{g \in \mathrm{sup}(S)} (d_g + 1) P_g`$ key bytes before trie sharing, the inner sum ranging over distinct channels | one key per distinct channel, and $`\sum_{c \in g} f_c \le P_g - 8`$ |
+| Maintenance, index Absent | $`O(1)`$ | two `Option` tests, plus the load-counter increment of `set_group` and `clear` |
+| Maintenance, no support transition | $`O(P_g)`$ | two support lookups by prefix and an $`O(1)`$ clone of the index |
+| Maintenance, support transition | $`O(n_g P_g)`$ | a parse, then one key inserted or removed per position |
+| `clear` | $`O(1)`$ for the slot, plus releasing the nodes that no snapshot shares | |
+| Taking a handle | $`O(1)`$ | two `Arc` clones and a clone of the store (A4) |
+| Read of $`c`$ | $`O(f_c) + \sum_{j \in J(c)} O(B_j + P_j) + \sum_{g \in G_h(c)} O(P_g + R_g + T_g \log T_g)`$, plus the output | J1 and J2 walk the join records of $`c`$ and look each group up; the visit materializes each group prefix, looks it up, walks its records and sorts its targets into the order of `get_continuations` |
+| Resolve | $`O(P_g + \lvert I\rvert + \lvert\mathit{src}\rvert)`$ | an exact lookup, then a comparison of the identity and source bytes |
+
+The sort compares orders, which are unique within a group (`record_index.rs:1129`), so each
+comparison costs $`O(1)`$. The store gains the field $`\sigma`$, an `Arc`
+(`hot_store.rs:639`), and the build marker (`hot_store.rs:642`), and the continuation store gains
+the index slot and the load count (`record_index.rs:1204-1205`). A handle adds two `Arc`s and an
+$`O(1)`$ snapshot. No body, identity, source or order is copied.
+
+##### Discharge of the 8010 obligations
+
+Each obligation that task 8010 set for task 8011
+([obligations for tasks 8011 and 8012](#obligations-for-tasks-8011-and-8012)) is discharged as
+follows:
+
+| Obligation | Discharge |
+|---|---|
+| 1. Provide the store revision $`\sigma`$ | The recommended option: the store-level `Arc<ContinuationEpoch>` field `continuation_store_epoch`, which `bump_continuation_revision` and `bump_continuation_generation` replace (D1, D2; [production revision tokens](#production-revision-tokens)). Evidence: the five revision-token tests, RAC-CS-07 and RAC-RS-49. |
+| 2. Handle an incomplete scope | Both options: a read falls back as Incomplete through J1, J2 and J3, and `hydrate_receive_scope` loads the missing groups without a new revision ([channel-scoped classification and read](#channel-scoped-classification-and-read)). Evidence: RAC-CS-01 to RAC-CS-05, the four refutations, and RAC-RS-31, RAC-RS-32, RAC-RS-33 and RAC-RS-50. |
+| 3. Pass the harness | `ProductionAccelerator` implements `AcceleratorUnderTest` (`rspace++/tests/support/receive_accelerator_production.rs:148`) for published and detached handles. The 31 tests of `rspace++/tests/receive_accelerator_production_spec.rs` carry the properties of tests 1 to 31 to the production accelerator: every capstone RAC-RC-01 to RAC-RC-26 and every invariant RAC-TLA-02 to RAC-TLA-11 names at least one production witness in the registry, and `production_maintenance_equals_rebuild_over_generated_traces` drives the production accelerator through `check_trace`. The production controls RAC-RS-26 to RAC-RS-50 include an analogue of each of RAC-RS-01 to RAC-RS-16 (table below). |
+| 4. Bind adoption to the semantic manifest | `receive_accelerator_adoption` adopts exactly when the bound manifest equals the current one, and `persisted_receive_accelerator_adoption` parses an `AcceleratorManifestV1` and compares the `semantic_manifest` it binds with the current `ObjectRefV1`; bytes that do not parse are Foreign (`receive_accelerator.rs:382-407`). Only unit tests call the persisted form until task 7931 adopts persisted accelerator manifests. Evidence: `production_adoption_requires_the_stored_bound_semantic_manifest`, `production_foreign_generation_or_manifest_accelerators_are_never_adopted`, RAC-RS-47 (the analogue of RAC-RS-25) and RAC-RS-48, which compares only the digests and is killed by a bound manifest with a forged length. |
+| 5. Resolve compressed targets to full bytes | A target keeps shared handles to its record and returns the full identity and source bytes (`receive_accelerator.rs:227-248`); resolution compares kind, prefix, identity and source (`receive_accelerator.rs:251-264`, `receive_accelerator.rs:306-316`). Evidence: `production_receive_ids_resolve_only_to_byte_identical_records`, `forged_alias_source_targets_never_resolve_at_current_tokens`, RAC-RS-26, RAC-RS-40, RAC-RS-41 and RAC-RS-42. |
+| 6. Copy no bodies | Targets hold the record's `Arc<StoredRecord>` or the installed slot's `Arc` (`receive_accelerator.rs:198-202`), the index holds only keys, and a handle clones persistent tries. |
+
+**Production controls.** Each production control is a single fault in production source whose
+anchor occurs exactly once, applied by `scripts/generate-receive-accelerator-mutant.py` to an export
+of the tree, in the sense of mutation testing (DeMillo, Lipton and Sayward, 1978). Each was run in a
+debug build with `PROPTEST_RNG_SEED=41318011`: each made its killing test fail, and each killing
+test passes on the unmutated tree. Sixteen controls are the analogues of the harness controls
+RAC-RS-01 to RAC-RS-16, RAC-RS-47 is the analogue of RAC-RS-25, three are the analogues of the
+channel-scope refutations, and five have no earlier analogue.
+
+| ID | Analogue | Production fault | Anchor | Killing test |
+|---|---|---|---|---|
+| RAC-RS-26 | RAC-RS-01 | `resolve` accepts a target whose identity has the same length | `receive_accelerator.rs:315` | `production_receive_ids_resolve_only_to_byte_identical_records` |
+| RAC-RS-27 | RAC-RS-02 | the removal of a group's first ordered record is treated as final | `hot_store.rs:1265` | `production_nonfinal_removals_maintain_the_published_accelerator` |
+| RAC-RS-28 | RAC-RS-03 | a read without a handle on an Absent store answers the exact empty set, materialized from an empty rebuilt store | `hot_store.rs:1329-1330` | `production_reads_equal_derivation_in_every_accelerator_state` |
+| RAC-RS-29 | RAC-RS-04 | the store-token test is ignored, so a stale handle answers from its old index | `receive_accelerator.rs:131` | `production_held_handles_fall_back_after_every_mutation` |
+| RAC-RS-30 | RAC-RS-05 | the generation test is ignored | `receive_accelerator.rs:129` | `production_clear_and_set_state_retire_held_handles_and_rebuilds_equal_the_derivation` |
+| RAC-RS-31 | RAC-RS-06 | J2 skips the join groups outside the handle's scope | `receive_accelerator.rs:371-374` | `production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated` |
+| RAC-RS-32 | RAC-CSMUT-02 | J3 skips an installed-only group outside the handle's scope, so the channel answers without it | `receive_accelerator.rs:149` | `production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated` |
+| RAC-RS-33 | none | J1 treats an unloaded join view as one without join groups | `receive_accelerator.rs:377-378` | `production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated` |
+| RAC-RS-34 | RAC-RS-07 | a repeated channel keeps only its first position | `receive_accelerator.rs:429` | `production_repeated_channels_yield_one_occurrence_per_target` |
+| RAC-RS-35 | RAC-RS-08 | an installed target is dropped beside a resting record with the same identity and source bytes | `receive_accelerator.rs:175-182` | `production_metadata_distinct_records_keep_distinct_ids` |
+| RAC-RS-36 | RAC-RS-09 | resting targets are answered in reverse historical order | `receive_accelerator.rs:179` | `production_construction_order_does_not_change_answers_or_ids` |
+| RAC-RS-37 | RAC-RS-10 | a handle is stamped with the generation's base epoch as its store token | `hot_store.rs:687` | `production_index_and_catalog_publish_at_one_revision` |
+| RAC-RS-38 | RAC-RS-11 | a failed maintenance publishes its replacement | `record_index.rs:1637` | `faulted_maintenance_publishes_nothing` |
+| RAC-RS-39 | RAC-RS-12 | a rebuild clears the pending journals | `hot_store.rs:1295` | `production_accelerator_never_changes_semantic_identity` |
+| RAC-RS-40 | RAC-RS-13 | target equality ignores the source bytes | `receive_accelerator.rs:261-262` | `forged_alias_source_targets_never_resolve_at_current_tokens` |
+| RAC-RS-41 | RAC-RS-14 | `resolve` skips the revision test | `receive_accelerator.rs:311` | `production_ids_and_handles_from_a_prior_revision_or_generation_never_answer` |
+| RAC-RS-42 | RAC-RS-15 | a resting target's identity is its continuation body, which erases the persist flag and the peeks | `receive_accelerator.rs:238` | `production_metadata_distinct_records_keep_distinct_ids` |
+| RAC-RS-43 | RAC-RS-16 | a final removal keeps the group's keys | `record_index.rs:1631` | `production_final_removal_clears_the_maintained_group` |
+| RAC-RS-44 | none | a history load skips maintenance | `record_index.rs:1261-1262` | `production_history_loads_extend_the_maintained_scope` |
+| RAC-RS-45 | RAC-CSMUT-03 | a key is built from the raw image instead of its frame | `receive_accelerator.rs:411` | `occurrence_keys_are_exact_under_prefix_aliased_images` |
+| RAC-RS-46 | none (D4) | publication ignores the load count | `hot_store.rs:738` | `publication_refuses_a_stale_base_or_a_history_load` |
+| RAC-RS-47 | RAC-RS-25 | adoption ignores the bound manifest | `receive_accelerator.rs:388` | `production_foreign_generation_or_manifest_accelerators_are_never_adopted` |
+| RAC-RS-48 | none | persisted adoption compares only the manifest digests | `receive_accelerator.rs:404` | `production_adoption_requires_the_stored_bound_semantic_manifest` |
+| RAC-RS-49 | none | a continuation change bumps its group epoch but keeps the previous store token | `hot_store.rs:947-948` | `every_continuation_change_issues_the_bumped_group_epoch_as_a_fresh_store_token` |
+| RAC-RS-50 | RAC-CSMUT-04 (D3) | J2 inspects the live store's scope | `hot_store.rs:697` | `production_held_handles_never_answer_for_groups_loaded_after_they_were_taken` |
+
+**Registry and runner.** The family's registry, `formal/receive_accelerator_obligations.generated.json`,
+holds 123 obligations: 26 RAC-RC, 15 RAC-MUT, 11 RAC-TLA, 10 RAC-TMUT, 50 RAC-RS, 7 RAC-CS and
+4 RAC-CSMUT. Task 8011 bound all 26 capstones and RAC-TLA-02 to RAC-TLA-11 to production witnesses,
+which moved 12 capstones and those ten invariants from `concrete_witness` to
+`executable_refinement`. Of the 123, 69 are executable refinements (the 26 RAC-RC,
+the ten RAC-TLA, RAC-RS-17 to RAC-RS-24 and RAC-RS-26 to RAC-RS-50), 32 are concrete witnesses (the
+15 RAC-MUT and the 17 harness controls), and 22 are proof-only (RAC-TLA-01, the ten RAC-TMUT, the
+seven RAC-CS and the four RAC-CSMUT). The runner's `--receive-accelerator` flag
+(`scripts/check-stack-safe-pda-proofs.sh:718`) rejects placeholders in the two channel-scope files,
+compiles them with closed counts 8 and 5 and checks them with `coqchk`
+(`scripts/check-stack-safe-pda-proofs.sh:728-749`).
+Besides the 8010 suites, it runs the production specification (31 tests), the occurrence-index,
+binding and revision-token library tests (14, 18 and 5;
+`scripts/check-stack-safe-pda-proofs.sh:791-794`) and the production Rholang tests (5;
+`scripts/check-stack-safe-pda-proofs.sh:803`). The main suite compiles and checks the same files
+(`scripts/check-stack-safe-pda-proofs.sh:1252-1257`, `scripts/check-stack-safe-pda-proofs.sh:1291-1292`,
+`scripts/check-stack-safe-pda-proofs.sh:1321-1322`), and the checker pins every suite count
+(`scripts/check-receive-accelerator-obligations.py:84-93`). The production property tests are
+randomized property-based tests (Claessen and Hughes, 2000) that run 256 cases for each store-level
+property and 64 for each trace, with the fixed seed `PROPERTY_SEED` of 41318011
+(`rspace++/tests/receive_accelerator_production_spec.rs:52-54`,
+`rspace++/tests/receive_accelerator_production_spec.rs:396-403`); the flag's
+`PROPTEST_RNG_SEED=41318010` (`scripts/check-stack-safe-pda-proofs.sh:719`) seeds the `proptest!`
+properties of the library tests.
+
+**Identity neutrality and isolation.** `production_accelerator_never_changes_semantic_identity`
+witnesses RAC-RC-26 and RAC-TLA-11 for production: building, maintaining and reading the
+accelerator leave the canonical plans, the snapshots and the pending journals unchanged, and
+RAC-RS-39 makes it fail. The library test
+`canonical_plans_snapshots_and_journals_are_identical_with_the_index_on_and_off` checks the same
+property at the level of the continuation store. The registry's `accelerator_isolation` entry makes
+the checker refuse any file under `rspace++/src/rspace/persistence` or
+`rspace++/src/rspace/history`, and any of `pathmap_codec.rs`, `data_index.rs`,
+`hot_store_action.rs` and `checkpoint.rs` in `rspace++/src/rspace`, whose text matches a name of
+the accelerator such as `ReceiveRevision`, `receive_index` or `hydrate_receive_scope`, so no
+persistence, history, codec, candidate-index, hot-store-action or checkpoint code can depend on it.
+The invariant catalog's
+[TLRS-PROP-11](../pathmap/two-level-rspace-authority-invariant-catalog-2026-09-02.md#tlrs-prop-11--ordered-receive-fields-and-occurrence-identity-2026-09-06)
+is the register of this family's obligations, witnesses and controls.
+
+Cited works: M. Abadi and L. Lamport, "The existence of refinement mappings", *Theoretical
+Computer Science* 82(2):253–284, 1991,
+[doi:10.1016/0304-3975(91)90224-P](https://doi.org/10.1016/0304-3975(91)90224-P); K. Claessen and
+J. Hughes, "QuickCheck: a lightweight tool for random testing of Haskell programs", *Proceedings of
+the Fifth ACM SIGPLAN International Conference on Functional Programming (ICFP '00)*, 268–279, 2000,
+[doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266); R. A. DeMillo, R. J. Lipton
+and F. G. Sayward, "Hints on test data selection: help for the practicing programmer", *Computer*
+11(4):34–41, 1978, [doi:10.1109/C-M.1978.218136](https://doi.org/10.1109/C-M.1978.218136);
+J. R. Driscoll, N. Sarnak, D. D. Sleator and R. E. Tarjan, "Making data structures persistent",
+*Journal of Computer and System Sciences* 38(1):86–124, 1989,
+[doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2); E. Fredkin,
+"Trie memory", *Communications of the ACM* 3(9):490–499, 1960,
+[doi:10.1145/367390.367400](https://doi.org/10.1145/367390.367400); D. E. Knuth, "Literate
+programming", *The Computer Journal* 27(2):97–111, 1984,
+[doi:10.1093/comjnl/27.2.97](https://doi.org/10.1093/comjnl/27.2.97); H. T. Kung and
+J. T. Robinson, "On optimistic methods for concurrency control", *ACM Transactions on Database
+Systems* 6(2):213–226, 1981, [doi:10.1145/319566.319567](https://doi.org/10.1145/319566.319567);
+L. Lamport, "The temporal logic of actions", *ACM Transactions on Programming Languages and
+Systems* 16(3):872–923, 1994, [doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726).
+
 #### Consensus-visible observations the index leaves untouched
 
 Task 8010 changes no production code, so each of these observations is unchanged and flagged to
