@@ -1,0 +1,106 @@
+@startuml receive-accelerator-channel-read
+skinparam backgroundColor #F7FAFC
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam ArrowColor #334155
+skinparam activity {
+  BorderColor #334155
+  FontColor #0F172A
+  BackgroundColor #FFFFFF
+}
+skinparam activityDiamond {
+  BorderColor #334155
+  FontColor #0F172A
+  BackgroundColor #E2E8F0
+}
+skinparam partition {
+  BorderColor #334155
+  FontColor #0F172A
+}
+skinparam note {
+  BorderColor #334155
+  FontColor #0F172A
+  BackgroundColor #FFFFFF
+}
+
+start
+:READ(h, c) under one read lock of the hot store state:
+receive_occurrences(Some(h), c) reads a held handle h, and
+current_receive_occurrences(c) reads h = receive_handle().
+The lock fixes the live revision <latex>(\gamma_w, \sigma_w)</latex> = receive_revision()
+and the live join view.; <<#E0E7FF>>
+note right
+  No handle: receive_occurrences(None, c), or a store
+  without a published index, answers
+  Fallback(vacant_receive_class()): Building while a
+  build marker is open, Absent otherwise.
+end note
+partition "token_class(receive_revision()): the revision tokens of h" {
+  if (shares_generation: <latex>\gamma_h = \gamma_w</latex> ?) then (no)
+    :Fallback(Foreign); <<#FEE2E2>>
+    stop
+  else (yes)
+  endif
+  if (<latex>\sigma_h = \sigma_w</latex> ?) then (no)
+    :Fallback(Stale); <<#FFEDD5>>
+    stop
+  else (yes)
+  endif
+}
+partition "join_scope_class(h.scope(), joins, c): the join groups of c" {
+  if (J1: is the join prefix of c loaded in the live join view?\ntry_visit_join_groups returns Some) then (no)
+    :Fallback(Incomplete); <<#EDE9FE>>
+    stop
+  else (yes)
+  endif
+  if (J2: is every join group g of c loaded in h.scope(),\nthe scope of the handle and never the live scope (D3)?\nis_loaded_prefix(continuation_prefix(g))) then (no)
+    :Fallback(Incomplete); <<#EDE9FE>>
+    stop
+  else (yes)
+  endif
+}
+partition "h.materialize(c): the occurrence keys of c in the index of h" {
+  :visit the keys under channel_frame(c) in the occurrence
+  index of h with try_visit_groups_of, one group prefix per key;
+  if (J3: is every visited group loaded in the snapshot of h?\nloaded_group_channels(prefix) is Some) then (no)
+    :Fallback(Incomplete); <<#EDE9FE>>
+    stop
+  else (yes)
+  endif
+  :Exact(ReceiveOccurrences), stamped with revision() of h; <<#DCFCE7>>
+  note right
+    Each ReceiveOccurrenceGroup carries
+    · the channels and prefix of its join group;
+    · the positions of c, from the group prefix (positions_of);
+    · its targets: the installed slot first (installed_entry),
+      then the resting records in ordered_resting_records order.
+    receive_id(target) = ReceiveId(revision, target), and
+    resolve_receive answers only at an equal revision
+    and for a byte-identical record.
+  end note
+}
+stop
+
+floating note left
+  <b>Hydration issues no new revision.</b>
+  hydrate_receive_scope(c) loads the join groups and the
+  unloaded installed groups of c from history through
+  get_continuations_versioned, which calls set_group:
+  count_load increments loads and the published index
+  is maintained, but <latex>\gamma</latex> and <latex>\sigma</latex> stay unchanged.
+  A handle taken before the load keeps equal tokens, so
+  J2 or J3 against its own scope answers Incomplete,
+  and a handle taken after the load answers Exact.
+end note
+
+legend right
+  |= Color |= Meaning |
+  |<#E0E7FF> indigo | the read and its read lock |
+  |<#E2E8F0> grey diamond | a check, asked in order; the first failure decides |
+  |<#FEE2E2> red | Foreign: another generation |
+  |<#FFEDD5> orange | Stale: the store token moved |
+  |<#EDE9FE> violet | Incomplete: a join group outside the scope of h |
+  |<#DCFCE7> green | Exact: the only answer from the accelerator |
+  | Fallback(class) | the caller derives from the roots or fails closed |
+endlegend
+@enduml

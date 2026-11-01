@@ -1,0 +1,97 @@
+@startuml receive-accelerator-production-lifecycle
+skinparam backgroundColor #F7FAFC
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam ArrowColor #334155
+skinparam state {
+  BorderColor #334155
+  FontColor #0F172A
+  BackgroundColor #FFFFFF
+  StartColor #334155
+  EndColor #334155
+}
+skinparam note {
+  BorderColor #334155
+  FontColor #0F172A
+}
+
+state "Absent" as Absent #F1F5F9
+Absent : receive_index = None and no build marker;
+Absent : readers get Fallback(Absent)
+
+state "Building" as Building #FEF3C7
+Building : receive_build = Some(base), where
+Building : base = ReceiveBuildBase(revision, loads);
+Building : readers get Fallback(Building)
+
+state "Coherent" as Coherent #DCFCE7
+Coherent : receive_index = Some(index), maintained in
+Coherent : the same write lock as each mutation;
+Coherent : receive_handle() pairs it with <latex>(\gamma, \sigma)</latex>
+
+state "Locked rebuild" as Locked #E0E7FF
+Locked : rebuild_receive_index_locked() under the
+Locked : write lock clears the marker and runs
+Locked : rebuild_receive_index() in place
+
+state finish <<choice>>
+state maintain <<choice>>
+
+[*] --> Absent : from_snapshot() or a fresh state:\n<latex>\sigma = \gamma</latex>, one fresh base epoch
+Absent --> Building : rebuild_receive_accelerator():\nbegin_receive_build() stores the marker\nand clones the continuation store
+Building --> finish : build_receive_index() on the\ndetached snapshot, outside the lock
+finish -[#15803D]-> Coherent : finish_receive_build(): the marker is still open,\nthe same revision, the same loads (D4),\nno index, and the build is Ok;\nthen publish_receive_index()
+finish -[#B91C1C,dashed]-> Locked : refused: a token or loads moved,\nthe marker is gone, or the build failed
+Coherent --> Locked : rebuild_receive_accelerator() when\nbegin_receive_build() returns None
+Locked --> Coherent : Ok
+Locked --> Absent : Err
+Coherent --> maintain : set_group, put_prepared,\nremove_path or install
+maintain -[#15803D]-> Coherent : support of the group (before, after):\n(false, true) insert_group,\n(true, false) remove_group,\notherwise unchanged
+maintain -[#B91C1C,dashed]-> Absent : maintenance fault: insert_group or\nremove_group fails, receive_index = None
+Coherent -[#B91C1C]-> Absent : clear() or set_state()
+Building -[#B91C1C]-> Absent : clear() or set_state()\ndrops the marker
+
+note left of Coherent #FFEDD5
+  <b><latex>\sigma</latex> bump (D1)</b>
+  put_continuation (when inserted), install_continuation and
+  remove_continuation (when removed) call bump_continuation_revision():
+  one fresh ContinuationEpoch becomes the group epoch in
+  continuation_epochs, and <latex>\sigma</latex> = continuation_store_epoch
+  takes the same allocation. The index is maintained in
+  the same write lock, so the store stays Coherent;
+  a handle taken earlier: token_class answers Stale.
+end note
+
+note right of Absent #FEE2E2
+  <b><latex>\gamma</latex> bump</b>
+  clear() calls bump_continuation_generation(): a fresh
+  continuation_base_epoch <latex>\gamma</latex>, then <latex>\sigma = \gamma</latex> and an
+  empty continuation_epochs; RSpaceContinuationStore::clear()
+  drops the index. set_state() rebuilds the whole state with
+  from_snapshot(), which also issues a fresh <latex>\gamma = \sigma</latex>.
+  A handle taken earlier: token_class answers Foreign.
+end note
+
+note right of Building #EDE9FE
+  <b>History load: no token moves</b>
+  get_continuations_versioned() calls set_group(), and
+  count_load() increments loads: a build opened before
+  the load is refused (D4), so a published index never
+  lacks a loaded group. A handle taken before the load
+  answers Incomplete for the loaded group (J2 or J3).
+end note
+
+legend right
+  |= Color |= Meaning |
+  |<#F1F5F9> slate | Absent: no published index |
+  |<#FEF3C7> amber | Building: a marker is open, readers fall back |
+  |<#DCFCE7> green | Coherent: the store's published index, coherent with its live scope |
+  |<#E0E7FF> indigo | rebuild in place under the write lock |
+  |<#FFEDD5> orange | a <latex>\sigma</latex> bump: earlier handles become Stale |
+  |<#FEE2E2> red | a <latex>\gamma</latex> bump: earlier handles become Foreign |
+  |<#EDE9FE> violet | a history load: earlier handles answer Incomplete for it |
+  | green arrow | publication or maintenance that keeps the index |
+  | red arrow | the index or the marker is dropped |
+  | red dashed arrow | a refused build or a maintenance fault |
+endlegend
+@enduml
