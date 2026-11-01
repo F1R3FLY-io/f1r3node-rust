@@ -141,13 +141,10 @@ TLA_MUTANTS = {
     "FailedUpdateLeak": ("failed-update-leak", "FailedUpdateIsNonMutating"),
     "SemanticPollution": ("semantic-pollution", "SemanticIdentityIsAcceleratorFree"),
 }
-REFINEMENT = re.findall(
-    r"\S+",
-    """
-RAC-RC-05 RAC-RC-07 RAC-RC-08 RAC-RC-09 RAC-RC-14 RAC-RC-15 RAC-RC-16 RAC-RC-17 RAC-RC-18
-RAC-RC-19 RAC-RC-20 RAC-RC-21 RAC-RC-24 RAC-RC-25 RAC-RS-17 RAC-RS-18 RAC-RS-19 RAC-RS-20
-RAC-RS-21 RAC-RS-22 RAC-RS-23 RAC-RS-24
-""",
+REFINEMENT = (
+    *(f"RAC-RC-{index:02d}" for index in range(1, len(THEOREMS) + 1)),
+    *(f"RAC-TLA-{index:02d}" for index in range(2, len(INVARIANTS) + 1)),
+    *(f"RAC-RS-{index:02d}" for index in range(17, 25)),
 )
 PROOF_ONLY = (
     "RAC-TLA-01",
@@ -338,6 +335,208 @@ SOURCE_MUTANT_EVIDENCE = {
     "RAC-RS-25": (
         '"{name}: adoption requires the bound semantic manifest to equal the current one"',
         'assert_eq!(foreign, 4, "four bindings are foreign to the current manifest");',
+    ),
+}
+PRODUCTION_WITNESSES = {
+    "production_answers_equal_the_derivation_over_generated_stores": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-01", "RAC-RC-02"),
+        "prop_assert_eq!(&published.answer(&world, &image), &expected);",
+    ),
+    "production_positions_come_from_the_group_prefix": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-03",),
+        "\"an occurrence is its target's own projection at the probed channel\"",
+    ),
+    "production_repeated_channels_yield_one_occurrence_per_target": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-04", "RAC-RC-05"),
+        "assert_eq!(accelerator.answer(&world, a), Answer::Exact(expected_a.clone()));",
+    ),
+    "production_prefix_aliased_images_never_share_occurrences": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-06",),
+        '"an image reaches exactly the groups holding it"',
+    ),
+    "production_answers_ignore_data_and_authority_orders": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-07",),
+        '"a held handle answers unchanged after a datum"',
+    ),
+    "production_exact_groups_are_the_join_groups_with_targets": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-08",),
+        '"a fired single receive leaves no join"',
+    ),
+    "production_history_groups_without_joins_are_invisible_to_both_paths": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-08",),
+        '"an unjoined history group is invisible to the accelerator and to the joins"',
+    ),
+    "production_construction_order_does_not_change_answers_or_ids": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-09",),
+        'assert_construction_order_invariance(&fixed).expect("the fixed plan is order invariant");',
+    ),
+    "production_receive_ids_resolve_only_to_byte_identical_records": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-10", "RAC-RC-12"),
+        '"a forgery differs from every current target"',
+    ),
+    "production_metadata_distinct_records_keep_distinct_ids": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-11",),
+        '"persist, peeks and the continuation each keep a distinct identity"',
+    ),
+    "production_ids_and_handles_from_a_prior_revision_or_generation_never_answer": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-13",),
+        '"a current id resolves to its own target"',
+    ),
+    "production_alias_puts_keep_the_revision_answers_and_first_source": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-14",),
+        '"the first source stays the representative"',
+    ),
+    "production_insertions_maintain_the_published_accelerator": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-15",),
+        '"an insertion replaces the group version"',
+    ),
+    "production_nonfinal_removals_maintain_the_published_accelerator": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-16",),
+        '"a removal replaces the group version"',
+    ),
+    "production_final_removal_clears_the_maintained_group": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-17",),
+        '"a cleared group leaves no occurrence group, not even an empty one"',
+    ),
+    "production_installs_maintain_and_set_state_retires_the_published_accelerator": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-18",),
+        '"an install replaces the group version"',
+    ),
+    "production_history_loads_extend_the_maintained_scope": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-19",),
+        '"a history load extends the maintained scope"',
+    ),
+    "production_clear_and_set_state_retire_held_handles_and_rebuilds_equal_the_derivation": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-20",),
+        "assert_generation_retires_held_handles(",
+    ),
+    "production_equal_group_versions_imply_equal_group_answers": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-21",),
+        '"the prefix produce fires the single-channel receive"',
+    ),
+    "production_reads_equal_derivation_in_every_accelerator_state": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-22", "RAC-TLA-05"),
+        '"the absent state is probed where the derivation is nonempty"',
+    ),
+    "production_refused_updates_leave_the_store_and_accelerator_unchanged": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-23", "RAC-TLA-10"),
+        '"a refused removal changes no version or target"',
+    ),
+    "production_index_and_catalog_publish_at_one_revision": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-24", "RAC-TLA-02"),
+        "assert_one_revision(&store, &accelerator, &after);",
+    ),
+    "production_same_count_group_replacement_never_reuses_a_stale_answer_or_handle": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-24",),
+        '"the replacement keeps the candidate count"',
+    ),
+    "production_stale_tickets_ids_and_handles_never_commit": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-25", "RAC-TLA-09"),
+        '"the old id names a receive that is still present"',
+    ),
+    "production_accelerator_never_changes_semantic_identity": (
+        PRODUCTION_SPEC,
+        ("RAC-RC-26", "RAC-TLA-11"),
+        '"{step:?}: the accelerator never changes a selection or a checkpoint"',
+    ),
+    "production_maintenance_equals_rebuild_over_generated_traces": (
+        PRODUCTION_SPEC,
+        ("RAC-TLA-03",),
+        "let report = check_trace(make, &*store, &groups, &probes(), &steps);",
+    ),
+    "production_answers_never_name_absent_receives": (
+        PRODUCTION_SPEC,
+        ("RAC-TLA-04",),
+        '"the fixed trace removes receives"',
+    ),
+    "production_held_handles_fall_back_after_every_mutation": (
+        PRODUCTION_SPEC,
+        ("RAC-TLA-06",),
+        "assert_stale_fallback(&held, &held_answers, &after, name);",
+    ),
+    "production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated": (
+        PRODUCTION_SPEC,
+        ("RAC-TLA-07",),
+        '"{gap:?}: a current handle falls back as incomplete"',
+    ),
+    "production_held_handles_never_answer_for_groups_loaded_after_they_were_taken": (
+        PRODUCTION_SPEC,
+        ("RAC-TLA-07",),
+        '"a held handle never answers for a group loaded after it was taken"',
+    ),
+    "production_foreign_generation_or_manifest_accelerators_are_never_adopted": (
+        PRODUCTION_SPEC,
+        ("RAC-TLA-08",),
+        '"an accelerator bound to another manifest is never adopted"',
+    ),
+    "occurrence_keys_are_exact_under_prefix_aliased_images": (
+        OCCURRENCE_TESTS,
+        ("RAC-RC-06",),
+        "assert_eq!(keys.len(), distinct_occurrences);",
+    ),
+    "faulted_maintenance_publishes_nothing": (
+        OCCURRENCE_TESTS,
+        ("RAC-RC-23", "RAC-TLA-10"),
+        "assert!(faulted.receive_index().is_none());",
+    ),
+    "forged_alias_source_targets_never_resolve_at_current_tokens": (
+        BINDING_TESTS,
+        ("RAC-RC-10",),
+        "assert!(store.resolve_receive(&forged).is_none());",
+    ),
+    "publication_refuses_a_stale_base_or_a_history_load": (
+        BINDING_TESTS,
+        ("RAC-RC-23", "RAC-TLA-10"),
+        '"{disturbance} during a build refuses its publication"',
+    ),
+    "held_handles_never_answer_for_groups_loaded_after_they_were_taken": (
+        BINDING_TESTS,
+        ("RAC-TLA-07",),
+        "fallback(store.receive_occurrences(Some(&held), &receiving)),",
+    ),
+    "every_continuation_change_issues_the_bumped_group_epoch_as_a_fresh_store_token": (
+        TOKEN_TESTS,
+        ("RAC-RC-21",),
+        "assert_fresh_revision(&store, &mut issued, &resting);",
+    ),
+    "production_adoption_requires_the_stored_bound_semantic_manifest": (
+        LIB,
+        ("RAC-RC-20", "RAC-TLA-08"),
+        '"{name}: production adoption requires the bound manifest to equal the current one"',
+    ),
+    "production_compiled_join_capacity_agrees_with_occurrence_multiplicity": (
+        PRODUCTION_RHOLANG,
+        ("RAC-RC-05",),
+        '"one datum on a cannot fill both a positions, so the join keeps resting"',
+    ),
+    "production_checkpoint_reset_and_soft_revert_rebuild_identical_occurrences": (
+        PRODUCTION_RHOLANG,
+        ("RAC-RC-20",),
+        'assert_absent_everywhere(&checkpointed_store, &probed, "checkpoint");',
     ),
 }
 TEST_ATTRIBUTE = re.compile(r"^#\[(?:tokio::)?test\b")
@@ -767,6 +966,25 @@ def extract(sources, configs):
         PERSISTED_WITNESS[1] in suites[LIB],
         f"{CATALOG_ROW} witness {PERSISTED_WITNESS[1]} is not a normal-suite test",
     )
+    production_owned = {}
+    for test, (path, held, fragment) in PRODUCTION_WITNESSES.items():
+        require(test in suites[path], f"production witness {test} is not a normal-suite test of {path}")
+        require(held, f"production witness {test} witnesses no obligation")
+        require(
+            fragment in test_body(sources[path], test),
+            f"production witness {test} lost its production evidence",
+        )
+        for identifier in held:
+            production_owned.setdefault(identifier, []).append([path, test])
+    require(
+        [test for test, (path, _, _) in PRODUCTION_WITNESSES.items() if path == PRODUCTION_SPEC]
+        == suites[PRODUCTION_SPEC],
+        f"{PRODUCTION_SPEC} tests are not production witnesses in file order",
+    )
+    require(
+        sorted(production_owned) == sorted([*capstones, *bindings[1:]]),
+        "every capstone and witnessed invariant needs a production witness, and no witness names another id",
+    )
 
     mutations = generator_mutations(sources[GENERATOR])
     require(
@@ -837,8 +1055,8 @@ def extract(sources, configs):
     refuted_by = dict(zip(INVARIANTS[1:], controls))
 
     return {
-        "scope": "Generation-bound receive occurrence index: the receive relation derived from the semantic roots and the versioned installed input, exact receive identifiers, revision-bound accelerator classes, artifact publication, failure atomicity and candidate commit (design 8010)",
-        "boundary": "The Rocq capstones and the bounded TLA+ invariants specify the derived index; the named tests check a test-only reference oracle over real HotStore and RSpace instances. Harness controls RAC-RS-01 to RAC-RS-16 and RAC-RS-25 show that each named test observes its property, and production controls RAC-RS-17 to RAC-RS-24 show that the tests observe the production revision signals. No production accelerator exists yet, and none of this is a formal Rust refinement proof.",
+        "scope": "Generation-bound receive occurrence index: the receive relation derived from the semantic roots and the versioned installed input, exact receive identifiers, revision-bound accelerator classes, artifact publication, failure atomicity and candidate commit (designs 8010 and 8011)",
+        "boundary": "The Rocq capstones and the bounded TLA+ invariants specify the derived index; the named tests check a test-only reference oracle over real HotStore and RSpace instances, and the production witnesses check the production receive accelerator of task 8011 against the same obligations. Harness controls RAC-RS-01 to RAC-RS-16 and RAC-RS-25 show that each named test observes its property, and production controls RAC-RS-17 to RAC-RS-24 show that the tests observe the production revision signals. None of this is a formal Rust refinement proof.",
         "sources_sha256": {
             path: hashlib.sha256(sources[path].encode()).hexdigest()
             for path in paths()
@@ -856,6 +1074,7 @@ def extract(sources, configs):
                     "mode": mode(identifier),
                     "test_source": owned[identifier][0],
                     "test_target": owned[identifier][1],
+                    "production_witnesses": production_owned[identifier],
                 }
                 for identifier, name in zip(capstones, printed)
             ],
@@ -911,6 +1130,7 @@ def extract(sources, configs):
                     "tla_mutant": refuted_by.get(symbol),
                     "test_source": owned.get(identifier, (None, None))[0],
                     "test_target": owned.get(identifier, (None, None))[1],
+                    "production_witnesses": production_owned.get(identifier, []),
                 }
                 for identifier, symbol in zip(bindings, invariants)
             ],
@@ -1156,6 +1376,24 @@ def self_test(sources, configs, baseline):
         sources[PRODUCTION_SPEC].replace('#[path = "support/receive_accelerator_production.rs"]\n', "", 1),
         "unmounted production adapter",
         "the production adapter is not compiled into the production suites",
+    )
+    rejected(
+        PRODUCTION_SPEC,
+        sources[PRODUCTION_SPEC].replace(
+            "fn production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated(",
+            "fn production_scope_gaps_fall_back_until_the_channel_is_hydrated(",
+            1,
+        ),
+        "renamed production witness",
+        "production witness production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated is not a "
+        "normal-suite test",
+    )
+    rejected(
+        PRODUCTION_SPEC,
+        sources[PRODUCTION_SPEC].replace('"a forgery differs from every current target"', '""', 1),
+        "blanked production evidence",
+        "production witness production_receive_ids_resolve_only_to_byte_identical_records lost its production "
+        "evidence",
     )
     rejected(
         RUNNER,
