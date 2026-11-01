@@ -17,7 +17,40 @@ pub fn process_owner(process: &Par) -> WalletOwner {
     WalletOwner::Process(Blake2b256::hash(input))
 }
 
+pub const RUNNER_CONTEXT_URNS: [&str; 5] = [
+    "rho:system:deployerId",
+    "rho:rchain:deployerId",
+    "rho:system:deployId",
+    "rho:system:cosignerId:",
+    "rho:deploy:data",
+];
+
 pub fn seals_itself(quoted: &Par, body: &Par) -> bool { canonical(quoted) == canonical(body) }
+
+pub fn is_closed(process: &Par) -> bool { process.locally_free.iter().all(|b| *b == 0) }
+
+pub fn reads_runner_context(process: &Par) -> bool {
+    let bytes = process.encode_to_vec();
+    RUNNER_CONTEXT_URNS
+        .iter()
+        .any(|urn| bytes.windows(urn.len()).any(|w| w == urn.as_bytes()))
+}
+
+pub fn hash_seal_admissible(quoted: &Par, body: &Par) -> Result<(), String> {
+    if !is_closed(quoted) || !is_closed(body) {
+        return Err("a `# P` seal must name a closed process".to_string());
+    }
+    if !seals_itself(quoted, body) {
+        return Err("a signed term may name `# P` only when its body is P".to_string());
+    }
+    if reads_runner_context(body) {
+        return Err(
+            "a `# P` body may not bind a name that resolves from the running deployment"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
 
 pub fn split_hash_seals(signature: &CostSignature) -> (Vec<Par>, Vec<CostSignature>) {
     let mut hashes = Vec::new();
@@ -49,8 +82,9 @@ pub fn self_sealed_envelope(term: &Par) -> Option<WalletOwner> {
     else {
         return None;
     };
-    let closed = body.locally_free.iter().all(|b| *b == 0);
-    (closed && seals_itself(quoted, body)).then(|| process_owner(body))
+    hash_seal_admissible(quoted, body)
+        .ok()
+        .map(|_| process_owner(body))
 }
 
 #[cfg(test)]

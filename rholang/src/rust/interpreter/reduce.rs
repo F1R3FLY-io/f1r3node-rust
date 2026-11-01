@@ -54,7 +54,7 @@ use super::accounting::rev_stack::journal::{
     journal_open, journaled_transfers, record, JournalEntry,
 };
 use super::accounting::rev_stack::kind::{is_stack_body, stack_kind, TokenKind};
-use super::accounting::rev_stack::process::{seals_itself, split_hash_seals};
+use super::accounting::rev_stack::process::{hash_seal_admissible, split_hash_seals};
 use super::accounting::rev_stack::region::{admissible, signature_owner};
 use super::accounting::rev_stack::reserve::reservation;
 use super::accounting::rev_stack::{RevAmount, RevStackError, RevStacks, WalletOwner};
@@ -70,7 +70,7 @@ use super::metrics_constants::{
 };
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
-use super::substitute::Substitute;
+use super::substitute::{Substitute, SubstituteTrait};
 use super::system_processes::DeployData;
 use super::util::GeneratedMessage;
 use super::{unwrap_option_ref, unwrap_option_safe};
@@ -1671,14 +1671,20 @@ impl DebruijnInterpreter {
                 "a signed term may name only the signatures of the deployment's signers: {reason}"
             ))
         };
+        let signature = self
+            .substitute
+            .substitute_cost_signature(signature, 0, env)?;
         let (hashes, others) = split_hash_seals(&signature);
-        if hashes
-            .iter()
-            .any(|process| !body.is_some_and(|body| seals_itself(process, body)))
-        {
-            return Err(InterpreterError::ReduceError(
-                "a signed term may name `# P` only when its body is P".to_string(),
-            ));
+        if !hashes.is_empty() {
+            let Some(body) = body else {
+                return Err(InterpreterError::ReduceError(
+                    "a signed term may name `# P` only when its body is P".to_string(),
+                ));
+            };
+            let body = self.substitute.substitute(body.clone(), 0, env)?;
+            for process in &hashes {
+                hash_seal_admissible(process, &body).map_err(InterpreterError::ReduceError)?;
+            }
         }
         let signers = {
             let data = self.deploy_data.read().await;
@@ -1689,9 +1695,6 @@ impl DebruijnInterpreter {
                 .map_err(|e| refused(e.to_string()))?
         };
         for signature in others {
-            let signature = self
-                .substitute
-                .substitute_cost_signature(signature, 0, env)?;
             let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
             if !held_or_signed(&owner, &signers) {
                 return Err(refused(format!("{owner:?}")));
