@@ -1153,9 +1153,14 @@ impl SystemProcesses {
                 .filter_map(|pk| rev_stack::WalletOwner::from_public_key(pk).ok())
                 .collect::<Vec<_>>()
         };
-        let Some(response) =
-            rev_stack::native::handle(self.space.hot_store(), &command, second_par, &signers)
-        else {
+        let block_number = self.block_data.read().await.block_number;
+        let Some(response) = rev_stack::native::handle(
+            self.space.hot_store(),
+            &command,
+            second_par,
+            &signers,
+            block_number,
+        ) else {
             return Err(illegal_argument_error("rev_wallet"));
         };
 

@@ -1693,7 +1693,7 @@ impl DebruijnInterpreter {
                 .substitute
                 .substitute_cost_signature(signature, 0, env)?;
             let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
-            if !admissible(&owner, &signers) {
+            if !held_or_signed(&owner, &signers) {
                 return Err(refused(format!("{owner:?}")));
             }
         }
@@ -8420,5 +8420,15 @@ mod is_mergeable_channel_tests {
             merge_type(tuple(vec![other(), bitmask_or_mergeable_tag_name()])).await,
             None
         );
+    }
+}
+
+fn held_or_signed(owner: &WalletOwner, signers: &[WalletOwner]) -> bool {
+    match owner {
+        WalletOwner::Unforgeable(_) => true,
+        WalletOwner::Compound(components) => {
+            components.iter().all(|c| held_or_signed(c, signers))
+        }
+        single => admissible(single, signers),
     }
 }

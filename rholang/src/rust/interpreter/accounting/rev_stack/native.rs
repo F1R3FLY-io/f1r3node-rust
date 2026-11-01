@@ -9,6 +9,7 @@ use rspace_plus_plus::rspace::hot_store::HotStore;
 
 use super::channel::wallet_channel;
 use super::funders;
+use super::grant::Grant;
 use super::hooks::hook_authority;
 use super::process::process_owner;
 use super::journal::{journal_open, journaled_transfer, visible_balance, JournalEntry};
@@ -33,6 +34,7 @@ pub fn handle(
     command: &str,
     arg: &Par,
     signers: &[WalletOwner],
+    block_number: i64,
 ) -> Option<Par> {
     let result = match command {
         "find" => owner_of(arg).map(|owner| wallet_handle(&owner)),
@@ -50,28 +52,38 @@ pub fn handle(
             Ok(RhoNumber::create_par(balance as i64))
         }),
         "transfer" => with_stacks(store, |stacks| {
-            let (from, to, amount) = transfer_args(arg)?;
+            let (from, presented, to, amount) = transfer_args(arg)?;
+            if !presented && !admissible(&from, signers) {
+                return Err("the payer must be a signer of this deployment".to_string());
+            }
+            move_rev(stacks, from, to, amount)
+        }),
+        "fundGrant" => with_stacks(store, |stacks| {
+            let usage = "fundGrant expects (deployerId, (slot, opens, closes), amount)";
+            let [payer, grant, amount] = tuple_of(arg, usage)?.try_into().map_err(|_| usage)?;
+            let from = payer_of(&payer)?;
             if !admissible(&from, signers) {
                 return Err("the payer must be a signer of this deployment".to_string());
             }
-            let held = reservation(stacks.cells(), &from)
-                .map_err(|e| e.to_string())?
-                .held;
-            if journal_open(stacks.cells()) {
-                let balance = stacks.balance(&from).map_err(|e| e.to_string())?;
-                return journaled_transfer(
-                    stacks.cells(),
-                    balance,
-                    held,
-                    JournalEntry::transfer(from, to, amount),
-                )
-                .map(|_| Par::default())
-                .map_err(transfer_error);
+            move_rev(stacks, from, grant_of(&grant)?.owner(), amount_of(&amount)?)
+        }),
+        "drawGrant" => with_stacks(store, |stacks| {
+            let usage = "drawGrant expects ((slot, opens, closes), payee, amount)";
+            let [grant, payee, amount] = tuple_of(arg, usage)?.try_into().map_err(|_| usage)?;
+            let grant = grant_of(&grant)?;
+            if !grant.open_at(block_number) {
+                return Err(format!(
+                    "the grant is open from block {} to block {}, not at block {block_number}",
+                    grant.opens, grant.closes
+                ));
             }
-            stacks
-                .transfer_keeping(&from, &to, amount, held)
-                .map(|_| Par::default())
-                .map_err(transfer_error)
+            move_rev(stacks, grant.owner(), owner_of(&payee)?, amount_of(&amount)?)
+        }),
+        "grantBalance" => with_stacks(store, |stacks| {
+            let balance = stacks
+                .balance(&grant_of(arg)?.owner())
+                .map_err(|e| e.to_string())?;
+            Ok(RhoNumber::create_par(balance as i64))
         }),
         "fund" => with_stacks(store, |stacks| {
             let (from, process, amount) = fund_args(arg)?;
@@ -183,8 +195,8 @@ fn owner_of(par: &Par) -> Result<WalletOwner, String> {
     Err("expected a REV address, a deployer id, an unforgeable name or a tuple of them".to_string())
 }
 
-fn transfer_args(arg: &Par) -> Result<(WalletOwner, WalletOwner, RevAmount), String> {
-    let usage = "transfer expects (deployerId, toAddress, amount)";
+fn transfer_args(arg: &Par) -> Result<(WalletOwner, bool, WalletOwner, RevAmount), String> {
+    let usage = "transfer expects (deployerId or slot, toAddress, amount)";
     let Some(ExprInstance::ETupleBody(tuple)) = single_expr(arg).and_then(|e| e.expr_instance)
     else {
         return Err(usage.to_string());
@@ -192,12 +204,11 @@ fn transfer_args(arg: &Par) -> Result<(WalletOwner, WalletOwner, RevAmount), Str
     let [deployer_id, to, amount] = tuple.ps.as_slice() else {
         return Err(usage.to_string());
     };
-    let from = payer_of(deployer_id)?;
-    let to = owner_of(to)?;
-    let amount = RhoNumber::unapply(amount)
-        .filter(|a| *a > 0)
-        .ok_or_else(|| "Amount must be positive value".to_string())?;
-    Ok((from, to, amount as RevAmount))
+    let (from, presented) = match RhoName::unapply(deployer_id) {
+        Some(slot) => (WalletOwner::from_unforgeable(&slot), true),
+        None => (payer_of(deployer_id)?, false),
+    };
+    Ok((from, presented, owner_of(to)?, amount_of(amount)?))
 }
 
 fn kind_args(arg: &Par) -> Result<(TokenKind, WalletOwner), String> {
@@ -300,4 +311,46 @@ fn share_args(arg: &Par) -> Result<(WalletOwner, WalletOwner), String> {
     let usage = "expects (process, funder)";
     let [process, funder] = tuple_of(arg, usage)?.try_into().map_err(|_| usage)?;
     Ok((process_owner(&process), owner_of(&funder)?))
+}
+
+fn amount_of(par: &Par) -> Result<RevAmount, String> {
+    RhoNumber::unapply(par)
+        .filter(|a| *a > 0)
+        .map(|a| a as RevAmount)
+        .ok_or_else(|| "Amount must be positive value".to_string())
+}
+
+fn grant_of(par: &Par) -> Result<Grant, String> {
+    let usage = "a grant is (slot, opens, closes)";
+    let [slot, opens, closes] = tuple_of(par, usage)?.try_into().map_err(|_| usage)?;
+    let slot = RhoName::unapply(&slot).ok_or("a grant's slot must be an unforgeable name")?;
+    let opens = RhoNumber::unapply(&opens).ok_or(usage)?;
+    let closes = RhoNumber::unapply(&closes).ok_or(usage)?;
+    Grant::new(slot.id, opens, closes)
+}
+
+fn move_rev(
+    stacks: &RevStacks,
+    from: WalletOwner,
+    to: WalletOwner,
+    amount: RevAmount,
+) -> Result<Par, String> {
+    let held = reservation(stacks.cells(), &from)
+        .map_err(|e| e.to_string())?
+        .held;
+    if journal_open(stacks.cells()) {
+        let balance = stacks.balance(&from).map_err(|e| e.to_string())?;
+        return journaled_transfer(
+            stacks.cells(),
+            balance,
+            held,
+            JournalEntry::transfer(from, to, amount),
+        )
+        .map(|_| Par::default())
+        .map_err(transfer_error);
+    }
+    stacks
+        .transfer_keeping(&from, &to, amount, held)
+        .map(|_| Par::default())
+        .map_err(transfer_error)
 }

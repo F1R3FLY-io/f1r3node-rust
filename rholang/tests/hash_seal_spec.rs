@@ -114,7 +114,7 @@ async fn a_compound_with_a_hash_seal_needs_the_other_components_signers() {
             sent(&runtime, "joint").await,
             vec![RhoNumber::create_par(1)]
         );
-        let foreign = r#"new s in { {% @"joint"!(2) %}[s (*) # { @"joint"!(2) }] }"#;
+        let foreign = r#"{% @"joint"!(2) %}[bob (*) # { @"joint"!(2) }]"#;
         let errors = run_as(&runtime, &ALICE, foreign).await;
         assert!(refused(&errors, "deployment's signers"), "{errors:?}");
     })

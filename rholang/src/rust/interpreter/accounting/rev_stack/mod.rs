@@ -4,6 +4,7 @@ pub mod channel;
 pub mod funders;
 pub mod compute;
 pub mod genesis;
+pub mod grant;
 pub mod hooks;
 pub mod journal;
 pub mod kind;
