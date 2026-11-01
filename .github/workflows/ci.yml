@@ -637,6 +637,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ephemeral-run-tagging.sh
 
+      - name: Verify casper crash backtraces
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-casper-crash-backtraces.sh
+
       - name: Verify CI runner reclaim
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ci-runner-reclaim.sh
@@ -1053,6 +1057,9 @@ jobs:
         with:
           tool: nextest
 
+      - name: Enable crash core files
+        run: bash .github/scripts/casper-crash-backtraces.sh setup
+
       - name: Run tests (shard ${{ matrix.partition }}/2)
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
@@ -1064,6 +1071,8 @@ jobs:
         shell: bash -euo pipefail {0}
         run: |
           ulimit -n 65536
+          # Issue #911: a core file gives the native stack of a crashed test.
+          ulimit -c unlimited || true
           mkdir -p /tmp/test-logs
           # `count:m/2` deals tests round-robin across the two shards, so the
           # slow convergence/recursion specs spread over both legs instead of
@@ -1081,6 +1090,11 @@ jobs:
           fi
           echo "nextest exit=$nt doctest exit=$dt"
           [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
+
+      - name: Report crash backtraces
+        if: failure()
+        timeout-minutes: 10
+        run: bash .github/scripts/casper-crash-backtraces.sh report
 
       - name: Upload test logs
         if: failure()
@@ -1141,6 +1155,10 @@ jobs:
         with:
           tool: cargo-llvm-cov,nextest
 
+      - name: Enable crash core files
+        if: matrix.crate == 'casper'
+        run: bash .github/scripts/casper-crash-backtraces.sh setup
+
       - name: Measure coverage
         env:
           RUST_BACKTRACE: "1"
@@ -1148,6 +1166,8 @@ jobs:
         shell: bash -euo pipefail {0}
         run: |
           ulimit -n 65536
+          # Issue #911: a core file gives the native stack of a crashed test.
+          if [ "${{ matrix.crate }}" = casper ]; then ulimit -c unlimited || true; fi
           mkdir -p target/coverage
           cargo llvm-cov clean
           cargo llvm-cov nextest --locked --release -p ${{ matrix.crate }} --no-tests=pass
@@ -1165,6 +1185,11 @@ jobs:
           cargo llvm-cov report --release -p ${{ matrix.crate }} \
             --ignore-filename-regex "$ignore_regex" \
             --lcov --output-path target/coverage/coverage-${{ matrix.crate }}.lcov
+
+      - name: Report crash backtraces
+        if: failure() && matrix.crate == 'casper'
+        timeout-minutes: 10
+        run: bash .github/scripts/casper-crash-backtraces.sh report
 
       - name: Upload coverage data
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
