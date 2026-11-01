@@ -6553,6 +6553,71 @@ group or others can open fails the synthetic child.
 | SW-03 | Last-reference deletion. The deleted closure is the part of $`\mathrm{cl}(B)`$ off the manifest, the namespace roots and every kept key's search path. It is disjoint from $`\mathrm{cl}(T)`$, holds each deleted key's leaf, and has between $`m`$ and $`2m - 1`$ objects. The retained frontier is exactly the new path $`\mathrm{cl}(T) \setminus \mathrm{cl}(B)`$, and after the commit every object of $`\mathrm{cl}(B) \setminus \mathrm{cl}(T)`$ has current count zero and a positive retained count. Every commit passes the verify routine. | `last_reference_deletion_expands_exactly_the_deleted_closure` |
 | SW-04 | Harness determinism and fail-closed probes. A `/proc/self/io` copy that lacks any of `rchar`, `wchar`, `syscr`, `syscw`, `read_bytes` and `write_bytes`, or is truncated anywhere before the last of those values, is refused, as is a status copy that lacks `VmRSS`, `VmHWM` or `VmSwap`, and a `/proc` read that fills its buffer. Equal or decreasing clock readings, a zero allocation count, and tmpfs and ramfs are refused. 27 malformed cells are refused, and the schedule permutation is a bijection for every length up to 64 under four seeds. For each of the U, E and L cells, a build child prints a header and a fixture record; two verify children print the same records except the 32 per-phase probe fields and the process record; and a time child prints one sample per commit, with the labels in order, every nanosecond field positive, zero probes and the verify children's target chain. In E only the reclaim commit unlinks files, and they include `reclaim.v1`. | `scaling_harness_is_deterministic_and_fails_closed` |
 
+### Fallible legacy state-authority facets (2026-11-01)
+
+Task 7931 wires the durable PathMap DAG owner into RSpace as a third
+state-authority backend, beside the in-memory and LMDB backends. The authority
+hands out three legacy facets, which are views of its objects in the legacy
+byte layout: the history facet (radix history nodes keyed by digest), the cold
+facet (cold leaves keyed by physical address) and the roots facet (the
+verified-root catalog, read-only). They come from
+`RSpaceStateAuthority::history_store`, `cold_store` and
+`roots_store_for_inspection` in
+[`rspace_state_authority.rs`](../../../rspace++/src/rspace/state/rspace_state_authority.rs).
+A durable backend does not keep that layout as its authority, so it may be
+unable to serve a facet. Until this slice the accessors returned a bare
+`Arc<dyn KeyValueStore>`, so the only ways to fail were a panic or a
+fabricated view.
+
+This slice, the fifth leaf of the operation gate, makes the three accessors
+fallible. Each now returns
+`Result<Arc<dyn KeyValueStore>, AuthorityBackendMismatch>`, where
+`AuthorityBackendMismatch` names the unavailable facet: `History`, `Cold` or
+`Roots`. All three call one private `legacy_facet(kind)`, whose `match` over the
+backend names the in-memory and LMDB backends explicitly and returns the
+existing view for both. No behavior, persisted byte, root or wire message
+changes. When the durable backend is added, that `match` stops compiling until
+the new arm states which facets the backend serves, so a missing facet is a
+decision recorded in the code rather than an accident.
+
+Each caller passes the refusal on with `?` into the error type it already
+returns. There is one conversion per error type, and no call site maps the
+mismatch itself, so these conversions are the only places where the facet that
+a refusal names could be lost:
+
+| Caller's error type | Callers | Conversion |
+|---|---|---|
+| `HistoryError` | `commit_local_checkpoint`, `RadixHistory::create_authorized` | the new variant `HistoryError::BackendMismatch` |
+| `HistoryRepositoryError` | `HistoryRepositoryInstances::repository` | `HistoryRepositoryError::HistoryError` around the `HistoryError` conversion |
+| `StateExportError` | the exporter's `get_page`, `get_history_items` and `get_data_items` | the new variant `StateExportError::BackendMismatch` |
+| `StateImportError` | `seal_import`, and the importer's `begin_import` and `get_history_item` | the new variant `StateImportError::BackendMismatch` |
+| `heed::Error` | `store` of the in-memory, LMDB and LMDB-directory store managers | `heed::Error::Io` holding an I/O error of kind `Other` whose source is the mismatch itself, so a caller can recover it by downcasting |
+
+The exporter and the importer take their facets when they are built, and their
+constructors, `RSpaceExporterStore::create` and `RSpaceImporterStore::create`,
+return the store itself rather than a `Result`. Both are public, and a Casper
+test builds an exporter through one, so instead of changing their signatures,
+each store keeps the facet's `Result` and refuses at the first operation that
+needs the facet. The exporter refuses every page and history request while the
+history facet is unavailable, and every data request while the cold facet is.
+The importer refuses `begin_import` while either facet is unavailable, before
+it stages anything, and `get_history_item` while the history facet is
+unavailable. An empty request is refused too, so a refusal never depends on
+what was asked for.
+`every_export_operation_refuses_an_unavailable_legacy_facet` and
+`every_import_operation_refuses_an_unavailable_legacy_facet` pin this wiring,
+and the second also checks that a refused import leaves the current root
+unchanged. They test the stores' wiring rather than a property, so they are not
+registered.
+
+**The OG rows.** OG is the operation gate's family. Its numbers come from the
+gate's property plan, so rows are added in the order in which their leaves
+land, not in numeric order.
+
+| ID | Required property | Test |
+|---|---|---|
+| OG-12 | Typed refusal of an unavailable legacy facet. For each of the three facets, the mismatch converts into `HistoryError`, into `HistoryRepositoryError` (directly and through `HistoryError`), into `StateExportError` and into `StateImportError` as the `BackendMismatch` variant holding the same facet, and each converted message contains the mismatch's own. It converts into `heed::Error::Io` holding an I/O error of kind `Other` whose message equals the mismatch's and whose source downcasts to the same mismatch. The in-memory authority and an initialized LMDB authority still serve all three facets: the history and cold facets read as empty maps, and the roots facet holds the current-root record. | `legacy_facet_mismatch_conversions_keep_their_typed_source` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -6786,6 +6851,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | SW-02 | `EXEC_ONLY` | `RetentionV2Editor.metadata_trial_work_is_the_changed_objects`, `RetentionV2Editor.anchor_step_realizes_the_retention_entry_step`, `RetentionV2Editor.flat_manifest_mutant_rewrites_bytes_proportional_to_history` | P | Production refinement at geometric history sizes (task 7929). The metadata trial's work is the changed radix objects plus the two anchors; the new anchor and radix nodes equal the model's retention entry step byte for byte; and the V1 control's manifest grows by 56 bytes per historical entry, as the flat-manifest mutant states. |
 | SW-03 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedReachability.decrement_changes_unique_inventory` | P | Production refinement of last-reference deletion (task 7929). The current deactivation expands each object of the deleted closure once, and each object that loses its last current reference leaves the current inventory while its retained count stays positive. |
 | SW-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 11989): the measurement harness's record contract, schedule and fail-closed probes. No model states a property of the harness; the trusted commit's work that it measures is SW-01 to SW-03's. |
+| OG-12 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result types of the legacy facet accessors and the conversion of an unavailable facet into each caller's error type. No model states a property of Rust accessor results or error types. |
 
 ## Generator discipline
 
@@ -7174,6 +7240,27 @@ and the release doc tests. These results add tooling and evidence only: no
 production code, persisted byte or outcome changed, and the section still
 claims no scaling result. See the fixed-delta trusted commit scaling section
 and pgmcp artifact 1158 for caps and evidence hashes.
+
+The 2026-11-01 fallible legacy facet slice of task 7931 adds OG-12, the first
+OG row, so the catalog/derivation/binding registry now contains **228** IDs. On
+an export of the candidate tree, OG-12 and the two wiring tests passed in under
+0.01 s in debug and in release. Four production controls each made exactly one
+of the three tests fail: a conversion into `HistoryError::ActionError`, and a
+`heed::Error` whose source is the mismatch's message rather than the mismatch,
+each failed OG-12; an exporter refusal retyped as `InvalidPath` and an importer
+refusal retyped as `InternalInvariant` each failed that store's wiring test.
+The library tests passed with 893 tests in release (10 ignored), the `mod`
+target with 179, and every rspace++ test target with 1,453 tests in 28 binaries
+(13 ignored); the manifest test passed. `cargo check` of every workspace target
+passed, with eight warnings that all lie in files this slice does not touch,
+and clippy passed on `rspace_plus_plus` with warnings denied. The affine-import
+and atomic-checkpoint obligation checkers pin assertion text from two of the
+edited tests, the malformed-page import test and the root-visibility helper, so
+their pinned fragments now include the facet's `expect`, and both registries
+were regenerated. No persisted byte, root, identity or wire message changed:
+the in-memory and LMDB backends serve every facet as before. See the fallible
+legacy state-authority facets section and pgmcp artifacts 1565 and 1566 for
+the gate and measurement logs.
 
 ## Caller-authority contract (2026-09-06)
 

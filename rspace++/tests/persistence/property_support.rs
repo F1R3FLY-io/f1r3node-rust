@@ -299,6 +299,7 @@ pub(super) const PROPERTY_BINDINGS: &[(&str, &str)] = &[
     ("SW-02", "trusted_commit_work_is_unchanged_by_geometric_history_growth"),
     ("SW-03", "last_reference_deletion_expands_exactly_the_deleted_closure"),
     ("SW-04", "scaling_harness_is_deterministic_and_fails_closed"),
+    ("OG-12", "legacy_facet_mismatch_conversions_keep_their_typed_source"),
     ("JR-01", "constructor_refuses_foreign_or_invalidated_hot_authority_without_losing_its_view"),
     ("JR-02", "invalidated_base_cannot_release_old_recovery_or_report_ready"),
     ("JR-03", "a_stale_capture_is_rejected_before_publication_even_when_its_journal_bytes_match"),

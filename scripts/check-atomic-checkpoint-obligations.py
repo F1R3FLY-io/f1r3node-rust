@@ -105,8 +105,10 @@ TEST_ASSERTIONS = {
 HELPER_ASSERTIONS = (
     "assert_eq!(authority.current_verified_root().unwrap(), Some(root.clone()));",
     "assert!(authority.contains_verified_root(root.root()).unwrap());",
-    "authority .history_store() .get_one(&root.root().bytes()) .unwrap() .as_deref(), prepared.root_encoding()",
-    "authority .cold_store() .get_one(&cold.encode()) .unwrap() .is_some()",
+    'authority .history_store() .expect("legacy history facet") .get_one(&root.root().bytes())'
+    " .unwrap() .as_deref(), prepared.root_encoding()",
+    'authority .cold_store() .expect("legacy cold facet") .get_one(&cold.encode()) .unwrap()'
+    " .is_some()",
 )
 
 

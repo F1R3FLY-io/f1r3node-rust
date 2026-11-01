@@ -77,6 +77,7 @@ pub enum HistoryError {
     KvStoreError(KvStoreError),
     RootError(RootError),
     MergeError(String),
+    BackendMismatch(AuthorityBackendMismatch),
 }
 
 impl std::fmt::Display for HistoryError {
@@ -88,6 +89,7 @@ impl std::fmt::Display for HistoryError {
             HistoryError::KvStoreError(err) => write!(f, "Key Value Store Error: {}", err),
             HistoryError::RootError(err) => write!(f, "Root Error: {}", err),
             HistoryError::MergeError(err) => write!(f, "Merge Error: {}", err),
+            HistoryError::BackendMismatch(err) => write!(f, "Authority Backend Mismatch: {}", err),
         }
     }
 }
@@ -102,6 +104,10 @@ impl From<KvStoreError> for HistoryError {
 
 impl From<RootError> for HistoryError {
     fn from(error: RootError) -> Self { HistoryError::RootError(error) }
+}
+
+impl From<AuthorityBackendMismatch> for HistoryError {
+    fn from(error: AuthorityBackendMismatch) -> Self { HistoryError::BackendMismatch(error) }
 }
 
 /* History Repository Error */
@@ -127,6 +133,38 @@ impl From<RootError> for HistoryRepositoryError {
 
 impl From<HistoryError> for HistoryRepositoryError {
     fn from(error: HistoryError) -> Self { HistoryRepositoryError::HistoryError(error) }
+}
+
+impl From<AuthorityBackendMismatch> for HistoryRepositoryError {
+    fn from(error: AuthorityBackendMismatch) -> Self {
+        HistoryRepositoryError::HistoryError(HistoryError::from(error))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthorityBackendMismatch {
+    History,
+    Cold,
+    Roots,
+}
+
+impl std::fmt::Display for AuthorityBackendMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let facet = match self {
+            AuthorityBackendMismatch::History => "history",
+            AuthorityBackendMismatch::Cold => "cold",
+            AuthorityBackendMismatch::Roots => "roots",
+        };
+        write!(f, "RSpace state authority backend does not expose the legacy {} facet", facet)
+    }
+}
+
+impl std::error::Error for AuthorityBackendMismatch {}
+
+impl From<AuthorityBackendMismatch> for heed::Error {
+    fn from(error: AuthorityBackendMismatch) -> Self {
+        heed::Error::Io(std::io::Error::other(error))
+    }
 }
 
 /* Radix Tree Error */

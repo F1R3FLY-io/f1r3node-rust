@@ -113,7 +113,7 @@ where
         // RSpace importer/exporter / directly operates on Store (lmdb)
         let exporter = RSpaceExporterStore::create(authority.clone());
         let importer = RSpaceImporterStore::create_with_validator(authority.clone(), validator);
-        let cold_key_value_store = authority.cold_store();
+        let cold_key_value_store = authority.cold_store()?;
 
         Ok(Box::new(HistoryRepositoryImpl::new(
             Box::new(history),

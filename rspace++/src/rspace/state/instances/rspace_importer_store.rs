@@ -4,6 +4,7 @@ use std::sync::Arc;
 use shared::rust::ByteVector;
 use shared::rust::store::key_value_store::KeyValueStore;
 
+use crate::rspace::errors::AuthorityBackendMismatch;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::{
     ColdLeafAddress, PersistedDataKind, PersistedDataView, put_cold_leaves_if_absent_verified,
@@ -77,8 +78,8 @@ where
 
 #[derive(Clone)]
 pub struct RSpaceImporterImpl {
-    history_store: Arc<dyn KeyValueStore>,
-    value_store: Arc<dyn KeyValueStore>,
+    history_store: Result<Arc<dyn KeyValueStore>, AuthorityBackendMismatch>,
+    value_store: Result<Arc<dyn KeyValueStore>, AuthorityBackendMismatch>,
     authority: Arc<RSpaceStateAuthority>,
     record_validator: RecordValidator,
 }
@@ -88,6 +89,8 @@ impl RSpaceImporter for RSpaceImporterImpl {
         &self,
         spec: StateImportSpec,
     ) -> Result<Box<dyn StateImportSession>, StateImportError> {
+        let history_store = self.history_store.clone()?;
+        let value_store = self.value_store.clone()?;
         let staged = self.authority.begin_import(spec.clone())?;
         let pending_paths = spec
             .roots()
@@ -96,8 +99,8 @@ impl RSpaceImporter for RSpaceImporterImpl {
             .map(|root| vec![(root, None)])
             .collect();
         Ok(Box::new(RSpaceImportSessionImpl {
-            history_store: Arc::clone(&self.history_store),
-            value_store: Arc::clone(&self.value_store),
+            history_store,
+            value_store,
             authority: Arc::clone(&self.authority),
             record_validator: Arc::clone(&self.record_validator),
             spec,
@@ -110,7 +113,7 @@ impl RSpaceImporter for RSpaceImporterImpl {
         &self,
         hash: Blake2b256Hash,
     ) -> Result<Option<ByteVector>, StateImportError> {
-        Ok(self.history_store.get_one(&hash.0)?)
+        Ok(self.history_store.clone()?.get_one(&hash.0)?)
     }
 }
 
@@ -502,8 +505,22 @@ mod tests {
             }),
             Err(StateImportError::HistoryDigestMismatch { .. })
         ));
-        assert!(!importer.history_store.non_empty().unwrap());
-        assert!(!importer.value_store.non_empty().unwrap());
+        assert!(
+            !importer
+                .history_store
+                .as_ref()
+                .expect("legacy history facet")
+                .non_empty()
+                .expect("history facet reads")
+        );
+        assert!(
+            !importer
+                .value_store
+                .as_ref()
+                .expect("legacy cold facet")
+                .non_empty()
+                .expect("cold facet reads")
+        );
         assert_eq!(importer.authority.current_verified_root().unwrap(), current_before);
     }
 
@@ -532,7 +549,14 @@ mod tests {
             }),
             Err(StateImportError::DataProjectionMismatch)
         );
-        assert!(!importer.value_store.non_empty().unwrap());
+        assert!(
+            !importer
+                .value_store
+                .as_ref()
+                .expect("legacy cold facet")
+                .non_empty()
+                .expect("cold facet reads")
+        );
 
         // Rejection is affine but non-consuming: the exact requested cursor
         // remains retryable with its authenticated zero-object page.
@@ -623,6 +647,51 @@ mod tests {
                 .authority
                 .contains_verified_root(&RadixHistory::empty_root_node_hash())
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn every_import_operation_refuses_an_unavailable_legacy_facet() {
+        let authority = RSpaceStateAuthority::in_memory();
+        let current_before = authority
+            .current_verified_root()
+            .expect("current root reads");
+        let history_refused = RSpaceImporterImpl {
+            history_store: Err(AuthorityBackendMismatch::History),
+            value_store: authority.cold_store(),
+            authority: Arc::clone(&authority),
+            record_validator: Arc::new(|_, _| Ok(())),
+        };
+        let cold_refused = RSpaceImporterImpl {
+            history_store: authority.history_store(),
+            value_store: Err(AuthorityBackendMismatch::Cold),
+            authority: Arc::clone(&authority),
+            record_validator: Arc::new(|_, _| Ok(())),
+        };
+        let root = RadixHistory::empty_root_node_hash();
+        let spec = StateImportSpec::new(
+            [root.clone()],
+            StateImportPublicationMode::Activate(root.clone()),
+        )
+        .expect("activation import spec");
+
+        assert!(matches!(
+            history_refused.begin_import(spec.clone()),
+            Err(StateImportError::BackendMismatch(AuthorityBackendMismatch::History))
+        ));
+        assert!(matches!(
+            cold_refused.begin_import(spec),
+            Err(StateImportError::BackendMismatch(AuthorityBackendMismatch::Cold))
+        ));
+        assert_eq!(
+            history_refused.get_history_item(root),
+            Err(StateImportError::BackendMismatch(AuthorityBackendMismatch::History))
+        );
+        assert_eq!(
+            authority
+                .current_verified_root()
+                .expect("current root reads"),
+            current_before
         );
     }
 }

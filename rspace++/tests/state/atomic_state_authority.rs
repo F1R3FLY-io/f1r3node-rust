@@ -5,7 +5,9 @@ use proptest::prelude::*;
 use shared::rust::test_scratch;
 
 use super::{AuthorityBackend, CURRENT_ROOT_KEY, RSpaceStateAuthority, verified_root_key};
-use crate::rspace::errors::{HistoryError, RootError};
+use crate::rspace::errors::{
+    AuthorityBackendMismatch, HistoryError, HistoryRepositoryError, RootError,
+};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::{
     ColdLeafAddress, DataLeaf, PersistedData, PersistedDataKind, PersistedDataView,
@@ -17,7 +19,9 @@ use crate::rspace::history::roots_store::CurrentRoot;
 use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use crate::rspace::shared::lmdb_dir_store_manager::{Db, LmdbDirStoreManager, LmdbEnvConfig};
+use crate::rspace::shared::trie_exporter::StateExportError;
 use crate::rspace::state::closure_verifier::RecordValidator;
+use crate::rspace::state::import_session::StateImportError;
 
 #[derive(Debug, PartialEq, Eq)]
 struct MemorySnapshot {
@@ -197,7 +201,14 @@ async fn scope_layout_ordinary_literal_and_alias_routing() {
     let authority = manager.state_authority("rspace").await.unwrap();
     authority.initialize_for_records(&validator()).unwrap();
     assert_eq!(store.get_one(&vec![1]).unwrap(), Some(vec![2]));
-    assert!(authority.history_store().to_map().unwrap().is_empty());
+    assert!(
+        authority
+            .history_store()
+            .expect("legacy history facet")
+            .to_map()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -318,12 +329,20 @@ async fn scope_layout_named_migration_and_marker_binding() {
         let (_history_env, _) = scope_layout_database(
             &scratch.path().join("shared"),
             names[0],
-            source.history_store().to_map().unwrap(),
+            source
+                .history_store()
+                .expect("legacy history facet")
+                .to_map()
+                .unwrap(),
         );
         let (_roots_env, _) =
             scope_layout_database(&scratch.path().join("shared"), names[1], legacy_roots);
         let source_name = if default { "db" } else { names[2] };
-        let source_entries = source.cold_store().to_map().unwrap();
+        let source_entries = source
+            .cold_store()
+            .expect("legacy cold facet")
+            .to_map()
+            .unwrap();
         let (cold_env, cold_db) = scope_layout_database(
             &scratch.path().join("split"),
             source_name,
@@ -343,7 +362,14 @@ async fn scope_layout_named_migration_and_marker_binding() {
         let authority = manager.state_authority("rspace").await.unwrap();
         authority.initialize_for_records(&validator()).unwrap();
         assert_eq!(authority.current_root().unwrap(), *expected.root());
-        assert_eq!(authority.cold_store().get_one(&address.encode()).unwrap(), Some(bytes));
+        assert_eq!(
+            authority
+                .cold_store()
+                .expect("legacy cold facet")
+                .get_one(&address.encode())
+                .unwrap(),
+            Some(bytes)
+        );
         let txn = cold_env.read_txn().unwrap();
         let after: BTreeMap<_, _> = cold_db
             .iter(&txn)
@@ -359,7 +385,11 @@ async fn scope_layout_named_migration_and_marker_binding() {
                 Some(b"unrelated source".to_vec())
             );
         }
-        let catalog = authority.roots_store_for_inspection().to_map().unwrap();
+        let catalog = authority
+            .roots_store_for_inspection()
+            .expect("legacy roots facet")
+            .to_map()
+            .unwrap();
         let marker_key = b"rspace-state-authority/migration/legacy-state/v2/completed".to_vec();
         let marker = catalog.get(&marker_key).unwrap().clone();
         let encoded = marker
@@ -471,12 +501,12 @@ proptest! {
             second.initialize_for_records(&validator()).unwrap();
             for (index, (choice, discriminator)) in steps.into_iter().enumerate() {
                 let (target, other) = if choice { (&first, &second) } else { (&second, &first) };
-                let before = (other.history_store().to_map().unwrap(), other.cold_store().to_map().unwrap(), other.roots_store_for_inspection().to_map().unwrap());
+                let before = (other.history_store().expect("legacy history facet").to_map().unwrap(), other.cold_store().expect("legacy cold facet").to_map().unwrap(), other.roots_store_for_inspection().expect("legacy roots facet").to_map().unwrap());
                 let history = history_at_current(target);
                 let (cold, bytes) = data_leaf(&[index as u8, discriminator]);
                 let (_, plan) = prepare_insert(history.as_ref(), discriminator, &cold);
                 target.commit_local_checkpoint(&plan, vec![(cold, bytes)], &validator()).unwrap();
-                assert_eq!((other.history_store().to_map().unwrap(), other.cold_store().to_map().unwrap(), other.roots_store_for_inspection().to_map().unwrap()), before);
+                assert_eq!((other.history_store().expect("legacy history facet").to_map().unwrap(), other.cold_store().expect("legacy cold facet").to_map().unwrap(), other.roots_store_for_inspection().expect("legacy roots facet").to_map().unwrap()), before);
             }
         });
     }
@@ -518,12 +548,27 @@ async fn scope_layout_disjoint_checkpoints_and_reopen() {
     let (second_cold, second_bytes) = data_leaf(b"scope-second");
     let (_, first_plan) = prepare_insert(first_history.as_ref(), 71, &first_cold);
     let (_, second_plan) = prepare_insert(second_history.as_ref(), 72, &second_cold);
-    let second_before = second.roots_store_for_inspection().to_map().unwrap();
+    let second_before = second
+        .roots_store_for_inspection()
+        .expect("legacy roots facet")
+        .to_map()
+        .unwrap();
     let first_root = first
         .commit_local_checkpoint(&first_plan, vec![(first_cold.clone(), first_bytes)], &validator())
         .unwrap();
-    assert_eq!(second.roots_store_for_inspection().to_map().unwrap(), second_before);
-    let first_before = first.roots_store_for_inspection().to_map().unwrap();
+    assert_eq!(
+        second
+            .roots_store_for_inspection()
+            .expect("legacy roots facet")
+            .to_map()
+            .unwrap(),
+        second_before
+    );
+    let first_before = first
+        .roots_store_for_inspection()
+        .expect("legacy roots facet")
+        .to_map()
+        .unwrap();
     let second_root = second
         .commit_local_checkpoint(
             &second_plan,
@@ -531,11 +576,19 @@ async fn scope_layout_disjoint_checkpoints_and_reopen() {
             &validator(),
         )
         .unwrap();
-    assert_eq!(first.roots_store_for_inspection().to_map().unwrap(), first_before);
+    assert_eq!(
+        first
+            .roots_store_for_inspection()
+            .expect("legacy roots facet")
+            .to_map()
+            .unwrap(),
+        first_before
+    );
     assert_ne!(first_root.root(), second_root.root());
     assert!(
         first
             .cold_store()
+            .expect("legacy cold facet")
             .get_one(&second_cold.encode())
             .unwrap()
             .is_none()
@@ -543,6 +596,7 @@ async fn scope_layout_disjoint_checkpoints_and_reopen() {
     assert!(
         second
             .cold_store()
+            .expect("legacy cold facet")
             .get_one(&first_cold.encode())
             .unwrap()
             .is_none()
@@ -649,6 +703,7 @@ fn assert_root_objects_visible(
     assert_eq!(
         authority
             .history_store()
+            .expect("legacy history facet")
             .get_one(&root.root().bytes())
             .unwrap()
             .as_deref(),
@@ -657,6 +712,7 @@ fn assert_root_objects_visible(
     assert!(
         authority
             .cold_store()
+            .expect("legacy cold facet")
             .get_one(&cold.encode())
             .unwrap()
             .is_some()
@@ -689,6 +745,7 @@ fn authority_facets_reject_deletion_and_authorized_history_rejects_detached_comm
 
     let deletion = authority
         .cold_store()
+        .expect("legacy cold facet")
         .delete(vec![cold.encode()])
         .expect_err("authority-owned content cannot be deleted");
     assert!(deletion.to_string().contains("cannot be deleted"));
@@ -699,6 +756,72 @@ fn authority_facets_reject_deletion_and_authorized_history_rejects_detached_comm
         Err(HistoryError::ActionError(message))
             if message.contains("atomic checkpoint authority")
     ));
+}
+
+#[test]
+fn legacy_facet_mismatch_conversions_keep_their_typed_source() {
+    for mismatch in [
+        AuthorityBackendMismatch::History,
+        AuthorityBackendMismatch::Cold,
+        AuthorityBackendMismatch::Roots,
+    ] {
+        let message = mismatch.to_string();
+        let history = HistoryError::from(mismatch);
+        assert_eq!(history, HistoryError::BackendMismatch(mismatch));
+        assert!(history.to_string().contains(&message));
+        let repository = HistoryRepositoryError::from(mismatch);
+        assert!(repository.to_string().contains(&message));
+        assert!(matches!(
+            repository,
+            HistoryRepositoryError::HistoryError(HistoryError::BackendMismatch(source))
+                if source == mismatch
+        ));
+        assert!(matches!(
+            HistoryRepositoryError::from(history),
+            HistoryRepositoryError::HistoryError(HistoryError::BackendMismatch(source))
+                if source == mismatch
+        ));
+        let export = StateExportError::from(mismatch);
+        assert_eq!(export, StateExportError::BackendMismatch(mismatch));
+        assert!(export.to_string().contains(&message));
+        let import = StateImportError::from(mismatch);
+        assert_eq!(import, StateImportError::BackendMismatch(mismatch));
+        assert!(import.to_string().contains(&message));
+        let converted = heed::Error::from(mismatch);
+        assert_eq!(converted.to_string(), message);
+        let heed::Error::Io(io_error) = converted else {
+            panic!("a backend mismatch must surface as heed::Error::Io");
+        };
+        assert_eq!(io_error.kind(), std::io::ErrorKind::Other);
+        assert_eq!(
+            io_error
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<AuthorityBackendMismatch>()),
+            Some(&mismatch)
+        );
+    }
+
+    let scratch = test_scratch::acquire("rspace-authority-legacy-facets-");
+    let lmdb =
+        RSpaceStateAuthority::open_lmdb(scratch.path(), "rspace", None, None, 16 * 1024 * 1024, 8)
+            .expect("open LMDB authority");
+    lmdb.initialize_for_records(&validator())
+        .expect("initialize LMDB authority");
+    for authority in [RSpaceStateAuthority::in_memory(), lmdb] {
+        let history = authority.history_store().expect("legacy history facet");
+        let cold = authority.cold_store().expect("legacy cold facet");
+        let roots = authority
+            .roots_store_for_inspection()
+            .expect("legacy roots facet");
+        assert!(history.to_map().expect("history facet reads").is_empty());
+        assert!(cold.to_map().expect("cold facet reads").is_empty());
+        assert!(
+            roots
+                .get_one(&CURRENT_ROOT_KEY.to_vec())
+                .expect("roots facet reads")
+                .is_some()
+        );
+    }
 }
 
 #[test]
@@ -933,6 +1056,7 @@ fn same_key_same_value_is_idempotent_across_checkpoints() {
     assert!(
         authority
             .cold_store()
+            .expect("legacy cold facet")
             .get_one(&cold.encode())
             .unwrap()
             .is_some()
@@ -960,14 +1084,36 @@ fn lmdb_success_and_stale_conflict_match_memory_atomicity() {
         .expect("LMDB atomic checkpoint");
     assert_root_objects_visible(&authority, &current, &winner, &winner_cold);
 
-    let history_before = authority.history_store().to_map().unwrap();
-    let cold_before = authority.cold_store().to_map().unwrap();
+    let history_before = authority
+        .history_store()
+        .expect("legacy history facet")
+        .to_map()
+        .unwrap();
+    let cold_before = authority
+        .cold_store()
+        .expect("legacy cold facet")
+        .to_map()
+        .unwrap();
     let current_before = authority.current_verified_root().unwrap();
     authority
         .commit_local_checkpoint(&loser, vec![(loser_cold, loser_bytes)], &validator())
         .expect_err("LMDB stale plan conflicts");
-    assert_eq!(authority.history_store().to_map().unwrap(), history_before);
-    assert_eq!(authority.cold_store().to_map().unwrap(), cold_before);
+    assert_eq!(
+        authority
+            .history_store()
+            .expect("legacy history facet")
+            .to_map()
+            .unwrap(),
+        history_before
+    );
+    assert_eq!(
+        authority
+            .cold_store()
+            .expect("legacy cold facet")
+            .to_map()
+            .unwrap(),
+        cold_before
+    );
     assert_eq!(authority.current_verified_root().unwrap(), current_before);
 }
 
@@ -1194,6 +1340,7 @@ fn legacy_fixture_snapshot(
     let current = authority.current_verified_root().unwrap().unwrap();
     let catalog: BTreeMap<_, _> = authority
         .roots_store_for_inspection()
+        .expect("legacy roots facet")
         .to_map()
         .unwrap()
         .into_iter()
@@ -1225,12 +1372,14 @@ fn legacy_fixture_snapshot(
         catalog,
         history: authority
             .history_store()
+            .expect("legacy history facet")
             .to_map()
             .unwrap()
             .into_iter()
             .collect(),
         cold: authority
             .cold_store()
+            .expect("legacy cold facet")
             .to_map()
             .unwrap()
             .into_iter()

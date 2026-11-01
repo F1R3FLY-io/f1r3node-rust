@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rspace::errors::{RadixTreeError, RootError};
+use crate::rspace::errors::{AuthorityBackendMismatch, RadixTreeError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::{ColdLeafAddress, ColdLeafStoreError};
 use crate::rspace::shared::trie_exporter::{NodePath, StateExportError, Value};
@@ -212,6 +212,7 @@ pub enum StateImportError {
     ColdLeaf(ColdLeafStoreError),
     Store(KvStoreError),
     Root(RootError),
+    BackendMismatch(AuthorityBackendMismatch),
 }
 
 impl std::fmt::Display for StateImportError {
@@ -318,6 +319,9 @@ impl std::fmt::Display for StateImportError {
             Self::ColdLeaf(error) => write!(f, "state import cold-leaf error: {error}"),
             Self::Store(error) => write!(f, "state import storage error: {error}"),
             Self::Root(error) => write!(f, "state import root-catalog error: {error}"),
+            Self::BackendMismatch(error) => {
+                write!(f, "state import authority backend mismatch: {error}")
+            }
         }
     }
 }
@@ -342,6 +346,10 @@ impl From<RootError> for StateImportError {
 
 impl From<StateExportError> for StateImportError {
     fn from(error: StateExportError) -> Self { Self::ExportProjection(error) }
+}
+
+impl From<AuthorityBackendMismatch> for StateImportError {
+    fn from(error: AuthorityBackendMismatch) -> Self { Self::BackendMismatch(error) }
 }
 
 fn validate_digest_width(

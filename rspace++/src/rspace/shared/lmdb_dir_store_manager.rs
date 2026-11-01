@@ -212,9 +212,9 @@ impl KeyValueStoreManager for LmdbDirStoreManager {
         if let Some((prefix, domain)) = authority_role {
             let authority = self.state_authority(prefix).await?;
             let inner = match domain {
-                "history" => authority.history_store(),
-                "cold" => authority.cold_store(),
-                "roots" => authority.roots_store_for_inspection(),
+                "history" => authority.history_store()?,
+                "cold" => authority.cold_store()?,
+                "roots" => authority.roots_store_for_inspection()?,
                 _ => unreachable!("authority_owned_store admitted an unavailable domain"),
             };
             return Ok(Arc::new(ReadOnlyStore::new(inner)));

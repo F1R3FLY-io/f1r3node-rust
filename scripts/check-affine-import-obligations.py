@@ -56,8 +56,10 @@ WITNESS_ASSERTIONS = {
     ),
     "malformed_page_cannot_mutate_any_store_or_publish_a_root": (
         "Err(StateImportError::HistoryDigestMismatch{..})",
-        "assert!(!importer.history_store.non_empty().unwrap())",
-        "assert!(!importer.value_store.non_empty().unwrap())",
+        'assert!(!importer.history_store.as_ref().expect("legacy history facet")'
+        '.non_empty().expect("history facet reads"))',
+        'assert!(!importer.value_store.as_ref().expect("legacy cold facet")'
+        '.non_empty().expect("cold facet reads"))',
         "assert_eq!(importer.authority.current_verified_root().unwrap(),current_before)",
     ),
     "concurrent_activation_sessions_use_generation_cas_at_publication": (

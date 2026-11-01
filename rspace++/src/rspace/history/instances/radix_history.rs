@@ -82,7 +82,7 @@ impl RadixHistory {
                 "cannot construct authorized history for unverified root {root}"
             )));
         }
-        let store = authority.history_store();
+        let store = authority.history_store()?;
         let imple = RadixTreeImpl::new(store.clone());
         let node = Self::load_root_node(&imple, &root)?;
         Ok(RadixHistory {

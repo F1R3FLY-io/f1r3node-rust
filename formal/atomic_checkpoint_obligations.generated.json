@@ -23,7 +23,7 @@
   "config_sha256": "db0199d8e40a9a44fdab54aa8706ddfc2d7e005b568aa155703d8579d0e11a07",
   "model": "formal/tlaplus/stack_safe_pda/RSpaceAtomicCheckpointAuthority.tla",
   "model_sha256": "5044201a3dfcf7261884a49fc90ab3bf7df59a632b19e1ff9dea003d2fd00172",
-  "module_sha256": "4a29facad927d0c7374c9c39d80a5c73ca60e45be2ae1eb7202821d8f905d992",
+  "module_sha256": "604e984c6cafdf8d1321349e17d9d505d3017beda1ab4a54e97e7dd8b4defb43",
   "normal_suite_test_module": "rspace++/tests/state/atomic_state_authority.rs",
   "obligations": [
     {
@@ -118,5 +118,5 @@
       "test": "no_op_writes_nothing_and_does_not_advance_generation"
     }
   ],
-  "test_sha256": "4a2362f6dc94cd2cd7e3a2415e387813653e0bbe7d293338e6a6020601065e16"
+  "test_sha256": "3f36ff5b6383d0d571125f713d85dc805b5fa5336d41a18b42697880afda6987"
 }

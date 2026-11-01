@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use shared::rust::store::key_value_store::KeyValueStore;
 
-use crate::rspace::errors::RootError;
+use crate::rspace::errors::{AuthorityBackendMismatch, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::{ColdLeafAddress, load_cold_leaf};
 use crate::rspace::history::instances::radix_history::RadixHistory;
@@ -27,8 +27,8 @@ impl RSpaceExporterStore {
 }
 
 pub struct RSpaceExporterImpl {
-    source_history_store: Arc<dyn KeyValueStore>,
-    source_value_store: Arc<dyn KeyValueStore>,
+    source_history_store: Result<Arc<dyn KeyValueStore>, AuthorityBackendMismatch>,
+    source_value_store: Result<Arc<dyn KeyValueStore>, AuthorityBackendMismatch>,
     authority: Arc<RSpaceStateAuthority>,
 }
 
@@ -65,7 +65,7 @@ impl TrieExporter for RSpaceExporterImpl {
         skip: i32,
         take: i32,
     ) -> Result<AuthenticatedTraversalPage<KeyHash>, StateExportError> {
-        let source_trie_store = RadixHistory::create_store(self.source_history_store.clone());
+        let source_trie_store = RadixHistory::create_store(self.source_history_store.clone()?);
 
         RSpaceExporterInstance::traverse_history_page(
             start_path,
@@ -79,17 +79,18 @@ impl TrieExporter for RSpaceExporterImpl {
         &self,
         keys: Vec<Blake2b256Hash>,
     ) -> Result<Vec<(KeyHash, Value)>, StateExportError> {
-        self.get_items(self.source_history_store.clone(), keys)
+        self.get_items(self.source_history_store.clone()?, keys)
     }
 
     fn get_data_items(
         &self,
         addresses: Vec<ColdLeafAddress>,
     ) -> Result<Vec<(KeyHash, Value)>, StateExportError> {
+        let source_value_store = self.source_value_store.clone()?;
         addresses
             .into_iter()
             .map(|address| {
-                let loaded = load_cold_leaf(self.source_value_store.as_ref(), &address)?;
+                let loaded = load_cold_leaf(source_value_store.as_ref(), &address)?;
                 Ok((address.into_digest(), loaded.into_bytes()))
             })
             .collect()
@@ -103,11 +104,13 @@ mod tests {
     use shared::rust::store::key_value_store::KeyValueStore;
 
     use super::RSpaceExporterImpl;
+    use crate::rspace::errors::AuthorityBackendMismatch;
     use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
     use crate::rspace::history::cold_store::{
         ColdLeafAddress, ContinuationsLeaf, DataLeaf, JoinsLeaf, PersistedData, PersistedDataKind,
         PersistedDataView,
     };
+    use crate::rspace::history::instances::radix_history::RadixHistory;
     use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use crate::rspace::shared::trie_exporter::{StateExportError, TrieExporter};
     use crate::rspace::state::exporters::rspace_exporter_items::RSpaceExporterItems;
@@ -175,8 +178,8 @@ mod tests {
             ])
             .expect("populate the leaf store");
         let exporter = RSpaceExporterImpl {
-            source_history_store: unused.clone(),
-            source_value_store: values,
+            source_history_store: Ok(unused.clone()),
+            source_value_store: Ok(values),
             authority: RSpaceStateAuthority::in_memory(),
         };
 
@@ -207,8 +210,8 @@ mod tests {
             ])
             .unwrap();
         let exporter = RSpaceExporterImpl {
-            source_history_store: unused.clone(),
-            source_value_store: values,
+            source_history_store: Ok(unused.clone()),
+            source_value_store: Ok(values),
             authority: RSpaceStateAuthority::in_memory(),
         };
 
@@ -231,8 +234,8 @@ mod tests {
             .put_one(corrupt.bytes(), b"wrong-history-bytes".to_vec())
             .unwrap();
         let exporter = RSpaceExporterImpl {
-            source_history_store: history,
-            source_value_store: unused.clone(),
+            source_history_store: Ok(history),
+            source_value_store: Ok(unused.clone()),
             authority: RSpaceStateAuthority::in_memory(),
         };
 
@@ -259,11 +262,33 @@ mod tests {
             .put(vec![(data.encode(), continuation_bytes), (data.digest().bytes(), data_bytes)])
             .unwrap();
         let exporter = RSpaceExporterImpl {
-            source_history_store: unused.clone(),
-            source_value_store: values,
+            source_history_store: Ok(unused.clone()),
+            source_value_store: Ok(values),
             authority: RSpaceStateAuthority::in_memory(),
         };
 
         assert!(matches!(exporter.get_data_items(vec![data]), Err(StateExportError::ColdLeaf(_))));
+    }
+
+    #[test]
+    fn every_export_operation_refuses_an_unavailable_legacy_facet() {
+        let exporter = RSpaceExporterImpl {
+            source_history_store: Err(AuthorityBackendMismatch::History),
+            source_value_store: Err(AuthorityBackendMismatch::Cold),
+            authority: RSpaceStateAuthority::in_memory(),
+        };
+        let root = RadixHistory::empty_root_node_hash();
+        let history_refusal = StateExportError::BackendMismatch(AuthorityBackendMismatch::History);
+
+        assert!(matches!(
+            exporter.get_page(vec![(root.clone(), None)], 0, 1),
+            Err(refusal) if refusal == history_refusal
+        ));
+        assert_eq!(exporter.get_history_items(Vec::new()), Err(history_refusal.clone()));
+        assert_eq!(exporter.get_history_items(vec![root]), Err(history_refusal));
+        assert_eq!(
+            exporter.get_data_items(Vec::new()),
+            Err(StateExportError::BackendMismatch(AuthorityBackendMismatch::Cold))
+        );
     }
 }

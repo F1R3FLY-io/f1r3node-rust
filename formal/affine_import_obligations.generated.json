@@ -31,7 +31,7 @@
   "dedicated_verus_sources": [],
   "model": "formal/tlaplus/stack_safe_pda/RSpaceAffineImportLifecycle.tla",
   "model_sha256": "3150cd26e180e66327a6c96bb7906bd9b695a604c41f4c56bc39b6df37993f70",
-  "normal_suite_source_sha256": "6641b0d25336ad6317117a05f245d0d77b06614648b49e3148feac43047e5a62",
+  "normal_suite_source_sha256": "0743346943fca31833af5cebbd6ac40ccf4df043a38307f9153d14395a22c417",
   "normal_suite_test_module": "rspace++/src/rspace/state/instances/rspace_importer_store.rs",
   "obligations": [
     {
@@ -98,5 +98,5 @@
     }
   ],
   "runtime_authority": "rspace++/src/rspace/state/rspace_state_authority.rs",
-  "runtime_authority_sha256": "4a29facad927d0c7374c9c39d80a5c73ca60e45be2ae1eb7202821d8f905d992"
+  "runtime_authority_sha256": "604e984c6cafdf8d1321349e17d9d505d3017beda1ab4a54e97e7dd8b4defb43"
 }

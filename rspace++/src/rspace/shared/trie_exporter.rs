@@ -3,7 +3,7 @@
 use shared::rust::Byte;
 use shared::rust::store::key_value_store::KvStoreError;
 
-use crate::rspace::errors::RadixTreeError;
+use crate::rspace::errors::{AuthorityBackendMismatch, RadixTreeError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::{ColdLeafAddress, ColdLeafStoreError};
 
@@ -50,6 +50,7 @@ pub enum StateExportError {
     RadixTree(RadixTreeError),
     ColdLeaf(ColdLeafStoreError),
     Store(KvStoreError),
+    BackendMismatch(AuthorityBackendMismatch),
 }
 
 impl std::fmt::Display for StateExportError {
@@ -70,6 +71,9 @@ impl std::fmt::Display for StateExportError {
             Self::RadixTree(error) => write!(f, "state-export radix traversal failed: {error}"),
             Self::ColdLeaf(error) => write!(f, "state-export cold leaf failed: {error}"),
             Self::Store(error) => write!(f, "state-export store failed: {error}"),
+            Self::BackendMismatch(error) => {
+                write!(f, "state-export authority backend mismatch: {error}")
+            }
         }
     }
 }
@@ -86,6 +90,10 @@ impl From<ColdLeafStoreError> for StateExportError {
 
 impl From<KvStoreError> for StateExportError {
     fn from(error: KvStoreError) -> Self { Self::Store(error) }
+}
+
+impl From<AuthorityBackendMismatch> for StateExportError {
+    fn from(error: AuthorityBackendMismatch) -> Self { Self::BackendMismatch(error) }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

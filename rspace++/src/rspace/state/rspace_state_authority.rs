@@ -17,7 +17,7 @@ use shared::rust::store::key_value_store::{
     KeyValueStore, KeyValueStoreMutation, KvStoreError, validate_atomic_batch,
 };
 
-use crate::rspace::errors::{HistoryError, RootError};
+use crate::rspace::errors::{AuthorityBackendMismatch, HistoryError, RootError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::history::cold_store::{ColdLeafAddress, validate_cold_leaf};
 use crate::rspace::history::instances::radix_history::{PreparedHistoryCheckpoint, RadixHistory};
@@ -290,25 +290,36 @@ impl RSpaceStateAuthority {
         self.initialize_empty_root()
     }
 
-    pub(crate) fn history_store(self: &Arc<Self>) -> Arc<dyn KeyValueStore> {
-        Arc::new(ContentAddressedStore {
-            authority: Arc::clone(self),
-            kind: ObjectKind::History,
-        })
+    pub(crate) fn history_store(
+        self: &Arc<Self>,
+    ) -> Result<Arc<dyn KeyValueStore>, AuthorityBackendMismatch> {
+        self.legacy_facet(ObjectKind::History)
     }
 
-    pub(crate) fn cold_store(self: &Arc<Self>) -> Arc<dyn KeyValueStore> {
-        Arc::new(ContentAddressedStore {
-            authority: Arc::clone(self),
-            kind: ObjectKind::Cold,
-        })
+    pub(crate) fn cold_store(
+        self: &Arc<Self>,
+    ) -> Result<Arc<dyn KeyValueStore>, AuthorityBackendMismatch> {
+        self.legacy_facet(ObjectKind::Cold)
     }
 
-    pub(crate) fn roots_store_for_inspection(self: &Arc<Self>) -> Arc<dyn KeyValueStore> {
-        Arc::new(ContentAddressedStore {
-            authority: Arc::clone(self),
-            kind: ObjectKind::Roots,
-        })
+    pub(crate) fn roots_store_for_inspection(
+        self: &Arc<Self>,
+    ) -> Result<Arc<dyn KeyValueStore>, AuthorityBackendMismatch> {
+        self.legacy_facet(ObjectKind::Roots)
+    }
+
+    fn legacy_facet(
+        self: &Arc<Self>,
+        kind: ObjectKind,
+    ) -> Result<Arc<dyn KeyValueStore>, AuthorityBackendMismatch> {
+        match &self.backend {
+            AuthorityBackend::Memory(_) | AuthorityBackend::Lmdb(_) => {
+                Ok(Arc::new(ContentAddressedStore {
+                    authority: Arc::clone(self),
+                    kind,
+                }))
+            }
+        }
     }
 
     pub fn current_verified_root(&self) -> Result<Option<CurrentRoot>, RootError> {
@@ -401,8 +412,9 @@ impl RSpaceStateAuthority {
             }
         }
 
-        let history_overlay = OverlayStore::new(self.history_store(), Arc::clone(&history_objects));
-        let cold_overlay = OverlayStore::new(self.cold_store(), Arc::clone(&cold_objects));
+        let history_overlay =
+            OverlayStore::new(self.history_store()?, Arc::clone(&history_objects));
+        let cold_overlay = OverlayStore::new(self.cold_store()?, Arc::clone(&cold_objects));
         verify_state_closure(
             &history_overlay,
             &cold_overlay,
@@ -544,8 +556,8 @@ impl RSpaceStateAuthority {
                 staged.pending_paths.iter().cloned().collect(),
             ));
         }
-        let history = self.history_store();
-        let cold = self.cold_store();
+        let history = self.history_store()?;
+        let cold = self.cold_store()?;
         verify_state_closure(
             history.as_ref(),
             cold.as_ref(),
