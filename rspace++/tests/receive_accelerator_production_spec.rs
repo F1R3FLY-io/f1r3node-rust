@@ -6,12 +6,13 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed, TestRunner};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::StableHashSerialize;
-use rspace_plus_plus::rspace::hot_store::ReceiveRevision;
+use rspace_plus_plus::rspace::hot_store::{HotStoreState, ReceiveRevision};
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::ordered_receive::{PreparedContinuationRecord, RestingReceiveVisit};
 use rspace_plus_plus::rspace::receive_accelerator::{
-    ReceiveAcceleratorClass, ReceiveAnswer, ReceiveKind as ProductionKind,
+    ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, ReceiveId,
+    ReceiveKind as ProductionKind, ReceiveOccurrences, ReceiveTarget as ProductionTarget,
 };
 use rspace_plus_plus::rspace::rho_path::ReceiveChannelQuery;
 use rspace_plus_plus::rspace::rspace::RSpace;
@@ -21,6 +22,8 @@ use rspace_plus_plus::rspace::serializers::cold_store_decode::{
 };
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::trace::Log;
+use rspace_plus_plus::rspace::trace::event::Event;
 use serde::{Deserialize, Serialize};
 
 #[path = "support/receive_occurrence_reference.rs"]
@@ -50,6 +53,7 @@ const TRACE_CASES: u32 = 64;
 const PROPERTY_SEED: u64 = 41_318_011;
 const COLLIDING_PEEK_BYTE: i32 = 0x0100_0000;
 const FORGED_PEEK_BYTE: i32 = 0x0200_0000;
+const SPACE_CHANNELS: [&str; 3] = ["space-alpha", "space-beta", "space-gamma"];
 
 fn raw_channels(images: &[&[u8]]) -> Vec<RawChannel> {
     images
@@ -682,6 +686,55 @@ fn assert_maintained_equals_rebuild(
     }
 }
 
+fn assert_one_revision(
+    store: &RawStore,
+    accelerator: &ProductionAccelerator<'_>,
+    world: &ReferenceWorld,
+) {
+    assert_eq!(
+        accelerator.artifact_revisions(),
+        vec![world.revision.clone()],
+        "the accelerator reports one artifact revision, the world's"
+    );
+    let current = current_revision(store);
+    let mut resolved = 0usize;
+    for image in probe_images(world) {
+        match (
+            accelerator.occurrences(&RawChannel(image.clone())),
+            answer_under_join_premise(world, &image),
+        ) {
+            (ReceiveAnswer::Exact(occurrences), Answer::Exact(derived)) => {
+                assert!(
+                    *occurrences.revision() == current,
+                    "the occurrence index answers at the store's revision"
+                );
+                let targets: BTreeSet<ReceiveTarget> = derived
+                    .into_iter()
+                    .map(|occurrence| occurrence.target)
+                    .collect();
+                assert_eq!(
+                    resolved_targets(store, &occurrences),
+                    targets,
+                    "the catalog resolves every id the index mints, at the same stamp"
+                );
+                resolved = resolved
+                    .checked_add(targets.len())
+                    .expect("a resolved target count fits usize");
+            }
+            (
+                ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Incomplete),
+                Answer::Fallback(AcceleratorClass::Incomplete),
+            ) => {}
+            (answer, expected) => panic!(
+                "{image:?}: the accelerator falls back as {:?} where the world answers \
+                 {expected:?}",
+                fallback_class(answer)
+            ),
+        }
+    }
+    assert!(resolved > 0, "the catalog resolves some answered id");
+}
+
 fn probe_images(world: &ReferenceWorld) -> BTreeSet<ChannelImage> {
     let mut images = world.observation.channel_images();
     images.extend(probes());
@@ -996,6 +1049,378 @@ async fn produce(space: &StringSpace, channel: &str, value: &str) -> Option<Stri
 
 fn hydrated_space(space: &StringSpace, universe: &[Vec<String>]) -> Observation {
     observe(&**space.get_store(), universe, true)
+}
+
+type StringState = HotStoreState<String, Pattern, String, String>;
+type SpaceHandle = ReceiveAcceleratorHandle<String, Pattern, String>;
+type SpaceOccurrences = ReceiveOccurrences<String, Pattern, String>;
+type SpaceId = ReceiveId<String, Pattern, String>;
+type SpaceTarget = ProductionTarget<String, Pattern, String>;
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a current-thread runtime builds")
+}
+
+fn assert_same_hot_state(actual: &StringState, expected: &StringState) {
+    assert_eq!(actual.continuations, expected.continuations);
+    assert_eq!(actual.installed_continuations, expected.installed_continuations);
+    assert_eq!(actual.data, expected.data);
+    assert_eq!(actual.joins, expected.joins);
+    assert_eq!(actual.installed_joins, expected.installed_joins);
+}
+
+fn space_target(group: &GroupKey, target: &SpaceTarget) -> ReceiveTarget {
+    ReceiveTarget {
+        kind: reference_kind(target.kind()),
+        group: group.clone(),
+        identity: target.identity_bytes().into_owned(),
+        source: target.source_bytes().into_owned(),
+    }
+}
+
+fn space_group_targets(occurrences: &SpaceOccurrences) -> Vec<(GroupKey, Vec<ReceiveTarget>)> {
+    let mut ordered = Vec::with_capacity(occurrences.groups().len());
+    for group in occurrences.groups() {
+        let key = group_key(group.channels());
+        let mut targets = Vec::with_capacity(group.targets().len());
+        targets.extend(
+            group
+                .targets()
+                .iter()
+                .map(|target| space_target(&key, target)),
+        );
+        ordered.push((key, targets));
+    }
+    ordered
+}
+
+fn space_occurrences(occurrences: &SpaceOccurrences, image: &[u8]) -> BTreeSet<Occurrence> {
+    let mut mapped = BTreeSet::new();
+    for group in occurrences.groups() {
+        let key = group_key(group.channels());
+        let mut positions = Vec::with_capacity(group.positions().len());
+        positions.extend(group.positions().iter().map(|position| position.get()));
+        for target in group.targets() {
+            let occurrence = Occurrence {
+                channel: image.to_vec(),
+                group: key.clone(),
+                positions: positions.clone(),
+                target: space_target(&key, target),
+            };
+            assert!(mapped.insert(occurrence), "a production answer names each occurrence once");
+        }
+    }
+    mapped
+}
+
+fn space_ids(occurrences: &SpaceOccurrences) -> Vec<(SpaceId, ReceiveTarget)> {
+    let count = occurrences
+        .groups()
+        .iter()
+        .map(|group| group.targets().len())
+        .fold(0usize, |total, count| {
+            total
+                .checked_add(count)
+                .expect("an answer's target count fits usize")
+        });
+    let mut ids = Vec::with_capacity(count);
+    for group in occurrences.groups() {
+        let key = group_key(group.channels());
+        ids.extend(
+            group
+                .targets()
+                .iter()
+                .map(|target| (occurrences.receive_id(target), space_target(&key, target))),
+        );
+    }
+    ids
+}
+
+fn exact_space_answer(
+    space: &StringSpace,
+    handle: &SpaceHandle,
+    channel: &String,
+) -> SpaceOccurrences {
+    let store = space.get_store();
+    store.get_joins(channel);
+    match store.receive_occurrences(Some(handle), channel) {
+        ReceiveAnswer::Exact(occurrences) => occurrences,
+        ReceiveAnswer::Fallback(class) => {
+            panic!(
+                "{channel}: a current handle over a hydrated scope answers exactly, not \
+                 Fallback({class:?})"
+            )
+        }
+    }
+}
+
+fn space_fallback(
+    space: &StringSpace,
+    handle: &SpaceHandle,
+    channel: &String,
+) -> Option<ReceiveAcceleratorClass> {
+    let store = space.get_store();
+    store.get_joins(channel);
+    fallback_class(store.receive_occurrences(Some(handle), channel))
+}
+
+fn space_groups() -> [Vec<String>; 3] {
+    [vec!["space-alpha".to_owned()], vec!["space-alpha".to_owned(), "space-beta".to_owned()], vec![
+        "space-beta".to_owned(),
+        "space-gamma".to_owned(),
+        "space-beta".to_owned(),
+    ]]
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SpaceStepPlan {
+    Consume { group: usize, persist: bool },
+    Produce { channel: usize },
+    Rebuild,
+    Checkpoint,
+}
+
+fn space_step_plan() -> impl Strategy<Value = SpaceStepPlan> {
+    prop_oneof![
+        4 => (0..3usize, any::<bool>())
+            .prop_map(|(group, persist)| SpaceStepPlan::Consume { group, persist }),
+        4 => (0..3usize).prop_map(|channel| SpaceStepPlan::Produce { channel }),
+        1 => Just(SpaceStepPlan::Rebuild),
+        1 => Just(SpaceStepPlan::Checkpoint),
+    ]
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SpaceOutcome {
+    Rested,
+    Fired {
+        continuation: String,
+        data: Vec<String>,
+    },
+    Rebuilt,
+    Checkpointed {
+        root: Blake2b256Hash,
+        log: Log,
+    },
+}
+
+fn rebuild_when_accelerated(space: &StringSpace, accelerated: bool) {
+    match accelerated {
+        true => assert_eq!(
+            space.get_store().rebuild_receive_accelerator(),
+            ReceiveAcceleratorClass::Coherent
+        ),
+        false => {}
+    }
+}
+
+async fn apply_space_step(
+    space: &StringSpace,
+    step: &SpaceStepPlan,
+    ordinal: usize,
+    accelerated: bool,
+) -> SpaceOutcome {
+    match step {
+        SpaceStepPlan::Consume { group, persist } => {
+            let channels = space_groups()
+                .get(*group)
+                .cloned()
+                .expect("a generated group index addresses the space groups");
+            let patterns = vec![Pattern::Wildcard; channels.len()];
+            let fired = space
+                .consume(
+                    channels,
+                    patterns,
+                    format!("space-receive-{ordinal}"),
+                    *persist,
+                    BTreeSet::new(),
+                )
+                .await
+                .expect("an in-memory consume succeeds");
+            match fired {
+                Some((result, matched)) => SpaceOutcome::Fired {
+                    continuation: result.continuation,
+                    data: matched
+                        .into_iter()
+                        .map(|binding| binding.matched_datum)
+                        .collect(),
+                },
+                None => SpaceOutcome::Rested,
+            }
+        }
+        SpaceStepPlan::Produce { channel } => {
+            let name = SPACE_CHANNELS
+                .get(*channel)
+                .expect("a generated channel index addresses the space channels");
+            let fired = space
+                .produce((*name).to_owned(), format!("space-value-{ordinal}"), false)
+                .await
+                .expect("an in-memory produce succeeds");
+            match fired {
+                Some((result, matched, _)) => SpaceOutcome::Fired {
+                    continuation: result.continuation,
+                    data: matched
+                        .into_iter()
+                        .map(|binding| binding.matched_datum)
+                        .collect(),
+                },
+                None => SpaceOutcome::Rested,
+            }
+        }
+        SpaceStepPlan::Rebuild => {
+            rebuild_when_accelerated(space, accelerated);
+            SpaceOutcome::Rebuilt
+        }
+        SpaceStepPlan::Checkpoint => {
+            let checkpoint = space
+                .create_checkpoint()
+                .await
+                .expect("an in-memory checkpoint succeeds");
+            rebuild_when_accelerated(space, accelerated);
+            SpaceOutcome::Checkpointed {
+                root: checkpoint.root,
+                log: checkpoint.log,
+            }
+        }
+    }
+}
+
+fn published_group_answers(
+    space: &StringSpace,
+    groups: &[Vec<String>],
+) -> (Observation, BTreeMap<GroupKey, Vec<ReceiveTarget>>) {
+    let observation = hydrated_space(space, groups);
+    let current = space
+        .get_store()
+        .receive_accelerator()
+        .expect("the maintained space keeps its accelerator published");
+    let mut answers: BTreeMap<GroupKey, Vec<ReceiveTarget>> = BTreeMap::new();
+    for name in SPACE_CHANNELS {
+        let occurrences = exact_space_answer(space, &current, &name.to_owned());
+        for (key, targets) in space_group_targets(&occurrences) {
+            match answers.insert(key, targets.clone()) {
+                Some(previous) => assert_eq!(
+                    previous, targets,
+                    "a group answers one target list at each of its channels"
+                ),
+                None => {}
+            }
+        }
+    }
+    (observation, answers)
+}
+
+fn hydrate_space_scope(space: &StringSpace, groups: &[Vec<String>]) -> Observation {
+    let observation = hydrated_space(space, groups);
+    let store = space.get_store();
+    for name in SPACE_CHANNELS {
+        store.get_joins(&name.to_owned());
+    }
+    observation
+}
+
+fn assert_maintained_answers(space: &StringSpace, observation: &Observation, step: &SpaceStepPlan) {
+    let current = space
+        .get_store()
+        .receive_accelerator()
+        .expect("the maintained space keeps its accelerator published");
+    for name in SPACE_CHANNELS {
+        let channel = name.to_owned();
+        let image = channel_image(&channel);
+        assert_eq!(
+            space_occurrences(&exact_space_answer(space, &current, &channel), &image),
+            derive(observation, &image),
+            "{step:?}: the maintained accelerator answers the derivation"
+        );
+    }
+}
+
+fn assert_same_semantic_identity(
+    absent: &StringSpace,
+    maintained: &StringSpace,
+    step: &SpaceStepPlan,
+    phase: &str,
+) {
+    let absent_store = absent.get_store();
+    let maintained_store = maintained.get_store();
+    assert_same_hot_state(&maintained_store.snapshot(), &absent_store.snapshot());
+    assert!(
+        maintained_store
+            .pending_data_delta()
+            .expect("an in-memory data journal reads") ==
+            absent_store
+                .pending_data_delta()
+                .expect("an in-memory data journal reads"),
+        "{step:?} {phase}: the pending data delta is accelerator-free"
+    );
+    assert!(
+        maintained_store
+            .pending_continuation_delta()
+            .expect("an in-memory continuation journal reads") ==
+            absent_store
+                .pending_continuation_delta()
+                .expect("an in-memory continuation journal reads"),
+        "{step:?} {phase}: the pending continuation delta is accelerator-free"
+    );
+    assert!(
+        maintained_store
+            .pending_join_delta()
+            .expect("an in-memory join journal reads") ==
+            absent_store
+                .pending_join_delta()
+                .expect("an in-memory join journal reads"),
+        "{step:?} {phase}: the pending join delta is accelerator-free"
+    );
+    let maintained_content = maintained_store
+        .pending_continuation_content()
+        .expect("an in-memory content journal reads")
+        .expect("an in-memory store journals continuation content");
+    let absent_content = absent_store
+        .pending_continuation_content()
+        .expect("an in-memory content journal reads")
+        .expect("an in-memory store journals continuation content");
+    assert_eq!(
+        maintained_content
+            .iter()
+            .map(|(path, transition)| (path, *transition))
+            .collect::<Vec<_>>(),
+        absent_content
+            .iter()
+            .map(|(path, transition)| (path, *transition))
+            .collect::<Vec<_>>(),
+        "{step:?} {phase}: the pending continuation content is accelerator-free"
+    );
+    let maintained_sources = maintained_store
+        .pending_continuation_source_bytes()
+        .expect("an in-memory source journal reads")
+        .expect("an in-memory store journals continuation sources");
+    let absent_sources = absent_store
+        .pending_continuation_source_bytes()
+        .expect("an in-memory source journal reads")
+        .expect("an in-memory store journals continuation sources");
+    assert_eq!(
+        maintained_sources
+            .iter()
+            .map(|(path, bytes)| (path, Arc::clone(bytes)))
+            .collect::<Vec<_>>(),
+        absent_sources
+            .iter()
+            .map(|(path, bytes)| (path, Arc::clone(bytes)))
+            .collect::<Vec<_>>(),
+        "{step:?} {phase}: the pending continuation sources are accelerator-free"
+    );
+    assert_eq!(
+        maintained_store
+            .checkpoint_changes()
+            .expect("an in-memory store plans its checkpoint"),
+        absent_store
+            .checkpoint_changes()
+            .expect("an in-memory store plans its checkpoint"),
+        "{step:?} {phase}: the canonical checkpoint plans are accelerator-free"
+    );
 }
 
 fn assert_exact_groups_are_join_groups_with_targets(
@@ -2140,6 +2565,105 @@ fn production_clear_and_set_state_retire_held_handles_and_rebuilds_equal_the_der
 }
 
 #[test]
+fn production_equal_group_versions_imply_equal_group_answers() {
+    let prefix = [
+        SpaceStepPlan::Consume {
+            group: 1,
+            persist: true,
+        },
+        SpaceStepPlan::Consume {
+            group: 0,
+            persist: false,
+        },
+        SpaceStepPlan::Produce { channel: 0 },
+    ];
+    let strategy = proptest::collection::vec(space_step_plan(), 0..=10);
+    check_property(TRACE_CASES, &strategy, |suffix| {
+        runtime().block_on(async {
+            let space = string_space().await;
+            let groups = space_groups();
+            let keys: Vec<GroupKey> = groups.iter().map(|channels| group_key(channels)).collect();
+            let steps = prefix
+                .len()
+                .checked_add(suffix.len())
+                .expect("the step count fits usize");
+            let capacity = steps
+                .checked_add(1)
+                .expect("the observation count fits usize");
+            let mut observed: Vec<(Observation, BTreeMap<GroupKey, Vec<ReceiveTarget>>)> =
+                Vec::with_capacity(capacity);
+            let mut outcomes: Vec<SpaceOutcome> = Vec::with_capacity(steps);
+            assert_eq!(
+                space.get_store().rebuild_receive_accelerator(),
+                ReceiveAcceleratorClass::Coherent
+            );
+            observed.push(published_group_answers(&space, &groups));
+            for (ordinal, step) in prefix.iter().chain(suffix.iter()).enumerate() {
+                outcomes.push(apply_space_step(&space, step, ordinal, true).await);
+                observed.push(published_group_answers(&space, &groups));
+            }
+            assert_eq!(
+                outcomes.get(2),
+                Some(&SpaceOutcome::Fired {
+                    continuation: "space-receive-1".to_owned(),
+                    data: vec!["space-value-2".to_owned()],
+                }),
+                "the prefix produce fires the single-channel receive"
+            );
+            let (
+                [single_key, joined_key, _],
+                Some((rested, rested_answers)),
+                Some((fired, fired_answers)),
+            ) = (keys.as_slice(), observed.get(2), observed.get(3))
+            else {
+                panic!("the fixed prefix is observed");
+            };
+            assert_eq!(
+                rested_answers.get(single_key).map(Vec::len),
+                Some(1),
+                "the prefix receive rests"
+            );
+            assert_eq!(fired_answers.get(single_key), None, "the prefix produce fires it");
+            assert_eq!(
+                rested.version(joined_key),
+                fired.version(joined_key),
+                "the produce leaves the joined group's version"
+            );
+            assert_eq!(
+                fired_answers.get(joined_key).map(Vec::len),
+                Some(1),
+                "the joined group still answers its receive"
+            );
+            let mut compared = 0usize;
+            for key in &keys {
+                for (left, left_answers) in &observed {
+                    for (right, right_answers) in &observed {
+                        match (left.version(key), right.version(key)) {
+                            (Some(left_version), Some(right_version))
+                                if left_version == right_version =>
+                            {
+                                assert_eq!(
+                                    left_answers.get(key),
+                                    right_answers.get(key),
+                                    "equal group versions imply equal production group answers"
+                                );
+                                match left_answers.get(key) {
+                                    Some(_) => compared = checked_increment(compared),
+                                    None => {}
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            assert!(compared > 0, "an equal-version pair answers a nonempty group");
+        });
+        Ok(())
+    });
+}
+
+#[test]
 fn production_reads_equal_derivation_in_every_accelerator_state() {
     let resident = raw_channels(&[&[0x01]]);
     let historical = raw_channels(&[&[0x01], &[0x00]]);
@@ -2277,6 +2801,314 @@ fn production_refused_updates_leave_the_store_and_accelerator_unchanged() {
         "a refused update leaves the maintained handle unchanged"
     );
     assert_eq!(maintained.artifact_revisions(), vec![after.revision.clone()]);
+}
+
+#[test]
+fn production_index_and_catalog_publish_at_one_revision() {
+    let resident = raw_channels(&[&[0x01], &[0x01, 0x00]]);
+    let historical = raw_channels(&[&[0x00]]);
+    let seeded = raw_hot_store();
+    for body in ["stamp-first", "stamp-second"] {
+        let record = raw_continuation(&resident, body, false, BTreeSet::new());
+        assert_eq!(seeded.put_continuation(&resident, record), Some(true));
+    }
+    for channel in &resident {
+        assert_eq!(seeded.put_join(channel, &resident), Some(()));
+    }
+    let mut history = StubHistory::default();
+    history.put_continuations(historical.clone(), vec![raw_continuation(
+        &historical,
+        "stamp-history",
+        false,
+        BTreeSet::new(),
+    )]);
+    for channel in &historical {
+        history.put_join(channel.clone(), historical.clone());
+    }
+    let store = raw_hot_store_with_history(seeded.snapshot(), history);
+    let universe = vec![resident.clone(), historical.clone()];
+    let resident_key = group_key(&resident);
+    let mut lineage = Lineage::new(Vec::new());
+    let initial = lineage.world(observe(&*store, &universe, false));
+    let mut accelerator = rebuilt(&store, Build::Published, &initial);
+    assert_one_revision(&store, &accelerator, &initial);
+
+    let inserted = raw_continuation(&resident, "stamp-third", false, BTreeSet::new());
+    let before = lineage.world(observe(&*store, &universe, false));
+    assert_eq!(store.put_continuation(&resident, inserted.clone()), Some(true));
+    let after = lineage.world(observe(&*store, &universe, false));
+    accelerator
+        .apply(
+            &MaintenanceOp::PutResting(expected_target(ReceiveKind::Resting, &resident, &inserted)),
+            &before,
+            &after,
+        )
+        .expect("an insertion is maintained");
+    assert_one_revision(&store, &accelerator, &after);
+
+    let installed = raw_continuation(&resident, "stamp-installed", true, BTreeSet::new());
+    let before = lineage.world(observe(&*store, &universe, false));
+    assert_eq!(store.install_continuation(&resident, installed.clone()), Some(()));
+    lineage.reinstall();
+    let after = lineage.world(observe(&*store, &universe, false));
+    accelerator
+        .apply(
+            &MaintenanceOp::Install(expected_target(ReceiveKind::Installed, &resident, &installed)),
+            &before,
+            &after,
+        )
+        .expect("an install is maintained");
+    assert_one_revision(&store, &accelerator, &after);
+
+    let before = lineage.world(observe(&*store, &universe, false));
+    let named = before
+        .observation
+        .ordered_targets(&resident_key)
+        .get(1)
+        .cloned()
+        .expect("the resident group orders an installed and three resting receives");
+    assert_eq!(store.remove_continuation(&resident, 1), Some(()));
+    let after = lineage.world(observe(&*store, &universe, false));
+    accelerator
+        .apply(&MaintenanceOp::RemoveResting(named), &before, &after)
+        .expect("a removal is maintained");
+    assert_one_revision(&store, &accelerator, &after);
+
+    let before = lineage.world(observe(&*store, &universe, false));
+    let loaded = store.get_continuations(&historical);
+    let after = lineage.world(observe(&*store, &universe, false));
+    let mut targets = Vec::with_capacity(loaded.len());
+    targets.extend(
+        loaded
+            .iter()
+            .map(|continuation| expected_target(ReceiveKind::Resting, &historical, continuation)),
+    );
+    let operation = MaintenanceOp::LoadHistory {
+        group: group_key(&historical),
+        targets,
+    };
+    accelerator
+        .apply(&operation, &before, &after)
+        .expect("a history load is maintained");
+    assert_one_revision(&store, &accelerator, &after);
+    assert!(after.observation.is_complete(), "the history load completes the store");
+    assert_maintained_equals_rebuild(&store, &accelerator, &after);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_same_count_group_replacement_never_reuses_a_stale_answer_or_handle() {
+    let space = string_space().await;
+    let channel = "replaced-group".to_owned();
+    let single = vec![channel.clone()];
+    let joined = vec![channel.clone(), "replaced-partner".to_owned()];
+    let universe = vec![single.clone(), joined.clone()];
+    let single_key = group_key(&single);
+    let image = channel_image(&channel);
+    rest_wildcard_receive(&space, &single, "replaced-first").await;
+    rest_wildcard_receive(&space, &joined, "replaced-joined").await;
+    let store = space.get_store();
+    let cached = hydrated_space(&space, &universe);
+    assert_eq!(store.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+    let held = store
+        .receive_accelerator()
+        .expect("a rebuilt store publishes its accelerator");
+    let held_occurrences = exact_space_answer(&space, &held, &channel);
+    let held_answer = space_occurrences(&held_occurrences, &image);
+    assert_eq!(held_answer, derive(&cached, &image), "the held handle answers the derivation");
+    let held_ids = space_ids(&held_occurrences);
+    assert_eq!(produce(&space, &channel, "replacing").await, Some("replaced-first".to_owned()));
+    rest_wildcard_receive(&space, &single, "replaced-second").await;
+    let replaced = hydrated_space(&space, &universe);
+    assert_eq!(
+        cached.targets(&single_key).len(),
+        replaced.targets(&single_key).len(),
+        "the replacement keeps the candidate count"
+    );
+    assert_ne!(cached.targets(&single_key), replaced.targets(&single_key));
+    assert_ne!(cached.version(&single_key), replaced.version(&single_key));
+    assert_eq!(
+        space_fallback(&space, &held, &channel),
+        Some(ReceiveAcceleratorClass::Stale),
+        "a handle held across the replacement never answers"
+    );
+    let mut surviving = 0usize;
+    for (id, target) in &held_ids {
+        assert!(
+            store.resolve_receive(id).is_none(),
+            "an id held across the replacement never resolves"
+        );
+        match replaced.contains_target(target) {
+            true => surviving = checked_increment(surviving),
+            false => {}
+        }
+    }
+    assert!(surviving > 0, "a held id names a receive that survives the replacement");
+    let current = store
+        .receive_accelerator()
+        .expect("the maintained store keeps its accelerator published");
+    let current_occurrences = exact_space_answer(&space, &current, &channel);
+    let current_answer = space_occurrences(&current_occurrences, &image);
+    assert_eq!(
+        current_answer,
+        derive(&replaced, &image),
+        "the maintained handle answers the replacement"
+    );
+    assert_eq!(current_answer.len(), held_answer.len(), "the replacement keeps the answer's size");
+    assert_ne!(current_answer, held_answer, "the maintained handle never reuses the held answer");
+    let detached = store
+        .detached_receive_accelerator()
+        .expect("a fresh build indexes the store");
+    assert_eq!(
+        space_occurrences(&exact_space_answer(&space, &detached, &channel), &image),
+        current_answer,
+        "the maintained answer equals a fresh build's"
+    );
+    for (id, _) in space_ids(&current_occurrences) {
+        assert!(store.resolve_receive(&id).is_some(), "a current id resolves");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn production_stale_tickets_ids_and_handles_never_commit() {
+    let space = string_space().await;
+    let channel = "stale-ticket".to_owned();
+    let channels = vec![channel.clone()];
+    let universe = vec![channels.clone()];
+    let image = channel_image(&channel);
+    assert_eq!(produce(&space, &channel, "datum").await, None);
+    let store = space.get_store();
+    let held_continuation = WaitingContinuation::create(
+        &channels,
+        &vec![Pattern::Wildcard],
+        &"held".to_owned(),
+        false,
+        BTreeSet::new(),
+    );
+    assert_eq!(store.put_continuation(&channels, held_continuation), Some(true));
+    assert_eq!(store.put_join(&channel, &channels), Some(()));
+    assert_eq!(store.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+    let old_handle = store
+        .receive_accelerator()
+        .expect("a rebuilt store publishes its accelerator");
+    let old_ids = space_ids(&exact_space_answer(&space, &old_handle, &channel));
+    assert_eq!(old_ids.len(), 1, "the old handle names the held receive");
+    for (id, _) in &old_ids {
+        assert!(store.resolve_receive(id).is_some(), "an id resolves before the mutation");
+    }
+    let held = space
+        .enabled_rendezvous()
+        .into_iter()
+        .next()
+        .expect("the resting datum enables the held receive");
+    let new_head = WaitingContinuation::create(
+        &channels,
+        &vec![Pattern::Wildcard],
+        &"new-head".to_owned(),
+        false,
+        BTreeSet::new(),
+    );
+    assert_eq!(store.put_continuation(&channels, new_head), Some(true));
+    let expected = store.snapshot();
+    let _ = space.take_event_log().await;
+    assert!(space.process_match_found(held).is_none(), "production refuses a stale ticket");
+    assert_same_hot_state(&store.snapshot(), &expected);
+    assert!(space.take_event_log().await.is_empty(), "a stale ticket publishes no COMM");
+    let current = hydrated_space(&space, &universe);
+    for (id, target) in &old_ids {
+        assert!(
+            current.contains_target(target),
+            "the old id names a receive that is still present"
+        );
+        assert!(
+            store.resolve_receive(id).is_none(),
+            "an id from before the mutation never resolves"
+        );
+    }
+    assert_eq!(
+        space_fallback(&space, &old_handle, &channel),
+        Some(ReceiveAcceleratorClass::Stale),
+        "the old handle falls back as stale"
+    );
+    let fresh_handle = store
+        .receive_accelerator()
+        .expect("the maintained store keeps its accelerator published");
+    let fresh_occurrences = exact_space_answer(&space, &fresh_handle, &channel);
+    assert_eq!(
+        space_occurrences(&fresh_occurrences, &image),
+        derive(&current, &image),
+        "the fresh handle answers the derivation"
+    );
+    let fresh_ids = space_ids(&fresh_occurrences);
+    assert_eq!(fresh_ids.len(), 2, "the fresh handle names both receives");
+    for (id, _) in &fresh_ids {
+        assert!(store.resolve_receive(id).is_some(), "a fresh id resolves");
+    }
+    let fresh_ticket = space
+        .enabled_rendezvous()
+        .into_iter()
+        .next()
+        .expect("the resting datum still enables a receive");
+    assert!(space.process_match_found(fresh_ticket).is_some(), "a fresh ticket commits");
+    assert!(
+        matches!(space.take_event_log().await.as_slice(), [Event::Comm(_)]),
+        "the fresh ticket publishes exactly one COMM"
+    );
+}
+
+#[test]
+fn production_accelerator_never_changes_semantic_identity() {
+    let prefix = [
+        SpaceStepPlan::Consume {
+            group: 0,
+            persist: false,
+        },
+        SpaceStepPlan::Rebuild,
+        SpaceStepPlan::Produce { channel: 1 },
+        SpaceStepPlan::Produce { channel: 0 },
+        SpaceStepPlan::Checkpoint,
+    ];
+    let strategy = proptest::collection::vec(space_step_plan(), 0..=12);
+    check_property(TRACE_CASES, &strategy, |suffix| {
+        runtime().block_on(async {
+            let absent = string_space().await;
+            let maintained = string_space().await;
+            assert_eq!(
+                maintained.get_store().rebuild_receive_accelerator(),
+                ReceiveAcceleratorClass::Coherent
+            );
+            let groups = space_groups();
+            let mut fired = 0usize;
+            let mut checkpoints = 0usize;
+            for (ordinal, step) in prefix.iter().chain(suffix.iter()).enumerate() {
+                let absent_outcome = apply_space_step(&absent, step, ordinal, false).await;
+                let maintained_outcome = apply_space_step(&maintained, step, ordinal, true).await;
+                assert_eq!(
+                    maintained_outcome, absent_outcome,
+                    "{step:?}: the accelerator never changes a selection or a checkpoint"
+                );
+                match maintained_outcome {
+                    SpaceOutcome::Fired { .. } => fired = checked_increment(fired),
+                    SpaceOutcome::Checkpointed { .. } => {
+                        checkpoints = checked_increment(checkpoints)
+                    }
+                    SpaceOutcome::Rested | SpaceOutcome::Rebuilt => {}
+                }
+                assert_same_semantic_identity(&absent, &maintained, step, "after the step");
+                let absent_observation = hydrate_space_scope(&absent, &groups);
+                let maintained_observation = hydrate_space_scope(&maintained, &groups);
+                assert_eq!(
+                    derive_all(&maintained_observation),
+                    derive_all(&absent_observation),
+                    "{step:?}: both spaces derive the same relation"
+                );
+                assert_maintained_answers(&maintained, &maintained_observation, step);
+                assert_same_semantic_identity(&absent, &maintained, step, "after hydration");
+            }
+            assert!(fired > 0, "the trace exercises COMMs");
+            assert!(checkpoints > 0, "the trace exercises checkpoints");
+        });
+        Ok(())
+    });
 }
 
 #[test]
