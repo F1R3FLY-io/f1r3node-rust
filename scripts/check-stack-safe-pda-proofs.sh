@@ -727,16 +727,26 @@ if [[ "${1:-}" == "--receive-accelerator" ]]; then
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA theories/TwoLevelRSpaceContinuationAuthority.v
   rocq_reject_placeholders \
     theories/TwoLevelRSpaceReceiveAccelerator.v \
-    theories/TwoLevelRSpaceReceiveAcceleratorMutants.v
+    theories/TwoLevelRSpaceReceiveAcceleratorMutants.v \
+    theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v \
+    theories/TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v
   rocq_compile_with_closed_count \
     theories/TwoLevelRSpaceReceiveAccelerator.v 26 \
     "the generation-bound receive occurrence index"
   rocq_compile_with_closed_count \
     theories/TwoLevelRSpaceReceiveAcceleratorMutants.v 16 \
     "the receive occurrence index causal controls"
+  rocq_compile_with_closed_count \
+    theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v 8 \
+    "the channel-scoped receive accelerator reads"
+  rocq_compile_with_closed_count \
+    theories/TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v 5 \
+    "the channel-scoped read causal controls"
   rocq_check_modules "receive occurrence index and its causal controls" \
     StackSafePDA.TwoLevelRSpaceReceiveAccelerator \
-    StackSafePDA.TwoLevelRSpaceReceiveAcceleratorMutants
+    StackSafePDA.TwoLevelRSpaceReceiveAcceleratorMutants \
+    StackSafePDA.TwoLevelRSpaceReceiveAcceleratorChannelScope \
+    StackSafePDA.TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants
   popd >/dev/null
   tla_root="$repo_root/formal/tlaplus/stack_safe_pda"
   tla_metadir="$(tlc_metadir receive-accelerator)"
@@ -778,6 +788,10 @@ if [[ "${1:-}" == "--receive-accelerator" ]]; then
   pushd "$repo_root" >/dev/null
   rspace_preparation_run_tests 31 --test receive_accelerator_spec
   rspace_preparation_run_tests 2 --lib receive_accelerator_manifest_binding
+  rspace_preparation_run_tests 31 --test receive_accelerator_production_spec
+  rspace_preparation_run_tests 14 --lib rspace::receive_accelerator::
+  rspace_preparation_run_tests 18 --lib rspace::hot_store::receive_accelerator_bindings_tests::
+  rspace_preparation_run_tests 5 --lib rspace::hot_store::receive_revision_tokens_tests::
   rspace_preparation_run_tests 57 --test hot_store_spec
   rspace_preparation_run_tests 13 --test ordered_receive_view_spec
   rspace_preparation_run_tests 20 --lib rspace::record_index::
@@ -786,6 +800,7 @@ if [[ "${1:-}" == "--receive-accelerator" ]]; then
   rspace_preparation_run_tests 18 --test guarded_matching_tests
   rspace_preparation_run_tests 3 --test replay_comm_order
   rholang_run_tests 5 --test receive_accelerator_rholang
+  rholang_run_tests 5 --test receive_accelerator_production_rholang
   rholang_run_tests 4 --test ordered_receive_view_rholang
   rholang_run_tests 2 --test matching_lifecycle_acceptance
   popd >/dev/null
@@ -1234,6 +1249,12 @@ rocq_compile_with_closed_count \
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceReceiveAcceleratorMutants.v 16 \
   "the receive occurrence index causal controls"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v 8 \
+  "the channel-scoped receive accelerator reads"
+rocq_compile_with_closed_count \
+  theories/TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v 5 \
+  "the channel-scoped read causal controls"
 match_preparation_proof_clients
 rocq_compile_with_closed_count \
   theories/TwoLevelRSpaceMatchTransaction.v 25 \
@@ -1267,6 +1288,8 @@ rocq_reject_placeholders \
   theories/TwoLevelRSpaceContinuationAuthorityMutants.v \
   theories/TwoLevelRSpaceReceiveAccelerator.v \
   theories/TwoLevelRSpaceReceiveAcceleratorMutants.v \
+  theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v \
+  theories/TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v \
   theories/TwoLevelRSpaceMatchPreparation.v \
   theories/EncodedRSpaceCandidateCatalog.v \
   theories/TwoLevelRSpaceFlatDeltaTrace.v \
@@ -1295,6 +1318,8 @@ rocq_check_modules "two-level RSpace authority and RBA1 checkpoint recovery" \
   StackSafePDA.TwoLevelRSpaceContinuationAuthorityMutants \
   StackSafePDA.TwoLevelRSpaceReceiveAccelerator \
   StackSafePDA.TwoLevelRSpaceReceiveAcceleratorMutants \
+  StackSafePDA.TwoLevelRSpaceReceiveAcceleratorChannelScope \
+  StackSafePDA.TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants \
   StackSafePDA.TwoLevelRSpaceMatchPreparation \
   StackSafePDA.EncodedRSpaceCandidateCatalog \
   StackSafePDA.TwoLevelRSpaceFlatDeltaTrace \
