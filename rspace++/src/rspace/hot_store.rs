@@ -57,7 +57,8 @@ use crate::rspace::persistence::{
     RSpaceSemanticProfile, SemanticNamespace, SemanticProfile, StateVersionV1,
 };
 use crate::rspace::receive_accelerator::{
-    ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, join_scope_class,
+    ReceiveAcceleratorClass, ReceiveAcceleratorHandle, ReceiveAnswer, ReceiveId, ReceiveTarget,
+    join_scope_class,
 };
 use crate::rspace::record_index::{RSpaceContinuationStore, RSpaceJoinStore, RecordIndexError};
 use crate::rspace::rho_path::{RhoPathEncode, RhoPathV1};
@@ -345,6 +346,7 @@ pub trait HotStore<C: Clone + Hash + Eq, P: Clone, A: Clone, K: Clone>: Sync + S
     fn current_receive_occurrences(&self, _channel: &C) -> ReceiveAnswer<C, P, K> {
         ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Absent)
     }
+    fn resolve_receive(&self, _id: &ReceiveId<C, P, K>) -> Option<ReceiveTarget<C, P, K>> { None }
 
     fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
     fn get_candidate_pool(&self, channel: &C) -> CandidatePool<A>;
@@ -1217,6 +1219,11 @@ where
             Some(handle) => state.read_receive_occurrences(&handle, channel),
             None => ReceiveAnswer::Fallback(ReceiveAcceleratorClass::Absent),
         }
+    }
+
+    fn resolve_receive(&self, id: &ReceiveId<C, P, K>) -> Option<ReceiveTarget<C, P, K>> {
+        let state = self.state.read().expect("hot store state read lock");
+        id.resolve(&state.continuations, &state.receive_revision())
     }
 
     // Data

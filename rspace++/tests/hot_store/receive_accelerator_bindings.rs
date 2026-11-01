@@ -14,6 +14,8 @@ type TestContinuation = WaitingContinuation<String, String>;
 type TestHandle = ReceiveAcceleratorHandle<String, String, String>;
 type TestAnswer = ReceiveAnswer<String, String, String>;
 type TestOccurrences = ReceiveOccurrences<String, String, String>;
+type TestId = ReceiveId<String, String, String>;
+type TestTarget = ReceiveTarget<String, String, String>;
 
 struct GroupHistory {
     continuations: HashMap<Vec<String>, Vec<TestContinuation>>,
@@ -152,6 +154,31 @@ fn positions_in(store: &TestStore, name: &str, channels: &[String]) -> Vec<usize
         .iter()
         .map(|position| position.index())
         .collect()
+}
+
+fn receive_ids(occurrences: &TestOccurrences) -> Vec<TestId> {
+    let count = occurrences
+        .groups()
+        .iter()
+        .map(|occurrence| occurrence.targets().len())
+        .sum();
+    let mut ids = Vec::with_capacity(count);
+    ids.extend(occurrences.groups().iter().flat_map(|occurrence| {
+        occurrence
+            .targets()
+            .iter()
+            .map(|target| occurrences.receive_id(target))
+    }));
+    ids
+}
+
+fn target_of<'a>(occurrences: &'a TestOccurrences, wanted: &TestContinuation) -> &'a TestTarget {
+    occurrences
+        .groups()
+        .iter()
+        .flat_map(|occurrence| occurrence.targets())
+        .find(|target| target.continuation() == wanted)
+        .expect("the answer lists the continuation as a target")
 }
 
 #[test]
@@ -400,4 +427,110 @@ fn answers_carry_the_revision_of_the_handle_that_produced_them() {
         second.revision()
     );
     assert_eq!(exact(store.current_receive_occurrences(&receiving)).revision(), &revision(&store));
+}
+
+#[test]
+fn receive_ids_resolve_to_their_current_resting_and_installed_records() {
+    let store = rebuilt();
+    let ids = receive_ids(&exact(store.current_receive_occurrences(&channel("a"))));
+    assert_eq!(ids.len(), 5);
+    assert_eq!(
+        ids.iter()
+            .filter(|id| id.target().kind() == ReceiveKind::Installed)
+            .count(),
+        1
+    );
+    for expected in [
+        continuation(1, false),
+        continuation(2, true),
+        continuation(3, false),
+        continuation(4, false),
+        continuation(5, true),
+    ] {
+        assert!(ids.iter().any(|id| id.target().continuation() == &expected));
+    }
+    for id in &ids {
+        let resolved = store
+            .resolve_receive(id)
+            .expect("an identifier taken at the current revision resolves");
+        let expected = id.target();
+        assert!(resolved == *expected);
+        assert_eq!(resolved.kind(), expected.kind());
+        assert_eq!(resolved.group_prefix(), expected.group_prefix());
+        assert_eq!(resolved.continuation(), expected.continuation());
+        assert_eq!(resolved.identity_bytes(), expected.identity_bytes());
+        assert_eq!(resolved.source_bytes(), expected.source_bytes());
+    }
+}
+
+#[test]
+fn receive_ids_from_before_a_sigma_or_gamma_change_never_resolve() {
+    let store = rebuilt();
+    let receiving = channel("a");
+    let before_put = receive_ids(&exact(store.current_receive_occurrences(&receiving)));
+    assert!(
+        before_put
+            .iter()
+            .all(|id| store.resolve_receive(id).is_some())
+    );
+
+    assert_eq!(
+        store.put_continuation(&group(&["a", "b", "a"]), continuation(7, false)),
+        Some(true)
+    );
+    assert!(
+        before_put
+            .iter()
+            .all(|id| store.resolve_receive(id).is_none())
+    );
+    let after_put = receive_ids(&exact(store.current_receive_occurrences(&receiving)));
+    assert_eq!(after_put.len(), 6);
+    assert!(
+        after_put
+            .iter()
+            .all(|id| store.resolve_receive(id).is_some())
+    );
+
+    store.set_state(store.snapshot());
+    assert_eq!(store.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+    assert!(
+        after_put
+            .iter()
+            .all(|id| store.resolve_receive(id).is_none())
+    );
+    let after_reset = receive_ids(&exact(store.current_receive_occurrences(&receiving)));
+    assert_eq!(after_reset.len(), 6);
+    assert!(
+        after_reset
+            .iter()
+            .all(|id| store.resolve_receive(id).is_some())
+    );
+}
+
+#[test]
+fn forged_alias_source_targets_never_resolve_at_current_tokens() {
+    let genuine = continuation(3, false);
+    let mut alias = genuine.clone();
+    alias.source.hash = Blake2b256Hash::from_bytes(vec![33; 32]);
+    let mut alias_snapshot = fixture_snapshot();
+    alias_snapshot
+        .continuations
+        .insert(group(&["a"]), vec![alias.clone(), continuation(4, false)]);
+    let alias_store = store_from(alias_snapshot, fixture_history());
+    assert_eq!(alias_store.rebuild_receive_accelerator(), ReceiveAcceleratorClass::Coherent);
+    let aliased = exact(alias_store.current_receive_occurrences(&channel("a")));
+
+    let store = rebuilt();
+    let current = exact(store.current_receive_occurrences(&channel("a")));
+    let genuine_target = target_of(&current, &genuine);
+    let forged = current.receive_id(target_of(&aliased, &alias));
+    assert_eq!(forged.revision(), current.revision());
+    assert_eq!(forged.target().identity_bytes(), genuine_target.identity_bytes());
+    assert_ne!(forged.target().source_bytes(), genuine_target.source_bytes());
+    assert!(store.resolve_receive(&forged).is_none());
+
+    let resolved = store
+        .resolve_receive(&current.receive_id(genuine_target))
+        .expect("the genuine identifier resolves at the current revision");
+    assert!(resolved == *genuine_target);
 }

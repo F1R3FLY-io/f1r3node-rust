@@ -23,8 +23,8 @@ use super::hashing::stable_hash_provider::{StableHashSerialize, hash, hash_from_
 use super::history::cold_store::{CanonicalCollectionKind, PERSISTED_DATA_HEADER_LEN};
 use super::internal::WaitingContinuation;
 use super::ordered_receive::{
-    ContinuationFieldBounds, OrderedReceiveError, OrderedReceiveView, PreparedContinuationRecord,
-    RestingReceiveVisit,
+    ContinuationFieldBounds, ContinuationRecordView, OrderedReceiveError, OrderedReceiveView,
+    PreparedContinuationRecord, RestingReceiveVisit,
 };
 use super::receive_accelerator::ReceiveOccurrenceIndex;
 use super::rho_path::{RhoPathEncode, RhoPathError, RhoPathV1};
@@ -386,13 +386,6 @@ struct PendingRecord<R> {
 impl<R> StoredRecord<R> {
     pub(crate) fn path(&self) -> &Arc<[u8]> { &self.path }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read only by library tests until task 12002 resolves receive identifiers"
-        )
-    )]
     pub(crate) fn identity_path(&self) -> Option<&Arc<[u8]>> { self.identity_path.as_ref() }
 
     pub(crate) fn value(&self) -> &R { &self.value }
@@ -417,6 +410,14 @@ impl<R> StoredRecord<R> {
     ) -> Option<Result<OrderedReceiveView<'_>, OrderedReceiveError>> {
         let bounds = self.field_bounds.as_ref()?;
         Some(OrderedReceiveView::admit_legacy_v1(&self.path, self.prefix_len, bounds))
+    }
+
+    pub(crate) fn continuation_view(
+        &self,
+    ) -> Option<Result<ContinuationRecordView<'_>, OrderedReceiveError>> {
+        let bounds = self.field_bounds.as_ref()?;
+        let record = self.path.get(self.prefix_len..)?;
+        Some(ContinuationRecordView::admit_record(record, bounds))
     }
 }
 
@@ -1603,13 +1604,6 @@ where
         self.resting.ordered_records(prefix)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read only by library tests until task 12002 resolves receive identifiers"
-        )
-    )]
     pub(crate) fn resting_identity_record(
         &self,
         prefix: &[u8],

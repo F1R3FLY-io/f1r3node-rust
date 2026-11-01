@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use pathmap::PathMap;
@@ -6,6 +7,7 @@ use pathmap::zipper::{Zipper, ZipperMoving, ZipperReadOnlyIteration, ZipperValue
 use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::hot_store::ReceiveRevision;
 use super::internal::WaitingContinuation;
+use super::ordered_receive::PreparedContinuationRecord;
 use super::record_index::{RSpaceContinuationStore, RSpaceJoinStore, StoredRecord};
 use super::rho_path::{RhoPathEncode, RhoPathError, RhoPathReceivePosition, RhoPathV1};
 
@@ -180,11 +182,13 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct ReceiveTarget<C, P: Clone, K: Clone> {
     prefix: Arc<[u8]>,
     record: ReceiveRecord<C, P, K>,
 }
 
+#[derive(Clone)]
 enum ReceiveRecord<C, P: Clone, K: Clone> {
     Resting(Arc<StoredRecord<WaitingContinuation<P, K>>>),
     Installed(Arc<(Arc<[C]>, WaitingContinuation<P, K>)>),
@@ -205,6 +209,103 @@ impl<C, P: Clone, K: Clone> ReceiveTarget<C, P, K> {
             ReceiveRecord::Resting(record) => record.value(),
             ReceiveRecord::Installed(entry) => &entry.1,
         }
+    }
+}
+
+impl<C, P, K> ReceiveTarget<C, P, K>
+where
+    P: Clone + StableHashSerialize,
+    K: Clone + StableHashSerialize,
+{
+    pub fn identity_bytes(&self) -> Cow<'_, [u8]> { self.record_bytes().0 }
+
+    pub fn source_bytes(&self) -> Cow<'_, [u8]> { self.record_bytes().1 }
+
+    fn record_bytes(&self) -> (Cow<'_, [u8]>, Cow<'_, [u8]>) {
+        match &self.record {
+            ReceiveRecord::Resting(record) => {
+                let view = record
+                    .continuation_view()
+                    .expect("a resting continuation record keeps its field bounds")
+                    .expect("a resting continuation record admits its own field bounds");
+                (Cow::Borrowed(view.identity()), Cow::Borrowed(view.source_suffix()))
+            }
+            ReceiveRecord::Installed(entry) => {
+                let prepared = PreparedContinuationRecord::encode_waiting(&entry.1);
+                let identity_end = prepared.record_view().identity().len();
+                let (mut identity, _) = prepared.into_parts();
+                let source = identity.split_off(identity_end);
+                (Cow::Owned(identity), Cow::Owned(source))
+            }
+        }
+    }
+}
+
+impl<C, P, K> PartialEq for ReceiveTarget<C, P, K>
+where
+    P: Clone + StableHashSerialize,
+    K: Clone + StableHashSerialize,
+{
+    fn eq(&self, other: &Self) -> bool {
+        let (identity, source) = self.record_bytes();
+        let (other_identity, other_source) = other.record_bytes();
+        self.kind() == other.kind() &&
+            self.prefix == other.prefix &&
+            identity == other_identity &&
+            source == other_source
+    }
+}
+
+impl<C, P, K> ReceiveTarget<C, P, K>
+where
+    C: Clone + RhoPathEncode + Send + Sync,
+    P: Clone + StableHashSerialize + Send + Sync,
+    K: Clone + StableHashSerialize + Send + Sync,
+{
+    fn current_in(&self, scope: &RSpaceContinuationStore<C, P, K>) -> Option<Self> {
+        let record = match &self.record {
+            ReceiveRecord::Resting(record) => ReceiveRecord::Resting(
+                scope.resting_identity_record(&self.prefix, record.identity_path()?)?,
+            ),
+            ReceiveRecord::Installed(_) => {
+                ReceiveRecord::Installed(Arc::clone(scope.installed_entry(&self.prefix)?))
+            }
+        };
+        Some(Self {
+            prefix: Arc::clone(&self.prefix),
+            record,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct ReceiveId<C, P: Clone, K: Clone> {
+    revision: ReceiveRevision,
+    target: ReceiveTarget<C, P, K>,
+}
+
+impl<C, P: Clone, K: Clone> ReceiveId<C, P, K> {
+    pub fn revision(&self) -> &ReceiveRevision { &self.revision }
+
+    pub fn target(&self) -> &ReceiveTarget<C, P, K> { &self.target }
+}
+
+impl<C, P, K> ReceiveId<C, P, K>
+where
+    C: Clone + RhoPathEncode + Send + Sync,
+    P: Clone + StableHashSerialize + Send + Sync,
+    K: Clone + StableHashSerialize + Send + Sync,
+{
+    pub(crate) fn resolve(
+        &self,
+        scope: &RSpaceContinuationStore<C, P, K>,
+        current: &ReceiveRevision,
+    ) -> Option<ReceiveTarget<C, P, K>> {
+        let found = match self.revision == *current {
+            true => self.target.current_in(scope)?,
+            false => return None,
+        };
+        (found == self.target).then_some(found)
     }
 }
 
@@ -234,6 +335,14 @@ impl<C, P: Clone, K: Clone> ReceiveOccurrences<C, P, K> {
     pub fn revision(&self) -> &ReceiveRevision { &self.revision }
 
     pub fn groups(&self) -> &[ReceiveOccurrenceGroup<C, P, K>] { &self.groups }
+
+    pub fn receive_id(&self, target: &ReceiveTarget<C, P, K>) -> ReceiveId<C, P, K>
+    where C: Clone {
+        ReceiveId {
+            revision: self.revision.clone(),
+            target: target.clone(),
+        }
+    }
 }
 
 pub enum ReceiveAnswer<C, P: Clone, K: Clone> {
