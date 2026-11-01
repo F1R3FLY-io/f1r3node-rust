@@ -777,7 +777,7 @@ if [[ "${1:-}" == "--receive-accelerator" ]]; then
   popd >/dev/null
   pushd "$repo_root" >/dev/null
   rspace_preparation_run_tests 31 --test receive_accelerator_spec
-  rspace_preparation_run_tests 1 --lib receive_accelerator_manifest_binding
+  rspace_preparation_run_tests 2 --lib receive_accelerator_manifest_binding
   rspace_preparation_run_tests 57 --test hot_store_spec
   rspace_preparation_run_tests 13 --test ordered_receive_view_spec
   rspace_preparation_run_tests 20 --lib rspace::record_index::

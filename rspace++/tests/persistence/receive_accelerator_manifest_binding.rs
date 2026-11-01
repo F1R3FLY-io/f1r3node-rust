@@ -16,6 +16,10 @@ use crate::rspace::persistence::{
     ObjectDigest, ObjectRefV1, OpenDagTransaction, SealedObject, SemanticStateManifestView,
     SemanticValidationLimits, StateVersionV1, VerifiedDagState,
 };
+use crate::rspace::receive_accelerator::{
+    ReceiveAcceleratorAdoption, ReceiveAcceleratorClass, ReceiveAnswer,
+    persisted_receive_accelerator_adoption, receive_accelerator_adoption,
+};
 use crate::rspace::rho_path::{ReceiveChannelQuery, RhoPathEncode};
 
 #[path = "../support/receive_accelerator_adoption.rs"]
@@ -352,6 +356,84 @@ fn resolved_relation(adoption: Adoption, case: &AdoptionCase<'_>) -> Relation {
     }
 }
 
+fn production_relation(
+    hot: &dyn HotStore<String, String, String, String>,
+    receives: &[PlannedReceive],
+) -> Relation {
+    assert_eq!(
+        hot.rebuild_receive_accelerator(),
+        ReceiveAcceleratorClass::Coherent,
+        "a loaded hot store publishes its rebuilt receive accelerator"
+    );
+    let channels: BTreeSet<&String> = receives
+        .iter()
+        .flat_map(|receive| &receive.channels)
+        .collect();
+    let mut relation = Relation::new();
+    for channel in channels {
+        let occurrences = match hot.current_receive_occurrences(channel) {
+            ReceiveAnswer::Exact(occurrences) => occurrences,
+            ReceiveAnswer::Fallback(class) => {
+                panic!("a loaded, rebuilt store answers exactly, not Fallback({class:?})")
+            }
+        };
+        let found = relation.entry(channel.rho_path_identity()).or_default();
+        for group in occurrences.groups() {
+            let key = group_key(group.channels());
+            let positions: Vec<u64> = group
+                .positions()
+                .iter()
+                .map(|position| position.get())
+                .collect();
+            for target in group.targets() {
+                found.insert(DerivedOccurrence {
+                    group: key.clone(),
+                    positions: positions.clone(),
+                    identity: target.identity_bytes().into_owned(),
+                    source: target.source_bytes().into_owned(),
+                });
+            }
+        }
+    }
+    relation
+}
+
+fn production_adoption(expected: Adoption) -> ReceiveAcceleratorAdoption {
+    match expected {
+        Adoption::Adopted => ReceiveAcceleratorAdoption::Adopted,
+        Adoption::Foreign => ReceiveAcceleratorAdoption::Foreign,
+    }
+}
+
+fn stored_object(store: &CanonicalObjectStore, reference: ObjectRefV1, object: &str) -> Arc<[u8]> {
+    let stored = store
+        .get_bounded(&reference.digest(), reference.encoded_len())
+        .expect("the in-memory object store reads");
+    let Some(bytes) = stored else {
+        panic!("the {object} is a stored object");
+    };
+    bytes
+}
+
+fn forged_length(manifest: ObjectRefV1) -> ObjectRefV1 {
+    ObjectRefV1::new(
+        manifest.digest(),
+        manifest
+            .encoded_len()
+            .checked_add(1)
+            .expect("a forged manifest length fits u64"),
+    )
+    .expect("a lengthened reference keeps its envelope")
+}
+
+fn flipped_digest(manifest: ObjectRefV1) -> ObjectRefV1 {
+    let mut flipped = *manifest.digest().as_array();
+    let [leading, ..] = &mut flipped;
+    *leading ^= 0x01;
+    ObjectRefV1::new(ObjectDigest::from_array(flipped), manifest.encoded_len())
+        .expect("a flipped digest keeps the manifest length")
+}
+
 #[test]
 fn persisted_accelerator_adoption_requires_the_bound_semantic_manifest() {
     let store = CanonicalObjectStore::new();
@@ -512,4 +594,163 @@ fn persisted_accelerator_adoption_requires_the_bound_semantic_manifest() {
         first_relation, second_relation,
         "adopting a foreign accelerator would answer from the wrong relation"
     );
+}
+
+#[test]
+fn production_adoption_requires_the_stored_bound_semantic_manifest() {
+    let store = CanonicalObjectStore::new();
+    let base = base_state(&store, BASE_GENERATION, None);
+    let first_receives = first_state();
+    let mut reversed_receives = first_state();
+    reversed_receives.reverse();
+    let second_receives = second_state();
+    let first = seal_state(&store, base, &first_receives);
+    let reversed = seal_state(&store, base, &reversed_receives);
+    let second = seal_state(&store, base, &second_receives);
+    for sealed in [&first, &reversed, &second] {
+        publish(&store, sealed);
+    }
+
+    let first_manifest = first.version.manifest();
+    let second_manifest = second.version.manifest();
+    let first_roots = stored_manifest(&store, first_manifest).roots();
+    let second_roots = stored_manifest(&store, second_manifest).roots();
+    let first_relation = production_relation(&*first.hot, &first_receives);
+    let second_relation = production_relation(&*second.hot, &second_receives);
+    assert_ne!(
+        first_relation, second_relation,
+        "the two states publish different production answers"
+    );
+    let first_accelerator = bind_accelerator(&store, first_manifest, first_roots.continuation_map);
+    let second_accelerator =
+        bind_accelerator(&store, second_manifest, second_roots.continuation_map);
+    let forged_length_accelerator =
+        bind_accelerator(&store, forged_length(first_manifest), first_roots.continuation_map);
+    let flipped_digest_accelerator =
+        bind_accelerator(&store, flipped_digest(first_manifest), first_roots.continuation_map);
+
+    let cases = [
+        AdoptionCase {
+            name: "an accelerator bound to an identical state sealed in another order",
+            accelerator: first_accelerator,
+            persisted: &first_relation,
+            current: &reversed,
+            current_receives: &reversed_receives,
+            expected: Adoption::Adopted,
+        },
+        AdoptionCase {
+            name: "an accelerator bound to its own state",
+            accelerator: second_accelerator,
+            persisted: &second_relation,
+            current: &second,
+            current_receives: &second_receives,
+            expected: Adoption::Adopted,
+        },
+        AdoptionCase {
+            name: "the first state's accelerator over the second state",
+            accelerator: first_accelerator,
+            persisted: &first_relation,
+            current: &second,
+            current_receives: &second_receives,
+            expected: Adoption::Foreign,
+        },
+        AdoptionCase {
+            name: "the second state's accelerator over the first state",
+            accelerator: second_accelerator,
+            persisted: &second_relation,
+            current: &first,
+            current_receives: &first_receives,
+            expected: Adoption::Foreign,
+        },
+        AdoptionCase {
+            name: "an accelerator whose bound manifest length is forged",
+            accelerator: forged_length_accelerator,
+            persisted: &first_relation,
+            current: &first,
+            current_receives: &first_receives,
+            expected: Adoption::Foreign,
+        },
+        AdoptionCase {
+            name: "an accelerator whose bound manifest digest is flipped",
+            accelerator: flipped_digest_accelerator,
+            persisted: &first_relation,
+            current: &first,
+            current_receives: &first_receives,
+            expected: Adoption::Foreign,
+        },
+    ];
+    let mut foreign = 0usize;
+    for case in &cases {
+        let name = case.name;
+        let manifest = stored_object(&store, case.accelerator, "bound accelerator manifest");
+        let view = AcceleratorManifestView::parse(&manifest)
+            .expect("a stored accelerator manifest parses");
+        assert_eq!(
+            view.object_ref(),
+            case.accelerator,
+            "{name}: the stored bytes are the bound accelerator manifest"
+        );
+        let current_manifest = case.current.version.manifest();
+        let adoption = persisted_receive_accelerator_adoption(&manifest, current_manifest);
+        assert_eq!(
+            adoption,
+            production_adoption(case.expected),
+            "{name}: production adoption requires the bound manifest to equal the current one"
+        );
+        assert_eq!(
+            adoption,
+            receive_accelerator_adoption(&view.semantic_manifest(), &current_manifest),
+            "{name}: the persisted path applies the adoption rule to the bound semantic manifest"
+        );
+        let rebuilt = production_relation(&*case.current.hot, case.current_receives);
+        assert_eq!(
+            rebuilt,
+            expected_relation(case.current_receives),
+            "{name}: the production rebuild equals the current derivation"
+        );
+        match adoption {
+            ReceiveAcceleratorAdoption::Adopted => assert_eq!(
+                &rebuilt, case.persisted,
+                "{name}: an adopted accelerator answers exactly as its bound state"
+            ),
+            ReceiveAcceleratorAdoption::Foreign => {
+                foreign = foreign
+                    .checked_add(1)
+                    .expect("the foreign case count fits usize");
+            }
+        }
+    }
+    assert_eq!(foreign, 4, "four stored bindings are foreign to the current manifest");
+
+    let intact = stored_object(&store, first_accelerator, "first accelerator manifest");
+    let semantic = stored_object(&store, first_manifest, "first semantic manifest");
+    let truncated_len = intact
+        .len()
+        .checked_sub(1)
+        .expect("an accelerator manifest is nonempty");
+    let mut extended = Vec::with_capacity(
+        intact
+            .len()
+            .checked_add(1)
+            .expect("an extended manifest length fits usize"),
+    );
+    extended.extend_from_slice(&intact);
+    extended.push(0);
+    let malformed: [(&str, &[u8]); 4] = [
+        ("empty bytes", &[]),
+        ("a truncated accelerator manifest", &intact[..truncated_len]),
+        ("an accelerator manifest with a trailing byte", extended.as_slice()),
+        ("a semantic manifest in place of an accelerator manifest", &semantic[..]),
+    ];
+    for (name, bytes) in malformed {
+        assert!(
+            AcceleratorManifestView::parse(bytes).is_err(),
+            "{name}: the bytes never parse as an accelerator manifest"
+        );
+        assert_eq!(
+            persisted_receive_accelerator_adoption(bytes, first_manifest),
+            ReceiveAcceleratorAdoption::Foreign,
+            "{name}: adoption is foreign even to the manifest the intact bytes bind"
+        );
+    }
 }

@@ -5709,7 +5709,7 @@
       "checker": "scripts/check-receive-accelerator-obligations.py",
       "family": "receive_accelerator",
       "manifest": "formal/receive_accelerator_obligations.generated.json",
-      "manifest_sha256": "c74db3bdcd892fdb7e6eb707065cc827478899abded56d0746261861bc96e8ce",
+      "manifest_sha256": "e9422b93abef944c45acd69008df61d72283470d8da7ecc1c3a82059548822a4",
       "obligations": {
         "boundary": "The Rocq capstones and the bounded TLA+ invariants specify the derived index; the named tests check a test-only reference oracle over real HotStore and RSpace instances. Harness controls RAC-RS-01 to RAC-RS-16 and RAC-RS-25 show that each named test observes its property, and production controls RAC-RS-17 to RAC-RS-24 show that the tests observe the production revision signals. No production accelerator exists yet, and none of this is a formal Rust refinement proof.",
         "mutants": {
@@ -5870,7 +5870,8 @@
               "both_matching_directions_maintain_the_derived_relation"
             ],
             "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs": [
-              "persisted_accelerator_adoption_requires_the_bound_semantic_manifest"
+              "persisted_accelerator_adoption_requires_the_bound_semantic_manifest",
+              "production_adoption_requires_the_stored_bound_semantic_manifest"
             ],
             "rspace++/tests/receive_accelerator_spec.rs": [
               "reference_occurrences_are_sound_over_generated_groups",
@@ -6433,11 +6434,11 @@
           "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceStaleCandidateCommitMutant.cfg": "7501f8caea56dabe95cc6822657505718825a5ed41696435996df6a16638996e",
           "formal/tlaplus/stack_safe_pda/RSpaceReceiveAcceleratorCoherenceUnsoundAnswerMutant.cfg": "e7bad44a21a477ee00147e0bb29a65f06f98365567a7dcc922e86b4af516ef17",
           "rholang/tests/receive_accelerator_rholang.rs": "ddc29e65936a99bf37cca7aff46730020a495723665d1f093ea5ba8c6c46cbd5",
-          "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs": "e6ac470d915bf2a54e65bd8454be68bd647b0c52d7664a17fdaa331567fcacec",
+          "rspace++/tests/persistence/receive_accelerator_manifest_binding.rs": "08087833d9078df13452218c7a2f5f1b82e9c0832fa8c70eda4bbae1581af124",
           "rspace++/tests/receive_accelerator_spec.rs": "e9006a8767fdf5745f34a8470c029d1ec576b325330bb8c639e9298df06738ef",
           "rspace++/tests/support/receive_accelerator_adoption.rs": "2951e1a411f26b6733c18ffd14dc34cb587b17ac1e7f457d873d6a0392304798",
           "rspace++/tests/support/receive_occurrence_reference.rs": "610ae1a9888a343957f70abe1ed0414a8d1a70e9f47219f38c352a3329d3b9fc",
-          "scripts/check-receive-accelerator-obligations.py": "96120ce761e5641d08abb53805db13fd65fdc657e631c2273b490c83f4cdaf84",
+          "scripts/check-receive-accelerator-obligations.py": "b776304c75ff6a1e623fcb7d13e509039f04f9a21bdc8097ef4b1d72a1daa1ed",
           "scripts/generate-receive-accelerator-mutant.py": "7eb730b0350d183088d087d23f5c28215c2cfa1f8253031b9fbd84e8ef3eee76"
         },
         "tla": {
@@ -7906,7 +7907,7 @@
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "3f78c412837a8a6feb8d2711b9536d09195d58e6c548b3a85054698cfef4310b",
+      "manifest_sha256": "67725bda41e5f1c701b29a687de315ceb7ee6ec2512ed09503bb90eab4404e82",
       "obligations": {
         "controls": [
           {
@@ -8265,7 +8266,7 @@
           "rholang/tests/epathmap_replay_equivalence_spec.rs": "660beba8782f1e658313e6a73bae0321b1bdc2d7736d968a5a43aedb9308192d",
           "rspace++/libs/rspace_rhotypes/src/lib.rs": "a419f0b57104e280bd6ce584b0a4b6be9d7c74ae4b897e8bc527d4c5b16f9588",
           "rspace++/libs/rspace_rhotypes/tests/affine_state_import_ffi/mod.rs": "ac5176ca7b1d2072457afd81e61e5262ac3732eb39e82742c121a587bf2ff159",
-          "rspace++/src/rspace/persistence/mod.rs": "b336e1309fffed0170750810c6cd5e4fba7b579afd98a6ef14a75a4e72f5c355",
+          "rspace++/src/rspace/persistence/mod.rs": "2ea83cd44047018e34bd66243693d0c24949e0cc04e94b2b9562a48de54c48c3",
           "rspace++/src/rspace/state/rspace_state_authority.rs": "4a29facad927d0c7374c9c39d80a5c73ca60e45be2ae1eb7202821d8f905d992",
           "rspace++/tests/persistence/generation_checkpoint_properties.rs": "108ac2f266645e8e504289a0af218b4892f1a33edecd433007ca0a17e1149834",
           "rspace++/tests/persistence/mod.rs": "2738e4da506a295ffa2340100874fd3c2e310f0f895acf6aa76c859c50001064",

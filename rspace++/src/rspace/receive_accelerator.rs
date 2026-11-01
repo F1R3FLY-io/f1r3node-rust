@@ -8,6 +8,7 @@ use super::hashing::stable_hash_provider::StableHashSerialize;
 use super::hot_store::ReceiveRevision;
 use super::internal::WaitingContinuation;
 use super::ordered_receive::PreparedContinuationRecord;
+use super::persistence::{AcceleratorManifestView, ObjectRefV1};
 use super::record_index::{RSpaceContinuationStore, RSpaceJoinStore, StoredRecord};
 use super::rho_path::{RhoPathEncode, RhoPathError, RhoPathReceivePosition, RhoPathV1};
 
@@ -87,6 +88,12 @@ pub enum ReceiveAcceleratorClass {
 pub enum ReceiveKind {
     Installed,
     Resting,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReceiveAcceleratorAdoption {
+    Adopted,
+    Foreign,
 }
 
 #[derive(Clone)]
@@ -369,6 +376,33 @@ where
     match covered {
         Some(Ok(())) => None,
         Some(Err(())) | None => Some(ReceiveAcceleratorClass::Incomplete),
+    }
+}
+
+pub fn receive_accelerator_adoption<R: Eq + ?Sized>(
+    bound: &R,
+    current: &R,
+) -> ReceiveAcceleratorAdoption {
+    match bound == current {
+        true => ReceiveAcceleratorAdoption::Adopted,
+        false => ReceiveAcceleratorAdoption::Foreign,
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only unit tests call this until task 7931 adopts persisted accelerator manifests"
+    )
+)]
+pub(crate) fn persisted_receive_accelerator_adoption(
+    manifest: &[u8],
+    current: ObjectRefV1,
+) -> ReceiveAcceleratorAdoption {
+    match AcceleratorManifestView::parse(manifest) {
+        Ok(view) => receive_accelerator_adoption(&view.semantic_manifest(), &current),
+        Err(_) => ReceiveAcceleratorAdoption::Foreign,
     }
 }
 

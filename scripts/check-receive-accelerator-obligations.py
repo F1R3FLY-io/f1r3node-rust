@@ -40,7 +40,7 @@ BRIDGE = "implementation_with_correct_switches_is_the_model"
 DECLARATIONS = "Theorem|Lemma|Corollary|Proposition|Fact|Remark|Example|Definition|Fixpoint"
 CLOSED_REPORTS = {ROCQ: 26, MUTANTS: 16}
 LIB_FILTER = "receive_accelerator_manifest_binding"
-SUITE_COUNTS = {SPEC: 31, RHOLANG: 5, LIB: 1}
+SUITE_COUNTS = {SPEC: 31, RHOLANG: 5, LIB: 2}
 CATALOG_ROW = "TLRS-RECEIVE-28"
 PERSISTED_WITNESS = (LIB, "persisted_accelerator_adoption_requires_the_bound_semantic_manifest")
 PERSISTED_REFINES = ("RAC-RC-20", "RAC-TLA-08")
@@ -910,8 +910,8 @@ def self_test(sources, configs, baseline):
     rejected(
         RUNNER,
         sources[RUNNER].replace(
-            "rspace_preparation_run_tests 1 --lib receive_accelerator_manifest_binding",
             "rspace_preparation_run_tests 2 --lib receive_accelerator_manifest_binding",
+            "rspace_preparation_run_tests 1 --lib receive_accelerator_manifest_binding",
             1,
         ),
         "wrong focused library test count",

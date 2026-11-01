@@ -51,10 +51,11 @@ pub(crate) use durable::{
     ObjectIndexHeaderV1, ObjectLocationV1, PACK_HEADER_LEN_V1, PackFormatError, PackHeaderV1,
 };
 pub(crate) use durable::{DurableAuthorityViewV1, DurableObjectReadErrorV1};
+pub(crate) use manifest::AcceleratorManifestView;
 #[cfg(test)]
 pub(crate) use manifest::{
-    AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, AcceleratorManifestView,
-    LegacyHistoryRoot, SemanticStateManifestV1,
+    AcceleratorArtifact, AcceleratorArtifactKind, AcceleratorManifestV1, LegacyHistoryRoot,
+    SemanticStateManifestV1,
 };
 pub use manifest::{
     SemanticNamespace, SemanticProfileId, SemanticRoots, SemanticStateManifestView,
