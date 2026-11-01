@@ -10,9 +10,7 @@ use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReader;
-use rspace_plus_plus::rspace::merger::merging_logic::{
-    self, NumberChannelsDiff, NumberChannelsEndVal,
-};
+use rspace_plus_plus::rspace::merger::merging_logic::{NumberChannelsDiff, NumberChannelsEndVal};
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
@@ -64,36 +62,51 @@ pub fn merge_runs(
         ));
     }
     let reader = Arc::new(repository.get_history_reader(&base).map_err(history)?);
-    let mut survivors: Vec<DeployChainIndex> = Vec::new();
-    let mut merged = Vec::with_capacity(effects.len());
-    for (effect, diff) in effects.iter().zip(diffs) {
-        let index = DeployIndex {
-            deploy_id: effect.envelope_id.clone(),
-            cost: 0,
-            event_log_index: create_event_log_index(
-                effect.user_log,
-                repository.clone(),
+    let chains = effects
+        .iter()
+        .zip(diffs)
+        .map(|(effect, diff)| {
+            let index = DeployIndex {
+                deploy_id: effect.envelope_id.clone(),
+                cost: 0,
+                event_log_index: create_event_log_index(
+                    effect.user_log,
+                    repository.clone(),
+                    &base,
+                    diff,
+                ),
+            };
+            DeployChainIndex::new(
+                &HashableSet(HashSet::from([index])),
                 &base,
-                diff,
-            ),
-        };
-        let chain = DeployChainIndex::new(
-            &HashableSet(HashSet::from([index])),
-            &base,
-            &Blake2b256Hash::from_bytes(effect.post_root.to_vec()),
-            repository.clone(),
-            Bytes::new(),
-            0,
-            HashMap::new(),
-        )
-        .map_err(history)?;
-        let conflicts = survivors.iter().any(|kept| {
-            merging_logic::are_conflicting(&kept.event_log_index, &chain.event_log_index)
+                &Blake2b256Hash::from_bytes(effect.post_root.to_vec()),
+                repository.clone(),
+                Bytes::new(),
+                0,
+                HashMap::new(),
+            )
+            .map_err(history)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if chains.is_empty() {
+        return Ok(Merged {
+            mid_root: pre_root.clone(),
+            merged: Vec::new(),
         });
-        if conflicts {
-            merged.push(false);
-            continue;
+    }
+    match merged_root(&chains, &reader, &repository, &base, true) {
+        Ok(root) => {
+            return Ok(Merged {
+                mid_root: root.to_bytes_prost(),
+                merged: vec![true; chains.len()],
+            })
         }
+        Err(HistoryError::MergeError(_)) => {}
+        Err(error) => return Err(history(error)),
+    }
+    let mut survivors: Vec<DeployChainIndex> = Vec::new();
+    let mut merged = Vec::with_capacity(chains.len());
+    for chain in chains {
         survivors.push(chain);
         match merged_root(&survivors, &reader, &repository, &base, false) {
             Ok(_) => merged.push(true),

@@ -6,6 +6,7 @@ pub mod core;
 pub mod engine;
 pub mod evidence;
 pub mod executor;
+pub mod footprint;
 pub mod gate;
 pub mod genesis_policy;
 pub mod genesis_wallets;

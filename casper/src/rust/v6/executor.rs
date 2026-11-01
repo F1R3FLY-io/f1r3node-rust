@@ -23,12 +23,14 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash as stable_hash;
 use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 
 use super::backend::{block_data, close_block, ExecutionBackend};
 use super::block_record::{BlockRecord, EnvelopeOutcome, ExecutedEnvelope, RecordEntry};
 use super::body::StateHash;
 use super::conservation::Conservation;
+use super::footprint::{footprint, Footprint};
 use super::gate::{
     check_recorded, gate_block, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
     PhloLimitDemand, StoreReader,
@@ -49,6 +51,7 @@ pub struct ExecutedBlock {
     pub runs: Vec<EnvelopeRun>,
     pub processed: Vec<ProcessedDeploy>,
     pub merged: Vec<bool>,
+    pub footprints: Vec<Footprint>,
     pub gate: GateOutcome,
     pub settlement: Settlement,
     pub settled_root: StateHash,
@@ -81,6 +84,7 @@ struct MergedBlock {
     processed: Vec<ProcessedDeploy>,
     kept: Vec<bool>,
     journals: Vec<Vec<JournalEntry>>,
+    footprints: Vec<Footprint>,
 }
 
 struct EnvelopeEffect {
@@ -259,12 +263,49 @@ impl EnvelopeExecutor {
         }
     }
 
+    fn footprints(
+        &self,
+        pre_root: &StateHash,
+        effects: &[EnvelopeEffect],
+        admitted: &[bool],
+    ) -> Result<Vec<Footprint>, CasperError> {
+        let reader = self
+            .runtime_manager
+            .history_repo
+            .get_history_reader(&Blake2b256Hash::from_bytes_prost(pre_root))
+            .map_err(CasperError::HistoryError)?;
+        let joins = |channel: &prost::bytes::Bytes| {
+            reader
+                .get_joins(&Blake2b256Hash::from_bytes(channel.to_vec()))
+                .map(|joins| {
+                    joins
+                        .iter()
+                        .map(|join| {
+                            join.iter()
+                                .map(|c| prost::bytes::Bytes::from(stable_hash(c).bytes()))
+                                .collect()
+                        })
+                        .collect()
+                })
+                .map_err(CasperError::HistoryError)
+        };
+        effects
+            .iter()
+            .zip(admitted)
+            .map(|(effect, admitted)| match *admitted && !effect.run.failed {
+                true => footprint(&effect.run.user_log, &effect.number_channels, joins),
+                false => Ok(Footprint::default()),
+            })
+            .collect()
+    }
+
     fn merge(
         &self,
         pre_root: &StateHash,
         effects: Vec<EnvelopeEffect>,
         admitted: &[bool],
     ) -> Result<MergedBlock, CasperError> {
+        let footprints = self.footprints(pre_root, &effects, admitted)?;
         let mut debited: std::collections::BTreeSet<Vec<u8>> = std::collections::BTreeSet::new();
         let mut candidates: Vec<usize> = Vec::new();
         for i in 0..effects.len() {
@@ -280,6 +321,12 @@ impl EnvelopeExecutor {
                 })
                 .collect();
             if payers.iter().any(|p| debited.contains(p)) {
+                continue;
+            }
+            if candidates
+                .iter()
+                .any(|kept| footprints[*kept].conflicts_with(&footprints[i]))
+            {
                 continue;
             }
             debited.extend(payers);
@@ -319,6 +366,7 @@ impl EnvelopeExecutor {
             processed,
             kept,
             journals,
+            footprints,
         })
     }
 
@@ -371,6 +419,7 @@ impl EnvelopeExecutor {
             processed,
             kept: merged,
             journals,
+            footprints,
         } = self.merge(pre_root, effects, &admitted)?;
         timings.merge = started.elapsed();
         let started = std::time::Instant::now();
@@ -385,6 +434,7 @@ impl EnvelopeExecutor {
             runs,
             processed,
             merged,
+            footprints,
             gate,
             settlement,
             settled_root,
@@ -659,7 +709,8 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
         .iter()
         .zip(&executed.merged)
         .zip(&executed.gate.entries)
-        .map(|((run, merged), gate)| RecordEntry {
+        .zip(&executed.footprints)
+        .map(|(((run, merged), gate), footprint)| RecordEntry {
             executed: ExecutedEnvelope {
                 envelope_id: run.envelope_sig.clone(),
                 outcome: outcome(
@@ -672,6 +723,7 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
                 comm_phlo: run.comm_phlo,
                 compute_phlo: run.compute_phlo,
                 user_log: run.user_log.clone(),
+                footprint: footprint.clone(),
             },
         })
         .collect()

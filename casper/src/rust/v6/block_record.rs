@@ -8,6 +8,7 @@ use super::body::StateHash;
 use super::gate::{GateEntry, GateEntryProto};
 use super::record::ExecutionRecord;
 use super::settle::{Settlement, SettlementProto};
+use super::footprint::{Footprint, FootprintCellProto};
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RecordEntryProto {
@@ -21,6 +22,8 @@ pub struct RecordEntryProto {
     pub user_log: Vec<EventProto>,
     #[prost(uint64, tag = "16")]
     pub comm_phlo: u64,
+    #[prost(message, repeated, tag = "17")]
+    pub footprint: Vec<FootprintCellProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -82,6 +85,7 @@ pub struct ExecutedEnvelope {
     pub comm_phlo: u64,
     pub compute_phlo: u64,
     pub user_log: Vec<Event>,
+    pub footprint: Footprint,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -258,6 +262,7 @@ fn entry_to_proto(entry: &RecordEntry) -> RecordEntryProto {
             .map(Event::to_proto)
             .collect(),
         comm_phlo: entry.executed.comm_phlo,
+        footprint: entry.executed.footprint.to_proto(),
     }
 }
 
@@ -273,6 +278,7 @@ fn entry_from_proto(proto: RecordEntryProto) -> Result<RecordEntry, String> {
                 .into_iter()
                 .map(Event::from_proto)
                 .collect::<Result<Vec<_>, _>>()?,
+            footprint: Footprint::from_proto(proto.footprint)?,
         },
     })
 }
@@ -323,6 +329,7 @@ mod tests {
                 comm_phlo: 3,
                 compute_phlo: 12,
                 user_log: vec![log_event()],
+                footprint: Default::default(),
             },
         }
     }

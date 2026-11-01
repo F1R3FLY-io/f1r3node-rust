@@ -481,6 +481,7 @@ async fn pooled_runtimes_give_the_records_of_fresh_ones() {
             events
         };
         assert_eq!(sorted(&x.executed.user_log), sorted(&y.executed.user_log), "log");
+        assert_eq!(x.executed.footprint, y.executed.footprint, "footprint");
     }
     assert_eq!(a1.gate(), a2.gate(), "gate");
     assert_eq!(a1.settlement(), a2.settlement(), "settlement");
@@ -497,4 +498,72 @@ async fn pooled_runtimes_give_the_records_of_fresh_ones() {
     let b2 = fresh.executor.execute(&pre_root(&host), &second).await.unwrap();
     assert_eq!(b2.post_root(), b1.post_root());
     assert_eq!(b2.settlement(), b1.settlement());
+}
+
+async fn outcomes_of(host: &Host, number: i64, terms: &[&str]) -> (BlockMessage, BlockRecord) {
+    let deploys = terms
+        .iter()
+        .enumerate()
+        .map(|(i, term)| offer(&payer(i), term, number * 100 + i as i64))
+        .collect();
+    let target = block(host, number, deploys);
+    let record = host.executor.execute(&pre_root(host), &target).await.unwrap();
+    assert_eq!(host.executor.replay(&record, &target).await.unwrap(), *record.post_root());
+    (target, record)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn footprints_let_commuting_runs_merge() {
+    let host = launch(4).await;
+    let (_, sends) = outcomes_of(&host, 1, &["@\"queue\"!(\"a\")", "@\"queue\"!(\"b\")", "@\"queue\"!(\"c\")"]).await;
+    assert_eq!(outcomes(&sends), vec![EnvelopeOutcome::Completed; 3]);
+    let (_, numbers) = outcomes_of(&host, 4, &["@\"cell\"!(1)", "@\"cell\"!(2)"]).await;
+    assert_eq!(outcomes(&numbers), vec![EnvelopeOutcome::Completed, EnvelopeOutcome::Conflicted]);
+    let lookup = "new rl(`rho:registry:lookup`), ret in { rl!(`rho:vault:system`, *ret) }";
+    let (_, reads) = outcomes_of(&host, 2, &[lookup, lookup]).await;
+    assert_eq!(outcomes(&reads), vec![EnvelopeOutcome::Completed; 2]);
+    let (_, apart) = outcomes_of(&host, 3, &["for (_ <- @\"p\") { Nil }", "for (_ <- @\"q\") { Nil }"]).await;
+    assert_eq!(outcomes(&apart), vec![EnvelopeOutcome::Completed; 2]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn footprints_reject_runs_that_touch_the_same_cell() {
+    let host = launch(4).await;
+    let (_, receive_then_send) =
+        outcomes_of(&host, 1, &["for (_ <- @\"r\") { Nil }", "@\"r\"!(1)", "@\"s\"!(1)"]).await;
+    assert_eq!(
+        outcomes(&receive_then_send),
+        vec![EnvelopeOutcome::Completed, EnvelopeOutcome::Conflicted, EnvelopeOutcome::Completed]
+    );
+    let (_, two_receivers) =
+        outcomes_of(&host, 2, &["for (_ <- @\"t\") { Nil }", "for (_ <- @\"t\") { Nil }"]).await;
+    assert_eq!(
+        outcomes(&two_receivers),
+        vec![EnvelopeOutcome::Completed, EnvelopeOutcome::Conflicted]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_record_carries_each_run_footprint_and_replay_checks_it() {
+    let host = launch(4).await;
+    let (target, record) = outcomes_of(&host, 1, &["@\"u\"!(1)", "for (_ <- @\"v\") { Nil }"]).await;
+    let footprints: Vec<_> = record.entries().iter().map(|e| e.executed.footprint.clone()).collect();
+    assert!(footprints.iter().all(|f| !f.is_empty()));
+    assert!(!footprints[0].conflicts_with(&footprints[1]));
+    let decoded = BlockRecord::decode(&record.encode()).unwrap();
+    assert_eq!(decoded, record);
+    let mut forged = record.entries().to_vec();
+    forged[0].executed.footprint = footprints[1].clone();
+    let forged = BlockRecord::new(
+        record.target().clone(),
+        record.pre_root().clone(),
+        record.mid_root().clone(),
+        record.post_root().clone(),
+        forged,
+        record.system_deploys().to_vec(),
+    )
+    .and_then(|r| r.with_gate(record.gate().to_vec()))
+    .unwrap()
+    .with_settlement(record.settlement().unwrap().clone());
+    assert!(host.executor.replay(&forged, &target).await.is_err());
 }

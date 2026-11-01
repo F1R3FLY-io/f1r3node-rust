@@ -64,6 +64,7 @@ mod tests {
                 comm_phlo: comm,
                 compute_phlo: compute,
                 user_log: Vec::new(),
+                footprint: Default::default(),
             },
         }
     }
