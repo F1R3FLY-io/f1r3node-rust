@@ -22228,6 +22228,448 @@ Hardware Design and Verification Methods (CHARME 1999)*, Lecture Notes in
 Computer Science 1703, 54–66, 1999,
 [doi:10.1007/3-540-48153-2_6](https://doi.org/10.1007/3-540-48153-2_6).
 
+### J-256 — 2026-11-01: the production receive occurrence accelerator (task 8011)
+
+**DERIVED.** Task 8011 is the implementation leaf of task 5686 that the
+continuation table of
+[J-068](#j-068--2026-09-06-preserve-ordered-receive-positions-in-derived-channel-indexes)
+states as "Implement the verified PathMap-derived catalogs and occurrence
+indexes, reusing current authority and automata". Task 8010
+([J-255](#j-255--2026-11-01-the-generation-bound-receive-occurrence-index-task-8010))
+fixed what any receive index must satisfy: it equals the occurrence relation
+$`\mathrm{Occ}`$ of the semantic roots, every copy is bound to a revision of
+fresh tokens, and only a Coherent copy answers. Task 8010 checked these rules
+against a test-only reference and left task 8011 six obligations. Task 8011
+builds the production accelerator inside the continuation store, refines task
+8010's global Incomplete test to the channel being read, binds every task-8010
+capstone and invariant to production witnesses, and shows with 25 production
+controls that those witnesses observe the production code. No production caller
+builds the accelerator yet, so it is Absent by default and production behaviour
+is unchanged; selecting COMMs through it is task 8012.
+
+The reviewed plan (pgmcp artifact 1424) built the task in seven slices, each a
+child task of 8011, committed in order. Slices 4 to 7 were split further into 29
+leaf tasks, each confined to one component and closed at its own commit, so that
+each could be checked and finished independently.
+
+| Slice | Task | Deliverable | Commits, with their leaf tasks |
+|---|---|---|---|
+| 8011.1 | 11999 | The channel-scope Rocq theory `TwoLevelRSpaceReceiveAcceleratorChannelScope.v` with capstones RAC-CS-01 to RAC-CS-07, and its companion `TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v` with a bridge theorem and refutations RAC-CSMUT-01 to RAC-CSMUT-04 | `101a6db47` |
+| 8011.2 | 12000 | The store revision token $`\sigma`$ and its five library tests | `ce366d25e` |
+| 8011.3 | 12001 | The framed occurrence index inside the continuation store, maintained by its five mutators, and its first 13 library tests | `6221a8271` |
+| 8011.4 | 12002 | Fault containment that leaves the index Absent when its maintenance fails, handles and channel-scoped reads, receive identifiers, scope hydration and two-phase publication | `26457c364` (12084), `7fc00fab4` (12085), `445b62acc` (12087), `b58ec3bb3` (12088), `1724e5671` (12086) |
+| 8011.5 | 12003 | The production adapter of the task-8010 harness and the 31 production specification tests | `9c7d95270` (12372), `11c1b9eb0` (12373), `4129b4fb5` (12374), `2556105e6` (12375), `ab8df3f38` (12376), `7c433958d` (12377) |
+| 8011.6 | 12004 | Adoption bound to the semantic manifest with its tests, and the five production Rholang tests | `bfd6aad90` (12378), `c5dc35be4` (12379), `6743154da` (12380), `8f806951b` (12381) |
+| 8011.7 | 12005 | The runner's checks, the registry entries and checker rules, the isolation check, the production controls RAC-RS-26 to RAC-RS-50, the two figures, the design subsection, the catalog rows and this entry | `8dfacd194` (12382), `1cad316bc` (12383), `ae736f9fc` (12384), `30866da3f` (12385), `7634e4c81` (12386), `1f08c7f0e` (12387), `e49600937` (12388), `b753b1063` (12389), `2db834b7e` (12390), `30fff03a6` (12391), `a0217225b` (12392), `7c1d7db16` (12393), `6892edccb` (12394), and the commit that adds this entry (12395) |
+
+The design, with its notation, its algorithms, its complexity table and its two
+figures, is the integration doc's
+[production receive accelerator](../rspace/pathmap-bag-rspace-integration.md#production-receive-accelerator-task-8011)
+subsection. The invariant catalog binds the channel-scope proofs and every
+task-8010 obligation to production witnesses in
+[TLRS-PROP-11](two-level-rspace-authority-invariant-catalog-2026-09-02.md#tlrs-prop-11--ordered-receive-fields-and-occurrence-identity-2026-09-06),
+rows TLRS-RECEIVE-29 to TLRS-RECEIVE-33, and lists the 25 production controls
+with their batches, killing tests and log digests in its production receive
+accelerator control table.
+
+**THE ACCELERATOR.** The notation is J-255's: $`w`$ is a world, a group
+$`g = [c_0, \dots, c_{n-1}]`$ is the ordered list of the channel images of one
+receive group, and $`\mathrm{Occ}_w(c)`$ is the occurrence relation of a channel
+image $`c`$ in $`w`$. A group is *supported* in a continuation store $`S`$ when
+it holds a resting record loaded in $`S`$ or an installed slot. The summary
+below is enough to read this entry; the integration doc defines the rest.
+
+- *Keys.* The escape $`\mathrm{esc}(x)`$ replaces every byte `00` of an image
+  $`x`$ by the pair `00 FF`, and the frame of $`x`$ is
+  $`\mathrm{frame}(x) = \mathrm{esc}(x) \mathbin{+\!\!+} [\mathtt{00}, \mathtt{00}]`$,
+  where $`\mathbin{+\!\!+}`$ concatenates byte strings. The group prefix
+  $`\mathrm{prefix}(g)`$ is the existing RhoPath continuation prefix: a fixed
+  header, the frames of $`c_0, \dots, c_{n-1}`$ and a terminator. The index of
+  $`S`$ is a PathMap set $`X(S)`$ that holds the occurrence key
+  $`\kappa(c_i, g) = \mathrm{frame}(c_i) \mathbin{+\!\!+} \mathrm{prefix}(g)`$
+  for every position $`i`$ of every supported group $`g`$; positions that repeat
+  a channel give one key. Frames are prefix-free, so the keys under
+  $`\mathrm{frame}(c)`$ name exactly the groups of $`c`$ (RAC-CS-06), and a read
+  of $`c`$ walks one subtrie.
+- *Revision.* The receive revision is the pair $`(\gamma, \sigma)`$ of the
+  generation token and the store token, two `Arc<ContinuationEpoch>` values
+  compared by allocation identity. Every continuation change, an install
+  included, allocates a fresh epoch for its group and makes it $`\sigma`$; a new
+  generation makes its fresh base epoch both $`\gamma`$ and $`\sigma`$.
+- *Handles.* A handle $`h`$ is a revision and an $`O(1)`$ snapshot of the
+  continuation store, taken together under one lock. The snapshot shares every
+  PathMap node with the live store, and a later mutation copies only the nodes
+  it changes (Driscoll et al., 1989).
+- *Reads.* A read of $`c`$ through $`h`$ answers `Exact` only when the tokens of
+  $`h`$ are the store's, else it falls back as Foreign or Stale, and three scope
+  tests pass, else it falls back as Incomplete: J1, the live join view of $`c`$
+  is loaded; J2, every join group of $`c`$ is loaded in the snapshot of $`h`$;
+  and J3, every group visited under $`\mathrm{frame}(c)`$ is loaded there.
+  Without a handle a read falls back as Building while a build is open and as
+  Absent otherwise. After any fallback the caller derives the answer from
+  authority, as RSpace does today.
+- *Maintenance.* The five mutators of the continuation store maintain the
+  index in the critical section of the mutation, on a clone that replaces the
+  index only when every step succeeds. A failed maintenance leaves the index
+  Absent and never rolls the mutation back, so the semantic state never depends
+  on the accelerator.
+- *Publication.* A rebuild builds once from a snapshot outside the write lock
+  and publishes only if its build marker is still open, the revision and the
+  history-load count are unchanged and no index was published meanwhile;
+  otherwise it rebuilds under the write lock, in the manner of optimistic
+  concurrency control (Kung and Robinson, 1981).
+
+The channel-scope theorems connect these reads to task 8010's relation. An
+`Exact` answer carries the current revision, manifest and artifacts and is
+sound and complete for every group it answers (the first theorem of RAC-CS-03).
+Under the premise $`P_J`$ that the joins cover the targets, join groups in scope
+complete the channel scope (RAC-CS-01), a complete channel scope answers the
+derivation (RAC-CS-02), an `Exact` answer has the members of
+$`\mathrm{Occ}_w(c)`$ (the second theorem of RAC-CS-03), and a globally
+Coherent accelerator is channel-Coherent with the same answer (RAC-CS-04).
+Without the premise, an `Exact` answer still contains every occurrence of every
+join group (RAC-CS-05). Along a run, equal store tokens imply equal revisions
+(RAC-CS-07), which licenses comparing two tokens in place of task 8010's three.
+
+**DECISIONS.** The review of the plan fixed seven decisions:
+
+1. *One store token* (D1). The store token $`\sigma`$ is the fresh epoch that
+   `bump_continuation_revision` allocates for the changed group, and
+   `bump_continuation_generation` makes it the new base epoch
+   (`rspace++/src/rspace/hot_store.rs:944-957`); a fresh state starts with its
+   base epoch as $`\sigma`$.
+2. *No installed token* (D2). An install already bumps the revision, so
+   `ReceiveRevision` holds only $`(\gamma, \sigma)`$. The installed version of
+   the model is supplied by a refinement mapping with a history variable
+   $`\hat v`$ (Abadi and Lamport, 1991), and RAC-CS-07 proves its converse:
+   equal store tokens imply equal revisions.
+3. *A handle answers only for its own scope* (D3). J2 inspects the groups
+   loaded in the snapshot of the handle, never those of the live store.
+   RAC-CSMUT-04 refutes the live-scope variant on a concrete world, the library
+   test `held_handles_never_answer_for_groups_loaded_after_they_were_taken` and
+   its production twin witness the rule, and control RAC-RS-50 applies the
+   variant to production and is killed.
+4. *The load count* (D4). A history load changes no token but adds loaded
+   groups, so an index built from a snapshot taken before the load would miss
+   their keys. `finish_receive_build` therefore refuses a build if the store's
+   history-load count changed while it ran; control RAC-RS-46.
+5. *Settled questions* (D5). The split-index and aggregate registries, which
+   hash `record_index.rs`, and the runner's hunks were regenerated or patched
+   inside the export and staged index-only, so their dirty working copies stayed
+   untouched; `HotStore` gained eight methods whose defaults fail closed;
+   adoption is a predicate plus a rebuild, and nothing new is persisted; and no
+   performance experiment runs, because the accelerator is Absent by default and
+   measurement belongs with selection in task 8012.
+6. *Channel scope* (D6). Task 8010's global Incomplete test becomes a test of
+   the read channel's groups, proved in Rocq: RAC-CS-04 holds under
+   `joins_cover`, J1 is modelled as a join view, and RAC-CS-05 holds without the
+   premise. The TLA+ model (Lamport, 1994) is unchanged (question Q1), for the
+   five reasons the integration doc gives under
+   [why the TLA+ model is unchanged](../rspace/pathmap-bag-rspace-integration.md#why-the-tla-model-is-unchanged).
+7. *Execution* (D7). Logs were written under `target/perf/logs/8011` and
+   archived, sanitized, as pgmcp artifacts; heavy jobs ran one at a time in a
+   user scope with `MemoryMax=32G` and no swap, on cores 16 to 31 and their SMT
+   siblings 48 to 63; every change was reviewed against its leaf design before
+   its commit; and the slices were committed in order, each a pgmcp child task
+   of 8011.
+
+The slices added six findings:
+
+- *Building is observable only in library tests* (slice 8011.5). A store
+  answers `Fallback(Building)` only while `rebuild_receive_accelerator` holds a
+  build open between its two phases, which no integration test can reach. The
+  library test `open_builds_report_building_until_they_publish` checks it, and
+  `production_reads_equal_derivation_in_every_accelerator_state` covers the
+  Absent, Coherent, Stale, Foreign and Incomplete classes.
+- *The task-8010 suite stays frozen* (slices 8011.5 and 8011.6). The reference
+  oracle, its 31 specification tests and its support modules are unchanged;
+  the production specification duplicates the helpers it needs, so the
+  task-8010 suites still test the reference exactly as J-255 records.
+- *Publication is optimistic, then locked* (slice 8011.4). A refused
+  publication is followed by a rebuild under the write lock, so a lost race
+  costs one more build and never publishes a stale index.
+- *The runner's normal suite changed as well* (slice 8011.7, leaf 12382). The
+  two closed-count lines of the channel-scope theories, their placeholder
+  entries and their kernel-check modules entered the runner's normal suite as
+  well as its focused `--receive-accelerator` block, so each count line appears
+  twice in the runner and once in the focused block, as the checker's
+  `CLOSED_REPORTS` rule requires.
+- *The isolation scope* (slice 8011.7, leaf 12386). The isolation check scans
+  every Rust source under `rspace++/src/rspace/persistence` and
+  `rspace++/src/rspace/history` and the four files `pathmap_codec.rs`,
+  `data_index.rs`, `hot_store_action.rs` and `checkpoint.rs`, 56 files in all,
+  and excludes `hot_store.rs` and `record_index.rs`, which host the
+  accelerator. A bare `Accelerator` stays allowed, because persistence names
+  `AcceleratorManifestV1`.
+- *One killing test per control* (slice 8011.7, leaves 12387 to 12391). Each
+  control names exactly one killing test, and the checker requires it to be a
+  production witness of every formal id the control refines. RAC-RS-47 is
+  killed by production specification test 31,
+  `production_foreign_generation_or_manifest_accelerators_are_never_adopted`,
+  RAC-RS-50 by test 30,
+  `production_held_handles_never_answer_for_groups_loaded_after_they_were_taken`,
+  and RAC-RS-48 by the library test
+  `production_adoption_requires_the_stored_bound_semantic_manifest`. The batch
+  runs were the first to observe the killing tests of RAC-RS-35, which had been
+  seen failing only a Rholang production test, and of RAC-RS-41, RAC-RS-45,
+  RAC-RS-49 and RAC-RS-50.
+
+**CORRECTIONS.** This entry corrects three earlier statements.
+
+- *The bounds of section 2.11 of the reviewed plan.* The integration doc's
+  [complexity table](../rspace/pathmap-bag-rspace-integration.md#production-accelerator-complexity)
+  gives the bounds of the code as built. In it, $`n_g`$ is the arity of a group
+  $`g`$, $`d_g \le n_g`$ its number of distinct channels, $`P_g`$ the length of
+  its prefix, $`T_g`$ its number of targets, $`R_g`$ the total length of the
+  paths of its resting records, $`J(c)`$ the join groups of a channel $`c`$, and
+  $`B_j`$ the length of the join record of $`j`$. The table corrects the plan in
+  five places:
+  1. A build and a support transition insert or remove one key per position,
+     $`n_g`$ keys, not one per distinct channel, $`d_g`$, and a build also walks
+     every loaded group.
+  2. Index space is below $`\sum_{g} (d_g + 1) P_g`$ key bytes before trie
+     sharing, because each key holds its channel's frame as well as the group
+     prefix.
+  3. Maintenance with a published index and no support transition costs
+     $`O(P_g)`$, for two support lookups by prefix; $`O(1)`$ holds only while
+     the index is Absent.
+  4. A read of $`c`$ costs $`O(P_g + R_g + T_g \log T_g)`$ for each visited
+     group, because it walks the group's records and sorts its targets, and J2
+     adds $`\sum_{j \in J(c)} O(B_j + P_j)`$.
+  5. A handle is two `Arc`s and an $`O(1)`$ snapshot, because D2 removed the
+     installed token; D2 also turns the three-token Stale test of section 2.7
+     of the plan into the $`(\gamma, \sigma)`$ test.
+- *The slice table of the integration doc.* Its row for slice 8011.3 listed
+  `26457c364` and the phrase "left Absent when maintenance fails", although
+  that commit is leaf 12084 of slice 8011.4, as its message states. The commit
+  that adds this entry moves both to the row of slice 8011.4 and changes
+  nothing else in that document.
+- *A leaf number in a commit message.* The message of `445b62acc` calls task
+  12087 "leaf 3 of 5 of task 12002". It is leaf 4: task 12086 is leaf 3, and
+  task 12088 is leaf 5. Commits are not rewritten, so the correction is
+  recorded here.
+
+**HYPOTHESES.** The entry tests six hypotheses. H1 states what the proofs must
+show, H2 to H4 what the production code and its tests must show, and H5 and H6
+what the task must leave unchanged.
+
+- *H1.* The channel-scope theories close with nothing assumed: the model file
+  prints 8 closed reports, for its seven capstones with RAC-CS-03 as two
+  theorems, and the mutants file 5, for its bridge and four refutations; the
+  four receive accelerator modules pass independent kernel checking; and a
+  count control that expects 7 reports from the model file fails.
+- *H2.* The library suites of the production accelerator pass: 14
+  occurrence-index tests, 18 hot-store binding tests, 5 revision-token tests and
+  2 persisted-manifest tests; and the continuation store's own 20 tests still
+  pass.
+- *H3.* The production accelerator refines task 8010's specification: the 31
+  production specification tests and the 5 production Rholang tests pass over
+  real `HotStore` and `RSpace` instances and compiled Rholang; task 8010's
+  reference suites, 31 specification tests and 5 Rholang tests, still pass; and
+  every pin of the focused flag passes.
+- *H4.* Each of the 25 production controls is killed by its named test, and
+  the kills hold for the tree of the completion commit.
+- *H5.* The accelerator is identity-neutral: building, maintaining and reading
+  it change no canonical plan, snapshot or pending journal; no persistence,
+  history, codec, candidate-index, hot-store-action or checkpoint source names
+  it; and the default genesis post-state hash stays
+  `87b8dedea0e1483869d020c76d5337073f7f835b995dbb55b545dcc8846da87b`.
+- *H6.* Nothing regresses: every target of `rspace_plus_plus` passes, both
+  formatting checks pass, and every obligation registry is current, the
+  aggregate with 17 families and 892 global identifiers and the receive
+  accelerator family with 123.
+
+**MEASURED.** The completion gates ran on T0, the tree `09a29855` of commit
+`6892edccb`, exported to `target/scratch/idx`; the export equalled T0 in all
+3,537 tracked files before the first gate and after the last. T1, the tree of
+the commit that adds this entry, differs from T0 only in this entry and in two
+rows of the integration doc's slice table, and no script, registry, model, hook
+or Rust source reads either document, so every gate on T0 holds for T1. The red
+row of H1 ran on the export of leaf 12382, and H4 on the five batch trees.
+
+| Claim | Command or artifact | Result | Uncertainty | Decision |
+|---|---|---|---|---|
+| H1 | the flag's focused block: the four imports and the task-8010 theories, then `coqc -Q theories StackSafePDA` of the two channel-scope theories, then `coqchk` of the four receive accelerator modules | the channel-scope theory printed 8 closed reports and its mutants 5, beside 0, 5, 21, 54, 26 and 16 for the imports and the task-8010 theories; `coqchk`: "Modules were successfully checked" | the theorems describe the model; only the tests and the controls tie the production code to it | confirmed |
+| H1, red | the focused Rocq driver `rocq_focus.sh`, kept outside the repository, which compiles a theory's dependency closure in the export with `coqc -Q theories StackSafePDA`, requires the given number of closed reports and kernel-checks the module, as the runner's `rocq_compile_with_closed_count` and `rocq_check_modules` do; run with `theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v=7` | `closed=8 expected=7` and `RESULT fail=1`, while the kernel check of the module passed | none | the count check is live |
+| H2 | the flag's library filters | `rspace::receive_accelerator::` 14, `rspace::hot_store::receive_accelerator_bindings_tests::` 18, `rspace::hot_store::receive_revision_tokens_tests::` 5, `receive_accelerator_manifest_binding` 2 and `rspace::record_index::` 20 | the `proptest!` properties draw their cases from seed 41318010 | confirmed |
+| H3 | the flag's suites, and the gate's run of the four Rholang suites | production specification 31 of 31 and production Rholang 5 of 5; task-8010 specification 31 and Rholang 5; the pins `hot_store_spec` 57, `ordered_receive_view_spec` 13, `accepted_match_formal_bindings` 15, `continuation_join_lifecycle_equivalence` 1, `guarded_matching_tests` 18, `replay_comm_order` 3, `ordered_receive_view_rholang` 4 and `matching_lifecycle_acceptance` 2 | the tests sample finitely many states; the controls show which faults they observe | confirmed |
+| H4 | `scripts/generate-receive-accelerator-mutant.py`, each control applied alone to an export of its batch's tree, debug build, seed 41318011, one test thread; then step 1 of the completion gate | 25 of 25 killed, each by exactly its killing test, which first passed alone on the unmutated export; between each batch tree and T0 no Rust source, manifest or lock file differs, no Rust file names a file that differs, and the generator only gained entries | each control is one fault, and a fault not modelled could survive | confirmed |
+| H5 | `production_accelerator_never_changes_semantic_identity`, the library test `canonical_plans_snapshots_and_journals_are_identical_with_the_index_on_and_off`, the checker's isolation scan, and `default_genesis_post_state_hash_is_pinned_across_processes` | all passed; the scan matched none of its 56 files; the genesis post-state hash is unchanged | the genesis pin covers the default genesis, on which no production caller builds the accelerator | confirmed |
+| H6 | `cargo test --locked --release --no-fail-fast -p rspace_plus_plus`, `cargo fmt --all -- --check`, `scripts/check-fmt.sh`, and every family checker's and the aggregate's `--check` and `--self-test` | 28 binaries, 1,450 passed, 0 failed, 13 ignored, in 119 s; both formatting checks clean; every registry current, with 17 families and 892 global identifiers, 123 of them in the receive accelerator family | no slice adds or removes an `#[ignore]` attribute, so the 13 ignored tests predate the task | confirmed |
+
+**THE NEGATIVE CONTROLS.** Each of the 25 production controls is a single fault
+in production source that its killing test must detect, in the sense of
+mutation testing (DeMillo, Lipton and Sayward, 1978). The generator applies it
+to an export of its batch's tree; the export is rebuilt in a debug build, the
+killing test runs alone on one test thread with seed `41318011`, and the
+touched file is restored and checked blob for blob. Each distinct killing test
+first passed alone on the unmutated export. The catalog's control table gives
+each control's class, formal counterpart, change and anchor. The table below
+adds the first assertion that failed, at a line of T0 and of T1. Paths are
+relative to `rspace++/`, and `spec` stands for
+`tests/receive_accelerator_production_spec.rs`. The *fragment* is the text of
+the killing test that the registry pins to the control
+(`SOURCE_MUTANT_EVIDENCE` in
+`scripts/check-receive-accelerator-obligations.py`), and the column after the
+assertion says where the failure lies relative to it.
+Each log is `target/perf/logs/8011/red-<batch>/<control>.log`, and the last
+column names its sanitized copy in pgmcp.
+
+| Control | Batch | Killing test | First failing assertion | Relation to the fragment | Log SHA-256 | Artifact |
+|---|---|---|---|---|---|---|
+| RAC-RS-26 | 12387 | `production_receive_ids_resolve_only_to_byte_identical_records` | `spec:1959` "a forged id never resolves" | at the fragment | `7feaaaa62fd4a9c5be8589597b4b1dba0103f3f90c27335a732278d26beffb52` | 1489 |
+| RAC-RS-27 | 12387 | `production_nonfinal_removals_maintain_the_published_accelerator` | `spec:677` "the maintained accelerator answers the groups and targets of a fresh build" | inside `assert_maintained_equals_rebuild`, which the fragment calls | `c0ec28bc2fa4b5816d60497e86dde0e9fc0becfbad0c884635ee1edefcb3496d` | 1490 |
+| RAC-RS-28 | 12387 | `production_reads_equal_derivation_in_every_accelerator_state` | `spec:1518` "a vacant or held handle falls back" | an earlier assertion, in `assert_production_reads_equal_derivation` | `7cbdb1b1a380a2dab6f8aafa04a117d9845e1a2fa8bf0031d4e880eec41e7519` | 1491 |
+| RAC-RS-29 | 12387 | `production_held_handles_fall_back_after_every_mutation` | `spec:845` "insertion: a held handle falls back as stale" | inside `assert_stale_fallback`, which the fragment calls | `fadb5eb88e3ea4a511b6854284e8a1a1518469411f20ef3cd5d1da51fc98645f` | 1492 |
+| RAC-RS-30 | 12387 | `production_clear_and_set_state_retire_held_handles_and_rebuilds_equal_the_derivation` | `spec:804` "a handle from a replaced generation falls back as foreign" | inside `assert_generation_retires_held_handles`, which the fragment calls | `bb2996360ce75ad68eaef82b4e8fd08a88626c41f7571414289a8b4962f1f4f4` | 1493 |
+| RAC-RS-31 | 12388 | `production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated` | `spec:3283` "UnloadedJoinGroup: a current handle falls back as incomplete" | at the fragment | `c9245a3ad1ab07bfabff1d8081523a9aaf501d2d784056d3fafa335cd4a8e549` | 1502 |
+| RAC-RS-32 | 12388 | `production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated` | `spec:3283` "UnloadedInstalledGroup: a current handle falls back as incomplete" | the next assertion, after the fragment passes | `f5eb22aafc3e4c4da98d7e9a2b89c9784d858ccf5ceb3aed2dcd0f705e4ee069` | 1503 |
+| RAC-RS-33 | 12388 | `production_scope_gaps_fall_back_as_incomplete_until_the_channel_is_hydrated` | `spec:3283` "UnloadedJoins: a current handle falls back as incomplete" | at the fragment | `3e71ba425388c155f45f43be9598b6e69b39af01bb1e4b6122ffc4bf86e18bc9` | 1504 |
+| RAC-RS-34 | 12388 | `production_repeated_channels_yield_one_occurrence_per_target` | `spec:1671` an unlabelled `assert_eq!` | at the fragment | `954fc75f6c16cbe48a9a155e8308144781cae15a23549930ea5d3ae098220ea9` | 1505 |
+| RAC-RS-35 | 12388 | `production_metadata_distinct_records_keep_distinct_ids` | `spec:1996` "persist, peeks, the continuation and the kind each keep a target" | at the fragment | `df17f52eb33474260cf395a7ab38449071346b93c2010b84c45450ee1c376a31` | 1506 |
+| RAC-RS-36 | 12389 | `production_construction_order_does_not_change_answers_or_ids` | `spec:1914` "the fixed plan is order invariant", a failed `proptest` case | at the fragment | `7d3e5974d5a2af642e6751f3de0eb1b0f0d81e30fb3745267a4307712cca2513` | 1513 |
+| RAC-RS-37 | 12389 | `production_index_and_catalog_publish_at_one_revision` | `spec:695` "the accelerator reports one artifact revision, the world's" | inside `assert_one_revision`, which the fragment calls | `b3ffeb326dc358dda3842b28b7228475e0f3fe55fd819298ecb7369aff38e23e` | 1514 |
+| RAC-RS-38 | 12389 | `faulted_maintenance_publishes_nothing` | `tests/receive_accelerator/occurrence_index.rs:569` `assert!(faulted.receive_index().is_none())` | at the fragment | `64ff2fa23cdcb6cabfa2e1407aa039ac08d06fab2258ba3455c18b60a6730a91` | 1515 |
+| RAC-RS-39 | 12389 | `production_accelerator_never_changes_semantic_identity` | `spec:1360` "Rebuild after the step: the pending continuation delta is accelerator-free" | a later assertion, in `assert_same_semantic_identity`, after the fragment passes | `405e6c1aed7d1644f786bbfae3b24cd7b4e1141bc37fe942a158161d08fcbf47` | 1516 |
+| RAC-RS-40 | 12389 | `forged_alias_source_targets_never_resolve_at_current_tokens` | `tests/hot_store/receive_accelerator_bindings.rs:530` `assert!(store.resolve_receive(&forged).is_none())` | at the fragment | `0d65d8c6970e8f103cdd07ac94735cbfe3bde5260a282b1ecc0ced5232e3d9a4` | 1517 |
+| RAC-RS-41 | 12390 | `production_ids_and_handles_from_a_prior_revision_or_generation_never_answer` | `spec:2073` "a prior-revision id never resolves" | at the fragment | `e13673a7041bcf573333a6c19651f40c6d3144d5c72eb967efe717ae1f854b6a` | 1526 |
+| RAC-RS-42 | 12390 | `production_metadata_distinct_records_keep_distinct_ids` | `spec:2006` "persist, peeks and the continuation each keep a distinct identity" | at the fragment | `ac2a611a9c6b2a6e0433ea2c282183c5da93a42b1b739a8b4fe0a08fe38966d1` | 1527 |
+| RAC-RS-43 | 12390 | `production_final_removal_clears_the_maintained_group` | `spec:677` "the maintained accelerator answers the groups and targets of a fresh build" | an earlier assertion, in `assert_maintained_equals_rebuild` | `3529d0e74a4b0d5af5be5626273a68a9def5c78dbf522c6eca7339cb44dd23c8` | 1528 |
+| RAC-RS-44 | 12390 | `production_history_loads_extend_the_maintained_scope` | `spec:677` "the maintained accelerator answers the groups and targets of a fresh build" | an earlier assertion, in `assert_maintained_equals_rebuild` | `0bdb4fdc6a25a224b422fc6e84fdd84845cc8cb5f4ab1defed72e7d37652cdee` | 1529 |
+| RAC-RS-45 | 12390 | `occurrence_keys_are_exact_under_prefix_aliased_images` | `tests/receive_accelerator/occurrence_index.rs:261` an unlabelled `assert_eq!` | at the fragment | `84d738a0545a41bc035e9cc773883ea33e0431b981984913bbf002f6c44cc4f8` | 1530 |
+| RAC-RS-46 | 12391 | `publication_refuses_a_stale_base_or_a_history_load` | `src/rspace/record_index.rs:1649` "the maintained receive occurrence index equals a fresh build" | another assertion, the store's test-only coherence check | `97c45e171e242299eacdf49af078747636711203073cd9688d94f831bb80ae5d` | 1539 |
+| RAC-RS-47 | 12391 | `production_foreign_generation_or_manifest_accelerators_are_never_adopted` | `spec:3494` "an accelerator bound to another manifest is never adopted" | at the fragment | `95dff1a5663c82bf434354feb0fd32d4e4947b10c9bdc06a90e5868447130ff8` | 1540 |
+| RAC-RS-48 | 12391 | `production_adoption_requires_the_stored_bound_semantic_manifest` | `tests/persistence/receive_accelerator_manifest_binding.rs:695` "an accelerator whose bound manifest length is forged: production adoption requires the bound manifest to equal the current one" | at the fragment | `7fa27b5416abe9ae1d2f02eee2d8819fea5714e5a3a9ad81d38614091496d67e` | 1541 |
+| RAC-RS-49 | 12391 | `every_continuation_change_issues_the_bumped_group_epoch_as_a_fresh_store_token` | `tests/hot_store/receive_revision_tokens.rs:223` "a continuation change issues a store token that was never issued before" | inside `assert_fresh_revision`, which the fragment calls | `c1eda485609cc8c4fb485988e7822eac347d749a00803a3c33d7a543d9019142` | 1542 |
+| RAC-RS-50 | 12391 | `production_held_handles_never_answer_for_groups_loaded_after_they_were_taken` | `spec:3372` "a held handle never answers for a group loaded after it was taken" | at the fragment | `84519f165a56ed9f770ac373fc9310720fcb462d481c57469370d45ee2b9cf59` | 1543 |
+
+Fourteen controls fail at the statement that holds their fragment, and five,
+RAC-RS-27, RAC-RS-29, RAC-RS-30, RAC-RS-37 and RAC-RS-49, inside the helper
+that the fragment's statement calls. The other six fail at another assertion of
+their killing test:
+
+- RAC-RS-28 fails in `assert_production_reads_equal_derivation`, where a vacant
+  or held handle must fall back. The test calls that helper twice before its
+  fragment, the check that the absent state is probed where the derivation is
+  nonempty, so the fragment is never reached.
+- RAC-RS-32 passes its fragment, the check that the channel-projected reference
+  world is incomplete, and fails at the next assertion of the same iteration,
+  that a current handle falls back as incomplete, which is the fragment of
+  RAC-RS-31 and RAC-RS-33.
+- RAC-RS-39 passes its fragment, the check that a step changes no selection or
+  checkpoint, and fails later in the same iteration, in
+  `assert_same_semantic_identity` after a `Rebuild` step, because the pending
+  continuation delta is no longer accelerator-free.
+- RAC-RS-43 and RAC-RS-44 fail in `assert_maintained_equals_rebuild`, the
+  comparison with a fresh build, which each test calls before its fragment, the
+  check that a cleared group leaves no occurrence group and the check that a
+  history load extends the maintained scope; neither fragment is reached.
+- RAC-RS-46 passes its fragment for the revision bump and the clear, whose
+  publications are refused because the revision changed. For the history load
+  the mutated publication goes ahead, and the continuation store's test-only
+  coherence check (`src/rspace/record_index.rs:1649-1652`), which compares the
+  published index with a fresh build, fails inside it, before the fragment's
+  assertion is reached.
+
+Every failure lies inside the run of the named killing test, so each of the 25
+controls is a kill by that test. The registry, however, checks only that each
+fragment remains in its killing test; for these six controls the fragment is
+not the assertion that detects the fault.
+
+**VERIFICATION BOUNDARY.** One heavy job ran at a time, each in a user scope
+with `MemoryMax=32G` and zero swap on cores 16 to 31 and 48 to 63, with
+`TMPDIR` and the cargo target directory under `target/`.
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| the completion gate driver, which runs every check below on T0 in order | T0, exported | every step passed, ending "gate exit=0". An earlier attempt, `target/perf/logs/8011/gate-12395-20261101T173743Z.log`, stopped during the prebuild of the flag after its own registry-count snippet raised a `TypeError`; the snippet was corrected and the gate rerun from the start | `target/perf/logs/8011/gate-12395-20261101T173916Z.log` (pgmcp artifact 1555) | `7425ce2b108b3f5726903dc428b78bceb980d4124800f3bd81b46e44ce7d37db` |
+| the runner's `--receive-accelerator` flag | T0, `TLC_RUNTIME_MAX_SEC=3600`, `PROPTEST_RNG_SEED=41318010` | passed in 336 s with the final line "stack-safe-pda: focused receive accelerator proof, model and runtime gates passed": the closed reports and the kernel check as H1; TLC: the base model with no error, 202,406 distinct states (534,006 generated, search depth 6), and each of the ten mutants violated its own target; the suites as H2 and H3 | `target/perf/logs/8011/flag-12395-20261101T173950Z.log` (artifacts 1556 to 1559, split at line boundaries) | `1f4c958c087123eeaaf264f69714c06c74c33605c524639a05a1bc99f3fcb50e` |
+| the four Rholang suites | T0; `cargo test --release --locked --no-fail-fast -p rholang` with the four `--test` targets | `receive_accelerator_rholang` 5, `receive_accelerator_production_rholang` 5, `ordered_receive_view_rholang` 4 and `matching_lifecycle_acceptance` 2 | `target/perf/logs/8011/rholang-12395-20261101T174702Z.log` (artifact 1560) | `59afa883c9a92ab98d04006c5bbeb5349b662c0efc52f76a166306044fe2ecb8` |
+| every target of `rspace_plus_plus` | T0 | as H6 | `target/perf/logs/8011/rspace-12395-20261101T174703Z.log` (artifact 1561) | `7326506b451285663ff35b5d8d2f21f8287590635bce67ca2e77b1dfd01b7fa2` |
+| the genesis pin | T0; `cargo test --release --locked -p casper --test mod` of `genesis::genesis_vaults_order_determinism::default_genesis_post_state_hash_is_pinned_across_processes`, exact | passed in 356 s | `target/perf/logs/8011/genesis-12395-20261101T174903Z.log` (artifact 1562) | `5a5b976ab43c0a185b1821d6ede5dd83cef0e8324226c8fbe4d4d80c9815e628` |
+| formatting and every obligation registry | T0 | as H6; and with the receive accelerator registry removed from the export, its checker's `--check` failed (rc 1), and `--write` reproduced the registry of T0 byte for byte | the driver log (artifact 1555) | as above |
+| the count control of H1 | the export of leaf 12382 | as H1 | `target/perf/logs/phase0/12382-red-rocq-20261101T135309Z.log` (artifact 1563) | `cef3d8e558e24d918d2796d41f30bc06a5ef16f00fceffca440dbb47e35dc9ac` |
+| the 25 production controls | the five batch trees; debug | as the control table | the batch run logs `target/perf/logs/8011/red-12387-20261101T143811Z.log`, `red-12388-20261101T145127Z.log`, `red-12389-20261101T145911Z.log`, `red-12390-20261101T151607Z.log` and `red-12391-20261101T153334Z.log` (artifacts 1487, 1500, 1511, 1524 and 1537) | in the catalog's batch table |
+| `cargo clippy` | not re-run on T0 | T0 has no Rust change since `8f806951b`. The leaf gates of slice 8011.7 ran `cargo clippy -p rspace_plus_plus -- -D warnings` on trees whose Rust sources equal T0's, and the pre-commit hook runs `cargo clippy --workspace -- -D warnings` on the working tree of this commit | for example `target/perf/logs/8011/leaf-12382-20261101T134420Z.log` (artifact 1468) | `168c3d33432f33c7c16ed75d4cd4521c5e09ad8e284684c128651774c3ca4466` |
+| the pre-commit hook of this commit | the working tree at the commit | required to pass before the commit was made; it runs after this entry was written, so pgmcp task 12395 records its result | pgmcp task 12395 | recorded there |
+
+The logs live under `target/`, which is not durable; pgmcp holds sanitized
+copies as the artifacts named above, with the repository root written as `.`
+and the home directory as `~`. These are agent-run results; independent review
+and the approved pgmcp verification recipe remain required.
+
+**RESIDUAL UNCERTAINTY.**
+
+- *Refinement is tested, not proved.* The production code is tied to the Rocq
+  model by tests over real stores and by 25 single-fault controls, not by
+  extraction or a code-level proof. A fault that no test observes could
+  survive, and the controls sample the space of faults rather than cover it.
+- *Answers are refined, class tags are not.* A handle may answer for one
+  channel where the model's global test calls the snapshot Incomplete. The
+  channel-scope theorems show that such an answer is exact, and the bounded
+  TLA+ model keeps the global rule.
+- *A failed maintenance only removes answers.* It leaves the index Absent
+  instead of rolling the mutation back, so the witnesses of RAC-TLA-10 check
+  that a refused update changes nothing and that a failed maintenance publishes
+  nothing.
+- *The join premise.* `remove_continuation` does not remove joins, and a
+  history group whose joins were never written is invisible to the accelerator
+  and to the joins derivation until it is loaded. Without $`P_J`$, RAC-CS-05 is
+  the only guarantee about what an `Exact` answer contains.
+- *Building is checked only in a library test*, because no integration test can
+  stop a rebuild between its two phases.
+- *No production caller.* No production path builds or reads the accelerator,
+  so no production workload has exercised it and its cost is not measured.
+  Task 8012 adds selection and its measurement, and task 8013 qualifies the
+  result.
+- *Persisted adoption has unit-test callers only*, until task 7931 adopts
+  persisted accelerator manifests.
+- *Generated cases are finite.* The properties draw their cases from seed
+  41318010 in the gates and 41318011 in the controls; a violation outside the
+  drawn cases would be missed (Claessen and Hughes, 2000).
+- *Six fragments are not the detecting assertion* (see the negative controls).
+- *The controls ran on the batch trees, not on T1.* Between each batch tree and
+  T1 no Rust source, manifest or lock file changed, no Rust file names a changed
+  file, and the generator only gained entries, so each control's fault, sources
+  and build are identical on T1 and its kill carries over. The slice-7 leaf
+  design therefore did not re-run the controls on T1.
+
+**BOUNDARY.**
+
+- No persisted byte, identity, format, root, RhoPath version, wire message or
+  production outcome changes, and `AcceleratorManifestV1` keeps its bytes, so
+  the consensus-change register gets no note.
+- The later consumers are task 8012, which selects COMMs through the read rule
+  and `apply_accepted_match` and measures the result; task 8013, which
+  qualifies it; task 6021, which owns RCI2 activation, still a stop point; and
+  task 7931, which must keep routing every change of the continuation tries
+  through the five mutators of `RSpaceContinuationStore` and will adopt
+  persisted accelerator manifests.
+- The J-number is the one free at the completion commit: J-255 was the last
+  entry, so this entry is J-256, and task 7929's entry takes the next free
+  number at its own completion.
+
+Cited works: M. Abadi and L. Lamport, "The existence of refinement mappings",
+*Theoretical Computer Science* 82(2):253–284, 1991,
+[doi:10.1016/0304-3975(91)90224-P](https://doi.org/10.1016/0304-3975(91)90224-P);
+K. Claessen and J. Hughes, "QuickCheck: a lightweight tool for random testing of
+Haskell programs", *Proceedings of the Fifth ACM SIGPLAN International
+Conference on Functional Programming (ICFP '00)*, 268–279, 2000,
+[doi:10.1145/351240.351266](https://doi.org/10.1145/351240.351266);
+R. A. DeMillo, R. J. Lipton and F. G. Sayward, "Hints on test data selection:
+help for the practicing programmer", *Computer* 11(4):34–41, 1978,
+[doi:10.1109/C-M.1978.218136](https://doi.org/10.1109/C-M.1978.218136);
+J. R. Driscoll, N. Sarnak, D. D. Sleator and R. E. Tarjan, "Making data
+structures persistent", *Journal of Computer and System Sciences*
+38(1):86–124, 1989,
+[doi:10.1016/0022-0000(89)90034-2](https://doi.org/10.1016/0022-0000(89)90034-2);
+H. T. Kung and J. T. Robinson, "On optimistic methods for concurrency control",
+*ACM Transactions on Database Systems* 6(2):213–226, 1981,
+[doi:10.1145/319566.319567](https://doi.org/10.1145/319566.319567);
+L. Lamport, "The temporal logic of actions", *ACM Transactions on Programming
+Languages and Systems* 16(3):872–923, 1994,
+[doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726).
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

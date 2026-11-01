@@ -2231,8 +2231,8 @@ Task 8011 was delivered in seven slices:
 |---|---|---|
 | 8011.1 | The channel-scope Rocq model [`TwoLevelRSpaceReceiveAcceleratorChannelScope.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScope.v), capstones RAC-CS-01 to RAC-CS-07, and its companion [`TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v`](../../../formal/rocq/stack_safe_pda/theories/TwoLevelRSpaceReceiveAcceleratorChannelScopeMutants.v), a bridge theorem and refutations RAC-CSMUT-01 to RAC-CSMUT-04 | `101a6db47` |
 | 8011.2 | The store revision token $`\sigma`$ and its five library tests | `ce366d25e` |
-| 8011.3 | The framed occurrence index inside the continuation store, maintained by its five mutators and left Absent when maintenance fails | `6221a8271`, `26457c364` |
-| 8011.4 | Handles, channel-scoped reads, receive identifiers, scope hydration and two-phase publication | `7fc00fab4`, `445b62acc`, `b58ec3bb3`, `1724e5671` |
+| 8011.3 | The framed occurrence index inside the continuation store, maintained by its five mutators | `6221a8271` |
+| 8011.4 | Fault containment that leaves the index Absent when its maintenance fails, handles, channel-scoped reads, receive identifiers, scope hydration and two-phase publication | `26457c364`, `7fc00fab4`, `445b62acc`, `b58ec3bb3`, `1724e5671` |
 | 8011.5 | The production adapter of the 8010 harness and the 31 production specification tests | `9c7d95270`, `11c1b9eb0`, `4129b4fb5`, `2556105e6`, `ab8df3f38`, `7c433958d` |
 | 8011.6 | Adoption bound to the semantic manifest, and the five production Rholang tests | `bfd6aad90`, `c5dc35be4`, `6743154da`, `8f806951b` |
 | 8011.7 | The runner flag, the registry entries and their checker, the isolation check, the production controls RAC-RS-26 to RAC-RS-50, the two figures, this subsection, the catalog rows and the journal entry | `8dfacd194` to `a0217225b`, the commit that adds this subsection, and the two that follow it |
