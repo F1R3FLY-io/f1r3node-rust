@@ -736,7 +736,7 @@ where
         A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
         K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
     {
-        let setup = Self::create_history_repo(store).unwrap();
+        let setup = Self::create_history_repo(store)?;
         let (history_reader, store) = setup;
         let space = Self::apply(Arc::new(history_reader), store, matcher);
         Ok(space)
@@ -761,7 +761,7 @@ where
         A: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
         K: Clone + Debug + Default + Send + Sync + Serialize + ColdStoreDecode + 'static,
     {
-        let setup = Self::create_history_repo(store).unwrap();
+        let setup = Self::create_history_repo(store)?;
         let (history_repo, store) = setup;
         let history_repo_arc = Arc::new(history_repo);
 

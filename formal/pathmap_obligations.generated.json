@@ -287,7 +287,7 @@
       "checker": "scripts/check-atomic-checkpoint-obligations.py",
       "family": "atomic_checkpoint",
       "manifest": "formal/atomic_checkpoint_obligations.generated.json",
-      "manifest_sha256": "34bc6776082c70d78d2a6ef8a2b53c6fa4ff8fd77a35e41547e7bde60ecb569f",
+      "manifest_sha256": "74a2d41361ab18aee6d731fcac1ef54ec97f05c486cd0d0bb4bb9e3b31b587b1",
       "obligations": {
         "causal_mutants": [
           {
@@ -408,7 +408,7 @@
             "test": "no_op_writes_nothing_and_does_not_advance_generation"
           }
         ],
-        "test_sha256": "3f36ff5b6383d0d571125f713d85dc805b5fa5336d41a18b42697880afda6987"
+        "test_sha256": "53892e7697fdc0540de34100359974739633c9c790a8fe8c00c3d733350ce488"
       }
     },
     {
@@ -8686,7 +8686,7 @@
       "checker": "scripts/check-workspace-regression-obligations.py",
       "family": "workspace_regression",
       "manifest": "formal/workspace_regression_obligations.generated.json",
-      "manifest_sha256": "f420193e890796e74e8bf5b9a25050aba7cc568ca897a0b93e8c5a38abf4d484",
+      "manifest_sha256": "50855f0db2aeabbb1ec83fcd80c577aad3677192ed1c93845ef65c778e641c84",
       "obligations": {
         "controls": [
           {
@@ -9049,7 +9049,7 @@
           "rspace++/src/rspace/state/rspace_state_authority.rs": "604e984c6cafdf8d1321349e17d9d505d3017beda1ab4a54e97e7dd8b4defb43",
           "rspace++/tests/persistence/generation_checkpoint_properties.rs": "786c771c8810030ff1fd2816e43aa67762408fb8daf08454b516a713493ab673",
           "rspace++/tests/persistence/mod.rs": "2738e4da506a295ffa2340100874fd3c2e310f0f895acf6aa76c859c50001064",
-          "rspace++/tests/state/atomic_state_authority.rs": "3f36ff5b6383d0d571125f713d85dc805b5fa5336d41a18b42697880afda6987",
+          "rspace++/tests/state/atomic_state_authority.rs": "53892e7697fdc0540de34100359974739633c9c790a8fe8c00c3d733350ce488",
           "shared/Cargo.toml": "eb329b1f634d0cfbc623f9a28007d221b4f6100cb6d12638023072d73dd229c0",
           "shared/tests/workspace_regression_formal_bindings.rs": "cbf69fba3ac5d18cd48fe196036768e29368ccae1ae1a0dfb354482c961e0823"
         }

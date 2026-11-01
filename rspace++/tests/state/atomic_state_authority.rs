@@ -16,6 +16,8 @@ use crate::rspace::history::history::{History, HistoryInstances};
 use crate::rspace::history::history_action::{HistoryAction, InsertAction};
 use crate::rspace::history::instances::radix_history::PreparedHistoryCheckpoint;
 use crate::rspace::history::roots_store::CurrentRoot;
+use crate::rspace::r#match::Match;
+use crate::rspace::rspace::{RSpace, RSpaceStore};
 use crate::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
 use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use crate::rspace::shared::lmdb_dir_store_manager::{Db, LmdbDirStoreManager, LmdbEnvConfig};
@@ -821,6 +823,51 @@ fn legacy_facet_mismatch_conversions_keep_their_typed_source() {
                 .expect("roots facet reads")
                 .is_some()
         );
+    }
+}
+
+struct EqualStrings;
+
+impl Match<String, String, String> for EqualStrings {
+    fn get(&self, pattern: &String, datum: &String) -> Option<String> {
+        (pattern == datum).then(|| datum.clone())
+    }
+}
+
+fn store_with_malformed_current_root() -> RSpaceStore {
+    let authority = RSpaceStateAuthority::in_memory();
+    let AuthorityBackend::Memory(state) = &authority.backend else {
+        unreachable!()
+    };
+    state
+        .lock()
+        .expect("authority state lock")
+        .roots
+        .insert(CURRENT_ROOT_KEY.to_vec(), b"malformed-current".to_vec());
+    RSpaceStore::new(authority)
+}
+
+#[test]
+fn rspace_constructors_propagate_a_failing_store_as_an_error() {
+    type StringSpace = RSpace<String, String, String, String>;
+    let matcher =
+        || -> Arc<Box<dyn Match<String, String, String>>> { Arc::new(Box::new(EqualStrings)) };
+    let is_malformed_current_root = |error: &HistoryRepositoryError| {
+        matches!(
+            error,
+            HistoryRepositoryError::RootError(RootError::CorruptRootCatalog(message))
+                if message == "current-root value has an unknown version or invalid length"
+        )
+    };
+    match StringSpace::create(store_with_malformed_current_root(), matcher()) {
+        Ok(_) => panic!("RSpace::create accepted a store whose current root is malformed"),
+        Err(error) => assert!(is_malformed_current_root(&error), "unexpected error {error}"),
+    }
+    match StringSpace::create_with_replay(store_with_malformed_current_root(), matcher()) {
+        Ok(_) => {
+            panic!("RSpace::create_with_replay accepted a store whose current root is malformed")
+        }
+        Err(error) => assert!(is_malformed_current_root(&error), "unexpected error {error}"),
     }
 }
 

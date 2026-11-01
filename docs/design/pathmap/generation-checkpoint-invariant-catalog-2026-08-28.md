@@ -6618,6 +6618,57 @@ land, not in numeric order.
 |---|---|---|
 | OG-12 | Typed refusal of an unavailable legacy facet. For each of the three facets, the mismatch converts into `HistoryError`, into `HistoryRepositoryError` (directly and through `HistoryError`), into `StateExportError` and into `StateImportError` as the `BackendMismatch` variant holding the same facet, and each converted message contains the mismatch's own. It converts into `heed::Error::Io` holding an I/O error of kind `Other` whose message equals the mismatch's and whose source downcasts to the same mismatch. The in-memory authority and an initialized LMDB authority still serve all three facets: the history and cold facets read as empty maps, and the roots facet holds the current-root record. | `legacy_facet_mismatch_conversions_keep_their_typed_source` |
 
+### Fallible RSpace constructors (2026-11-01)
+
+`RSpace::create` and `RSpace::create_with_replay` in
+[`rspace.rs`](../../../rspace++/src/rspace/rspace.rs) build a space over an
+`RSpaceStore`, which wraps the state authority. Both return
+`Result<_, HistoryRepositoryError>`, and both begin with `create_history_repo`,
+which opens the history repository over the authority and builds the hot store
+from the history at the current root. Until this slice each constructor called
+`.unwrap()` on that result, so a store that the repository refused made the
+caller panic, although the signature promised a `Result`. The replay reader that
+`create_with_replay` opens next already passed its refusal on with `?`.
+
+This slice, the fourth leaf of the operation gate, replaces both `.unwrap()`
+calls with `?`. Every refusal of `create_history_repo` now reaches the caller as
+the `HistoryRepositoryError` it already was, with its variant and message
+intact. The signatures do not change, and a store that the repository accepts
+builds the same space as before, so no successful construction, persisted byte,
+root or wire message changes. The durable backend that task 7931 adds will
+refuse some stores with a typed error when the repository is opened, and a
+constructor that panics would turn each such refusal into a process abort.
+
+The refusals that now reach the caller are those of the steps of
+`create_history_repo`:
+
+| Step | What it refuses | Arrives as |
+|---|---|---|
+| `RSpaceStateAuthority::initialize_for_records` | an LMDB legacy state it cannot complete, or a current-root record it cannot decode | `HistoryRepositoryError::RootError` |
+| `RSpaceStateAuthority::current_root` | an authority with no current root | `HistoryRepositoryError::RootError` |
+| `HistoryInstances::create_authorized` | a current root that is not verified, an unavailable history facet, or a root node it cannot load | `HistoryRepositoryError::HistoryError` |
+| `RSpaceStateAuthority::cold_store` | an unavailable cold facet (OG-12) | `HistoryRepositoryError::HistoryError` holding `HistoryError::BackendMismatch` |
+| `HistoryRepository::get_history_reader` | a history reader it cannot open at the current root | `HistoryRepositoryError::HistoryError` |
+
+`rspace_constructors_propagate_a_failing_store_as_an_error` builds each space
+over an in-memory authority whose current-root record is the 17 bytes
+`malformed-current`. A current-root record is 61 bytes: the 21-byte versioned
+prefix `rspace-current-root\0\x01`, an 8-byte generation and a 32-byte root.
+`initialize_for_records` refuses the 17-byte record because it has neither that
+length nor that prefix. An in-memory store needs no files, so the refusal is
+deterministic, and the record is the one that
+`lmdb_rejects_malformed_current_and_membership_records` writes into an LMDB
+authority. Both constructors must return
+`HistoryRepositoryError::RootError(RootError::CorruptRootCatalog(..))` with the
+message `current-root value has an unknown version or invalid length`. With
+either `.unwrap()` restored, the test panics instead.
+
+**The OG row.**
+
+| ID | Required property | Test |
+|---|---|---|
+| OG-39 | Constructor refusal. Over a store whose history repository cannot be opened, `RSpace::create` and `RSpace::create_with_replay` each return `Err` holding the repository's own error instead of panicking. For an in-memory authority whose current-root record is malformed, that error is `HistoryRepositoryError::RootError(RootError::CorruptRootCatalog(..))` with the message `current-root value has an unknown version or invalid length`. | `rspace_constructors_propagate_a_failing_store_as_an_error` |
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -6852,6 +6903,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | SW-03 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedReachability.decrement_changes_unique_inventory` | P | Production refinement of last-reference deletion (task 7929). The current deactivation expands each object of the deleted closure once, and each object that loses its last current reference leaves the current inventory while its retained count stays positive. |
 | SW-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 11989): the measurement harness's record contract, schedule and fail-closed probes. No model states a property of the harness; the trusted commit's work that it measures is SW-01 to SW-03's. |
 | OG-12 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result types of the legacy facet accessors and the conversion of an unavailable facet into each caller's error type. No model states a property of Rust accessor results or error types. |
+| OG-39 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result of the RSpace constructors when the history repository refuses the store. No model states a property of Rust constructor results or panics. |
 
 ## Generator discipline
 
@@ -7261,6 +7313,24 @@ were regenerated. No persisted byte, root, identity or wire message changed:
 the in-memory and LMDB backends serve every facet as before. See the fallible
 legacy state-authority facets section and pgmcp artifacts 1565 and 1566 for
 the gate and measurement logs.
+
+The 2026-11-01 constructor slice of task 7931 adds OG-39, so the
+catalog/derivation/binding registry now contains **229** IDs. On an export of
+the candidate tree, OG-39 and the 27 other atomic-state-authority tests passed
+in release and in debug. Two production controls each made OG-39, and only
+OG-39, fail among those 28 tests: the `.unwrap()` restored in `RSpace::create`,
+and the `.unwrap()` restored in `create_with_replay`. In each, the constructor
+panicked instead of returning the refusal. The library tests passed with 894
+tests in release (10 ignored), the `mod` target with 179, and every rspace++
+test target with 1,454 tests in 28 binaries (13 ignored); the manifest test
+passed. `cargo check` of every workspace target passed, with the same eight
+warnings as before, all in files this slice does not touch, and clippy passed
+on `rspace_plus_plus` with warnings denied. The atomic-checkpoint and
+workspace-regression registries hash the edited test file, so both were
+regenerated, and the PathMap aggregate takes their new manifest digests. No
+successful construction, persisted byte, root, identity or wire message
+changed. See the fallible RSpace constructors section and pgmcp artifacts 1572
+and 1573 for the gate and measurement logs.
 
 ## Caller-authority contract (2026-09-06)
 
