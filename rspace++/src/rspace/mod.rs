@@ -39,6 +39,7 @@ pub mod replay_rspace_interface;
 pub mod errors;
 pub mod replay_rspace;
 pub(crate) mod record_index;
+pub mod receive_accelerator;
 #[cfg(feature = "record-order-index-experiment")]
 #[doc(hidden)]
 pub use record_index::order_index_experiment;

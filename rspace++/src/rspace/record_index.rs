@@ -26,7 +26,8 @@ use super::ordered_receive::{
     ContinuationFieldBounds, OrderedReceiveError, OrderedReceiveView, PreparedContinuationRecord,
     RestingReceiveVisit,
 };
-use super::rho_path::{RhoPathEncode, RhoPathV1};
+use super::receive_accelerator::ReceiveOccurrenceIndex;
+use super::rho_path::{RhoPathEncode, RhoPathError, RhoPathV1};
 use super::serializers::serializers::encode_join_record;
 use crate::rspace::persistence::{
     CanonicalBlob, CanonicalBlobKind, CanonicalEncode, ContentTransition, ObjectRefV1,
@@ -384,6 +385,15 @@ struct PendingRecord<R> {
 
 impl<R> StoredRecord<R> {
     pub(crate) fn path(&self) -> &Arc<[u8]> { &self.path }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by library tests until task 12002 resolves receive identifiers"
+        )
+    )]
+    pub(crate) fn identity_path(&self) -> Option<&Arc<[u8]>> { self.identity_path.as_ref() }
 
     pub(crate) fn value(&self) -> &R { &self.value }
 
@@ -1190,6 +1200,8 @@ pub(crate) struct RSpaceContinuationStore<
     pending_delta: BagDelta,
     pending_content: PathMap<ContentTransition>,
     pending_source_bytes: PathMap<Arc<[u8]>>,
+    receive_index: Option<ReceiveOccurrenceIndex>,
+    loads: u64,
 }
 
 impl<C, P, K> Default for RSpaceContinuationStore<C, P, K>
@@ -1205,6 +1217,8 @@ where
             pending_delta: BagDelta::new(),
             pending_content: PathMap::new(),
             pending_source_bytes: PathMap::new(),
+            receive_index: None,
+            loads: 0,
         }
     }
 }
@@ -1228,6 +1242,7 @@ where
         continuations: Vec<WaitingContinuation<P, K>>,
     ) {
         let prefix = RhoPathV1::continuation_prefix(&channels);
+        let receive_support = self.receive_support(&prefix);
         let records = continuations
             .into_iter()
             .map(|continuation| {
@@ -1242,6 +1257,8 @@ where
         self.resting
             .set_group_with_refs(&prefix, Arc::from(channels), records, false)
             .expect("typed continuation records must have an injective frozen encoding");
+        self.count_load();
+        self.maintain_receive_index(&prefix, receive_support);
     }
 
     pub(crate) fn put_prepared(
@@ -1251,6 +1268,7 @@ where
         prepared: PreparedContinuationRecord,
     ) -> bool {
         let prefix = RhoPathV1::continuation_prefix(channels);
+        let receive_support = self.receive_support(&prefix);
         // The live primary trie and its multiplicity delta are keyed by the
         // complete canonical record bytes. The semantic ContinuationMap
         // content journal uses the separate framed, source-free identity path.
@@ -1291,6 +1309,7 @@ where
             self.pending_source_bytes
                 .insert(&identity_path, source_bytes);
         }
+        self.maintain_receive_index(&prefix, receive_support);
         inserted
     }
 
@@ -1370,15 +1389,13 @@ where
         channels: &[C],
         path: &[u8],
     ) -> Option<WaitingContinuation<P, K>> {
-        let record = self
-            .resting
-            .get_path(&RhoPathV1::continuation_prefix(channels), path);
+        let prefix = RhoPathV1::continuation_prefix(channels);
+        let receive_support = self.receive_support(&prefix);
+        let record = self.resting.get_path(&prefix, path);
         let identity_path = record
             .as_ref()
             .and_then(|record| record.identity_path.clone());
-        let removed = self
-            .resting
-            .remove_path(&RhoPathV1::continuation_prefix(channels), path);
+        let removed = self.resting.remove_path(&prefix, path);
         if removed.is_some() {
             self.pending_delta
                 .record_removal(path, Multiplicity::new(1).expect("one is nonzero"))
@@ -1397,14 +1414,16 @@ where
             );
             self.pending_source_bytes.remove_val_at(identity_path, true);
         }
+        self.maintain_receive_index(&prefix, receive_support);
         removed
     }
 
     pub(crate) fn install(&mut self, channels: &[C], continuation: WaitingContinuation<P, K>) {
-        self.installed.insert(
-            RhoPathV1::continuation_prefix(channels),
-            Arc::new((Arc::from(channels), continuation)),
-        );
+        let prefix = RhoPathV1::continuation_prefix(channels);
+        let receive_support = self.receive_support(&prefix);
+        self.installed
+            .insert(&prefix, Arc::new((Arc::from(channels), continuation)));
+        self.maintain_receive_index(&prefix, receive_support);
     }
 
     pub(crate) fn installed(&self, channels: &[C]) -> Option<WaitingContinuation<P, K>> {
@@ -1504,6 +1523,196 @@ where
         self.pending_delta = BagDelta::new();
         self.pending_content = PathMap::new();
         self.pending_source_bytes = PathMap::new();
+        self.receive_index = None;
+        self.count_load();
+    }
+
+    pub(crate) fn build_receive_index(&self) -> Result<ReceiveOccurrenceIndex, RhoPathError> {
+        let mut index = ReceiveOccurrenceIndex::new();
+        self.resting
+            .try_visit_groups(|prefix, group| match group.len {
+                0 => Ok(()),
+                _ => index.insert_group(prefix),
+            })?;
+        let mut cursor = self.installed.read_zipper();
+        if cursor.val().is_some() {
+            index.insert_group(cursor.path())?;
+        }
+        while cursor.to_next_get_val().is_some() {
+            index.insert_group(cursor.path())?;
+        }
+        Ok(index)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "built only by library tests until task 12002 adds the HotStore read path"
+        )
+    )]
+    pub(crate) fn rebuild_receive_index(&mut self) -> bool {
+        match self.build_receive_index() {
+            Ok(index) => {
+                self.receive_index = Some(index);
+                true
+            }
+            Err(_) => {
+                self.receive_index = None;
+                false
+            }
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "published only by library tests until task 12002 adds the two-phase build"
+        )
+    )]
+    pub(crate) fn publish_receive_index(&mut self, index: ReceiveOccurrenceIndex) {
+        self.receive_index = Some(index);
+        #[cfg(test)]
+        self.assert_receive_index_coherent();
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by library tests until task 12002 adds the HotStore read path"
+        )
+    )]
+    pub(crate) fn receive_index(&self) -> Option<&ReceiveOccurrenceIndex> {
+        self.receive_index.as_ref()
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by library tests until task 12002 adds the two-phase build"
+        )
+    )]
+    pub(crate) fn loads(&self) -> u64 { self.loads }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by library tests until task 12002 adds the HotStore read path"
+        )
+    )]
+    pub(crate) fn is_loaded_prefix(&self, prefix: &[u8]) -> bool { self.resting.is_loaded(prefix) }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by library tests until task 12002 adds the HotStore read path"
+        )
+    )]
+    pub(crate) fn loaded_group_channels(&self, prefix: &[u8]) -> Option<&Arc<[C]>> {
+        self.resting.groups.get(prefix).map(|group| &group.key)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by library tests until task 12002 adds the HotStore read path"
+        )
+    )]
+    pub(crate) fn installed_entry(
+        &self,
+        prefix: &[u8],
+    ) -> Option<&Arc<(Arc<[C]>, WaitingContinuation<P, K>)>> {
+        self.installed.get(prefix)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by library tests until task 12002 adds the HotStore read path"
+        )
+    )]
+    pub(crate) fn ordered_resting_records(
+        &self,
+        prefix: &[u8],
+    ) -> Vec<Arc<StoredRecord<WaitingContinuation<P, K>>>> {
+        self.resting.ordered_records(prefix)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by library tests until task 12002 resolves receive identifiers"
+        )
+    )]
+    pub(crate) fn resting_identity_record(
+        &self,
+        prefix: &[u8],
+        identity_path: &[u8],
+    ) -> Option<Arc<StoredRecord<WaitingContinuation<P, K>>>> {
+        self.resting.get_identity_path(prefix, identity_path)
+    }
+
+    fn count_load(&mut self) {
+        self.loads = self
+            .loads
+            .checked_add(1)
+            .expect("the continuation history-load count fits u64");
+    }
+
+    fn receive_support(&self, prefix: &[u8]) -> Option<bool> {
+        self.receive_index
+            .as_ref()
+            .map(|_| self.supports_receive_group(prefix))
+    }
+
+    fn supports_receive_group(&self, prefix: &[u8]) -> bool {
+        self.resting
+            .groups
+            .get(prefix)
+            .is_some_and(|group| group.len != 0) ||
+            self.installed.contains(prefix)
+    }
+
+    fn maintain_receive_index(&mut self, prefix: &[u8], before: Option<bool>) {
+        let Some(before) = before else {
+            return;
+        };
+        let after = self.supports_receive_group(prefix);
+        if let Some(current) = &self.receive_index {
+            let mut replacement = current.clone();
+            let maintained = match (before, after) {
+                (false, true) => replacement.insert_group(prefix),
+                (true, false) => replacement.remove_group(prefix),
+                (false, false) | (true, true) => Ok(()),
+            };
+            self.receive_index = match maintained {
+                Ok(()) => Some(replacement),
+                Err(_) => None,
+            };
+        }
+        #[cfg(test)]
+        self.assert_receive_index_coherent();
+    }
+
+    #[cfg(test)]
+    fn assert_receive_index_coherent(&self) {
+        if let Some(index) = &self.receive_index {
+            let rebuilt = self
+                .build_receive_index()
+                .expect("every stored continuation group prefix parses");
+            assert!(
+                index.same_keys(&rebuilt),
+                "the maintained receive occurrence index equals a fresh build"
+            );
+        }
     }
 }
 
