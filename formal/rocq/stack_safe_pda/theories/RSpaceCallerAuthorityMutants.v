@@ -167,6 +167,30 @@ Example journal_key_only_rebase_misses_a_captured_cell_with_no_old_delta :
     (rebased_count_removal captured (fun _ => 3)) 0 = 1.
 Proof. vm_compute; repeat split. Qed.
 
+Example keeping_the_captured_before_misses_the_receiving_base :
+  ~ exact_content_transition (Some 3) (Some 2) (Some (Some 1, Some 2)) /\
+  rebased_content Nat.eq_dec (Some 3) (Some 2) = Some (Some 3, Some 2) /\
+  exact_content_transition (Some 3) (Some 2) (rebased_content Nat.eq_dec (Some 3) (Some 2)).
+Proof.
+  cbn; split; [intros [before _]; discriminate before|].
+  split; [reflexivity|split; [reflexivity|split; [reflexivity|discriminate]]].
+Qed.
+
+Example copying_captured_sources_misses_bytes_after_a_cross_base_restore :
+  rebased_content Nat.eq_dec (Some 2) (Some 2) = None /\
+  source_of_transition (fun reference : nat => reference)
+    (rebased_content Nat.eq_dec (Some 2) (Some 2)) = None /\
+  source_of_transition (fun reference : nat => reference)
+    (rebased_content Nat.eq_dec (Some 3) (Some 2)) = Some 2.
+Proof. vm_compute; repeat split. Qed.
+
+Example stale_source_bytes_for_a_removed_record_are_not_the_rebased_source :
+  rebased_content Nat.eq_dec (Some 2) None = Some (Some 2, None) /\
+  source_of_transition (fun reference : nat => reference)
+    (rebased_content Nat.eq_dec (Some 2) None) = None /\
+  source_of_transition (fun reference : nat => reference) (Some (Some 1, Some 2)) = Some 2.
+Proof. vm_compute; repeat split. Qed.
+
 Print Assumptions generation_blind_aba_is_not_authorized.
 Print Assumptions ready_bit_alone_cannot_revive_closed_permit.
 Print Assumptions fresh_generation_does_not_replace_owner_identity.
@@ -190,6 +214,9 @@ Print Assumptions dropping_one_of_five_journals_refuses_restore.
 Print Assumptions copying_old_base_count_journals_misses_the_restored_count.
 Print Assumptions omitting_count_removals_misses_a_lower_restored_count.
 Print Assumptions journal_key_only_rebase_misses_a_captured_cell_with_no_old_delta.
+Print Assumptions keeping_the_captured_before_misses_the_receiving_base.
+Print Assumptions copying_captured_sources_misses_bytes_after_a_cross_base_restore.
+Print Assumptions stale_source_bytes_for_a_removed_record_are_not_the_rebased_source.
 
 Set Implicit Arguments.
 

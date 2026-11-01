@@ -515,6 +515,182 @@ Print Assumptions rebased_counts_bounded.
 Print Assumptions rebase_is_zero_outside_overlay_domain.
 Print Assumptions same_base_rebase_is_identity_for_exact_journals.
 
+Section FiveJournalRebase.
+
+Context {Key Ref Bytes Log Counter : Type}.
+Variable ref_eq_dec : forall one other : Ref, {one = other} + {one <> other}.
+Variable source_bytes : Ref -> Bytes.
+
+Record hot_value := HotValue {
+  data_count : nat;
+  continuation_count : nat;
+  continuation_content : option Ref;
+  join_count : nat
+}.
+
+Definition count_delta := (nat * nat)%type.
+Definition content_transition := (option Ref * option Ref)%type.
+Definition hot_journals := five_journals (Key -> count_delta) (Key -> count_delta)
+  (Key -> option content_transition) (Key -> option Bytes) (Key -> count_delta).
+Definition hot_payload := @soft_payload Key hot_value Log Counter (Key -> count_delta)
+  (Key -> count_delta) (Key -> option content_transition) (Key -> option Bytes)
+  (Key -> count_delta).
+
+Definition option_ref_eq_dec (one other : option Ref) : {one = other} + {one <> other}.
+Proof.
+  destruct one as [one|], other as [other|].
+  - destruct (ref_eq_dec one other) as [same|different].
+    + left; rewrite same; reflexivity.
+    + right; intros equal; injection equal; exact different.
+  - right; discriminate.
+  - right; discriminate.
+  - left; reflexivity.
+Defined.
+
+Definition rebased_delta (base target : nat) : count_delta :=
+  (rebased_addition base target, rebased_removal base target).
+
+Definition rebased_content (base target : option Ref) : option content_transition :=
+  if option_ref_eq_dec base target then None else Some (base, target).
+
+Definition source_of_transition (transition : option content_transition) : option Bytes :=
+  match transition with
+  | Some (_, Some reference) => Some (source_bytes reference)
+  | _ => None
+  end.
+
+Definition rebase_journals (payload : hot_payload) (history : Key -> hot_value)
+    : hot_journals :=
+  FiveJournals _ _ _ _ _
+    (fun key => rebased_delta (data_count (history key))
+      (data_count (overlay payload history key)))
+    (fun key => rebased_delta (continuation_count (history key))
+      (continuation_count (overlay payload history key)))
+    (fun key => rebased_content (continuation_content (history key))
+      (continuation_content (overlay payload history key)))
+    (fun key => source_of_transition (rebased_content (continuation_content (history key))
+      (continuation_content (overlay payload history key))))
+    (fun key => rebased_delta (join_count (history key))
+      (join_count (overlay payload history key))).
+
+Definition exact_count_delta (base target : nat) (delta : count_delta) : Prop :=
+  apply_count_delta base (fst delta) (snd delta) = target /\ snd delta <= base /\
+  (fst delta = 0 \/ snd delta = 0).
+
+Definition exact_content_transition (base target : option Ref)
+    (transition : option content_transition) : Prop :=
+  match transition with
+  | None => base = target
+  | Some (before, after) => before = base /\ after = target /\ before <> after
+  end.
+
+Definition hot_journal_refinement (payload : hot_payload) (history : Key -> hot_value)
+    (journals : hot_journals) : Prop :=
+  forall key,
+    exact_count_delta (data_count (history key)) (data_count (overlay payload history key))
+      (journal_data _ _ _ _ _ journals key) /\
+    exact_count_delta (continuation_count (history key))
+      (continuation_count (overlay payload history key))
+      (journal_continuations _ _ _ _ _ journals key) /\
+    exact_content_transition (continuation_content (history key))
+      (continuation_content (overlay payload history key))
+      (journal_content _ _ _ _ _ journals key) /\
+    journal_sources _ _ _ _ _ journals key =
+      source_of_transition (journal_content _ _ _ _ _ journals key) /\
+    exact_count_delta (join_count (history key)) (join_count (overlay payload history key))
+      (journal_joins _ _ _ _ _ journals key).
+
+Lemma rebased_delta_is_exact : forall base target,
+  exact_count_delta base target (rebased_delta base target).
+Proof.
+  unfold exact_count_delta, rebased_delta, apply_count_delta, rebased_addition,
+    rebased_removal; simpl; intros; lia.
+Qed.
+
+Lemma exact_count_delta_is_the_rebased_delta : forall base target delta,
+  exact_count_delta base target delta -> delta = rebased_delta base target.
+Proof.
+  unfold exact_count_delta, rebased_delta, apply_count_delta, rebased_addition,
+    rebased_removal; intros base target [addition removal]; simpl.
+  intros [reconstructed [bounded disjoint]]; f_equal; lia.
+Qed.
+
+Lemma rebased_content_is_exact : forall base target,
+  exact_content_transition base target (rebased_content base target).
+Proof.
+  intros base target; unfold exact_content_transition, rebased_content.
+  destruct (option_ref_eq_dec base target) as [same|different]; [exact same|].
+  split; [reflexivity|split; [reflexivity|exact different]].
+Qed.
+
+Lemma exact_content_transition_is_the_rebased_content : forall base target transition,
+  exact_content_transition base target transition ->
+  transition = rebased_content base target.
+Proof.
+  intros base target transition exact; unfold rebased_content.
+  destruct transition as [[before after]|]; simpl in exact;
+    destruct (option_ref_eq_dec base target) as [same|different].
+  - destruct exact as [from [to changed]]; exfalso; apply changed; rewrite from, to;
+      exact same.
+  - destruct exact as [from [to _]]; rewrite from, to; reflexivity.
+  - reflexivity.
+  - contradiction.
+Qed.
+
+Theorem rebased_journals_refine_soft_restore : forall payload history,
+  hot_journal_refinement payload history (rebase_journals payload history).
+Proof.
+  intros payload history key; simpl.
+  split; [apply rebased_delta_is_exact|].
+  split; [apply rebased_delta_is_exact|].
+  split; [apply rebased_content_is_exact|].
+  split; [reflexivity|apply rebased_delta_is_exact].
+Qed.
+
+Theorem soft_restore_refinement_determines_the_journals : forall payload history journals,
+  hot_journal_refinement payload history journals ->
+  forall key,
+    journal_data _ _ _ _ _ journals key =
+      journal_data _ _ _ _ _ (rebase_journals payload history) key /\
+    journal_continuations _ _ _ _ _ journals key =
+      journal_continuations _ _ _ _ _ (rebase_journals payload history) key /\
+    journal_content _ _ _ _ _ journals key =
+      journal_content _ _ _ _ _ (rebase_journals payload history) key /\
+    journal_sources _ _ _ _ _ journals key =
+      journal_sources _ _ _ _ _ (rebase_journals payload history) key /\
+    journal_joins _ _ _ _ _ journals key =
+      journal_joins _ _ _ _ _ (rebase_journals payload history) key.
+Proof.
+  intros payload history journals refined key; simpl.
+  destruct (refined key) as [data [continuations [content [sources joins]]]].
+  apply exact_content_transition_is_the_rebased_content in content.
+  split; [apply exact_count_delta_is_the_rebased_delta; exact data|].
+  split; [apply exact_count_delta_is_the_rebased_delta; exact continuations|].
+  split; [exact content|].
+  split; [rewrite sources, content; reflexivity|].
+  apply exact_count_delta_is_the_rebased_delta; exact joins.
+Qed.
+
+Corollary every_legacy_overlay_has_a_permitted_restore :
+  forall (authenticated_view_history : mutable_view -> (Key -> hot_value) -> Prop)
+    o p v (payload : hot_payload) history,
+  authorizes o p -> attached o v -> authenticated_view_history v history ->
+  exists journals, permitted_restore authenticated_view_history hot_journal_refinement
+    o p v payload history journals o (restore payload history journals).
+Proof.
+  intros authenticated_view_history o p v payload history permit same authenticated.
+  apply every_legacy_overlay_with_refined_journals_has_a_permitted_restore;
+    [exact permit|exact same|exact authenticated|].
+  exists (rebase_journals payload history).
+  apply rebased_journals_refine_soft_restore.
+Qed.
+
+End FiveJournalRebase.
+
+Print Assumptions rebased_journals_refine_soft_restore.
+Print Assumptions soft_restore_refinement_determines_the_journals.
+Print Assumptions every_legacy_overlay_has_a_permitted_restore.
+
 Module ScopeBytes := ChannelImage.
 Set Implicit Arguments.
 

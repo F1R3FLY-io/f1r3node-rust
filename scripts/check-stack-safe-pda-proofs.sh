@@ -872,9 +872,9 @@ rocq_compile_with_closed_count theories/ChannelImage.v 11 \
 python3 "$repo_root/scripts/check-rci2-channel-image-obligations.py" --check
 python3 "$repo_root/scripts/check-rci2-channel-image-obligations.py" --self-test
 rocq_reject_placeholders theories/RSpaceCallerAuthority.v theories/RSpaceCallerAuthorityMutants.v
-rocq_compile_with_closed_count theories/RSpaceCallerAuthority.v 41 \
+rocq_compile_with_closed_count theories/RSpaceCallerAuthority.v 44 \
   "the exact caller-authority contract capstones"
-rocq_compile_with_closed_count theories/RSpaceCallerAuthorityMutants.v 46 \
+rocq_compile_with_closed_count theories/RSpaceCallerAuthorityMutants.v 49 \
   "the caller-authority negative controls"
 rocq_check_modules "RSpace caller-authority contract" \
   StackSafePDA.RSpaceCallerAuthority StackSafePDA.RSpaceCallerAuthorityMutants
