@@ -413,16 +413,30 @@ pub(crate) fn gate_inputs<'a>(
         .collect()
 }
 
+enum EnvelopeSignatures {
+    Unnormalized,
+    Sealed(WalletOwner),
+    Named(Vec<WalletOwner>),
+}
+
 fn envelope_signatures(deploy: &Signed<DeployData>) -> (Vec<WalletOwner>, Vec<WalletOwner>) {
+    match classify_envelope(deploy) {
+        EnvelopeSignatures::Unnormalized => (Vec::new(), Vec::new()),
+        EnvelopeSignatures::Sealed(process) => (Vec::new(), vec![process]),
+        EnvelopeSignatures::Named(named) => (named, Vec::new()),
+    }
+}
+
+fn classify_envelope(deploy: &Signed<DeployData>) -> EnvelopeSignatures {
     let Some(term) = normalizer_env_from_deploy(deploy)
         .ok()
         .and_then(|env| Compiler::source_to_adt_with_normalizer_env(&deploy.data.term, env).ok())
     else {
-        return (Vec::new(), Vec::new());
+        return EnvelopeSignatures::Unnormalized;
     };
     match self_sealed_envelope(&term) {
-        Some(process) => (Vec::new(), vec![process]),
-        None => (named_owners(&term), Vec::new()),
+        Some(process) => EnvelopeSignatures::Sealed(process),
+        None => EnvelopeSignatures::Named(named_owners(&term)),
     }
 }
 

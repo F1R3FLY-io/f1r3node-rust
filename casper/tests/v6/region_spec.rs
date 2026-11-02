@@ -796,3 +796,93 @@ async fn a_seal_sent_as_data_to_an_owners_contract_draws_on_no_wallet() {
         .expect("the attack replays");
     assert_eq!(again.settled_root, second.settled_root);
 }
+
+#[tokio::test]
+async fn a_term_that_fails_to_normalize_is_charged_to_the_deployer_alone() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let broken = r#"new c(`rho:system:cosignerId:0`), slot in { {% slot :: () %}[c] | nope }"#;
+    let played = executor
+        .execute(
+            &pre,
+            vec![cosigned(broken, 1, &alice, &bob, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block executes");
+    assert_eq!(played.gate.admitted(), vec![true]);
+    assert!(played.processed[0].is_failed);
+    assert!(played.settlement.transfers.is_empty());
+    let debited: Vec<_> = played.settlement.debits.keys().cloned().collect();
+    assert_eq!(debited, vec![wallet(&alice)]);
+    let settled = &played.settled_root;
+    assert_eq!(
+        balance(&rm, settled, &alice).await,
+        100_000 - paid(&played, &alice)
+    );
+    assert_eq!(balance(&rm, settled, &bob).await, 100_000);
+    let again = executor
+        .replay(
+            &pre,
+            played.processed.clone(),
+            &played.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block replays");
+    assert_eq!(again.settled_root, played.settled_root);
+}
+
+#[tokio::test]
+async fn the_nested_kind_form_passes_the_gate_and_draws_only_on_its_sealer() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let mint = r#"new k, d(`rho:system:deployerId`) in {
+        {% d :: d :: d :: () %}[k] | @"pub"!(bundle0{*k}) | @"aid"!(*d)
+    }"#;
+    let give = r#"new d(`rho:system:deployerId`), s in {
+        for (kind <<- @"pub") { {% {% s :: () %}[kind] %}[d] } | @"s"!(*s)
+    }"#;
+    let steal = r#"new s in {
+        for (a <<- @"aid") { for (kind <<- @"pub") { {% {% s :: () %}[kind] %}[a] } }
+    }"#;
+    let mut root = pre.clone();
+    let mut kind = None;
+    for (ts, who, term, fails) in [
+        (1, &alice, mint, false),
+        (2, &alice, give, false),
+        (3, &bob, steal, true),
+    ] {
+        let played = executor
+            .execute(
+                &root,
+                vec![envelope(term, ts, who, 1_000, 1)],
+                block_data(&proposer),
+            )
+            .await
+            .expect("the block executes");
+        assert_eq!(played.gate.admitted(), vec![true], "{term}");
+        assert_eq!(played.processed[0].is_failed, fails, "{term}");
+        let again = executor
+            .replay(
+                &root,
+                played.processed.clone(),
+                &played.gate.entries,
+                block_data(&proposer),
+            )
+            .await
+            .expect("the block replays");
+        assert_eq!(again.settled_root, played.settled_root);
+        root = played.settled_root.clone();
+        if kind.is_none() {
+            kind = TokenKind::from_name(published(&rm, &root, "pub").await);
+        }
+    }
+    let kind = kind.unwrap();
+    let s = WalletOwner::Unforgeable(published(&rm, &root, "s").await);
+    assert_eq!(kind_balance(&rm, &root, &kind, &alice.owner).await, 2);
+    assert_eq!(kind_balance(&rm, &root, &kind, &s).await, 1);
+    assert_eq!(kind_balance(&rm, &root, &kind, &bob.owner).await, 0);
+}

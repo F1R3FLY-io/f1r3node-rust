@@ -125,6 +125,37 @@ fn names_a_kind(signature: &CostSignature, scope: &Scope) -> bool {
     }
 }
 
+enum StackSeal {
+    Kind,
+    KindPaidBy(CostSignature),
+    Wallet,
+}
+
+fn stack_payer(signature: &CostSignature, scope: &Scope) -> StackSeal {
+    let Some(Value::Compound(compound)) = &signature.value else {
+        return if names_a_kind(signature, scope) {
+            StackSeal::Kind
+        } else {
+            StackSeal::Wallet
+        };
+    };
+    let (kinds, payers): (Vec<_>, Vec<_>) = compound
+        .elements
+        .iter()
+        .cloned()
+        .partition(|element| names_a_kind(element, scope));
+    match (kinds.is_empty(), payers.len()) {
+        (true, _) => StackSeal::Wallet,
+        (false, 0) => StackSeal::Kind,
+        (false, 1) => StackSeal::KindPaidBy(payers.into_iter().next().expect("one payer")),
+        (false, _) => StackSeal::KindPaidBy(CostSignature {
+            value: Some(Value::Compound(models::rhoapi::CostSignatureCompound {
+                elements: payers,
+            })),
+        }),
+    }
+}
+
 fn name_signature(signature: &CostSignature, scope: &mut Scope, named: &mut Vec<WalletOwner>) {
     named.push(static_owner(signature, scope).unwrap_or_else(|| unresolved_owner(signature)));
     visit_signature_pars(signature, scope, named);
@@ -173,13 +204,18 @@ fn new_binders(new: &New) -> Vec<Option<WalletOwner>> {
 
 fn visit_par(par: &Par, scope: &mut Scope, named: &mut Vec<WalletOwner>) {
     for term in &par.cost_signed_terms {
-        let kind_stack = term.body.as_ref().is_some_and(is_stack_body)
-            && term
-                .signature
-                .as_ref()
-                .is_some_and(|signature| names_a_kind(signature, scope));
-        if let (Some(signature), false) = (&term.signature, kind_stack) {
-            name_signature(signature, scope, named);
+        let stack_body = term.body.as_ref().is_some_and(is_stack_body);
+        match &term.signature {
+            Some(signature) if stack_body => match stack_payer(signature, scope) {
+                StackSeal::Kind => visit_signature_pars(signature, scope, named),
+                StackSeal::KindPaidBy(payer) => {
+                    name_signature(&payer, scope, named);
+                    visit_signature_pars(signature, scope, named);
+                }
+                StackSeal::Wallet => name_signature(signature, scope, named),
+            },
+            Some(signature) => name_signature(signature, scope, named),
+            None => {}
         }
         if let Some(body) = &term.body {
             visit_par(body, scope, named);

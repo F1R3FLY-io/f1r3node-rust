@@ -87,6 +87,16 @@ fn the_gate_sees_the_deployer_as_the_only_name_of_an_own_signed_term() {
         vec![owner(&ALICE)]
     );
     assert_eq!(named(r#"new x in { x!(1) }"#), vec![]);
+    let nested = r#"new d(`rho:system:deployerId`), s in {
+        for (kind <<- @"pub") { {% {% s :: () %}[kind] %}[d] }
+    }"#;
+    assert_eq!(named(nested), vec![owner(&ALICE)]);
+    let received = r#"new s in {
+        for (a <<- @"aid") { for (kind <<- @"pub") { {% {% s :: () %}[kind] %}[a] } }
+    }"#;
+    assert_eq!(named(received), vec![]);
+    let minted = r#"new k, d(`rho:system:deployerId`) in { {% d :: () %}[k] }"#;
+    assert_eq!(named(minted), vec![]);
 }
 
 #[test]
