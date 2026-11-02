@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -661,6 +661,53 @@ FX-8 joins branches that now differ in shared code. Revision 6 re-audits the mer
    - `hash_seal_spec` (F18, F20, F22), `seal_record_spec` and `seal_wiring_spec`.
    - FX-3's cosigner tests and FX-5's `region_spec` tests.
    - FX-6's F28 test, and lane C's route tests under Decision 67 when they land.
+
+## Revision 6 (action A-8): lane C's route tests under Decision 67
+
+- **Commit audited:** `patch/FX-6` at `ead0663ef` (lane C, second commit on FX-6). It adds route tests to `rholang/tests/seal_record_spec.rs`, adds FX-6 decision 6 (`runs_bound_process` in `eval_receive`), and extends the FX-6 decision log.
+- **Scope:** by Decision 67, lane C lists the routes and owns their coverage. This revision does not analyze whether the list is complete. It records each test, and it checks by reading that each test fails if the `from_data` mark is removed.
+- **Method:** a code reading of the test helper `route` and the eleven tests. No tests were run.
+
+### How each test detects the mark
+
+The helper `route(contract, deliveries)` runs three payloads in turn:
+- `sealed`: a stack sealed by `a`, with `a` bound to Alice's deployer id.
+- `bare`: a bare stack.
+- `mint`: a kind mint.
+
+Alice stores the contract in her own deployment. Bob then delivers the payload in his deployments, along the route that the contract makes. After the deliveries, the helper asserts four things:
+- Alice's and Bob's REV balances are unchanged.
+- The slot holds no REV.
+- For `sealed` and `bare`, at least one error says "inside data".
+- For `mint`, there are no errors and the slot holds one unit of the kind.
+
+In every test, the payload runs inside code that Alice stored, so it runs under Alice's stored record. If the mark is removed, the `sealed` payload passes the region check against Alice's origin, and both the `sealed` and the `bare` payloads draw on Alice's wallet. Alice's balance assertion and the refusal assertion then fail. So each test fails without the mark, for both stack payloads. The `mint` case does not depend on the mark. It checks Decision 68's exception.
+
+Two sources set the mark, and the tests depend on them as follows:
+- `eval_received` sets it when a received variable or a method result runs in process position.
+- FX-6 decision 6 (`runs_bound_process`) stores a continuation under a marked record when the substitution puts a received process into the continuation's stored body.
+- The stored record keeps the mark (FX-6 decision 1).
+
+| # | Route (lane C's list) | Test | Mark that the test depends on | Fails without the mark |
+|---|---|---|---|---|
+| 1 | Drop of a received name | `route_drop_of_a_received_name` | `eval_received` | Yes |
+| 2 | A received process variable | `route_a_received_process_variable` | `eval_received` | Yes |
+| 3 | A method result run as a process | `route_a_method_result_run_as_a_process` | `eval_received` | Yes |
+| 4 | A received value in a stored continuation that fires later | `route_a_received_value_in_a_stored_continuation_that_fires_later` | decision 6, then the stored mark | Yes. Lane C reports that the test failed before decision 6. |
+| 5 | The same, in a contract body | `route_a_received_value_in_a_stored_contract_body` | decision 6, then the stored mark | Yes, as 4 |
+| 6 | Data that comes back out of the tuplespace | `route_data_that_comes_back_out_of_the_tuplespace` | `eval_received` | Yes |
+| 7 | A persistent send | `route_a_persistent_send` | `eval_received` | Yes |
+| 8 | A match binding | `route_a_match_binding` | `eval_received` | Yes |
+| 9 | A received process inside the owner's own region | `route_a_received_process_inside_the_owners_own_region` | `eval_received`, kept through `enter` | Yes |
+| 10 | `new`, `if` and `bundle` bodies | `route_new_if_and_bundle_bodies` | `eval_received` | Yes |
+| 11 | A continuation stored by received data, fired later | `route_a_continuation_stored_by_received_data` | `eval_received`, then the stored mark | Yes |
+
+**Result:** all eleven tests detect the mark's removal for both stack payloads. FX-6 open item 1 records that decision 6 marks the whole stored continuation, so it also refuses an owner's own sealed stack in that body. That is a precision limit, not an authority finding.
+
+### Still open
+
+- **FX-6 open item 2** is FX-8 merge requirement 3: `rho:rev:wallet` and `rho:rev:bond` must refuse a draw under a `from_data` record. The route tests check stacks only. When FX-8 lands, the same routes need a native-draw case. The fixing lane writes those tests.
+- **F32** (lane B), FX-8 (lane A2) and FX-9 (lane B, Decision 69) have not landed.
 
 ## Open questions for review
 
