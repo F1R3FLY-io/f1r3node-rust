@@ -217,6 +217,44 @@ async fn a_stack_literal_moves_one_unit_per_cell_and_replays() {
 }
 
 #[tokio::test]
+async fn a_stripped_envelope_does_not_decode_and_the_complete_envelope_runs_after_it() {
+    use models::rust::casper::protocol::casper_message::DeployData as Wire;
+
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 50_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let address = VaultAddress::from_public_key(&carol.pk)
+        .unwrap()
+        .to_base58();
+    let term = format!(
+        r#"new w(`rho:rev:wallet`), c(`rho:system:cosignerId:0`) in {{
+             w!("transfer", (*c, "{address}", 700), "out")
+           }}"#
+    );
+    let complete = cosigned(&term, 1, &alice, &bob, 1);
+    let mut stripped = complete.clone();
+    stripped.data.cosignatures.clear();
+    assert!(Wire::from_proto(Wire::to_proto_ref(&stripped)).is_err());
+    let decoded =
+        Wire::from_proto(Wire::to_proto_ref(&complete)).expect("the complete envelope decodes");
+    assert_eq!(decoded.sig, stripped.sig);
+    let played = executor
+        .execute(&pre, vec![decoded], block_data(&proposer))
+        .await
+        .expect("the block executes");
+    assert_eq!(played.gate.admitted(), vec![true]);
+    assert_eq!(balance(&rm, &played.settled_root, &carol).await, 700);
+    let refused = executor
+        .execute(&pre, vec![stripped], block_data(&proposer))
+        .await
+        .expect("the block executes");
+    assert_eq!(
+        refused.gate.entries[0].verdict,
+        Verdict::Refused(Refusal::InvalidTerms)
+    );
+}
+
+#[tokio::test]
 async fn native_rev_writes_of_a_run_survive_the_merge() {
     let (alice, bob, proposer) = (party(), party(), party());
     let (rm, pre) = shard(&[(&alice, 10_000)]).await;
@@ -238,8 +276,14 @@ async fn native_rev_writes_of_a_run_survive_the_merge() {
     assert_eq!(balance(&rm, &played.settled_root, &bob).await, 6_000);
 }
 
+fn naming(term: &str, ts: i64, who: &Party, cosigner: &Party, price: i64) -> Signed<DeployData> {
+    let mut data = envelope(term, ts, who, 1_000, price).data;
+    data.required_cosigners = vec![cosigner.pk.bytes.to_vec()];
+    Signed::create(data, Box::new(Secp256k1), who.sk.clone()).unwrap()
+}
+
 fn cosigned(term: &str, ts: i64, who: &Party, cosigner: &Party, price: i64) -> Signed<DeployData> {
-    let mut deploy = envelope(term, ts, who, 1_000, price);
+    let mut deploy = naming(term, ts, who, cosigner, price);
     let cosignature = Cosignature::sign(&deploy, &cosigner.sk, &Secp256k1.name()).unwrap();
     deploy.data.cosignatures.push(cosignature);
     deploy

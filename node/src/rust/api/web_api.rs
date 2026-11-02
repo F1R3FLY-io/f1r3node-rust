@@ -1864,9 +1864,10 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
     let deploy_data = request.data.clone();
 
     // Create signed deploy
-    Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
+    let signed = Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
         .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
+        .ok_or_else(|| eyre!("Failed to create signed deploy"))?;
+    DeployData::with_complete_cosignatures(signed).map_err(|e| eyre!("Invalid cosignatures: {}", e))
 }
 
 // Conversion functions for protobuf generated types
@@ -2489,6 +2490,7 @@ mod tests {
                 expiration_timestamp: None,
                 parameters: Vec::new(),
                 cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             deployer: "0123456789abcdef".to_string(),
             signature: "fedcba9876543210".to_string(),
@@ -3403,6 +3405,7 @@ mod tests {
             expiration_timestamp: None,
             parameters: Vec::new(),
             cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         }
     }
 

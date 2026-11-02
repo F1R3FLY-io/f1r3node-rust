@@ -352,6 +352,7 @@ message DeployDataProto {
   int64 expirationTimestamp   = 13;//optional millisecond timestamp after which deploy is invalid (0 = no expiration)
   repeated DeployParameter parameters = 14;
   repeated DeployCosignature cosignatures = 15;
+  repeated bytes requiredCosigners = 16;
 }
 
 message DeployCosignature {

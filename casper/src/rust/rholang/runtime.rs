@@ -1060,6 +1060,7 @@ impl RuntimeOps {
                 expiration_timestamp: None,
                 parameters: Vec::new(),
                 cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             };
 
             let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();

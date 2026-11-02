@@ -6,6 +6,7 @@ use casper::rust::util::comm::grpc_propose_service::GrpcProposeService;
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use crypto::rust::private_key::PrivateKey;
+use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use crypto::rust::util::key_util::KeyUtil;
@@ -236,10 +237,19 @@ fn run_cli(options: Options, rt: &Runtime, console: &mut impl ConsoleIO) -> Resu
                     private_key,
                     private_key_path,
                     shard_id,
+                    cosigners,
                     envelope,
                     location,
                 } => {
                     let private_key = get_private_key(private_key, private_key_path, console)?;
+                    let cosigners = cosigners
+                        .iter()
+                        .map(|key| {
+                            hex::decode(key)
+                                .map(|bytes| PublicKey::from_bytes(&bytes))
+                                .map_err(|e| eyre::eyre!("Bad cosigner key {key}: {e}"))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
                     let params = DeployParams {
                         phlo_limit,
                         phlo_price,
@@ -250,6 +260,7 @@ fn run_cli(options: Options, rt: &Runtime, console: &mut impl ConsoleIO) -> Resu
                         &location,
                         &envelope,
                         &params,
+                        &cosigners,
                         &private_key,
                     ));
                     Ok(())

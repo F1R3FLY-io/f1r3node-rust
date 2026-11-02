@@ -69,6 +69,7 @@ fn create_deploy(
         expiration_timestamp,
         parameters: Vec::new(),
         cosignatures: Vec::new(),
+        required_cosigners: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())

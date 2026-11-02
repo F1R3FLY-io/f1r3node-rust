@@ -127,6 +127,7 @@ mod tests {
                 expiration_timestamp: None,
                 parameters: Vec::new(),
                 cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             pk: PublicKey::from_bytes(&[1, 2, 3, 4]),
             sig: Bytes::from(vec![5, 6, 7, 8]),

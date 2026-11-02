@@ -416,6 +416,7 @@ mod tests {
             expiration_timestamp: Some(500),
             parameters,
             cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         }
     }
 

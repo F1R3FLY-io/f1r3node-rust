@@ -878,7 +878,9 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
         .unwrap();
     assert!(alone.settlement.transfers.is_empty());
 
-    let mut by_quorum = envelope(&refuse, 5, &bob, 50_000, 1);
+    let mut quorum_data = envelope(&refuse, 5, &bob, 50_000, 1).data;
+    quorum_data.required_cosigners = vec![dave.pk.bytes.to_vec()];
+    let mut by_quorum = Signed::create(quorum_data, Box::new(Secp256k1), bob.sk.clone()).unwrap();
     by_quorum
         .data
         .cosignatures

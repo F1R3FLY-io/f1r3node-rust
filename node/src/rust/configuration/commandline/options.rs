@@ -798,6 +798,12 @@ pub enum CosignAction {
         #[arg(long = "shard-id", default_value = "", help = "The name of the shard")]
         shard_id: String,
 
+        #[arg(
+            long = "cosigner",
+            help = "A required cosigner's public key encoded as Base16 (repeat for each cosigner, in order)"
+        )]
+        cosigners: Vec<String>,
+
         #[arg(long = "envelope", help = "Envelope file to write")]
         envelope: String,
 
@@ -1116,6 +1122,10 @@ mod wallet_clap_tests {
             "2",
             "--private-key",
             KEY,
+            "--cosigner",
+            "04aa",
+            "--cosigner",
+            "04bb",
             "--envelope",
             "e.hex",
             "deploy.rho",
@@ -1129,12 +1139,14 @@ mod wallet_clap_tests {
             phlo_price,
             envelope,
             location,
+            cosigners,
             ..
         } = c.action
         else {
             panic!("expected prepare");
         };
         assert_eq!((phlo_limit, phlo_price), (1000, 2));
+        assert_eq!(cosigners, vec!["04aa".to_string(), "04bb".to_string()]);
         assert_eq!(
             (envelope.as_str(), location.as_str()),
             ("e.hex", "deploy.rho")
