@@ -312,6 +312,146 @@ async fn a_kind_minted_inside_data_still_mints_and_a_received_kind_name_still_mo
     .await;
 }
 
+const PAYLOADS: [(&str, &str); 3] = [
+    ("sealed", "{% slot :: () %}[a]"),
+    ("bare", "slot :: ()"),
+    ("mint", "{% slot :: () %}[k]"),
+];
+
+async fn route(contract: &str, deliveries: &[&str]) {
+    let contract = contract.to_string();
+    let deliveries: Vec<String> = deliveries.iter().map(|d| d.to_string()).collect();
+    for (n, (name, payload)) in PAYLOADS.iter().enumerate() {
+        let contract = contract.clone();
+        let deliveries = deliveries.clone();
+        sealed_runtime(|runtime| async move {
+            let setup =
+                format!(r#"new d(`rho:system:deployerId`) in {{ @"aid"!(*d) | {contract} }}"#);
+            assert!(run(&runtime, &ALICE, &[], 1, &setup).await.is_empty());
+            let mut errors = Vec::new();
+            for (i, delivery) in deliveries.iter().enumerate() {
+                let source = if i == 0 {
+                    format!(
+                        r#"new slot, k in {{
+                            @"slot"!(*slot) | @"kind"!(bundle0{{*k}}) |
+                            for (a <<- @"aid") {{ {} }}
+                        }}"#,
+                        delivery.replace("PAYLOAD", payload)
+                    )
+                } else {
+                    delivery.clone()
+                };
+                errors.extend(run(&runtime, &BOB, &[], 2 + i as u8, &source).await);
+            }
+            let refused = errors.iter().any(
+                |e| matches!(e, InterpreterError::ReduceError(m) if m.contains("inside data")),
+            );
+            assert_eq!(
+                stacks(&runtime).balance(&owner(&ALICE)).unwrap(),
+                1_000,
+                "{name}"
+            );
+            assert_eq!(
+                stacks(&runtime).balance(&owner(&BOB)).unwrap(),
+                1_000,
+                "{name}"
+            );
+            let slot = slot_owner(&runtime, "slot");
+            assert_eq!(stacks(&runtime).balance(&slot).unwrap(), 0, "{name}");
+            if *name == "mint" {
+                assert!(errors.is_empty(), "{name}: {errors:?}");
+                let WalletOwner::Unforgeable(id) = slot_owner(&runtime, "kind") else {
+                    panic!("a kind is an unforgeable name");
+                };
+                let kind = TokenKind::from_name(id).unwrap();
+                assert_eq!(stacks(&runtime).of_kind(&kind).balance(&slot).unwrap(), 1);
+            } else {
+                assert!(refused, "{name} on route {n}: {errors:?}");
+            }
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn route_drop_of_a_received_name() {
+    route(r#"for (p <= @"r") { *p }"#, &[r#"@"r"!(PAYLOAD)"#]).await;
+}
+
+#[tokio::test]
+async fn route_a_received_process_variable() {
+    route(r#"for (@p <= @"r") { p }"#, &[r#"@"r"!(PAYLOAD)"#]).await;
+}
+
+#[tokio::test]
+async fn route_a_method_result_run_as_a_process() {
+    route(r#"for (@l <= @"r") { l.nth(0) }"#, &[r#"@"r"!([PAYLOAD])"#]).await;
+}
+
+#[tokio::test]
+async fn route_a_received_value_in_a_stored_continuation_that_fires_later() {
+    route(
+        r#"for (@p <= @"r") { for (_ <- @"go") { p } }"#,
+        &[r#"@"r"!(PAYLOAD)"#, r#"@"go"!(0)"#],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn route_data_that_comes_back_out_of_the_tuplespace() {
+    route(
+        r#"for (_ <= @"go") { for (@q <<- @"store") { q } }"#,
+        &[r#"@"store"!(PAYLOAD)"#, r#"@"go"!(0)"#],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn route_a_persistent_send() {
+    route(r#"for (@p <- @"r") { p }"#, &[r#"@"r"!!(PAYLOAD)"#]).await;
+}
+
+#[tokio::test]
+async fn route_a_match_binding() {
+    route(
+        r#"for (@m <= @"r") { match m { x => x } }"#,
+        &[r#"@"r"!(PAYLOAD)"#],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn route_a_received_process_inside_the_owners_own_region() {
+    route(r#"for (@p <= @"r") { {% p %}[d] }"#, &[r#"@"r"!(PAYLOAD)"#]).await;
+}
+
+#[tokio::test]
+async fn route_new_if_and_bundle_bodies() {
+    route(
+        r#"for (@p <= @"r") { new z in { if (true) { bundle0 { p } } else { Nil } } }"#,
+        &[r#"@"r"!(PAYLOAD)"#],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn route_a_continuation_stored_by_received_data() {
+    route(
+        r#"for (@p <= @"r") { p }"#,
+        &[r#"@"r"!(for (_ <- @"go") { PAYLOAD })"#, r#"@"go"!(0)"#],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn route_a_received_value_in_a_stored_contract_body() {
+    route(
+        r#"for (@p <= @"r") { contract @"c"(_) = { p } }"#,
+        &[r#"@"r"!(PAYLOAD)"#, r#"@"c"!(0)"#],
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn a_legacy_runtime_keeps_the_golden_root() {
     with_runtime(
