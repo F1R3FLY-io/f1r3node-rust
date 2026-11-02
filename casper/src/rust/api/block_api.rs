@@ -19,6 +19,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use models::rust::deploy_parameters::DeployParameter;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use prost::bytes::Bytes;
@@ -1967,6 +1968,7 @@ impl BlockAPI {
         use_pre_state_hash: bool,
         dev_mode: bool,
         deployer: Option<PublicKey>,
+        parameters: Vec<DeployParameter>,
     ) -> ApiErr<(Vec<Par>, LightBlockInfo, u64)> {
         let error_message =
             "Could not execute exploratory deploy, casper instance was not available yet.";
@@ -2030,7 +2032,7 @@ impl BlockAPI {
                             let _permit = permit;
                             let _metrics = ExploratoryDeployMetrics::new(task_outcome.clone());
                             let result = task_runtime_manager
-                                .play_exploratory_deploy(term, &state_hash, deployer)
+                                .play_exploratory_deploy(term, &state_hash, deployer, parameters)
                                 .await;
                             if result.is_ok() {
                                 task_outcome.store(
