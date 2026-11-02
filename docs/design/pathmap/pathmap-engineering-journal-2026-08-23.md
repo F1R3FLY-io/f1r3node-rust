@@ -22670,6 +22670,106 @@ L. Lamport, "The temporal logic of actions", *ACM Transactions on Programming
 Languages and Systems* 16(3):872–923, 1994,
 [doi:10.1145/177492.177726](https://doi.org/10.1145/177492.177726).
 
+### J-257 — 2026-11-01: the source-bound DAG transfer contract (task 7938)
+
+**DERIVED.** Task 7938 is the specification leaf of task 5690 that plan section 4.6 states
+as "`RSpaceDagStateTransfer.tla` extends `RSpaceAffineImportLifecycle.tla`. A session is
+bound to (binding digest, catalog generation, bridge version, transfer version, profile),
+and the resume token is (session, acknowledged frontier). Mutants: cross-version resume,
+skipped frontier, mixed session." Before task 7939 streams a closure, four questions need
+exact answers: to what a resumable transfer is bound, when a token may continue, what makes
+a pin authoritative, and what must hold before an imported state becomes known or current.
+J-071 adds a fifth: an unsupported bridge identity is refused without selecting an older
+authority. The catalog section "Source-bound DAG transfer and resume contract" records the
+model, its 31 configurations with their measured state counts, the peer and interruption
+matrix, a state diagram of the session (`figures/dag-transfer-session.svg`) and the rows
+DT-01 to DT-11. Three commits carry the task: `48546c256` adds the model, its
+configurations and its runner; `fcf57e954` makes the stack-safe proof runner call that
+runner; and the commit of this entry adds the catalog section, the figure and this entry.
+
+**DECISIONS.**
+1. Extend, do not parallel. The inherited `Next` is not a disjunct of `TransferNext`,
+   because it would let the transfer's capability publish without a transfer; the
+   capability's terminal page is guarded by full cold admission, and `PROPERTY
+   AffineLifecycleIsPreserved` checks the inherited `Spec` on every transfer behavior.
+2. The binding digest stays abstract because the read path (D1) and the coupled binding's
+   durable carrier (the D3 re-ruling) are undecided. Any carrier must keep it injective
+   over closure, representation and generation; theorem 15 shows why the state version
+   alone is insufficient, and DT-M04 is its transfer analogue.
+3. The catalog generation is part of the session, as the generation is part of the
+   retention resume binding.
+4. A refused resume keeps the token; abort is explicit, discards staging and releases the
+   pin. A new session never inherits staging or a frontier (DT-M03).
+5. One affine capability per target is untouched until admission. Its expected generation
+   stays the initial capture, which is conservative: a stale activation is rejected, not
+   retried.
+6. The FFI boundary model is cited, not co-extended: its `phase`, `Phases`, `Init`,
+   `Next`, `Spec`, `vars` and `TypeInvariant` collide. Abort after admission is therefore
+   the transfer invariant `NoSessionHoldsNothing`.
+7. Catalog generation, transfer version and retention format are physical coordinates and
+   never epochs; the adopted identity is the session's `PreservedLegacyV1` coupled binding.
+8. A later transfer version may reorder the export, so a frontier is interpreted only
+   within its own version.
+
+**CORRECTION.** The design checked the two properties only on the faithful model, so
+neither had a negative control, although the plan requires one for every safety property.
+Two controls were added without changing the module: DT-P01 checks
+`AffineLifecycleIsPreserved` alone against `AffineIncompleteAdoptionMutantSpec`, and DT-P02
+checks `FrontierAdvancesByOne` alone against `SkippedFrontierMutantSpec`. The runner also
+refuses a faithful configuration without either property. The configurations therefore
+number 31, not the 29 of the design.
+
+**MEASURED.** The hand count made before any run predicted, for the faithful model, 47,072
+distinct states, a complete search of depth 20, and 3 to 6 times $`10^5`$ states generated
+in under 15 s; and, for each control, its reported invariant or property and the length
+of its shortest counterexample.
+
+| Claim | Configuration and scope | Result | Prediction |
+|---|---|---|---|
+| the faithful model completes | the gate of `48546c256`, two workers | no error; 2 initial states, 390,674 generated, 47,072 distinct, depth 20, 2 s | as predicted |
+| the same, as the aggregate runner runs it | the gate of `fcf57e954`, one worker | the same counts, no error | as predicted |
+| every control reports its designated text | the gate of `48546c256` | the twelve mutants at traces of 4, 3, 6, 5, 5, 4, 2, 2, 3, 3, 2 and 8 states; the sixteen witnesses at 9, 9, 2, 2, 2, 4, 4, 4, 4, 4, 5, 5, 4, 11, 12 and 3; DT-P01 and DT-P02 at 2 and 3 | every text and every trace as predicted |
+| the hook overrides the aggregate limit | the gate of `fcf57e954` | the runner's 31 TLC scopes all carry `RuntimeMaxSec=120`, none 900 | as predicted |
+| no obligation registry hashes the runner | the exports of `48546c256` and `fcf57e954` | all 17 family checkers and the aggregate registry builder exit 0 under `--check` on both | as stated by the design |
+
+**THE NEGATIVE CONTROLS.** Twelve mutants each weaken one guard or update of the faithful
+model and are killed by their designated invariant; three are the plan's. Sixteen
+witnesses show that each refusal, resume, interruption and adoption path is reachable.
+Two property controls are killed by their property. Five further faults, each a one-line
+change to a scratch copy of the export, failed as predicted:
+
+1. Deleting the refused-pin branch of `ResumeRefusal`: the faithful model reports
+   `ServingIsPinned` violated after Negotiate, Disconnect, PinLapse and Reconnect.
+2. An `Abort` that keeps its staging: `StagingIsSessionBound` is violated after
+   Negotiate, ServePage and Abort.
+3. A runner that expects `StagingIsSessionBound` from `SkippedFrontierMutant` stops after
+   three TLC runs with "failed without its expected invariant".
+4. A faithful configuration without `ActivationGenerationIsCASProtected` stops before any
+   run with "dropped the inherited invariant".
+5. `TLC_RUNTIME_MAX_SEC=1` stops the faithful run just after its initial states, and the
+   runner reports "the faithful model failed", so the variable reaches the scope's limit.
+
+**VERIFICATION BOUNDARY.** One heavy job ran at a time, each in a user scope with
+`MemoryMax=4G` on cores 16 to 31 and 48 to 63, with `TMPDIR` and the TLC metadirectories
+under `target/`.
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| SANY parse | the working-tree module before `48546c256` | no error | `target/perf/logs/phase4/12490-sany-20261101T233205Z.log` (pgmcp artifact 1589) | `4fb3594862bf1c5d717fd63c789d6e29837081d44938b3aa458fdfdafadcc425` |
+| the model gate | the export of `48546c256`'s tree `151db246` | runner exit 0 after 31 TLC runs, the export unchanged | `target/perf/logs/phase4/12490-tlc-gate-20261101T233447Z.log` (artifact 1596) | `43296a5bca2584a2ae17652bbcafe5cbab7f554926c0fc93a64c7361412580b4` |
+| the affine registry | the exports of `d971fad64` and of `151db246`; the working tree before and after | exit 0 on both exports; exit 1 on the working tree both times, from uncommitted registry drift outside this task | artifacts 1592 to 1595 | `7a07f416801773a17109ab3105eb6f9e35e71b485f91c9cb508ee7405b31acc8`, `ae27a898d4079ad7d09d7fa968150d1c9a450752e9b4054ebf0d4f6e73f598d3`, `41874fcb6182500b4cb73fd8450bf3c71df21e3b21bb07474fc07e99abdf3faf`, `6d19ef5eda8effa69d87ae98a6806172353f5609a4a9218685838e10e0e7e3dc` |
+| faults 1 to 4 | scratch copies of the export of `151db246` | as listed above | artifacts 1597 to 1600 | `327a43e2b44c61f8bf947d84798b149bb9b1fc9ae413613d2e6e99f8a201f386`, `e896dc3e900a4c177f124178224f04c6c67910e1477295fcd81b3771bad1d762`, `11aebd4f76ca34f167cc39fdb7c44b6615217a9d5191a5e1442fd2229a8f236d`, `bfbe6002d840b059bd603cf7c0844d24f1e3059452b6e915b94bfc574ac43e3d` |
+| the hook gate and fault 5 | the exports of `48546c256` and of `fcf57e954`'s tree `3a71c933` | every step passed, ending "gate fail=0" | `target/perf/logs/phase4/12491-gate-20261101T234823Z.log` (artifact 1601) | `fb2c9212da14537c52ec567d396b052b60f0a347c6730eb30ac53bd73a7da168` |
+
+The logs live under `target/`, which is not durable; pgmcp holds sanitized copies as the
+artifacts named above, with the repository root written as `.` and the home directory as
+`~`. These are agent-run results; independent review and the approved pgmcp verification
+recipe remain required.
+
+**BOUNDARY.** No production source, wire message, physical format or consensus identity
+changes. Task 7939 discharges DT-01 to DT-10 as executable properties and promotes DT into
+the manifest; task 7940 owns negotiation, a user stop point.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's

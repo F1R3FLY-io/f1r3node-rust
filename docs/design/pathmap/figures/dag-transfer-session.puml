@@ -1,0 +1,84 @@
+@startuml dag-transfer-session
+' ============================================================================
+' One source-bound DAG transfer session (task 7938): the actions of
+' TransferNext in formal/tlaplus/stack_safe_pda/RSpaceDagStateTransfer.tla,
+' which extends the unchanged RSpaceAffineImportLifecycle.tla. Task 7939
+' implements the transfer and task 7940 its node and FFI consumers.
+'   GREY   #E0E0E0  no session: no token, staging or stream; capability unused
+'   BLUE   #BBDEFB  a live stream under the source's pin of the exact session
+'   AMBER  #FFE0B2  link down: the token, the staging and the pins are durable
+'   RED    #FFCDD2  refusals, which open nothing and keep the token, and the
+'                   activation that lost the generation compare-and-swap
+'   GREEN  #C8E6C9  full cold admission, seal and publication of the capability
+'   PURPLE #E1BEE7  the source: restamp, reclamation and pin lapse
+'   DARK GREY arrows  abort, which discards staging and token, releasing the pin
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam StateBorderColor #455A64
+skinparam StateFontSize 13
+skinparam NoteBorderColor #455A64
+
+title <b>One source-bound DAG transfer session</b>\na token resumes only its exact pinned session, and only full cold admission reaches the adoption capability
+
+state "Importer" as Importer #FFFFFF {
+  state "No session" as NoSession #E0E0E0 : no token, no staging, frontier 0, link down;\nthe adoption capability is open and unused
+  state "Streaming" as Streaming #BBDEFB : session <latex>s = (\beta, g, b, t, p)</latex>, token <latex>\tau = (s, f)</latex>\nthe source serves object <latex>f + 1</latex> of <latex>\beta</latex> in the export\norder of <latex>t</latex>, from the generation its pin of <latex>s</latex> holds
+  state "Link down" as Down #FFE0B2 : the token <latex>(s, f)</latex>, the private staging\nand the source's pins are durable
+  state "Admitted" as Admitted #C8E6C9 : full cold admission at <latex>f = n</latex> with\n<latex>\mathrm{Closure}(\beta) \subseteq \mathit{staged}</latex>; terminal page staged,\nclosure verified, the pin released
+  state "Sealed" as Sealed #C8E6C9 : the inherited seal of the capability
+  state "Published" as Published #A5D6A7 : PreserveCurrent adopts a known state,\nActivate a current one
+  state "Rejected" as Rejected #FFCDD2 : a racing activation won\nthe generation compare-and-swap
+
+  [*] --> NoSession
+  NoSession -[#C62828]-> NoSession : Negotiate(p) refused: a legacy-only peer,\nan unactivated bridge identity or a foreign\nprofile; nothing opens, nothing older is chosen
+  NoSession -[#1565C0]-> Streaming : Negotiate(p) accepted: bind s to the\nsource's current generation g and pin it
+  Streaming -[#1565C0]-> Streaming : ServePage stages object f + 1;\nAcknowledgeFrontier persists f + 1\nonly once that object is staged
+  Streaming -[#EF6C00]-> Down : Disconnect: importer crash,\nnetwork loss or source restart
+  Down -[#C62828]-> Down : Reconnect(p) refused: another transfer\nversion, bridge or profile, or the pin of s\nlapsed; the token is kept
+  Down -[#1565C0]-> Streaming : Reconnect(p) accepted: the same t, b and p,\nand the source still pins s
+  Streaming -[#424242]-> NoSession : Abort
+  Down -[#424242]-> NoSession : Abort: staging and token\ndiscarded, the pin released
+  Streaming -[#2E7D32]-> Admitted : AdmitClosure
+  Down -[#2E7D32]-> Admitted : AdmitClosure
+  Admitted -[#2E7D32]-> Sealed : SealTarget
+  Sealed -[#2E7D32]-> Published : PublishTarget
+  Sealed -[#C62828]-> Rejected : RejectTarget
+}
+
+state "Source" as Source #FFFFFF {
+  state "Generation 1" as GenerationOne #E1BEE7 : retained {1}
+  state "Generation 2 beside 1" as GenerationTwoBesideOne #E1BEE7 : retained {1, 2}: the same state restamped\nin another representation, so its binding\ndigest differs while its state version does not
+  state "Generation 2" as GenerationTwo #E1BEE7 : retained {2}
+  [*] --> GenerationOne
+  GenerationOne -[#6A1B9A]-> GenerationTwoBesideOne : SourcePublish, which never moves a pin
+  GenerationTwoBesideOne -[#6A1B9A]-> GenerationTwo : SourceReclaim, only while no\ntransfer pins generation 1
+}
+
+note top of Streaming #E3F2FD
+  ServingIsPinned and StreamMatchesSessionIdentity hold
+  on every live stream; FrontierIsContiguous gives
+  <latex>\mathrm{Ack}(s, f) \subseteq \mathit{staged} \subseteq \mathrm{Ack}(s, \min(f + 1, n))</latex>,
+  and FrontierAdvancesByOne gives <latex>s' = s \Rightarrow f' \in \{f, f + 1\}</latex>
+end note
+
+note bottom of NoSession #F5F5F5
+  NoSessionHoldsNothing: without a session the
+  importer holds no staging, frontier or stream,
+  and the capability is unused
+end note
+
+note left of Published #F1F8E9
+  ColdAdmissionRequiresCompleteClosure and
+  AdoptionRequiresAdmittedClosure: only an admitted,
+  sealed closure of a supported session is published
+end note
+
+note bottom of Source #F3E5F5
+  PinLapse drops every transfer pin while the link is down
+  (a restart without durable pins, or lease expiry), and
+  PinnedGenerationsAreRetained forbids reclaiming a pinned generation
+end note
+@enduml

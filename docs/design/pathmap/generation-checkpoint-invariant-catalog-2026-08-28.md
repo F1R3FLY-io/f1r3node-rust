@@ -7888,6 +7888,197 @@ metadata are not thereby declared consensus preimages. Their format, migration a
 compatibility must still be explicit. Storage metering integration remains separately tracked;
 this fixture does not select a charging representation or change compute/storage costs.
 
+## Source-bound DAG transfer and resume contract (2026-11-01)
+
+**Status: abstract contract model-checked; implementation and qualification remain
+required.** Task 7938 owns this contract. Task 7939 implements the parent-first streaming
+export of the full coupled closure, affine private staging, the persisted resume frontier
+and full cold admission before publication. Task 7940 owns the node and FFI consumers;
+negotiating a DAG transfer version is wire-visible and stays non-default until the user
+confirms it. This checkpoint changes no physical format, wire message, consensus identity
+or production source.
+
+### Session, token and coordinates
+
+Write $`\beta`$ for the binding digest, $`g`$ for the catalog generation, $`b`$ for the
+bridge version, $`t`$ for the transfer version, $`p`$ for the profile, and $`f`$ for the
+acknowledged frontier: the number of leading objects of the closure, in the export order
+of $`t`$, that the importer has staged durably and then acknowledged. A transfer session
+$`s`$ and its resume token $`\tau`$ are
+
+```math
+s = (\beta,\ g,\ b,\ t,\ p), \qquad \tau = (s,\ f), \qquad 0 \le f \le n,
+```
+
+where $`n`$ is the number of objects in the closure that $`\beta`$ names.
+
+The binding digest is abstract. It names the exact coupled semantic-plus-compatibility
+closure (CI-05, CI-06) and the physical representation that the source published at one
+catalog generation, so two representations of one state have different digests, as
+theorems 14 and 15 of `RetentionV2Format.v` require of the retention binding (RV-16). Its
+durable carrier and the read path are pending rulings and are not modelled; whichever
+carrier is chosen must keep the digest injective over closure, representation and
+generation. The bridge version is the identity version of `RSpaceConsensusIdentity.v`,
+where only `PreservedLegacyV1` resolves (CI-10, CI-11, CI-12). The catalog generation and
+the transfer version are physical transfer coordinates: they never enter consensus
+identity and are not epochs (RV-17, LM-12).
+
+### Model
+
+`formal/tlaplus/stack_safe_pda/RSpaceDagStateTransfer.tla` extends the unchanged
+`RSpaceAffineImportLifecycle.tla` (LM-10). The affine session chosen as the transfer target
+is the importer's adoption capability; only cold admission (its terminal page and closure
+verification), seal and publication touch it, so a refused or aborted transfer leaves it
+unused. The other two affine sessions keep the inherited lifecycle and race the transfer.
+The inherited `Spec` is checked as a property of the transfer specification, so every
+step is an affine step or leaves the affine state unchanged, and all seven inherited
+invariants are checked on the composed specification.
+
+The source publishes a second generation that restamps the same state, reclaims an
+unpinned superseded generation and may lose its pins. A reconnection meets one of five
+peers: legacy-only, DAG transfer version 1, an upgraded peer speaking only version 2, a
+peer presenting an unactivated bridge identity, and a peer with a foreign profile. The
+durable importer speaks versions 1 and 2 and never the legacy page protocol, because a
+durable node cannot bootstrap from a legacy-only peer (plan 4.5). A frontier is meaningful
+only under the export order of one transfer version.
+
+The model is a contract, not an implementation. One importer runs one transfer at a time.
+The source is honest but may crash, restart or change software; page and cursor validation
+against a malicious peer remains task 6093's authenticated cursor contract and the closure
+verifier. Abort and admission release the pin, standing for release or lease expiry; a
+lingering pin only delays reclamation. A crash after admission is not modelled because the
+affine capability is process-local (LM-10); recovery returns to the complete frontier,
+from which admission needs no source.
+
+The domains are bounded: a closure of two objects, a root and its child (so $`n = 2`$);
+two source generations; the five peers; the two transfer versions the importer speaks,
+whose export orders are reversed; and two profiles. Write $`\mathrm{obj}(\beta, t, i)`$
+for the object at position $`i`$ of the export order of version $`t`$ over the closure
+that $`\beta`$ names, and $`\beta_s`$ and $`t_s`$ for the binding digest and the transfer
+version of a session $`s`$. The objects that the token $`(s, f)`$ acknowledges are
+
+```math
+\mathrm{Ack}(s, f) = \{\, \mathrm{obj}(\beta_s, t_s, i) : 1 \le i \le f \,\}.
+```
+
+With $`\mathit{staged}`$ the importer's private staging and $`v`$ the tuple of all model
+variables, the frontier discipline is the invariant `FrontierIsContiguous` together with
+the action property `FrontierAdvancesByOne`:
+
+```math
+\mathrm{Ack}(s, f) \subseteq \mathit{staged} \subseteq \mathrm{Ack}\big(s, \min(f + 1, n)\big),
+\qquad
+\Box\big[\, s' = s \Rightarrow f' \in \{f,\ f + 1\} \,\big]_{v}.
+```
+
+The invariant allows at most the next object beyond the acknowledged prefix to be staged,
+which is what a crash between staging an object and persisting the frontier leaves
+behind; the property forbids a frontier that regresses or skips within one session.
+
+![State diagram of one source-bound DAG transfer session. In grey, no session: no token, no staging, no stream, and the adoption capability unused; a negotiation with a legacy-only peer, an unactivated bridge identity or a foreign profile is refused, in red, and opens nothing. In blue, an accepted negotiation binds the session, made of the binding digest, catalog generation, bridge, transfer version and profile, to the source's current generation and pins it; the source serves the next object from the pinned generation in the export order of the session's transfer version, and the importer persists the frontier only once that object is staged. In amber, a disconnect keeps the token, the staging and the pins; a reconnection resumes the stream, in blue, only with the same transfer version, bridge and profile while the source still pins the exact session, and is otherwise refused, in red, with the token kept. In dark grey, abort discards the staging and the token and releases the pin. In green, full cold admission at the complete frontier over the whole closure, then the inherited seal and publication as a known or current state; in red, the stale activation that a racing activator beat at the generation compare-and-swap. In purple, the source restamps generation 1 as generation 2 without moving a pin, reclaims generation 1 only while no transfer pins it, and may lose its pins while the link is down. Notes name the invariants that hold on a live stream, without a session, and at publication](figures/dag-transfer-session.svg)
+
+### Configurations
+
+`scripts/check-rspace-dag-state-transfer-model.sh` runs every configuration and requires
+the stated result. It refuses a module that no longer extends the affine model and a
+faithful configuration that drops an inherited invariant or either property, requires the
+faithful model to complete with no error, and requires each of the 30 controls to fail
+with its exact expected text. The stack-safe proof runner calls it with a 120 s TLC limit
+per run. The numbers below come from the runner's gate on the tree of commit `48546c256`
+(TLC 2.19, two workers, a 4 GiB scope). With two workers TLC's breadth-first search is not
+level-synchronous, so a control's generated and distinct counts depend on scheduling; every
+trace nevertheless has the minimal length predicted by hand before the run, and the
+faithful model's 47,072 distinct states at depth 20 equal the hand count. A single-worker
+run, as the stack-safe proof runner makes, reports the same faithful-model numbers.
+
+| ID | Configuration suffix | Checked | Expected | Generated | Distinct | Depth | Trace (states) |
+|---|---|---|---|---:|---:|---:|---:|
+| — | (base) | 18 invariants, 2 properties | no error | 390,674 | 47,072 | 20 | — |
+| DT-M01 | `CrossVersionResumeMutant` | `StreamMatchesSessionIdentity` | violated | 176 | 104 | 4 | 4 |
+| DT-M02 | `SkippedFrontierMutant` | `FrontierIsContiguous` | violated | 32 | 32 | 3 | 3 |
+| DT-M03 | `MixedSessionMutant` | `StagingIsSessionBound` | violated | 2,202 | 812 | 6 | 6 |
+| DT-M04 | `StateVersionOnlyResumeMutant` | `SessionBindingIsExact` | violated | 772 | 332 | 5 | 5 |
+| DT-M05 | `ResumeWithoutPinMutant` | `ServingIsPinned` | violated | 752 | 328 | 5 | 5 |
+| DT-M06 | `ReclaimPinnedMutant` | `PinnedGenerationsAreRetained` | violated | 194 | 117 | 4 | 4 |
+| DT-M07 | `LegacyFallbackMutant` | `SessionIdentityIsSupported` | violated | 20 | 20 | 2 | 2 |
+| DT-M08 | `OlderAuthorityMutant` | `StreamMatchesSessionIdentity` | violated | 20 | 20 | 2 | 2 |
+| DT-M09 | `EarlyAdmissionMutant` | `ColdAdmissionRequiresCompleteClosure` | violated | 32 | 32 | 3 | 3 |
+| DT-M10 | `FrontierBeforeObjectsMutant` | `FrontierIsContiguous` | violated | 32 | 32 | 3 | 3 |
+| DT-M11 | `AffineIncompleteAdoptionMutant` | `AdoptionRequiresAdmittedClosure` | violated | 20 | 20 | 2 | 2 |
+| DT-M12 | `AbortAfterAdmissionMutant` | `NoSessionHoldsNothing` | violated | 13,556 | 3,507 | 8 | 8 |
+| DT-W01 | `NeverAdoptsCurrent` | `NeverAdoptsCurrent` | violated | 29,139 | 6,529 | 9 | 9 |
+| DT-W02 | `NeverAdoptsKnown` | `NeverAdoptsKnown` | violated | 29,035 | 6,515 | 9 | 9 |
+| DT-W03 | `NeverRefusesLegacyOnlyPeer` | `NeverRefusesLegacyOnlyPeer` | violated | 8 | 8 | 2 | 2 |
+| DT-W04 | `NeverRefusesUnsupportedBridge` | `NeverRefusesUnsupportedBridge` | violated | 10 | 10 | 2 | 2 |
+| DT-W05 | `NeverRefusesProfileMismatch` | `NeverRefusesProfileMismatch` | violated | 12 | 12 | 2 | 2 |
+| DT-W06 | `NeverResumesAfterDisconnect` | `NeverResumesAfterDisconnect` | violated | 154 | 86 | 4 | 4 |
+| DT-W07 | `NeverRefusesResumeOnLegacyOnlyPeer` | `NeverRefusesResumeOnLegacyOnlyPeer` | violated | 158 | 90 | 4 | 4 |
+| DT-W08 | `NeverRefusesResumeOnChangedTransferVersion` | `NeverRefusesResumeOnChangedTransferVersion` | violated | 156 | 88 | 4 | 4 |
+| DT-W09 | `NeverRefusesResumeOnBridgeChange` | `NeverRefusesResumeOnBridgeChange` | violated | 208 | 118 | 4 | 4 |
+| DT-W10 | `NeverRefusesResumeOnProfileChange` | `NeverRefusesResumeOnProfileChange` | violated | 162 | 94 | 4 | 4 |
+| DT-W11 | `NeverRefusesResumeAfterPinLapse` | `NeverRefusesResumeAfterPinLapse` | violated | 739 | 326 | 5 | 5 |
+| DT-W12 | `NeverResumesAcrossSourcePublication` | `NeverResumesAcrossSourcePublication` | violated | 632 | 282 | 5 | 5 |
+| DT-W13 | `NeverStagesBeyondFrontier` | `NeverStagesBeyondFrontier` | violated | 144 | 78 | 4 | 4 |
+| DT-W14 | `NeverAdoptsAfterAbort` | `NeverAdoptsAfterAbort` | violated | 106,429 | 18,505 | 11 | 11 |
+| DT-W15 | `NeverRejectsTransferActivation` | `NeverRejectsTransferActivation` | violated | 143,605 | 23,216 | 12 | 12 |
+| DT-W16 | `NeverReclaimsSupersededGeneration` | `NeverReclaimsSupersededGeneration` | violated | 102 | 64 | 3 | 3 |
+| DT-P01 | `LifecyclePropertyMutant` | `AffineLifecycleIsPreserved` against `AffineIncompleteAdoptionMutantSpec` | violated | 20 | 20 | 2 | 2 |
+| DT-P02 | `FrontierPropertyMutant` | `FrontierAdvancesByOne` against `SkippedFrontierMutantSpec` | violated | 32 | 32 | 3 | 3 |
+
+DT-M01 to DT-M03 are the three mutants that plan section 4.6 names. DT-P01 and DT-P02 are
+the negative controls of the two properties: each runs a mutant specification against one
+property alone, so a property that held vacuously would let its control pass. TLC names
+the inherited `[][Next]_vars` of `Spec`, which DT-P01 violates, by its source location,
+line 95 of `RSpaceAffineImportLifecycle.tla`.
+
+### Peer and interruption matrix
+
+| # | Scenario | Faithful behavior | Covered by |
+|---|---|---|---|
+| E1 | Durable importer, legacy-only peer | refuse; no session, no fallback | DT-02; M07; W03 |
+| E2 | Durable importer, DAG peer v1 or v2 | complete; current or known adoption | W01, W02; DT-08, DT-09 |
+| E3 | Durable importer, unactivated bridge | refuse; no older authority | DT-02, DT-03; M08; W04 |
+| E4 | Durable importer, foreign profile | refuse | DT-02; W05 |
+| E5 | Legacy importer, DAG peer (pages from the facet) | unchanged legacy affine import; not a transfer client here | DT-11 (inherited invariants on the free sessions); executable owners N1 B09 and 7940 |
+| E6 | Legacy importer, legacy peer | unchanged | DT-11; the three affine mutants |
+| E7 | Mixed: DAG session reconnects to legacy-only | resume refused, token kept | DT-03; M01; W07 |
+| E8 | Changed transfer version (v1 then upgraded v2) | resume refused; abort; fresh session completes | DT-03; M01; W08, W14 |
+| E9 | Mixed: reconnect to unactivated-bridge peer | resume refused | DT-03; M01; W09 |
+| E10 | Mixed: reconnect to foreign-profile peer | resume refused | DT-03; M01; W10 |
+| E11 | Crash or disconnect, same peer, pin held | resume at frontier | DT-04, DT-07; W06 |
+| E12 | Crash between staging and frontier persistence | at most one page beyond the frontier; idempotent re-stage | DT-07; M10; W13 |
+| E13 | Changed source generation (restamp), pin held | pinned generation still served; resume accepted | DT-01, DT-04; M04; W12 |
+| E14 | Source restart or pin lapse | resume refused; abort; restart binds the current generation | DT-04; M05; W11, W14 |
+| E15 | Superseded generation reclaimed | only when unpinned | DT-05; M06; W16 |
+| E16 | New session after refusal or abort | empty staging, frontier 0 | DT-06, DT-10; M03 |
+| E17 | Out-of-order page | rejected | DT-07; M02; P02 |
+| E18 | Admission or adoption before complete closure | blocked | DT-08, DT-09; M09, M11; P01 |
+| E19 | Abort after admission | forbidden; consume through the FFI abort | DT-10; M12 |
+| E20 | Racing activation wins | transfer Activate rejected by CAS | inherited CAS invariants; W15 |
+
+In the last column, M*nn*, W*nn* and P*nn* abbreviate the configurations DT-M*nn*, DT-W*nn*
+and DT-P*nn* above.
+
+### Contract rows
+
+DT-01 to DT-10 exhaust the transfer invariants of the model; DT-11 names the inherited
+lifecycle. **Future** entries are binding executable acceptance targets for the indicated
+task, not currently passing runtime evidence.
+
+| ID | Model symbol | Negative control | Required executable property |
+|---|---|---|---|
+| DT-01 | `SessionBindingIsExact` | DT-M04 | Future 7939: a session records the exact binding digest the source published at its catalog generation; with one state restamped into a second representation, a token is refused against the restamp, and refreshing its generation while keeping its digest is refused. |
+| DT-02 | `SessionIdentityIsSupported` | DT-M07 | Future 7939 and 7940: negotiating with a legacy-only peer, an unactivated bridge identity or a foreign profile refuses before any page is staged or token written, with no legacy-page fallback (plan 4.5). |
+| DT-03 | `StreamMatchesSessionIdentity` | DT-M01, DT-M08 | Future 7939: a token resumes only on a stream speaking its transfer version, bridge and profile; upgraded, legacy-only, epoch and foreign-profile peers refuse, and an unactivated bridge is never answered with the older `PreservedLegacyV1` authority (CI-12, CI-25). |
+| DT-04 | `ServingIsPinned` | DT-M05 | Future 7939: the exporter serves a session only under an authority-held pin of that exact session; after a restart or lease expiry drops it, resume is refused. |
+| DT-05 | `PinnedGenerationsAreRetained` | DT-M06 | Future 7939 with 7943–7944: reclamation never removes a generation a transfer pins (CA-21). |
+| DT-06 | `StagingIsSessionBound` | DT-M03 | Future 7939: staging and frontier never cross sessions; a session opened after a refusal or abort starts at frontier 0 with empty private staging. |
+| DT-07 | `FrontierIsContiguous`, `FrontierAdvancesByOne` | DT-M02, DT-M10, DT-P02 | Future 7939: a page beyond the next position is rejected; the frontier is persisted only after the objects it covers are durable; crash injection between the two leaves at most one page beyond the frontier, and replay is idempotent. |
+| DT-08 | `ColdAdmissionRequiresCompleteClosure` | DT-M09 | Future 7939: full cold admission (closure walk, retention metadata closure, history rules) runs only at the complete frontier over the complete closure of the session binding. |
+| DT-09 | `AdoptionRequiresAdmittedClosure` | DT-M11 | Future 7939 and 7940: `PreserveCurrent` and `Activate` publish only an admitted, sealed closure of a supported session; a stale activation is rejected by the generation CAS. |
+| DT-10 | `NoSessionHoldsNothing` | DT-M12 | Future 7939 and 7940: abort before admission discards staging and token and leaves the capability unused; after admission the capability is consumed through the FFI abort (`AbortConsumesWithoutPublishing`), never by dropping the token. |
+| DT-11 | the seven inherited invariants, `AffineLifecycleIsPreserved` | the three affine mutants; DT-W15; DT-P01 | Existing affine evidence (LM-10); no new property. |
+
 ## Refinement completion rule
 
 The runtime may be declared conformant only when:
