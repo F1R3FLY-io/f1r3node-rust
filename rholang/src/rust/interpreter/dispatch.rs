@@ -5,6 +5,7 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{ListParWithRandom, Par, TaggedContinuation};
 use prost::Message;
 
+use super::accounting::rev_stack::seal;
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::reduce::DebruijnInterpreter;
@@ -47,6 +48,8 @@ impl RholangAndScalaDispatcher {
         is_replay: bool,
         previous_output: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
+        let record = seal::of_continuation(&continuation)
+            .map_err(|e| InterpreterError::ReduceError(e.to_string()))?;
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
@@ -68,7 +71,7 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    reducer.eval(body, &env, merged_rand).await?;
+                    seal::within(record, reducer.eval(body, &env, merged_rand)).await?;
 
                     Ok(DispatchType::DeterministicCall)
                 }

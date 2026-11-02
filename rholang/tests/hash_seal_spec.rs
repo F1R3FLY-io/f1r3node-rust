@@ -37,6 +37,7 @@ async fn run_as(runtime: &RhoRuntimeImpl, key: &[u8], source: &str) -> Vec<Inter
             deployer_id: PublicKey::from_bytes(key),
             deploy_id: vec![1],
             cosigners: Vec::new(),
+            phlo_price: 0,
         })
         .await;
     runtime
@@ -202,6 +203,64 @@ async fn a_hash_sealed_body_may_not_read_the_running_deployment() {
         assert!(sent(&runtime, "who").await.is_empty());
         let term = Compiler::source_to_adt_with_normalizer_env(source, deployer_env(&ALICE)).unwrap();
         assert_eq!(self_sealed_envelope(&term), None);
+    })
+    .await;
+}
+
+async fn with_seal_records<F, Fut>(f: F)
+where
+    F: FnOnce(RhoRuntimeImpl) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    with_runtime("hash-seal-records-", |runtime: RhoRuntimeImpl| async move {
+        runtime.set_seal_records(true);
+        f(runtime).await
+    })
+    .await
+}
+
+#[tokio::test]
+async fn with_seal_records_a_hash_seal_is_still_checked_on_the_substituted_process() {
+    with_seal_records(|runtime| async move {
+        let same = r#"for (@x <- @"a") { {% @"y"!(1) %}[# { @"y"!(x) }] } | @"a"!(1)"#;
+        let errors = run_as(&runtime, &ALICE, same).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(sent(&runtime, "y").await, vec![RhoNumber::create_par(1)]);
+        let other = r#"for (@x <- @"b") { {% @"z"!(1) %}[# { @"z"!(x) }] } | @"b"!(2)"#;
+        let errors = run_as(&runtime, &ALICE, other).await;
+        assert!(refused(&errors, "only when its body is P"), "{errors:?}");
+        assert!(sent(&runtime, "z").await.is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn with_seal_records_each_instance_of_a_hash_sealed_template_still_has_its_own_wallet() {
+    with_seal_records(|runtime| async move {
+        stacks(&runtime).deposit(&owner(&ALICE), 100).unwrap();
+        let template = r#"for (@x <= @"in") { {% @"out"!(x) %}[# { @"out"!(x) }] } |
+                          @"in"!(1) | @"in"!(2)"#;
+        let errors = run_as(&runtime, &ALICE, template).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        let errors = run_as(&runtime, &ALICE, r#"# { @"out"!(1) } :: ()"#).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        let one = process_owner(&Compiler::source_to_adt(r#"@"out"!(1)"#).unwrap());
+        let two = process_owner(&Compiler::source_to_adt(r#"@"out"!(2)"#).unwrap());
+        assert_ne!(one, two);
+        assert_eq!(stacks(&runtime).balance(&one).unwrap(), 1);
+        assert_eq!(stacks(&runtime).balance(&two).unwrap(), 0);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn with_seal_records_a_hash_sealed_body_still_may_not_read_the_running_deployment() {
+    with_seal_records(|runtime| async move {
+        let source = r#"{% new d(`rho:system:deployerId`) in { @"who"!(*d) } %}
+                        [# { new d(`rho:system:deployerId`) in { @"who"!(*d) } }]"#;
+        let errors = run_as(&runtime, &ALICE, source).await;
+        assert!(refused(&errors, "resolves from the running deployment"), "{errors:?}");
+        assert!(sent(&runtime, "who").await.is_empty());
     })
     .await;
 }

@@ -218,6 +218,7 @@ impl Runs {
         let mut ops = RuntimeOps::new(runtime);
         ops.runtime.set_block_data(block_data).await;
         ops.runtime.set_invalid_blocks(HashMap::new()).await;
+        ops.runtime.set_seal_records(true);
         ops.runtime.cost.charge_storage_left_in_space();
         ops.runtime.cost.comm_ledger().reset();
         let cells = runtime_cells(&ops.runtime)?;
@@ -261,6 +262,7 @@ impl Runs {
         let runtime = &mut replay.runtime_ops.runtime;
         runtime.set_block_data(block_data).await;
         runtime.set_invalid_blocks(HashMap::new()).await;
+        runtime.set_seal_records(true);
         runtime.cost.charge_storage_left_in_space();
         runtime.cost.comm_ledger().reset();
         let cells = runtime_cells(runtime)?;
@@ -568,16 +570,30 @@ pub(crate) fn gate_inputs<'a>(
         .collect()
 }
 
+enum EnvelopeSignatures {
+    Unnormalized,
+    Sealed(WalletOwner),
+    Named(Vec<WalletOwner>),
+}
+
 fn envelope_signatures(deploy: &Signed<DeployData>) -> (Vec<WalletOwner>, Vec<WalletOwner>) {
+    match classify_envelope(deploy) {
+        EnvelopeSignatures::Unnormalized => (Vec::new(), Vec::new()),
+        EnvelopeSignatures::Sealed(process) => (Vec::new(), vec![process]),
+        EnvelopeSignatures::Named(named) => (named, Vec::new()),
+    }
+}
+
+fn classify_envelope(deploy: &Signed<DeployData>) -> EnvelopeSignatures {
     let Some(term) = normalizer_env_from_deploy(deploy)
         .ok()
         .and_then(|env| Compiler::source_to_adt_with_normalizer_env(&deploy.data.term, env).ok())
     else {
-        return (Vec::new(), Vec::new());
+        return EnvelopeSignatures::Unnormalized;
     };
     match self_sealed_envelope(&term) {
-        Some(process) => (Vec::new(), vec![process]),
-        None => (named_owners(&term), Vec::new()),
+        Some(process) => EnvelopeSignatures::Sealed(process),
+        None => EnvelopeSignatures::Named(named_owners(&term)),
     }
 }
 

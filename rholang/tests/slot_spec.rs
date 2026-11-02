@@ -52,6 +52,7 @@ async fn at_block(runtime: &RhoRuntimeImpl, block_number: i64, signer: &Key) {
             deployer_id: signer.pk.clone(),
             deploy_id: vec![1],
             cosigners: Vec::new(),
+            phlo_price: 0,
         })
         .await;
 }

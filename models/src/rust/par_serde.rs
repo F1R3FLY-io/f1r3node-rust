@@ -4,15 +4,18 @@ use serde::de::{self, SeqAccess, Visitor};
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::rhoapi::tagged_continuation::TaggedCont;
 use crate::rhoapi::{
     Bundle, Connective, CostSignature, CostSignedTerm, CostStack, Expr, GUnforgeable, If, Match,
-    New, Par, Receive, ReceiveBind, Send, Var,
+    New, Par, Receive, ReceiveBind, SealRecordProto, Send, TaggedContinuation, Var,
 };
 
 const CONNECTIVE_USED: u8 = 1;
 const PAR_EXTENSION: u8 = 2;
 const REMAINDER_PRESENT: u8 = 1;
 const BIND_EXTENSION: u8 = 2;
+const GUARD_PRESENT: u8 = 1;
+const SEAL_PRESENT: u8 = 2;
 
 struct EmptyBytes;
 
@@ -268,6 +271,95 @@ impl<'de> Deserialize<'de> for ReceiveBind {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "TaggedContinuation")]
+struct TaggedContinuationFields {
+    guard: Option<Par>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seal: Option<SealRecordProto>,
+    tagged_cont: Option<TaggedCont>,
+}
+
+impl Serialize for TaggedContinuation {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            return TaggedContinuationFields {
+                guard: self.guard.clone(),
+                seal: self.seal.clone(),
+                tagged_cont: self.tagged_cont.clone(),
+            }
+            .serialize(serializer);
+        }
+        let mut tag = 0;
+        if self.guard.is_some() {
+            tag |= GUARD_PRESENT;
+        }
+        if self.seal.is_some() {
+            tag |= SEAL_PRESENT;
+        }
+        let mut tuple = serializer.serialize_tuple(4)?;
+        tuple.serialize_element(&tag)?;
+        if let Some(guard) = &self.guard {
+            tuple.serialize_element(guard)?;
+        }
+        if let Some(seal) = &self.seal {
+            tuple.serialize_element(seal)?;
+        }
+        tuple.serialize_element(&self.tagged_cont)?;
+        tuple.end()
+    }
+}
+
+struct BinaryTaggedContinuation;
+
+impl<'de> Visitor<'de> for BinaryTaggedContinuation {
+    type Value = TaggedContinuation;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a binary TaggedContinuation")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<TaggedContinuation, A::Error> {
+        let tag: u8 = next(&mut seq, 0)?;
+        if tag & !(GUARD_PRESENT | SEAL_PRESENT) != 0 {
+            return Err(de::Error::custom(format!(
+                "unknown TaggedContinuation tag {tag:#x}"
+            )));
+        }
+        let guard = if tag & GUARD_PRESENT != 0 {
+            Some(next(&mut seq, 1)?)
+        } else {
+            None
+        };
+        let seal = if tag & SEAL_PRESENT != 0 {
+            Some(next(&mut seq, 2)?)
+        } else {
+            None
+        };
+        let tagged_cont = next(&mut seq, 3)?;
+        Ok(TaggedContinuation {
+            tagged_cont,
+            guard,
+            seal,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for TaggedContinuation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            let f = TaggedContinuationFields::deserialize(deserializer)?;
+            Ok(TaggedContinuation {
+                tagged_cont: f.tagged_cont,
+                guard: f.guard,
+                seal: f.seal,
+            })
+        } else {
+            deserializer.deserialize_tuple(4, BinaryTaggedContinuation)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -290,6 +382,75 @@ mod tests {
         #[serde(serialize_with = "crate::rust::serde_helpers::serialize_as_empty_bytes")]
         locally_free: Vec<u8>,
         connective_used: bool,
+    }
+
+    #[derive(Serialize)]
+    struct LegacyTaggedContinuation {
+        guard: Option<Par>,
+        tagged_cont: Option<TaggedCont>,
+    }
+
+    fn small(n: i64) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(crate::rhoapi::expr::ExprInstance::GInt(n)),
+        }])
+    }
+
+    fn continuation(guard: Option<Par>, seal: Option<SealRecordProto>) -> TaggedContinuation {
+        TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(crate::rhoapi::ParWithRandom {
+                body: Some(small(1)),
+                random_state: vec![3; 8],
+            })),
+            guard,
+            seal,
+        }
+    }
+
+    #[test]
+    fn a_continuation_without_a_seal_keeps_the_legacy_bytes() {
+        for guard in [None, Some(small(2))] {
+            let c = continuation(guard.clone(), None);
+            let legacy = LegacyTaggedContinuation {
+                tagged_cont: c.tagged_cont.clone(),
+                guard,
+            };
+            assert_eq!(
+                bincode::serialize(&c).unwrap(),
+                bincode::serialize(&legacy).unwrap()
+            );
+            let back: TaggedContinuation =
+                bincode::deserialize(&bincode::serialize(&c).unwrap()).unwrap();
+            assert_eq!(back, c);
+        }
+    }
+
+    #[test]
+    fn a_sealed_continuation_round_trips_and_differs_from_the_unsealed_one() {
+        let seal = SealRecordProto {
+            owner: vec![2; 33],
+            kind: 1,
+            origin: Some(crate::rhoapi::SealOrigin {
+                envelope: vec![9; 64],
+                signers: vec![vec![1; 33], vec![2; 33]],
+                phlo_price: 7,
+            }),
+            from_data: false,
+        };
+        for guard in [None, Some(small(2))] {
+            let sealed = continuation(guard.clone(), Some(seal.clone()));
+            let bytes = bincode::serialize(&sealed).unwrap();
+            let back: TaggedContinuation = bincode::deserialize(&bytes).unwrap();
+            assert_eq!(back, sealed);
+            assert_ne!(sealed, continuation(guard.clone(), None));
+            assert_ne!(
+                bytes,
+                bincode::serialize(&continuation(guard, None)).unwrap()
+            );
+        }
+        let mut bytes = bincode::serialize(&continuation(None, None)).unwrap();
+        bytes[0] = 4;
+        assert!(bincode::deserialize::<TaggedContinuation>(&bytes).is_err());
     }
 
     #[derive(Serialize)]
@@ -407,3 +568,4 @@ mod tests {
         assert!(bincode::deserialize::<Par>(&bytes).is_err());
     }
 }
+

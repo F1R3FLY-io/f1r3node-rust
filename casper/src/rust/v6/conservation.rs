@@ -141,7 +141,9 @@ impl WalletIndex {
         self.insert(TokenKind::rev(), settlement.proposer.clone());
         for transfer in &settlement.transfers {
             match &transfer.from {
-                Source::Wallet(from) => self.insert_owner(transfer.kind.clone(), from),
+                Source::Wallet(from) | Source::Share { process: from, .. } => {
+                    self.insert_owner(transfer.kind.clone(), from)
+                }
                 Source::Mint => {
                     let total = minted.entry(transfer.kind.clone()).or_default();
                     *total = total.saturating_add(u128::from(transfer.amount));
