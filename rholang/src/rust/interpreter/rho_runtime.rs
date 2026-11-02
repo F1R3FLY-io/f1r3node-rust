@@ -365,6 +365,18 @@ impl RhoRuntimeImpl {
 
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
 
+    pub fn set_seal_records(&self, recorded: bool) {
+        self.reducer
+            .seal_records
+            .store(recorded, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn seal_records(&self) -> bool {
+        self.reducer
+            .seal_records
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Enable the rho:io:fs:native:* URN filter.  Every subsequent
     /// `new x(`rho:io:fs:native:...`)` inside a deploy returns
     /// `ReduceError` from `eval_new`.  This is the default state.
@@ -778,6 +790,7 @@ where
         let continuation = TaggedContinuation {
             tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
             guard: None,
+            seal: None,
         };
 
         for space in &mut spaces {
@@ -1629,6 +1642,7 @@ async fn setup_reducer(
         filter_fs_native_urns: urn_phase.fs_native_filtered.clone(),
         genesis_phase: urn_phase.genesis.clone(),
         deploy_data: deploy_data_ref,
+        seal_records: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

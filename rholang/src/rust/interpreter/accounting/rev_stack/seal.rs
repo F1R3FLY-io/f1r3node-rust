@@ -1,0 +1,200 @@
+use std::future::Future;
+
+use models::rhoapi::{SealOrigin, SealRecordProto, TaggedContinuation};
+
+use super::owner::WalletOwner;
+use super::RevStackError;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    pub envelope: Vec<u8>,
+    pub signers: Vec<WalletOwner>,
+    pub phlo_price: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SealKind {
+    Deployment,
+    Signed,
+    Process,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealRecord {
+    pub owner: WalletOwner,
+    pub kind: SealKind,
+    pub origin: Origin,
+}
+
+tokio::task_local! {
+    static SEAL: Option<SealRecord>;
+}
+
+pub fn current() -> Option<SealRecord> { SEAL.try_with(Clone::clone).ok().flatten() }
+
+pub fn current_owner() -> Option<WalletOwner> { current().map(|record| record.owner) }
+
+pub fn of_continuation(
+    continuation: &TaggedContinuation,
+) -> Result<Option<SealRecord>, RevStackError> {
+    continuation
+        .seal
+        .as_ref()
+        .map(SealRecord::from_proto)
+        .transpose()
+}
+
+pub(crate) async fn within<F: Future>(record: Option<SealRecord>, future: F) -> F::Output {
+    SEAL.scope(record, future).await
+}
+
+pub(crate) fn inherit<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    SEAL.scope(current(), future)
+}
+
+const KIND_DEPLOYMENT: i32 = 1;
+const KIND_SIGNED: i32 = 2;
+const KIND_PROCESS: i32 = 3;
+
+impl SealKind {
+    fn tag(self) -> i32 {
+        match self {
+            SealKind::Deployment => KIND_DEPLOYMENT,
+            SealKind::Signed => KIND_SIGNED,
+            SealKind::Process => KIND_PROCESS,
+        }
+    }
+
+    fn from_tag(tag: i32) -> Option<Self> {
+        match tag {
+            KIND_DEPLOYMENT => Some(SealKind::Deployment),
+            KIND_SIGNED => Some(SealKind::Signed),
+            KIND_PROCESS => Some(SealKind::Process),
+            _ => None,
+        }
+    }
+}
+
+impl SealRecord {
+    pub(crate) fn deployment(owner: WalletOwner, origin: Origin) -> Self {
+        SealRecord {
+            owner,
+            kind: SealKind::Deployment,
+            origin,
+        }
+    }
+
+    pub(crate) fn enter(&self, owner: WalletOwner, kind: SealKind) -> Self {
+        SealRecord {
+            owner,
+            kind,
+            origin: self.origin.clone(),
+        }
+    }
+
+    pub fn to_proto(&self) -> SealRecordProto {
+        SealRecordProto {
+            owner: self.owner.canonical_bytes(),
+            kind: self.kind.tag(),
+            origin: Some(SealOrigin {
+                envelope: self.origin.envelope.clone(),
+                signers: self
+                    .origin
+                    .signers
+                    .iter()
+                    .map(WalletOwner::canonical_bytes)
+                    .collect(),
+                phlo_price: self.origin.phlo_price,
+            }),
+        }
+    }
+
+    pub fn from_proto(proto: &SealRecordProto) -> Result<Self, RevStackError> {
+        let corrupt = |what: &str| RevStackError::CorruptWallet(format!("a seal record {what}"));
+        let owner = WalletOwner::from_canonical_bytes(&proto.owner)
+            .ok_or_else(|| corrupt("names no owner"))?;
+        let kind = SealKind::from_tag(proto.kind).ok_or_else(|| corrupt("has no kind"))?;
+        let origin = proto
+            .origin
+            .as_ref()
+            .ok_or_else(|| corrupt("has no origin"))?;
+        let signers = origin
+            .signers
+            .iter()
+            .map(|bytes| WalletOwner::from_canonical_bytes(bytes))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| corrupt("names a signer that is no owner"))?;
+        Ok(SealRecord {
+            owner,
+            kind,
+            origin: Origin {
+                envelope: origin.envelope.clone(),
+                signers,
+                phlo_price: origin.phlo_price,
+            },
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(owner: u8, kind: SealKind) -> SealRecord {
+        SealRecord {
+            owner: WalletOwner::Unforgeable(vec![owner; 32]),
+            kind,
+            origin: Origin {
+                envelope: vec![9; 64],
+                signers: vec![
+                    WalletOwner::Unforgeable(vec![1; 32]),
+                    WalletOwner::Unforgeable(vec![2; 32]),
+                ],
+                phlo_price: 3,
+            },
+        }
+    }
+
+    #[test]
+    fn a_record_round_trips_through_its_proto() {
+        for kind in [SealKind::Deployment, SealKind::Signed, SealKind::Process] {
+            let r = record(5, kind);
+            assert_eq!(SealRecord::from_proto(&r.to_proto()), Ok(r));
+        }
+        let mut bad = record(5, SealKind::Signed).to_proto();
+        bad.kind = 0;
+        assert!(SealRecord::from_proto(&bad).is_err());
+        let mut bad = record(5, SealKind::Signed).to_proto();
+        bad.origin = None;
+        assert!(SealRecord::from_proto(&bad).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_record_is_scoped_and_spawned_tasks_inherit_it() {
+        assert_eq!(current(), None);
+        let outer = record(5, SealKind::Deployment);
+        let inner = outer.enter(WalletOwner::Unforgeable(vec![6; 32]), SealKind::Signed);
+        let seen = within(Some(outer.clone()), async {
+            let before = current();
+            let nested = within(Some(inner.clone()), async { current() }).await;
+            let cleared = within(None, async { current() }).await;
+            let spawned = tokio::spawn(inherit(async { current() })).await.unwrap();
+            let bare = tokio::spawn(async { current() }).await.unwrap();
+            (before, nested, cleared, spawned, bare, current())
+        })
+        .await;
+        assert_eq!(
+            seen,
+            (
+                Some(outer.clone()),
+                Some(inner.clone()),
+                None,
+                Some(outer.clone()),
+                None,
+                Some(outer)
+            )
+        );
+        assert_eq!(inner.origin.phlo_price, 3);
+        assert_eq!(current(), None);
+    }
+}

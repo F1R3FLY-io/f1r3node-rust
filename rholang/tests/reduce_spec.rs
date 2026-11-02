@@ -87,6 +87,7 @@ fn check_continuation(
             &TaggedContinuation {
                 tagged_cont: Some(TaggedCont::ParBody(body)),
                 guard: None,
+                seal: None,
             },
             false,
             BTreeSet::new(),

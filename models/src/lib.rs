@@ -222,7 +222,9 @@ impl Hash for Par {
 
 impl PartialEq for TaggedContinuation {
     fn eq(&self, other: &Self) -> bool {
-        self.tagged_cont == other.tagged_cont && self.guard == other.guard
+        self.tagged_cont == other.tagged_cont
+            && self.guard == other.guard
+            && self.seal == other.seal
     }
 }
 
@@ -230,6 +232,9 @@ impl Hash for TaggedContinuation {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.tagged_cont.hash(state);
         self.guard.hash(state);
+        if let Some(seal) = &self.seal {
+            seal.hash(state);
+        }
     }
 }
 
@@ -1081,6 +1086,36 @@ impl Hash for UnfInstance {
             UnfInstance::GDeployerIdBody(a) => a.hash(state),
             UnfInstance::GSysAuthTokenBody(a) => a.hash(state),
         }
+    }
+}
+
+impl PartialEq for SealOrigin {
+    fn eq(&self, other: &Self) -> bool {
+        self.envelope == other.envelope
+            && self.signers == other.signers
+            && self.phlo_price == other.phlo_price
+    }
+}
+
+impl Hash for SealOrigin {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.envelope.hash(state);
+        self.signers.hash(state);
+        self.phlo_price.hash(state);
+    }
+}
+
+impl PartialEq for SealRecordProto {
+    fn eq(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.kind == other.kind && self.origin == other.origin
+    }
+}
+
+impl Hash for SealRecordProto {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.owner.hash(state);
+        self.kind.hash(state);
+        self.origin.hash(state);
     }
 }
 
