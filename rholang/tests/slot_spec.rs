@@ -166,3 +166,83 @@ async fn a_term_sealed_with_a_slot_it_holds_runs() {
         .await;
     assert_eq!(ran.len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_grant_returns_each_funders_share() {
+    use rholang::rust::interpreter::accounting::rev_stack::funders::share;
+    use rholang::rust::interpreter::accounting::rev_stack::grant::Grant;
+    use rholang::rust::interpreter::accounting::rev_stack::HotStoreCells;
+    use rholang::rust::interpreter::rho_type::RhoName;
+
+    let runtime = runtime().await;
+    let (sponsor, carol, newcomer, anyone) = (key(), key(), key(), key());
+    stacks(&runtime).deposit(&sponsor.owner, 1_000).unwrap();
+    stacks(&runtime).deposit(&carol.owner, 1_000).unwrap();
+    at_block(&runtime, 1, &sponsor).await;
+    run(
+        &runtime,
+        &sponsor,
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), slot, funded in {
+             w!("fundGrant", (*d, (*slot, 10, 20), 300), *funded) |
+             for (_ <- funded) { @"slot"!!(*slot) }
+           }"#,
+    )
+    .await;
+    at_block(&runtime, 2, &carol).await;
+    run(
+        &runtime,
+        &carol,
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`) in {
+             for (@slot <<- @"slot") { w!("fundGrant", (*d, (slot, 10, 20), 100), "carol-funded") }
+           }"#,
+    )
+    .await;
+    assert!(replies(&runtime, "carol-funded").await[0].0);
+
+    at_block(&runtime, 15, &newcomer).await;
+    run(
+        &runtime,
+        &newcomer,
+        &format!(
+            r#"new w(`rho:rev:wallet`) in {{
+                 for (@slot <<- @"slot") {{ w!("drawGrant", ((slot, 10, 20), "{}", 100), "drawn") }}
+               }}"#,
+            newcomer.address
+        ),
+    )
+    .await;
+    assert!(replies(&runtime, "drawn").await[0].0);
+
+    let slot_par = runtime
+        .get_data(&RhoString::create_par("slot".to_string()))
+        .await[0]
+        .a
+        .pars[0]
+        .clone();
+    let slot = RhoName::unapply(&slot_par).unwrap();
+    let grant = Grant::new(slot.id, 10, 20).unwrap().owner();
+    let cells = HotStoreCells(runtime.reducer.space.hot_store().unwrap());
+    assert_eq!(share(&cells, &grant, &sponsor.owner).unwrap(), 225);
+    assert_eq!(share(&cells, &grant, &carol.owner).unwrap(), 75);
+
+    let give_back = |funder: &str, out: &str| {
+        format!(
+            r#"new w(`rho:rev:wallet`) in {{
+                 for (@slot <<- @"slot") {{ w!("returnGrant", ((slot, 10, 20), "{funder}"), "{out}") }}
+               }}"#
+        )
+    };
+    at_block(&runtime, 20, &anyone).await;
+    run(&runtime, &anyone, &give_back(&sponsor.address, "too-soon")).await;
+    assert!(!replies(&runtime, "too-soon").await[0].0);
+    at_block(&runtime, 21, &anyone).await;
+    run(&runtime, &anyone, &give_back(&sponsor.address, "sponsor-back")).await;
+    run(&runtime, &anyone, &give_back(&carol.address, "carol-back")).await;
+    assert!(replies(&runtime, "sponsor-back").await[0].0);
+    assert!(replies(&runtime, "carol-back").await[0].0);
+    assert_eq!(stacks(&runtime).balance(&sponsor.owner).unwrap(), 700 + 225);
+    assert_eq!(stacks(&runtime).balance(&carol.owner).unwrap(), 900 + 75);
+    assert_eq!(stacks(&runtime).balance(&grant).unwrap(), 0);
+    run(&runtime, &anyone, &give_back(&carol.address, "again")).await;
+    assert!(!replies(&runtime, "again").await[0].0);
+}

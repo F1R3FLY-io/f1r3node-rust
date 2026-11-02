@@ -719,14 +719,23 @@ fn settle_funders(
             funders::refuse(store, process, funder, t.amount)?;
         }
     }
+    for t in settlement.transfers.iter().filter(|t| t.kind.is_rev()) {
+        if let Source::Wallet(funder) = &t.from {
+            if t.to.has_funders() {
+                funders::credit(store, &t.to, funder, t.amount)?;
+            }
+        }
+    }
     for charge in &settlement.charges {
-        if let Some(process @ WalletOwner::Process(_)) = owners.get(&charge.wallet) {
-            funders::draw(store, process, charge.comm_rev + charge.compute_rev)?;
+        if let Some(funded) = owners.get(&charge.wallet).filter(|o| o.has_funders()) {
+            funders::draw(store, funded, charge.comm_rev + charge.compute_rev)?;
         }
     }
     for t in settlement.transfers.iter().filter(|t| t.kind.is_rev()) {
-        if let (Source::Wallet(funder), WalletOwner::Process(_)) = (&t.from, &t.to) {
-            funders::credit(store, &t.to, funder, t.amount)?;
+        if let Source::Wallet(from) = &t.from {
+            if from.has_funders() {
+                funders::draw(store, from, t.amount)?;
+            }
         }
     }
     Ok(())
