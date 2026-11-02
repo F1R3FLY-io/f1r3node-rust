@@ -22,7 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 tempfile = { workspace = true }
-zip = { version = "=3.0.0", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 comm = { path = "../../comm", optional = true }
 models = { path = "../../models", optional = true }
 prost = { workspace = true, optional = true }
