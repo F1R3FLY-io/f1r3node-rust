@@ -8,6 +8,7 @@ new PoS,
     rs(`rho:registry:insertSigned:secp256k1`),
     sysAuthTokenOps(`sys:authToken:ops`),
     RevBond(`rho:rev:bond`),
+    RevBondAdmin(`rho:rev:bondAdmin`),
     uriOut
 in {
   registryLookup!(`rho:lang:listOps`, *listOpsCh) |
@@ -143,7 +144,7 @@ in {
                             if (state.get("allBonds").getOrElse(validator, 0) <= 0) {
                               stateUpdateCh!(state, (true, Nil))
                             } else {
-                              RevBond!("slash", (sysAuthToken, validator), *slashCh) |
+                              RevBondAdmin!("slash", validator, *slashCh) |
                               for (@slashResult <- slashCh) {
                                 match slashResult {
                                   (true, _) => {
@@ -221,7 +222,7 @@ in {
                                   resultCh!((pk, true))
                                 } else {
                                   new releaseCh in {
-                                    RevBond!("release", (sysAuthToken, pk, bonds), *releaseCh) |
+                                    RevBondAdmin!("release", (pk, bonds), *releaseCh) |
                                     for (@releaseResult <- releaseCh) {
                                       match releaseResult {
                                         (true, _) => { resultCh!((pk, true)) }

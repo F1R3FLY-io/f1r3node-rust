@@ -207,6 +207,8 @@ impl FixedChannels {
 
     pub fn rev_bond() -> Par { byte_name(71) }
 
+    pub fn rev_bond_admin() -> Par { byte_name(72) }
+
     pub fn reg_lookup() -> Par { byte_name(14) }
 
     pub fn reg_insert_random() -> Par { byte_name(15) }
@@ -489,6 +491,7 @@ impl BodyRefs {
     pub const REV_WALLET: i64 = 69;
     pub const REV_GENESIS: i64 = 70;
     pub const REV_BOND: i64 = 71;
+    pub const REV_BOND_ADMIN: i64 = 72;
     pub const REG_OPS: i64 = 15;
     pub const SYS_AUTHTOKEN_OPS: i64 = 16;
     pub const REG_OPS_V1: i64 = 17;
@@ -1193,9 +1196,14 @@ impl SystemProcesses {
                 .filter_map(|pk| rev_stack::WalletOwner::from_public_key(pk).ok())
                 .collect::<Vec<_>>()
         };
-        let Some(response) =
-            rev_stack::native::handle(self.space.hot_store(), &command, second_par, &signers)
-        else {
+        let block_number = self.block_data.read().await.block_number;
+        let Some(response) = rev_stack::native::handle(
+            self.space.hot_store(),
+            &command,
+            second_par,
+            &signers,
+            block_number,
+        ) else {
             return Err(illegal_argument_error("rev_wallet"));
         };
 
@@ -1222,6 +1230,31 @@ impl SystemProcesses {
             rev_stack::bond::handle(self.space.hot_store(), &command, second_par)
         else {
             return Err(illegal_argument_error("rev_bond"));
+        };
+
+        produce(&[response], ack).await
+    }
+
+    pub async fn rev_bond_admin(
+        &self,
+        contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
+    ) -> Result<Vec<Par>, InterpreterError> {
+        let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
+            return Err(illegal_argument_error("rev_bond_admin"));
+        };
+
+        let [first_par, second_par, ack] = args.as_slice() else {
+            return Err(illegal_argument_error("rev_bond_admin"));
+        };
+
+        let Some(command) = RhoString::unapply(first_par) else {
+            return Err(illegal_argument_error("rev_bond_admin"));
+        };
+
+        let Some(response) =
+            rev_stack::bond::admin_handle(self.space.hot_store(), &command, second_par)
+        else {
+            return Err(illegal_argument_error("rev_bond_admin"));
         };
 
         produce(&[response], ack).await

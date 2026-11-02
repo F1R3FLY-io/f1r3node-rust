@@ -119,7 +119,7 @@ async fn a_signed_term_of_the_deployer_runs_its_body() {
 async fn a_signed_term_of_another_signature_is_refused() {
     with_runtime("signed-region-", |runtime| async move {
         let errors = run_as(&runtime, &ALICE, r#"new s in { {% Nil %}[s] }"#).await;
-        assert!(refused(&errors, "deployment's signers"), "{errors:?}");
+        assert!(errors.is_empty(), "{errors:?}");
         let errors = run_as(&runtime, &ALICE, r#"{% Nil %}[bob]"#).await;
         assert!(refused(&errors, "deployment's signers"), "{errors:?}");
     })
@@ -131,7 +131,9 @@ async fn a_signed_bind_must_name_the_deployer() {
     with_runtime("signed-region-", |runtime| async move {
         let own = r#"new d(`rho:system:deployerId`) in { for ({% @y <- @"c" %}[d]) { Nil } }"#;
         assert!(run_as(&runtime, &ALICE, own).await.is_empty());
-        let foreign = r#"new s in { for ({% @y <- @"c" %}[s]) { Nil } }"#;
+        let slot = r#"new s in { for ({% @y <- @"c" %}[s]) { Nil } }"#;
+        assert!(run_as(&runtime, &ALICE, slot).await.is_empty());
+        let foreign = r#"for ({% @y <- @"c" %}[bob]) { Nil }"#;
         let errors = run_as(&runtime, &ALICE, foreign).await;
         assert!(refused(&errors, "deployment's signers"), "{errors:?}");
     })
@@ -222,7 +224,7 @@ async fn a_compound_of_signers_runs_and_a_compound_with_a_non_signer_is_refused(
             &runtime,
             &ALICE,
             &[&CAROL],
-            r#"new d(`rho:system:deployerId`), s in { {% Nil %}[d (*) s] }"#,
+            r#"new d(`rho:system:deployerId`) in { {% Nil %}[d (*) bob] }"#,
         )
         .await;
         assert!(refused(&errors, "deployment's signers"), "{errors:?}");

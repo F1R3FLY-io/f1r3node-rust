@@ -962,3 +962,58 @@ async fn a_user_deploy_cannot_reach_the_genesis_mint_through_the_registry_lookup
         post
     );
 }
+
+#[tokio::test]
+async fn a_grant_settles_draws_inside_its_window_in_play_and_replay() {
+    let (sponsor, newcomer, proposer) = (party(), party(), party());
+    let (rm, genesis) = shard(&[(&sponsor, 100_000), (&newcomer, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let at = |block_number: i64| BlockData {
+        time_stamp: 1,
+        block_number,
+        sender: proposer.pk.clone(),
+        seq_num: 1,
+    };
+    let grant = r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), slot, funded in {
+        w!("fundGrant", (*d, (*slot, 2, 5), 3000), *funded) |
+        for (_ <- funded) { @"grant-slot"!(*slot) }
+      }"#;
+    let first = executor
+        .execute(&genesis, vec![envelope(grant, 1, &sponsor, 50_000, 1)], at(1))
+        .await
+        .unwrap();
+    assert_eq!(first.settlement.transfers.len(), 1);
+    let draw = format!(
+        r#"new w(`rho:rev:wallet`), out in {{
+             for (@slot <<- @"grant-slot") {{ w!("drawGrant", ((slot, 2, 5), "{}", 1000), *out) }}
+           }}"#,
+        newcomer.address
+    );
+    let inside = executor
+        .execute(
+            &first.settled_root,
+            vec![envelope(&draw, 2, &newcomer, 50_000, 1)],
+            at(3),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inside.settlement.transfers.len(), 1);
+    assert_eq!(inside.settlement.transfers[0].amount, 1_000);
+    assert_eq!(
+        replay(&executor, &first.settled_root, &inside, at(3)).await.settled_root,
+        inside.settled_root
+    );
+    let late = executor
+        .execute(
+            &inside.settled_root,
+            vec![envelope(&draw, 3, &newcomer, 50_000, 1)],
+            at(9),
+        )
+        .await
+        .unwrap();
+    assert!(late.settlement.transfers.is_empty());
+    assert_eq!(
+        replay(&executor, &inside.settled_root, &late, at(9)).await.settled_root,
+        late.settled_root
+    );
+}
