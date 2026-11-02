@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -579,6 +579,88 @@ Revisions 3 and 4 are accepted.
 | F30 | The merge of the FX branches keeps FX-4's hash-seal check ahead of FX-2's origin check. A-7 checks the merge commit. | FX-8 | A2 |
 
 A-7 re-audits FX-6, FX-7 and FX-8 as each lands.
+
+## Revision 5 (action A-8): re-audit of FX-3, FX-5, FX-2-refunds and FX-7
+
+- **Commits audited:**
+
+  | Branch | Commit | Lane | Base |
+  |---|---|---|---|
+  | `patch/FX-3` | `d3c5d383a` | C | FX-3 at `df0db3146` |
+  | `patch/FX-5` | `c0d48af7f` | C | `patch/FX-6` at `a978756ca` |
+  | `patch/FX-2-refunds` | `38c8ca21c` | B | `patch/FX-2` at `4aed4d852` |
+  | `patch/FX-7` | `d1c1a5df0` | B | `patch/FX-4` with FX-2 and P3-05 merged in |
+
+- **Method:** a code reading of each fix and of its tests, as in revisions 3 and 4. No tests were run or added.
+- **Rulings used:** Decisions 62 to 64 and 66 to 69 (plan r8.6).
+  - Decision 67: lane C lists every route by which data received at run time becomes running code, and writes one test for each route. This revision does not analyze those routes. When lane C's tests land, revision 6 records them and checks that each test fails without the `from_data` mark.
+  - Decision 68: a stack inside data received at run time is refused, sealed or bare. Kind mints are the one exception.
+  - Decision 69: the normalizer injects into a `new` only the URNs that it binds. FX-9 (lane B) will build this.
+
+### Results
+
+| # | Fix | Result | New findings |
+|---|---|---|---|
+| F27 | FX-3 decisions 6 to 11 | **Closed.** The deployer's signed message names the required cosigners in order. A cosignature counts only for a named key, and each key signs once. `cosignerId:<i>` is the i-th named key. A stripped envelope does not decode, so it does not take the identity. A test confirms that `Secp256k1::verify` refuses a second encoding of one deployer signature (high S, padding, long-form length, trailing byte). | — |
+| F12 | FX-5 decision 1 | **Closed.** An envelope whose term does not normalize names nothing and seals nothing, so the deployer alone pays. The test follows the A-6 F12 plan. | — |
+| F19 | FX-5 decisions 2 to 4 | **Closed by ruling.** By Decision 62, the gate keeps its kind assumption for a seal over a stack body that it cannot resolve. At run time, a wallet behind such a seal counts only where its owner wrote the seal, and never inside data received at run time (FX-6). The gate now names the payer elements of the nested kind form, so that form passes the gate and draws only on its sealer. The end-to-end test follows the A-6 F15 plan. | F33 (Low) |
+| F28 | FX-6, FX-5 | **Closed for the case tested.** Route coverage is left to lane C under Decision 67. | — |
+| — | FX-2-refunds decisions 10 to 12 | **No authority finding.** A storage refund is charged inside the record of the region that paid for the item. This moves only metering credit, within one run, and the run's totals do not change. `seal::within_now` is lane C's code, and lane C should review it, as the log says. | — |
+| F30 | FX-7 decision 1 (merge `692db527c`) | **Closed on FX-7.** `check_region_signature` substitutes once, checks each `# Q` with `hash_seal_admissible`, and only then checks the other components against the origin's signers. FX-8 must keep this order. | — |
+| F22 | FX-7 decisions 3, 5, 6 | **Closed.** The refusal follows the channel that a URN resolves to, not the URN string. Inside a `Process` record, `rho:block:data` and `rho:deploy:data` are refused, also through the registry lookup with a URN built at run time. The test covers both. | — |
+| F24 | FX-7 decision 4 | **Closed.** Genesis-only names are refused by channel and by name. Setup asserts that the two tests agree. | — |
+| F23 | FX-7 decisions 7, 12 | **Closed.** `replace_rev_hook` and `replaceHook` need the quorum's seal. `# H` cannot replace the hook. | — |
+| F25 | FX-7 decision 8 | **Closed.** A genesis test checks that only `PoSV6` names `rho:rev:bondAdmin`, that three terms name `rho:rev:genesis`, and that no blessed term asks the registry lookup. | — |
+| F26 | FX-7 decision 12, `seal_wiring_spec` | **Closed.** The F5, F6, F13 and F16 plans now run through the interpreter. | — |
+| F31 | FX-7 decision 9 | **Closed by Decision 64.** A casper test shows that a stack in a self-sealed region draws on the funders' shares pro rata, in play and replay. | — |
+| F5, F6 | FX-7 decisions 10, 11, 15 | **Closed under a seal record, open outside one.** See F32. | F32 (High) |
+
+### The two checks requested for FX-7
+
+1. **A deploy that is cosigned but not sealed no longer carries its cosigners' authority.** This holds for code that runs under a seal record. The `Deployment` record's owner is the deployer alone. The cosigners are origin signers only, so they count for a region that names them, not for a draw. `wallet_authority` returns the record's owner, and FX-7 decision 15 records the change with a test.
+
+   It does **not** hold for code that runs with no record. See F32. A contract installed at genesis has no stored record, so its body runs with none. A native draw there falls back to the running deployment's deployer and cosigners.
+
+2. **A `deployerId` bound inside `# P` gets the installer's id.** This holds. The URN is a normalizer injection, which is fixed in the term when the installing deployment is normalized. `eval_new` reads it from `New.injections`, not from the running deployment. `hash_seal_spec::a_hash_sealed_region_may_not_read_the_running_deployment` stores Alice's self-sealed P, fires it from Carol's deployment, and checks that the bound name is Alice's id. Because the whole deploy environment is injected today, P's hash also changes with the installer. FX-9 (Decision 69) changes the hash and not the value.
+
+### F32 — High: a native draw outside every seal falls back to the running deployment's signers
+
+**Code:** `SystemProcesses::wallet_authority` (`system_processes.rs`, FX-7) returns the owner of the current seal record. With no record, it returns the running deployment's deployer and verified cosigners. It does not check whether records are on. The reducer's own checks do: `stack_writer` and `region_signers` refuse "outside every seal" when records are on.
+
+**Why there is code with no record on a v6 runtime:** the dispatcher (`dispatch.rs`) runs a fired continuation under the record stored with it. A continuation stored at genesis has no record, because the genesis runtime has records off. `SystemVaultV6.rho` is such a contract. Its `transfer` body calls `rho:rev:wallet` `"transfer"` with the payer id that it receives.
+
+**Consequence:** inside the bodies of genesis contracts, a draw's authority is the running deployment again. This is the execution-context pattern that F6 named and that Decision 51 ruled out. It covers cosigners too, so the first requested check fails on this path. The draw is bounded by what the running deployment's signers hold.
+
+**Proposed fix:**
+1. With records on and no record, `wallet_authority` returns an empty authority, as `stack_writer` and `region_signers` already refuse. The fallback to the deploy's signers stays only for runtimes with records off.
+2. A genesis contract that moves REV for its caller must not draw by itself. The caller makes the draw in its own code, under its own record, either by calling `rho:rev:wallet` directly or by passing a region that it sealed. `SystemVaultV6.transfer` needs a matching change, or removal if the native process replaces it.
+3. Every v6 genesis contract that calls `rho:rev:wallet` or `rho:rev:bond` needs a test that runs with records on.
+
+**Test plan for lane B:** on a v6 shard after genesis, with records on:
+- A deployment calls `SystemVaultV6.transfer` for its own deployer. *Expected after the fix:* the call is refused, or done through the caller's own record, as the design decides.
+- An envelope cosigned by B calls the vault with B's id. *Expected after the fix:* B's wallet does not change.
+- A contract that M stored forwards a payer id that it received to the vault. *Expected after the fix:* no wallet other than M's changes.
+
+### F33 — Low: the gate does not commit a wallet that a variable seal resolves to at run time
+
+**Code:** by FX-5 decision 2, the gate does not name a seal that it cannot resolve over a stack body. If the variable resolves at run time to a wallet that passes the region check (for example, a cosigner of the origin), the stack draws on that wallet. The gate made no commitment for it.
+
+**Effect:** the gate's commitments and the run's draws can name different wallets. Decision 48's journal admission still checks each move against the wallet's balance less what is held, so the draw cannot overdraw. But the gate no longer bounds every paying wallet, which revision 2 proposed (F14, step 5).
+
+**Proposed fix:** record the gap as accepted under Decision 62, or have the executor add any wallet that a run draws on but the gate did not commit to the envelope's settlement check. A ruling is not urgent.
+
+### Merge requirements for FX-8
+
+FX-8 joins branches that now differ in shared code. Revision 6 re-audits the merge commit against this list.
+
+1. **F30:** keep FX-7's order in `check_region_signature`: the hash seal first, on the substituted closed process, then the origin's signers.
+2. **FX-3 and the seal record:** FX-2's `Origin.signers` must come from FX-3's `verified_cosigners` on the signed envelope. That gives the named cosigners in the deployer's order, and nothing when a named cosigner is missing.
+3. **FX-6 and FX-7:** under a `from_data` record, `wallet_authority` must also refuse, as FX-6's open item 2 asks and Decision 68 implies for draws. FX-7 was cut without FX-6, so its native handlers do not read `from_data`. The F32 fix applies in the same place.
+4. **FX-2-refunds and FX-6:** the record kept with each stored item must keep its `from_data` mark.
+5. **Tests to run on the merge:**
+   - `hash_seal_spec` (F18, F20, F22), `seal_record_spec` and `seal_wiring_spec`.
+   - FX-3's cosigner tests and FX-5's `region_spec` tests.
+   - FX-6's F28 test, and lane C's route tests under Decision 67 when they land.
 
 ## Open questions for review
 
