@@ -109,12 +109,16 @@ A relaunched network can reuse its `networkId`, so `networkId` cannot separate t
 | Empty | accepted | refused |
 | Ours not known yet | accepted | accepted |
 
-The pull list (`classify` in `rp/chain_id.rs`) holds the control messages without a packet (handshake, heartbeat, disconnect) and these request types:
+Each packet declares its pull or push class beside its wire tag in `impl_packet!` in `models/src/rust/casper/protocol/packet_type_tag.rs`.
+The macro generates packet conversion and class lookup from these declarations.
+Control messages without a packet (handshake, heartbeat, disconnect) are pulls. These request types are also pulls:
+
 - `ApprovedBlockRequest`, `BlockRequest`, `HasBlockRequest`, `ForkChoiceTipRequest`, `StoreItemsMessageRequest`, `MergeableEntryRequest`, `FloorCacheRequest`
 - snapshot requests: `GetSnapshotChunkRequest`, `HasSnapshotRequest`
 - write-ahead log (WAL) payload requests: `GetWalPayloadRequest`, `HasWalPayloadRequest`
 
-A joining node sends the snapshot and WAL payload requests before it knows its chain. A message type that is not in the pull list counts as a push.
+A joining node sends the snapshot and WAL payload requests before it knows its chain.
+An unknown packet tag counts as a push.
 
 **Where the check runs**:
 

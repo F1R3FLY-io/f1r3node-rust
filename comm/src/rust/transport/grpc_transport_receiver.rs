@@ -517,8 +517,8 @@ impl TransportLayerService {
         };
         StreamHandler::handle_stream(
             stream,
-            |streamed: &Streamed| match validation.check(streamed) {
-                Circuit::Closed => verify_stream_sender(streamed, sender_id),
+            |streamed: &Streamed| match verify_stream_sender(streamed, sender_id) {
+                Circuit::Closed => validation.check(streamed),
                 opened => opened,
             },
             &self.cache,
@@ -1036,6 +1036,36 @@ mod tests {
         assert!(verdict("BlockMessage", b"").broken());
         assert_eq!(verdict("BlockRequest", b""), Circuit::closed());
         assert_eq!(verdict("BlockMessage", b"our-chain"), Circuit::closed());
+    }
+
+    #[test]
+    fn stream_sender_mismatch_precedes_network_and_chain_refusals() {
+        let service = service(Arc::new(Mutex::new(HashMap::new())));
+        service
+            .rp_config
+            .chain_id
+            .set_once(Bytes::from_static(b"our-chain"))
+            .unwrap();
+
+        for (network, chain) in [
+            ("test", b"old-chain".as_slice()),
+            ("other-net", b"our-chain".as_slice()),
+            ("other-net", b"old-chain".as_slice()),
+            ("test", b"".as_slice()),
+        ] {
+            let mut chunks = chunks(chain, "BlockMessage");
+            if let Some(models::routing::chunk::Content::Header(header)) = &mut chunks[0].content {
+                header.network_id = network.to_string();
+            } else {
+                panic!("Expected a stream header");
+            }
+            let result = futures::executor::block_on(
+                service.handle_validated_stream(futures::stream::iter(chunks), b"another-sender"),
+            );
+
+            assert_eq!(result.unwrap_err(), StreamError::SenderMismatch);
+            assert!(service.cache.is_empty());
+        }
     }
 
     #[test]

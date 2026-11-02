@@ -1,5 +1,7 @@
 use std::sync::{Arc, OnceLock};
 
+use models::rust::casper::protocol::packet_type_tag::packet_message_class;
+pub use models::rust::casper::protocol::packet_type_tag::MessageClass;
 use prost::bytes::Bytes;
 
 use crate::rust::errors::{wrong_chain_id, CommError};
@@ -20,23 +22,6 @@ fn short_id(id: &[u8]) -> String {
     }
 }
 
-/// What a peer is trying to do with a message, derived from its packet type.
-///
-/// A node that has not yet learned its own genesis can only ever *ask* for
-/// data, so every message a joining node sends is a `Pull`. The abuse this
-/// guards against is the opposite direction: an unsolicited `Push` of chain
-/// data from a node that holds the state of a previous chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageClass {
-    /// A request. The responder bounds the cost, so an unidentified peer may
-    /// send one: this is what lets a new node bootstrap and an observer sync.
-    Pull,
-    /// Chain data the sender pushes at us, or a response to something we
-    /// asked. Accepting one from an unidentified peer is the resource
-    /// exhaustion this module exists to prevent.
-    Push,
-}
-
 /// Classify a message by its packet type id.
 ///
 /// `None` is a control-plane message with no packet payload (handshake,
@@ -46,22 +31,7 @@ pub enum MessageClass {
 pub fn classify(type_id: Option<&str>) -> MessageClass {
     match type_id {
         None => MessageClass::Pull,
-        Some(
-            "ApprovedBlockRequest"
-            | "BlockRequest"
-            | "HasBlockRequest"
-            | "ForkChoiceTipRequest"
-            | "StoreItemsMessageRequest"
-            | "MergeableEntryRequest"
-            | "FloorCacheRequest"
-            | "GetSnapshotChunkRequest"
-            | "HasSnapshotRequest"
-            | "GetWalPayloadRequest"
-            | "HasWalPayloadRequest",
-        ) => MessageClass::Pull,
-        // Default deny: an unrecognized type counts as a push, so a message
-        // type added later is guarded before anyone remembers this list.
-        Some(_) => MessageClass::Push,
+        Some(type_id) => packet_message_class(type_id),
     }
 }
 
@@ -219,5 +189,83 @@ impl ChainIdCell {
              verified against this node's own genesis once that is recorded"
         );
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use models::casper::*;
+    use models::rust::casper::protocol::packet_type_tag::ToPacket;
+
+    use super::*;
+
+    #[test]
+    fn joining_nodes_can_send_every_declared_request() {
+        let chain = ChainIdCell::known(Bytes::from_static(b"our-chain"));
+        let packets = [
+            ApprovedBlockRequestProto::default().mk_packet(),
+            BlockRequestProto::default().mk_packet(),
+            HasBlockRequestProto::default().mk_packet(),
+            ForkChoiceTipRequestProto::default().mk_packet(),
+            StoreItemsMessageRequestProto::default().mk_packet(),
+            MergeableEntryRequestProto::default().mk_packet(),
+            FloorCacheRequestProto::default().mk_packet(),
+            GetSnapshotChunkRequestProto::default().mk_packet(),
+            HasSnapshotRequestProto::default().mk_packet(),
+            GetWalPayloadRequestProto::default().mk_packet(),
+            HasWalPayloadRequestProto::default().mk_packet(),
+        ];
+
+        assert!(chain.check("peer", b"", None).is_ok());
+        for packet in packets {
+            assert!(
+                chain.check("peer", b"", Some(&packet.type_id)).is_ok(),
+                "{} must be accepted from a joining node",
+                packet.type_id,
+            );
+            assert!(matches!(
+                chain.check("peer", b"old-chain", Some(&packet.type_id)),
+                Err(CommError::WrongChainId(..))
+            ));
+        }
+    }
+
+    #[test]
+    fn joining_nodes_cannot_push_data_or_unknown_packets() {
+        let chain = ChainIdCell::known(Bytes::from_static(b"our-chain"));
+        let packets = [
+            BlockMessageProto::default().mk_packet(),
+            BlockHashMessageProto::default().mk_packet(),
+            ApprovedBlockProto::default().mk_packet(),
+            UnapprovedBlockProto::default().mk_packet(),
+            BlockApprovalProto::default().mk_packet(),
+            NoApprovedBlockAvailableProto::default().mk_packet(),
+            HasBlockProto::default().mk_packet(),
+            StoreItemsMessageProto::default().mk_packet(),
+            MergeableEntryResponseProto::default().mk_packet(),
+            FloorCacheResponseProto::default().mk_packet(),
+            SnapshotChunkResponseProto::default().mk_packet(),
+            HasSnapshotProto::default().mk_packet(),
+            WalPayloadResponseProto::default().mk_packet(),
+            HasWalPayloadProto::default().mk_packet(),
+            models::routing::Packet {
+                type_id: "UnknownPacket".to_string(),
+                content: Bytes::new(),
+            },
+        ];
+
+        for packet in packets {
+            assert!(
+                matches!(
+                    chain.check("peer", b"", Some(&packet.type_id)),
+                    Err(CommError::WrongChainId(..))
+                ),
+                "{} must be refused from a joining node",
+                packet.type_id,
+            );
+            assert!(chain
+                .check("peer", b"our-chain", Some(&packet.type_id))
+                .is_ok());
+        }
     }
 }
