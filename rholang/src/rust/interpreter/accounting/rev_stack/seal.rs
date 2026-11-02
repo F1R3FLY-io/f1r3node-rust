@@ -48,6 +48,10 @@ pub(crate) async fn within<F: Future>(record: Option<SealRecord>, future: F) -> 
     SEAL.scope(record, future).await
 }
 
+pub(crate) fn within_now<R>(record: Option<SealRecord>, f: impl FnOnce() -> R) -> R {
+    SEAL.sync_scope(record, f)
+}
+
 pub(crate) fn inherit<F: Future>(future: F) -> impl Future<Output = F::Output> {
     SEAL.scope(current(), future)
 }
@@ -196,5 +200,18 @@ mod tests {
         );
         assert_eq!(inner.origin.phlo_price, 3);
         assert_eq!(current(), None);
+    }
+
+    #[tokio::test]
+    async fn a_charge_made_for_another_record_sees_that_record_only_while_it_runs() {
+        let running = record(5, SealKind::Deployment);
+        let payer = record(7, SealKind::Signed);
+        let seen = within(Some(running.clone()), async {
+            let during = within_now(Some(payer.clone()), current);
+            let cleared = within_now(None, current);
+            (during, cleared, current())
+        })
+        .await;
+        assert_eq!(seen, (Some(payer), None, Some(running)));
     }
 }

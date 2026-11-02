@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 
+use super::rev_stack::seal::SealRecord;
+
+type Payer = Option<SealRecord>;
+
 #[derive(Debug, Default)]
 pub struct LeftInSpace {
-    data: HashMap<Vec<u8>, u32>,
-    continuations: HashMap<Vec<u8>, u32>,
+    data: HashMap<Vec<u8>, Vec<Payer>>,
+    continuations: HashMap<Vec<u8>, Vec<Payer>>,
     taken: HashMap<Vec<u8>, u32>,
     taken_continuations: HashMap<Vec<u8>, u32>,
 }
@@ -26,42 +30,55 @@ fn take(items: &mut HashMap<Vec<u8>, u32>, id: &[u8]) -> bool {
     }
 }
 
+fn keep(items: &mut HashMap<Vec<u8>, Vec<Payer>>, id: &[u8], payer: Payer) {
+    items.entry(id.to_vec()).or_default().push(payer);
+}
+
+fn release(items: &mut HashMap<Vec<u8>, Vec<Payer>>, id: &[u8]) -> Option<Payer> {
+    let payers = items.get_mut(id)?;
+    let payer = payers.remove(0);
+    if payers.is_empty() {
+        items.remove(id);
+    }
+    Some(payer)
+}
+
 impl LeftInSpace {
-    pub fn stored_datum(&mut self, id: &[u8]) { add(&mut self.data, id); }
+    pub fn stored_datum(&mut self, id: &[u8], payer: Payer) { keep(&mut self.data, id, payer); }
 
-    pub fn stored_continuation(&mut self, id: &[u8]) { add(&mut self.continuations, id); }
+    pub fn stored_continuation(&mut self, id: &[u8], payer: Payer) {
+        keep(&mut self.continuations, id, payer);
+    }
 
-    pub fn removed_datum(&mut self, id: &[u8]) -> bool {
-        if take(&mut self.data, id) {
-            true
-        } else {
+    pub fn removed_datum(&mut self, id: &[u8]) -> Option<Payer> {
+        let payer = release(&mut self.data, id);
+        if payer.is_none() {
             add(&mut self.taken, id);
-            false
         }
+        payer
     }
 
-    pub fn removed_continuation(&mut self, id: &[u8]) -> bool {
-        if take(&mut self.continuations, id) {
-            true
-        } else {
+    pub fn removed_continuation(&mut self, id: &[u8]) -> Option<Payer> {
+        let payer = release(&mut self.continuations, id);
+        if payer.is_none() {
             add(&mut self.taken_continuations, id);
-            false
         }
+        payer
     }
 
-    pub fn left_datum(&mut self, id: &[u8]) -> bool {
+    pub fn left_datum(&mut self, id: &[u8], payer: Payer) -> bool {
         if take(&mut self.taken, id) {
             return false;
         }
-        self.stored_datum(id);
+        self.stored_datum(id, payer);
         true
     }
 
-    pub fn left_continuation(&mut self, id: &[u8]) -> bool {
+    pub fn left_continuation(&mut self, id: &[u8], payer: Payer) -> bool {
         if take(&mut self.taken_continuations, id) {
             return false;
         }
-        self.stored_continuation(id);
+        self.stored_continuation(id, payer);
         true
     }
 
@@ -71,34 +88,59 @@ impl LeftInSpace {
 #[cfg(test)]
 mod tests {
     use super::LeftInSpace;
+    use crate::rust::interpreter::accounting::rev_stack::seal::{Origin, SealKind, SealRecord};
+    use crate::rust::interpreter::accounting::rev_stack::WalletOwner;
+
+    fn payer(owner: u8) -> Option<SealRecord> {
+        Some(SealRecord {
+            owner: WalletOwner::Unforgeable(vec![owner; 32]),
+            kind: SealKind::Signed,
+            origin: Origin {
+                envelope: vec![9; 64],
+                signers: vec![WalletOwner::Unforgeable(vec![owner; 32])],
+                phlo_price: 1,
+            },
+        })
+    }
 
     #[test]
     fn only_items_the_run_stored_count_as_its_own() {
         let mut rule = LeftInSpace::default();
-        rule.stored_datum(b"a");
-        rule.stored_datum(b"a");
-        assert!(rule.removed_datum(b"a"));
-        assert!(rule.removed_datum(b"a"));
-        assert!(!rule.removed_datum(b"a"));
-        assert!(!rule.removed_datum(b"pre"));
+        rule.stored_datum(b"a", None);
+        rule.stored_datum(b"a", None);
+        assert!(rule.removed_datum(b"a").is_some());
+        assert!(rule.removed_datum(b"a").is_some());
+        assert!(rule.removed_datum(b"a").is_none());
+        assert!(rule.removed_datum(b"pre").is_none());
         assert!(rule.restores(b"pre"));
         assert!(!rule.restores(b"pre"));
-        rule.stored_continuation(b"k");
-        assert!(rule.removed_continuation(b"k"));
-        assert!(!rule.removed_continuation(b"k"));
+        rule.stored_continuation(b"k", None);
+        assert!(rule.removed_continuation(b"k").is_some());
+        assert!(rule.removed_continuation(b"k").is_none());
     }
 
     #[test]
     fn an_item_taken_before_its_store_is_recorded_is_not_left_in_space() {
         let mut rule = LeftInSpace::default();
-        assert!(!rule.removed_datum(b"d"));
-        assert!(!rule.left_datum(b"d"));
-        assert!(!rule.removed_datum(b"d"));
-        assert!(rule.left_datum(b"e"));
-        assert!(rule.removed_datum(b"e"));
-        assert!(!rule.removed_continuation(b"k"));
-        assert!(!rule.left_continuation(b"k"));
-        assert!(rule.left_continuation(b"j"));
-        assert!(rule.removed_continuation(b"j"));
+        assert!(rule.removed_datum(b"d").is_none());
+        assert!(!rule.left_datum(b"d", None));
+        assert!(rule.removed_datum(b"d").is_none());
+        assert!(rule.left_datum(b"e", None));
+        assert!(rule.removed_datum(b"e").is_some());
+        assert!(rule.removed_continuation(b"k").is_none());
+        assert!(!rule.left_continuation(b"k", None));
+        assert!(rule.left_continuation(b"j", None));
+        assert!(rule.removed_continuation(b"j").is_some());
+    }
+
+    #[test]
+    fn a_removed_item_names_the_record_that_paid_for_it() {
+        let mut rule = LeftInSpace::default();
+        rule.stored_datum(b"a", payer(1));
+        rule.stored_datum(b"a", payer(2));
+        assert!(rule.left_continuation(b"k", payer(3)));
+        assert_eq!(rule.removed_datum(b"a"), Some(payer(1)));
+        assert_eq!(rule.removed_datum(b"a"), Some(payer(2)));
+        assert_eq!(rule.removed_continuation(b"k"), Some(payer(3)));
     }
 }
