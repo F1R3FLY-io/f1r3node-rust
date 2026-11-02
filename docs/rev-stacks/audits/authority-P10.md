@@ -566,6 +566,20 @@ The lane's tests pass owner values to `spend_compute` and `replace_rev_hook` dir
 - F27, F30, F31: above. F30 is a precondition for merging FX-2 with FX-4.
 - FX-2 open item 3 (a merge error in a three-block run with a repeated send) is with lane A2. It is outside authority.
 
+## Rulings of 2026-11-02 and the fixes that follow
+
+Revisions 3 and 4 are accepted.
+
+| Finding | Ruling | Fix | Lane |
+|---|---|---|---|
+| F27 | The deployer's signed message names the required cosigners (Decision 63). | FX-6 | C |
+| F28, F19 | A seal must be written by its owner. A seal in data received at run time is refused. A kind seal taken from a received name is allowed (Decision 62). | FX-6 | C |
+| F31 | A stack that draws on a process wallet is recorded as pro-rata share draws (Decision 64). | FX-7 | B |
+| F22 to F26, F5, F6 | As proposed in revisions 3 and 4, with the native and gate wiring to the seal record. | FX-7 | B |
+| F30 | The merge of the FX branches keeps FX-4's hash-seal check ahead of FX-2's origin check. A-7 checks the merge commit. | FX-8 | A2 |
+
+A-7 re-audits FX-6, FX-7 and FX-8 as each lands.
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -574,5 +588,5 @@ The lane's tests pass owner values to `spend_compute` and `replace_rev_hook` dir
 4. **F14 and F15:** may the payer of a stack come only from the enclosing seal, with the deployer no longer a default? This changes charging and the state root of blocks that hold stack literals.
 5. **F17:** may a region that A sealed in A's envelope run later in an envelope that A did not sign? Should the record of a region's origin be a field of `CostSignedTerm` or a wrapper that only the reducer can build?
 6. **F16:** should the hook's spending authority be the seal `# H` of the installed contract, the compound seal of the hook authority, or both?
-7. **F27:** should the deployer's signed message name the required cosigner keys, so that a relay cannot strip cosignatures from an envelope without changing its identity?
-8. **F31:** until region metering, should a draw whose writer is a `Process` owner be refused, or journaled as pro-rata share draws?
+7. **F27:** answered on 2026-11-02 (Decision 63). Should the deployer's signed message name the required cosigner keys, so that a relay cannot strip cosignatures from an envelope without changing its identity?
+8. **F31:** answered on 2026-11-02 (Decision 64). Until region metering, should a draw whose writer is a `Process` owner be refused, or journaled as pro-rata share draws?
