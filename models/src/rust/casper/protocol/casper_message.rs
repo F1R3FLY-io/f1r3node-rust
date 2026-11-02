@@ -1373,16 +1373,34 @@ pub struct Cosignature {
     pub sig_algorithm: String,
 }
 
+pub const COSIGNATURE_DOMAIN: &[u8] = b"f1r3fly/cosignature/v1";
+
 impl Cosignature {
+    pub fn preimage(envelope: &Signed<DeployData>) -> Vec<u8> {
+        let data = envelope.data.to_message().encode_to_vec();
+        let algorithm = envelope.sig_algorithm.name();
+        let parts: [&[u8]; 4] = [
+            &data,
+            &envelope.pk.bytes,
+            &envelope.sig,
+            algorithm.as_bytes(),
+        ];
+        let mut out = COSIGNATURE_DOMAIN.to_vec();
+        for part in parts {
+            out.extend_from_slice(&(part.len() as u64).to_be_bytes());
+            out.extend_from_slice(part);
+        }
+        out
+    }
+
     pub fn sign(
-        data: &DeployData,
+        envelope: &Signed<DeployData>,
         sk: &crypto::rust::private_key::PrivateKey,
         algorithm: &str,
     ) -> Result<Self, String> {
         let alg = SignaturesAlgFactory::apply(algorithm)
             .ok_or_else(|| format!("Unknown signature algorithm: {algorithm}"))?;
-        let hash =
-            Signed::<DeployData>::signature_hash(&alg.name(), data.to_message().encode_to_vec());
+        let hash = Signed::<DeployData>::signature_hash(&alg.name(), Self::preimage(envelope));
         Ok(Cosignature {
             cosigner: alg.to_public(sk).bytes.to_vec(),
             sig: alg.sign(&hash, &sk.bytes),
@@ -1390,20 +1408,23 @@ impl Cosignature {
         })
     }
 
-    pub fn verified_cosigners(data: &DeployData) -> Option<Vec<PublicKey>> {
-        data.cosignatures
+    pub fn verified_cosigners(envelope: &Signed<DeployData>) -> Option<Vec<PublicKey>> {
+        envelope
+            .data
+            .cosignatures
             .iter()
-            .map(|c| c.verify(data).then(|| PublicKey::from_bytes(&c.cosigner)))
+            .map(|c| {
+                c.verify(envelope)
+                    .then(|| PublicKey::from_bytes(&c.cosigner))
+            })
             .collect()
     }
 
-    pub fn verify(&self, data: &DeployData) -> bool {
+    pub fn verify(&self, envelope: &Signed<DeployData>) -> bool {
         match SignaturesAlgFactory::apply(&self.sig_algorithm) {
             Some(alg) => {
-                let hash = Signed::<DeployData>::signature_hash(
-                    &alg.name(),
-                    data.to_message().encode_to_vec(),
-                );
+                let hash =
+                    Signed::<DeployData>::signature_hash(&alg.name(), Self::preimage(envelope));
                 alg.verify(&hash, &self.sig, &self.cosigner)
             }
             None => false,
@@ -2845,12 +2866,12 @@ mod cosignature_tests {
     fn a_cosignature_signs_the_deployers_preimage_and_survives_the_proto() {
         let (mut signed, cosigner) = deploy();
         let preimage = signed.data.to_message().encode_to_vec();
-        let cosignature = Cosignature::sign(&signed.data, &cosigner, &Secp256k1.name()).unwrap();
+        let cosignature = Cosignature::sign(&signed, &cosigner, &Secp256k1.name()).unwrap();
         signed.data.cosignatures.push(cosignature);
         assert_eq!(signed.data.to_message().encode_to_vec(), preimage);
         let decoded = DeployData::from_proto(DeployData::to_proto_ref(&signed)).unwrap();
         assert_eq!(decoded.data.cosignatures, signed.data.cosignatures);
-        let keys = Cosignature::verified_cosigners(&decoded.data).unwrap();
+        let keys = Cosignature::verified_cosigners(&decoded).unwrap();
         assert_eq!(keys, vec![Secp256k1.to_public(&cosigner)]);
     }
 
@@ -2858,9 +2879,40 @@ mod cosignature_tests {
     fn a_tampered_cosignature_does_not_verify() {
         let (mut signed, cosigner) = deploy();
         let mut cosignature =
-            Cosignature::sign(&signed.data, &cosigner, &Secp256k1.name()).unwrap();
+            Cosignature::sign(&signed, &cosigner, &Secp256k1.name()).unwrap();
         cosignature.sig[3] ^= 1;
         signed.data.cosignatures.push(cosignature);
-        assert_eq!(Cosignature::verified_cosigners(&signed.data), None);
+        assert_eq!(Cosignature::verified_cosigners(&signed), None);
+    }
+
+    #[test]
+    fn a_cosignature_does_not_verify_under_another_deployer() {
+        let (mut signed, cosigner) = deploy();
+        let cosignature = Cosignature::sign(&signed, &cosigner, &Secp256k1.name()).unwrap();
+        signed.data.cosignatures.push(cosignature.clone());
+        assert!(Cosignature::verified_cosigners(&signed).is_some());
+        let (thief, _) = Secp256k1.new_key_pair();
+        let mut lifted = signed.data.clone();
+        lifted.cosignatures.clear();
+        let mut lifted = Signed::create(lifted, Box::new(Secp256k1), thief).unwrap();
+        lifted.data.cosignatures.push(cosignature);
+        assert_eq!(Cosignature::verified_cosigners(&lifted), None);
+    }
+
+    #[test]
+    fn a_cosignature_covers_the_deployers_signature() {
+        let (mut signed, cosigner) = deploy();
+        let cosignature = Cosignature::sign(&signed, &cosigner, &Secp256k1.name()).unwrap();
+        signed.data.cosignatures.push(cosignature);
+        let mut other_sig = signed.clone();
+        let mut bytes = other_sig.sig.to_vec();
+        bytes[5] ^= 1;
+        other_sig.sig = bytes.into();
+        assert!(Cosignature::verified_cosigners(&signed).is_some());
+        assert_eq!(Cosignature::verified_cosigners(&other_sig), None);
+        assert_ne!(
+            Cosignature::preimage(&signed),
+            Cosignature::preimage(&other_sig)
+        );
     }
 }

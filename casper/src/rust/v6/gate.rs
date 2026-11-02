@@ -37,7 +37,7 @@ impl GateInput {
     ) -> Result<Self, CasperError> {
         let deployer = WalletOwner::from_public_key(&deploy.pk)
             .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-        let verified = Cosignature::verified_cosigners(&deploy.data);
+        let verified = Cosignature::verified_cosigners(deploy);
         let cosigners = verified
             .iter()
             .flatten()

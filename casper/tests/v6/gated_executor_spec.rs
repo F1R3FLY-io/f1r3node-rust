@@ -882,7 +882,7 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
     by_quorum
         .data
         .cosignatures
-        .push(Cosignature::sign(&by_quorum.data, &dave.sk, &Secp256k1.name()).unwrap());
+        .push(Cosignature::sign(&by_quorum, &dave.sk, &Secp256k1.name()).unwrap());
     let third = executor
         .execute(&second.settled_root, vec![by_quorum], block_data(&proposer))
         .await

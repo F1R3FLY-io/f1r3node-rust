@@ -244,10 +244,10 @@ impl DeployRuntime {
 
     pub fn envelope_cosign(envelope: &str, private_key: &PrivateKey) -> Result<String, String> {
         let mut signed = Self::envelope_decode(envelope)?;
-        if Cosignature::verified_cosigners(&signed.data).is_none() {
+        if Cosignature::verified_cosigners(&signed).is_none() {
             return Err("The envelope carries a cosignature that does not verify".to_string());
         }
-        let cosignature = Cosignature::sign(&signed.data, private_key, &Secp256k1::name())?;
+        let cosignature = Cosignature::sign(&signed, private_key, &Secp256k1::name())?;
         let already = signed.pk.bytes.as_ref() == cosignature.cosigner.as_slice()
             || signed
                 .data
@@ -362,7 +362,7 @@ mod envelope_tests {
         assert_eq!(signed.pk, alice_pk);
         assert_eq!(signed.data.time_stamp, 7);
         assert_eq!(
-            Cosignature::verified_cosigners(&signed.data),
+            Cosignature::verified_cosigners(&signed),
             Some(vec![carol_pk])
         );
     }
