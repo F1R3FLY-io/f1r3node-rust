@@ -50,8 +50,10 @@ The node CLI can also read a balance:
 
 ## Transfer to a VaultAddress
 
-Alice uses these commands to transfer 100 tokens to Bob. The payer is always the deployer, so the
-script does not take a source address.
+Alice uses these commands to transfer 100 tokens to Bob. The transfer must be at the top level of
+Alice's own deploy, where her deployment seal is the authority. The `rho:vault:system` facade has no
+`transfer`, and code that another deploy stored cannot draw on Alice's wallet. The script does not take
+a source address, because the payer is always the deployer.
 
     ./propose.sh $ALICE_PRV vault_demo/3.transfer_funds.rho "-e s/%TO/$BOB_VAULT/"
     ./propose.sh $ALICE_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$ALICE_VAULT/"
@@ -63,6 +65,16 @@ The node CLI makes the same transfer:
 Bob then reads his own balance:
 
     ./propose.sh $BOB_PRV vault_demo/2.check_balance.rho "-e s/%VAULT_ADDR/$BOB_VAULT/"
+
+A joint wallet of Alice and Carol is spent only inside a region that both of them seal. Alice deploys
+the term, and Carol cosigns it:
+
+    new w(`rho:rev:wallet`), d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`),
+        deployId(`rho:system:deployId`) in {
+      {% w!("transfer", ((*d, *c), "%TO", 100), *deployId) %}[d (*) c]
+    }
+
+A cosigned deploy without that seal carries no authority from the cosigner.
 
 A transfer debits the wallet of the deployer and adds a separate deposit to the wallet of the
 payee. The payee does not have to create a wallet first. Every address has a wallet, and its

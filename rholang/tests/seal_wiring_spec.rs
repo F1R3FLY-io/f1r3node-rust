@@ -263,3 +263,31 @@ async fn a_wallet_or_bond_call_inside_data_received_at_run_time_moves_nothing() 
     })
     .await;
 }
+
+#[tokio::test]
+async fn code_with_no_record_draws_on_no_wallet_under_seal_records() {
+    with_runtime("seal-wiring-", |runtime: RhoRuntimeImpl| async move {
+        stacks(&runtime).deposit(&owner(&ALICE), 1_000).unwrap();
+        let payee = address(&MALLORY);
+        let installed = format!(
+            r#"new w(`rho:rev:wallet`) in {{
+                 contract @"pay"(@from, ret) = {{ w!("transfer", (from, "{payee}", 100), *ret) }}
+               }}"#
+        );
+        run(&runtime, &BOB, &[], 1, &installed).await;
+        let fire = |out: &str| {
+            format!(r#"new d(`rho:system:deployerId`) in {{ @"pay"!(*d, "{out}") }}"#)
+        };
+
+        runtime.set_seal_records(true);
+        run(&runtime, &ALICE, &[], 2, &fire("recorded")).await;
+        assert!(!ok(&runtime, "recorded").await);
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1_000);
+
+        runtime.set_seal_records(false);
+        run(&runtime, &ALICE, &[], 3, &fire("legacy")).await;
+        assert!(ok(&runtime, "legacy").await);
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 900);
+    })
+    .await;
+}

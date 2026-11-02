@@ -1593,6 +1593,7 @@ async fn setup_reducer(
     let urn_phase = UrnPhase {
         fs_native_filtered: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         genesis: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        seal_records: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
 
@@ -1642,7 +1643,7 @@ async fn setup_reducer(
         filter_fs_native_urns: urn_phase.fs_native_filtered.clone(),
         genesis_phase: urn_phase.genesis.clone(),
         deploy_data: deploy_data_ref,
-        seal_records: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        seal_records: urn_phase.seal_records.clone(),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();
