@@ -11,6 +11,14 @@ Both runs measure one commit. Use the same commit for both runs, and record its 
 3. Make sure that `scripts/v6/cli-end-to-end.sh` passes on that commit. This script is the M2 gate.
 4. Use a host that runs no other work during the run. Do not use a shared runner or a laptop.
 5. Record the host: CPU model, number of physical cores, memory, disk type and kernel version.
+6. Before each full test run, remove the LMDB directories that earlier test runs left in `/tmp`:
+
+   ```bash
+   rm -rf /tmp/casper-shared-lmdb-*
+   ```
+
+   One full casper run leaves about 23 GB there. A full disk makes many tests fail with errors that look like real failures.
+7. If two checkouts share one target directory, run `touch models/build.rs` before each build. Cargo shares the `models` build-script output between checkouts of the same workspace.
 
 The toolchain is the one in `rust-toolchain.toml`. If that nightly is not available, use stable with `RUSTC_BOOTSTRAP=1`, and record that in the report.
 

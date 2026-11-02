@@ -9,9 +9,10 @@ use rholang::rust::interpreter::accounting::rev_stack::seal::{of_continuation, S
 use rholang::rust::interpreter::accounting::rev_stack::{RevStacks, TokenKind, WalletOwner};
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
-use rholang::rust::interpreter::rho_type::RhoString;
+use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoString, RhoTuple2};
 use rholang::rust::interpreter::system_processes::DeployData;
 use rholang::rust::interpreter::test_utils::resources::with_runtime;
+use rholang::rust::interpreter::util::vault_address::VaultAddress;
 
 const ALICE: [u8; 65] = [4; 65];
 const BOB: [u8; 65] = [9; 65];
@@ -312,16 +313,35 @@ async fn a_kind_minted_inside_data_still_mints_and_a_received_kind_name_still_mo
     .await;
 }
 
-const PAYLOADS: [(&str, &str); 3] = [
-    ("sealed", "{% slot :: () %}[a]"),
-    ("bare", "slot :: ()"),
-    ("mint", "{% slot :: () %}[k]"),
-];
+fn payloads() -> Vec<(&'static str, String)> {
+    let bob = VaultAddress::from_public_key(&PublicKey::from_bytes(&BOB))
+        .unwrap()
+        .to_base58();
+    vec![
+        ("sealed", "{% slot :: () %}[a]".to_string()),
+        ("bare", "slot :: ()".to_string()),
+        ("mint", "{% slot :: () %}[k]".to_string()),
+        (
+            "wallet",
+            format!(r#"new w(`rho:rev:wallet`) in {{ w!("transfer", (*a, "{bob}", 100), "native") }}"#),
+        ),
+        (
+            "bond",
+            r#"new b(`rho:rev:bond`) in { b!("bond", (*a, 100), "native") }"#.to_string(),
+        ),
+    ]
+}
+
+async fn native_reply(runtime: &RhoRuntimeImpl) -> Option<bool> {
+    let data = runtime.get_data(&RhoString::create_par("native".to_string())).await;
+    let (ok, _) = RhoTuple2::unapply(&data.first()?.a.pars[0])?;
+    RhoBoolean::unapply(&ok)
+}
 
 async fn route(contract: &str, deliveries: &[&str]) {
     let contract = contract.to_string();
     let deliveries: Vec<String> = deliveries.iter().map(|d| d.to_string()).collect();
-    for (n, (name, payload)) in PAYLOADS.iter().enumerate() {
+    for (n, (name, payload)) in payloads().into_iter().enumerate() {
         let contract = contract.clone();
         let deliveries = deliveries.clone();
         sealed_runtime(|runtime| async move {
@@ -336,7 +356,7 @@ async fn route(contract: &str, deliveries: &[&str]) {
                             @"slot"!(*slot) | @"kind"!(bundle0{{*k}}) |
                             for (a <<- @"aid") {{ {} }}
                         }}"#,
-                        delivery.replace("PAYLOAD", payload)
+                        delivery.replace("PAYLOAD", &payload)
                     )
                 } else {
                     delivery.clone()
@@ -358,7 +378,9 @@ async fn route(contract: &str, deliveries: &[&str]) {
             );
             let slot = slot_owner(&runtime, "slot");
             assert_eq!(stacks(&runtime).balance(&slot).unwrap(), 0, "{name}");
-            if *name == "mint" {
+            if name == "wallet" || name == "bond" {
+                assert_eq!(native_reply(&runtime).await, Some(false), "{name} on route {n}: {errors:?}");
+            } else if name == "mint" {
                 assert!(errors.is_empty(), "{name}: {errors:?}");
                 let WalletOwner::Unforgeable(id) = slot_owner(&runtime, "kind") else {
                     panic!("a kind is an unforgeable name");

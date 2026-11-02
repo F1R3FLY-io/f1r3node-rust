@@ -263,3 +263,34 @@ async fn a_wallet_or_bond_call_inside_data_received_at_run_time_moves_nothing() 
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_bond_admin_call_inside_data_received_at_run_time_moves_nothing() {
+    sealed(|runtime| async move {
+        let bond = r#"new b(`rho:rev:bond`), d(`rho:system:deployerId`) in { b!("bond", (*d, 100), "bonded") }"#;
+        run(&runtime, &ALICE, &[], 1, bond).await;
+        assert!(ok(&runtime, "bonded").await);
+        {
+            let _genesis = runtime.enter_genesis_phase();
+            run(&runtime, &BOB, &[], 2, r#"new a(`rho:rev:bondAdmin`) in { @"pos-held"!(*a) }"#).await;
+        }
+        let evaluator = r#"for (p <= @"eval") { *p }"#;
+        run(&runtime, &BOB, &[], 3, evaluator).await;
+        let pk = hex::encode(ALICE);
+        let sent = format!(
+            r#"for (a <<- @"pos-held") {{
+                 @"eval"!({{ a!("slash", "{pk}".hexToBytes(), "slashed") }})
+               }}"#
+        );
+        run(&runtime, &MALLORY, &[], 4, &sent).await;
+        assert!(!ok(&runtime, "slashed").await);
+        assert_eq!(bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(), 100);
+
+        let direct = format!(
+            r#"for (a <<- @"pos-held") {{ a!("slash", "{pk}".hexToBytes(), "direct") }}"#
+        );
+        run(&runtime, &MALLORY, &[], 5, &direct).await;
+        assert_eq!(bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(), 0);
+    })
+    .await;
+}

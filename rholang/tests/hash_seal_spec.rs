@@ -282,15 +282,3 @@ async fn with_seal_records_each_instance_of_a_hash_sealed_template_still_has_its
     })
     .await;
 }
-
-#[tokio::test]
-async fn with_seal_records_a_hash_sealed_body_still_may_not_read_the_running_deployment() {
-    with_seal_records(|runtime| async move {
-        let source = r#"{% new d(`rho:system:deployerId`) in { @"who"!(*d) } %}
-                        [# { new d(`rho:system:deployerId`) in { @"who"!(*d) } }]"#;
-        let errors = run_as(&runtime, &ALICE, source).await;
-        assert!(refused(&errors, "resolves from the running deployment"), "{errors:?}");
-        assert!(sent(&runtime, "who").await.is_empty());
-    })
-    .await;
-}

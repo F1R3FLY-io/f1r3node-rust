@@ -228,7 +228,7 @@ async fn a_stripped_envelope_does_not_decode_and_the_complete_envelope_runs_afte
         .to_base58();
     let term = format!(
         r#"new w(`rho:rev:wallet`), c(`rho:system:cosignerId:0`) in {{
-             w!("transfer", (*c, "{address}", 700), "out")
+             {{% w!("transfer", (*c, "{address}", 700), "out") %}}[c]
            }}"#
     );
     let complete = cosigned(&term, 1, &alice, &bob, 1);
@@ -662,7 +662,7 @@ async fn a_lifted_cosignature_carries_no_authority_under_another_deployer() {
         .to_base58();
     let term = format!(
         r#"new w(`rho:rev:wallet`), c(`rho:system:cosignerId:0`) in {{
-             w!("transfer", (*c, "{address}", 700), "out")
+             {{% w!("transfer", (*c, "{address}", 700), "out") %}}[c]
            }}"#
     );
     let original = cosigned(&term, 1, &alice, &bob, 1);
@@ -684,7 +684,7 @@ async fn a_lifted_cosignature_carries_no_authority_under_another_deployer() {
     );
     let settled = &played.settled_root;
     assert_eq!(balance(&rm, settled, &carol).await, 700);
-    assert_eq!(balance(&rm, settled, &bob).await, 50_000 - 700);
+    assert_eq!(balance(&rm, settled, &bob).await, 50_000 - 700 - paid(&played, &bob));
     let again = executor
         .replay(
             &pre,

@@ -1318,6 +1318,10 @@ impl SystemProcesses {
             return Err(illegal_argument_error("rev_bond_admin"));
         };
 
+        if received_at_run_time() {
+            return produce(&[rev_stack::native::refusal(RECEIVED_AT_RUN_TIME)], ack).await;
+        }
+
         let Some(response) =
             rev_stack::bond::admin_handle(self.space.hot_store(), &command, second_par)
         else {

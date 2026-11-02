@@ -1132,11 +1132,13 @@ async fn a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata() 
         r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`), ack in {{ {{% w!("refuse", ({{ {p} }}, "{}"), *ack) %}}[d (*) c] }}"#,
         carol.address
     );
-    let mut by_quorum = envelope(&refuse, 4, &bob, 50_000, 1);
+    let mut quorum_data = envelope(&refuse, 4, &bob, 50_000, 1).data;
+    quorum_data.required_cosigners = vec![dave.pk.bytes.to_vec()];
+    let mut by_quorum = Signed::create(quorum_data, Box::new(Secp256k1), bob.sk.clone()).unwrap();
     by_quorum
         .data
         .cosignatures
-        .push(Cosignature::sign(&by_quorum.data, &dave.sk, &Secp256k1.name()).unwrap());
+        .push(Cosignature::sign(&by_quorum, &dave.sk, &Secp256k1.name()).unwrap());
     let refused = executor
         .execute(&spent.settled_root, vec![by_quorum], block_data(&proposer))
         .await
