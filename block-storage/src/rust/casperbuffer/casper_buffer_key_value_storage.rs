@@ -232,6 +232,15 @@ impl CasperBufferKeyValueStorage {
             .collect()
     }
 
+    pub fn buffered_block_hashes(&self) -> Vec<BlockHashSerde> {
+        let _guard = self.read_guard();
+        let dag = self
+            .block_dependency_dag
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        dag.child_to_parent_adjacency_list.keys().cloned().collect()
+    }
+
     pub fn put_pendant(&self, block: BlockHashSerde) -> Result<(), KvStoreError> {
         let _guard = self.write_guard();
         self.put_pendant_unlocked(block)

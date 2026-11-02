@@ -17,6 +17,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
+use models::rust::deploy_parameters::DeployParameter;
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -1256,6 +1257,7 @@ impl RuntimeManager {
         term: String,
         hash: &StateHash,
         deployer: Option<PublicKey>,
+        parameters: Vec<DeployParameter>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
@@ -1265,6 +1267,7 @@ impl RuntimeManager {
                 hash,
                 deployer,
                 self.exploratory_deploy_phlo_limit,
+                parameters,
             )
             .await
     }
