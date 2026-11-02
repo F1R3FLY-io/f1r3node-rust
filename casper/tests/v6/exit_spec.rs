@@ -646,3 +646,39 @@ async fn storage_charges_do_not_depend_on_the_interleaving() {
     }
     assert!(charged.iter().all(|seen| seen.len() == 1), "{charged:?}");
 }
+
+async fn chain(host: &Host, blocks: &[&[&str]]) -> Vec<BlockRecord> {
+    let mut root = pre_root(host);
+    let mut records = Vec::new();
+    for (n, terms) in blocks.iter().enumerate() {
+        let number = n as i64 + 1;
+        let deploys = terms
+            .iter()
+            .enumerate()
+            .map(|(i, term)| offer(&payer(i), term, number * 100 + i as i64))
+            .collect();
+        let target = block(host, number, deploys);
+        let record = host.executor.execute(&root, &target).await.unwrap();
+        assert_eq!(host.executor.replay(&record, &target).await.unwrap(), *record.post_root());
+        root = record.post_root().clone();
+        records.push(record);
+    }
+    records
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_contract_that_sends_the_same_datum_on_each_firing_keeps_merging() {
+    let host = launch(4).await;
+    let records = chain(&host, &[
+        &["contract @\"c\"(_) = { @\"ran\"!(1) }"],
+        &["@\"c\"!(0)"],
+        &["@\"c\"!(0)"],
+        &["@\"c\"!(0)"],
+        &["@\"c\"!(0)", "@\"c\"!(0)"],
+    ])
+    .await;
+    for record in &records[..4] {
+        assert_eq!(outcomes(record), vec![EnvelopeOutcome::Completed]);
+    }
+    assert_eq!(outcomes(&records[4]), vec![EnvelopeOutcome::Completed; 2]);
+}

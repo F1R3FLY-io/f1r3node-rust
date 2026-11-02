@@ -276,17 +276,15 @@ fn merged_root(
                         |h: &Blake2b256Hash| reader.get_data(h),
                     )?));
                 }
-                if !channel_changes.added.is_empty() {
+                if !channel_changes.added.is_empty() && multi_writer.contains(hash) {
                     let base_data = reader.get_data(hash)?;
-                    if !base_data.is_empty() || multi_writer.contains(hash) {
-                        let base_binary = reader.get_data_proj_binary(hash)?;
-                        RholangMergingLogic::check_single_value_cell_not_overfilled(
-                            hash,
-                            &base_data,
-                            &base_binary,
-                            channel_changes,
-                        )?;
-                    }
+                    let base_binary = reader.get_data_proj_binary(hash)?;
+                    RholangMergingLogic::check_single_value_cell_not_overfilled(
+                        hash,
+                        &base_data,
+                        &base_binary,
+                        channel_changes,
+                    )?;
                 }
                 Ok(None)
             },
