@@ -11,6 +11,7 @@ use super::native::RhoHotStore;
 use super::ops::{CellStore, HotStoreCells, RevStacks};
 use super::owner::WalletOwner;
 use super::reserve::reservation;
+use super::region::admissible;
 use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployerId, RhoNumber, RhoString, RhoTuple2,
@@ -62,7 +63,12 @@ pub fn bond_balance(
     RevStacks::new(store).balance(&bond_owner(validator_pk))
 }
 
-pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Par> {
+pub fn handle(
+    store: Option<RhoHotStore>,
+    command: &str,
+    arg: &Par,
+    authority: &[WalletOwner],
+) -> Option<Par> {
     let cells = || -> Result<Arc<dyn CellStore>, String> {
         let store = store
             .clone()
@@ -73,6 +79,10 @@ pub fn handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Option<Pa
         "bond" => tuple(arg, 2).and_then(|t| {
             let pk = RhoDeployerId::unapply(&t[0])
                 .ok_or_else(|| "the bonder must be the deployer's own deployer id".to_string())?;
+            let bonder = WalletOwner::from_deployer_id(&pk).map_err(|e| e.to_string())?;
+            if !admissible(&bonder, authority) {
+                return Err("the bonder must hold the enclosing seal".to_string());
+            }
             let amount = positive(&t[1])?;
             let cells = cells()?;
             if journal_open(cells.as_ref()) {

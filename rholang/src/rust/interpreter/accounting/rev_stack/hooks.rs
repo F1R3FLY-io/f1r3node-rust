@@ -58,7 +58,7 @@ impl HookAuthority {
     pub fn authorizes(&self, signers: &[WalletOwner]) -> bool {
         let members: BTreeSet<Vec<u8>> = self.members.iter().map(|m| m.canonical_bytes()).collect();
         let mut distinct = BTreeSet::new();
-        for s in signers {
+        for s in signers.iter().filter(|s| !matches!(s, WalletOwner::Compound(_))) {
             let key = s.canonical_bytes();
             if !members.contains(&key) {
                 return false;

@@ -214,7 +214,7 @@ async fn a_hash_sealed_region_may_not_read_the_running_deployment() {
         assert!(refused(&errors, "answers from the running deployment"), "{errors:?}");
         assert!(sent(&runtime, "got").await.is_empty());
 
-        let outside = r#"new lookup(`rho:internal:registry_lookup`), ret in {
+        let outside = r#"new lookup(`rho:internal:registry_lookup`), fresh, ret in {
                            lookup!("rho:deploy:" ++ "data", *ret) | for (d <- ret) { @"plain"!(true) }
                          }"#;
         assert!(run_as(&runtime, &ALICE, outside).await.is_empty());

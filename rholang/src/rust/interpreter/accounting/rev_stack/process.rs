@@ -66,6 +66,36 @@ pub fn self_sealed_envelope(term: &Par) -> Option<WalletOwner> {
         .map(|_| process_owner(body))
 }
 
+pub fn has_bare_stack(term: &Par) -> bool {
+    let mut pending: Vec<&Par> = vec![term];
+    while let Some(par) = pending.pop() {
+        if !par.cost_stacks.is_empty() {
+            return true;
+        }
+        for send in &par.sends {
+            pending.extend(send.chan.iter().chain(&send.data));
+        }
+        for receive in &par.receives {
+            pending.extend(receive.binds.iter().filter_map(|b| b.source.as_ref()));
+            pending.extend(receive.body.iter());
+        }
+        pending.extend(par.news.iter().filter_map(|n| n.p.as_ref()));
+        for matched in &par.matches {
+            pending.extend(matched.target.iter());
+            pending.extend(matched.cases.iter().filter_map(|c| c.source.as_ref()));
+        }
+        pending.extend(par.bundles.iter().filter_map(|b| b.body.as_ref()));
+        for conditional in &par.conditionals {
+            pending.extend(
+                [&conditional.condition, &conditional.if_true, &conditional.if_false]
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use models::rhoapi::expr::ExprInstance;

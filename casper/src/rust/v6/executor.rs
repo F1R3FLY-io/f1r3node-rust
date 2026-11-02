@@ -12,7 +12,7 @@ use rholang::rust::interpreter::accounting::rev_stack::journal::{
     close_journal, journal_overdrawn, open_journal, JournalEntry,
 };
 use models::rust::normalizer_env::normalizer_env_from_deploy;
-use rholang::rust::interpreter::accounting::rev_stack::process::self_sealed_envelope;
+use rholang::rust::interpreter::accounting::rev_stack::process::{has_bare_stack, self_sealed_envelope};
 use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
 use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
@@ -407,22 +407,24 @@ pub(crate) fn gate_inputs<'a>(
 ) -> Result<Vec<GateInput>, CasperError> {
     deploys
         .map(|d| {
-            let (named, sealed) = envelope_signatures(d);
-            GateInput::from_deploy(d, named).map(|input| input.with_sealed(sealed))
+            let (named, sealed, bare_stack) = envelope_signatures(d);
+            GateInput::from_deploy(d, named)
+                .map(|input| input.with_sealed(sealed).with_bare_stack(bare_stack))
         })
         .collect()
 }
 
-fn envelope_signatures(deploy: &Signed<DeployData>) -> (Vec<WalletOwner>, Vec<WalletOwner>) {
+fn envelope_signatures(deploy: &Signed<DeployData>) -> (Vec<WalletOwner>, Vec<WalletOwner>, bool) {
     let Some(term) = normalizer_env_from_deploy(deploy)
         .ok()
         .and_then(|env| Compiler::source_to_adt_with_normalizer_env(&deploy.data.term, env).ok())
     else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), false);
     };
+    let bare_stack = has_bare_stack(&term);
     match self_sealed_envelope(&term) {
-        Some(process) => (Vec::new(), vec![process]),
-        None => (named_owners(&term), Vec::new()),
+        Some(process) => (Vec::new(), vec![process], bare_stack),
+        None => (named_owners(&term), Vec::new(), bare_stack),
     }
 }
 

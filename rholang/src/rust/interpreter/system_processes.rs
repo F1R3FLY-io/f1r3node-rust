@@ -1215,6 +1215,24 @@ impl SystemProcesses {
         produce(&[response], ack).await
     }
 
+    async fn wallet_authority(&self) -> Vec<rev_stack::WalletOwner> {
+        match rev_stack::seal::current_owner() {
+            Some(rev_stack::WalletOwner::Compound(components)) => {
+                let mut authority = components.clone();
+                authority.push(rev_stack::WalletOwner::Compound(components));
+                authority
+            }
+            Some(owner) => vec![owner],
+            None => {
+                let data = self.deploy_data.read().await;
+                std::iter::once(&data.deployer_id)
+                    .chain(data.cosigners.iter())
+                    .filter_map(|pk| rev_stack::WalletOwner::from_public_key(pk).ok())
+                    .collect()
+            }
+        }
+    }
+
     pub async fn rev_wallet(
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
@@ -1231,13 +1249,7 @@ impl SystemProcesses {
             return Err(illegal_argument_error("rev_wallet"));
         };
 
-        let signers = {
-            let data = self.deploy_data.read().await;
-            std::iter::once(&data.deployer_id)
-                .chain(data.cosigners.iter())
-                .filter_map(|pk| rev_stack::WalletOwner::from_public_key(pk).ok())
-                .collect::<Vec<_>>()
-        };
+        let signers = self.wallet_authority().await;
         let block_number = self.block_data.read().await.block_number;
         let Some(response) = rev_stack::native::handle(
             self.space.hot_store(),
@@ -1269,7 +1281,7 @@ impl SystemProcesses {
         };
 
         let Some(response) =
-            rev_stack::bond::handle(self.space.hot_store(), &command, second_par)
+            rev_stack::bond::handle(self.space.hot_store(), &command, second_par, &self.wallet_authority().await)
         else {
             return Err(illegal_argument_error("rev_bond"));
         };

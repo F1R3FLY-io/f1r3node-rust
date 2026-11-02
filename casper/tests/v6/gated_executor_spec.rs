@@ -795,7 +795,7 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
     let (alice, carol, bob, dave, erin, proposer) =
         (party(), party(), party(), party(), party(), party());
     let (rm, genesis) = shard_with_authority(
-        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000)],
+        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000), (&dave, 100_000)],
         &[&bob, &dave],
         2,
     )
@@ -865,18 +865,37 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
     );
 
     let refuse = format!(
-        r#"new w(`rho:rev:wallet`), ack in {{ w!("refuse", ({{ @"x"!(1) }}, "{}"), *ack) }}"#,
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`), ack in {{ {{% w!("refuse", ({{ @"x"!(1) }}, "{}"), *ack) %}}[d (*) c] }}"#,
+        carol.address
+    );
+    let by_bob = format!(
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), ack in {{ {{% w!("refuse", ({{ @"x"!(1) }}, "{}"), *ack) %}}[d] }}"#,
         carol.address
     );
     let alone = executor
         .execute(
             &second.settled_root,
-            vec![envelope(&refuse, 4, &bob, 50_000, 1)],
+            vec![envelope(&by_bob, 4, &bob, 50_000, 1)],
             block_data(&proposer),
         )
         .await
         .unwrap();
     assert!(alone.settlement.transfers.is_empty());
+
+    let unsealed = format!(
+        r#"new w(`rho:rev:wallet`), ack in {{ w!("refuse", ({{ @"x"!(1) }}, "{}"), *ack) }}"#,
+        carol.address
+    );
+    let mut cosigned_only = envelope(&unsealed, 6, &bob, 50_000, 1);
+    cosigned_only
+        .data
+        .cosignatures
+        .push(Cosignature::sign(&cosigned_only.data, &dave.sk, &Secp256k1.name()).unwrap());
+    let outside = executor
+        .execute(&second.settled_root, vec![cosigned_only], block_data(&proposer))
+        .await
+        .unwrap();
+    assert!(outside.settlement.transfers.is_empty());
 
     let mut by_quorum = envelope(&refuse, 5, &bob, 50_000, 1);
     by_quorum
@@ -1140,7 +1159,7 @@ async fn a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata() 
     let (alice, carol, bob, dave, erin, proposer) =
         (party(), party(), party(), party(), party(), party());
     let (rm, genesis) = shard_with_authority(
-        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000)],
+        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000), (&dave, 100_000)],
         &[&bob, &dave],
         2,
     )
@@ -1217,7 +1236,7 @@ async fn a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata() 
     );
 
     let refuse = format!(
-        r#"new w(`rho:rev:wallet`), ack in {{ w!("refuse", ({{ {p} }}, "{}"), *ack) }}"#,
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`), ack in {{ {{% w!("refuse", ({{ {p} }}, "{}"), *ack) %}}[d (*) c] }}"#,
         carol.address
     );
     let mut by_quorum = envelope(&refuse, 4, &bob, 50_000, 1);
