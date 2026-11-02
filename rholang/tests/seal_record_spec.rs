@@ -453,6 +453,48 @@ async fn route_a_received_value_in_a_stored_contract_body() {
 }
 
 #[tokio::test]
+async fn a_separate_receive_keeps_the_owners_stack_apart_from_received_code() {
+    sealed_runtime(|runtime| async move {
+        let mixed = r#"new d(`rho:system:deployerId`), slot in {
+            @"aid"!(*d) | @"own"!(*slot) |
+            for (@p <= @"in") { for (_ <- @"go") { p | {% slot :: () %}[d] } }
+        }"#;
+        assert!(run(&runtime, &ALICE, &[], 1, mixed).await.is_empty());
+        assert!(run(&runtime, &BOB, &[], 2, r#"@"in"!(Nil)"#)
+            .await
+            .is_empty());
+        let errors = run(&runtime, &BOB, &[], 3, r#"@"go"!(0)"#).await;
+        assert!(
+            !errors.is_empty(),
+            "the whole continuation carries the mark"
+        );
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1_000);
+    })
+    .await;
+    sealed_runtime(|runtime| async move {
+        let split = r#"new d(`rho:system:deployerId`), slot, run in {
+            @"aid"!(*d) | @"own"!(*slot) |
+            for (@p <= @"in") { for (_ <- @"go") { run!(p) | {% slot :: () %}[d] } } |
+            for (@q <= run) { q }
+        }"#;
+        assert!(run(&runtime, &ALICE, &[], 1, split).await.is_empty());
+        let send = r#"new s in { for (a <<- @"aid") { @"in"!({% s :: () %}[a]) } }"#;
+        assert!(run(&runtime, &BOB, &[], 2, send).await.is_empty());
+        let errors = run(&runtime, &BOB, &[], 3, r#"@"go"!(0)"#).await;
+        assert!(
+            errors.iter().any(
+                |e| matches!(e, InterpreterError::ReduceError(m) if m.contains("inside data"))
+            ),
+            "{errors:?}"
+        );
+        let slot = slot_owner(&runtime, "own");
+        assert_eq!(stacks(&runtime).balance(&slot).unwrap(), 1);
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 999);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_legacy_runtime_keeps_the_golden_root() {
     with_runtime(
         "seal-record-golden-",

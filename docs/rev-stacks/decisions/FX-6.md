@@ -59,8 +59,31 @@ Not routes: `where` guards (the pure evaluator does not reduce), send data and c
 |---|----------|--------------|--------|------------|
 | 6 | When a receive's body runs a variable in process position that the substitution fills from the environment, at any depth of `new`, receive, match, `if`, bundle or region bodies, the continuation is stored under the current record with `from_data` set. | Mark only the substituted value inside the body. | The substituted value becomes part of the stored code, so the stored record must carry the mark. A per-value mark would need a new term form. | Yes |
 
+### The mark covers the whole stored continuation (Decision 71)
+
+| # | Decision | Alternatives | Reason | Reversible |
+|---|----------|--------------|--------|------------|
+| 7 | Decision 6 marks the whole stored continuation, not only the received value. A body that runs a received process and also holds the owner's own sealed stack therefore refuses that stack too. | A per-value mark (a term form that only the reducer writes). | Decision 71. The per-value mark is revisited after M2. | Yes |
+
+**Workaround.** Pass the received process to a separate receive, so that the owner's own sealed code and the received code are stored as two continuations. This body is marked as a whole, so the owner's stack is refused:
+
+```rholang
+for (@p <= @"in") { for (_ <- @"go") { p | {% slot :: () %}[d] } }
+```
+
+This body sends the received process on as data instead of running it, so the continuation on `@"go"` keeps the owner's clean record and its sealed stack draws on the owner. The receive on `run` binds the process at the COMM (route 2) and runs it under the mark:
+
+```rholang
+new run in {
+  for (@p <= @"in") { for (_ <- @"go") { run!(p) | {% slot :: () %}[d] } } |
+  for (@q <= run) { q }
+}
+```
+
+Test: `a_separate_receive_keeps_the_owners_stack_apart_from_received_code` (the first form refuses the owner's stack; the second draws one unit from the owner and refuses the received sealed stack).
+
 ## Open items
 
-1. Decision 6 marks the whole stored continuation. A body that runs a received process and also holds the owner's own sealed stack refuses that stack too. The owner can split the two (send the received process on to a separate receive). A per-value mark would be precise, at the cost of a term form that only the reducer writes.
-2. Lane B: `rho:rev:wallet` and `rho:rev:bond` should refuse a draw under a `from_data` record by the same rule when they read the record (F5, F6).
-3. A `match` on the term's own quoted code that evaluates a branch value also counts as data. No test or contract in the repository does this with a seal.
+1. Lane B: `rho:rev:wallet` and `rho:rev:bond` refuse a draw under a `from_data` record by the same rule when they read the record (F5, F6).
+2. A `match` on the term's own quoted code that evaluates a branch value also counts as data. No test or contract in the repository does this with a seal.
+3. Region tallies (lane B) should key a record by owner, kind and origin. A continuation stored under the mark has the same owner and origin as its unmarked form, and a storage refund for it is credited to the marked record (P2-16 on FX-2, `within_now`).
