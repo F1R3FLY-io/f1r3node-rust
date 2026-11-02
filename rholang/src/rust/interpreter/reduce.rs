@@ -13,7 +13,7 @@ use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
-    BindPattern, Bundle, CostSignature, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
+    cost_signature, BindPattern, Bundle, CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte,
     EList, ELt, ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap,
     EPercentPercent, EPlus, EPlusPlus, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If,
     KeyValuePair, ListParWithRandom, Match, New, Par, ParWithRandom, Receive, ReceiveBind, Send,
@@ -53,10 +53,11 @@ use super::accounting::costs::{
 use super::accounting::rev_stack::journal::{
     journal_open, journaled_transfers, record, JournalEntry,
 };
-use super::accounting::rev_stack::kind::{is_stack_body, stack_kind, TokenKind};
+use super::accounting::rev_stack::kind::{is_stack_body, stack_kind, KindStack, TokenKind};
 use super::accounting::rev_stack::process::{seals_itself, split_hash_seals};
 use super::accounting::rev_stack::region::{admissible, signature_owner};
 use super::accounting::rev_stack::reserve::reservation;
+use super::accounting::rev_stack::seal::{self, Origin, SealKind, SealRecord};
 use super::accounting::rev_stack::{RevAmount, RevStackError, RevStacks, WalletOwner};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
@@ -214,10 +215,42 @@ where
     F: Future + std::marker::Send + 'static,
     F::Output: std::marker::Send + 'static,
 {
+    let future = seal::inherit(future);
     AbortOnDrop(match DEFERRED_DISPATCHES.try_with(Arc::clone) {
         Ok(scope) => tokio::spawn(DEFERRED_DISPATCHES.scope(scope, future)),
         Err(_) => tokio::spawn(future),
     })
+}
+
+fn split_kind(
+    signature: &CostSignature,
+) -> Result<Option<(KindStack, Option<CostSignature>)>, InterpreterError> {
+    let elements = match &signature.value {
+        Some(cost_signature::Value::Compound(compound)) => compound.elements.clone(),
+        _ => vec![signature.clone()],
+    };
+    let (kinds, payers): (Vec<_>, Vec<_>) = elements
+        .into_iter()
+        .partition(|element| stack_kind(element).is_some());
+    let stack = match kinds.as_slice() {
+        [] => return Ok(None),
+        [kind] => stack_kind(kind).expect("a kind element"),
+        _ => {
+            return Err(InterpreterError::ReduceError(
+                "a token stack may name only one kind".to_string(),
+            ))
+        }
+    };
+    let payer = match payers.len() {
+        0 => None,
+        1 => payers.into_iter().next(),
+        _ => Some(CostSignature {
+            value: Some(cost_signature::Value::Compound(CostSignatureCompound {
+                elements: payers,
+            })),
+        }),
+    };
+    Ok(Some((stack, payer)))
 }
 
 fn join_error(err: JoinError) -> InterpreterError {
@@ -266,6 +299,7 @@ pub struct DebruijnInterpreter {
     pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
     pub genesis_phase: Arc<std::sync::atomic::AtomicBool>,
     pub deploy_data: Arc<RwLock<DeployData>>,
+    pub seal_records: Arc<std::sync::atomic::AtomicBool>,
 }
 
 type Application = Option<(
@@ -481,9 +515,13 @@ impl DebruijnInterpreter {
         let _close_on_drop = CloseOnDrop(scope.clone());
         let env = Env::new();
 
+        let record = self.deployment_record().await;
         let mut errors: Vec<InterpreterError> = Vec::new();
         if let Err(err) = DEFERRED_DISPATCHES
-            .scope(scope.clone(), self.eval(par, &env, rand))
+            .scope(
+                scope.clone(),
+                seal::within(record, self.eval(par, &env, rand)),
+            )
             .await
         {
             errors.push(err);
@@ -670,6 +708,7 @@ impl DebruijnInterpreter {
                 TaggedContinuation {
                     tagged_cont: Some(TaggedCont::ParBody(body)),
                     guard,
+                    seal: self.stored_seal(),
                 },
                 persistent,
                 peeks,
@@ -1653,12 +1692,76 @@ impl DebruijnInterpreter {
         self.eval(unwrap_option_safe(bundle.body)?, env, rand).await
     }
 
+    fn seals_recorded(&self) -> bool { self.seal_records.load(Ordering::Relaxed) }
+
+    fn stored_seal(&self) -> Option<models::rhoapi::SealRecordProto> {
+        if self.seals_recorded() {
+            seal::current().map(|record| record.to_proto())
+        } else {
+            None
+        }
+    }
+
+    async fn deployment_record(&self) -> Option<SealRecord> {
+        if !self.seals_recorded() {
+            return None;
+        }
+        let data = self.deploy_data.read().await;
+        let signers = std::iter::once(&data.deployer_id)
+            .chain(data.cosigners.iter())
+            .map(WalletOwner::from_public_key)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        Some(SealRecord::deployment(
+            signers.first()?.clone(),
+            Origin {
+                envelope: data.deploy_id.clone(),
+                signers,
+                phlo_price: data.phlo_price,
+            },
+        ))
+    }
+
+    async fn region_signers(
+        &self,
+        refused: &(dyn Fn(String) -> InterpreterError + Sync),
+    ) -> Result<Vec<WalletOwner>, InterpreterError> {
+        if let Some(record) = seal::current() {
+            return Ok(record.origin.signers);
+        }
+        if self.seals_recorded() {
+            return Err(refused("the code runs outside every seal".to_string()));
+        }
+        let data = self.deploy_data.read().await;
+        std::iter::once(&data.deployer_id)
+            .chain(data.cosigners.iter())
+            .map(WalletOwner::from_public_key)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| refused(e.to_string()))
+    }
+
+    async fn stack_writer(
+        &self,
+        refused: &(dyn Fn(String) -> InterpreterError + Sync),
+    ) -> Result<WalletOwner, InterpreterError> {
+        if let Some(owner) = seal::current_owner() {
+            return Ok(owner);
+        }
+        if self.seals_recorded() {
+            return Err(refused(
+                "a stack outside every seal has no payer".to_string(),
+            ));
+        }
+        WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
+            .map_err(|e| refused(e.to_string()))
+    }
+
     async fn check_region_signature(
         &self,
         signature: CostSignature,
         body: Option<&Par>,
         env: &Env<Par>,
-    ) -> Result<(), InterpreterError> {
+    ) -> Result<(WalletOwner, SealKind), InterpreterError> {
         let refused = |reason: String| {
             InterpreterError::ReduceError(format!(
                 "a signed term may name only the signatures of the deployment's signers: {reason}"
@@ -1673,24 +1776,28 @@ impl DebruijnInterpreter {
                 "a signed term may name `# P` only when its body is P".to_string(),
             ));
         }
-        let signers = {
-            let data = self.deploy_data.read().await;
-            std::iter::once(&data.deployer_id)
-                .chain(data.cosigners.iter())
-                .map(WalletOwner::from_public_key)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| refused(e.to_string()))?
-        };
-        for signature in others {
-            let signature = self
-                .substitute
-                .substitute_cost_signature(signature, 0, env)?;
-            let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
-            if !admissible(&owner, &signers) {
-                return Err(refused(format!("{owner:?}")));
+        if !others.is_empty() {
+            let signers = self.region_signers(&refused).await?;
+            for signature in others.iter().cloned() {
+                let signature = self
+                    .substitute
+                    .substitute_cost_signature(signature, 0, env)?;
+                let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+                if !admissible(&owner, &signers) {
+                    return Err(refused(format!("{owner:?}")));
+                }
             }
         }
-        Ok(())
+        let resolved = self
+            .substitute
+            .substitute_cost_signature(signature, 0, env)?;
+        let owner = signature_owner(&resolved).map_err(|e| refused(e.to_string()))?;
+        let kind = if others.is_empty() {
+            SealKind::Process
+        } else {
+            SealKind::Signed
+        };
+        Ok((owner, kind))
     }
 
     async fn eval_cost_stack(
@@ -1698,13 +1805,14 @@ impl DebruijnInterpreter {
         stack: &CostStack,
         env: &Env<Par>,
     ) -> Result<(), InterpreterError> {
-        self.pay_stacks(TokenKind::rev(), std::slice::from_ref(stack), env)
+        self.pay_stacks_from(TokenKind::rev(), None, std::slice::from_ref(stack), env)
             .await
     }
 
-    async fn pay_stacks(
+    async fn pay_stacks_from(
         &self,
         kind: TokenKind,
+        writer: Option<WalletOwner>,
         stacks: &[CostStack],
         env: &Env<Par>,
     ) -> Result<(), InterpreterError> {
@@ -1716,8 +1824,10 @@ impl DebruijnInterpreter {
         let refused = |reason: String| {
             InterpreterError::ReduceError(format!("{what} cannot be paid: {reason}"))
         };
-        let writer = WalletOwner::from_public_key(&self.deploy_data.read().await.deployer_id)
-            .map_err(|e| refused(e.to_string()))?;
+        let writer = match writer {
+            Some(writer) => writer,
+            None => self.stack_writer(&refused).await?,
+        };
         let payees = self.stack_payees(stacks, env, &refused)?;
         let store = self
             .space
@@ -1821,16 +1931,28 @@ impl DebruijnInterpreter {
             let resolved = self
                 .substitute
                 .substitute_cost_signature(signature.clone(), 0, env)?;
-            if let Some(stack) = stack_kind(&resolved) {
+            if let Some((stack, payer)) = split_kind(&resolved)? {
+                let writer = match payer {
+                    Some(payer) => Some(self.check_region_signature(payer, None, env).await?.0),
+                    None => None,
+                };
                 return if stack.mint {
                     self.mint_stacks(stack.kind, &body.cost_stacks, env).await
                 } else {
-                    self.pay_stacks(stack.kind, &body.cost_stacks, env).await
+                    self.pay_stacks_from(stack.kind, writer, &body.cost_stacks, env)
+                        .await
                 };
             }
         }
-        self.check_region_signature(signature, Some(&body), env).await?;
-        self.eval(body, env, rand).await
+        let (owner, kind) = self
+            .check_region_signature(signature, Some(&body), env)
+            .await?;
+        match seal::current() {
+            Some(record) => {
+                seal::within(Some(record.enter(owner, kind)), self.eval(body, env, rand)).await
+            }
+            None => self.eval(body, env, rand).await,
+        }
     }
 
     // Public here for testing purposes
@@ -7924,6 +8046,7 @@ impl DebruijnInterpreter {
             filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             genesis_phase: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             deploy_data: Arc::new(RwLock::new(DeployData::empty())),
+            seal_records: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

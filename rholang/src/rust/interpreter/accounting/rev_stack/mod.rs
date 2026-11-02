@@ -13,6 +13,7 @@ pub mod owner;
 pub mod process;
 pub mod region;
 pub mod reserve;
+pub mod seal;
 
 #[cfg(test)]
 mod tests;

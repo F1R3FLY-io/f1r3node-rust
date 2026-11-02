@@ -607,3 +607,145 @@ async fn a_kind_mint_and_a_kind_transfer_reach_the_settled_root() {
         .expect("the transfer replays");
     assert_eq!(again.settled_root, given.settled_root);
 }
+
+fn paid(played: &casper::rust::v6::executor::ExecutedBlock, who: &Party) -> u64 {
+    played
+        .settlement
+        .debits
+        .get(&wallet(who))
+        .copied()
+        .unwrap_or(0)
+}
+
+async fn rev_at(rm: &RuntimeManager, root: &StateHash, channel: &str) -> u64 {
+    let slot = WalletOwner::Unforgeable(published(rm, root, channel).await);
+    read_wallet_balance(rm, root, &slot).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_stack_under_a_cosigners_seal_draws_on_the_cosigner_not_the_deployer() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let term = r#"new a(`rho:system:cosignerId:0`), slot in {
+        {% @"x"!(1) | slot :: slot :: () %}[a] | @"slot"!(*slot)
+    }"#;
+    let played = executor
+        .execute(
+            &pre,
+            vec![cosigned(term, 1, &bob, &alice, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block executes");
+    assert_eq!(played.gate.admitted(), vec![true]);
+    assert!(!played.processed[0].is_failed);
+    let settled = &played.settled_root;
+    assert_eq!(rev_at(&rm, settled, "slot").await, 2);
+    assert_eq!(
+        balance(&rm, settled, &alice).await,
+        100_000 - paid(&played, &alice) - 2
+    );
+    assert_eq!(balance(&rm, settled, &bob).await, 100_000);
+    let again = executor
+        .replay(
+            &pre,
+            played.processed.clone(),
+            &played.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block replays");
+    assert_eq!(again.settled_root, played.settled_root);
+}
+
+#[tokio::test]
+async fn a_region_sealed_in_its_origin_pays_from_its_sealer_for_any_later_runner() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let store = r#"new d(`rho:system:deployerId`), slot in {
+        for (_ <= @"pub") { {% slot :: () %}[d] } | @"slot"!(*slot)
+    }"#;
+    let mut root = pre.clone();
+    let mut alice_paid = 0;
+    let mut bob_paid = 0;
+    for (ts, who, term) in [
+        (1, &alice, store),
+        (2, &bob, r#"@"pub"!(0)"#),
+        (3, &alice, r#"@"pub"!(0)"#),
+    ] {
+        let played = executor
+            .execute(
+                &root,
+                vec![envelope(term, ts, who, 1_000, 1)],
+                block_data(&proposer),
+            )
+            .await
+            .expect("the block executes");
+        assert_eq!(played.gate.admitted(), vec![true]);
+        assert!(!played.processed[0].is_failed, "{term}");
+        let again = executor
+            .replay(
+                &root,
+                played.processed.clone(),
+                &played.gate.entries,
+                block_data(&proposer),
+            )
+            .await
+            .expect("the block replays");
+        assert_eq!(again.settled_root, played.settled_root);
+        alice_paid += paid(&played, &alice);
+        bob_paid += paid(&played, &bob);
+        root = played.settled_root.clone();
+    }
+    assert_eq!(rev_at(&rm, &root, "slot").await, 2);
+    assert_eq!(balance(&rm, &root, &alice).await, 100_000 - alice_paid - 2);
+    assert_eq!(balance(&rm, &root, &bob).await, 100_000 - bob_paid);
+}
+
+#[tokio::test]
+async fn a_fired_continuation_draws_on_its_author_not_on_the_firing_region() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let store = r#"new slot in { for (_ <- @"x") { slot :: () } | @"slot"!(*slot) }"#;
+    let first = executor
+        .execute(
+            &pre,
+            vec![envelope(store, 1, &bob, 1_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the store executes");
+    let fire = r#"new d(`rho:system:deployerId`) in { {% @"x"!(1) %}[d] }"#;
+    let second = executor
+        .execute(
+            &first.settled_root,
+            vec![envelope(fire, 2, &alice, 1_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the firing executes");
+    assert!(!second.processed[0].is_failed);
+    let root = &second.settled_root;
+    assert_eq!(rev_at(&rm, root, "slot").await, 1);
+    assert_eq!(
+        balance(&rm, root, &bob).await,
+        100_000 - paid(&first, &bob) - 1
+    );
+    assert_eq!(
+        balance(&rm, root, &alice).await,
+        100_000 - paid(&second, &alice)
+    );
+    let again = executor
+        .replay(
+            &first.settled_root,
+            second.processed.clone(),
+            &second.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the firing replays");
+    assert_eq!(again.settled_root, second.settled_root);
+}

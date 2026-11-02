@@ -88,6 +88,19 @@ message TaggedContinuation {
   // every spatial pattern has matched, so cross-channel guards see every
   // bound variable. Empty Par = no guard. See plan §7.12.
   Par guard = 3;
+  SealRecordProto seal = 4;
+}
+
+message SealOrigin {
+  bytes envelope = 1;
+  repeated bytes signers = 2;
+  uint64 phlo_price = 3;
+}
+
+message SealRecordProto {
+  bytes owner = 1;
+  int32 kind = 2;
+  SealOrigin origin = 3;
 }
 
 /**

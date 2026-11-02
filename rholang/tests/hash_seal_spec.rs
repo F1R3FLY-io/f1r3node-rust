@@ -37,6 +37,7 @@ async fn run_as(runtime: &RhoRuntimeImpl, key: &[u8], source: &str) -> Vec<Inter
             deployer_id: PublicKey::from_bytes(key),
             deploy_id: vec![1],
             cosigners: Vec::new(),
+            phlo_price: 0,
         })
         .await;
     runtime
