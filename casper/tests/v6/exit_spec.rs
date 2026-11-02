@@ -43,7 +43,9 @@ fn payer(index: usize) -> PrivateKey {
 
 fn validator() -> PublicKey { Secp256k1.to_public(&PrivateKey::from_bytes(&[3u8; 32])) }
 
-async fn launch(payers: usize) -> Host {
+async fn launch(payers: usize) -> Host { launch_with(payers, 2).await }
+
+async fn launch_with(payers: usize, workers: usize) -> Host {
     let rm = mk_runtime_manager("v6-exit", Some(Genesis::default_mergeable_tags_arc())).await;
     let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
     genesis.version = PROTOCOL_V6;
@@ -59,7 +61,7 @@ async fn launch(payers: usize) -> Host {
             .await
             .expect("the genesis block is created");
     Host {
-        executor: BlockExecutor::new(Arc::new(rm), 2),
+        executor: BlockExecutor::new(Arc::new(rm), workers),
         genesis: block,
     }
 }
@@ -566,4 +568,69 @@ async fn the_record_carries_each_run_footprint_and_replay_checks_it() {
     .unwrap()
     .with_settlement(record.settlement().unwrap().clone());
     assert!(host.executor.replay(&forged, &target).await.is_err());
+}
+
+fn env_list(name: &str, default: &str) -> Vec<usize> {
+    std::env::var(name)
+        .unwrap_or_else(|_| default.to_string())
+        .split(',')
+        .map(|n| n.trim().parse().expect("a list of numbers"))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "scaling run: V6_SCALING_WORKERS, V6_SCALING_ENVELOPES"]
+async fn scaling_by_worker_count() {
+    let workers = env_list("V6_SCALING_WORKERS", "1,2,4,8,16");
+    let size = env_list("V6_SCALING_ENVELOPES", "256")[0];
+    let mut base: Option<f64> = None;
+    for w in workers {
+        let host = launch_with(size, w).await;
+        let deploys = (0..size)
+            .map(|index| offer(&payer(index), &format!("@\"scaled-{index}\"!(\"{index}\")"), index as i64 + 1))
+            .collect();
+        let block = block(&host, 1, deploys);
+        let mut best: Option<Duration> = None;
+        for _ in 0..3 {
+            let (record, t) = host
+                .executor
+                .execute_timed(&pre_root(&host), &block)
+                .await
+                .expect("the block executes");
+            assert!(outcomes(&record).iter().all(|o| *o == EnvelopeOutcome::Completed));
+            let e = t.envelopes;
+            let execution = e.gate + e.runs + e.merge + e.settlement;
+            best = Some(best.map_or(execution, |b| b.min(execution)));
+        }
+        let execution = best.expect("three runs");
+        let rate = size as f64 / execution.as_secs_f64();
+        let one = *base.get_or_insert(rate / w as f64);
+        println!(
+            "workers={w} envelopes={size} execution={execution:?} envelopes_per_second={rate:.2} speedup={:.2} efficiency={:.2}",
+            rate / one,
+            rate / (one * w as f64),
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn storage_charges_do_not_depend_on_the_interleaving() {
+    let host = launch(4).await;
+    let racing = block(&host, 2, vec![
+        offer(&payer(3), "new x in { contract x(@n) = { Nil } | x!(1) | x!(2) }", 4),
+        offer(&payer(0), "new x in { x!(1) | x!(2) | for (_ <- x) { Nil } | for (_ <- x) { Nil } }", 5),
+        offer(&payer(1), "new x in { for (_ <= x) { Nil } | x!(1) | x!(2) | x!(3) }", 6),
+    ]);
+    let mut charged: Vec<std::collections::BTreeSet<u64>> = vec![Default::default(); 3];
+    for _ in 0..30 {
+        let record = host.executor.execute(&pre_root(&host), &racing).await.unwrap();
+        for (seen, entry) in charged.iter_mut().zip(record.entries()) {
+            seen.insert(entry.executed.compute_phlo);
+        }
+        assert_eq!(
+            host.executor.replay(&record, &racing).await.unwrap(),
+            *record.post_root()
+        );
+    }
+    assert!(charged.iter().all(|seen| seen.len() == 1), "{charged:?}");
 }
