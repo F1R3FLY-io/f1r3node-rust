@@ -37,7 +37,9 @@ struct Host {
 
 fn payer(index: usize) -> PrivateKey {
     let mut bytes = [7u8; 32];
-    bytes[31] = u8::try_from(index + 1).expect("a small payer index");
+    let n = u16::try_from(index + 1).expect("a payer index below 65535");
+    bytes[30] = 7u8.wrapping_add((n >> 8) as u8);
+    bytes[31] = n as u8;
     PrivateKey::from_bytes(&bytes)
 }
 
@@ -590,7 +592,7 @@ async fn scaling_by_worker_count() {
             .map(|index| offer(&payer(index), &format!("@\"scaled-{index}\"!(\"{index}\")"), index as i64 + 1))
             .collect();
         let block = block(&host, 1, deploys);
-        let mut best: Option<Duration> = None;
+        let mut best: Option<(Duration, BlockTimings)> = None;
         for _ in 0..3 {
             let (record, t) = host
                 .executor
@@ -600,15 +602,25 @@ async fn scaling_by_worker_count() {
             assert!(outcomes(&record).iter().all(|o| *o == EnvelopeOutcome::Completed));
             let e = t.envelopes;
             let execution = e.gate + e.runs + e.merge + e.settlement;
-            best = Some(best.map_or(execution, |b| b.min(execution)));
+            if best.as_ref().is_none_or(|(b, _)| execution < *b) {
+                best = Some((execution, t));
+            }
         }
-        let execution = best.expect("three runs");
+        let (execution, t) = best.expect("three runs");
+        let e = t.envelopes;
         let rate = size as f64 / execution.as_secs_f64();
         let one = *base.get_or_insert(rate / w as f64);
         println!(
-            "workers={w} envelopes={size} execution={execution:?} envelopes_per_second={rate:.2} speedup={:.2} efficiency={:.2}",
+            "workers={w} envelopes={size} execution={execution:?} envelopes_per_second={rate:.2} speedup={:.2} efficiency={:.2} gate={:?} runs={:?} setup={:?} eval={:?} changes={:?} merge={:?} settlement={:?}",
             rate / one,
             rate / (one * w as f64),
+            e.gate,
+            e.runs,
+            e.run_setup,
+            e.run_eval,
+            e.run_checkpoint,
+            e.merge,
+            e.settlement,
         );
     }
 }

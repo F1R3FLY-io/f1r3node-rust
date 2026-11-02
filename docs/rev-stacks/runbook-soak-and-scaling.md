@@ -96,6 +96,8 @@ Put the results in `docs/rev-stacks/decisions/P3-06.md`, in a new section "Scali
 
 ### 2.8 How to read the result
 
+The first result on a 2-core host (P3-06.md, "First scaling result on this host") shows that `reset` limits the scaling. Run the scaling run after that limit is removed, or record it as the known cause.
+
 If `η` is less than 0.6, compare two values in the phase benchmark: the run wall time and the summed setup time. P3-06 found that the setups of different workers do not overlap. If the wall time is near the summed setup, `RhoRuntime::reset` is the limit. P3-06.md, section "The next cost", describes a possible fix.
 
 If the merge or the settlement is more than half of the execution time, the limit is the sequential part of the block. Record the share of each phase.
