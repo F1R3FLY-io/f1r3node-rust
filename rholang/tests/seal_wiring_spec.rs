@@ -229,3 +229,37 @@ async fn a_hook_is_replaced_only_inside_a_region_the_quorum_sealed() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_wallet_or_bond_call_inside_data_received_at_run_time_moves_nothing() {
+    sealed(|runtime| async move {
+        let evaluator = r#"new d(`rho:system:deployerId`) in { @"alice-id"!(*d) | for (p <= @"eval") { *p } }"#;
+        run(&runtime, &ALICE, &[], 1, evaluator).await;
+        let payee = address(&MALLORY);
+        let sent = format!(
+            r#"for (@a <- @"alice-id") {{
+                 @"eval"!({{ new w(`rho:rev:wallet`) in {{ w!("transfer", (a, "{payee}", 100), "moved") }} }}) |
+                 @"eval"!({{ new b(`rho:rev:bond`) in {{ b!("bond", (a, 100), "bonded") }} }}) |
+                 @"eval"!({{ new w(`rho:rev:wallet`) in {{ w!("balance", "{payee}", "read") }} }}) |
+                 @"alice-id"!(a)
+               }}"#
+        );
+        run(&runtime, &MALLORY, &[], 2, &sent).await;
+        assert!(!ok(&runtime, "moved").await);
+        assert!(!ok(&runtime, "bonded").await);
+        assert!(ok(&runtime, "read").await);
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1_000);
+        assert_eq!(stacks(&runtime).balance(&owner(&MALLORY)).unwrap(), 1_000);
+        assert_eq!(bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(), 0);
+
+        let own = format!(
+            r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`) in {{
+                 w!("transfer", (*d, "{payee}", 100), "own")
+               }}"#
+        );
+        run(&runtime, &ALICE, &[], 3, &own).await;
+        assert!(ok(&runtime, "own").await);
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 900);
+    })
+    .await;
+}

@@ -1268,3 +1268,70 @@ async fn an_expired_grant_returns_its_funders_shares_in_play_and_replay() {
         balance(&rm, &third.settled_root, &carol).await + 750
     );
 }
+
+#[tokio::test]
+async fn a_process_with_new_hashes_the_same_in_every_deploy_and_is_funded_across_deploys() {
+    use casper::rust::v6::genesis_wallets::cells_at;
+    use models::rust::normalizer_env::with_deployer_id;
+    use rholang::rust::interpreter::accounting::rev_stack::funders::{share, shares};
+    use rholang::rust::interpreter::accounting::rev_stack::process::process_owner;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+
+    let (alice, carol, bob, proposer) = (party(), party(), party(), party());
+    let (rm, genesis) = shard_with_authority(
+        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000)],
+        &[&bob],
+        1,
+    )
+    .await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let p = r#"new x in { x!(1) | for (_ <- x) { @"sink"!(1) } }"#;
+    let under = |party: &Party| {
+        process_owner(&Compiler::source_to_adt_with_normalizer_env(p, with_deployer_id(&party.pk)).unwrap())
+    };
+    let process = process_owner(&Compiler::source_to_adt(p).unwrap());
+    assert_eq!(under(&alice), process);
+    assert_eq!(under(&carol), process);
+    let fund = |amount: u64| {
+        format!(
+            r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), ack in {{
+                 w!("fund", (*d, {{ {p} }}, {amount}), *ack)
+               }}"#
+        )
+    };
+    let record = |root: StateHash| {
+        let (rm, process) = (rm.clone(), process.clone());
+        let (a, c) = (alice.owner.clone(), carol.owner.clone());
+        async move {
+            let cells = cells_at(&rm, &root).await.unwrap();
+            let held: u64 = shares(&cells, &process).unwrap().iter().map(|(_, s)| s).sum();
+            (
+                share(&cells, &process, &a).unwrap(),
+                share(&cells, &process, &c).unwrap(),
+                held,
+                read_wallet_balance(&rm, &root, &process).await.unwrap(),
+            )
+        }
+    };
+
+    let first = executor
+        .execute(&genesis, vec![envelope(&fund(3_000), 1, &alice, 50_000, 1)], block_data(&proposer))
+        .await
+        .unwrap();
+    assert_eq!(record(first.settled_root.clone()).await, (3_000, 0, 3_000, 3_000));
+    let second = executor
+        .execute(
+            &first.settled_root,
+            vec![envelope(&fund(1_000), 2, &carol, 50_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .unwrap();
+    assert_eq!(record(second.settled_root.clone()).await, (3_000, 1_000, 4_000, 4_000));
+    assert_eq!(
+        replay(&executor, &first.settled_root, &second, block_data(&proposer))
+            .await
+            .settled_root,
+        second.settled_root
+    );
+}
