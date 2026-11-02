@@ -101,6 +101,7 @@ message SealRecordProto {
   bytes owner = 1;
   int32 kind = 2;
   SealOrigin origin = 3;
+  bool from_data = 4;
 }
 
 /**

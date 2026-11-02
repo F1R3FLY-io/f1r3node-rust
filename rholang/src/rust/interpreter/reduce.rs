@@ -1264,11 +1264,11 @@ impl DebruijnInterpreter {
                     ExprInstance::EVarBody(e) => {
                         let var = e.v.as_ref().expect("an EVar always holds a variable");
                         let res = self.eval_var(var, env)?;
-                        self.eval(res, env, rand).await
+                        self.eval_received(res, env, rand).await
                     }
                     ExprInstance::EMethodBody(_) => {
                         let res = self.eval_expr_to_par(&term, env)?;
-                        self.eval(res, env, rand).await
+                        self.eval_received(res, env, rand).await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
                         "Undefined term: {:?}",
@@ -1722,11 +1722,28 @@ impl DebruijnInterpreter {
         ))
     }
 
+    async fn eval_received(
+        &self,
+        par: Par,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        match seal::current() {
+            Some(record) => seal::within(Some(record.received()), self.eval(par, env, rand)).await,
+            None => self.eval(par, env, rand).await,
+        }
+    }
+
     async fn region_signers(
         &self,
         refused: &(dyn Fn(String) -> InterpreterError + Sync),
     ) -> Result<Vec<WalletOwner>, InterpreterError> {
         if let Some(record) = seal::current() {
+            if record.from_data {
+                return Err(refused(
+                    "a seal inside data received at run time cannot name a wallet".to_string(),
+                ));
+            }
             return Ok(record.origin.signers);
         }
         if self.seals_recorded() {
@@ -1744,8 +1761,13 @@ impl DebruijnInterpreter {
         &self,
         refused: &(dyn Fn(String) -> InterpreterError + Sync),
     ) -> Result<WalletOwner, InterpreterError> {
-        if let Some(owner) = seal::current_owner() {
-            return Ok(owner);
+        if let Some(record) = seal::current() {
+            if record.from_data {
+                return Err(refused(
+                    "a stack inside data received at run time draws on no wallet".to_string(),
+                ));
+            }
+            return Ok(record.owner);
         }
         if self.seals_recorded() {
             return Err(refused(

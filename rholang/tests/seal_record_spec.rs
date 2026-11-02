@@ -249,6 +249,70 @@ async fn a_kind_transfer_draws_on_the_enclosing_seal() {
 }
 
 #[tokio::test]
+async fn a_seal_inside_data_received_at_run_time_draws_on_no_wallet() {
+    sealed_runtime(|runtime| async move {
+        let contract = r#"new d(`rho:system:deployerId`) in {
+            @"aid"!(*d) | for (p <= @"eval") { *p }
+        }"#;
+        assert!(run(&runtime, &ALICE, &[], 1, contract).await.is_empty());
+        let refused = |errors: Vec<InterpreterError>, reason: &str| {
+            errors
+                .iter()
+                .any(|e| matches!(e, InterpreterError::ReduceError(m) if m.contains(reason)))
+        };
+        let sealed = r#"new slot in {
+            for (a <<- @"aid") { @"eval"!({% slot :: () %}[a]) } | @"slot"!(*slot)
+        }"#;
+        let errors = run(&runtime, &BOB, &[], 2, sealed).await;
+        assert!(refused(errors, "inside data"), "a wallet seal in data");
+        let region = r#"for (a <<- @"aid") { @"eval"!({% @"x"!(1) %}[a]) }"#;
+        let errors = run(&runtime, &BOB, &[], 3, region).await;
+        assert!(refused(errors, "inside data"), "a wallet region in data");
+        let bare = r#"new slot2 in { @"eval"!(slot2 :: ()) }"#;
+        let errors = run(&runtime, &BOB, &[], 4, bare).await;
+        assert!(refused(errors, "inside data"), "a bare stack in data");
+        let later = r#"new slot3 in { @"eval"!(for (_ <- @"later") { slot3 :: () }) }"#;
+        assert!(run(&runtime, &BOB, &[], 5, later).await.is_empty());
+        let errors = run(&runtime, &BOB, &[], 6, r#"@"later"!(0)"#).await;
+        assert!(
+            refused(errors, "inside data"),
+            "stored data keeps its taint"
+        );
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1_000);
+        assert_eq!(stacks(&runtime).balance(&owner(&BOB)).unwrap(), 1_000);
+
+        let own = r#"new d(`rho:system:deployerId`), slot4 in {
+            {% slot4 :: () %}[d] | @"slot4"!(*slot4)
+        }"#;
+        assert!(run(&runtime, &ALICE, &[], 7, own).await.is_empty());
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 999);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_kind_minted_inside_data_still_mints_and_a_received_kind_name_still_moves_in_code() {
+    sealed_runtime(|runtime| async move {
+        let contract = r#"for (p <= @"eval") { *p }"#;
+        assert!(run(&runtime, &ALICE, &[], 1, contract).await.is_empty());
+        let mint = r#"new k, d(`rho:system:deployerId`) in {
+            @"eval"!({% d :: d :: () %}[k]) | @"pub"!(bundle0{*k})
+        }"#;
+        assert!(run(&runtime, &BOB, &[], 2, mint).await.is_empty());
+        let WalletOwner::Unforgeable(name) = slot_owner(&runtime, "pub") else {
+            panic!("a kind is an unforgeable name");
+        };
+        let kind = TokenKind::from_name(name).unwrap();
+        let held = |who: &WalletOwner| stacks(&runtime).of_kind(&kind).balance(who).unwrap();
+        assert_eq!(held(&owner(&BOB)), 2);
+        let give = r#"new s in { for (kind <<- @"pub") { {% s :: () %}[kind] } | @"s"!(*s) }"#;
+        assert!(run(&runtime, &BOB, &[], 3, give).await.is_empty());
+        assert_eq!(held(&owner(&BOB)), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_legacy_runtime_keeps_the_golden_root() {
     with_runtime(
         "seal-record-golden-",

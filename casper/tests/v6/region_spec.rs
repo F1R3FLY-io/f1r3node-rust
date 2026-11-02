@@ -749,3 +749,50 @@ async fn a_fired_continuation_draws_on_its_author_not_on_the_firing_region() {
         .expect("the firing replays");
     assert_eq!(again.settled_root, second.settled_root);
 }
+
+#[tokio::test]
+async fn a_seal_sent_as_data_to_an_owners_contract_draws_on_no_wallet() {
+    let (alice, mallory, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&mallory, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let contract = r#"new d(`rho:system:deployerId`) in {
+        @"aid"!(*d) | for (p <= @"eval") { *p }
+    }"#;
+    let first = executor
+        .execute(
+            &pre,
+            vec![envelope(contract, 1, &alice, 1_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the contract executes");
+    assert!(!first.processed[0].is_failed);
+    let attack = r#"new slot in {
+        for (a <<- @"aid") { @"eval"!({% slot :: slot :: () %}[a]) } | @"slot"!(*slot)
+    }"#;
+    let second = executor
+        .execute(
+            &first.settled_root,
+            vec![envelope(attack, 2, &mallory, 1_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the attack executes");
+    let root = &second.settled_root;
+    assert!(second.processed[0].is_failed);
+    assert!(second.settlement.transfers.is_empty());
+    assert_eq!(
+        balance(&rm, root, &alice).await,
+        100_000 - paid(&first, &alice)
+    );
+    let again = executor
+        .replay(
+            &first.settled_root,
+            second.processed.clone(),
+            &second.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the attack replays");
+    assert_eq!(again.settled_root, second.settled_root);
+}
