@@ -28,3 +28,17 @@ The full rholang, casper and models suites pass with no re-pin.
   - P is `new x in { x!(1) | for (_ <- x) { @"sink"!(1) } }`. Its `process_owner` is the same under Alice's environment, Carol's environment and no environment.
   - Alice funds 3,000 in one block. Carol funds 1,000 in the next block. The record is (3,000, 1,000, 4,000) and the wallet holds 4,000.
   - The second block replays to the same settled root.
+
+# Decision 68: wallet and bond calls inside data received at run time
+
+The same branch merges `patch/FX-6` (a978756ca, lane C) to reuse its `from_data` mark. The merge has no conflicts.
+
+| # | Decision | Alternatives | Reason | Reversible |
+|---|----------|--------------|--------|------------|
+| 3 | `rho:rev:wallet` and `rho:rev:bond` refuse a command that moves REV when the current seal record has `from_data`. The test is `seal::current()` and the record's `from_data` field, so FX-6's mark is the only source. The refusal message is FX-6's: "a stack inside data received at run time draws on no wallet". | A second mark in the system processes. | Decision 68. Without the refusal, B sends a transfer from A's published deployer id to A's evaluator contract. The call runs under A's record, so FX-7's authority check admits it. The test shows that this attack moves REV when the refusal is off. | Yes |
+| 4 | Reads stay open under the mark: `find`, `balance`, `kindBalance`, `grantBalance` and `share` in `rho:rev:wallet`, and `balance` in `rho:rev:bond`. | Refuse every command. | A read moves nothing and needs no authority. | Yes |
+| 5 | No wallet or bond command mints a kind. Kind mints happen in the reducer, which FX-6 decision 5 already exempts, so the exception of Decision 68 needs no code here. | — | — | — |
+
+## Tests
+
+- `seal_wiring_spec::a_wallet_or_bond_call_inside_data_received_at_run_time_moves_nothing`: Alice stores `for (p <= @"eval") { *p }` and publishes her deployer id. Mallory sends a transfer from Alice's id, a bond of Alice's id and a balance read, each as data. The transfer and the bond are refused, the read answers, and no balance or bond changes. Alice's own top-level transfer still moves 100.

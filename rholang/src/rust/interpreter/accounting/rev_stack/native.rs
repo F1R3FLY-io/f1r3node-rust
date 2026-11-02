@@ -32,6 +32,15 @@ pub const REV_WALLET_URN: &str = "rho:rev:wallet";
 pub type RhoHotStore =
     Arc<Box<dyn HotStore<Par, BindPattern, ListParWithRandom, TaggedContinuation>>>;
 
+pub const READS: [&str; 5] = ["find", "balance", "kindBalance", "grantBalance", "share"];
+
+pub fn refusal(message: &str) -> Par {
+    RhoTuple2::create_par((
+        RhoBoolean::create_par(false),
+        RhoString::create_par(message.to_string()),
+    ))
+}
+
 pub fn handle(
     store: Option<RhoHotStore>,
     command: &str,
