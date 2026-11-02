@@ -1685,6 +1685,22 @@ fn setup_maps_and_refs(
             urn_map.insert(key, value);
         });
 
+    let genesis_only = super::system_processes::genesis_only_channels();
+    let bound_to_genesis_only: Vec<&String> = urn_map
+        .iter()
+        .filter(|(_, value)| {
+            super::system_processes::resolved_channel(value)
+                .is_some_and(|channel| genesis_only.contains(channel))
+        })
+        .map(|(urn, _)| urn)
+        .collect();
+    assert!(
+        bound_to_genesis_only
+            .iter()
+            .all(|urn| super::accounting::rev_stack::genesis::is_genesis_only_urn(urn)),
+        "a URN outside the genesis-only list resolves to a genesis-only channel: {bound_to_genesis_only:?}"
+    );
+
     let mut proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes
         .iter()
         .map(|process| process.to_proc_defs())

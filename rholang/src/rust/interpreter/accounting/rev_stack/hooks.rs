@@ -163,14 +163,18 @@ pub fn rev_hook(store: &dyn CellStore) -> Result<Option<RevHook>, RevStackError>
     Ok(read_single(store, &rev_hook_channel(), REV_HOOK_TAG)?.map(RevHook::from_par))
 }
 
-pub fn seal_authorizes(store: &dyn CellStore, seal: &WalletOwner) -> Result<bool, RevStackError> {
+pub fn quorum_authorizes(store: &dyn CellStore, seal: &WalletOwner) -> Result<bool, RevStackError> {
     let authority = hook_authority(store)?
         .ok_or_else(|| RevStackError::CorruptWallet("no hook authority at genesis".into()))?;
     let components = match seal {
         WalletOwner::Compound(components) => components.clone(),
         single => vec![single.clone()],
     };
-    if authority.authorizes(&components) {
+    Ok(authority.authorizes(&components))
+}
+
+pub fn seal_authorizes(store: &dyn CellStore, seal: &WalletOwner) -> Result<bool, RevStackError> {
+    if quorum_authorizes(store, seal)? {
         return Ok(true);
     }
     Ok(match rev_hook(store)? {
@@ -184,10 +188,9 @@ pub fn replace_rev_hook(
     seal: &WalletOwner,
     hook: RevHook,
 ) -> Result<(), RevStackError> {
-    if !seal_authorizes(store, seal)? {
+    if !quorum_authorizes(store, seal)? {
         return Err(RevStackError::InvalidOwner(
-            "replacing a hook needs a seal of the hook authority's quorum or of the installed hook"
-                .into(),
+            "replacing a hook needs a seal of the hook authority's quorum".into(),
         ));
     }
     let channel = rev_hook_channel();
@@ -352,7 +355,11 @@ mod tests {
         assert!(replace_rev_hook(&store, &seal(&[ks[0].clone(), outsider]), hook.clone()).is_err());
         assert_eq!(rev_hook(&store).unwrap(), Some(RevHook::Noop));
         replace_rev_hook(&store, &seal(&[ks[2].clone(), ks[0].clone()]), hook.clone()).unwrap();
-        assert_eq!(rev_hook(&store).unwrap(), Some(hook));
+        assert_eq!(rev_hook(&store).unwrap(), Some(hook.clone()));
+        let RevHook::Contract(installed) = &hook else { unreachable!() };
+        let as_hook = super::super::process::process_owner(installed);
+        assert!(replace_rev_hook(&store, &as_hook, RevHook::Noop).is_err());
+        assert_eq!(rev_hook(&store).unwrap(), Some(hook.clone()));
         assert_eq!(store.get_data(&rev_hook_channel()).len(), 1);
         replace_rev_hook(&store, &seal(&ks), RevHook::Noop).unwrap();
         assert_eq!(rev_hook(&store).unwrap(), Some(RevHook::Noop));

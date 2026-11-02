@@ -875,19 +875,51 @@ pub struct UrnPhase {
 }
 
 impl UrnPhase {
-    pub fn refusal(&self, urn: &str) -> Option<String> {
+    pub fn refusal(&self, urn: &str, resolved: Option<&Par>) -> Option<String> {
         urn_refusal(
             urn,
+            resolved,
             self.fs_native_filtered
                 .load(std::sync::atomic::Ordering::Acquire),
             self.genesis.load(std::sync::atomic::Ordering::Acquire),
+            in_process_region(),
         )
     }
 
     pub fn is_genesis(&self) -> bool { self.genesis.load(std::sync::atomic::Ordering::Acquire) }
 }
 
-pub fn urn_refusal(urn: &str, fs_native_filtered: bool, genesis: bool) -> Option<String> {
+pub fn genesis_only_channels() -> [Par; 2] {
+    [FixedChannels::rev_genesis(), FixedChannels::rev_bond_admin()]
+}
+
+pub fn runner_context_channels() -> [Par; 2] {
+    [FixedChannels::get_block_data(), FixedChannels::deploy_data()]
+}
+
+pub fn resolved_channel(value: &Par) -> Option<&Par> {
+    match value.bundles.as_slice() {
+        [bundle] if value.sends.is_empty() && value.unforgeables.is_empty() => {
+            bundle.body.as_ref()
+        }
+        _ => None,
+    }
+}
+
+pub fn in_process_region() -> bool {
+    rev_stack::seal::current()
+        .is_some_and(|record| record.kind == rev_stack::seal::SealKind::Process)
+}
+
+pub fn urn_refusal(
+    urn: &str,
+    resolved: Option<&Par>,
+    fs_native_filtered: bool,
+    genesis: bool,
+    in_process_region: bool,
+) -> Option<String> {
+    let channel = resolved.and_then(resolved_channel);
+    let resolves_to = |channels: [Par; 2]| channel.is_some_and(|c| channels.contains(c));
     if fs_native_filtered && urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
         return Some(format!(
             "urn `{urn}` is not resolvable in this phase; \
@@ -897,8 +929,15 @@ pub fn urn_refusal(urn: &str, fs_native_filtered: bool, genesis: bool) -> Option
              at genesis"
         ));
     }
-    if !genesis && rev_stack::genesis::is_genesis_only_urn(urn) {
+    if !genesis
+        && (rev_stack::genesis::is_genesis_only_urn(urn) || resolves_to(genesis_only_channels()))
+    {
         return Some(format!("urn `{urn}` is reserved for genesis"));
+    }
+    if in_process_region && resolves_to(runner_context_channels()) {
+        return Some(format!(
+            "urn `{urn}` answers from the running deployment, which a `# P` region may not read"
+        ));
     }
     None
 }
@@ -1417,7 +1456,7 @@ impl SystemProcesses {
                 illegal_argument_error("registry_lookup: urn arg must be a String or Uri")
             })?;
 
-        if let Some(reason) = self.urn_phase.refusal(&urn_str) {
+        if let Some(reason) = self.urn_phase.refusal(&urn_str, self.urn_map.get(&urn_str)) {
             return Err(InterpreterError::ReduceError(reason));
         }
 

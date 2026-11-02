@@ -232,3 +232,43 @@ async fn a_v6_genesis_refuses_a_supply_beyond_the_largest_amount() {
             .is_err()
     );
 }
+
+#[test]
+fn only_pos_v6_binds_the_bond_admin_name_and_only_the_rev_genesis_deploys_bind_the_mint() {
+    use casper::rust::genesis::contracts::standard_deploys::pos_v6_generator;
+
+    let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    genesis.version = PROTOCOL_V6;
+    genesis.vaults = (0..3)
+        .map(|_| Vault {
+            vault_address: VaultAddress::from_public_key(&Secp256k1.new_key_pair().1).unwrap(),
+            initial_balance: 1_000,
+        })
+        .collect();
+    let terms: Vec<String> = Genesis::default_blessed_terms_with_policy(
+        &genesis.proof_of_stake,
+        &genesis.vaults,
+        genesis.supply,
+        &genesis.shard_id,
+        &genesis.native_token_name,
+        &genesis.native_token_symbol,
+        genesis.native_token_decimals,
+        &genesis.fs_bundle,
+        genesis.consensus_fs_snapshot_cadence,
+        Some(&ShardResourcePolicy::default()),
+    )
+    .into_iter()
+    .map(|deploy| deploy.data.term)
+    .collect();
+    let binding = |urn: &str| -> Vec<&String> { terms.iter().filter(|t| t.contains(urn)).collect() };
+
+    let pos = pos_v6_generator(&genesis.proof_of_stake, &genesis.shard_id).data.term;
+    assert_eq!(binding("rho:rev:bondAdmin"), vec![&pos]);
+
+    let mints = binding("rho:rev:genesis");
+    assert_eq!(mints.len(), 3, "one wallet batch, the hooks and the bonds");
+    assert!(!mints.contains(&&pos));
+    assert!(mints.iter().all(|t| !t.contains("rho:rev:bondAdmin")));
+
+    assert!(binding("rho:internal:registry_lookup").is_empty());
+}

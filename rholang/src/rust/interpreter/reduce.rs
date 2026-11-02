@@ -1567,10 +1567,15 @@ impl DebruijnInterpreter {
         let genesis = self
             .genesis_phase
             .load(std::sync::atomic::Ordering::Acquire);
+        let in_process_region = super::system_processes::in_process_region();
         for urn in &new.uri {
-            if let Some(reason) =
-                super::system_processes::urn_refusal(urn, fs_native_filtered, genesis)
-            {
+            if let Some(reason) = super::system_processes::urn_refusal(
+                urn,
+                self.urn_map.get(urn),
+                fs_native_filtered,
+                genesis,
+                in_process_region,
+            ) {
                 return Err(InterpreterError::ReduceError(reason));
             }
         }
