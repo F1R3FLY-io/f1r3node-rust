@@ -19,6 +19,7 @@ use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::util::unpack_option;
 
 use crate::rust::interpreter::accounting::_cost;
+use crate::rust::interpreter::accounting::rev_stack::seal;
 use crate::rust::interpreter::accounting::costs::{
     comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
 };
@@ -91,7 +92,7 @@ impl ChargingRSpace {
                         Some((cont, data_list)) => {
                             left_in_space_match(cont, data_list, &Trigger::Consume, &self.cost)?
                         }
-                        None => match with_rule(&self.cost, |rule| rule.left_continuation(&id)) {
+                        None => match with_rule(&self.cost, |rule| rule.left_continuation(&id, seal::current())) {
                             true => self.cost.charge(event_storage_cost(channels_count))?,
                             false => refund(&self.cost, consume_storage.value, "consume storage refund")?,
                         },
@@ -141,7 +142,7 @@ impl ChargingRSpace {
                             &Trigger::Produce { id, restored },
                             &self.cost,
                         )?,
-                        None if !restored => match with_rule(&self.cost, |rule| rule.left_datum(&id)) {
+                        None if !restored => match with_rule(&self.cost, |rule| rule.left_datum(&id, seal::current())) {
                             true => self.cost.charge(event_storage_cost(1))?,
                             false => refund(&self.cost, produce_storage.value, "produces storage refund")?,
                         },
@@ -412,19 +413,18 @@ fn left_in_space_match(
     cost: &_cost,
 ) -> Result<(), InterpreterError> {
     let consume_storage = storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
-    let consume_refund = match trigger {
-        Trigger::Consume => consume_storage.value,
-        Trigger::Produce { .. } if cont.persistent => 0,
+    match trigger {
+        Trigger::Consume => refund(cost, consume_storage.value, "consume storage refund")?,
+        Trigger::Produce { .. } if cont.persistent => {}
         Trigger::Produce { .. } => {
             let id = consume_id_bytes(&cont.continuation)?;
-            if with_rule(cost, |rule| rule.removed_continuation(&id)) {
-                consume_storage.value + event_storage_cost(cont.channels.len() as i64).value
-            } else {
-                0
+            if let Some(payer) = with_rule(cost, |rule| rule.removed_continuation(&id)) {
+                let amount =
+                    consume_storage.value + event_storage_cost(cont.channels.len() as i64).value;
+                seal::within_now(payer, || refund(cost, amount, "consume storage refund"))?;
             }
         }
-    };
-    refund(cost, consume_refund, "consume storage refund")?;
+    }
 
     let mut produce_refund = 0;
     for (data, channel) in data_list.iter().zip(cont.channels.iter()) {
@@ -440,9 +440,10 @@ fn left_in_space_match(
             }
             _ if data.persistent => {}
             _ => {
-                if with_rule(cost, |rule| rule.removed_datum(id)) {
-                    produce_refund += storage_cost_produce(channel, &data.removed_datum).value
+                if let Some(payer) = with_rule(cost, |rule| rule.removed_datum(id)) {
+                    let amount = storage_cost_produce(channel, &data.removed_datum).value
                         + event_storage_cost(1).value;
+                    seal::within_now(payer, || refund(cost, amount, "produces storage refund"))?;
                 }
             }
         }
