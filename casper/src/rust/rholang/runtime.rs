@@ -417,6 +417,7 @@ impl RuntimeOps {
         // Drop-based (see FsNativeFilterGuard) so the filter restores
         // on every return path including ? and panic unwind.
         let _guard = FsNativeFilterGuard::disable(&self.runtime.reducer);
+        let _genesis = self.runtime.enter_genesis_phase();
 
         let mut res = Vec::with_capacity(terms.len());
         for deploy in terms {
