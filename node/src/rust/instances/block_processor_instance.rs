@@ -909,9 +909,7 @@ mod tests {
         assert!(fixture
             .casper
             .runtime_manager
-            .active_validators_cache_order
-            .lock()
-            .unwrap()
+            .active_validators_cache
             .is_empty());
     }
 

@@ -27,6 +27,7 @@ use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::system_processes::BlockData;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
@@ -873,20 +874,6 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Merge scope test: visible_blocks should not include blocks below the LCA
-// ---------------------------------------------------------------------------
-// Builds a multi-parent DAG with 3 validators. The LCA of the latest blocks
-// is always the previous round's block (since each validator sees all others).
-// The visible_blocks set should only contain blocks ABOVE the LCA, not the
-// entire ancestry back to genesis. This test asserts that the visible_blocks
-// count stays bounded as the DAG grows — it should be ~3 per round (the 3
-// new blocks), not growing linearly with total blocks.
-//
-// With the current code, visible_blocks includes everything back to
-// ancestor_min_block_number (effectively genesis when max_parent_depth is
-// large), so this test FAILS — visible_blocks grows to ~60 at round 20.
-
 const BLOCK_INDEX_CACHE_BOUND: usize = RuntimeManager::MAX_BLOCK_INDEX_CACHE_ENTRIES;
 
 #[test]
@@ -1033,6 +1020,75 @@ async fn run_block_index_cache_bound_test() {
         BLOCK_INDEX_CACHE_BOUND
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_indexing_keeps_the_block_index_cache_within_its_bound() {
+    let mut kvm = InMemoryStoreManager::new();
+    let rspace_store = kvm
+        .r_space_stores()
+        .await
+        .expect("Failed to get rspace stores");
+    let mergeable_store = RuntimeManager::mergeable_store(&mut kvm)
+        .await
+        .expect("Failed to create mergeable store");
+    let (runtime_manager, _) = RuntimeManager::create_with_history(
+        rspace_store,
+        mergeable_store,
+        Genesis::default_mergeable_tags_arc(),
+        ExternalServices::noop(),
+    );
+
+    let state = Blake2b256Hash::new(b"state");
+    let threads = 16;
+    let blocks_per_thread = 2 * BLOCK_INDEX_CACHE_BOUND;
+    let start = std::sync::Barrier::new(threads);
+    std::thread::scope(|scope| {
+        for thread in 0..threads {
+            let runtime_manager = &runtime_manager;
+            let state = &state;
+            let start = &start;
+            scope.spawn(move || {
+                start.wait();
+                for block_number in 0..blocks_per_thread {
+                    let block_hash =
+                        Bytes::from(format!("block-{thread}-{block_number}").into_bytes());
+                    runtime_manager
+                        .get_or_compute_block_index(
+                            &block_hash,
+                            block_number as i64,
+                            &Vec::new(),
+                            &Vec::new(),
+                            state,
+                            state,
+                            &Vec::new(),
+                        )
+                        .expect("Failed to compute a block index");
+                }
+            });
+        }
+    });
+
+    assert!(
+        runtime_manager.block_index_cache.len() <= BLOCK_INDEX_CACHE_BOUND,
+        "concurrent indexing left {} block indexes cached, past the bound of {}",
+        runtime_manager.block_index_cache.len(),
+        BLOCK_INDEX_CACHE_BOUND
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Merge scope test: visible_blocks should not include blocks below the LCA
+// ---------------------------------------------------------------------------
+// Builds a multi-parent DAG with 3 validators. The LCA of the latest blocks
+// is always the previous round's block (since each validator sees all others).
+// The visible_blocks set should only contain blocks ABOVE the LCA, not the
+// entire ancestry back to genesis. This test asserts that the visible_blocks
+// count stays bounded as the DAG grows — it should be ~3 per round (the 3
+// new blocks), not growing linearly with total blocks.
+//
+// With the current code, visible_blocks includes everything back to
+// ancestor_min_block_number (effectively genesis when max_parent_depth is
+// large), so this test FAILS — visible_blocks grows to ~60 at round 20.
 
 #[test]
 fn visible_blocks_should_not_grow_unbounded_with_dag_depth() {
