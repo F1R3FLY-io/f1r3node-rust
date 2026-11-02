@@ -709,6 +709,19 @@ Two sources set the mark, and the tests depend on them as follows:
 - **FX-6 open item 2** is FX-8 merge requirement 3: `rho:rev:wallet` and `rho:rev:bond` must refuse a draw under a `from_data` record. The route tests check stacks only. When FX-8 lands, the same routes need a native-draw case. The fixing lane writes those tests.
 - **F32** (lane B), FX-8 (lane A2) and FX-9 (lane B, Decision 69) have not landed.
 
+## Rulings of 2026-11-02 (afternoon)
+
+Revisions 5 and 6 are accepted.
+
+| Finding | Ruling | Fix | Lane |
+|---|---|---|---|
+| F32 | Decision 70: P10 holds without exception. With records on, code that has no record has no authority. Fix now. | FX-11 | B |
+| F33 | Deferred until after the preview. Journal admission prevents the overdraw. | — | C |
+| FX-6 open item 1 | Decision 71: the data mark stays on the whole continuation. A per-value mark is revisited after M2. | — | — |
+| FX-8 merge requirements (revision 5) | Sent to lane A2 as part of FX-8b. | FX-8b | A2 |
+
+A-8 re-audits FX-11 and the FX-8b merge commit when each lands. For FX-11, it checks that a native draw with no record returns no authority, and that every v6 genesis contract is tested with records on. For FX-8b, it checks that native draws are refused under the data mark on the routes of revision 6.
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
