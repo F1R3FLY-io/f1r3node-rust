@@ -47,4 +47,5 @@ So F30's statement that neither branch's tests fail on that resolution holds onl
 
 - rholang `hash_seal_spec` 12, `seal_record_spec` 10, `signed_region_spec` 13, `slot_spec` 3, `storage_left_in_space_spec` 5: all pass.
 - casper `v6::`: 64 passed, 0 failed, 7 ignored (after the seal syntax of the new region test was corrected).
-- The full suites run on the merge commit before the push.
+- Full suites at be79dc7c6: rholang lib 1,444 passed; casper lib 847; casper `--test mod` 1,237 passed, 0 failed, 20 ignored; node 466. All 0 failed.
+- A first run of `casper --test mod` failed many tests when the disk filled with LMDB directories that earlier test runs left in `/tmp` (23 GB). After they were removed, the rerun passed.
