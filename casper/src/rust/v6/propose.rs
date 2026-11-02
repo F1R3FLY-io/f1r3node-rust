@@ -87,6 +87,7 @@ mod tests {
             expiration_timestamp: None,
             parameters: vec![],
             cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         };
         Signed::create(data, Box::new(Secp256k1), sk).unwrap()
     }

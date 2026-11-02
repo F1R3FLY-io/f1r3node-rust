@@ -158,6 +158,7 @@ mod tests {
                 expiration_timestamp: None,
                 parameters: Vec::new(),
                 cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             Box::new(secp256k1),
             sec,
@@ -307,6 +308,7 @@ mod tests {
             expiration_timestamp: None,
             parameters: Vec::new(),
             cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         };
         assert_eq!(
             PrettyPrinter::build_string_deploy_data(&deploy),

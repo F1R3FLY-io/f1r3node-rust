@@ -81,6 +81,7 @@ pub(super) fn decode(bytes: &BitVector) -> Result<Signed<DeployData>, KvStoreErr
             expiration_timestamp: legacy.data.expiration_timestamp,
             parameters: Vec::new(),
             cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         },
         pk: legacy.pk,
         sig: legacy.sig,

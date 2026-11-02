@@ -1,6 +1,7 @@
 pub mod bond;
 pub mod cell;
 pub mod channel;
+pub mod funders;
 pub mod compute;
 pub mod genesis;
 pub mod hooks;
@@ -9,6 +10,7 @@ pub mod kind;
 pub mod native;
 pub mod ops;
 pub mod owner;
+pub mod process;
 pub mod region;
 pub mod reserve;
 

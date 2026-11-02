@@ -442,8 +442,9 @@ fn the_journal_marks_mints_and_keeps_kinds_apart() {
     let mint = JournalEntry::mint(kind.clone(), alice.clone(), 4).unwrap();
     assert!(mint.is_mint());
     record(cells, &mint).unwrap();
-    journaled_transfers(cells, 0, 0, &kind, &alice, &[(bob.clone(), 3)]).unwrap();
-    assert!(journaled_transfers(cells, 0, 0, &kind, &alice, &[(bob.clone(), 2)]).is_err());
+    assert!(journaled_transfers(cells, 0, 0, &kind, &alice, &[(bob.clone(), 3)]).is_err());
+    journaled_transfers(cells, 3, 0, &kind, &alice, &[(bob.clone(), 3)]).unwrap();
+    assert!(journaled_transfers(cells, 3, 0, &kind, &alice, &[(bob.clone(), 4)]).is_err());
     assert!(journaled_transfer(
         cells,
         0,

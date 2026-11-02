@@ -1375,6 +1375,7 @@ mod merkle_block_hash_tests {
             expiration_timestamp: None,
             parameters: vec![],
             cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         };
         let signed = Signed::create(data, Secp256k1.box_clone(), sk).expect("sign deploy");
         ProcessedDeploy {

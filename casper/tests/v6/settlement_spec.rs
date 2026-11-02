@@ -320,3 +320,41 @@ async fn settlement_releases_unspent_commitments_and_conserves_the_supply() {
         assert!(audit.conserved(), "{audit:?}");
     }
 }
+
+#[tokio::test]
+async fn a_chain_of_moves_in_one_run_settles_in_any_order() {
+    use rholang::rust::interpreter::accounting::rev_stack::journal::JournalEntry;
+
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000)]).await;
+    let inputs = vec![input(&alice, 1, 1_000, 1)];
+    let runs = vec![metered(0, 0)];
+    let reader = StoreReader::at(&rm, &pre).await.unwrap();
+    let gate = gate_block(&reader, &PhloLimitDemand, &inputs).unwrap();
+    let journal = vec![
+        JournalEntry::transfer(bob.owner.clone(), carol.owner.clone(), 40),
+        JournalEntry::transfer(alice.owner.clone(), bob.owner.clone(), 40),
+    ];
+    let mut settled_roots = Vec::new();
+    for order in [journal.clone(), journal.into_iter().rev().collect()] {
+        let (settlement, settled) = settle_block(
+            &rm,
+            &pre,
+            &inputs,
+            &gate.entries,
+            &runs,
+            &[order],
+            &[true],
+            &proposer.owner,
+            Boxcar::unbounded(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(settlement.transfers.len(), 2);
+        assert_eq!(balance(&rm, &settled, &alice).await, 100_000 - 40);
+        assert_eq!(balance(&rm, &settled, &bob).await, 0);
+        assert_eq!(balance(&rm, &settled, &carol).await, 40);
+        settled_roots.push(settled);
+    }
+    assert_eq!(settled_roots[0], settled_roots[1]);
+}

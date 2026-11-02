@@ -3,14 +3,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
+use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
 use futures::FutureExt;
 use models::casper::{
-    BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, ExploratoryDeployQuery,
-    FindDeployQuery, IsFinalizedQuery, MachineVerifyQuery, VisualizeDagQuery,
+    BlockQuery, BlocksQuery, BondStatusQuery, ContinuationAtNameQuery, DeployDataProto,
+    ExploratoryDeployQuery, FindDeployQuery, IsFinalizedQuery, MachineVerifyQuery,
+    VisualizeDagQuery,
 };
-use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::casper::protocol::casper_message::{Cosignature, DeployData};
 use prost::bytes::Bytes;
+use prost::Message;
 use rholang::rust::interpreter::accounting::rev_stack::native;
 
 use crate::rust::util::comm::grpc_deploy_service::DeployService;
@@ -213,6 +216,7 @@ impl DeployRuntime {
             expiration_timestamp: None,
             parameters: Vec::new(),
             cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         };
         Signed::create(
             d,
@@ -220,6 +224,100 @@ impl DeployRuntime {
             private_key.clone(),
         )
         .map_err(|e| format!("Failed to sign deploy: {e}"))
+    }
+
+    pub fn envelope_prepare(
+        term: String,
+        params: &DeployParams,
+        cosigners: &[PublicKey],
+        private_key: &PrivateKey,
+        time_stamp: i64,
+    ) -> Result<String, String> {
+        let mut data = Self::signed_deploy(term, params, private_key, time_stamp)?.data;
+        data.required_cosigners = cosigners.iter().map(|pk| pk.bytes.to_vec()).collect();
+        let signed = Signed::create(
+            data,
+            Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
+            private_key.clone(),
+        )
+        .map_err(|e| format!("Failed to sign deploy: {e}"))?;
+        Cosignature::missing_cosigners(&signed)?;
+        Ok(hex::encode(DeployData::to_proto(signed).encode_to_vec()))
+    }
+
+    pub fn envelope_decode(envelope: &str) -> Result<Signed<DeployData>, String> {
+        let signed = Self::envelope_decode_partial(envelope)?;
+        DeployData::with_complete_cosignatures(signed)
+    }
+
+    fn envelope_decode_partial(envelope: &str) -> Result<Signed<DeployData>, String> {
+        let bytes = hex::decode(envelope.trim()).map_err(|e| format!("Bad envelope: {e}"))?;
+        let proto =
+            DeployDataProto::decode(bytes.as_slice()).map_err(|e| format!("Bad envelope: {e}"))?;
+        let stored = DeployData::from_stored_proto(proto)?;
+        Signed::from_signed_data(stored.data, stored.pk, stored.sig, stored.sig_algorithm)?
+            .ok_or_else(|| "Invalid signature".to_string())
+    }
+
+    pub fn envelope_cosign(envelope: &str, private_key: &PrivateKey) -> Result<String, String> {
+        let mut signed = Self::envelope_decode_partial(envelope)?;
+        let missing = Cosignature::missing_cosigners(&signed)?;
+        let cosignature = Cosignature::sign(&signed, private_key, &Secp256k1::name())?;
+        if !missing.contains(&cosignature.cosigner) {
+            return Err(
+                "This key is not a cosigner that the deployer named, or it has already signed"
+                    .to_string(),
+            );
+        }
+        signed.data.cosignatures.push(cosignature);
+        Ok(hex::encode(DeployData::to_proto(signed).encode_to_vec()))
+    }
+
+    pub async fn envelope_prepare_program(
+        file: &str,
+        output: &str,
+        params: &DeployParams,
+        cosigners: &[PublicKey],
+        private_key: &PrivateKey,
+    ) {
+        Self::graceful_exit(async {
+            let code = tokio::fs::read_to_string(file)
+                .await
+                .map_err(|e| vec![format!("Error with given file:\n{e}")])?;
+            let envelope = Self::envelope_prepare(code, params, cosigners, private_key, now_ms()?)
+                .map_err(|e| vec![e])?;
+            tokio::fs::write(output, envelope)
+                .await
+                .map_err(|e| vec![format!("Cannot write {output}: {e}")])?;
+            Ok(format!("Envelope written to {output}"))
+        })
+        .await
+    }
+
+    pub async fn envelope_cosign_program(envelope: &str, private_key: &PrivateKey) {
+        Self::graceful_exit(async {
+            let text = tokio::fs::read_to_string(envelope)
+                .await
+                .map_err(|e| vec![format!("Cannot read {envelope}: {e}")])?;
+            let cosigned = Self::envelope_cosign(&text, private_key).map_err(|e| vec![e])?;
+            tokio::fs::write(envelope, cosigned)
+                .await
+                .map_err(|e| vec![format!("Cannot write {envelope}: {e}")])?;
+            Ok(format!("Cosignature added to {envelope}"))
+        })
+        .await
+    }
+
+    pub async fn envelope_submit_program<S: DeployService>(svc: &mut S, envelope: &str) {
+        Self::graceful_exit(async {
+            let text = tokio::fs::read_to_string(envelope)
+                .await
+                .map_err(|e| vec![format!("Cannot read {envelope}: {e}")])?;
+            let signed = Self::envelope_decode(&text).map_err(|e| vec![e])?;
+            let resp = svc.deploy(signed).await?;
+            Ok(format!("Response: {resp}"))
+        })
+        .await
     }
 
     async fn deploy_term<S: DeployService>(
@@ -250,4 +348,74 @@ impl DeployRuntime {
     }
 
     pub async fn status<S: DeployService>(svc: &mut S) { Self::graceful_exit(svc.status()).await }
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+
+    use super::*;
+
+    fn params() -> DeployParams {
+        DeployParams {
+            phlo_limit: 1_000,
+            phlo_price: 1,
+            valid_after_block: 0,
+            shard_id: "root".to_string(),
+        }
+    }
+
+    #[test]
+    fn an_envelope_is_prepared_cosigned_and_decoded() {
+        let (alice, alice_pk) = Secp256k1.new_key_pair();
+        let (carol, carol_pk) = Secp256k1.new_key_pair();
+        let envelope = DeployRuntime::envelope_prepare(
+            "Nil".into(),
+            &params(),
+            std::slice::from_ref(&carol_pk),
+            &alice,
+            7,
+        )
+        .unwrap();
+        assert!(DeployRuntime::envelope_decode(&envelope).is_err());
+        let cosigned = DeployRuntime::envelope_cosign(&envelope, &carol).unwrap();
+        let signed = DeployRuntime::envelope_decode(&cosigned).unwrap();
+        assert_eq!(signed.pk, alice_pk);
+        assert_eq!(signed.data.time_stamp, 7);
+        assert_eq!(
+            Cosignature::verified_cosigners(&signed),
+            Some(vec![carol_pk])
+        );
+    }
+
+    #[test]
+    fn only_a_named_key_signs_and_only_once() {
+        let (alice, _) = Secp256k1.new_key_pair();
+        let (carol, carol_pk) = Secp256k1.new_key_pair();
+        let (mallory, _) = Secp256k1.new_key_pair();
+        let envelope =
+            DeployRuntime::envelope_prepare("Nil".into(), &params(), &[carol_pk], &alice, 7)
+                .unwrap();
+        assert!(DeployRuntime::envelope_cosign(&envelope, &alice).is_err());
+        assert!(DeployRuntime::envelope_cosign(&envelope, &mallory).is_err());
+        let once = DeployRuntime::envelope_cosign(&envelope, &carol).unwrap();
+        assert!(DeployRuntime::envelope_cosign(&once, &carol).is_err());
+        let alice_pk = Secp256k1.to_public(&alice);
+        assert!(
+            DeployRuntime::envelope_prepare("Nil".into(), &params(), &[alice_pk], &alice, 7)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_tampered_envelope_is_refused() {
+        let (alice, _) = Secp256k1.new_key_pair();
+        let envelope =
+            DeployRuntime::envelope_prepare("Nil".into(), &params(), &[], &alice, 7).unwrap();
+        let mut proto =
+            DeployDataProto::decode(hex::decode(&envelope).unwrap().as_slice()).unwrap();
+        proto.term = "@0!(1)".to_string();
+        let tampered = hex::encode(proto.encode_to_vec());
+        assert!(DeployRuntime::envelope_decode(&tampered).is_err());
+    }
 }

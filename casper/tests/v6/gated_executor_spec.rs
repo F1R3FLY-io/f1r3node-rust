@@ -594,6 +594,318 @@ async fn one_run_per_block_pays_natively_from_a_wallet() {
 }
 
 #[tokio::test]
+async fn parallel_transfers_that_overdraw_together_fail_the_run_in_play_and_replay() {
+    use casper::rust::v6::backend::ExecutionBackend;
+    use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
+    use casper::rust::v6::executor::BlockExecutor;
+    use casper::rust::v6::record::ExecutionRecord;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, F1r3flyState, Header, ProcessedDeploy,
+    };
+    use prost::bytes::Bytes;
+
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000)]).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let term = format!(
+        r#"new w(`rho:rev:wallet`), deployerId(`rho:system:deployerId`), toBob, toCarol in {{
+             w!("transfer", (*deployerId, "{}", 30000), *toBob) |
+             w!("transfer", (*deployerId, "{}", 30000), *toCarol)
+           }}"#,
+        bob.address, carol.address
+    );
+    let b = BlockMessage {
+        block_hash: Bytes::from_static(b"v6-overdraw"),
+        header: Header {
+            parents_hash_list: vec![],
+            timestamp: 1,
+            version: 1,
+            extra_bytes: Bytes::new(),
+        },
+        body: Body {
+            state: F1r3flyState {
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+                bonds: vec![],
+                block_number: 1,
+            },
+            deploys: vec![ProcessedDeploy::empty(envelope(
+                &term, 1, &alice, 50_000, 1,
+            ))],
+            rejected_deploys: vec![],
+            system_deploys: vec![],
+            extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
+            v6: None,
+        },
+        justifications: vec![],
+        sender: proposer.pk.bytes.clone(),
+        seq_num: 1,
+        sig: Bytes::new(),
+        sig_algorithm: String::new(),
+        shard_id: "root".to_string(),
+        extra_bytes: Bytes::new(),
+    };
+
+    let record = executor
+        .execute(&pre, &b)
+        .await
+        .expect("the block executes");
+    assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::Overdrawn);
+    let post = record.post_root().clone();
+    let settlement = record.settlement().unwrap().clone();
+    assert!(settlement.transfers.is_empty());
+    assert!(settlement.debited() > 0);
+    assert_eq!(balance(&rm, &post, &bob).await, 0);
+    assert_eq!(balance(&rm, &post, &carol).await, 0);
+    assert_eq!(
+        balance(&rm, &post, &alice).await,
+        100_000 - settlement.debited()
+    );
+
+    let decoded = BlockRecord::decode(&record.encode()).unwrap();
+    assert_eq!(executor.replay(&decoded, &b).await.unwrap(), post);
+}
+
+#[tokio::test]
+async fn a_self_sealed_envelope_is_paid_from_its_process_wallet_in_play_and_replay() {
+    use casper::rust::v6::backend::ExecutionBackend;
+    use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
+    use casper::rust::v6::executor::BlockExecutor;
+    use casper::rust::v6::record::ExecutionRecord;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, F1r3flyState, Header, ProcessedDeploy,
+    };
+    use prost::bytes::Bytes;
+    use rholang::rust::interpreter::accounting::rev_stack::process::process_owner;
+    use rholang::rust::interpreter::accounting::rev_stack::{wallet_channel_id, RevStacks};
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis_root) = shard(&[]).await;
+    let process = process_owner(&Compiler::source_to_adt(r#"@"x"!(1)"#).unwrap());
+    let mut runtime = rm.spawn_runtime().await.unwrap();
+    runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(&genesis_root))
+        .await
+        .unwrap();
+    RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
+        .deposit(&process, 10_000)
+        .unwrap();
+    let pre = runtime.create_checkpoint().await.root.to_bytes_prost();
+
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let term = r#"{% @"x"!(1) %}[# { @"x"!(1) }]"#;
+    let b = BlockMessage {
+        block_hash: Bytes::from_static(b"v6-self-sealed"),
+        header: Header {
+            parents_hash_list: vec![],
+            timestamp: 1,
+            version: 1,
+            extra_bytes: Bytes::new(),
+        },
+        body: Body {
+            state: F1r3flyState {
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+                bonds: vec![],
+                block_number: 1,
+            },
+            deploys: vec![ProcessedDeploy::empty(envelope(
+                term, 1, &alice, 1_000, 1,
+            ))],
+            rejected_deploys: vec![],
+            system_deploys: vec![],
+            extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
+            v6: None,
+        },
+        justifications: vec![],
+        sender: proposer.pk.bytes.clone(),
+        seq_num: 1,
+        sig: Bytes::new(),
+        sig_algorithm: String::new(),
+        shard_id: "root".to_string(),
+        extra_bytes: Bytes::new(),
+    };
+
+    let record = executor
+        .execute(&pre, &b)
+        .await
+        .expect("the block executes");
+    assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::Completed);
+    let settlement = record.settlement().unwrap().clone();
+    assert!(settlement.debited() > 0);
+    assert!(settlement
+        .charges
+        .iter()
+        .all(|c| c.wallet == wallet_channel_id(&process)));
+    let post = record.post_root().clone();
+    assert_eq!(balance(&rm, &post, &alice).await, 0);
+    assert_eq!(
+        read_wallet_balance(&rm, &post, &process).await.unwrap(),
+        10_000 - settlement.debited()
+    );
+
+    let decoded = BlockRecord::decode(&record.encode()).unwrap();
+    assert_eq!(executor.replay(&decoded, &b).await.unwrap(), post);
+}
+
+async fn shard_with_authority(
+    funded: &[(&Party, u128)],
+    members: &[&Party],
+    quorum: u32,
+) -> (Arc<RuntimeManager>, StateHash) {
+    let rm = mk_runtime_manager("v6-funders", Some(Genesis::default_mergeable_tags_arc())).await;
+    let (_, _, mut genesis) = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    genesis.version = PROTOCOL_V6;
+    genesis.vaults = funded
+        .iter()
+        .map(|(p, balance)| Vault {
+            vault_address: VaultAddress::from_public_key(&p.pk).unwrap(),
+            initial_balance: *balance,
+        })
+        .collect();
+    genesis.proof_of_stake.pos_multi_sig_public_keys =
+        members.iter().map(|m| hex::encode(&m.pk.bytes)).collect();
+    genesis.proof_of_stake.pos_multi_sig_quorum = quorum;
+    let block = Genesis::create_genesis_block_with_policy(
+        &rm,
+        &genesis,
+        Some(&ShardResourcePolicy::default()),
+    )
+    .await
+    .unwrap();
+    (Arc::new(rm), block.body.state.post_state_hash.clone())
+}
+
+#[tokio::test]
+async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_play_and_replay() {
+    use casper::rust::v6::genesis_wallets::cells_at;
+    use models::rust::casper::protocol::casper_message::Cosignature;
+    use rholang::rust::interpreter::accounting::rev_stack::funders::share;
+    use rholang::rust::interpreter::accounting::rev_stack::journal::Source;
+    use rholang::rust::interpreter::accounting::rev_stack::process::process_owner;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+
+    let (alice, carol, bob, dave, erin, proposer) =
+        (party(), party(), party(), party(), party(), party());
+    let (rm, genesis) = shard_with_authority(
+        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000)],
+        &[&bob, &dave],
+        2,
+    )
+    .await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let process = process_owner(&Compiler::source_to_adt(r#"@"x"!(1)"#).unwrap());
+    let fund = |amount: u64| {
+        format!(
+            r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), ack in {{
+                 w!("fund", (*d, {{ @"x"!(1) }}, {amount}), *ack)
+               }}"#
+        )
+    };
+    let shares_at = |root: StateHash| {
+        let rm = rm.clone();
+        let (alice, carol) = (alice.owner.clone(), carol.owner.clone());
+        let process = process.clone();
+        async move {
+            let cells = cells_at(&rm, &root).await.unwrap();
+            (
+                share(&cells, &process, &alice).unwrap(),
+                share(&cells, &process, &carol).unwrap(),
+                read_wallet_balance(&rm, &root, &process).await.unwrap(),
+            )
+        }
+    };
+
+    let first = executor
+        .execute(
+            &genesis,
+            vec![
+                envelope(&fund(3_000), 1, &alice, 50_000, 1),
+                envelope(&fund(1_000), 2, &carol, 50_000, 1),
+            ],
+            block_data(&proposer),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.merged, vec![true, true]);
+    assert_eq!(
+        replay(&executor, &genesis, &first, block_data(&proposer)).await.settled_root,
+        first.settled_root
+    );
+    assert_eq!(shares_at(first.settled_root.clone()).await, (3_000, 1_000, 4_000));
+
+    let sealed = r#"{% @"x"!(1) %}[# { @"x"!(1) }]"#;
+    let second = executor
+        .execute(
+            &first.settled_root,
+            vec![envelope(sealed, 3, &erin, 1_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .unwrap();
+    let drawn = second.settlement.debited();
+    assert!(drawn > 0);
+    let (a, c, held) = shares_at(second.settled_root.clone()).await;
+    assert_eq!(a + c, 4_000 - drawn);
+    assert_eq!(held, 4_000 - drawn);
+    let (from_alice, from_carol) = (3_000 - a, 1_000 - c);
+    assert!(from_alice.abs_diff(3 * from_carol) <= 3, "{from_alice} {from_carol}");
+    assert_eq!(
+        replay(&executor, &first.settled_root, &second, block_data(&proposer))
+            .await
+            .settled_root,
+        second.settled_root
+    );
+
+    let refuse = format!(
+        r#"new w(`rho:rev:wallet`), ack in {{ w!("refuse", ({{ @"x"!(1) }}, "{}"), *ack) }}"#,
+        carol.address
+    );
+    let alone = executor
+        .execute(
+            &second.settled_root,
+            vec![envelope(&refuse, 4, &bob, 50_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .unwrap();
+    assert!(alone.settlement.transfers.is_empty());
+
+    let mut quorum_data = envelope(&refuse, 5, &bob, 50_000, 1).data;
+    quorum_data.required_cosigners = vec![dave.pk.bytes.to_vec()];
+    let mut by_quorum = Signed::create(quorum_data, Box::new(Secp256k1), bob.sk.clone()).unwrap();
+    by_quorum
+        .data
+        .cosignatures
+        .push(Cosignature::sign(&by_quorum, &dave.sk, &Secp256k1.name()).unwrap());
+    let third = executor
+        .execute(&second.settled_root, vec![by_quorum], block_data(&proposer))
+        .await
+        .unwrap();
+    assert_eq!(third.settlement.transfers.len(), 1);
+    assert!(matches!(third.settlement.transfers[0].from, Source::Share { .. }));
+    assert_eq!(third.settlement.transfers[0].amount, c);
+    assert_eq!(
+        balance(&rm, &third.settled_root, &carol).await,
+        balance(&rm, &second.settled_root, &carol).await + c
+    );
+    assert_eq!(shares_at(third.settled_root.clone()).await, (a, 0, a));
+    assert_eq!(
+        replay(&executor, &second.settled_root, &third, block_data(&proposer))
+            .await
+            .settled_root,
+        third.settled_root
+    );
+}
+
+#[tokio::test]
 async fn a_user_deploy_cannot_reach_the_genesis_mint_through_the_registry_lookup() {
     use casper::rust::v6::genesis_wallets::read_genesis_supply;
 

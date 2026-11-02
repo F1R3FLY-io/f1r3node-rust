@@ -7,12 +7,14 @@ use crate::rust::interpreter::util::vault_address::VaultAddress;
 const TAG_ADDRESS: u8 = 0x01;
 const TAG_UNFORGEABLE: u8 = 0x02;
 const TAG_COMPOUND: u8 = 0x03;
+const TAG_PROCESS: u8 = 0x04;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum WalletOwner {
     Address(VaultAddress),
     Unforgeable(Vec<u8>),
     Compound(Vec<WalletOwner>),
+    Process(Vec<u8>),
 }
 
 impl WalletOwner {
@@ -59,16 +61,18 @@ impl WalletOwner {
     pub fn from_canonical_bytes(bytes: &[u8]) -> Option<Self> {
         let (tag, rest) = bytes.split_first()?;
         let owner = match *tag {
-            TAG_ADDRESS | TAG_UNFORGEABLE => {
+            TAG_ADDRESS | TAG_UNFORGEABLE | TAG_PROCESS => {
                 let len = u32::from_be_bytes(rest.get(..4)?.try_into().ok()?) as usize;
                 let body = rest.get(4..4 + len)?;
                 if rest.len() != 4 + len {
                     return None;
                 }
-                if *tag == TAG_ADDRESS {
-                    WalletOwner::from_address(std::str::from_utf8(body).ok()?).ok()?
-                } else {
-                    WalletOwner::Unforgeable(body.to_vec())
+                match *tag {
+                    TAG_ADDRESS => {
+                        WalletOwner::from_address(std::str::from_utf8(body).ok()?).ok()?
+                    }
+                    TAG_UNFORGEABLE => WalletOwner::Unforgeable(body.to_vec()),
+                    _ => WalletOwner::Process(body.to_vec()),
                 }
             }
             TAG_COMPOUND => {
@@ -106,6 +110,12 @@ impl WalletOwner {
                 let mut out = Vec::with_capacity(1 + 4 + id.len());
                 out.push(TAG_UNFORGEABLE);
                 push_len_prefixed(&mut out, id);
+                out
+            }
+            WalletOwner::Process(digest) => {
+                let mut out = Vec::with_capacity(1 + 4 + digest.len());
+                out.push(TAG_PROCESS);
+                push_len_prefixed(&mut out, digest);
                 out
             }
             WalletOwner::Compound(components) => {

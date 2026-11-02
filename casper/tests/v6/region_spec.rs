@@ -217,6 +217,44 @@ async fn a_stack_literal_moves_one_unit_per_cell_and_replays() {
 }
 
 #[tokio::test]
+async fn a_stripped_envelope_does_not_decode_and_the_complete_envelope_runs_after_it() {
+    use models::rust::casper::protocol::casper_message::DeployData as Wire;
+
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 50_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let address = VaultAddress::from_public_key(&carol.pk)
+        .unwrap()
+        .to_base58();
+    let term = format!(
+        r#"new w(`rho:rev:wallet`), c(`rho:system:cosignerId:0`) in {{
+             w!("transfer", (*c, "{address}", 700), "out")
+           }}"#
+    );
+    let complete = cosigned(&term, 1, &alice, &bob, 1);
+    let mut stripped = complete.clone();
+    stripped.data.cosignatures.clear();
+    assert!(Wire::from_proto(Wire::to_proto_ref(&stripped)).is_err());
+    let decoded =
+        Wire::from_proto(Wire::to_proto_ref(&complete)).expect("the complete envelope decodes");
+    assert_eq!(decoded.sig, stripped.sig);
+    let played = executor
+        .execute(&pre, vec![decoded], block_data(&proposer))
+        .await
+        .expect("the block executes");
+    assert_eq!(played.gate.admitted(), vec![true]);
+    assert_eq!(balance(&rm, &played.settled_root, &carol).await, 700);
+    let refused = executor
+        .execute(&pre, vec![stripped], block_data(&proposer))
+        .await
+        .expect("the block executes");
+    assert_eq!(
+        refused.gate.entries[0].verdict,
+        Verdict::Refused(Refusal::InvalidTerms)
+    );
+}
+
+#[tokio::test]
 async fn native_rev_writes_of_a_run_survive_the_merge() {
     let (alice, bob, proposer) = (party(), party(), party());
     let (rm, pre) = shard(&[(&alice, 10_000)]).await;
@@ -238,9 +276,15 @@ async fn native_rev_writes_of_a_run_survive_the_merge() {
     assert_eq!(balance(&rm, &played.settled_root, &bob).await, 6_000);
 }
 
+fn naming(term: &str, ts: i64, who: &Party, cosigner: &Party, price: i64) -> Signed<DeployData> {
+    let mut data = envelope(term, ts, who, 1_000, price).data;
+    data.required_cosigners = vec![cosigner.pk.bytes.to_vec()];
+    Signed::create(data, Box::new(Secp256k1), who.sk.clone()).unwrap()
+}
+
 fn cosigned(term: &str, ts: i64, who: &Party, cosigner: &Party, price: i64) -> Signed<DeployData> {
-    let mut deploy = envelope(term, ts, who, 1_000, price);
-    let cosignature = Cosignature::sign(&deploy.data, &cosigner.sk, &Secp256k1.name()).unwrap();
+    let mut deploy = naming(term, ts, who, cosigner, price);
+    let cosignature = Cosignature::sign(&deploy, &cosigner.sk, &Secp256k1.name()).unwrap();
     deploy.data.cosignatures.push(cosignature);
     deploy
 }
@@ -606,4 +650,49 @@ async fn a_kind_mint_and_a_kind_transfer_reach_the_settled_root() {
         .await
         .expect("the transfer replays");
     assert_eq!(again.settled_root, given.settled_root);
+}
+
+#[tokio::test]
+async fn a_lifted_cosignature_carries_no_authority_under_another_deployer() {
+    let (alice, bob, carol, mallory, proposer) = (party(), party(), party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 50_000), (&mallory, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let address = VaultAddress::from_public_key(&carol.pk)
+        .unwrap()
+        .to_base58();
+    let term = format!(
+        r#"new w(`rho:rev:wallet`), c(`rho:system:cosignerId:0`) in {{
+             w!("transfer", (*c, "{address}", 700), "out")
+           }}"#
+    );
+    let original = cosigned(&term, 1, &alice, &bob, 1);
+    let mut data = original.data.clone();
+    data.cosignatures.clear();
+    let mut lifted = Signed::create(data, Box::new(Secp256k1), mallory.sk.clone()).unwrap();
+    lifted
+        .data
+        .cosignatures
+        .push(original.data.cosignatures[0].clone());
+    let played = executor
+        .execute(&pre, vec![original, lifted], block_data(&proposer))
+        .await
+        .expect("the block executes");
+    assert_eq!(played.gate.admitted(), vec![true, false]);
+    assert_eq!(
+        played.gate.entries[1].verdict,
+        Verdict::Refused(Refusal::InvalidTerms)
+    );
+    let settled = &played.settled_root;
+    assert_eq!(balance(&rm, settled, &carol).await, 700);
+    assert_eq!(balance(&rm, settled, &bob).await, 50_000 - 700);
+    let again = executor
+        .replay(
+            &pre,
+            played.processed.clone(),
+            &played.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the block replays");
+    assert_eq!(again.settled_root, played.settled_root);
 }

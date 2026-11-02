@@ -856,7 +856,7 @@ impl DeployData {
             timestamp: template.data.time_stamp,
             deployer_id: template.pk.clone(),
             deploy_id: template.sig.to_vec(),
-            cosigners: casper_message::Cosignature::verified_cosigners(&template.data)
+            cosigners: casper_message::Cosignature::verified_cosigners(template)
                 .unwrap_or_default(),
         }
     }

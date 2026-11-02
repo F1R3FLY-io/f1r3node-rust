@@ -43,6 +43,7 @@ pub fn signature_owner(signature: &CostSignature) -> Result<WalletOwner, RevStac
     };
     match &signature.value {
         Some(Value::Name(name)) => name_owner(name).ok_or_else(unresolved),
+        Some(Value::Quote(process)) => Ok(super::process::process_owner(process)),
         Some(Value::Compound(compound)) => WalletOwner::compound(
             compound
                 .elements

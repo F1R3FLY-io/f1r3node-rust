@@ -73,6 +73,7 @@ pub fn signed_deploy_data_gen() -> impl Strategy<Value = Signed<DeployData>> {
                 expiration_timestamp: None,
                 parameters: Vec::new(),
                 cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             Box::new(secp256k1),
             sec,

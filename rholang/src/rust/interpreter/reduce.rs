@@ -54,6 +54,7 @@ use super::accounting::rev_stack::journal::{
     journal_open, journaled_transfers, record, JournalEntry,
 };
 use super::accounting::rev_stack::kind::{is_stack_body, stack_kind, TokenKind};
+use super::accounting::rev_stack::process::{seals_itself, split_hash_seals};
 use super::accounting::rev_stack::region::{admissible, signature_owner};
 use super::accounting::rev_stack::reserve::reservation;
 use super::accounting::rev_stack::{RevAmount, RevStackError, RevStacks, WalletOwner};
@@ -1310,7 +1311,7 @@ impl DebruijnInterpreter {
             .iter()
             .filter_map(|b| b.cost_signature.clone())
         {
-            self.check_region_signature(signature, env).await?;
+            self.check_region_signature(signature, None, env).await?;
         }
 
         // Optional `where`-clause guard. Substituted at depth=1 so any
@@ -1655,17 +1656,23 @@ impl DebruijnInterpreter {
     async fn check_region_signature(
         &self,
         signature: CostSignature,
+        body: Option<&Par>,
         env: &Env<Par>,
     ) -> Result<(), InterpreterError> {
-        let signature = self
-            .substitute
-            .substitute_cost_signature(signature, 0, env)?;
         let refused = |reason: String| {
             InterpreterError::ReduceError(format!(
                 "a signed term may name only the signatures of the deployment's signers: {reason}"
             ))
         };
-        let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+        let (hashes, others) = split_hash_seals(&signature);
+        if hashes
+            .iter()
+            .any(|process| !body.is_some_and(|body| seals_itself(process, body)))
+        {
+            return Err(InterpreterError::ReduceError(
+                "a signed term may name `# P` only when its body is P".to_string(),
+            ));
+        }
         let signers = {
             let data = self.deploy_data.read().await;
             std::iter::once(&data.deployer_id)
@@ -1674,11 +1681,16 @@ impl DebruijnInterpreter {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| refused(e.to_string()))?
         };
-        if admissible(&owner, &signers) {
-            Ok(())
-        } else {
-            Err(refused(format!("{owner:?}")))
+        for signature in others {
+            let signature = self
+                .substitute
+                .substitute_cost_signature(signature, 0, env)?;
+            let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+            if !admissible(&owner, &signers) {
+                return Err(refused(format!("{owner:?}")));
+            }
         }
+        Ok(())
     }
 
     async fn eval_cost_stack(
@@ -1817,7 +1829,7 @@ impl DebruijnInterpreter {
                 };
             }
         }
-        self.check_region_signature(signature, env).await?;
+        self.check_region_signature(signature, Some(&body), env).await?;
         self.eval(body, env, rand).await
     }
 
