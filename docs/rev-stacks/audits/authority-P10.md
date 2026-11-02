@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -481,6 +481,91 @@ The lane's tests pass owner values to `spend_compute` and `replace_rev_hook` dir
 - F9, F10, F11: as in revision 2. F10's whole-state audit per kind is in `patch/P2-09`.
 - F22 to F26: above. F22 and F23 depend on FX-2.
 
+## Revision 4 (action A-7): re-audit of patch/FX-2 and patch/FX-3
+
+- **Branches audited:** `patch/FX-2` at `4aed4d852` (lane C, cut from `patch/P3-04` at `8095c53b0`, with FX-1 merged in at `e82192f70`). `patch/FX-3` at `df0db3146` (lane C, cut from `patch/P3-04` at `8095c53b0`, with `patch/P3-02b` merged in at `d01d425e2`).
+- **Findings re-audited:** F2/F14, F3/F15, F17, F22, F23 (FX-2). F4 (FX-3). F5 and F6 stay with lane B, which wires `rho:rev:wallet`, `rho:rev:bond` and the gate's paying wallets to the record (FX-2 open item 2).
+- **Method:** as in revision 3. A code reading of each fix and of the lane's tests against the A-6 test plans. No tests were run or added.
+- **Files read:** `rev_stack/seal.rs`, `reduce.rs` (`region_signers`, `stack_writer`, `check_region_signature`, `pay_stacks_from`, `mint_stacks`, `eval_cost_signed_term`), `executor.rs`, `settle.rs` (`settle_funders`), `rev_stack/journal.rs` (`journaled_transfers`), `casper_message.rs` (`Cosignature`, `DeployData::_to_proto`), `gate.rs`, the FX-2 and FX-3 decision logs, and the tests that they name.
+
+### Results
+
+| # | Fix | Result | New findings |
+|---|---|---|---|
+| F2/F14 | FX-2 decisions 1, 2, 7, 10 | **Closed on v6 runtimes.** A stack draws on `current_owner()`, the innermost enclosing seal. A deployment runs under the implicit seal of its deployer (Decision 51). A fired continuation runs under the record stored with it, so stored code keeps its author's seal. With records on and no record, a stack is refused. A runtime without records (legacy, genesis, the close-block runtime) keeps the old writer, the deployer. | F31 (Medium) |
+| F3/F15 | FX-2 decision 11 | **Closed in the reducer.** The normalizer folds the nested form into one compound signature. The payer elements pass the region check against the origin, and the stack draws on them. With no payer element, the stack draws on the enclosing record. A mint still takes its authority from the kind name. The gate does not yet name the payer of the nested form, so an envelope that uses it is refused at the gate (FX-2 open item 1, with F19 in FX-5). | — |
+| F17 | FX-2 decisions 4, 7, 9, 12 | **Closed, with one interaction.** A region is checked against the verified signers of the envelope that admitted the code, `current().origin`, not against the running deployment. Only `consume` writes the stored record (`TaggedContinuation` field 4), and the normalizer cannot produce that field. | F28 (Medium) |
+| F4 | FX-3 decisions 1 to 5 | **Closed for lifting.** A cosignature signs a domain-separated, length-prefixed preimage of the deploy data, the deployer's key, the deployer's signature and its algorithm. Every caller passes the signed envelope. A lifted cosignature makes the envelope's cosignatures invalid, and the gate refuses it with `InvalidTerms`. | F27 (Medium) |
+| F22 | — | **Open, now Medium.** FX-2 makes the enclosing seal the payer of stacks, and a `{% # P %}[P]` region enters a `Process` record whose owner is P's wallet. A stack in P now draws on P's wallet. A body that reads runner context can therefore pay the runner from P's funds. On FX-2 alone, P3-04's unsubstituted `seals_itself` check is still in place, and no runner-context rule exists (see F30). After the merge with FX-4, the gaps of revision 3 remain: `rho:block:data`, and `rho:deploy:data` through the lookup. | — |
+| F23 | — | **Open.** FX-2 supplies the record but does not wire `replace_rev_hook`. The revision 3 proposal stands: replacement admits the authority's quorum only. | — |
+| F5, F6 | — | **Open (lane B).** `"transfer"` and `"bond"` still check the running deployment's signers. Inside a deployment that A signs, a contract that M stored runs under M's record, but a transfer from A in that contract still passes the old check. The F6 test plan therefore still shows A paying M. | — |
+
+### Coverage of the A-6 test plans by the lanes' tests
+
+| Plan | Lane tests | Covered | Gap |
+|---|---|---|---|
+| F2/F14: M stores a stack, A triggers it | `region_spec::a_fired_continuation_draws_on_its_author_not_on_the_firing_region`, `seal_record_spec::a_fired_continuation_does_not_inherit_the_firing_region` | Yes. The author pays the stack, the trigger pays only its own charges, and replay agrees. | — |
+| F14: `{% A %}[stack]` in an envelope that A and B sign, deployed by B | `region_spec::a_stack_under_a_cosigners_seal_draws_on_the_cosigner_not_the_deployer`, `seal_record_spec::a_stack_pays_from_its_enclosing_seal_not_the_deployer` | Yes | — |
+| F14: a bare stack in a deployment, expected refused | none | Superseded | Decision 51 makes the top level `{% D %}[deployer]`, so a bare stack in a deployment draws on the deployer by ruling. The plan's expectation is out of date. |
+| F15: B fires `{% A %}[ {% bundle0{*k} %}[cells] ]` in an envelope that only B signs | `seal_record_spec::a_kind_transfer_draws_on_the_enclosing_seal` | In the reducer only | The gate refuses the nested form (FX-2 open item 1), so no end-to-end test is possible yet. The end-to-end test arrives with FX-5. |
+| F17: three blocks, with A storing, B firing and A firing | `region_spec::a_region_sealed_in_its_origin_pays_from_its_sealer_for_any_later_runner`, `seal_record_spec::a_region_sealed_in_its_origin_runs_for_a_later_runner_and_pays_from_its_sealer`, `a_foreign_seal_in_a_later_runners_own_code_is_refused` | Yes, under Decision 59 (4) | — |
+| F4: M lifts B's cosignature | `region_spec::a_lifted_cosignature_carries_no_authority_under_another_deployer`, four `casper_message` unit tests | Yes | F27 is a separate defect, and no test covers it. |
+
+### F27 — Medium: the deployer's signature does not cover the cosignature set
+
+**Code:** `DeployData::_to_proto` (`casper_message.rs`) builds the message that the deployer signs. It leaves out `cosignatures`, and FX-3 decision 2 keeps the other cosignatures out of each cosignature's preimage too. The envelope's identity is the deployer's signature, and deduplication keys on it (revision 1, F4).
+
+**Consequence:** any relay or proposer can remove cosignatures from an envelope. The deployer's signature stays valid, the envelope keeps its identity, and the remaining cosignatures still verify. The stripped envelope names a seal whose owner is no longer a signer, so the gate refuses it (`ForeignSignature`). Under the same identity, the deploy is then rejected, and the complete envelope cannot be included afterward. No REV moves. The effect is a deterministic, attributable-looking refusal that any proposer can apply to any cosigned deploy, and a receipt whose identity does not say which cosignature set it judged.
+
+**Proposed fix:** the deployer commits to the cosigner set. Add the list of required cosigner public keys to `DeployData`, inside the message that the deployer signs. Refuse an envelope whose verified cosigners differ from that list. The cosignature preimage already covers the deployer's signature, so it then covers the list too. This is a change to the deploy format and the gate, so it needs a ruling (escalation: authority and cross-lane interface).
+
+**Test plan for lane C:** an envelope from A, cosigned by B, whose term draws on B. A relay removes B's cosignature and submits the result first. *Expected after the fix:* the stripped envelope is refused as malformed, and does not consume the identity. The complete envelope is then admitted. *Today:* the stripped envelope is refused for a foreign signature, and the complete one is a duplicate.
+
+**Note, to verify:** the cosignature now binds the exact bytes of the deployer's signature. If the deployer's signature scheme accepted a second valid encoding of one signature (for example a high-S ECDSA value), a relay could make a second envelope identity from one deploy. `Secp256k1::verify` uses `k256`'s `verify_prehash` on a DER signature. Confirm that it refuses high-S values and non-canonical DER. This concerns deduplication in general, not only FX-3.
+
+### F28 — Medium: Decision 12 turns F19 into a route to another party's seal
+
+**Code:** FX-2 decision 12 checks a sealed region that arrives as data against the origin of the code that evaluates it. F19 (open, FX-5) lets the gate admit a variable seal over a stack body, because it assumes that the variable is a kind.
+
+**Consequence:** M's admitted term can build, at run time, a stack region whose seal variable M binds to A's deployer id, and send it as data. If any code that A stored evaluates data that it receives, the region runs under A's record, passes the check against A's origin, and draws on A's wallet. Decision 12 is the ruling, and A's code chose to evaluate the data. But the gate is the barrier that keeps M from writing A's seal at all, and F19 is a hole in that barrier.
+
+**Proposed fix:** raise F19 to Medium and fix it before FX-2 merges. At the gate, name an unresolved variable seal as unresolved unless it can be proved to be a kind. At run time, refuse a stack-body region whose seal resolves to a wallet name instead of a kind, unless the wallet is a payer element of a compound (FX-2 decision 11).
+
+### F30 — Medium: merging FX-2 with FX-4 can silently drop the F18 and F20 fixes
+
+**Code:** FX-2 is cut from P3-04, not from FX-4. Its `check_region_signature` still uses P3-04's `seals_itself` on unsubstituted forms, with no closedness check and no runner-context rule. FX-4 rewrote the same function (`hash_seal_admissible` on the substituted, closed process, and `held_or_signed` from P3-05). FX-2 rewrote it again (origin signers and the returned owner and kind).
+
+**Consequence:** the two branches conflict in one function. A resolution that keeps FX-2's side reopens F18 and F20. Neither branch's tests fail on that resolution, because FX-2's tests do not use a hash seal with free variables or runner context.
+
+**Proposed fix:** the merge keeps FX-4's hash-seal check, done once on the substituted signature and body, ahead of FX-2's origin check, and returns FX-2's owner and kind. Run FX-4's `hash_seal_spec` and FX-2's `seal_record_spec` together on the merge. A-7 re-audits the merge commit.
+
+### F31 — Medium (to verify): a stack in a `# P` region spends P's wallet outside the funder ledger
+
+**Code:** under FX-2, a stack inside `{% # P %}[P]` draws on `current_owner()`, which is P's process wallet. `journaled_transfers` records it as `Source::Wallet(process_owner)`. `settle_funders` (`settle.rs`) draws funder shares only for charges on a process wallet (`funders::draw`) and for `Source::Share` refusals. It does nothing for a `Source::Wallet` spend from a process wallet. P3-04 decision 21 states that settlement debits a process wallet only for charges.
+
+**Reachable:** yes, by the interim rule. The gate admits an envelope that is exactly `{% P %}[# P]` (P3-04 decision 17), and its static walk names only the payees of a stack's cells. So P may contain a stack.
+
+**Consequence:** the wallet's balance falls while the funders' recorded shares do not. A later refusal of a share by the authority, or a charge drawn pro rata, then works on shares that sum to more than the wallet holds. REV is still conserved, because the transfer itself is balanced. But the per-funder ledger (Decision 50) no longer matches the wallet, and a refusal may fail at settlement. Settlement failing on a recorded block would be a consensus failure. This last step is to verify.
+
+**Proposed fix:** until region metering defines draws from shares (Decision 56), refuse a stack or a native draw whose writer is a `Process` owner. Alternatively, journal such a draw as a pro-rata `Source::Share` set, by Decision 50's rule. Lane C or lane B decides, with region metering.
+
+**Test plan for lane B:** Alice funds `# P` with 3,000 and Carol with 1,000. A self-sealed envelope P contains a stack of 400 cells to Dave. *Expected after the fix:* either the stack is refused, or the shares fall by 300 and 100 and still sum to the wallet balance. A following refusal of Carol's share returns exactly her remaining share, and every block replays to the same settled root.
+
+### What FX-2 and FX-3 get right
+
+- The record is written only by the reducer, on a field that the normalizer cannot produce, and a continuation without a seal keeps its legacy bytes. A golden-root test pins the legacy root.
+- A fired continuation never runs under the firing task's record. Stored code keeps its author's authority, and the firing party lends none.
+- With records on, code outside every seal can neither pass a region check nor pay a stack. Both refuse.
+- The cosignature preimage is domain-separated and length-prefixed. No caller can check a cosignature against the deploy data alone.
+
+### What remains open after FX-1 to FX-4
+
+- F5, F6: lane B's wiring of the record into `rho:rev:wallet`, `rho:rev:bond` and the gate.
+- F12, F19 (now Medium, F28): FX-5.
+- F22 (now Medium), F23, F24, F25, F26: as in revision 3. F22 and F26 need the native wiring. F23 needs the hook wiring.
+- F27, F30, F31: above. F30 is a precondition for merging FX-2 with FX-4.
+- FX-2 open item 3 (a merge error in a three-block run with a repeated send) is with lane A2. It is outside authority.
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -489,3 +574,5 @@ The lane's tests pass owner values to `spend_compute` and `replace_rev_hook` dir
 4. **F14 and F15:** may the payer of a stack come only from the enclosing seal, with the deployer no longer a default? This changes charging and the state root of blocks that hold stack literals.
 5. **F17:** may a region that A sealed in A's envelope run later in an envelope that A did not sign? Should the record of a region's origin be a field of `CostSignedTerm` or a wrapper that only the reducer can build?
 6. **F16:** should the hook's spending authority be the seal `# H` of the installed contract, the compound seal of the hook authority, or both?
+7. **F27:** should the deployer's signed message name the required cosigner keys, so that a relay cannot strip cosignatures from an envelope without changing its identity?
+8. **F31:** until region metering, should a draw whose writer is a `Process` owner be refused, or journaled as pro-rata share draws?
