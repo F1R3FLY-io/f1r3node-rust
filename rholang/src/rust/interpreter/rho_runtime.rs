@@ -189,6 +189,12 @@ pub trait RhoRuntime: HasCost {
      */
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError>;
 
+    async fn reset_to_soft_checkpoint(
+        &mut self,
+        root: &Blake2b256Hash,
+        checkpoint: SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    ) -> Result<(), InterpreterError>;
+
     /**
      * Consume the result in the rspace.
      *
@@ -322,6 +328,55 @@ pub struct RhoRuntimeImpl {
 }
 
 impl RhoRuntimeImpl {
+    fn reset_files(&mut self, root: &Blake2b256Hash) {
+        // PB-M-13 / Slice 28: seed FileHandleTable::next_fd from the
+        // state root.  Every block boundary triggers a reset via this
+        // path (see `casper::rholang::runtime::play_deploys_for_state`,
+        // `play_deploys_for_genesis`, `play_system_deploy`), and every
+        // validator resetting to the same root computes the same
+        // watermark — so fd values captured by the leader are
+        // reproducibly replayable by followers.
+        //
+        // **Consensus commitment**: fd values are consensus-observable
+        // via Rholang tuplespace state (`fdP` cells inside File
+        // agents).  This seed derivation is therefore an implicit
+        // consensus commitment — any future change to
+        // `seed_next_fd_from_state_hash`'s derivation constants or
+        // hash algorithm is a hard fork.
+        //
+        // **Aliasing prevention**: a fresh runtime spawned per block
+        // (via `RuntimeManager::spawn_runtime`) starts fd allocation
+        // from the state-hash-derived watermark, NOT from `next_fd =
+        // 1`.  Two independent runtimes at the same state hash
+        // allocate identical fd sequences (leader/follower replay).
+        self.fs_handles.seed_next_fd_from_state_hash(&root.bytes());
+        // Streaming-backing slice (2026-08-25): seed the dir-stream
+        // fd counter from the same state hash.  Same PB-M-13 aliasing
+        // threat as file fds — dir-stream fd values flow through the
+        // tuplespace as GInt, so a joining validator (or restart) that
+        // allocated fresh dir-stream fds starting from 1 could alias a
+        // stream fd a prior lifetime stashed in tuplespace state.
+        self.fs_handles
+            .dir_handles
+            .seed_next_fd_from_state_hash(&root.bytes());
+        // H-29-F2 review fix (defense in depth): clear the consensus
+        // WAL on reset.  All correctness paths drain the WAL per-
+        // deploy via `Wal::take_deploy_entries`; this clear guarantees
+        // that if a caller resets to a state root without first
+        // draining, the follower observes an empty WAL — no ghost
+        // entries from an earlier block leak into the next.
+        self.fs_handles.wal.clear();
+        // M6 round-2 fix: also clear stashed checkpoint marks so a
+        // subsequent revert doesn't pop a stale mark (which would
+        // truncate the fd table to a pre-reset watermark or the WAL
+        // to a length below the cleared zero).  A reset semantically
+        // means "start fresh at this state root"; leaving a mark
+        // stashed is inconsistent with that.
+        self.fs_snapshot_stack.lock().unwrap().clear();
+        self.dir_fs_snapshot_stack.lock().unwrap().clear();
+        self.wal_snapshot_stack.lock().unwrap().clear();
+    }
+
     fn new(
         reducer: Arc<DebruijnInterpreter>,
         cost: _cost,
@@ -559,54 +614,19 @@ impl RhoRuntime for RhoRuntimeImpl {
         checkpoint
     }
 
+    async fn reset_to_soft_checkpoint(
+        &mut self,
+        root: &Blake2b256Hash,
+        checkpoint: SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    ) -> Result<(), InterpreterError> {
+        self.reducer.space.revert_to_soft_checkpoint(checkpoint).await?;
+        self.reset_files(root);
+        Ok(())
+    }
+
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
         self.reducer.space.reset(root).await?;
-        // PB-M-13 / Slice 28: seed FileHandleTable::next_fd from the
-        // state root.  Every block boundary triggers a reset via this
-        // path (see `casper::rholang::runtime::play_deploys_for_state`,
-        // `play_deploys_for_genesis`, `play_system_deploy`), and every
-        // validator resetting to the same root computes the same
-        // watermark — so fd values captured by the leader are
-        // reproducibly replayable by followers.
-        //
-        // **Consensus commitment**: fd values are consensus-observable
-        // via Rholang tuplespace state (`fdP` cells inside File
-        // agents).  This seed derivation is therefore an implicit
-        // consensus commitment — any future change to
-        // `seed_next_fd_from_state_hash`'s derivation constants or
-        // hash algorithm is a hard fork.
-        //
-        // **Aliasing prevention**: a fresh runtime spawned per block
-        // (via `RuntimeManager::spawn_runtime`) starts fd allocation
-        // from the state-hash-derived watermark, NOT from `next_fd =
-        // 1`.  Two independent runtimes at the same state hash
-        // allocate identical fd sequences (leader/follower replay).
-        self.fs_handles.seed_next_fd_from_state_hash(&root.bytes());
-        // Streaming-backing slice (2026-08-25): seed the dir-stream
-        // fd counter from the same state hash.  Same PB-M-13 aliasing
-        // threat as file fds — dir-stream fd values flow through the
-        // tuplespace as GInt, so a joining validator (or restart) that
-        // allocated fresh dir-stream fds starting from 1 could alias a
-        // stream fd a prior lifetime stashed in tuplespace state.
-        self.fs_handles
-            .dir_handles
-            .seed_next_fd_from_state_hash(&root.bytes());
-        // H-29-F2 review fix (defense in depth): clear the consensus
-        // WAL on reset.  All correctness paths drain the WAL per-
-        // deploy via `Wal::take_deploy_entries`; this clear guarantees
-        // that if a caller resets to a state root without first
-        // draining, the follower observes an empty WAL — no ghost
-        // entries from an earlier block leak into the next.
-        self.fs_handles.wal.clear();
-        // M6 round-2 fix: also clear stashed checkpoint marks so a
-        // subsequent revert doesn't pop a stale mark (which would
-        // truncate the fd table to a pre-reset watermark or the WAL
-        // to a length below the cleared zero).  A reset semantically
-        // means "start fresh at this state root"; leaving a mark
-        // stashed is inconsistent with that.
-        self.fs_snapshot_stack.lock().unwrap().clear();
-        self.dir_fs_snapshot_stack.lock().unwrap().clear();
-        self.wal_snapshot_stack.lock().unwrap().clear();
+        self.reset_files(root);
         Ok(())
     }
 

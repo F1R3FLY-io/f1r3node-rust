@@ -24,6 +24,7 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash as stable_hash;
+use rspace_plus_plus::rspace::checkpoint::SoftCheckpoint;
 use rspace_plus_plus::rspace::hot_store_action::HotStoreAction;
 use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 
@@ -121,47 +122,83 @@ pub struct EnvelopeExecutor {
     runtime_manager: Arc<RuntimeManager>,
     workers: usize,
     boxcar: Boxcar,
-    play_pool: parking_lot::Mutex<Vec<RhoRuntimeImpl>>,
-    replay_pool: parking_lot::Mutex<Vec<RhoRuntimeImpl>>,
+    runs: Arc<Runs>,
+}
+
+struct Runs {
+    runtime_manager: Arc<RuntimeManager>,
+    workers: usize,
+    play_pool: parking_lot::Mutex<Vec<Pooled>>,
+    replay_pool: parking_lot::Mutex<Vec<Pooled>>,
+}
+
+struct Pooled {
+    runtime: RhoRuntimeImpl,
+    base: Option<(StateHash, SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>)>,
 }
 
 impl EnvelopeExecutor {
     pub fn new(runtime_manager: Arc<RuntimeManager>, workers: usize) -> Self {
+        let workers = workers.max(1);
         EnvelopeExecutor {
+            runs: Arc::new(Runs {
+                runtime_manager: Arc::clone(&runtime_manager),
+                workers,
+                play_pool: parking_lot::Mutex::new(Vec::new()),
+                replay_pool: parking_lot::Mutex::new(Vec::new()),
+            }),
             runtime_manager,
-            workers: workers.max(1),
+            workers,
             boxcar: Boxcar::unbounded(),
-            play_pool: parking_lot::Mutex::new(Vec::new()),
-            replay_pool: parking_lot::Mutex::new(Vec::new()),
-        }
-    }
-
-    async fn play_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
-        let pooled = self.play_pool.lock().pop();
-        match pooled {
-            Some(runtime) => Ok(runtime),
-            None => self.runtime_manager.spawn_runtime().await,
-        }
-    }
-
-    async fn replay_runtime(&self) -> Result<RhoRuntimeImpl, CasperError> {
-        let pooled = self.replay_pool.lock().pop();
-        match pooled {
-            Some(runtime) => Ok(runtime),
-            None => self.runtime_manager.spawn_replay_runtime().await,
-        }
-    }
-
-    fn give_back(&self, pool: &parking_lot::Mutex<Vec<RhoRuntimeImpl>>, runtime: RhoRuntimeImpl) {
-        let mut pool = pool.lock();
-        if pool.len() < self.workers {
-            pool.push(runtime);
         }
     }
 
     pub fn with_boxcar(mut self, boxcar: Boxcar) -> Self {
         self.boxcar = boxcar;
         self
+    }
+}
+
+impl Runs {
+
+    async fn runtime_at(&self, replay: bool, pre_root: &StateHash) -> Result<Pooled, CasperError> {
+        let pool = if replay { &self.replay_pool } else { &self.play_pool };
+        let taken = pool.lock().pop();
+        let mut pooled = match taken {
+            Some(pooled) => pooled,
+            None => Pooled {
+                runtime: match replay {
+                    true => self.runtime_manager.spawn_replay_runtime().await?,
+                    false => self.runtime_manager.spawn_runtime().await?,
+                },
+                base: None,
+            },
+        };
+        let root = Blake2b256Hash::from_bytes_prost(pre_root);
+        match &pooled.base {
+            Some((at, checkpoint)) if at == pre_root => pooled
+                .runtime
+                .reset_to_soft_checkpoint(&root, checkpoint.clone())
+                .await
+                .map_err(CasperError::InterpreterError)?,
+            _ => {
+                pooled
+                    .runtime
+                    .reset(&root)
+                    .await
+                    .map_err(CasperError::InterpreterError)?;
+                let checkpoint = pooled.runtime.create_soft_checkpoint().await;
+                pooled.base = Some((pre_root.clone(), checkpoint));
+            }
+        }
+        Ok(pooled)
+    }
+
+    fn give_back(&self, replay: bool, pooled: Pooled) {
+        let mut pool = if replay { self.replay_pool.lock() } else { self.play_pool.lock() };
+        if pool.len() < self.workers {
+            pool.push(pooled);
+        }
     }
 
     async fn run(
@@ -172,12 +209,9 @@ impl EnvelopeExecutor {
         reservations: Vec<(WalletOwner, Reservation)>,
     ) -> Result<EnvelopeEffect, CasperError> {
         let started = std::time::Instant::now();
-        let mut ops = RuntimeOps::new(self.play_runtime().await?);
         let spawned = started.elapsed();
-        ops.runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(pre_root))
-            .await
-            .map_err(CasperError::InterpreterError)?;
+        let Pooled { runtime, base } = self.runtime_at(false, pre_root).await?;
+        let mut ops = RuntimeOps::new(runtime);
         ops.runtime.set_block_data(block_data).await;
         ops.runtime.set_invalid_blocks(HashMap::new()).await;
         ops.runtime.cost.charge_storage_left_in_space();
@@ -192,7 +226,7 @@ impl EnvelopeExecutor {
         release(&cells, &reservations)?;
         let changes = runtime_cells(&ops.runtime)?.0.changes();
         let checkpointed = started.elapsed();
-        self.give_back(&self.play_pool, ops.runtime);
+        self.give_back(false, Pooled { runtime: ops.runtime, base });
         Ok(EnvelopeEffect {
             run: envelope_run(&processed),
             processed,
@@ -215,12 +249,9 @@ impl EnvelopeExecutor {
         block_data: BlockData,
         reservations: Vec<(WalletOwner, Reservation)>,
     ) -> Result<EnvelopeEffect, CasperError> {
-        let mut replay = ReplayRuntimeOps::new_from_runtime(self.replay_runtime().await?);
+        let Pooled { runtime, base } = self.runtime_at(true, pre_root).await?;
+        let mut replay = ReplayRuntimeOps::new_from_runtime(runtime);
         let runtime = &mut replay.runtime_ops.runtime;
-        runtime
-            .reset(&Blake2b256Hash::from_bytes_prost(pre_root))
-            .await
-            .map_err(CasperError::InterpreterError)?;
         runtime.set_block_data(block_data).await;
         runtime.set_invalid_blocks(HashMap::new()).await;
         runtime.cost.charge_storage_left_in_space();
@@ -232,7 +263,7 @@ impl EnvelopeExecutor {
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
         let changes = runtime_cells(&replay.runtime_ops.runtime)?.0.changes();
-        self.give_back(&self.replay_pool, replay.runtime_ops.runtime);
+        self.give_back(true, Pooled { runtime: replay.runtime_ops.runtime, base });
         Ok(EnvelopeEffect {
             run: envelope_run(&recorded),
             processed: recorded,
@@ -242,7 +273,9 @@ impl EnvelopeExecutor {
             timing: Default::default(),
         })
     }
+}
 
+impl EnvelopeExecutor {
     fn refused(deploy: Signed<DeployData>) -> EnvelopeEffect {
         let processed = ProcessedDeploy::empty(deploy);
         EnvelopeEffect {
@@ -446,17 +479,17 @@ impl EnvelopeExecutor {
                 let gate = &gate;
                 let inputs = &inputs;
                 let block_data = block_data.clone();
+                let admitted = gate.entries[i].admitted();
+                let held = reservations(gate, &inputs[i], i);
+                let runs = Arc::clone(&self.runs);
+                let pre_root = pre_root.clone();
                 async move {
-                    if !gate.entries[i].admitted() {
+                    if !admitted {
                         return Ok(Self::refused(envelope));
                     }
-                    self.run(
-                        pre_root,
-                        envelope,
-                        block_data,
-                        reservations(gate, &inputs[i], i),
-                    )
-                    .await
+                    tokio::spawn(async move { runs.run(&pre_root, envelope, block_data, held).await })
+                        .await
+                        .map_err(|e| invalid(format!("an envelope run stopped: {e}")))?
                 }
             })
             .buffered(self.workers)
@@ -488,17 +521,19 @@ impl EnvelopeExecutor {
                 let gate = &gate;
                 let inputs = &inputs;
                 let block_data = block_data.clone();
+                let admitted = gate.entries[i].admitted();
+                let held = reservations(gate, &inputs[i], i);
+                let runs = Arc::clone(&self.runs);
+                let pre_root = pre_root.clone();
                 async move {
-                    if !gate.entries[i].admitted() {
+                    if !admitted {
                         return Ok(Self::refused(processed.deploy));
                     }
-                    self.replay_one(
-                        pre_root,
-                        processed,
-                        block_data,
-                        reservations(gate, &inputs[i], i),
-                    )
+                    tokio::spawn(async move {
+                        runs.replay_one(&pre_root, processed, block_data, held).await
+                    })
                     .await
+                    .map_err(|e| invalid(format!("an envelope replay stopped: {e}")))?
                 }
             })
             .buffered(self.workers)
