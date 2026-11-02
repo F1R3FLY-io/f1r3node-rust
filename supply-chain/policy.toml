@@ -71,21 +71,27 @@ review-by = 2026-11-05
 
 [exceptions.RUSTSEC-2026-0367]
 package = "zip"
-versions = ["0.6.6", "3.0.0"]
+versions = ["0.6.6"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-11-15
 
 [exceptions.RUSTSEC-2026-0368]
 package = "zip"
-versions = ["0.6.6", "3.0.0"]
+versions = ["0.6.6"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-11-15
 
 [exceptions.RUSTSEC-2026-0369]
 package = "zip"
-versions = ["0.6.6", "3.0.0"]
+versions = ["0.6.6"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-11-15
+
+[exceptions.RUSTSEC-2026-0429]
+package = "zip"
+versions = ["0.6.6"]
+owner = "@F1R3FLY-io/ci-maintainers"
+review-by = 2026-12-02
 
 [exceptions.RUSTSEC-2026-0395]
 package = "zstd-safe"
@@ -140,10 +146,6 @@ package = "zstd-safe"
 versions = ["5.0.2+zstd.1.5.2"]
 owner = "@F1R3FLY-io/ci-maintainers"
 review-by = 2026-11-26
-
-[yanked."zip@3.0.0"]
-owner = "@F1R3FLY-io/ci-maintainers"
-review-by = 2026-11-15
 
 [yanked."zip@0.6.6"]
 owner = "@F1R3FLY-io/ci-maintainers"
