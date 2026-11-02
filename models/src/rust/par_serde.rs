@@ -435,6 +435,7 @@ mod tests {
                 signers: vec![vec![1; 33], vec![2; 33]],
                 phlo_price: 7,
             }),
+            from_data: false,
         };
         for guard in [None, Some(small(2))] {
             let sealed = continuation(guard.clone(), Some(seal.clone()));
