@@ -82,6 +82,11 @@ The job runs these script tests:
 - Integration preflight driver
 - Heartbeat timing driver
 - Soak dashboard restoration
+- Casper crash backtraces
+
+### Casper crash backtraces
+
+The `Test (casper N/2)` and `Coverage (casper)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The `Test (casper N/2)` jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
 
 ### Soak Harness Tests
 
