@@ -75,7 +75,6 @@ fn metered(comms: u64, compute: u64) -> EnvelopeRun {
         compute_phlo: compute,
         failed: false,
         user_log: Vec::new(),
-        post_root: Default::default(),
     }
 }
 

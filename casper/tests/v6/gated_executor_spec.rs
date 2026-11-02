@@ -201,9 +201,9 @@ async fn a_run_cannot_spend_the_rev_its_block_has_committed() {
         .await
         .unwrap();
     assert_eq!(played.gate.admitted(), vec![true, true]);
-    assert_eq!(balance(&rm, &played.runs[0].post_root, &bob).await, 0);
+    assert_eq!(balance(&rm, &played.mid_root, &bob).await, 0);
     assert_eq!(
-        balance(&rm, &played.runs[0].post_root, &alice).await,
+        balance(&rm, &played.mid_root, &alice).await,
         10_000
     );
     let paid = played.settlement.debited();

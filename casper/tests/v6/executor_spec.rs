@@ -76,7 +76,6 @@ async fn execute_and_replay_agree_and_record_comm_and_compute_phlo() {
         assert_eq!(replayed.merged, executed.merged);
         for (recorded, again) in executed.runs.iter().zip(&replayed.runs) {
             assert_eq!(recorded.recorded().mismatch(again), None);
-            assert_eq!(recorded.post_root, again.post_root);
         }
     })
     .await
@@ -161,7 +160,6 @@ async fn envelopes_pay_only_the_storage_they_leave_and_replay_agrees() {
         assert_eq!(replayed.mid_root, executed.mid_root);
         for (recorded, again) in executed.runs.iter().zip(&replayed.runs) {
             assert_eq!(recorded.recorded().mismatch(again), None);
-            assert_eq!(recorded.post_root, again.post_root);
         }
     })
     .await

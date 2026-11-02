@@ -491,7 +491,7 @@ async fn the_gate_admits_a_mint_of_a_kind_and_the_block_replays() {
     assert_eq!(played.gate.admitted(), vec![true]);
     assert!(!played.processed[0].is_failed);
     assert_eq!(
-        balance(&rm, &played.runs[0].post_root, &alice).await,
+        balance(&rm, &played.mid_root, &alice).await,
         100_000
     );
     let again = executor

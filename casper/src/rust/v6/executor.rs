@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use crypto::rust::signatures::signed::Signed;
 use futures::stream::{self, StreamExt, TryStreamExt};
-use models::rhoapi::PCost;
+use models::rhoapi::{BindPattern, ListParWithRandom, PCost, Par, TaggedContinuation};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, DeployData, Event, ProcessedDeploy,
 };
@@ -24,6 +24,7 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash as stable_hash;
+use rspace_plus_plus::rspace::hot_store_action::HotStoreAction;
 use rspace_plus_plus::rspace::merger::merging_logic::NumberChannelsEndVal;
 
 use super::backend::{block_data, close_block, ExecutionBackend};
@@ -91,6 +92,7 @@ struct EnvelopeEffect {
     run: EnvelopeRun,
     processed: ProcessedDeploy,
     number_channels: NumberChannelsEndVal,
+    changes: Vec<HotStoreAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
     journal: Vec<JournalEntry>,
     timing: [std::time::Duration; 4],
 }
@@ -105,20 +107,13 @@ fn invalid(message: impl std::fmt::Display) -> CasperError {
     CasperError::RuntimeError(message.to_string())
 }
 
-fn root_bytes(root: &StateHash) -> Result<[u8; 32], CasperError> {
-    root.as_ref()
-        .try_into()
-        .map_err(|_| invalid("a state root is 32 bytes"))
-}
-
-fn envelope_run(processed: &ProcessedDeploy, post_root: StateHash) -> EnvelopeRun {
+fn envelope_run(processed: &ProcessedDeploy) -> EnvelopeRun {
     EnvelopeRun {
         envelope_sig: processed.deploy.sig.clone(),
         comm_phlo: comm_count(&processed.deploy_log),
         compute_phlo: processed.cost.cost,
         failed: processed.is_failed,
         user_log: processed.deploy_log.clone(),
-        post_root,
     }
 }
 
@@ -195,13 +190,14 @@ impl EnvelopeExecutor {
         let evaluated = started.elapsed();
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
-        let post_root = ops.runtime.create_checkpoint().await.root.to_bytes_prost();
+        let changes = runtime_cells(&ops.runtime)?.0.changes();
         let checkpointed = started.elapsed();
         self.give_back(&self.play_pool, ops.runtime);
         Ok(EnvelopeEffect {
-            run: envelope_run(&processed, post_root),
+            run: envelope_run(&processed),
             processed,
             number_channels,
+            changes,
             journal,
             timing: [
                 spawned,
@@ -235,29 +231,25 @@ impl EnvelopeExecutor {
         let number_channels = replay.replay_deploy_e(false, &recorded).await?;
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
-        let post_root = replay
-            .runtime_ops
-            .runtime
-            .create_checkpoint()
-            .await
-            .root
-            .to_bytes_prost();
+        let changes = runtime_cells(&replay.runtime_ops.runtime)?.0.changes();
         self.give_back(&self.replay_pool, replay.runtime_ops.runtime);
         Ok(EnvelopeEffect {
-            run: envelope_run(&recorded, post_root),
+            run: envelope_run(&recorded),
             processed: recorded,
             number_channels,
+            changes,
             journal,
             timing: Default::default(),
         })
     }
 
-    fn refused(pre_root: &StateHash, deploy: Signed<DeployData>) -> EnvelopeEffect {
+    fn refused(deploy: Signed<DeployData>) -> EnvelopeEffect {
         let processed = ProcessedDeploy::empty(deploy);
         EnvelopeEffect {
-            run: envelope_run(&processed, pre_root.clone()),
+            run: envelope_run(&processed),
             processed,
             number_channels: NumberChannelsEndVal::default(),
+            changes: Vec::new(),
             journal: Vec::new(),
             timing: Default::default(),
         }
@@ -332,17 +324,12 @@ impl EnvelopeExecutor {
             debited.extend(payers);
             candidates.push(i);
         }
-        let roots = candidates
-            .iter()
-            .map(|i| root_bytes(&effects[*i].run.post_root))
-            .collect::<Result<Vec<_>, _>>()?;
         let inputs: Vec<RunEffect<'_>> = candidates
             .iter()
-            .zip(roots)
-            .map(|(i, post_root)| RunEffect {
+            .map(|i| RunEffect {
                 envelope_id: effects[*i].run.envelope_sig.clone(),
                 user_log: &effects[*i].run.user_log,
-                post_root,
+                changes: &effects[*i].changes,
                 number_channels: &effects[*i].number_channels,
             })
             .collect();
@@ -461,7 +448,7 @@ impl EnvelopeExecutor {
                 let block_data = block_data.clone();
                 async move {
                     if !gate.entries[i].admitted() {
-                        return Ok(Self::refused(pre_root, envelope));
+                        return Ok(Self::refused(envelope));
                     }
                     self.run(
                         pre_root,
@@ -503,7 +490,7 @@ impl EnvelopeExecutor {
                 let block_data = block_data.clone();
                 async move {
                     if !gate.entries[i].admitted() {
-                        return Ok(Self::refused(pre_root, processed.deploy));
+                        return Ok(Self::refused(processed.deploy));
                     }
                     self.replay_one(
                         pre_root,

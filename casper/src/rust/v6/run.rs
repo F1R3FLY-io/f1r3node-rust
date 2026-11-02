@@ -1,8 +1,6 @@
 use models::rust::casper::protocol::casper_message::Event;
 use prost::bytes::Bytes;
 
-use super::body::StateHash;
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct EnvelopeRun {
     pub envelope_sig: Bytes,
@@ -10,7 +8,6 @@ pub struct EnvelopeRun {
     pub compute_phlo: u64,
     pub failed: bool,
     pub user_log: Vec<Event>,
-    pub post_root: StateHash,
 }
 
 impl EnvelopeRun {
@@ -72,7 +69,6 @@ mod tests {
             compute_phlo: compute,
             failed: false,
             user_log: Vec::new(),
-            post_root: Bytes::from_static(b"root"),
         }
     }
 

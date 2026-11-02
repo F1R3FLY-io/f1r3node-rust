@@ -10,8 +10,11 @@ use rholang::rust::interpreter::rho_runtime::RhoHistoryRepository;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_reader::HistoryReader;
+use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndexFold;
 use rspace_plus_plus::rspace::merger::merging_logic::{NumberChannelsDiff, NumberChannelsEndVal};
-use rspace_plus_plus::rspace::merger::state_change::StateChange;
+use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash as stable_hash, hash_from_vec};
+use rspace_plus_plus::rspace::hot_store_action::{DeleteAction, HotStoreAction, InsertAction};
+use rspace_plus_plus::rspace::merger::state_change::{ChangeReader, StateChange};
 use rspace_plus_plus::rspace::merger::state_change_merger;
 use shared::rust::hashable_set::HashableSet;
 
@@ -19,18 +22,94 @@ use super::body::StateHash;
 use crate::rust::errors::CasperError;
 use crate::rust::merging::block_index::create_event_log_index;
 use crate::rust::merging::conflict_set_merger::{compute_merged_state, ResolvedConflicts};
-use crate::rust::merging::deploy_chain_index::DeployChainIndex;
-use crate::rust::merging::deploy_index::DeployIndex;
+use crate::rust::merging::deploy_chain_index::{DeployChainIndex, DeployIdWithCost};
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 type HistoryReaderOf = Arc<
     Box<dyn HistoryReader<Blake2b256Hash, Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
 >;
 
+type HotStoreActions = [HotStoreAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>];
+
+struct RunChanges<R> {
+    base: R,
+    data: HashMap<Blake2b256Hash, Vec<Vec<u8>>>,
+    continuations: HashMap<Blake2b256Hash, Vec<Vec<u8>>>,
+    joins: HashMap<Blake2b256Hash, Vec<Vec<Par>>>,
+}
+
+fn binaries<T: serde::Serialize>(items: &[T]) -> Vec<Vec<u8>> {
+    let mut encoded: Vec<Vec<u8>> = items
+        .iter()
+        .map(|item| bincode::serialize(item).expect("a tuple-space item serializes"))
+        .collect();
+    encoded.sort();
+    encoded
+}
+
+impl<R> RunChanges<R> {
+    fn new(base: R, actions: &HotStoreActions) -> Self {
+        let mut changes = RunChanges {
+            base,
+            data: HashMap::new(),
+            continuations: HashMap::new(),
+            joins: HashMap::new(),
+        };
+        for action in actions {
+            match action {
+                HotStoreAction::Insert(InsertAction::InsertData(i)) => {
+                    changes.data.insert(stable_hash(&i.channel), binaries(&i.data));
+                }
+                HotStoreAction::Insert(InsertAction::InsertContinuations(i)) => {
+                    changes
+                        .continuations
+                        .insert(hash_from_vec(&i.channels), binaries(&i.continuations));
+                }
+                HotStoreAction::Insert(InsertAction::InsertJoins(i)) => {
+                    changes.joins.insert(stable_hash(&i.channel), i.joins.clone());
+                }
+                HotStoreAction::Delete(DeleteAction::DeleteData(d)) => {
+                    changes.data.insert(stable_hash(&d.channel), Vec::new());
+                }
+                HotStoreAction::Delete(DeleteAction::DeleteContinuations(d)) => {
+                    changes.continuations.insert(hash_from_vec(&d.channels), Vec::new());
+                }
+                HotStoreAction::Delete(DeleteAction::DeleteJoins(d)) => {
+                    changes.joins.insert(stable_hash(&d.channel), Vec::new());
+                }
+            }
+        }
+        changes
+    }
+}
+
+impl<R: ChangeReader<Par>> ChangeReader<Par> for RunChanges<R> {
+    fn data_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError> {
+        match self.data.get(key) {
+            Some(value) => Ok(value.clone()),
+            None => self.base.data_binary(key),
+        }
+    }
+
+    fn continuations_binary(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<u8>>, HistoryError> {
+        match self.continuations.get(key) {
+            Some(value) => Ok(value.clone()),
+            None => self.base.continuations_binary(key),
+        }
+    }
+
+    fn joins(&self, key: &Blake2b256Hash) -> Result<Vec<Vec<Par>>, HistoryError> {
+        match self.joins.get(key) {
+            Some(value) => Ok(value.clone()),
+            None => self.base.joins(key),
+        }
+    }
+}
+
 pub struct RunEffect<'a> {
     pub envelope_id: Bytes,
     pub user_log: &'a [Event],
-    pub post_root: [u8; 32],
+    pub changes: &'a HotStoreActions,
     pub number_channels: &'a NumberChannelsEndVal,
 }
 
@@ -66,26 +145,27 @@ pub fn merge_runs(
         .iter()
         .zip(diffs)
         .map(|(effect, diff)| {
-            let index = DeployIndex {
-                deploy_id: effect.envelope_id.clone(),
-                cost: 0,
-                event_log_index: create_event_log_index(
-                    effect.user_log,
-                    repository.clone(),
-                    &base,
-                    diff,
-                ),
-            };
-            DeployChainIndex::new(
-                &HashableSet(HashSet::from([index])),
-                &base,
-                &Blake2b256Hash::from_bytes(effect.post_root.to_vec()),
-                repository.clone(),
+            let mut fold = EventLogIndexFold::default();
+            fold.add(&create_event_log_index(effect.user_log, repository.clone(), &base, diff))
+                .map_err(history)?;
+            let event_log_index = fold.finish();
+            let pre = repository.get_history_reader_struct(&base).map_err(history)?;
+            let post = RunChanges::new(
+                repository.get_history_reader_struct(&base).map_err(history)?,
+                effect.changes,
+            );
+            let state_changes = StateChange::new(pre, post, &event_log_index).map_err(history)?;
+            Ok::<_, CasperError>(DeployChainIndex::from_parts(
+                HashableSet(HashSet::from([DeployIdWithCost {
+                    deploy_id: effect.envelope_id.clone(),
+                    cost: 0,
+                }])),
+                base.clone(),
+                event_log_index,
+                state_changes,
                 Bytes::new(),
                 0,
-                HashMap::new(),
-            )
-            .map_err(history)
+            ))
         })
         .collect::<Result<Vec<_>, _>>()?;
     if chains.is_empty() {
