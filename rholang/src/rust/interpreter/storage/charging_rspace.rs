@@ -77,8 +77,8 @@ impl ChargingRSpace {
                 MaybeConsumeResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
-                self.cost
-                    .charge(storage_cost_consume(&channels, &patterns, &continuation))?;
+                let consume_storage = storage_cost_consume(&channels, &patterns, &continuation);
+                self.cost.charge(consume_storage.clone())?;
 
                 let id = consume_id_bytes(&continuation)?;
                 let channels_count = channels.len() as i64;
@@ -91,10 +91,10 @@ impl ChargingRSpace {
                         Some((cont, data_list)) => {
                             left_in_space_match(cont, data_list, &Trigger::Consume, &self.cost)?
                         }
-                        None => {
-                            self.cost.charge(event_storage_cost(channels_count))?;
-                            with_rule(&self.cost, |rule| rule.stored_continuation(&id));
-                        }
+                        None => match with_rule(&self.cost, |rule| rule.left_continuation(&id)) {
+                            true => self.cost.charge(event_storage_cost(channels_count))?,
+                            false => refund(&self.cost, consume_storage.value, "consume storage refund")?,
+                        },
                     }
                     return Ok(consume_res);
                 }
@@ -129,8 +129,9 @@ impl ChargingRSpace {
                 if self.cost.storage_left_in_space().is_some() {
                     let id = data.random_state.clone();
                     let restored = with_rule(&self.cost, |rule| rule.restores(&id));
+                    let produce_storage = storage_cost_produce(&channel, &data);
                     if !restored {
-                        self.cost.charge(storage_cost_produce(&channel, &data))?;
+                        self.cost.charge(produce_storage.clone())?;
                     }
                     let produce_res = self.space.produce(channel, data, persist).await?;
                     match produce_res.as_ref() {
@@ -140,10 +141,10 @@ impl ChargingRSpace {
                             &Trigger::Produce { id, restored },
                             &self.cost,
                         )?,
-                        None if !restored => {
-                            self.cost.charge(event_storage_cost(1))?;
-                            with_rule(&self.cost, |rule| rule.stored_datum(&id));
-                        }
+                        None if !restored => match with_rule(&self.cost, |rule| rule.left_datum(&id)) {
+                            true => self.cost.charge(event_storage_cost(1))?,
+                            false => refund(&self.cost, produce_storage.value, "produces storage refund")?,
+                        },
                         None => {}
                     }
                     return Ok(produce_res);

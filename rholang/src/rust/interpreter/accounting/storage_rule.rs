@@ -5,6 +5,7 @@ pub struct LeftInSpace {
     data: HashMap<Vec<u8>, u32>,
     continuations: HashMap<Vec<u8>, u32>,
     taken: HashMap<Vec<u8>, u32>,
+    taken_continuations: HashMap<Vec<u8>, u32>,
 }
 
 fn add(items: &mut HashMap<Vec<u8>, u32>, id: &[u8]) {
@@ -40,7 +41,28 @@ impl LeftInSpace {
     }
 
     pub fn removed_continuation(&mut self, id: &[u8]) -> bool {
-        take(&mut self.continuations, id)
+        if take(&mut self.continuations, id) {
+            true
+        } else {
+            add(&mut self.taken_continuations, id);
+            false
+        }
+    }
+
+    pub fn left_datum(&mut self, id: &[u8]) -> bool {
+        if take(&mut self.taken, id) {
+            return false;
+        }
+        self.stored_datum(id);
+        true
+    }
+
+    pub fn left_continuation(&mut self, id: &[u8]) -> bool {
+        if take(&mut self.taken_continuations, id) {
+            return false;
+        }
+        self.stored_continuation(id);
+        true
     }
 
     pub fn restores(&mut self, id: &[u8]) -> bool { take(&mut self.taken, id) }
@@ -64,5 +86,19 @@ mod tests {
         rule.stored_continuation(b"k");
         assert!(rule.removed_continuation(b"k"));
         assert!(!rule.removed_continuation(b"k"));
+    }
+
+    #[test]
+    fn an_item_taken_before_its_store_is_recorded_is_not_left_in_space() {
+        let mut rule = LeftInSpace::default();
+        assert!(!rule.removed_datum(b"d"));
+        assert!(!rule.left_datum(b"d"));
+        assert!(!rule.removed_datum(b"d"));
+        assert!(rule.left_datum(b"e"));
+        assert!(rule.removed_datum(b"e"));
+        assert!(!rule.removed_continuation(b"k"));
+        assert!(!rule.left_continuation(b"k"));
+        assert!(rule.left_continuation(b"j"));
+        assert!(rule.removed_continuation(b"j"));
     }
 }
