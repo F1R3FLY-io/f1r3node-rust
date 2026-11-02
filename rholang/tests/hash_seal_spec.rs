@@ -193,16 +193,46 @@ async fn a_hash_seal_is_checked_on_the_substituted_process() {
 }
 
 #[tokio::test]
-async fn a_hash_sealed_body_may_not_read_the_running_deployment() {
+async fn a_hash_sealed_region_may_not_read_the_running_deployment() {
     use rholang::rust::interpreter::accounting::rev_stack::process::self_sealed_envelope;
     with_runtime("hash-seal-", |runtime| async move {
-        let source = r#"{% new d(`rho:system:deployerId`) in { @"who"!(*d) } %}
-                        [# { new d(`rho:system:deployerId`) in { @"who"!(*d) } }]"#;
-        let errors = run_as(&runtime, &ALICE, source).await;
-        assert!(refused(&errors, "resolves from the running deployment"), "{errors:?}");
-        assert!(sent(&runtime, "who").await.is_empty());
-        let term = Compiler::source_to_adt_with_normalizer_env(source, deployer_env(&ALICE)).unwrap();
-        assert_eq!(self_sealed_envelope(&term), None);
+        runtime.set_seal_records(true);
+        let block = r#"{% new b(`rho:block:data`) in { b!("blk") } %}
+                       [# { new b(`rho:block:data`) in { b!("blk") } }]"#;
+        let errors = run_as(&runtime, &ALICE, block).await;
+        assert!(refused(&errors, "answers from the running deployment"), "{errors:?}");
+
+        let built = r#"{% new lookup(`rho:internal:registry_lookup`), ret in {
+                            lookup!("rho:deploy:" ++ "data", *ret) |
+                            for (d <- ret) { @"got"!(true) }
+                          } %}
+                       [# { new lookup(`rho:internal:registry_lookup`), ret in {
+                            lookup!("rho:deploy:" ++ "data", *ret) |
+                            for (d <- ret) { @"got"!(true) }
+                          } }]"#;
+        let errors = run_as(&runtime, &ALICE, built).await;
+        assert!(refused(&errors, "answers from the running deployment"), "{errors:?}");
+        assert!(sent(&runtime, "got").await.is_empty());
+
+        let outside = r#"new lookup(`rho:internal:registry_lookup`), fresh, ret in {
+                           lookup!("rho:deploy:" ++ "data", *ret) | for (d <- ret) { @"plain"!(true) }
+                         }"#;
+        assert!(run_as(&runtime, &ALICE, outside).await.is_empty());
+        assert_eq!(sent(&runtime, "plain").await.len(), 1);
+
+        let author = r#"@"held"!({% new d(`rho:system:deployerId`) in { @"who"!(*d) } %}
+                                [# { new d(`rho:system:deployerId`) in { @"who"!(*d) } }])"#;
+        assert!(run_as(&runtime, &ALICE, author).await.is_empty());
+        let errors = run_as(&runtime, &CAROL, r#"for (@p <- @"held") { p }"#).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        let who = sent(&runtime, "who").await;
+        assert_eq!(who.len(), 1);
+        assert_eq!(who[0], deployer_env(&ALICE)["rho:system:deployerId"]);
+
+        let own = r#"{% new d(`rho:system:deployerId`) in { @"who"!(*d) } %}
+                     [# { new d(`rho:system:deployerId`) in { @"who"!(*d) } }]"#;
+        let term = Compiler::source_to_adt_with_normalizer_env(own, deployer_env(&ALICE)).unwrap();
+        assert!(self_sealed_envelope(&term).is_some());
     })
     .await;
 }

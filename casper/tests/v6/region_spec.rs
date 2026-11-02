@@ -456,7 +456,7 @@ async fn a_joint_wallet_is_spent_only_by_all_its_signers() {
     let address = VaultAddress::from_public_key(&bob.pk).unwrap().to_base58();
     let spend = format!(
         r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`) in {{
-             w!("transfer", ((*d, *c), "{address}", 700), "out")
+             {{% w!("transfer", ((*d, *c), "{address}", 700), "out") %}}[d (*) c]
            }}"#
     );
     let played = executor

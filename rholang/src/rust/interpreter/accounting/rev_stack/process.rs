@@ -17,24 +17,9 @@ pub fn process_owner(process: &Par) -> WalletOwner {
     WalletOwner::Process(Blake2b256::hash(input))
 }
 
-pub const RUNNER_CONTEXT_URNS: [&str; 5] = [
-    "rho:system:deployerId",
-    "rho:rchain:deployerId",
-    "rho:system:deployId",
-    "rho:system:cosignerId:",
-    "rho:deploy:data",
-];
-
 pub fn seals_itself(quoted: &Par, body: &Par) -> bool { canonical(quoted) == canonical(body) }
 
 pub fn is_closed(process: &Par) -> bool { process.locally_free.iter().all(|b| *b == 0) }
-
-pub fn reads_runner_context(process: &Par) -> bool {
-    let bytes = process.encode_to_vec();
-    RUNNER_CONTEXT_URNS
-        .iter()
-        .any(|urn| bytes.windows(urn.len()).any(|w| w == urn.as_bytes()))
-}
 
 pub fn hash_seal_admissible(quoted: &Par, body: &Par) -> Result<(), String> {
     if !is_closed(quoted) || !is_closed(body) {
@@ -42,12 +27,6 @@ pub fn hash_seal_admissible(quoted: &Par, body: &Par) -> Result<(), String> {
     }
     if !seals_itself(quoted, body) {
         return Err("a signed term may name `# P` only when its body is P".to_string());
-    }
-    if reads_runner_context(body) {
-        return Err(
-            "a `# P` body may not bind a name that resolves from the running deployment"
-                .to_string(),
-        );
     }
     Ok(())
 }
@@ -85,6 +64,36 @@ pub fn self_sealed_envelope(term: &Par) -> Option<WalletOwner> {
     hash_seal_admissible(quoted, body)
         .ok()
         .map(|_| process_owner(body))
+}
+
+pub fn has_bare_stack(term: &Par) -> bool {
+    let mut pending: Vec<&Par> = vec![term];
+    while let Some(par) = pending.pop() {
+        if !par.cost_stacks.is_empty() {
+            return true;
+        }
+        for send in &par.sends {
+            pending.extend(send.chan.iter().chain(&send.data));
+        }
+        for receive in &par.receives {
+            pending.extend(receive.binds.iter().filter_map(|b| b.source.as_ref()));
+            pending.extend(receive.body.iter());
+        }
+        pending.extend(par.news.iter().filter_map(|n| n.p.as_ref()));
+        for matched in &par.matches {
+            pending.extend(matched.target.iter());
+            pending.extend(matched.cases.iter().filter_map(|c| c.source.as_ref()));
+        }
+        pending.extend(par.bundles.iter().filter_map(|b| b.body.as_ref()));
+        for conditional in &par.conditionals {
+            pending.extend(
+                [&conditional.condition, &conditional.if_true, &conditional.if_false]
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+    }
+    false
 }
 
 #[cfg(test)]

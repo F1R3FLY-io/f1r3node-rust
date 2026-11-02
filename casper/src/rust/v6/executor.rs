@@ -12,7 +12,7 @@ use rholang::rust::interpreter::accounting::rev_stack::journal::{
     close_journal, journal_overdrawn, open_journal, JournalEntry,
 };
 use models::rust::normalizer_env::normalizer_env_from_deploy;
-use rholang::rust::interpreter::accounting::rev_stack::process::self_sealed_envelope;
+use rholang::rust::interpreter::accounting::rev_stack::process::{has_bare_stack, self_sealed_envelope};
 use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
 use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
@@ -564,23 +564,24 @@ pub(crate) fn gate_inputs<'a>(
 ) -> Result<Vec<GateInput>, CasperError> {
     deploys
         .map(|d| {
-            let (named, sealed) = envelope_signatures(d);
-            GateInput::from_deploy(d, named).map(|input| input.with_sealed(sealed))
+            let (named, sealed, bare_stack) = envelope_signatures(d);
+            GateInput::from_deploy(d, named)
+                .map(|input| input.with_sealed(sealed).with_bare_stack(bare_stack))
         })
         .collect()
 }
 
 enum EnvelopeSignatures {
     Unnormalized,
-    Sealed(WalletOwner),
-    Named(Vec<WalletOwner>),
+    Sealed(WalletOwner, bool),
+    Named(Vec<WalletOwner>, bool),
 }
 
-fn envelope_signatures(deploy: &Signed<DeployData>) -> (Vec<WalletOwner>, Vec<WalletOwner>) {
+fn envelope_signatures(deploy: &Signed<DeployData>) -> (Vec<WalletOwner>, Vec<WalletOwner>, bool) {
     match classify_envelope(deploy) {
-        EnvelopeSignatures::Unnormalized => (Vec::new(), Vec::new()),
-        EnvelopeSignatures::Sealed(process) => (Vec::new(), vec![process]),
-        EnvelopeSignatures::Named(named) => (named, Vec::new()),
+        EnvelopeSignatures::Unnormalized => (Vec::new(), Vec::new(), false),
+        EnvelopeSignatures::Sealed(process, bare_stack) => (Vec::new(), vec![process], bare_stack),
+        EnvelopeSignatures::Named(named, bare_stack) => (named, Vec::new(), bare_stack),
     }
 }
 
@@ -591,9 +592,10 @@ fn classify_envelope(deploy: &Signed<DeployData>) -> EnvelopeSignatures {
     else {
         return EnvelopeSignatures::Unnormalized;
     };
+    let bare_stack = has_bare_stack(&term);
     match self_sealed_envelope(&term) {
-        Some(process) => EnvelopeSignatures::Sealed(process),
-        None => EnvelopeSignatures::Named(named_owners(&term)),
+        Some(process) => EnvelopeSignatures::Sealed(process, bare_stack),
+        None => EnvelopeSignatures::Named(named_owners(&term), bare_stack),
     }
 }
 

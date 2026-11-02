@@ -9,6 +9,9 @@ use rspace_plus_plus::rspace::hot_store::HotStore;
 
 use super::channel::wallet_channel;
 use super::funders;
+use super::compute::compute_wallet_owner;
+use super::hooks::{replace_rev_hook, seal_authorizes, RevHook};
+use super::seal;
 use super::grant::Grant;
 use super::hooks::hook_authority;
 use super::process::process_owner;
@@ -78,6 +81,69 @@ pub fn handle(
                 ));
             }
             move_rev(stacks, grant.owner(), owner_of(&payee)?, amount_of(&amount)?)
+        }),
+        "returnGrant" => with_stacks(store, |stacks| {
+            let usage = "returnGrant expects ((slot, opens, closes), funder)";
+            let [grant, funder] = tuple_of(arg, usage)?.try_into().map_err(|_| usage)?;
+            let grant = grant_of(&grant)?;
+            if block_number <= grant.closes {
+                return Err(format!(
+                    "the grant closes at block {}, so its shares return only after it",
+                    grant.closes
+                ));
+            }
+            let (owner, funder) = (grant.owner(), owner_of(&funder)?);
+            let share = funders::share(stacks.cells(), &owner, &funder).map_err(|e| e.to_string())?;
+            if share == 0 {
+                return Err("the funder holds no share of this grant".to_string());
+            }
+            if journal_open(stacks.cells()) {
+                let balance = stacks.balance(&owner).map_err(|e| e.to_string())?;
+                return journaled_transfer(
+                    stacks.cells(),
+                    balance,
+                    0,
+                    JournalEntry::refusal(owner, funder, share),
+                )
+                .map(|_| Par::default())
+                .map_err(transfer_error);
+            }
+            stacks
+                .transfer_keeping(&owner, &funder, share, 0)
+                .map_err(transfer_error)?;
+            funders::refuse(stacks.cells(), &owner, &funder, share).map_err(|e| e.to_string())?;
+            Ok(Par::default())
+        }),
+        "spendCompute" => with_stacks(store, |stacks| {
+            let usage = "spendCompute expects (payee, amount)";
+            let [payee, amount] = tuple_of(arg, usage)?.try_into().map_err(|_| usage)?;
+            let seal = seal::current_owner()
+                .ok_or("spending from the compute wallet needs a seal")?;
+            if !seal_authorizes(stacks.cells(), &seal).map_err(|e| e.to_string())? {
+                return Err(
+                    "spending from the compute wallet needs a seal of the hook authority's quorum or of the installed hook"
+                        .to_string(),
+                );
+            }
+            let (from, to) = (compute_wallet_owner(), owner_of(&payee)?);
+            if to == from {
+                return Err("the compute wallet cannot pay itself".to_string());
+            }
+            move_rev(stacks, from, to, amount_of(&amount)?)
+        }),
+        "replaceHook" => with_stacks(store, |stacks| {
+            let seal = seal::current_owner().ok_or("replacing a hook needs a seal")?;
+            if journal_open(stacks.cells()) {
+                return Err("a hook cannot be replaced inside a gated run".to_string());
+            }
+            let hook = if *arg == Par::default() {
+                RevHook::Noop
+            } else {
+                RevHook::Contract(arg.clone())
+            };
+            replace_rev_hook(stacks.cells(), &seal, hook)
+                .map(|_| Par::default())
+                .map_err(|e| e.to_string())
         }),
         "grantBalance" => with_stacks(store, |stacks| {
             let balance = stacks
@@ -351,6 +417,12 @@ fn move_rev(
     }
     stacks
         .transfer_keeping(&from, &to, amount, held)
-        .map(|_| Par::default())
-        .map_err(transfer_error)
+        .map_err(transfer_error)?;
+    if to.has_funders() {
+        funders::credit(stacks.cells(), &to, &from, amount).map_err(|e| e.to_string())?;
+    }
+    if from.has_funders() {
+        funders::draw(stacks.cells(), &from, amount).map_err(|e| e.to_string())?;
+    }
+    Ok(Par::default())
 }

@@ -29,7 +29,7 @@ impl Grant {
         input.extend_from_slice(&self.slot);
         input.extend_from_slice(&self.opens.to_be_bytes());
         input.extend_from_slice(&self.closes.to_be_bytes());
-        WalletOwner::Unforgeable(Blake2b256::hash(input))
+        WalletOwner::Grant(Blake2b256::hash(input))
     }
 
     pub fn open_at(&self, block_number: i64) -> bool {

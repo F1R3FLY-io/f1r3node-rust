@@ -24,7 +24,7 @@ pub const SUPPLY_CHANNEL_DOMAIN: &[u8] = b"f1r3fly/rev-stack/genesis-supply/v1";
 pub const SUPPLY_TAG: &str = "supply";
 
 pub fn is_genesis_only_urn(urn: &str) -> bool {
-    urn == REV_GENESIS_URN || urn == super::bond::REV_BOND_ADMIN_URN
+    urn.starts_with(REV_GENESIS_URN) || urn.starts_with(super::bond::REV_BOND_ADMIN_URN)
 }
 
 pub fn supply_channel() -> Par {

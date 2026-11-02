@@ -12,6 +12,7 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::{
     RhoBoolean, RhoString, RhoTuple2,
 };
+use rholang::rust::interpreter::system_processes::DeployData;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -43,6 +44,15 @@ fn stacks(runtime: &RhoRuntimeImpl) -> RevStacks {
 }
 
 async fn eval_as(runtime: &RhoRuntimeImpl, signer: &Key, term: &str) -> Vec<String> {
+    runtime
+        .set_deploy_data(DeployData {
+            timestamp: 1,
+            deployer_id: signer.pk.clone(),
+            deploy_id: vec![1],
+            cosigners: Vec::new(),
+            phlo_price: 1,
+        })
+        .await;
     let result = runtime
         .evaluate(term, phlo(), with_deployer_id(&signer.pk), rand())
         .await

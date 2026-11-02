@@ -795,7 +795,7 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
     let (alice, carol, bob, dave, erin, proposer) =
         (party(), party(), party(), party(), party(), party());
     let (rm, genesis) = shard_with_authority(
-        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000)],
+        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000), (&dave, 100_000)],
         &[&bob, &dave],
         2,
     )
@@ -865,18 +865,40 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
     );
 
     let refuse = format!(
-        r#"new w(`rho:rev:wallet`), ack in {{ w!("refuse", ({{ @"x"!(1) }}, "{}"), *ack) }}"#,
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`), ack in {{ {{% w!("refuse", ({{ @"x"!(1) }}, "{}"), *ack) %}}[d (*) c] }}"#,
+        carol.address
+    );
+    let by_bob = format!(
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), ack in {{ {{% w!("refuse", ({{ @"x"!(1) }}, "{}"), *ack) %}}[d] }}"#,
         carol.address
     );
     let alone = executor
         .execute(
             &second.settled_root,
-            vec![envelope(&refuse, 4, &bob, 50_000, 1)],
+            vec![envelope(&by_bob, 4, &bob, 50_000, 1)],
             block_data(&proposer),
         )
         .await
         .unwrap();
     assert!(alone.settlement.transfers.is_empty());
+
+    let unsealed = format!(
+        r#"new w(`rho:rev:wallet`), ack in {{ w!("refuse", ({{ @"x"!(1) }}, "{}"), *ack) }}"#,
+        carol.address
+    );
+    let mut unsealed_data = envelope(&unsealed, 6, &bob, 50_000, 1).data;
+    unsealed_data.required_cosigners = vec![dave.pk.bytes.to_vec()];
+    let mut cosigned_only =
+        Signed::create(unsealed_data, Box::new(Secp256k1), bob.sk.clone()).unwrap();
+    cosigned_only
+        .data
+        .cosignatures
+        .push(Cosignature::sign(&cosigned_only, &dave.sk, &Secp256k1.name()).unwrap());
+    let outside = executor
+        .execute(&second.settled_root, vec![cosigned_only], block_data(&proposer))
+        .await
+        .unwrap();
+    assert!(outside.settlement.transfers.is_empty());
 
     let mut quorum_data = envelope(&refuse, 5, &bob, 50_000, 1).data;
     quorum_data.required_cosigners = vec![dave.pk.bytes.to_vec()];
@@ -904,6 +926,7 @@ async fn funders_are_drawn_pro_rata_and_only_the_authority_refuses_a_share_in_pl
         third.settled_root
     );
 }
+
 
 #[tokio::test]
 async fn a_user_deploy_cannot_reach_the_genesis_mint_through_the_registry_lookup() {
@@ -1015,5 +1038,233 @@ async fn a_grant_settles_draws_inside_its_window_in_play_and_replay() {
     assert_eq!(
         replay(&executor, &inside.settled_root, &late, at(9)).await.settled_root,
         late.settled_root
+    );
+}
+
+#[tokio::test]
+async fn a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata() {
+    use casper::rust::v6::genesis_wallets::cells_at;
+    use models::rust::casper::protocol::casper_message::Cosignature;
+    use rholang::rust::interpreter::accounting::rev_stack::funders::{share, shares};
+    use rholang::rust::interpreter::accounting::rev_stack::process::process_owner;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+
+    let (alice, carol, bob, dave, erin, proposer) =
+        (party(), party(), party(), party(), party(), party());
+    let (rm, genesis) = shard_with_authority(
+        &[(&alice, 100_000), (&carol, 100_000), (&bob, 100_000), (&dave, 100_000)],
+        &[&bob, &dave],
+        2,
+    )
+    .await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let cells = vec![r#"# { @"sink"!(1) }"#; 20].join(" :: ");
+    let p = format!("{cells} :: ()");
+    let sink = process_owner(&Compiler::source_to_adt(r#"@"sink"!(1)"#).unwrap());
+    let process = process_owner(&Compiler::source_to_adt(&p).unwrap());
+    let fund = |amount: u64| {
+        format!(
+            r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), ack in {{
+                 w!("fund", (*d, {{ {p} }}, {amount}), *ack)
+               }}"#
+        )
+    };
+    let record = |root: StateHash| {
+        let (rm, process) = (rm.clone(), process.clone());
+        let (a, c) = (alice.owner.clone(), carol.owner.clone());
+        async move {
+            let cells = cells_at(&rm, &root).await.unwrap();
+            let held: u64 = shares(&cells, &process).unwrap().iter().map(|(_, s)| s).sum();
+            (
+                share(&cells, &process, &a).unwrap(),
+                share(&cells, &process, &c).unwrap(),
+                held,
+                read_wallet_balance(&rm, &root, &process).await.unwrap(),
+            )
+        }
+    };
+
+    let funded = executor
+        .execute(
+            &genesis,
+            vec![
+                envelope(&fund(3_000), 1, &alice, 50_000, 1),
+                envelope(&fund(1_000), 2, &carol, 50_000, 1),
+            ],
+            block_data(&proposer),
+        )
+        .await
+        .unwrap();
+    assert_eq!(record(funded.settled_root.clone()).await, (3_000, 1_000, 4_000, 4_000));
+
+    let sealed = format!("{{% {p} %}}[# {{ {p} }}]");
+    let spent = executor
+        .execute(
+            &funded.settled_root,
+            vec![envelope(&sealed, 3, &erin, 3_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .unwrap();
+    assert!(
+        spent.merged[0],
+        "gate {:?} failed {} overdrawn {} phlo {}",
+        spent.gate.entries[0].verdict,
+        spent.runs[0].failed,
+        spent.overdrawn[0],
+        spent.runs[0].phlo_used()
+    );
+    let charge = spent.settlement.debited();
+    let (a, c, held, wallet) = record(spent.settled_root.clone()).await;
+    assert_eq!(read_wallet_balance(&rm, &spent.settled_root, &sink).await.unwrap(), 20);
+    assert_eq!(wallet, 4_000 - 20 - charge);
+    assert_eq!(held, wallet);
+    assert_eq!(a + c, held);
+    assert!((3_000 - a).abs_diff(3 * (1_000 - c)) <= 3, "{a} {c}");
+    assert_eq!(
+        replay(&executor, &funded.settled_root, &spent, block_data(&proposer))
+            .await
+            .settled_root,
+        spent.settled_root
+    );
+
+    let refuse = format!(
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`), ack in {{ {{% w!("refuse", ({{ {p} }}, "{}"), *ack) %}}[d (*) c] }}"#,
+        carol.address
+    );
+    let mut by_quorum = envelope(&refuse, 4, &bob, 50_000, 1);
+    by_quorum
+        .data
+        .cosignatures
+        .push(Cosignature::sign(&by_quorum.data, &dave.sk, &Secp256k1.name()).unwrap());
+    let refused = executor
+        .execute(&spent.settled_root, vec![by_quorum], block_data(&proposer))
+        .await
+        .unwrap();
+    assert_eq!(refused.settlement.transfers.len(), 1);
+    assert_eq!(refused.settlement.transfers[0].amount, c);
+    assert_eq!(
+        balance(&rm, &refused.settled_root, &carol).await,
+        balance(&rm, &spent.settled_root, &carol).await + c
+    );
+    assert_eq!(record(refused.settled_root.clone()).await, (a, 0, a, a));
+    assert_eq!(
+        replay(&executor, &spent.settled_root, &refused, block_data(&proposer))
+            .await
+            .settled_root,
+        refused.settled_root
+    );
+}
+
+#[tokio::test]
+async fn an_expired_grant_returns_its_funders_shares_in_play_and_replay() {
+    use rholang::rust::interpreter::accounting::rev_stack::journal::Source;
+
+    let (sponsor, carol, newcomer, anyone, proposer) =
+        (party(), party(), party(), party(), party());
+    let (rm, genesis) = shard(&[
+        (&sponsor, 100_000),
+        (&carol, 100_000),
+        (&newcomer, 100_000),
+        (&anyone, 100_000),
+    ])
+    .await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let at = |block_number: i64| BlockData {
+        time_stamp: 1,
+        block_number,
+        sender: proposer.pk.clone(),
+        seq_num: 1,
+    };
+    let step = |pre: StateHash, envelope: Signed<DeployData>, block: i64| {
+        let (executor, rm) = (&executor, rm.clone());
+        async move {
+            let played = executor.execute(&pre, vec![envelope], at(block)).await.unwrap();
+            let again = replay(executor, &pre, &played, at(block)).await;
+            assert_eq!(again.settled_root, played.settled_root);
+            let _ = rm;
+            played
+        }
+    };
+    let first = step(
+        genesis.clone(),
+        envelope(
+            r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), slot, funded in {
+                 w!("fundGrant", (*d, (*slot, 2, 5), 3000), *funded) |
+                 for (_ <- funded) { @"grant-slot"!!(*slot) }
+               }"#,
+            1,
+            &sponsor,
+            50_000,
+            1,
+        ),
+        1,
+    )
+    .await;
+    let second = step(
+        first.settled_root.clone(),
+        envelope(
+            r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), out in {
+                 for (@slot <<- @"grant-slot") { w!("fundGrant", (*d, (slot, 2, 5), 1000), *out) }
+               }"#,
+            2,
+            &carol,
+            50_000,
+            1,
+        ),
+        2,
+    )
+    .await;
+    assert_eq!(second.settlement.transfers.len(), 1);
+    let draw = format!(
+        r#"new w(`rho:rev:wallet`), out in {{
+             for (@slot <<- @"grant-slot") {{ w!("drawGrant", ((slot, 2, 5), "{}", 1000), *out) }}
+           }}"#,
+        newcomer.address
+    );
+    let third = step(
+        second.settled_root.clone(),
+        envelope(&draw, 3, &newcomer, 50_000, 1),
+        3,
+    )
+    .await;
+    assert_eq!(third.settlement.transfers.len(), 1);
+    let back = format!(
+        r#"new w(`rho:rev:wallet`), a, b in {{
+             for (@slot <<- @"grant-slot") {{
+               w!("returnGrant", ((slot, 2, 5), "{}"), *a) |
+               w!("returnGrant", ((slot, 2, 5), "{}"), *b)
+             }}
+           }}"#,
+        sponsor.address, carol.address
+    );
+    let early = step(
+        third.settled_root.clone(),
+        envelope(&back, 4, &anyone, 50_000, 1),
+        5,
+    )
+    .await;
+    assert!(early.settlement.transfers.is_empty());
+    let late = step(
+        third.settled_root.clone(),
+        envelope(&back, 5, &anyone, 50_000, 1),
+        9,
+    )
+    .await;
+    let mut returned: Vec<(bool, u64)> = late
+        .settlement
+        .transfers
+        .iter()
+        .map(|t| (matches!(t.from, Source::Share { .. }), t.amount))
+        .collect();
+    returned.sort();
+    assert_eq!(returned, vec![(true, 750), (true, 2_250)]);
+    assert_eq!(
+        balance(&rm, &late.settled_root, &sponsor).await,
+        balance(&rm, &third.settled_root, &sponsor).await + 2_250
+    );
+    assert_eq!(
+        balance(&rm, &late.settled_root, &carol).await,
+        balance(&rm, &third.settled_root, &carol).await + 750
     );
 }
