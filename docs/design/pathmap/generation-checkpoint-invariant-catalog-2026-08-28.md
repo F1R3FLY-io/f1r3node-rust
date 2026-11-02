@@ -6776,6 +6776,186 @@ the control's failure reports all of them.
 |---|---|---|
 | VR-01 | Generation-leased read handle. A handle taken from a durable view before `into_rspace_authority` adds exactly one lease to the directory's lease registry. After the owner publishes and acknowledges a successor, the handle still reads its own generation's semantic roots, which differ from the successor's, and that generation's exact lease key is still active although the owner's lease has moved to the successor. After the owner is torn down, `retire_pack_range_if_unleased` refuses the generation's pack range, and the handle's lease is the only one left. Once the handle is dropped, none is left. | `read_handle_pins_its_generation_across_a_successor_and_owner_teardown` |
 
+### Durable owner incarnations and close (2026-11-01)
+
+Task 7931 will let several RSpace views share one durable owner, and it must
+be able to close that owner and open another on the same directory. The view
+extension of
+[`RSpaceJournalPublicationOwner.tla`](../../../formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla)
+states what close and reopen must guarantee. Before this slice the owner in
+[`rspace_authority.rs`](../../../rspace++/src/rspace/persistence/durable/rspace_authority.rs)
+had no identity and no close: it lived until it was dropped. A view could
+remember only the owner's base, the catalog slot the owner was current at.
+After a close and a reopen with no publication in between, the new owner is
+current at the same slot, so the base cannot tell a view of the closed owner
+from a view of its successor.
+
+This slice, leaf G07 of task 7931, adds three things.
+
+- **Incarnation.** An `OwnerIncarnationV1` is a `u64` that names one owner
+  for its whole life. `OwnerIncarnationAllocatorV1::allocate` advances an
+  `AtomicU64` with `fetch_update` and `checked_add(1)`, and returns the value
+  it replaced. An allocator that starts at $`n`$ therefore hands out
+  $`n, n+1, \ldots, 2^{64}-2`$, each once and in increasing order. Once the
+  counter holds $`2^{64}-1`$, every later call returns the typed refusal
+  `OwnerIncarnationExhaustedV1`, and the counter never wraps.
+  - `from_view` draws from `OWNER_INCARNATIONS`, one allocator that every
+    owner in the process shares and that starts at 0. `from_view_with` takes
+    the allocator as an argument, so a test can exhaust an allocator of its
+    own.
+  - When the allocator refuses, the constructor returns its view with
+    `DurableRSpaceTransactionError::IncarnationExhausted`, as it already
+    returns the view with its other refusal. `into_rspace_authority`
+    therefore reports `DurableRSpaceTransactionError` instead of
+    `RSpaceError`, and a journal-authority refusal arrives as its `Journal`
+    variant.
+- **Attachment.** `attach` returns a `ViewAttachmentV1 { incarnation, base }`
+  from a live owner that has no pending publication and whose journal base is
+  valid. `validate_attachment` checks an attachment in the model's order,
+  given in the table below.
+- **Close.** `close` refuses with `Unresolved(phase)` while a publication is
+  pending, which is the model's `Quiescent` precondition. Otherwise it
+  replaces the owner's live state with `Closed`, which keeps only the
+  generation key. Replacing the live state drops three things:
+  - the incarnation;
+  - the writer lease, which releases the directory's writer lock;
+  - the owner's own generation pin.
+
+  A closed owner then refuses every operation:
+  - `attach`, `state`, `checkpoint` and `reconcile` return
+    `DurableRSpaceTransactionError::Closed`, and so does a second `close`;
+  - `phase` reports the new `JournalPublicationPhaseV1::Closed`;
+  - `validate_attachment` refuses every attachment as `OwnerClosed`.
+
+  The hot store keeps its journals, but the owner is its only route to
+  publication, so nothing that a closed owner's hot store holds can be
+  published. Reopening is not a method. It is recovering a new view from the
+  directory and constructing a new owner, which draws a fresh incarnation.
+
+The owner's life, and what three close and reopen cycles leave behind:
+
+```text
+recovered view ──▶ from_view ──▶ ┌──────────────────┐       close        ┌───────────────────────┐
+                   allocates i   │ Live             │ ─────────────────▶ │ Closed                │
+                   from the      │  incarnation i   │ only when no       │  generation key only  │
+                   shared        │  writer lease    │ publication is     │  writer lock free     │
+                   counter       │  generation pin  │ pending            │  own pin released     │
+                                 └────────┬─────────┘                    │  read handles pinned  │
+                                          │ attach                       └───────────────────────┘
+                                          ▼
+                                      (i, base)
+
+owner 0, incarnation i0       attaches a0 = (i0, b)
+   └─ close, recover, reopen
+owner 1, incarnation i1 > i0  attaches a1 = (i1, b)    refuses a0          as StaleIncarnation
+   └─ close, recover, reopen
+owner 2, incarnation i2 > i1  attaches a2 = (i2, b)    refuses a0, a1      as StaleIncarnation
+   └─ close, recover, reopen
+owner 3, incarnation i3 > i2  attaches a3 = (i3, b)    refuses a0, a1, a2  as StaleIncarnation
+```
+
+`validate_attachment` decides in this order:
+
+| Order | Check | Refusal when it fails |
+|---|---|---|
+| 1 | The owner is live. | `OwnerClosed` |
+| 2 | The attachment's incarnation is the owner's. | `StaleIncarnation { attached, current }` |
+| 3 | The attachment's base is the owner's current catalog slot. | `StaleBase { attached, current }` |
+
+The model's `CheckRequest` checks the caller's permit first, then
+`incarnationOk`, then `baseOk`. The permit check belongs to the slice that
+passes the attachment and the permit into the checkpoint path; this slice has
+no permit to check. Nothing in production calls `attach` or
+`validate_attachment` yet.
+
+**Relation to the model.**
+
+| Model | This slice |
+|---|---|
+| `CloseOwner` requires `Quiescent`, sets `live` to false and increments the incarnation. | `close` refuses while a publication is pending, and replaces the live state, incarnation included, with `Closed`. |
+| `ReopenOwner` takes the incarnation that `FreshIncarnation` allows: one more than the value `CloseOwner` left. | A new owner draws the next value of the shared counter. That value is greater than every incarnation an earlier owner held in the process, so it differs from each of them, which is all `incarnationOk` needs. It need not be exactly one more, because every owner in the process draws from the same counter. |
+| `CheckRequest` returns `refused-incarnation` before `refused-base`. | `validate_attachment` returns `StaleIncarnation` before `StaleBase`. |
+| `StaleIncarnationRefused`: a caller that publishes, acknowledges or applies holds an attachment from the live owner's own session. The mutants `CloseNoBump` and `ReopenReusesIncarnation` violate it. | OG-06 and OG-07, and the red control that gives each owner a counter of its own. |
+| The witness `NeverRefusedRetainedIncarnation` is violated: a live owner refuses an attachment kept from an earlier session. | OG-07 observes that refusal in each of its three cycles. |
+
+**Relation to the caller registry.** Close is a teardown of the owner without
+a drop. CA-22, `owner_teardown_preserves_retained_readers`, requires a
+teardown to revoke the owner's mutation permits and to leave retained readers
+pinned. Close drops the writer lease, which is the owner's only mutation
+permit, and the owner's own generation pin, and it touches no read handle.
+Each handle holds its own lease on its generation and its own reference to the
+shared core, as the generation-leased durable read handle section above
+describes. OG-08 observes both halves. Its derivation row is executable-only
+for the reason that VR-01's is.
+
+**The tests.** All five tests are in
+[`owner_incarnation.rs`](../../../rspace++/tests/persistence/owner_incarnation.rs).
+Each recovers a view of an installed checkpoint image and opens owners on it.
+
+- `close_revokes_old_attachments_without_mutation` (OG-06) attaches to an
+  owner, populates its hot store with a datum, a continuation and a join, and
+  records the state, the three bag journals and the store files. Before close,
+  the attachment is accepted and the writer lock is held. After close it
+  requires all of the following:
+  - the attachment is refused as `OwnerClosed`;
+  - `attach`, `checkpoint`, `reconcile`, `state` and a second `close` each
+    return `Closed`, and `phase` is `Closed`;
+  - the view gate is free, the journals and the store files are unchanged, the
+    writer lock can be taken, and a fresh recovery reads the recorded state.
+- `reopened_owners_refuse_every_earlier_incarnation` (OG-07) runs three cycles
+  of close, recover and reopen, attaches to each new owner, and keeps every
+  closed owner alive. After cycle $`k`$, the new owner must accept its own
+  attachment and refuse each of the $`k`$ earlier ones as `StaleIncarnation`,
+  naming that attachment's incarnation and its own. The four incarnations must
+  increase, and the four attachments must name the same base, so only the
+  incarnation separates them.
+- `pinned_reads_survive_owner_close_until_the_last_reader_releases` (OG-08)
+  takes a read handle before `into_rspace_authority`, then closes the owner.
+  It requires all of the following:
+  - two leases before close, the owner's and the handle's, and one after;
+  - the writer lock can be taken while the handle is alive;
+  - the handle still reads the generation's semantic roots;
+  - the generation's exact key is still active, and
+    `retire_pack_range_if_unleased` refuses its pack range;
+  - once the handle is dropped, no lease is left and the range can be retired.
+- `concurrent_incarnation_allocation_is_unique_monotonic_and_never_wraps`
+  starts an allocator 8,192 values below $`2^{64}-1`$ and lets eight threads
+  allocate until each is refused. The values granted must be exactly those
+  8,192, each thread's values must increase, and later calls must still be
+  refused. A new allocator must grant 0, then 1.
+- `an_exhausted_allocator_refuses_the_owner_and_returns_its_view` constructs an
+  owner with an allocator that starts at $`2^{64}-1`$. It requires the refusal
+  `IncarnationExhausted`, a returned view at the original state, and an owner
+  opened from that view at the same state.
+
+The last two tests are bound to no ID. They check the allocator, and no model
+action describes it.
+
+**Red controls.** Four production controls are each applied to an export of
+the candidate tree. Each must make exactly one test of this file fail, and no
+durable persistence test:
+
+- `from_view` with a counter of its own that starts at 0 gives every owner
+  incarnation 0. The earlier attachments at the unchanged base are then
+  accepted, and OG-07 fails.
+- `validate_attachment` accepting every attachment on a closed owner makes
+  OG-06 fail.
+- `close` leaking one lease on its generation makes OG-08 fail.
+- `checkpoint` without its closed-owner check makes OG-06 fail.
+
+One assertion compares all the observations of a test, so each control's
+failure reports every one of them.
+
+**The OG rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| OG-06 | Close revocation. Closing a quiescent durable owner refuses its earlier attachment as `OwnerClosed`, and `attach`, `checkpoint`, `reconcile`, `state` and a second `close` each return `Closed`, with `phase` reporting `Closed`. Close leaves the view gate free and the writer lock available, changes neither the hot store's journals nor the store files, and a fresh recovery reads the state recorded before close. | `close_revokes_old_attachments_without_mutation` |
+| OG-07 | Fresh incarnation on reopen. Over three cycles of close, recovery and reopen at an unchanged base, each new owner accepts only its own attachment and refuses every earlier one as `StaleIncarnation` naming both incarnations. The owners' incarnations increase. | `reopened_owners_refuse_every_earlier_incarnation` |
+| OG-08 | Pinned reads across close. A read handle taken before `into_rspace_authority` survives the owner's close. Close leaves exactly the handle's lease and frees the writer lock, while the handle still reads its generation's semantic roots and keeps the generation's exact key active, so `retire_pack_range_if_unleased` refuses its pack range. Once the handle is dropped, no lease is left and the range can be retired. | `pinned_reads_survive_owner_close_until_the_last_reader_releases` |
+
+No persisted byte, root, identity or wire message changes.
+
 ## Formal-to-executable derivation matrix
 
 Classification is explicit: **D** is directly entailed at the model's abstraction level, **P** is partially entailed with concrete executable refinement obligations, and **E** is executable-only. `EXEC_ONLY` is deliberate rather than a missing citation. A campaign-complete report may contain D, P, and E rows, but no unresolved mismatch class.
@@ -7009,6 +7189,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | SW-02 | `EXEC_ONLY` | `RetentionV2Editor.metadata_trial_work_is_the_changed_objects`, `RetentionV2Editor.anchor_step_realizes_the_retention_entry_step`, `RetentionV2Editor.flat_manifest_mutant_rewrites_bytes_proportional_to_history` | P | Production refinement at geometric history sizes (task 7929). The metadata trial's work is the changed radix objects plus the two anchors; the new anchor and radix nodes equal the model's retention entry step byte for byte; and the V1 control's manifest grows by 56 bytes per historical entry, as the flat-manifest mutant states. |
 | SW-03 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedReachability.decrement_changes_unique_inventory` | P | Production refinement of last-reference deletion (task 7929). The current deactivation expands each object of the deleted closure once, and each object that loses its last current reference leaves the current inventory while its retained count stays positive. |
 | SW-04 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 11989): the measurement harness's record contract, schedule and fail-closed probes. No model states a property of the harness; the trusted commit's work that it measures is SW-01 to SW-03's. |
+| OG-06 | `CloseOwner`, `StaleIncarnationRefused` | `EXEC_ONLY` | P | Partially entailed (task 7931): `CloseOwner` fires only from `Quiescent` and leaves the owner not live, and `StaleIncarnationRefused` requires a live owner for every caller that publishes, acknowledges or applies. The writer lock, the view gate, the journals and the store files are not in the model; their preservation across close is the executable refinement obligation. |
+| OG-07 | `StaleIncarnationRefused`, `NeverRefusedRetainedIncarnation` | `EXEC_ONLY` | P | Partially entailed (task 7931): `StaleIncarnationRefused` requires the caller's attachment to come from the live owner's session, and the counterexample to the witness `NeverRefusedRetainedIncarnation` reaches the refusal of a retained attachment. The model's `FreshIncarnation` is exactly one more than the closed owner's value; the refinement obligation is that the shared counter's greater value differs from every earlier incarnation at an unchanged base. |
+| OG-08 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the lease count, writer lock, reads, key activity and reclamation decision of a read handle across the owner's close. It witnesses the caller registry's CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite, for the reason given at VR-01. |
 | OG-12 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result types of the legacy facet accessors and the conversion of an unavailable facet into each caller's error type. No model states a property of Rust accessor results or error types. |
 | OG-39 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result of the RSpace constructors when the history repository refuses the store. No model states a property of Rust constructor results or panics. |
 | VR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12397): the lease count, lease key activity and reclamation decision of a durable read handle across a successor and owner teardown. It witnesses the caller registry's CA-21, `pinned_generation_cannot_be_reclaimed`, and CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite: listing `RSpaceCallerAuthority.v` among its Rocq sources would oblige a row here for every capstone of that file. |
@@ -7459,6 +7642,47 @@ file and the persistence test module, so it was regenerated, and the PathMap
 aggregate takes its new manifest digest. No persisted byte, root, identity or
 wire message changed. See the generation-leased durable read handle section
 and pgmcp artifacts 1576 and 1577 for the gate and measurement logs.
+
+The 2026-11-01 owner incarnation slice of task 7931 adds OG-06, OG-07 and
+OG-08, so the catalog/derivation/binding registry now contains **233** IDs. On
+an export of the candidate tree, the five owner-incarnation tests and the 20
+durable owner tests passed in release and in debug, and the 128 tests of the
+durable persistence modules and the 21 trusted-chain tests passed in release.
+Four production controls each made exactly one of the 133 tests of the
+owner-incarnation and durable persistence modules fail, as predicted:
+
+- A counter of its own for each owner gave every owner incarnation 0. OG-07
+  then observed every earlier attachment accepted and incarnations that do not
+  increase.
+- `validate_attachment` accepting every attachment on a closed owner made
+  OG-06 observe `Ok(())` where `OwnerClosed` is required, with every other
+  observation unchanged.
+- `close` leaking one lease on its generation made OG-08 observe
+  `(2, 2, true, true, true, false, 1, false)` against the required
+  `(2, 1, true, true, true, false, 0, true)`: two leases after close, one
+  after the handle is dropped, and a range that cannot be retired.
+- `checkpoint` without its closed-owner check took the view gate, captured the
+  journals into a pending record and refused with `Closed` only at
+  publication. A closed owner reports the `Closed` phase, not `Captured`, so
+  the refusal kept the record and the gate permit it holds: OG-06 observed the
+  gate held, with every other observation unchanged.
+
+The library tests passed with 900 tests in release (10 ignored), the `mod`
+target with 179, and every rspace++ test target with 1,460 tests in 28
+binaries (13 ignored); the manifest test passed. `cargo check` of every
+workspace target passed, with the same eight warnings as before, all in files
+this slice does not touch, and clippy passed on `rspace_plus_plus` with
+warnings denied. An earlier gate of this slice found two
+`clippy::result_large_err` warnings in the new test file, because the
+stale-base refusal carried two catalog slots, at least 496 bytes; that refusal
+now boxes them, and clippy of every rspace++ test target lists the same 127
+findings as before this slice, none new. The workspace-regression registry
+hashes the manifest test's file and the persistence test module, so it was
+regenerated, and the PathMap aggregate takes its new manifest digest. No
+persisted byte, root, identity or wire message changed. See the durable owner
+incarnations and close section and pgmcp artifacts 1604 and 1607 for the gate
+and measurement logs, 1608 for the locations of the check's warnings, and 1605
+and 1606 for the earlier gate and its full clippy output.
 
 ## Caller-authority contract (2026-09-06)
 

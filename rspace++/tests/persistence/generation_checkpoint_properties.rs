@@ -712,6 +712,7 @@ fn model_property_manifest_is_unique_and_exhaustive() {
         include_str!("durable_rspace_authority.rs"),
         include_str!("generation_checkpoint_properties.rs"),
         include_str!("incremental_reachability_properties.rs"),
+        include_str!("owner_incarnation.rs"),
         include_str!("path_exact_closure_properties.rs"),
         include_str!("path_provenance.rs"),
         include_str!("retention_v2_editor_properties.rs"),

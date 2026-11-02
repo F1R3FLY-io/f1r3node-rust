@@ -107,6 +107,7 @@ pub(crate) use rspace_authority::hooks as journal_owner_hooks;
 #[cfg(test)]
 pub(crate) use rspace_authority::{
     DurableRSpacePublicationLimitsV1, DurableRSpaceTransactionError, JournalPublicationPhaseV1,
+    OwnerIncarnationAllocatorV1, OwnerIncarnationExhaustedV1, ViewAttachmentRefusalV1,
 };
 #[cfg(test)]
 pub(crate) use startup::{
@@ -142,7 +143,10 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
             >,
         >,
         operation_gate: std::sync::Arc<tokio::sync::RwLock<()>>,
-    ) -> Result<DurableRSpaceAuthorityV1<P>, Box<(Self, crate::rspace::errors::RSpaceError)>>
+    ) -> Result<
+        DurableRSpaceAuthorityV1<P>,
+        Box<(Self, rspace_authority::DurableRSpaceTransactionError)>,
+    >
     where
         P::Channel: Clone + std::hash::Hash + Eq,
     {

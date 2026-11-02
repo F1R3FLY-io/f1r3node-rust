@@ -272,7 +272,7 @@ fn run_owner_boundary_unwind_child(index: usize, case: &str) {
     poll_checkpoint(&mut verify.owner);
 }
 
-fn store_files(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+pub(super) fn store_files(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
     fs::read_dir(root)
         .unwrap()
         .map(Result::unwrap)

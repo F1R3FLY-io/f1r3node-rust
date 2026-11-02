@@ -1,5 +1,6 @@
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
@@ -57,6 +58,8 @@ pub(crate) enum DurableRSpaceTransactionError {
         expected: Option<CatalogSlotV1>,
         actual: CatalogSlotV1,
     },
+    Closed,
+    IncarnationExhausted(OwnerIncarnationExhaustedV1),
 }
 
 impl From<MutationError> for DurableRSpaceTransactionError {
@@ -95,6 +98,10 @@ impl From<RSpaceError> for DurableRSpaceTransactionError {
     fn from(error: RSpaceError) -> Self { Self::Journal(error) }
 }
 
+impl From<OwnerIncarnationExhaustedV1> for DurableRSpaceTransactionError {
+    fn from(error: OwnerIncarnationExhaustedV1) -> Self { Self::IncarnationExhausted(error) }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum JournalPublicationPhaseV1 {
     Ready,
@@ -102,14 +109,84 @@ pub(crate) enum JournalPublicationPhaseV1 {
     Captured,
     RecoveryRequired,
     AwaitingAck,
+    Closed,
+}
+
+static OWNER_INCARNATIONS: OwnerIncarnationAllocatorV1 = OwnerIncarnationAllocatorV1::new();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct OwnerIncarnationV1(u64);
+
+impl OwnerIncarnationV1 {
+    pub(crate) const fn get(self) -> u64 { self.0 }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OwnerIncarnationExhaustedV1;
+
+pub(crate) struct OwnerIncarnationAllocatorV1 {
+    next: AtomicU64,
+}
+
+impl OwnerIncarnationAllocatorV1 {
+    pub(crate) const fn new() -> Self { Self::starting_at(0) }
+
+    pub(crate) const fn starting_at(next: u64) -> Self {
+        Self {
+            next: AtomicU64::new(next),
+        }
+    }
+
+    pub(crate) fn allocate(&self) -> Result<OwnerIncarnationV1, OwnerIncarnationExhaustedV1> {
+        self.next
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+            .map(OwnerIncarnationV1)
+            .map_err(|_| OwnerIncarnationExhaustedV1)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ViewAttachmentV1 {
+    incarnation: OwnerIncarnationV1,
+    base: CatalogSlotV1,
+}
+
+impl ViewAttachmentV1 {
+    pub(crate) const fn incarnation(&self) -> OwnerIncarnationV1 { self.incarnation }
+
+    pub(crate) const fn base(&self) -> CatalogSlotV1 { self.base }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ViewAttachmentRefusalV1 {
+    OwnerClosed,
+    StaleIncarnation {
+        attached: OwnerIncarnationV1,
+        current: OwnerIncarnationV1,
+    },
+    StaleBase {
+        attached: Box<CatalogSlotV1>,
+        current: Box<CatalogSlotV1>,
+    },
+}
+
+enum OwnerLifecycleV1 {
+    Live {
+        incarnation: OwnerIncarnationV1,
+        lease: DurableWriterLeaseV1,
+        generation_lease: GenerationLeaseV1,
+    },
+    Closed {
+        generation: GenerationLeaseKeyV1,
+    },
 }
 
 pub(crate) struct DurableRSpaceAuthorityV1<P: SemanticProfile>
 where P::Channel: Clone + Hash + Eq
 {
-    lease: DurableWriterLeaseV1,
+    lifecycle: OwnerLifecycleV1,
+    registry: GenerationLeaseRegistryV1,
     source: Arc<DurableAuthorityCoreV1<P>>,
-    generation_lease: GenerationLeaseV1,
     hot: Arc<Box<dyn HotStore<P::Channel, P::Pattern, P::Datum, P::Continuation>>>,
     operation_gate: Arc<RwLock<()>>,
     pending: Option<Box<PendingJournalPublicationV1<P>>>,
@@ -139,21 +216,39 @@ where P::Channel: Clone + Hash + Eq
         view: DurableAuthorityViewV1<P>,
         hot: Arc<Box<dyn HotStore<P::Channel, P::Pattern, P::Datum, P::Continuation>>>,
         operation_gate: Arc<RwLock<()>>,
-    ) -> Result<Self, Box<(DurableAuthorityViewV1<P>, RSpaceError)>> {
+    ) -> Result<Self, Box<(DurableAuthorityViewV1<P>, DurableRSpaceTransactionError)>> {
+        Self::from_view_with(view, hot, operation_gate, &OWNER_INCARNATIONS)
+    }
+
+    pub(crate) fn from_view_with(
+        view: DurableAuthorityViewV1<P>,
+        hot: Arc<Box<dyn HotStore<P::Channel, P::Pattern, P::Datum, P::Continuation>>>,
+        operation_gate: Arc<RwLock<()>>,
+        incarnations: &OwnerIncarnationAllocatorV1,
+    ) -> Result<Self, Box<(DurableAuthorityViewV1<P>, DurableRSpaceTransactionError)>> {
         if let Err(error) =
             hot.validate_journal_authority(view.catalog(), &view.generation_leases())
         {
-            return Err(Box::new((view, error)));
+            return Err(Box::new((view, error.into())));
         }
+        let incarnation = match incarnations.allocate() {
+            Ok(incarnation) => incarnation,
+            Err(exhausted) => return Err(Box::new((view, exhausted.into()))),
+        };
         let DurableAuthorityViewV1 {
             writer,
             _generation_lease,
         } = view;
         let (lease, source) = writer.into_parts();
+        let registry = lease.generation_leases();
         Ok(Self {
-            lease,
+            lifecycle: OwnerLifecycleV1::Live {
+                incarnation,
+                lease,
+                generation_lease: _generation_lease,
+            },
+            registry,
             source: source.into_core(),
-            generation_lease: _generation_lease,
             hot,
             operation_gate,
             pending: None,
@@ -161,20 +256,24 @@ where P::Channel: Clone + Hash + Eq
     }
 
     pub(crate) fn phase(&self) -> JournalPublicationPhaseV1 {
-        match self.pending.as_ref().map(|pending| &pending.phase) {
-            None if self.validate_base().is_ok() => JournalPublicationPhaseV1::Ready,
-            None => JournalPublicationPhaseV1::Invalidated,
-            Some(PendingJournalPhaseV1::Captured) => JournalPublicationPhaseV1::Captured,
-            Some(PendingJournalPhaseV1::RecoveryRequired) => {
+        match (&self.lifecycle, self.pending.as_ref().map(|pending| &pending.phase)) {
+            (OwnerLifecycleV1::Closed { .. }, _) => JournalPublicationPhaseV1::Closed,
+            (_, None) if self.validate_base().is_ok() => JournalPublicationPhaseV1::Ready,
+            (_, None) => JournalPublicationPhaseV1::Invalidated,
+            (_, Some(PendingJournalPhaseV1::Captured)) => JournalPublicationPhaseV1::Captured,
+            (_, Some(PendingJournalPhaseV1::RecoveryRequired)) => {
                 JournalPublicationPhaseV1::RecoveryRequired
             }
-            Some(PendingJournalPhaseV1::AwaitingAck { .. }) => {
+            (_, Some(PendingJournalPhaseV1::AwaitingAck { .. })) => {
                 JournalPublicationPhaseV1::AwaitingAck
             }
         }
     }
 
     pub(crate) fn state(&self) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
+        let OwnerLifecycleV1::Live { .. } = self.lifecycle else {
+            return Err(DurableRSpaceTransactionError::Closed);
+        };
         if self.pending.is_some() {
             return Err(DurableRSpaceTransactionError::Unresolved(self.phase()));
         }
@@ -183,26 +282,81 @@ where P::Channel: Clone + Hash + Eq
     }
 
     fn validate_base(&self) -> Result<(), RSpaceError> {
-        self.hot.validate_journal_authority(
-            self.source.authority().slot(),
-            &self.lease.generation_leases(),
-        )
+        self.hot
+            .validate_journal_authority(self.source.authority().slot(), &self.registry)
     }
 
     pub(crate) fn pending_terminal(&self) -> Option<CatalogSlotV1> {
         self.pending.as_ref().and_then(|pending| pending.expected)
     }
 
-    pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 {
-        self.lease.generation_leases()
+    pub(crate) fn generation_leases(&self) -> GenerationLeaseRegistryV1 { self.registry.clone() }
+
+    pub(crate) fn generation_key(&self) -> GenerationLeaseKeyV1 {
+        match &self.lifecycle {
+            OwnerLifecycleV1::Live {
+                generation_lease, ..
+            } => generation_lease.key(),
+            OwnerLifecycleV1::Closed { generation } => *generation,
+        }
     }
 
-    pub(crate) fn generation_key(&self) -> GenerationLeaseKeyV1 { self.generation_lease.key() }
+    pub(crate) fn attach(&self) -> Result<ViewAttachmentV1, DurableRSpaceTransactionError> {
+        let OwnerLifecycleV1::Live { incarnation, .. } = self.lifecycle else {
+            return Err(DurableRSpaceTransactionError::Closed);
+        };
+        self.state()?;
+        Ok(ViewAttachmentV1 {
+            incarnation,
+            base: self.source.authority().slot(),
+        })
+    }
+
+    pub(crate) fn validate_attachment(
+        &self,
+        attachment: ViewAttachmentV1,
+    ) -> Result<(), ViewAttachmentRefusalV1> {
+        let OwnerLifecycleV1::Live { incarnation, .. } = self.lifecycle else {
+            return Err(ViewAttachmentRefusalV1::OwnerClosed);
+        };
+        if attachment.incarnation != incarnation {
+            return Err(ViewAttachmentRefusalV1::StaleIncarnation {
+                attached: attachment.incarnation,
+                current: incarnation,
+            });
+        }
+        let current = self.source.authority().slot();
+        if attachment.base != current {
+            return Err(ViewAttachmentRefusalV1::StaleBase {
+                attached: Box::new(attachment.base),
+                current: Box::new(current),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn close(&mut self) -> Result<(), DurableRSpaceTransactionError> {
+        let OwnerLifecycleV1::Live {
+            generation_lease, ..
+        } = &self.lifecycle
+        else {
+            return Err(DurableRSpaceTransactionError::Closed);
+        };
+        let generation = generation_lease.key();
+        if self.pending.is_some() {
+            return Err(DurableRSpaceTransactionError::Unresolved(self.phase()));
+        }
+        self.lifecycle = OwnerLifecycleV1::Closed { generation };
+        Ok(())
+    }
 
     pub(crate) async fn checkpoint(
         &mut self,
         limits: DurableRSpacePublicationLimitsV1,
     ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
+        let OwnerLifecycleV1::Live { .. } = self.lifecycle else {
+            return Err(DurableRSpaceTransactionError::Closed);
+        };
         if self.pending.is_some() {
             let old = self.source.authority().slot().state();
             let recovered = self.reconcile(limits)?;
@@ -256,19 +410,22 @@ where P::Channel: Clone + Hash + Eq
             OpenDagTransaction::new(self.source.verified_state(), view, limits.transaction)?;
         stage_pending_continuation_sources(&mut transaction, &observation.pending)?;
         let sealed = transaction.seal()?;
+        let OwnerLifecycleV1::Live { lease, .. } = &mut self.lifecycle else {
+            return Err(DurableRSpaceTransactionError::Closed);
+        };
         let sealed = self
             .source
-            .bind_trusted_transaction(&self.lease, sealed, limits.trusted)?;
+            .bind_trusted_transaction(lease, sealed, limits.trusted)?;
         let sequence = pending.predecessor.commit_sequence().successor()?;
-        let prepared =
-            self.source
-                .prepare_transaction(&self.lease, &sealed, sequence, limits.wal)?;
+        let prepared = self
+            .source
+            .prepare_transaction(lease, &sealed, sequence, limits.wal)?;
         #[cfg(test)]
         hooks::run(hooks::JournalOwnerHookPoint::AfterPreparation);
         self.hot.validate_pending_journal(&pending.captured)?;
         pending.phase = PendingJournalPhaseV1::RecoveryRequired;
         let successor = publish_trusted_incremental_v1(
-            &mut self.lease,
+            lease,
             &self.source,
             &prepared,
             limits.trusted,
@@ -299,11 +456,15 @@ where P::Channel: Clone + Hash + Eq
             return self.acknowledge_successor();
         }
         self.validate_base()?;
-        let physical = recover_physical_from_lease_v1(&mut self.lease, limits.recovery, limits.wal)
-            .map_err(|error| {
+        let OwnerLifecycleV1::Live { lease, .. } = &mut self.lifecycle else {
+            return Err(DurableRSpaceTransactionError::Closed);
+        };
+        let physical = recover_physical_from_lease_v1(lease, limits.recovery, limits.wal).map_err(
+            |error| {
                 DurableRSpaceTransactionError::Recovery(DurableAdmissionErrorV1::Startup(error))
-            })?;
-        let successor = admit_physical_source::<P>(&self.lease, physical, limits.admission)
+            },
+        )?;
+        let successor = admit_physical_source::<P>(lease, physical, limits.admission)
             .map_err(DurableRSpaceTransactionError::Recovery)?
             .into_core();
         let actual = successor.authority().slot();
@@ -313,7 +474,7 @@ where P::Channel: Clone + Hash + Eq
             .expect("reconciliation retains its capture");
         if actual == pending.predecessor {
             self.hot
-                .validate_journal_authority(actual, &self.lease.generation_leases())?;
+                .validate_journal_authority(actual, &self.registry)?;
             self.source = successor;
             self.pending = None;
             return self.state();
@@ -347,8 +508,7 @@ where P::Channel: Clone + Hash + Eq
             #[cfg(test)]
             hooks::run(hooks::JournalOwnerHookPoint::BeforeSuccessorPin);
             *generation_lease = Some(
-                self.lease
-                    .generation_leases()
+                self.registry
                     .acquire(GenerationLeaseKeyV1::from_catalog(successor.authority().slot()))?,
             );
         }
@@ -366,8 +526,15 @@ where P::Channel: Clone + Hash + Eq
         self.hot.validate_journal_acknowledgement(
             &pending.captured,
             successor.authority().slot(),
-            &self.lease.generation_leases(),
+            &self.registry,
         )?;
+        let OwnerLifecycleV1::Live {
+            generation_lease: current_pin,
+            ..
+        } = &mut self.lifecycle
+        else {
+            return Err(DurableRSpaceTransactionError::Closed);
+        };
         let PendingJournalPublicationV1 { permit, phase, .. } = *self
             .pending
             .take()
@@ -380,7 +547,7 @@ where P::Channel: Clone + Hash + Eq
             unreachable!("acknowledgement preserves its admitted successor");
         };
         self.source = successor;
-        self.generation_lease = generation_lease.expect("successor pin precedes acknowledgement");
+        *current_pin = generation_lease.expect("successor pin precedes acknowledgement");
         drop(permit);
         self.state()
     }

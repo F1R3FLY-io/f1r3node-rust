@@ -28,6 +28,7 @@ mod object_codec;
 mod object_store_collision;
 #[cfg(unix)]
 mod owner_history_production;
+mod owner_incarnation;
 mod pack_codec;
 mod path_exact_closure_properties;
 mod path_provenance;
