@@ -789,7 +789,7 @@ The refusal message that all three native handlers return under the mark is the 
   - Decision 75: the installer pays for its continuations, from the purse at the surface of its stored code. An unfunded stored receive does not fire.
   - Decision 76: each surface of a COMM pays, and surfaces under one seal pay once.
   - Decision 77: no data mark. Received data runs under the continuation's membrane, and origin verification stays.
-- **Source of the forms:** design r10 §6.3 (`cost-accounting/stall-loop-design-r10.tex`, publications `e41e41e`), "The elaborated forms (normative)" and "The two charges". This pass was first written from Decision 74 before r10 was published, and then checked against r10. See "Correction after r10" below.
+- **Source of the forms:** design r10 §6.3 (`cost-accounting/stall-loop-design-r10.tex`, publications `187a5ab`), "The elaborated forms (normative)" and "The two charges". This pass was first written from Decision 74 before r10 was published, and then checked against r10. See "Correction after r10" below.
 - **Method:** a code reading of every path that charges phlo or moves REV, or that decides who may do so. No tests were run. The from_data checks of revisions 6 and 7 are dropped from this audit, because Decision 77 supersedes them.
 
 ### Charging paths
