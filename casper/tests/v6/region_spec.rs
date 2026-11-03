@@ -809,7 +809,7 @@ async fn a_region_sealed_in_its_origin_pays_from_its_sealer_for_any_later_runner
 }
 
 #[tokio::test]
-async fn a_seal_sent_as_data_to_an_owners_contract_draws_on_no_wallet() {
+async fn data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_paid_there() {
     let (alice, mallory, proposer) = (party(), party(), party());
     let (rm, pre) = shard(&[(&alice, 100_000), (&mallory, 100_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
@@ -825,23 +825,45 @@ async fn a_seal_sent_as_data_to_an_owners_contract_draws_on_no_wallet() {
         .await
         .expect("the contract executes");
     assert!(!first.processed[0].is_failed);
-    let attack = r#"new slot in {
+    let sent = r#"new slot in {
         for (a <<- @"aid") { @"eval"!({% slot :: slot :: () %}[a]) } | @"slot"!(*slot)
     }"#;
     let second = executor
         .execute(
             &first.settled_root,
-            vec![envelope(attack, 2, &mallory, 1_000, 1)],
+            vec![envelope(sent, 2, &mallory, 1_000, 1)],
             block_data(&proposer),
         )
         .await
-        .expect("the attack executes");
+        .expect("the delivery executes");
     let root = &second.settled_root;
-    assert!(second.processed[0].is_failed);
-    assert!(second.settlement.transfers.is_empty());
+    assert!(!second.processed[0].is_failed);
+    assert_eq!(rev_at(&rm, root, "slot").await, 2);
     assert_eq!(
         balance(&rm, root, &alice).await,
-        100_000 - paid(&first, &alice) - paid(&second, &alice)
+        100_000 - paid(&first, &alice) - paid(&second, &alice) - 2
+    );
+    assert_eq!(
+        balance(&rm, root, &mallory).await,
+        100_000 - paid(&second, &mallory)
+    );
+    let owner = second
+        .settlement
+        .surface_charges
+        .iter()
+        .find(|sc| sc.purse == alice.owner)
+        .expect("the owner's membrane is charged");
+    assert!(owner.compute > 0, "the owner pays for the continuation's work");
+    let sender = second
+        .settlement
+        .charges
+        .iter()
+        .find(|c| c.wallet == wallet(&mallory))
+        .expect("the sender pays its own part");
+    assert_eq!(
+        sender.compute_phlo + owner.compute,
+        second.runs[0].compute_phlo,
+        "the run's work is split between the sender and the owner, with nothing counted twice"
     );
     let again = executor
         .replay(
@@ -851,7 +873,7 @@ async fn a_seal_sent_as_data_to_an_owners_contract_draws_on_no_wallet() {
             block_data(&proposer),
         )
         .await
-        .expect("the attack replays");
+        .expect("the delivery replays");
     assert_eq!(again.settled_root, second.settled_root);
 }
 

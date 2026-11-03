@@ -112,7 +112,6 @@ mod tests {
                 signers: vec![WalletOwner::Unforgeable(vec![owner; 32])],
                 phlo_price: 1,
             },
-            from_data: false,
         })
     }
 
@@ -155,16 +154,5 @@ mod tests {
         assert_eq!(rule.removed_datum(b"a"), Some(payer(1)));
         assert_eq!(rule.removed_datum(b"a"), Some(payer(2)));
         assert_eq!(rule.removed_continuation(b"k"), Some(payer(3)));
-    }
-
-    #[test]
-    fn a_refund_record_keeps_the_mark_of_data_received_at_run_time() {
-        let mut rule = LeftInSpace::default();
-        let marked = payer(4).map(|record| SealRecord { from_data: true, ..record });
-        rule.stored_datum(b"m", marked.clone());
-        assert!(rule.left_continuation(b"n", marked.clone()));
-        assert_eq!(rule.removed_datum(b"m"), Some(marked.clone()));
-        assert_eq!(rule.removed_continuation(b"n"), Some(marked.clone()));
-        assert!(marked.is_some_and(|record| record.from_data));
     }
 }

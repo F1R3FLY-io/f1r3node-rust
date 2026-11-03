@@ -1110,7 +1110,6 @@ impl PartialEq for SealRecordProto {
         self.owner == other.owner
             && self.kind == other.kind
             && self.origin == other.origin
-            && self.from_data == other.from_data
     }
 }
 
@@ -1119,7 +1118,6 @@ impl Hash for SealRecordProto {
         self.owner.hash(state);
         self.kind.hash(state);
         self.origin.hash(state);
-        self.from_data.hash(state);
     }
 }
 
