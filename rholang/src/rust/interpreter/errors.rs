@@ -19,6 +19,7 @@ pub enum InterpreterError {
     UnrecognizedNormalizerError(String),
     OutOfPhlogistonsError,
     HostWorkRejected,
+    MembraneStopped,
     UserAbortError,
     TopLevelWildcardsNotAllowedError(String),
     TopLevelFreeVariablesNotAllowedError(String),
@@ -161,6 +162,13 @@ impl fmt::Display for InterpreterError {
 
             InterpreterError::HostWorkRejected => {
                 write!(f, "Host work budget rejected evaluation.")
+            }
+
+            InterpreterError::MembraneStopped => {
+                write!(
+                    f,
+                    "Work under a membrane stopped because its wallet cannot pay."
+                )
             }
 
             InterpreterError::UserAbortError => {
@@ -363,7 +371,16 @@ impl fmt::Display for InterpreterError {
 }
 
 impl From<RSpaceError> for InterpreterError {
-    fn from(err: RSpaceError) -> InterpreterError { InterpreterError::RSpaceError(err) }
+    fn from(err: RSpaceError) -> InterpreterError {
+        match err {
+            RSpaceError::InterpreterError(msg)
+                if msg == InterpreterError::MembraneStopped.to_string() =>
+            {
+                InterpreterError::MembraneStopped
+            }
+            err => InterpreterError::RSpaceError(err),
+        }
+    }
 }
 
 impl From<InterpreterError> for RSpaceError {
@@ -439,6 +456,10 @@ mod tests {
             (
                 InterpreterError::OutOfPhlogistonsError,
                 "Computation ran out of phlogistons.".to_string(),
+            ),
+            (
+                InterpreterError::MembraneStopped,
+                "Work under a membrane stopped because its wallet cannot pay.".to_string(),
             ),
             (
                 InterpreterError::UserAbortError,
@@ -674,5 +695,14 @@ mod tests {
             illegal_argument_error("nth"),
             InterpreterError::IllegalArgumentError("Incorrect arguments for nth".to_string())
         );
+    }
+
+    #[test]
+    fn a_membrane_stop_keeps_its_kind_through_the_space() {
+        let through: InterpreterError = RSpaceError::from(InterpreterError::MembraneStopped).into();
+        assert_eq!(through, InterpreterError::MembraneStopped);
+        let other: InterpreterError =
+            RSpaceError::from(InterpreterError::ReduceError("r".to_string())).into();
+        assert!(matches!(other, InterpreterError::RSpaceError(_)));
     }
 }

@@ -10,6 +10,7 @@ pub mod cost_accounting;
 pub mod costs;
 pub mod delta_sigma;
 pub mod has_cost;
+pub mod membrane;
 pub mod noop;
 pub mod rev_stack;
 pub mod storage_rule;
@@ -59,6 +60,29 @@ impl CostManager {
             return Err(InterpreterError::OutOfPhlogistonsError);
         }
 
+        if let Some(record) = rev_stack::seal::current() {
+            if let Some(meter) = rev_stack::seal::meter() {
+                if amount.value <= 0 && meter.gates(&record) {
+                    drop(current_cost);
+                    self.comms
+                        .on_work(Some(comm_ledger::Surface::of(&record)), amount.value);
+                    self.push_log(amount);
+                    return Ok(());
+                }
+                match meter.admit_charge(&record, amount.value) {
+                    membrane::Admission::Refused => return Err(InterpreterError::MembraneStopped),
+                    membrane::Admission::Admitted => {
+                        drop(current_cost);
+                        self.comms
+                            .on_work(Some(comm_ledger::Surface::of(&record)), amount.value);
+                        self.push_log(amount);
+                        return Ok(());
+                    }
+                    membrane::Admission::Ungated => {}
+                }
+            }
+        }
+
         // Use saturating arithmetic to prevent overflow when credits (negative
         // charges) are applied to balances near i64::MAX (e.g., genesis deploys).
         current_cost.value = current_cost.value.saturating_sub(amount.value);
@@ -66,6 +90,16 @@ impl CostManager {
             rev_stack::seal::current().map(|record| comm_ledger::Surface::of(&record)),
             amount.value,
         );
+        self.push_log(amount);
+
+        if current_cost.value < 0 {
+            return Err(InterpreterError::OutOfPhlogistonsError);
+        }
+
+        Ok(())
+    }
+
+    fn push_log(&self, amount: Cost) {
         if self.max_log_entries > 0 {
             let mut log = self.log.lock().unwrap();
             if log.len() >= self.max_log_entries {
@@ -73,12 +107,6 @@ impl CostManager {
             }
             log.push_back(amount);
         }
-
-        if current_cost.value < 0 {
-            return Err(InterpreterError::OutOfPhlogistonsError);
-        }
-
-        Ok(())
     }
 
     pub fn get(&self) -> Cost {

@@ -17,7 +17,7 @@ use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
 use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
 };
-use rholang::rust::interpreter::accounting::rev_stack::seal::Funding;
+use rholang::rust::interpreter::accounting::membrane::{Funding, MembraneMeter, Metered, Refusal};
 use rholang::rust::interpreter::accounting::rev_stack::{
     wallet_channel_id, wallet_channel_id_of, HotStoreCells, WalletOwner,
 };
@@ -44,7 +44,7 @@ use super::record::ExecutionRecord;
 use super::run::EnvelopeRun;
 use super::settle::{self, Boxcar, Settlement};
 use super::slash::{require_no_slashes, NoSlashing, SlashSource};
-use super::surface::{own_cells, BlockPurses, EnvelopeFunding, Surfaces};
+use super::surface::{accept_metered, own_cells, BlockPurses, EnvelopeFunding, Surfaces};
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
@@ -59,11 +59,29 @@ pub struct ExecutedBlock {
     pub footprints: Vec<Footprint>,
     pub surfaces: Vec<Surfaces>,
     pub work: Vec<Surfaces>,
+    pub metered: Vec<RunMeter>,
     pub overdrawn: Vec<bool>,
     pub gate: GateOutcome,
     pub settlement: Settlement,
     pub settled_root: StateHash,
     pub timings: PhaseTimings,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunMeter {
+    pub refusals: Vec<Refusal>,
+    pub drawn: std::collections::BTreeMap<Vec<u8>, u64>,
+    pub reached: std::collections::BTreeSet<Vec<u8>>,
+}
+
+impl From<Metered> for RunMeter {
+    fn from(m: Metered) -> Self {
+        RunMeter {
+            refusals: m.refusals,
+            drawn: m.drawn,
+            reached: m.reached,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,12 +114,14 @@ struct MergedBlock {
     footprints: Vec<Footprint>,
     surfaces: Vec<Surfaces>,
     work: Vec<Surfaces>,
+    metered: Vec<RunMeter>,
 }
 
 struct EnvelopeEffect {
     run: EnvelopeRun,
     surfaces: Surfaces,
     work: Surfaces,
+    metered: RunMeter,
     processed: ProcessedDeploy,
     number_channels: NumberChannelsEndVal,
     changes: Vec<HotStoreAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
@@ -228,7 +248,8 @@ impl Runs {
         ops.runtime.set_block_data(block_data).await;
         ops.runtime.set_invalid_blocks(HashMap::new()).await;
         ops.runtime.set_seal_records(true);
-        ops.runtime.set_funding(Some(funding));
+        let meter = MembraneMeter::play(funding);
+        ops.runtime.set_funding(Some(meter.clone()));
         ops.runtime.cost.charge_storage_left_in_space();
         ops.runtime.cost.comm_ledger().reset();
         let cells = runtime_cells(&ops.runtime)?;
@@ -251,6 +272,7 @@ impl Runs {
             run: envelope_run(&processed),
             surfaces,
             work,
+            metered: meter.take().into(),
             processed,
             number_channels,
             changes,
@@ -272,6 +294,7 @@ impl Runs {
         block_data: BlockData,
         reservations: Vec<(WalletOwner, Reservation)>,
         funding: Arc<dyn Funding>,
+        logged: Vec<Refusal>,
     ) -> Result<EnvelopeEffect, CasperError> {
         let Pooled { runtime, base } = self.runtime_at(true, pre_root).await?;
         let mut replay = ReplayRuntimeOps::new_from_runtime(runtime);
@@ -279,7 +302,8 @@ impl Runs {
         runtime.set_block_data(block_data).await;
         runtime.set_invalid_blocks(HashMap::new()).await;
         runtime.set_seal_records(true);
-        runtime.set_funding(Some(funding));
+        let meter = MembraneMeter::replay(funding, &logged);
+        runtime.set_funding(Some(meter.clone()));
         runtime.cost.charge_storage_left_in_space();
         runtime.cost.comm_ledger().reset();
         let cells = runtime_cells(runtime)?;
@@ -306,6 +330,7 @@ impl Runs {
             run: envelope_run(&recorded),
             surfaces,
             work,
+            metered: meter.take().into(),
             processed: recorded,
             number_channels,
             changes,
@@ -325,6 +350,7 @@ impl EnvelopeExecutor {
             number_channels: NumberChannelsEndVal::default(),
             surfaces: Vec::new(),
             work: Vec::new(),
+            metered: RunMeter::default(),
             changes: Vec::new(),
             journal: Vec::new(),
             timing: Default::default(),
@@ -419,9 +445,11 @@ impl EnvelopeExecutor {
         let mut overdrawn = Vec::with_capacity(effects.len());
         let mut surfaces = Vec::with_capacity(effects.len());
         let mut work = Vec::with_capacity(effects.len());
+        let mut metered = Vec::with_capacity(effects.len());
         for effect in effects {
             surfaces.push(effect.surfaces);
             work.push(effect.work);
+            metered.push(effect.metered);
             runs.push(effect.run);
             processed.push(effect.processed);
             journals.push(effect.journal);
@@ -431,6 +459,7 @@ impl EnvelopeExecutor {
             mid_root: merged.mid_root,
             surfaces,
             work,
+            metered,
             runs,
             processed,
             kept,
@@ -496,6 +525,7 @@ impl EnvelopeExecutor {
             footprints,
             surfaces,
             work,
+            metered,
             overdrawn,
         } = self.merge(pre_root, effects, &admitted)?;
         timings.merge = started.elapsed();
@@ -514,6 +544,7 @@ impl EnvelopeExecutor {
             footprints,
             surfaces,
             work,
+            metered,
             overdrawn,
             gate,
             settlement,
@@ -542,7 +573,7 @@ impl EnvelopeExecutor {
                 let block_data = block_data.clone();
                 let admitted = gate.entries[i].admitted();
                 let held = reservations(gate, &inputs[i], i);
-                let funding = EnvelopeFunding::new(purses.clone(), &gate.entries[i].envelope_sig);
+                let funding = EnvelopeFunding::new(purses.clone(), inputs[i].paying_wallets());
                 let runs = Arc::clone(&self.runs);
                 let pre_root = pre_root.clone();
                 async move {
@@ -573,20 +604,34 @@ impl EnvelopeExecutor {
         recorded_gate: &[GateEntry],
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
+        let logged = vec![Vec::new(); recorded.len()];
+        self.replay_with_refusals(pre_root, recorded, recorded_gate, block_data, logged)
+            .await
+    }
+
+    pub async fn replay_with_refusals(
+        &self,
+        pre_root: &StateHash,
+        recorded: Vec<ProcessedDeploy>,
+        recorded_gate: &[GateEntry],
+        block_data: BlockData,
+        logged: Vec<Vec<Refusal>>,
+    ) -> Result<ExecutedBlock, CasperError> {
         let mut inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
         let gate = check_recorded(&reader, &PhloLimitDemand, &inputs, recorded_gate)
             .map_err(|e| invalid(format!("the recorded gate does not replay: {e}")))?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), gate.table.clone()));
-        let effects: Vec<EnvelopeEffect> = stream::iter(recorded.into_iter().enumerate())
-            .map(|(i, processed)| {
+        let logged_runs = logged.clone();
+        let effects: Vec<EnvelopeEffect> = stream::iter(recorded.into_iter().zip(logged).enumerate())
+            .map(|(i, (processed, logged))| {
                 let gate = &gate;
                 let inputs = &inputs;
                 let block_data = block_data.clone();
                 let admitted = gate.entries[i].admitted();
                 let held = reservations(gate, &inputs[i], i);
-                let funding = EnvelopeFunding::new(purses.clone(), &gate.entries[i].envelope_sig);
+                let funding = EnvelopeFunding::new(purses.clone(), inputs[i].paying_wallets());
                 let runs = Arc::clone(&self.runs);
                 let pre_root = pre_root.clone();
                 async move {
@@ -594,7 +639,7 @@ impl EnvelopeExecutor {
                         return Ok(Self::refused(processed.deploy));
                     }
                     tokio::spawn(async move {
-                        runs.replay_one(&pre_root, processed, block_data, held, funding)
+                        runs.replay_one(&pre_root, processed, block_data, held, funding, logged)
                             .await
                     })
                     .await
@@ -604,6 +649,19 @@ impl EnvelopeExecutor {
             .buffered(self.workers)
             .try_collect()
             .await?;
+        for (i, (effect, logged)) in effects.iter().zip(&logged_runs).enumerate() {
+            accept_metered(
+                &purses,
+                logged,
+                &effect.metered.drawn,
+                &effect.metered.reached,
+            )
+            .map_err(|e| {
+                invalid(format!(
+                    "envelope {i}: the membrane stops do not replay: {e}"
+                ))
+            })?;
+        }
         self.finish(pre_root, inputs, gate, effects, &block_data, PhaseTimings::default())
             .await
     }

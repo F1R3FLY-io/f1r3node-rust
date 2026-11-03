@@ -65,9 +65,6 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
         }
     }
 
-    fn admits_waiting(&self, k: &TaggedContinuation) -> bool {
-        crate::rust::interpreter::accounting::rev_stack::seal::funds_continuation(k)
-    }
 
     /// Cross-channel `where`-clause guard. Called by the matcher
     /// coordinator after every spatial bind has produced a
@@ -78,18 +75,23 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     /// `GBool(true)`. Anything else (false, non-bool, error) means
     /// guard-fail and the consume stays uncommitted. See plan §7.12.
     fn check_commit(&self, k: &TaggedContinuation, matched: &[ListParWithRandom]) -> bool {
-        let Some(guard) = k.guard.as_ref() else {
-            return true;
-        };
-        if is_empty_par(guard) {
-            return true;
-        }
-        let mut combined: Vec<Par> = Vec::new();
-        for m in matched {
-            combined.extend_from_slice(&m.pars);
-        }
-        guard_passes(guard, &combined)
+        guard_holds(k, matched)
+            && crate::rust::interpreter::accounting::rev_stack::seal::admits_comm(k, matched)
     }
+}
+
+fn guard_holds(k: &TaggedContinuation, matched: &[ListParWithRandom]) -> bool {
+    let Some(guard) = k.guard.as_ref() else {
+        return true;
+    };
+    if is_empty_par(guard) {
+        return true;
+    }
+    let mut combined: Vec<Par> = Vec::new();
+    for m in matched {
+        combined.extend_from_slice(&m.pars);
+    }
+    guard_passes(guard, &combined)
 }
 
 fn is_empty_par(par: &Par) -> bool { par == &Par::default() }

@@ -20,6 +20,7 @@ use rspace_plus_plus::rspace::util::unpack_option;
 
 use crate::rust::interpreter::accounting::_cost;
 use crate::rust::interpreter::accounting::comm_ledger::comm_cells;
+use crate::rust::interpreter::accounting::membrane;
 use crate::rust::interpreter::accounting::rev_stack::seal;
 use crate::rust::interpreter::accounting::costs::{
     comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
@@ -323,7 +324,21 @@ fn handle_result(
         };
 
     match result {
-        Some((cont, data_list)) => {
+        Some((cont, data_list)) => membrane::settling(|| {
+            if let Some(meter) = seal::meter() {
+                let mut records: Vec<seal::SealRecord> = seal::of_continuation(&cont.continuation)
+                    .ok()
+                    .flatten()
+                    .into_iter()
+                    .collect();
+                records.extend(
+                    data_list
+                        .iter()
+                        .filter_map(|d| d.removed_datum.seal.as_ref())
+                        .filter_map(|p| seal::SealRecord::from_proto(p).ok()),
+                );
+                meter.draw_comm_in_replay(&records);
+            }
             let consume_id_bytes = consume_id_bytes(&cont.continuation)?;
 
             // We refund for non-persistent continuations, and for the persistent continuation triggering the comm.
@@ -356,7 +371,7 @@ fn handle_result(
             }
 
             cost.charge(comm_event_storage_cost(cont.channels.len() as i64))
-        }
+        }),
         None => cost.charge(event_storage_cost(triggered_by_channels_count)),
     }
 }
@@ -435,6 +450,9 @@ fn left_in_space_match(
         })
         .collect();
     let surfaces = comm_cells(receive.as_ref(), sends.iter().map(Option::as_ref));
+    if let Some(meter) = seal::meter() {
+        meter.draw_comm_in_replay(&seal::records_of_comm(receive.as_ref(), &sends));
+    }
     let consume_storage = storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
     match trigger {
         Trigger::Consume => refund(cost, consume_storage.value, "consume storage refund")?,

@@ -5,6 +5,7 @@ use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{ListParWithRandom, Par, TaggedContinuation};
 use prost::Message;
 
+use super::accounting::membrane;
 use super::accounting::rev_stack::seal;
 use super::env::Env;
 use super::errors::InterpreterError;
@@ -71,7 +72,22 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    seal::within(record, reducer.eval(body, &env, merged_rand)).await?;
+                    let gated = match (seal::meter(), record.as_ref()) {
+                        (Some(meter), Some(r)) => meter.gates(r),
+                        _ => false,
+                    };
+                    let evaluation =
+                        seal::within(record, reducer.eval(body, &env, merged_rand.clone()));
+                    if gated {
+                        let scope = membrane::StepScope::new(membrane::step_base(
+                            membrane::StepSource::Comm,
+                            &[],
+                            &merged_rand.to_bytes(),
+                        ));
+                        membrane::stepping(scope, evaluation).await?;
+                    } else {
+                        evaluation.await?;
+                    }
 
                     Ok(DispatchType::DeterministicCall)
                 }
