@@ -1259,11 +1259,10 @@ jobs:
           path: target-coverage-summary.md
           retention-days: 30
 
-  # Ruleset gate. The branch ruleset requires a status check named exactly
-  # `Test (casper)` (formerly the matrix leg's name). This collapses the two
-  # shard jobs into that one required context, in the same style as the
-  # per-arch integration aggregators below. `needs` on a matrix job resolves
-  # to success only when every shard succeeds.
+  # Ruleset gate. The master ruleset and the master merge queue require this
+  # check; dev requires the two shard checks instead. It collapses both shards
+  # and, on a pull request, the coverage summary into one context. `needs` on a
+  # matrix job resolves to success only when every shard succeeds.
   test_casper_gate:
     name: Test Gate (casper)
     needs: [test_casper, coverage_summary]
@@ -1290,9 +1289,13 @@ jobs:
 
   # Integration pipeline (native Docker build -> ephemeral OCI runner launch ->
   # integration matrix -> smoke) lives in the reusable _integration-pipeline.yml.
+  # Static Checks and Script Tests (which covers the runner launch, tagging and
+  # reclaim scripts) gate the OCI quota. Soak Harness Tests covers only the
+  # casper-soak tool, which this pipeline does not run; the merge queue still
+  # requires it, so it does not delay the pipeline.
   pipeline:
     name: Integration Pipeline
-    needs: [build_base, static_checks, script_tests, soak_harness_tests]
+    needs: [build_base, static_checks, script_tests]
     # A newer branch or PR head replaces obsolete heavy work. Version tags use
     # separate groups and run to completion. OCI launch remains globally locked.
     # A merge group is never cancelled: the queue reads a cancelled required

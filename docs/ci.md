@@ -32,14 +32,16 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | `coverage` | Coverage (*crate*) | Unit test | `build_base`, `static_checks` |
 | `coverage_summary` | Coverage Summary | Gate | `build_base`, `coverage` |
 | `test_casper_gate` | Test Gate (casper) | Gate | `test_casper`, `coverage_summary` |
-| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests`, `soak_harness_tests` |
+| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests` |
 | `integration_tests_amd64` | Integration Gate (amd64) | Gate | `build_base`, `pipeline` |
 | `integration_tests_arm64` | Integration Gate (arm64) | Gate | `build_base`, `pipeline` |
 | `notify_queue_failure` | Notify Queue Failure | Notification | `pipeline`, both integration gates |
 | `release_docker_image` | Release Docker Image | Build | the checks above |
 | `release_packages` | Release Packages | Build | the checks above |
 
-The Integration Pipeline waits for all three of Static Checks, Script Tests, and Soak Harness Tests. A failed inexpensive check therefore does not start ephemeral OCI runners.
+The Integration Pipeline waits for Static Checks and Script Tests. A failed inexpensive check therefore does not start ephemeral OCI runners. Script Tests covers the runner launch, tagging, and reclaim scripts that the pipeline uses.
+
+The Integration Pipeline does not wait for Soak Harness Tests. That job tests only the casper-soak tool, which the pipeline does not run, and it takes approximately 18 minutes. The merge queues and the release jobs still require it.
 
 ### Static Checks
 
