@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -839,6 +839,56 @@ D1 and D2 are the two divergences known before this pass. D4, D5 and D7 are new.
 ### Re-runs
 
 A-9 is re-run on FX-12 and FX-13 when they land. For FX-12, the check is one test per elaborated form, plus the sugar cases (the implicit seal, `-o`, a compound, `# P`) elaborated and checked against the form, as the FX-12 row of the plan says.
+
+
+## Revision 8 (action A-8): re-audit of FX-11
+
+- **Branch audited:** `patch/FX-11` at `1b2d387e1` (lane B, cut from `patch/FX-10`). Commits `54c8ff4e0` (Decision 70) and `1b2d387e1` (Decisions 72 and 73).
+- **Method:** a code reading of `system_processes.rs` (`wallet_authority`, `UrnPhase`), `rev_stack/native.rs` (`spendCompute`, `replaceHook`), `PoSV6.rhox`, `SystemVaultV6.rho`, the FX-11 decision log and its tests. No tests were run.
+- **Not in scope:** the data-mark message change (FX-11 decision 3), because Decision 77 removes the mark. FX-8b has not merged FX-11 yet. That merge is re-audited when it lands.
+
+### The five checks
+
+| # | Check | Result | Code | Test |
+|---|---|---|---|---|
+| 1 | A native draw with no record returns no authority | **Holds.** With records on, `wallet_authority` returns an empty list when there is no record (FX-11 decision 1). The flag is one `Arc` that `setup_reducer` shares between the reducer and `UrnPhase`, so the native handlers and the reducer cannot disagree. `rho:rev:wallet` and `rho:rev:bond` read only `wallet_authority`. `spendCompute` and `replaceHook` need `seal::current_owner()` and refuse without one. `rho:rev:bondAdmin` needs no wallet authority: its authority is the name. | `system_processes.rs` `wallet_authority`, `native.rs` | `seal_wiring_spec::code_with_no_record_draws_on_no_wallet_under_seal_records` (it pays with records off and moves nothing with records on) |
+| 2 | Every v6 genesis contract that calls `rho:rev:wallet` or `rho:rev:bond` is tested with records on | **Holds.** Two blessed contracts call them.<ul><li>`SystemVaultV6.rho` calls only `find` and `balance` now, because `transfer` is removed.</li><li>`PoSV6.rhox` calls `rho:rev:bond` `balance`, plus `rho:rev:bondAdmin` `release` and `slash`.</li></ul>Both run with records on in the tests listed. `closeBlock` runs in the close-block system deploy on a runtime with records off. Its `bondAdmin` calls are authorized by the name, so the flag does not change them. | `SystemVaultV6.rho`, `PoSV6.rhox` | `system_vault_v6_test` (`the_facade_has_no_transfer`, and the balance and overdraft tests with `set_seal_records(true)`). `genesis_contracts_records_spec::the_v6_vault_facade_finds_and_reads_under_seal_records_and_has_no_transfer`, `every_pos_v6_entry_point_answers_under_seal_records`, `the_v6_utility_contracts_answer_under_seal_records`. `pos_bond_admin_spec` (four tests through `BlockExecutor`, each replayed). |
+| 3 | Bond: PoS moves no REV | **Holds.** `PoS!("bond", …)` checks the amount and the key, then appends `(amount, handleCh)` to `pendingBonds`. It calls no `rho:rev` command. `settlePendingBonds` reads `rho:rev:bond` `balance` only. | `PoSV6.rhox`, `bond` and `settlePendingBonds` | `pos_bond_admin_spec::two_pos_bonds_on_one_native_bond_admit_the_first_and_release_the_rest`, `gated_executor_spec::a_user_transfer_and_bond_survive_play_and_replay` |
+| 4 | Dropped bonds: released through `rho:rev:bondAdmin` and nothing else | **Holds.** After a key's pending bonds are folded, any native bond above the recorded total (with a withdrawing bond still counted) is released with `RevBondAdmin!("release", (pk, native - total))`. The only REV moves in `PoSV6.rhox` are three `rho:rev:bondAdmin` calls: this release, the release after quarantine, and the slash. The contract has no `rho:rev:wallet` call. | `PoSV6.rhox` lines with `RevBondAdmin!` | `two_pos_bonds_on_one_native_bond_admit_the_first_and_release_the_rest` (500 returns to the wallet), `a_pending_bond_backed_only_by_a_withdrawn_bond_is_dropped` (nothing is released) |
+| 5 | Handle: `withdraw`, `commitRandomImage` and `revealRandom` accept only the validator's handle, and only the deploy that bonded can read it | **First part holds, second part fails.** All three look up `handles[handle]` and refuse "Unknown validator handle" otherwise. But the handle goes to the `handleCh` of whoever registered the pending bond, and `bond` identifies the validator from a deployer id passed as data. A party that is not the bonder can therefore receive the handle. See F35. | `PoSV6.rhox` `withdraw`, `commitRandomImage`, `revealRandom`, `bond` | `pos_bond_admin_spec::a_published_deployer_id_does_not_act_for_its_validator` covers the first part. No test covers the second. |
+
+### F35 — High: the PoS bond registration identifies the validator from a deployer id passed as data
+
+**Code:** `PoS!("bond", deployerId, amount, returnCh, handleCh)` takes the key from `getUser!(deployerId, …)`. Any caller that holds a validator's deployer id can register a pending bond for that key, and names the channel that receives the handle. If the native bond covers it, `closeBlock` admits it and sends the handle to that channel. FX-11 lists this as open item 2.
+
+**Why it breaks the ruling:** Decision 73 says that PoS must not identify the validator from a deployer id passed as data. `withdraw`, `commitRandomImage` and `revealRandom` now follow it, but `bond` still identifies the validator that way, and `bond` is where the handle is issued. The handle then confers the rights that Decision 73 meant to protect: withdrawal, commit and reveal. No REV moves to the third party. A withdrawal returns the bond to the validator's own wallet. The harm is control of the validator's withdrawal and of its random-beacon participation.
+
+**Related effect:** a registration that the native bond does not cover is dropped, and any native bond above the recorded total is released at the close. A third-party registration can therefore cause a validator's unregistered native bond to be returned before the validator's own registration arrives. This is griefing only, because the REV goes back to its owner.
+
+**Proposed fix:** issue the handle where the bond is made. The native `rho:rev:bond` `bond` runs under the bonder's own seal (Decisions 70 and 72). It can return a bond receipt, an unforgeable name, to its caller, and `PoS!("bond", …)` takes that receipt in place of a deployer id. Then only the code that moved the REV can register, and the handle goes to a channel that this code chose. This matches lane B's option (C). It also settles open item 1 (custody) for the bonding deploy. A ruling is needed, because it changes PoSV6's interface and the bond flow.
+
+**Test plan for lane B:** Mallory registers a pending bond for Alice's key, using Alice's published deployer id, before Alice registers. *Expected after the fix:* Mallory's registration is refused. Alice's registration is admitted, and her handle reaches only her channel.
+
+### F36 — Medium: user code fired during the close-block system deploy runs unmetered
+
+**Code:** `closeBlock` sends each validator's handle, or a refusal, on the caller's `handleCh`. It runs in the close-block system deploy (`executor.rs`, `compute_state` with `close_block`), on a runtime with records off.
+
+**Consequence:** a continuation that the caller stored on `handleCh` fires inside the system deploy. Its authority is correct, because the dispatcher installs the record stored with the continuation. But its work runs on the system deploy's meter, which no envelope pays. Under Decision 75 the installer pays for its continuation. This is a case of A-9's D1 that the envelope meter does not reach at all. It is also a cost-free path to running user code at every close.
+
+**Proposed fix:** FX-12 meters a fired continuation to its stored record's purse (Decision 75). An unfunded continuation does not fire, also in system deploys. Until then, PoS can answer on a channel that the caller reads with a receive in its own deploy, rather than firing caller code at the close. That is lane B's choice.
+
+### Other open items from the FX-11 log
+
+- **Genesis validators** (open item 3) have no handle, so they cannot withdraw, commit or reveal. This is liveness, not authority. It needs a design answer before M2.
+- **Handle custody** (open item 1) is closed for the bonding deploy by the F35 fix. A validator's later deploys still need a way to use the handle. Lane B's options A and C both give one.
+
+### A-9 addendum
+
+F36 adds a divergence to the A-9 table:
+
+| # | Divergence | Code | Ruling | Fix |
+|---|---|---|---|---|
+| D8 | A continuation fired inside a system deploy (close block, slash) runs on no envelope's meter. | `executor.rs` `compute_state` with `close_block`, and the system-deploy runtime | Decision 75 | FX-12 |
 
 
 ## Open questions for review
