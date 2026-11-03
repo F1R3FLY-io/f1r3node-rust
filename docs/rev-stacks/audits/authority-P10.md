@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1005,6 +1005,28 @@ A-9 re-runs on FX-12 with three added checks:
 3. a datum stored in an earlier block charged to its sender (D9).
 
 A-8 re-audits FX-14 and the merge of FX-13 into FX-8b.
+
+## Revision 11 (action A-8): the FX-13 merge into FX-8b, and design r11
+
+- **Commit audited:** `patch/FX-8b` merge `e17e3ed32`, with parents `8947dc111` (FX-8b with FX-11) and `ecd2b0169` (FX-13).
+- **Method:** a code reading of the merged files. No tests were run, and lane A2 has not yet posted suite results for this merge.
+
+| Check | Result |
+|---|---|
+| No refusal under the removed data mark survives, FX-11's per-command refusals included | **Holds.** At `e17e3ed32` the tree has no `from_data`, `received_at_run_time`, `RECEIVED_AT_RUN_TIME`, `eval_received` or `runs_bound_process`, and no "moves no REV" or "data received at run time" message in `rholang/src` or `casper/src`. `native::READS` and `native::refusal` are gone. The only `refusal` left in `system_processes.rs` is the URN filter (`UrnPhase::refusal`). `SealRecordProto` field 4 is `reserved`. No test refers to `from_data`. |
+| `wallet_authority` keeps its no-record branch (Decision 70) | **Holds.** `None if self.urn_phase.seals_recorded() => Vec::new()` is present. |
+
+**Result:** the merge meets both requirements of revision 9. D3 is closed on the integration branch.
+
+### Design r11
+
+Design r11 is published (publications `8c81189`). Its §6.3 differs from r10's in three consequences, which are Decisions 79 to 81:
+- the purse is the wallet at the seal;
+- an unfunded stored receive is not a match candidate, and replay re-checks every logged COMM;
+- one membrane means one cell, for the same owner and origin, and a surface with no record is charged to the firing client.
+
+The rest of §6.3 is unchanged. From the next pass on, A-9 reads against r11. None of the A-9 rows changes because of r11: D6 was already closed by Decision 79, and the matcher-filter and replay checks are the added FX-12 checks.
+
 
 ## Open questions for review
 
