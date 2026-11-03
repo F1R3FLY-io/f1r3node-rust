@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1028,6 +1028,107 @@ Design r11 is published (publications `8c81189`). Its §6.3 differs from r10's i
 The rest of §6.3 is unchanged. From the next pass on, A-9 reads against r11. None of the A-9 rows changes because of r11: D6 was already closed by Decision 79, and the matcher-filter and replay checks are the added FX-12 checks.
 
 
+## Revision 12 (actions A-8 and A-9): A-9 pass 4 on FX-12 and D79, and the FX-14 re-audit
+
+- **Commits audited:**
+  - `patch/FX-12` at `435568f9d`: metering commit `aa47795d4` and the FX-13 merge `e51906722`. The branch is cut from D76 `427d72396`.
+  - `patch/D76` at `1502a4e98` (lane C, D79). The branch is rebased onto FX-8b `e17e3ed32`.
+  - `patch/FX-14` at `c334f9287`. The branch is cut from FX-12.
+  - `patch/FX-8b` at `f00a2da3d` (suite results after the FX-13 merge, no code change).
+- **Reference:** design r11 §6.3 and Decisions 75 to 82.
+- **Method:** a code reading of the commits and the decision logs. No tests were run.
+- **Branch state:** FX-12 and D79 do not contain each other. Their merge base is `8947dc111`. FX-14 is on FX-12, so FX-14 does not contain D79. The checks below that depend on D79 hold on `patch/D76` only, until lane A2 merges the branches.
+
+### Divergences after FX-12 and D79
+
+| Divergence | Status | Closed by | Pinning test |
+|---|---|---|---|
+| D1: continuation work metered to the firing deployment | **Closed** on FX-12 | FX-12 decision 1: `CostManager::charge` records each charge under `seal::current()` | `forms_spec::the_two_party_form_charges_each_surface_and_the_installer_for_its_continuation`, `region_spec::data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_paid_there` |
+| D2: stored receives | Closed (D76, revision 10) | — | — |
+| D4: inner membrane not metered | **Closed** on FX-12 | FX-12 decisions 1 and 3 | `forms_spec::the_lollipop_charges_the_comm_to_s1_and_the_continuation_to_s2` |
+| D5: separate seals each pay the whole envelope | **Closed** on FX-12 | FX-12 decision 3 | `forms_spec::separately_named_regions_pay_only_their_own_work` |
+| D6 | Closed by ruling (Decision 79). The implementation is D79 decision 9. | — | see check (a) |
+| D7: the deployer pays nothing for the top-level surface | **Closed** on FX-12 | FX-12 decision 4 | the three changed `region_spec` tests in the FX-12 log |
+| D8: system-deploy continuations unmetered | **Open** | FX-12 open item 1 gives a proposal | none |
+| D9: a stored send has no record | **Closed** on `patch/D76` only | D79 decisions 6 to 8 | `region_spec::a_datum_stored_in_an_earlier_block_is_charged_to_its_sender` |
+
+### Checks (a) to (g)
+
+| Check | Result |
+|---|---|
+| (a) The matcher filter (Decision 79) replaces D76 decision 7 | **Holds on `patch/D76`, with a gap (F40).** `Match::admits_waiting` runs in `extract_first_match` for each waiting continuation. `EnvelopeFunding` funds a record of the running envelope without a test. For another envelope's record, each wallet of `purse()` must hold `price()` at the pre-state, less the gate table. `BlockPurses` reads the pre-state once for each block and shares the reads. The test fails when the hook returns `true` (D79 verification). D76's cap stays at settlement (D79 decision 12), as Decision 79 keeps it. The test covers one cell only. It does not cover the continuation's work (F40). |
+| (b) Replay re-checks every logged COMM | **Holds on `patch/D76` for stored receives.** Replay of a send goes through the same `extract_first_match`, with the oracle installed in `replay_one` from the recorded gate. `an_unfunded_stored_receive_is_not_a_match_candidate_in_play_or_replay` includes a replay that gives the funded run's log with the held block's gate, and that replay fails. On the consume path the stored side is data, so there is no candidate to filter (D79 decision 9). |
+| (c) A datum stored in an earlier block is charged to its sender | **Holds on `patch/D76`.** `eval_send` writes the record on the datum (`ListParWithRandom` field 3) when records are on. At a COMM the record on the datum decides the payer, before the storage rule. A datum without a record keeps the legacy bytes. Native acks, contract calls and cells that the REV layer writes carry no record, so Decision 81 applies to them. |
+| (d) One cell only for the same owner and origin (Decision 80) | **Holds on `patch/D76`, with one open point.** `SealRecord::shares_membrane` compares the owner and the origin. `comm_cells` gives one key for each distinct membrane, and a unit test covers it. The key is D76's `Surface` (owner, envelope, price). FX-12 keys its work tally with the same `Surface::of`, so the two tallies agree. Open point: a side with no record and the client's own record are two keys. A COMM between the client's send and genesis code therefore counts two cells (D79 decision 5). See question 10. |
+| (e) A surface with no record is charged to the firing client (Decision 81) | **Holds** on both branches. `comm_cells` maps a side with no record to the key `None`. FX-12's `own_payers` charges `None` to the deployer, or to every committed wallet when the gate did not commit the deployer. The same fallback also takes keys that do have a record (F39). |
+| (f) The elaborated-form test table | See the table below. |
+| (g) D8 metered | **Open.** FX-12 open item 1 proposes a close-runtime tally, a charge after the close, and a record for replay. That proposal touches the close block, so it needs a ruling before code. |
+
+### Elaborated-form tests
+
+| Form | Test | Status |
+|---|---|---|
+| Two-party, stored receive | `forms_spec::the_two_party_form_charges_each_surface_and_the_installer_for_its_continuation` (cells, work and both prices, sugar compared) | Present (FX-12) |
+| Two-party, stored send | `region_spec::a_datum_stored_in_an_earlier_block_is_charged_to_its_sender` | Present on `patch/D76` only |
+| One-party | `forms_spec::the_one_party_form_pays_once_for_a_redex_under_one_seal` | Present (FX-12) |
+| `-o` | `forms_spec::the_lollipop_charges_the_comm_to_s1_and_the_continuation_to_s2` (explicit layers compared) | Present (FX-12) |
+| Compound, at executor level | `region_spec::each_component_of_a_compound_pays_the_full_charge` and `a_funded_joint_wallet_pays_once_for_its_compound`, both through `EnvelopeExecutor` | Present |
+| `# P` | `gated_executor_spec::a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata` | Present for the draw. No test compares the `# P` sugar with its elaborated form. |
+| Origin price for compute | the two-party test above: Bob's work is charged at price 1 while Alice's envelope is at price 2 | Present (FX-12) |
+
+### F38 — Low: a refund is keyed to the record that runs when the refund occurs
+
+**Code:** `CostManager::charge` records a refund (a negative charge) under `seal::current()`. `take_work` drops a key whose net work is not positive.
+
+**Effect:** if a charge occurs under one record and its refund occurs under another, the first key pays the full charge. The second key goes to zero or below and is dropped. The sum of the keys can then be more than the run's net work. Also, the `Exhausted` test in `executor::entries` adds the envelope's own cells to `run.compute_phlo`, which includes foreign work. The two terms come from different meters.
+
+**Test plan:** a run in which a stored item is written under one seal and removed under another seal. The sum of the work keys must equal the run's net compute.
+
+**Proposed fix:** key a refund to the record of the charge that it reverses, or net the refunds per run before the split. Use the own work in the `Exhausted` test. Reversible, lane B.
+
+### F39 — Low: an own key whose owner the gate did not commit is charged to the client
+
+**Code:** `settle::own_payers` charges a key to its owner only when the gate committed the owner's wallet, or every component of a compound. Otherwise it charges the client, as for a key with no record.
+
+**Effect:** Decision 81 covers a surface with no record. A region with a record whose owner the gate did not commit is a different case, but it is charged to the client. F33 reaches this branch: a variable seal that resolves at run time to a cosigner draws on the cosigner (bounded by journal admission), and its work and cells are charged to the deployer. So F33 is not moot under located purses. It now also has a charging effect.
+
+**Test plan:** a test that lists which keys reach the fallback, and the payer of each.
+
+**Proposed fix:** a ruling on whether such a key is charged to the client, refused at the gate, or added to the settlement check (F33's proposed fix). Escalated: this touches charging.
+
+### F40 — Medium: the matcher filter funds one cell, and the continuation's work can go unpaid
+
+**Code:** `BlockPurses::funds_cell` admits a stored receive when each wallet of its purse holds the record's price for one cell. FX-12 then charges the continuation's cells and work to the same purse at settlement, capped by D76 decision 7.
+
+**Effect:** a purse that holds one cell at the pre-state can fire a continuation whose work costs more. The draw is capped, and the shortfall is charged to no wallet. The work still counts against the firing client's phlo limit (FX-12 open item 4), but the client does not pay for it. The validator does the shortfall without payment.
+
+**Test plan:** a stored receive whose purse holds exactly one cell, fired by a send from another envelope, with a continuation that does work. The settlement must show who pays the work, and replay must give the same result.
+
+**Proposed fix:** a ruling. The options are: the shortfall goes to the firing client, the continuation stops when its purse is empty, or the filter tests a bound on the work. Escalated: this touches charging and Decision 79.
+
+### FX-14 re-audit (Decision 82, F35)
+
+| Check | Result |
+|---|---|
+| `rho:rev:bond` returns an unforgeable receipt to its caller | **Holds.** A successful `bond` answers `(true, receipt)`. The receipt is a `GPrivate` whose identifier is the domain tag, the key and the hash of the call's random state. A term cannot write a `GPrivate`, and a name from `new` cannot carry the domain tag. The random state makes the receipt the same in play and replay. The bond process issues a receipt only after the FX-7 seal check. |
+| PoS bond takes the receipt and no deployer id | **Holds.** `PoS!("bond", receipt, amount, returnCh, handleCh)` reads the key through `RevBondAdmin!("receipt", ...)`. `getUser` is removed, and no PoS entry point reads a deployer id. `receipt_key` refuses a name without the domain tag and a key part of length zero. |
+| F35's test plan is covered | **Holds.** `pos_bond_admin_spec::a_published_deployer_id_does_not_act_for_its_validator` refuses Mallory's call with Alice's deployer id, and the close sends Mallory no handle. `rev_bond_spec::a_deployer_bonds_its_own_rev_natively` checks the receipt's key and refuses a value that is not a receipt. `genesis_contracts_records_spec` refuses a deployer id. `gated_executor_spec::a_user_transfer_and_bond_survive_play_and_replay` uses the receipt in play and replay. |
+
+**Note (no finding):** a receipt is not spent (FX-14 decision 4), and it can be passed on. A holder that is not the bonder can register for the bonder's key and get the handle. This is the capability reading of Decision 82: the bonder decides who holds the receipt. Each registration still passes the native-bond check at the close (Decision 72). If Decision 82 means that only the bonding deploy can get the handle, the receipt must be spent on use or bound to the bonding deploy.
+
+### Merge requirements for FX-12, D79 and FX-14 into FX-8b
+
+1. **Gate table:** D79's `BlockPurses` subtracts the gate table. FX-12 decision 4 adds the deployer to the paying wallets of more envelopes, so the held amounts change. Run D79's two `region_spec` tests and the grant test after the merge.
+2. **`comm_ledger.rs`:** keep D79's `comm_cells` call site and FX-12's work map. `reset` must clear both.
+3. **`executor.rs`:** `run` and `replay_one` gain the work tally (FX-12) and the funding oracle (D79). Keep both, and keep `set_funding(None)` before the runtime goes back to the pool.
+4. **Cross-host fixture:** both branches rewrite `casper/tests/fixtures/v6/cross_host`. Do not take either side. Write the fixture again after the merge with `write_cross_host_fixture`.
+5. **FX-14 after D79:** FX-14 and D79 both change `gated_executor_spec.rs`. Merge FX-14 after FX-12 and D79.
+6. **D79 open point 4:** a self-sealed envelope with a `for` form is refused as `ForeignSignature`. The owner of `hash_seal_admissible` must check this before the merge, because the funding tests use the `contract` form only.
+7. **Suite results:** the FX-12 and FX-14 logs post no suite results. Lane A2 must post them for the merge.
+
+A-8 re-audits the merge commit against this list. A-9 pass 5 runs on the merged branch, and on D8 when its ruling lands.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -1039,3 +1140,6 @@ The rest of §6.3 is unchanged. From the next pass on, A-9 reads against r11. No
 7. **F27:** answered on 2026-11-02 (Decision 63). Should the deployer's signed message name the required cosigner keys, so that a relay cannot strip cosignatures from an envelope without changing its identity?
 8. **F31:** answered on 2026-11-02 (Decision 64). Until region metering, should a draw whose writer is a `Process` owner be refused, or journaled as pro-rata share draws?
 9. **Q-31 / D76:** answered on 2026-11-03 (Decision 80: the same owner and the same origin). For Decision 76, does "surfaces under one seal" mean one owner, or one owner at one origin envelope and price?
+10. **D79 decision 5:** a side with no record and the client's own record are two keys, so a COMM between the client's send and genesis code counts two cells. Is one cell the intent of Decision 80 for this case?
+11. **F40:** when a funded stored receive fires a continuation whose work costs more than its purse holds, who pays the shortfall?
+12. **F39 and F33:** is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
