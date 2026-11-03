@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
+use super::rev_stack::seal::SealRecord;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommTally {
     pub comms: u64,
@@ -24,13 +26,23 @@ pub struct Surface {
 }
 
 impl Surface {
-    pub fn of(record: &super::rev_stack::seal::SealRecord) -> Self {
+    pub fn of(record: &SealRecord) -> Self {
         Surface {
             owner: record.owner.canonical_bytes(),
             envelope: record.origin.envelope.clone(),
             phlo_price: record.origin.phlo_price,
         }
     }
+}
+
+pub fn comm_cells<'a>(
+    receive: Option<&'a SealRecord>,
+    sends: impl IntoIterator<Item = Option<&'a SealRecord>>,
+) -> BTreeSet<Option<Surface>> {
+    std::iter::once(receive)
+        .chain(sends)
+        .map(|record| record.map(Surface::of))
+        .collect()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -138,6 +150,49 @@ mod surface_tests {
             envelope: vec![9],
             phlo_price: 2,
         })
+    }
+
+    fn record(owner: u8, envelope: u8, price: u64) -> SealRecord {
+        use super::super::rev_stack::seal::{Origin, SealKind};
+        use super::super::rev_stack::WalletOwner;
+        SealRecord {
+            owner: WalletOwner::Unforgeable(vec![owner; 32]),
+            kind: SealKind::Deployment,
+            origin: Origin {
+                envelope: vec![envelope; 64],
+                signers: vec![WalletOwner::Unforgeable(vec![envelope; 32])],
+                phlo_price: price,
+            },
+        }
+    }
+
+    #[test]
+    fn a_comm_is_one_cell_only_when_its_surfaces_share_a_membrane() {
+        let alice = record(1, 1, 2);
+        let signed = SealRecord {
+            kind: super::super::rev_stack::seal::SealKind::Signed,
+            ..alice.clone()
+        };
+        let bob = record(2, 2, 2);
+        let alice_elsewhere = record(1, 3, 2);
+        let alice_dearer = record(1, 1, 5);
+        let cells = |r: Option<&SealRecord>, s: Option<&SealRecord>| comm_cells(r, [s]).len();
+        assert_eq!(cells(Some(&alice), Some(&alice)), 1);
+        assert_eq!(cells(Some(&alice), Some(&signed)), 1);
+        assert_eq!(cells(Some(&alice), Some(&bob)), 2);
+        assert_eq!(cells(Some(&alice), Some(&alice_elsewhere)), 2);
+        assert_eq!(cells(Some(&alice), Some(&alice_dearer)), 2);
+        assert_eq!(cells(None, None), 1);
+        assert_eq!(cells(None, Some(&alice)), 2);
+        assert_eq!(cells(Some(&bob), None), 2);
+        assert_eq!(
+            comm_cells(Some(&alice), [Some(&alice), None, Some(&bob), None]),
+            BTreeSet::from([None, Some(Surface::of(&alice)), Some(Surface::of(&bob))])
+        );
+        assert_eq!(
+            comm_cells(Some(&bob), [Some(&alice)]),
+            comm_cells(Some(&alice), [Some(&bob)])
+        );
     }
 
     #[test]

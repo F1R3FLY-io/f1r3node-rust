@@ -125,6 +125,7 @@ message ListParWithRandom {
   repeated Par pars = 1;
   bytes randomState = 2
       [(scalapb.field).type = "coop.rchain.crypto.hash.Blake2b512Random"];
+  SealRecordProto seal = 3;
 }
 
 // While we use vars in both positions, when producing the normalized

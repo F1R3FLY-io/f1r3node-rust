@@ -58,6 +58,7 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
                 Some(ListParWithRandom {
                     pars: bound_pars,
                     random_state: data.random_state.clone(),
+                    seal: data.seal.clone(),
                 })
             }
             None => None,
@@ -72,6 +73,10 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     /// evaluated via rho-pure-eval. Returns true iff it reduces to
     /// `GBool(true)`. Anything else (false, non-bool, error) means
     /// guard-fail and the consume stays uncommitted. See plan §7.12.
+    fn admits_waiting(&self, k: &TaggedContinuation) -> bool {
+        crate::rust::interpreter::accounting::rev_stack::seal::funds_continuation(k)
+    }
+
     fn check_commit(&self, k: &TaggedContinuation, matched: &[ListParWithRandom]) -> bool {
         let Some(guard) = k.guard.as_ref() else {
             return true;

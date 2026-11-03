@@ -60,6 +60,7 @@ fn map_data(
                 ListParWithRandom {
                     pars: entry.data.clone(),
                     random_state: entry.rand.to_bytes(),
+                    seal: None,
                 },
                 false,
             )],
@@ -1717,6 +1718,7 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                     unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![42] })),
                 }])],
                 random_state: result0_rand.to_bytes(),
+                seal: None,
             },
             false,
         )],
@@ -1733,6 +1735,7 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                     })),
                 }])],
                 random_state: result1_rand.to_bytes(),
+                seal: None,
             },
             false,
         )],

@@ -132,6 +132,9 @@ where
         for (cont, index) in &match_candidates {
             metrics::counter!(RSPACE_MATCHER_EXTRACT_FIRST_MATCH_CANDIDATES_ITERATED_METRIC, "source" => RSPACE_METRICS_SOURCE)
                 .increment(1);
+            if !matcher.admits_waiting(&cont.continuation) {
+                continue;
+            }
             let __pair_start = std::time::Instant::now();
             let channel_pattern_pairs: Vec<(C, P)> = channels
                 .iter()

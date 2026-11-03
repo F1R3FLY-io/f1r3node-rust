@@ -287,7 +287,9 @@ impl Hash for PCost {
 
 impl PartialEq for ListParWithRandom {
     fn eq(&self, other: &Self) -> bool {
-        self.pars == other.pars && self.random_state == other.random_state
+        self.pars == other.pars
+            && self.random_state == other.random_state
+            && self.seal == other.seal
     }
 }
 
@@ -295,6 +297,9 @@ impl Hash for ListParWithRandom {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.pars.hash(state);
         self.random_state.hash(state);
+        if let Some(seal) = &self.seal {
+            seal.hash(state);
+        }
     }
 }
 

@@ -266,6 +266,35 @@ async fn a_wallet_or_bond_call_inside_data_received_at_run_time_runs_under_the_r
 }
 
 #[tokio::test]
+async fn inside_the_receivers_evaluator_a_transfer_from_the_senders_own_id_is_refused() {
+    sealed(|runtime| async move {
+        run(&runtime, &ALICE, &[], 1, r#"for (p <= @"eval") { *p }"#).await;
+        let payee = address(&BOB);
+        let sent = format!(
+            r#"new d(`rho:system:deployerId`) in {{
+                 @"eval"!({{ new w(`rho:rev:wallet`) in {{ w!("transfer", (*d, "{payee}", 100), "lifted") }} }})
+               }}"#
+        );
+        run(&runtime, &MALLORY, &[], 2, &sent).await;
+        assert!(!ok(&runtime, "lifted").await);
+        assert_eq!(stacks(&runtime).balance(&owner(&MALLORY)).unwrap(), 1_000);
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1_000);
+        assert_eq!(stacks(&runtime).balance(&owner(&BOB)).unwrap(), 1_000);
+
+        let direct = format!(
+            r#"new d(`rho:system:deployerId`), w(`rho:rev:wallet`) in {{
+                 w!("transfer", (*d, "{payee}", 100), "direct")
+               }}"#
+        );
+        run(&runtime, &MALLORY, &[], 3, &direct).await;
+        assert!(ok(&runtime, "direct").await);
+        assert_eq!(stacks(&runtime).balance(&owner(&MALLORY)).unwrap(), 900);
+        assert_eq!(stacks(&runtime).balance(&owner(&BOB)).unwrap(), 1_100);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_bond_admin_call_inside_data_received_at_run_time_acts_with_the_name_it_carries() {
     sealed(|runtime| async move {
         let bond = r#"new b(`rho:rev:bond`), d(`rho:system:deployerId`) in { b!("bond", (*d, 100), "bonded") }"#;

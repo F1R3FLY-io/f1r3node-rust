@@ -101,6 +101,7 @@ fn main() {
     let modified_content = without_derived_serde(&modified_content, "Par");
     let modified_content = without_derived_serde(&modified_content, "ReceiveBind");
     let modified_content = without_derived_serde(&modified_content, "TaggedContinuation");
+    let modified_content = without_derived_serde(&modified_content, "ListParWithRandom");
 
     fs::write(file_path, modified_content).expect("Unable to write file");
 }

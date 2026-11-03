@@ -19,7 +19,7 @@ use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::util::unpack_option;
 
 use crate::rust::interpreter::accounting::_cost;
-use crate::rust::interpreter::accounting::comm_ledger::Surface;
+use crate::rust::interpreter::accounting::comm_ledger::comm_cells;
 use crate::rust::interpreter::accounting::rev_stack::seal;
 use crate::rust::interpreter::accounting::costs::{
     comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
@@ -415,17 +415,26 @@ fn left_in_space_match(
     trigger: &Trigger,
     cost: &_cost,
 ) -> Result<(), InterpreterError> {
-    let mut surfaces: BTreeSet<Option<Surface>> = BTreeSet::new();
     let receive = seal::of_continuation(&cont.continuation).ok().flatten();
-    surfaces.insert(receive.as_ref().map(Surface::of));
-    for data in data_list {
-        let id = &data.removed_datum.random_state;
-        let send = match trigger {
-            Trigger::Produce { id: trigger_id, .. } if id == trigger_id => seal::current(),
-            _ => with_rule(cost, |rule| rule.datum_payer(id)).flatten(),
-        };
-        surfaces.insert(send.as_ref().map(Surface::of));
-    }
+    let sends: Vec<Option<seal::SealRecord>> = data_list
+        .iter()
+        .map(|data| {
+            let id = &data.removed_datum.random_state;
+            match trigger {
+                Trigger::Produce { id: trigger_id, .. } if id == trigger_id => seal::current(),
+                _ => match data
+                    .removed_datum
+                    .seal
+                    .as_ref()
+                    .map(seal::SealRecord::from_proto)
+                {
+                    Some(Ok(record)) => Some(record),
+                    _ => with_rule(cost, |rule| rule.datum_payer(id)).flatten(),
+                },
+            }
+        })
+        .collect();
+    let surfaces = comm_cells(receive.as_ref(), sends.iter().map(Option::as_ref));
     let consume_storage = storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
     match trigger {
         Trigger::Consume => refund(cost, consume_storage.value, "consume storage refund")?,
