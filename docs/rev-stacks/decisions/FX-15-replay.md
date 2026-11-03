@@ -86,3 +86,9 @@ Decisions 86 and 89. Base: `patch/FX-8b` at 4a74b0e34. The play side (the meter 
 | A failed acceptance check gives `InvalidFormat` | A new `InvalidBlock` variant | No new variant is necessary, and the log gives the reason. | Yes |
 
 **Open item (Decision 88: known issue, needs a ruling):** the proposer's balance can fall between the attested root and the execution pre-state, for example through blocks that execute between them. Then the hold is less than the pre-charge, and FX-16 can take less than the close charge. The shortfall is at most the pre-charge.
+
+## Storage-boundary test (2026-11-03)
+
+`rholang/tests/replay_stops_spec.rs` runs a real runtime:
+- Under a stopped membrane, a logged produce is stored. An unlogged produce and an unlogged consume are refused (2 refusals).
+- With no stopped membrane, everything is stored.
