@@ -962,12 +962,6 @@ pub struct SystemProcesses {
     chromadb_service: SharedChromaDBService,
 }
 
-const RECEIVED_AT_RUN_TIME: &str = "a stack inside data received at run time draws on no wallet";
-
-fn received_at_run_time() -> bool {
-    rev_stack::seal::current().is_some_and(|record| record.from_data)
-}
-
 impl SystemProcesses {
     fn create(
         dispatcher: RhoDispatch,
@@ -1255,9 +1249,6 @@ impl SystemProcesses {
             return Err(illegal_argument_error("rev_wallet"));
         };
 
-        if received_at_run_time() && !rev_stack::native::READS.contains(&command.as_str()) {
-            return produce(&[rev_stack::native::refusal(RECEIVED_AT_RUN_TIME)], ack).await;
-        }
         let signers = self.wallet_authority().await;
         let block_number = self.block_data.read().await.block_number;
         let Some(response) = rev_stack::native::handle(
@@ -1289,10 +1280,6 @@ impl SystemProcesses {
             return Err(illegal_argument_error("rev_bond"));
         };
 
-        if received_at_run_time() && command != "balance" {
-            return produce(&[rev_stack::native::refusal(RECEIVED_AT_RUN_TIME)], ack).await;
-        }
-
         let Some(response) =
             rev_stack::bond::handle(self.space.hot_store(), &command, second_par, &self.wallet_authority().await)
         else {
@@ -1317,10 +1304,6 @@ impl SystemProcesses {
         let Some(command) = RhoString::unapply(first_par) else {
             return Err(illegal_argument_error("rev_bond_admin"));
         };
-
-        if received_at_run_time() {
-            return produce(&[rev_stack::native::refusal(RECEIVED_AT_RUN_TIME)], ack).await;
-        }
 
         let Some(response) =
             rev_stack::bond::admin_handle(self.space.hot_store(), &command, second_par)
