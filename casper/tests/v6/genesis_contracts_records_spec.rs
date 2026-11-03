@@ -266,7 +266,7 @@ async fn the_v6_utility_contracts_answer_under_seal_records() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice]).await;
     let executed = execute(&rm, &genesis, UTILITIES, &alice, &proposer).await;
-    let checks = checks(&rm, &executed.runs[0].post_root).await;
+    let checks = checks(&rm, &executed.mid_root).await;
     let labels = [
         "authKey",
         "either",
@@ -290,7 +290,7 @@ async fn the_v6_vault_facade_finds_and_reads_under_seal_records_and_has_no_trans
         .replace("__ALICE__", &alice.address)
         .replace("__BOB__", &bob.address);
     let executed = execute(&rm, &genesis, &term, &alice, &proposer).await;
-    let checks = checks(&rm, &executed.runs[0].post_root).await;
+    let checks = checks(&rm, &executed.mid_root).await;
     assert_eq!(
         checks,
         BTreeMap::from([("balance".to_string(), true), ("find".to_string(), true)])
@@ -307,7 +307,7 @@ async fn every_pos_v6_entry_point_answers_under_seal_records() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice]).await;
     let executed = execute(&rm, &genesis, POS_ENTRY_POINTS, &alice, &proposer).await;
-    let checks = checks(&rm, &executed.runs[0].post_root).await;
+    let checks = checks(&rm, &executed.mid_root).await;
     let labels = [
         "bond",
         "closeBlock",
