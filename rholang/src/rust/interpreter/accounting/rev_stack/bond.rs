@@ -14,8 +14,9 @@ use super::reserve::reservation;
 use super::region::admissible;
 use super::{RevAmount, RevStackError};
 use crate::rust::interpreter::rho_type::{
-    RhoBoolean, RhoByteArray, RhoDeployerId, RhoNumber, RhoString, RhoTuple2,
+    RhoBoolean, RhoByteArray, RhoDeployerId, RhoName, RhoNumber, RhoString, RhoTuple2,
 };
+use models::rhoapi::GPrivate;
 
 pub const REV_BOND_URN: &str = "rho:rev:bond";
 pub const REV_BOND_ADMIN_URN: &str = "rho:rev:bondAdmin";
@@ -63,11 +64,31 @@ pub fn bond_balance(
     RevStacks::new(store).balance(&bond_owner(validator_pk))
 }
 
+const RECEIPT_DOMAIN: &[u8] = b"f1r3fly/rev-stack/bond-receipt/v1";
+
+pub fn bond_receipt(validator_pk: &[u8], random_state: &[u8]) -> Par {
+    let mut id = RECEIPT_DOMAIN.to_vec();
+    id.extend_from_slice(validator_pk);
+    id.extend_from_slice(&Blake2b256::hash(random_state.to_vec()));
+    RhoName::create_par(GPrivate { id })
+}
+
+pub fn receipt_key(receipt: &Par) -> Result<Vec<u8>, String> {
+    let refused = || "expected a bond receipt from rho:rev:bond".to_string();
+    let id = RhoName::unapply(receipt).ok_or_else(refused)?.id;
+    let rest = id.strip_prefix(RECEIPT_DOMAIN).ok_or_else(refused)?;
+    if rest.len() <= 32 {
+        return Err(refused());
+    }
+    Ok(rest[..rest.len() - 32].to_vec())
+}
+
 pub fn handle(
     store: Option<RhoHotStore>,
     command: &str,
     arg: &Par,
     authority: &[WalletOwner],
+    random_state: &[u8],
 ) -> Option<Par> {
     let cells = || -> Result<Arc<dyn CellStore>, String> {
         let store = store
@@ -98,11 +119,11 @@ pub fn handle(
                     held,
                     JournalEntry::transfer(from, bond_owner(&pk), amount),
                 )
-                .map(|_| Par::default())
+                .map(|_| bond_receipt(&pk, random_state))
                 .map_err(funds_error);
             }
             bond(cells, &pk, amount)
-                .map(|_| Par::default())
+                .map(|_| bond_receipt(&pk, random_state))
                 .map_err(funds_error)
         }),
         "balance" => bytes(arg).and_then(|pk| {
@@ -161,6 +182,7 @@ pub fn admin_handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Opt
                 .map(|_| Par::default())
                 .map_err(funds_error)
         }),
+        "receipt" => receipt_key(arg).map(|pk| RhoByteArray::create_par(pk)),
         "slash" => bytes(arg).and_then(|pk| {
             slash(cells()?, &pk)
                 .map(|held| RhoNumber::create_par(held as i64))

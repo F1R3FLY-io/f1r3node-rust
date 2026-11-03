@@ -87,9 +87,15 @@ async fn a_deployer_bonds_its_own_rev_natively() {
                     b!("bond", (*deployerId, 300), "out")
                   }"#;
     assert!(eval_as(&runtime, &alice, term).await.is_empty());
+    let (ok, receipt) = either(&take(&runtime, "out").await[0]);
+    assert!(ok);
     assert_eq!(
-        either(&take(&runtime, "out").await[0]),
-        (true, Par::default())
+        rholang::rust::interpreter::accounting::rev_stack::bond::receipt_key(&receipt),
+        Ok(alice.pk.bytes.to_vec()),
+        "the reply is a receipt that names the bonder"
+    );
+    assert!(
+        rholang::rust::interpreter::accounting::rev_stack::bond::receipt_key(&Par::default()).is_err()
     );
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 700);
     assert_eq!(bond_balance(cells(&runtime), &alice.pk.bytes).unwrap(), 300);

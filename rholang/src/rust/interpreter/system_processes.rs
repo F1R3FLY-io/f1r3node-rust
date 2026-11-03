@@ -1274,6 +1274,11 @@ impl SystemProcesses {
         &self,
         contract_args: (Vec<ListParWithRandom>, bool, Vec<Par>),
     ) -> Result<Vec<Par>, InterpreterError> {
+        let random_state = contract_args
+            .0
+            .first()
+            .map(|call| call.random_state.clone())
+            .unwrap_or_default();
         let Some((produce, _, _, args)) = self.is_contract_call().unapply(contract_args) else {
             return Err(illegal_argument_error("rev_bond"));
         };
@@ -1287,7 +1292,13 @@ impl SystemProcesses {
         };
 
         let Some(response) =
-            rev_stack::bond::handle(self.space.hot_store(), &command, second_par, &self.wallet_authority().await)
+            rev_stack::bond::handle(
+                self.space.hot_store(),
+                &command,
+                second_par,
+                &self.wallet_authority().await,
+                &random_state,
+            )
         else {
             return Err(illegal_argument_error("rev_bond"));
         };

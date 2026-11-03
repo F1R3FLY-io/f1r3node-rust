@@ -337,9 +337,9 @@ pub fn bond_term(amount: i64) -> Result<String, String> {
         "new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), \
          deployId(`rho:system:deployId`), rl(`rho:registry:lookup`), posCh, bonded in {{\n  \
          rb!(\"bond\", (*deployerId, {amount}), *bonded) |\n  \
-         for (@(true, _) <- bonded) {{\n    \
+         for (@(true, receipt) <- bonded) {{\n    \
          rl!(`rho:system:pos`, *posCh) |\n    \
-         for (@(_, PoS) <- posCh) {{ @PoS!(\"bond\", *deployerId, {amount}, *deployId, *deployId) }}\n  \
+         for (@(_, PoS) <- posCh) {{ @PoS!(\"bond\", receipt, {amount}, *deployId, *deployId) }}\n  \
          }} |\n  \
          for (@(false, message) <- bonded) {{ deployId!((false, message)) }}\n}}\n"
     ))

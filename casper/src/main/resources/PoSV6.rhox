@@ -1,7 +1,6 @@
 new PoS,
     registryLookup(`rho:registry:lookup`),
     listOpsCh,
-    getUser,
     pickActiveValidators,
     runMVar,
     fst,
@@ -123,27 +122,35 @@ in {
         contract PoS(@"getConsensusParameters", returnCh) = {
           returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$))
         } |
-        contract PoS(@"bond", @deployerId, @amount, returnCh, handleCh) = {
-          new userCh, processCh in {
-            runMVar!(*stateCh, *processCh, *returnCh) |
-            getUser!(deployerId, *userCh) |
-            for (@state, resultCh <- processCh &
-                 @userPk          <- userCh) {
-              if (state.get("allBonds").contains(userPk)) {
-                resultCh!(state, (false, "Public key is already bonded."))
-              } else if (not (amount matches Int)) {
-                resultCh!(state, (false, "Bond amount must be an Int."))
-              } else if (amount <= 0) {
-                resultCh!(state, (false, "Bond amount must be positive."))
-              } else if (amount < $$minimumBond$$) {
-                resultCh!(state, (false, "Bond is less than minimum!"))
-              } else if (amount > $$maximumBond$$) {
-                resultCh!(state, (false, "Bond is greater than maximum!"))
-              } else {
-                resultCh!(state.set("pendingBonds",
-                                    state.get("pendingBonds").set(userPk,
-                                      state.get("pendingBonds").getOrElse(userPk, []) ++ [(amount, *handleCh)])),
-                          (true, Nil))
+        contract PoS(@"bond", @receipt, @amount, returnCh, handleCh) = {
+          new keyCh in {
+            RevBondAdmin!("receipt", receipt, *keyCh) |
+            for (@key <- keyCh) {
+              match key {
+                (false, message) => { returnCh!((false, message)) }
+                (true, userPk) => {
+                  new processCh in {
+                    runMVar!(*stateCh, *processCh, *returnCh) |
+                    for (@state, resultCh <- processCh) {
+                      if (state.get("allBonds").contains(userPk)) {
+                        resultCh!(state, (false, "Public key is already bonded."))
+                      } else if (not (amount matches Int)) {
+                        resultCh!(state, (false, "Bond amount must be an Int."))
+                      } else if (amount <= 0) {
+                        resultCh!(state, (false, "Bond amount must be positive."))
+                      } else if (amount < $$minimumBond$$) {
+                        resultCh!(state, (false, "Bond is less than minimum!"))
+                      } else if (amount > $$maximumBond$$) {
+                        resultCh!(state, (false, "Bond is greater than maximum!"))
+                      } else {
+                        resultCh!(state.set("pendingBonds",
+                                            state.get("pendingBonds").set(userPk,
+                                              state.get("pendingBonds").getOrElse(userPk, []) ++ [(amount, *handleCh)])),
+                                  (true, Nil))
+                      }
+                    }
+                  }
+                }
               }
             }
           }
@@ -368,11 +375,6 @@ in {
   } |
   contract fst(@(first, _), resultCh) = {
     resultCh!(first)
-  } |
-  contract getUser(@deployerId, returnCh) = {
-    new deployerIdOps(`rho:system:deployerId:ops`) in {
-      deployerIdOps!("pubKeyBytes", deployerId, *returnCh)
-    }
   } |
   contract pickActiveValidators(@allBonds, returnCh) = {
     new pksCh in {

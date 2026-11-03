@@ -459,9 +459,9 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
                rl(`rho:registry:lookup`), posCh, sent, bonded, registered, handleCh in {{
              w!("transfer", (*deployerId, "{}", 6000), *sent) |
              rb!("bond", (*deployerId, 1000), *bonded) |
-             for (@(true, _) <- bonded) {{
+             for (@(true, receipt) <- bonded) {{
                rl!(`rho:system:pos`, *posCh) |
-               for (@(_, PoS) <- posCh) {{ @PoS!("bond", *deployerId, 1000, *registered, *handleCh) }}
+               for (@(_, PoS) <- posCh) {{ @PoS!("bond", receipt, 1000, *registered, *handleCh) }}
              }} |
              for (@h <- handleCh) {{ @"handle"!(h) }}
            }}"#,

@@ -2,10 +2,10 @@ new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), PoSCh, bondedCh, re
     rl(`rho:registry:lookup`), stdout(`rho:io:stdout`) in {
   stdout!("About to bond 100 natively...") |
   rb!("bond", (*deployerId, 100), *bondedCh) |
-  for (@(true, _) <- bondedCh) {
+  for (@(true, receipt) <- bondedCh) {
     rl!(`rho:system:pos`, *PoSCh) |
     for (@(_, PoS) <- PoSCh) {
-      @PoS!("bond", *deployerId, 100, *registeredCh, *handleCh) |
+      @PoS!("bond", receipt, 100, *registeredCh, *handleCh) |
       for (@(true, _) <- registeredCh) {
         stdout!("The bond is pending until the block closes.")
       }
