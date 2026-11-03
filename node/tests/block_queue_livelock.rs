@@ -265,6 +265,9 @@ impl PeerBehaviour {
 /// the first `SEED_PEERS` it is connected to.
 #[derive(Default, Debug)]
 struct SentRequests {
+    /// Block requests of either kind the node began to send, counted before
+    /// they wait on `block_requests`.
+    attempted: AtomicUsize,
     block_requests_to_seed_peers: AtomicUsize,
     block_requests_to_other_peers: AtomicUsize,
     has_block_requests: AtomicUsize,
@@ -315,6 +318,7 @@ fn block_request_kind(msg: &Protocol) -> Option<BlockRequestKind> {
 impl TransportLayer for PeerTransport {
     async fn send(&self, peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
         if let Some(kind) = block_request_kind(msg) {
+            self.sent.attempted.fetch_add(1, Ordering::SeqCst);
             self.block_requests.pass().await;
             let counter = match kind {
                 BlockRequestKind::HasBlockRequest => &self.sent.has_block_requests,
@@ -1019,6 +1023,67 @@ async fn missing_parents_held_beyond_the_seed_peers_are_fetched_when_thousands_a
         outcome.is_ok(),
         "{validated} of {waiting_count} blocks, each missing a parent that only non-seed peers \
          hold, were validated after {:?}; {sent}",
+        outcome.unwrap_err(),
+    );
+}
+
+// ── R6: a parent validated while its child waits on a paused peer ─────────
+
+/// Three validators. The third is paused, so a request for a missing block
+/// does not complete until it times out. The first validator's block arrives
+/// before its parent; while the node waits on the paused peer for that
+/// parent, the parent arrives from its author and is validated. Once the
+/// paused peer's request ends, the first validator keeps extending its chain.
+/// Every block must reach the DAG without being announced again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn a_chain_is_validated_when_its_parent_arrives_while_a_paused_peer_is_asked_for_it() {
+    init_tracing();
+    let mut validators = Validators::new(3);
+    let genesis = validators.genesis();
+    let mut stores = Stores::with_genesis(genesis.clone()).await;
+    let paused_peer = Gate::new(false);
+    let node = Node::start(&mut stores, NodeSetup {
+        peers: 3,
+        behaviour: PeerBehaviour::holding_nothing(),
+        block_requests: paused_peer.clone(),
+        validation: Gate::new(true),
+    })
+    .await;
+    let author = 0;
+
+    let parent = validators.sign(0, &[&genesis]);
+    let child = validators.sign(0, &[&parent]);
+    node.gossip(author, &child).await;
+    wait_until(Duration::from_secs(10), || {
+        node.sent.attempted.load(Ordering::SeqCst) > 0
+    })
+    .await
+    .expect("the node asks for the missing parent");
+
+    node.gossip(author, &parent).await;
+    wait_until(Duration::from_secs(10), || node.in_dag(&parent))
+        .await
+        .expect("the parent, whose own parent is validated, is validated");
+    paused_peer.open();
+
+    let mut chain = vec![child];
+    for _ in 0..6 {
+        let next = validators.sign(0, &[chain.last().expect("the chain starts at the child")]);
+        node.gossip(author, &next).await;
+        chain.push(next);
+    }
+
+    let outcome = wait_until(Duration::from_secs(30), || {
+        node.count_in_dag(&chain) == chain.len()
+    })
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "{} of {} blocks of a chain whose first block's parent arrived while a paused peer was \
+         asked for it were validated after {:?}",
+        node.count_in_dag(&chain),
+        chain.len(),
         outcome.unwrap_err(),
     );
 }
