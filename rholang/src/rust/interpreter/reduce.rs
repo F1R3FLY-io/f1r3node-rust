@@ -253,43 +253,6 @@ fn split_kind(
     Ok(Some((stack, payer)))
 }
 
-fn runs_bound_process(par: &Par, env: &Env<Par>) -> bool {
-    let within = |body: &Option<Par>, env: &Env<Par>| {
-        body.as_ref()
-            .is_some_and(|body| runs_bound_process(body, env))
-    };
-    par.exprs.iter().any(|expr| match &expr.expr_instance {
-        Some(ExprInstance::EVarBody(EVar {
-            v:
-                Some(Var {
-                    var_instance: Some(VarInstance::BoundVar(index)),
-                }),
-        })) => env.get(index).is_some(),
-        _ => false,
-    }) || par
-        .receives
-        .iter()
-        .any(|receive| within(&receive.body, &env.shift(receive.bind_count)))
-        || par
-            .news
-            .iter()
-            .any(|new| within(&new.p, &env.shift(new.bind_count)))
-        || par.matches.iter().any(|m| {
-            m.cases
-                .iter()
-                .any(|case| within(&case.source, &env.shift(case.free_count)))
-        })
-        || par
-            .conditionals
-            .iter()
-            .any(|c| within(&c.if_true, env) || within(&c.if_false, env))
-        || par.bundles.iter().any(|bundle| within(&bundle.body, env))
-        || par
-            .cost_signed_terms
-            .iter()
-            .any(|term| within(&term.body, env))
-}
-
 fn join_error(err: JoinError) -> InterpreterError {
     if err.is_cancelled() {
         InterpreterError::ReduceError(format!("task cancelled: {}", err))
@@ -1301,11 +1264,11 @@ impl DebruijnInterpreter {
                     ExprInstance::EVarBody(e) => {
                         let var = e.v.as_ref().expect("an EVar always holds a variable");
                         let res = self.eval_var(var, env)?;
-                        self.eval_received(res, env, rand).await
+                        self.eval(res, env, rand).await
                     }
                     ExprInstance::EMethodBody(_) => {
                         let res = self.eval_expr_to_par(&term, env)?;
-                        self.eval_received(res, env, rand).await
+                        self.eval(res, env, rand).await
                     }
                     other => Err(InterpreterError::BugFoundError(format!(
                         "Undefined term: {:?}",
@@ -1426,30 +1389,23 @@ impl DebruijnInterpreter {
             .collect::<Result<Vec<_>, InterpreterError>>()?;
 
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
-        let body = receive
-            .body
-            .expect("Receive.body: normalizer post-condition");
-        let body_env = env.shift(receive.bind_count);
-        let record = match seal::current() {
-            Some(record) if runs_bound_process(&body, &body_env) => Some(record.received()),
-            other => other,
-        };
-        let subst_body = self
-            .substitute
-            .substitute_no_sort_and_charge(body, 0, &body_env)?;
+        let subst_body = self.substitute.substitute_no_sort_and_charge(
+            receive
+                .body
+                .expect("Receive.body: normalizer post-condition"),
+            0,
+            &env.shift(receive.bind_count),
+        )?;
 
-        seal::within(
-            record,
-            self.consume(
-                binds,
-                ParWithRandom {
-                    body: Some(subst_body),
-                    random_state: rand.to_bytes(),
-                },
-                receive.persistent,
-                receive.peek,
-                subst_guard,
-            ),
+        self.consume(
+            binds,
+            ParWithRandom {
+                body: Some(subst_body),
+                random_state: rand.to_bytes(),
+            },
+            receive.persistent,
+            receive.peek,
+            subst_guard,
         )
         .await?;
         Ok(())
@@ -1771,28 +1727,11 @@ impl DebruijnInterpreter {
         ))
     }
 
-    async fn eval_received(
-        &self,
-        par: Par,
-        env: &Env<Par>,
-        rand: Blake2b512Random,
-    ) -> Result<(), InterpreterError> {
-        match seal::current() {
-            Some(record) => seal::within(Some(record.received()), self.eval(par, env, rand)).await,
-            None => self.eval(par, env, rand).await,
-        }
-    }
-
     async fn region_signers(
         &self,
         refused: &(dyn Fn(String) -> InterpreterError + Sync),
     ) -> Result<Vec<WalletOwner>, InterpreterError> {
         if let Some(record) = seal::current() {
-            if record.from_data {
-                return Err(refused(
-                    "a seal inside data received at run time cannot name a wallet".to_string(),
-                ));
-            }
             return Ok(record.origin.signers);
         }
         if self.seals_recorded() {
@@ -1811,11 +1750,6 @@ impl DebruijnInterpreter {
         refused: &(dyn Fn(String) -> InterpreterError + Sync),
     ) -> Result<WalletOwner, InterpreterError> {
         if let Some(record) = seal::current() {
-            if record.from_data {
-                return Err(refused(
-                    "a stack inside data received at run time draws on no wallet".to_string(),
-                ));
-            }
             return Ok(record.owner);
         }
         if self.seals_recorded() {

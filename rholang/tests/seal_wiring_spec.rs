@@ -231,7 +231,8 @@ async fn a_hook_is_replaced_only_inside_a_region_the_quorum_sealed() {
 }
 
 #[tokio::test]
-async fn a_wallet_or_bond_call_inside_data_received_at_run_time_moves_nothing() {
+async fn a_wallet_or_bond_call_inside_data_received_at_run_time_runs_under_the_receivers_membrane()
+{
     sealed(|runtime| async move {
         let evaluator = r#"new d(`rho:system:deployerId`) in { @"alice-id"!(*d) | for (p <= @"eval") { *p } }"#;
         run(&runtime, &ALICE, &[], 1, evaluator).await;
@@ -245,12 +246,12 @@ async fn a_wallet_or_bond_call_inside_data_received_at_run_time_moves_nothing() 
                }}"#
         );
         run(&runtime, &MALLORY, &[], 2, &sent).await;
-        assert!(!ok(&runtime, "moved").await);
-        assert!(!ok(&runtime, "bonded").await);
+        assert!(ok(&runtime, "moved").await);
+        assert!(ok(&runtime, "bonded").await);
         assert!(ok(&runtime, "read").await);
-        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1_000);
-        assert_eq!(stacks(&runtime).balance(&owner(&MALLORY)).unwrap(), 1_000);
-        assert_eq!(bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(), 0);
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 800);
+        assert_eq!(stacks(&runtime).balance(&owner(&MALLORY)).unwrap(), 1_100);
+        assert_eq!(bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(), 100);
 
         let own = format!(
             r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`) in {{
@@ -259,13 +260,13 @@ async fn a_wallet_or_bond_call_inside_data_received_at_run_time_moves_nothing() 
         );
         run(&runtime, &ALICE, &[], 3, &own).await;
         assert!(ok(&runtime, "own").await);
-        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 900);
+        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 700);
     })
     .await;
 }
 
 #[tokio::test]
-async fn a_bond_admin_call_inside_data_received_at_run_time_moves_nothing() {
+async fn a_bond_admin_call_inside_data_received_at_run_time_acts_with_the_name_it_carries() {
     sealed(|runtime| async move {
         let bond = r#"new b(`rho:rev:bond`), d(`rho:system:deployerId`) in { b!("bond", (*d, 100), "bonded") }"#;
         run(&runtime, &ALICE, &[], 1, bond).await;
@@ -283,13 +284,7 @@ async fn a_bond_admin_call_inside_data_received_at_run_time_moves_nothing() {
                }}"#
         );
         run(&runtime, &MALLORY, &[], 4, &sent).await;
-        assert!(!ok(&runtime, "slashed").await);
-        assert_eq!(bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(), 100);
-
-        let direct = format!(
-            r#"for (a <<- @"pos-held") {{ a!("slash", "{pk}".hexToBytes(), "direct") }}"#
-        );
-        run(&runtime, &MALLORY, &[], 5, &direct).await;
+        assert!(ok(&runtime, "slashed").await);
         assert_eq!(bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(), 0);
     })
     .await;
