@@ -80,6 +80,28 @@ mod stream_handler_spec {
     }
 
     #[tokio::test]
+    async fn should_refuse_a_second_header_chunk() {
+        // given
+        let cache = Arc::new(dashmap::DashMap::new());
+        let mut chunks = create_stream_iterator(
+            10 * 1024,
+            30 * 1024,
+            "sender".to_string(),
+            "BlockMessageTest".to_string(),
+        )
+        .await;
+        let header = chunks[0].clone();
+        chunks.insert(2, header);
+
+        // when
+        let err = handle_stream_err(stream::iter(chunks), None, Some(cache.clone())).await;
+
+        // then
+        assert!(matches!(err, StreamError::Unexpected { .. }));
+        assert!(cache.is_empty());
+    }
+
+    #[tokio::test]
     async fn should_stop_processing_stream_if_incomplete_data() {
         // given
         let cache = Arc::new(dashmap::DashMap::new());
@@ -119,7 +141,7 @@ mod stream_handler_spec {
                     content: Bytes::from(content.clone()),
                 },
             };
-            let chunks = Chunker::chunk_it(NETWORK_ID, &blob, 4096);
+            let chunks = Chunker::chunk_it(NETWORK_ID, Bytes::new(), &blob, 4096);
             assert!(chunks.len() > 2);
 
             let cache = Arc::new(dashmap::DashMap::new());
@@ -244,6 +266,7 @@ mod stream_handler_spec {
         let stream_message = comm::rust::transport::messages::StreamMessage::new(
             peer_node("sender"),
             "TestType".to_string(),
+            Bytes::new(),
             cache_key,
             false, // Not compressed
             test_data.len() as i32,
@@ -270,6 +293,7 @@ mod stream_handler_spec {
         let stream_message = comm::rust::transport::messages::StreamMessage::new(
             peer_node("sender"),
             "TestType".to_string(),
+            Bytes::new(),
             "non_existent_key".to_string(),
             false,
             10,
@@ -376,7 +400,7 @@ mod stream_handler_spec {
         };
 
         // Use Chunker to create chunks
-        Chunker::chunk_it(NETWORK_ID, &blob, message_size)
+        Chunker::chunk_it(NETWORK_ID, Bytes::new(), &blob, message_size)
     }
 
     /// Create a stream without header (for testing missing header scenario)
@@ -459,7 +483,7 @@ mod stream_handler_spec {
         };
 
         // Create chunks with wrong network ID
-        let mut chunks = Chunker::chunk_it("wrong_network", &blob, 4096);
+        let mut chunks = Chunker::chunk_it("wrong_network", Bytes::new(), &blob, 4096);
 
         // Replace the network_id in the header chunk to simulate wrong network
         if let Some(first_chunk) = chunks.get_mut(0) {
