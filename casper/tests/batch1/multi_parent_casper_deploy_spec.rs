@@ -588,7 +588,7 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
         .replace("ADDRESS", address);
         let (values, _) = node
             .runtime_manager
-            .play_exploratory_deploy(source, hash, None)
+            .play_exploratory_deploy(source, hash, None, Vec::new())
             .await
             .unwrap();
         assert_eq!(values.len(), 1);
@@ -686,7 +686,7 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
             );
             assert_eq!(balance(node, hash, recipient).await, amount);
             let (values, _) = node.runtime_manager.play_exploratory_deploy(
-                "new return, rl(`rho:registry:lookup`), posCh in { rl!(`rho:system:pos`, *posCh) | for (@(_, pos) <- posCh) { @pos!(\"getRewards\", *return) } }".into(), hash, None
+                "new return, rl(`rho:registry:lookup`), posCh in { rl!(`rho:system:pos`, *posCh) | for (@(_, pos) <- posCh) { @pos!(\"getRewards\", *return) } }".into(), hash, None, Vec::new()
             ).await.unwrap();
             assert_eq!(values.len(), 1);
             let rewards = RhoMap::unapply(&values[0]).unwrap();

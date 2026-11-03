@@ -174,6 +174,8 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.shard_conf }
 
     fn get_validator(&self) -> Option<ValidatorIdentity> { None }

@@ -714,6 +714,8 @@ mod tests {
 
         fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+        fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+
         fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
 
         fn runtime_manager(&self) -> Arc<RuntimeManager> { self.runtime_manager.clone() }
@@ -909,9 +911,7 @@ mod tests {
         assert!(fixture
             .casper
             .runtime_manager
-            .active_validators_cache_order
-            .lock()
-            .unwrap()
+            .active_validators_cache
             .is_empty());
     }
 
