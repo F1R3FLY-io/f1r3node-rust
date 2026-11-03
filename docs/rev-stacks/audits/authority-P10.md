@@ -1401,6 +1401,35 @@ r13 §6.3 says that work under t stops when the wallet at t cannot pay, and that
 The next merge into FX-8b must take the FX-14 follow-up and `eab30238f`. A-8 re-audits that merge.
 
 
+## Rulings of 2026-11-03: design r15 (Decision 94)
+
+From this point on, A-9 reads against design r15 §6.3 (publications `0bea858`). r15 differs from r14 only in the charging rule sentence, and in the close and genesis paragraphs of §6.3. r14 adds one sentence to the r13 text. Replay adds up what each membrane has drawn as it follows the trace, and a recorded amount that differs from that running total fails the block. That is the forged-amount requirement of the Decision 89 section. r14's exemption of the close (Decision 92) is withdrawn by r15. This audit never applied that exemption.
+
+**The rule (r15 §6.3):** all Rholang code is charged. Code that is not Rholang is not charged. Rholang that is not decorated is charged to its deployer.
+
+**Consequences:**
+- **The close is charged.** PoS's undecorated close code is charged to the system deploy's deployer, which is the proposing validator. The validator pays from its fees. A stored continuation that the close fires is charged to its installer, for its cells and its work. FX-15 gates it like any other membrane. Only consensus code written in Rust is free.
+- **Bootstrap is sunk cost.** The genesis block and its system deploys are not charged.
+- **Genesis code is charged to its caller.** Code installed at genesis has no deployer. When a later deployment fires it, the deployer of that run pays (Decision 81, confirmed).
+
+### Effect on the audit
+
+| Item | Before | After r15 |
+|---|---|---|
+| D8: work of a stored continuation that the close fires | Closed for work on FX-12 by `charge_recorded_work`, with a cap at the balance | **Stays closed** as to who pays. The cap is part of F40: FX-15 must gate this work like any membrane. |
+| D8b: cells of a COMM that the close fires | Blocking until question 13 is ruled | **Blocking (r15 §6.3).** It stays open until FX-15 gates the close and charges its cells to the installer. Question 13 is answered by Decision 94. |
+| **D10 (new): PoS's undecorated close code is not charged** | — | **Blocking.** FX-12 decision 7 says that work with no record (the close itself, PoS) is not charged. r15 §6.3 charges it to the proposing validator. The fix must charge the cells and work of the close's undecorated code to the proposer, and the post-state root must carry the charge so that replay checks it. |
+| Genesis code fired by a deployment (Decision 81) | Holds: a surface with no record is charged to the firing client. Decision 85 gives two cells for a COMM between the client's send and genesis code. | **No change.** |
+| Bootstrap | Not audited | **To check:** the genesis block and its system deploys draw no charge. |
+
+**D10 test plan:**
+1. A close whose PoS code does known work and COMMs. The proposer's wallet pays that work and those cells at the close.
+2. The block replays to the same root.
+3. A stored continuation that the close fires is charged to its installer, not to the proposer.
+
+**Question for the lanes (no ruling needed):** the proposer pays "from the fees it earns". The fix must state the order: does settlement credit the fees before the close charge, or does the close charge draw on the proposer's pre-state balance? Both are reversible. A lane decides and logs it.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -1415,5 +1444,5 @@ The next merge into FX-8b must take the FX-14 follow-up and `eab30238f`. A-8 re-
 10. **D79 decision 5:** answered on 2026-11-03 (Decision 85: two cells, both charged to the client). A side with no record and the client's own record are two keys, so a COMM between the client's send and genesis code counts two cells. Is one cell the intent of Decision 80 for this case?
 11. **F40:** answered on 2026-11-03 (Decision 86: work under the membrane stops). When a funded stored receive fires a continuation whose work costs more than its purse holds, who pays the shortfall?
 12. **F39 and F33:** answered on 2026-11-03 (Decision 83: the wallet at the seal pays). Is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
-13. **D8b:** is the close-block system deploy exempt from the one-cell charge of r12 §6.3, or must a COMM that the close fires pay its cells?
+13. **D8b:** answered on 2026-11-03 (Decision 94: the close is charged, its undecorated code to the proposer and stored continuations to their installers). Is the close-block system deploy exempt from the one-cell charge of r12 §6.3, or must a COMM that the close fires pay its cells?
 
