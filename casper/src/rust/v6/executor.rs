@@ -129,6 +129,8 @@ fn envelope_run(processed: &ProcessedDeploy) -> EnvelopeRun {
     }
 }
 
+const FOREIGN_WORK_BUDGET: i64 = super::resource_policy::DEFAULT_DEMAND_CAP;
+
 pub struct EnvelopeExecutor {
     runtime_manager: Arc<RuntimeManager>,
     workers: usize,
@@ -206,6 +208,7 @@ impl Runs {
     }
 
     fn give_back(&self, replay: bool, pooled: Pooled) {
+        pooled.runtime.cost.set_own_origin(None, 0);
         let mut pool = if replay { self.replay_pool.lock() } else { self.play_pool.lock() };
         if pool.len() < self.workers {
             pool.push(pooled);
@@ -228,6 +231,7 @@ impl Runs {
         ops.runtime.set_seal_records(true);
         ops.runtime.cost.charge_storage_left_in_space();
         ops.runtime.cost.comm_ledger().reset();
+        ops.runtime.cost.set_own_origin(Some(envelope.sig.to_vec()), FOREIGN_WORK_BUDGET);
         let cells = runtime_cells(&ops.runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
@@ -276,6 +280,7 @@ impl Runs {
         runtime.set_seal_records(true);
         runtime.cost.charge_storage_left_in_space();
         runtime.cost.comm_ledger().reset();
+        runtime.cost.set_own_origin(Some(recorded.deploy.sig.to_vec()), FOREIGN_WORK_BUDGET);
         let cells = runtime_cells(runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
