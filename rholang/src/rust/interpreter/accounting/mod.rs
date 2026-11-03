@@ -14,6 +14,7 @@ pub mod noop;
 pub mod rev_stack;
 pub mod stops;
 pub mod storage_rule;
+pub mod system_charge;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/package.scala
 #[allow(non_camel_case_types)]
@@ -29,6 +30,7 @@ pub struct CostManager {
     own_origin: Arc<Mutex<Option<Vec<u8>>>>,
     foreign: Arc<Mutex<(i64, i64)>>,
     stops: Arc<Mutex<Option<stops::ReplayStops>>>,
+    system_charge: Arc<Mutex<Option<system_charge::SystemCharge>>>,
 }
 
 impl CostManager {
@@ -53,6 +55,7 @@ impl CostManager {
             own_origin: Arc::new(Mutex::new(None)),
             foreign: Arc::new(Mutex::new((0, 0))),
             stops: Arc::new(Mutex::new(None)),
+            system_charge: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -131,6 +134,14 @@ impl CostManager {
 
     pub fn replay_stops(&self) -> Option<stops::ReplayStops> {
         self.stops.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    pub fn set_system_charge(&self, charge: Option<system_charge::SystemCharge>) {
+        *self.system_charge.lock().unwrap_or_else(|p| p.into_inner()) = charge;
+    }
+
+    pub fn system_charge(&self) -> Option<system_charge::SystemCharge> {
+        self.system_charge.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     pub fn charge_storage_left_in_space(&self) {

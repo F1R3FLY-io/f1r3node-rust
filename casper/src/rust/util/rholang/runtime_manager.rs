@@ -260,6 +260,29 @@ impl Default for ReplayLock {
     fn default() -> Self { Self::new() }
 }
 
+pub type StopChecker = Arc<
+    dyn Fn(
+            &[rholang::rust::interpreter::accounting::stops::Refusal],
+            &rholang::rust::interpreter::accounting::stops::ReplayStops,
+        ) -> Result<(), String>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone, Default)]
+pub struct SystemGate {
+    pub funding: Option<Arc<dyn rholang::rust::interpreter::accounting::rev_stack::seal::Funding>>,
+    pub charge: Option<rholang::rust::interpreter::accounting::system_charge::SystemCharge>,
+    pub stops: Option<StopChecker>,
+}
+
+impl SystemGate {
+    fn apply(&self, runtime: &RhoRuntimeImpl) {
+        runtime.set_funding(self.funding.clone());
+        runtime.cost.set_system_charge(self.charge.clone());
+    }
+}
+
 #[derive(Clone)]
 pub struct RuntimeManager {
     pub space: RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
@@ -784,8 +807,24 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        self.compute_state_gated(start_hash, terms, system_deploys, block_data, invalid_blocks, None)
+            .await
+    }
+
+    pub async fn compute_state_gated(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<Signed<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        gate: Option<SystemGate>,
+    ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await?;
+        if let Some(gate) = &gate {
+            gate.apply(&runtime);
+        }
         let mut runtime_ops = RuntimeOps::new(runtime);
 
         // Block data used for mergeable key
@@ -1046,6 +1085,28 @@ impl RuntimeManager {
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
     ) -> Result<StateHash, CasperError> {
+        self.replay_compute_state_gated(
+            start_hash,
+            terms,
+            system_deploys,
+            block_data,
+            invalid_blocks,
+            is_genesis,
+            None,
+        )
+        .await
+    }
+
+    pub async fn replay_compute_state_gated(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        block_data: &BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        is_genesis: bool,
+        gate: Option<SystemGate>,
+    ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
         let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
@@ -1108,6 +1169,22 @@ impl RuntimeManager {
             .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await?;
+        let refusals = crate::rust::v6::stops::system_refusals(&system_deploys);
+        let stopped = match &gate {
+            Some(gate) => {
+                gate.apply(&replay_runtime);
+                crate::rust::v6::stops::install_system(&system_deploys)
+            }
+            None => None,
+        };
+        if !refusals.is_empty() && gate.as_ref().and_then(|g| g.stops.as_ref()).is_none() {
+            return Err(CasperError::RuntimeError(
+                "a system deploy carries refusals, but its replay has no stop check".to_string(),
+            ));
+        }
+        replay_runtime
+            .cost
+            .set_replay_stops(stopped.as_ref().map(|(stops, _)| stops.clone()));
         let runtime_ops = RuntimeOps::new(replay_runtime);
         let mut replay_runtime_ops = ReplayRuntimeOps::new(runtime_ops);
 
@@ -1133,6 +1210,13 @@ impl RuntimeManager {
         // `block_hash` via `Validate::block_hash` which recomputes leaves
         // from the stored block body.
         let (state_hash, mergeable_chs, _block_hash_leaves) = replay_result?;
+        if let (Some((stops, refusals)), Some(check)) =
+            (&stopped, gate.as_ref().and_then(|g| g.stops.as_ref()))
+        {
+            check(refusals, stops).map_err(|e| {
+                CasperError::RuntimeError(format!("a membrane stop in a system deploy does not replay: {e}"))
+            })?;
+        }
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);

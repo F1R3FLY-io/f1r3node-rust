@@ -19,7 +19,7 @@ use rholang::rust::interpreter::accounting::rev_stack::reserve::{
 };
 use rholang::rust::interpreter::accounting::rev_stack::seal::Funding;
 use rholang::rust::interpreter::accounting::rev_stack::{
-    wallet_channel_id, wallet_channel_id_of, HotStoreCells, WalletOwner,
+    wallet_channel_id, wallet_channel_id_of, HotStoreCells, RevAmount, WalletOwner,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -36,7 +36,7 @@ use super::body::StateHash;
 use super::conservation::Conservation;
 use super::footprint::{footprint, Footprint};
 use super::gate::{
-    check_recorded, gate_block, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
+    check_recorded_with_close, gate_block_with_close, resolve_joint_wallets, CommitmentTable, GateEntry, GateInput, GateOutcome,
     PhloLimitDemand, StoreReader,
 };
 use super::merge::{merge_runs, RunEffect};
@@ -48,7 +48,8 @@ use super::surface::{own_cells, BlockPurses, EnvelopeFunding, Surfaces};
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::util::rholang::runtime_manager::{RuntimeManager, StopChecker, SystemGate};
+use rholang::rust::interpreter::accounting::system_charge::SystemCharge;
 
 #[derive(Clone, Debug)]
 pub struct ExecutedBlock {
@@ -137,6 +138,7 @@ pub struct EnvelopeExecutor {
     workers: usize,
     boxcar: Boxcar,
     runs: Arc<Runs>,
+    close_precharge: RevAmount,
 }
 
 struct Runs {
@@ -164,12 +166,27 @@ impl EnvelopeExecutor {
             runtime_manager,
             workers,
             boxcar: Boxcar::unbounded(),
+            close_precharge: 0,
         }
     }
 
     pub fn with_boxcar(mut self, boxcar: Boxcar) -> Self {
         self.boxcar = boxcar;
         self
+    }
+
+    pub fn with_close_precharge(mut self, precharge: RevAmount) -> Self {
+        self.close_precharge = precharge;
+        self
+    }
+
+    fn close_hold(&self, block_data: &BlockData) -> Result<Option<(WalletOwner, RevAmount)>, CasperError> {
+        if self.close_precharge == 0 {
+            return Ok(None);
+        }
+        let proposer = WalletOwner::from_public_key(&block_data.sender)
+            .map_err(|e| invalid(format!("the block sender has no wallet: {e}")))?;
+        Ok(Some((proposer, self.close_precharge)))
     }
 }
 
@@ -552,7 +569,13 @@ impl EnvelopeExecutor {
         let mut inputs = gate_inputs(envelopes.iter())?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
-        let gate = gate_block(&reader, &PhloLimitDemand, &inputs)?;
+        let close = self.close_hold(&block_data)?;
+        let gate = gate_block_with_close(
+            &reader,
+            &PhloLimitDemand,
+            &inputs,
+            close.as_ref().map(|(owner, amount)| (owner, *amount)),
+        )?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), gate.table.clone()));
         let gate_time = started.elapsed();
         let effects: Vec<EnvelopeEffect> = stream::iter(envelopes.into_iter().enumerate())
@@ -608,7 +631,14 @@ impl EnvelopeExecutor {
         let mut inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
-        let gate = check_recorded(&reader, &PhloLimitDemand, &inputs, recorded_gate)
+        let close = self.close_hold(&block_data)?;
+        let gate = check_recorded_with_close(
+            &reader,
+            &PhloLimitDemand,
+            &inputs,
+            recorded_gate,
+            close.as_ref().map(|(owner, amount)| (owner, *amount)),
+        )
             .map_err(|e| invalid(format!("the recorded gate does not replay: {e}")))?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), gate.table.clone()));
         let effects: Vec<EnvelopeEffect> = stream::iter(recorded.into_iter().enumerate())
@@ -740,6 +770,31 @@ pub struct BlockExecutor {
 }
 
 impl BlockExecutor {
+    async fn close_gate(
+        &self,
+        settled_root: &StateHash,
+        block: &BlockMessage,
+        hold: RevAmount,
+    ) -> Result<SystemGate, CasperError> {
+        let payer = WalletOwner::from_public_key(&block_data(block).sender)
+            .map_err(|e| invalid(format!("the block sender has no wallet: {e}")))?;
+        let reader = StoreReader::at(&self.runtime_manager, settled_root).await?;
+        let purses = Arc::new(BlockPurses::new(Box::new(reader), CommitmentTable::default()));
+        let stops: StopChecker = Arc::new(move |refusals, stops| {
+            super::stops::check(refusals, stops, &purses, &[]).map_err(|e| format!("{e:?}"))
+        });
+        Ok(SystemGate {
+            funding: None,
+            charge: Some(SystemCharge::new(payer, hold)),
+            stops: Some(stops),
+        })
+    }
+
+    pub fn with_close_precharge(mut self, precharge: RevAmount) -> Self {
+        self.envelopes = self.envelopes.with_close_precharge(precharge);
+        self
+    }
+
     pub fn new(runtime_manager: Arc<RuntimeManager>, workers: usize) -> Self {
         BlockExecutor {
             envelopes: EnvelopeExecutor::new(Arc::clone(&runtime_manager), workers),
@@ -766,14 +821,17 @@ impl BlockExecutor {
             .execute(pre_root, envelopes, block_data(block))
             .await?;
         let started = std::time::Instant::now();
+        let hold = executed.gate.close_hold.as_ref().map_or(0, |h| h.amount);
+        let gate = self.close_gate(&executed.settled_root, block, hold).await?;
         let (post_root, _, system_deploys) = self
             .runtime_manager
-            .compute_state(
+            .compute_state_gated(
                 &executed.settled_root,
                 vec![],
                 vec![close_block(block)],
                 block_data(block),
                 None,
+                Some(gate),
             )
             .await?;
         let close_block_time = started.elapsed();
@@ -963,15 +1021,18 @@ impl ExecutionBackend for BlockExecutor {
         if record.settlement() != Some(&replayed.settlement) {
             return Err(mismatch("the settled charges"));
         }
+        let hold = replayed.gate.close_hold.as_ref().map_or(0, |h| h.amount);
+        let gate = self.close_gate(&replayed.settled_root, block, hold).await?;
         let post_root = self
             .runtime_manager
-            .replay_compute_state(
+            .replay_compute_state_gated(
                 &replayed.settled_root,
                 vec![],
                 record.system_deploys().to_vec(),
                 &block_data(block),
                 None,
                 false,
+                Some(gate),
             )
             .await?;
         if post_root != *record.post_root() {
