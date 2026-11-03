@@ -455,11 +455,15 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
     let (rm, pre) = shard(&[(&alice, 100_000)]).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
     let term = format!(
-        r#"new w(`rho:rev:wallet`), deployerId(`rho:system:deployerId`),
-               rl(`rho:registry:lookup`), posCh, sent, bonded in {{
+        r#"new w(`rho:rev:wallet`), rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`),
+               rl(`rho:registry:lookup`), posCh, sent, bonded, registered, handleCh in {{
              w!("transfer", (*deployerId, "{}", 6000), *sent) |
-             rl!(`rho:system:pos`, *posCh) |
-             for (@(_, PoS) <- posCh) {{ @PoS!("bond", *deployerId, 1000, *bonded) }}
+             rb!("bond", (*deployerId, 1000), *bonded) |
+             for (@(true, _) <- bonded) {{
+               rl!(`rho:system:pos`, *posCh) |
+               for (@(_, PoS) <- posCh) {{ @PoS!("bond", *deployerId, 1000, *registered, *handleCh) }}
+             }} |
+             for (@h <- handleCh) {{ @"handle"!(h) }}
            }}"#,
         bob.address
     );
@@ -537,6 +541,12 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
         .await
         .unwrap();
     assert_eq!(RhoBoolean::unapply(&answer[0]), Some(true));
+    let handle = rm
+        .get_data(post.clone(), &rholang::rust::interpreter::rho_type::RhoString::create_par("handle".to_string()))
+        .await
+        .unwrap();
+    let (admitted, _) = rholang::rust::interpreter::rho_type::RhoTuple2::unapply(&handle[0]).unwrap();
+    assert_eq!(RhoBoolean::unapply(&admitted), Some(true));
 
     let decoded = BlockRecord::decode(&record.encode()).unwrap();
     assert_eq!(executor.replay(&decoded, &b).await.unwrap(), post);

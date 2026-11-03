@@ -218,7 +218,7 @@ new rl(`rho:registry:lookup`), d(`rho:system:deployerId`), keccak(`rho:crypto:ke
   rl!(`rho:system:pos`, *posCh) |
   for (@(_, PoS) <- posCh) {
     new bonds, active, withdrawers, pending, rewards, epochRewards, epoch, quarantine,
-        threshold, params, withdraw, slash, close, imageCh, committed, revealed, wrong in {
+        threshold, params, withdraw, slash, close, imageCh, committed, revealed, registered, handleCh in {
       @PoS!("getBonds", *bonds) |
       @PoS!("getActiveValidators", *active) |
       @PoS!("getWithdrawers", *withdrawers) |
@@ -242,7 +242,7 @@ new rl(`rho:registry:lookup`), d(`rho:system:deployerId`), keccak(`rho:crypto:ke
         @"check"!(("getConsensusParameters", depth != Nil and lifespan != Nil and price != Nil))
       } |
       @PoS!("withdraw", *d, *withdraw) |
-      for (@(ok, _) <- withdraw) { @"check"!(("withdraw", not ok)) } |
+      for (@(ok, why) <- withdraw) { @"check"!(("withdraw", not ok and why == "Unknown validator handle")) } |
       @PoS!("slash", *d, "00".hexToBytes(), Nil, *slash) |
       for (@(ok, _) <- slash) { @"check"!(("slash", not ok)) } |
       @PoS!("closeBlock", Nil, *close) |
@@ -250,17 +250,12 @@ new rl(`rho:registry:lookup`), d(`rho:system:deployerId`), keccak(`rho:crypto:ke
       keccak!("secret".toByteArray(), *imageCh) |
       for (@image <- imageCh) {
         @PoS!("commitRandomImage", *d, image, *committed) |
-        for (@c <- committed) {
-          @PoS!("revealRandom", *d, "wrong".toByteArray(), *wrong) |
-          for (@(w, _) <- wrong) {
-            @PoS!("revealRandom", *d, "secret".toByteArray(), *revealed) |
-            for (@r <- revealed) {
-              @"check"!(("commitRandomImage", c == true)) |
-              @"check"!(("revealRandom", r == true and not w))
-            }
-          }
-        }
-      }
+        @PoS!("revealRandom", *d, "secret".toByteArray(), *revealed) |
+        for (@(c, why) <- committed) { @"check"!(("commitRandomImage", not c and why == "Unknown validator handle")) } |
+        for (@(r, why) <- revealed) { @"check"!(("revealRandom", not r and why == "Unknown validator handle")) }
+      } |
+      @PoS!("bond", *d, 1000, *registered, *handleCh) |
+      for (@b <- registered) { @"check"!(("bond", b == (true, Nil))) }
     }
   }
 }
@@ -314,6 +309,7 @@ async fn every_pos_v6_entry_point_answers_under_seal_records() {
     let executed = execute(&rm, &genesis, POS_ENTRY_POINTS, &alice, &proposer).await;
     let checks = checks(&rm, &executed.runs[0].post_root).await;
     let labels = [
+        "bond",
         "closeBlock",
         "commitRandomImage",
         "getActiveValidators",
