@@ -334,6 +334,7 @@ impl Runs {
             stopped.as_ref().map_or(&[][..], |(_, refusals)| refusals.as_slice()),
             work,
             recorded_work.as_ref(),
+            &|membrane| stopped.as_ref().map_or(0, |(stops, _)| stops.refunds(membrane)),
         )
         .map_err(|e| invalid(format!("a stopped membrane does not settle: {e:?}")))?;
         let changes = runtime_cells(&replay.runtime_ops.runtime)?.0.changes();
