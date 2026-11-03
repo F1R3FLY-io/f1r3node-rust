@@ -1644,6 +1644,99 @@ The memo has not arrived. When it does, A-8 reviews it before the ruling, and ch
 The review also checks that the memo keeps the Decision 89 rule: the trace of an honest validator is accepted on replay, even when play stopped at a different point.
 
 
+## Review of the Q-33 memo (Decision 99, design r19), before FX-17
+
+- **Document reviewed:** `docs/rev-stacks/memos/Q-33.md` on `patch/Q-32` at `1c0256324` (lane A2). The memo's base is `patch/FX-15-replay` at `7ac56f01a`.
+- **Code read for the review, at `7ac56f01a`:**
+  - `finalization_runner::validate_commit` and `commit_lfb`.
+  - `v6::engine::tick` and `admits_envelopes`.
+  - `v6::lag::LagGate`.
+  - `v6::core::attestation`.
+  - `validate::repeat_deploy`.
+- **Reference:** P11 (Decision 98), Decision 99 as the plan states it. r18 and r19 are not yet in publications (the latest commit there is `0c58795`, r17).
+- **Method:** reading only. No tests were run.
+
+**Result: not signed off.** The design direction is sound: split the order floor from the LFB, put P5 in Validate, and void instead of reject. Five items must change in the memo before lane A2 writes FX-17 code. Two of them break the no-stall argument. Each item has its Decision 88 label.
+
+### What holds
+
+- **Option A is correctly refused.** After order certification, descendants cannot be rejected without invalidating honest blocks.
+- **Attestations name canonical roots.** `ExecutorCore::attestation` gives the root of the last canonical position, which citation and replay fix. It does not give the node's own speculative root. So attestations converge on the canonical records, and the finality rule does not require deterministic play. **Decision 89 still holds:** an honest trace whose play stopped at a different point is accepted on replay, and the canonical record that results is what validators attest.
+- **The P5 safety argument holds.** Two roots for one position cannot both have more than 2/3 of the stake, unless more than 1/3 misattests, and misattestation is already evidence.
+- **Every v6 block carries an attestation** (`check_close_cover` requires one). So blocks without envelopes, under the lag gate or floor pacing, still carry attestations, and P5 can still advance.
+- **The A-LIN hold:** under `ALinPolicy::Halt`, `validate_commit` refuses the commit. The memo keeps the A-LIN check on the order floor, so a held node commits nothing.
+- **Void and held amounts:** a void record has post-root = pre-root. So no gate hold, no Decision 97 pre-charge and no bond move of the void block reaches the state. Pending bonds from earlier blocks stay pending until the next close that runs. Nothing is lost or charged twice in the state, on the condition of item Q5 below.
+
+### Blocking items
+
+**Q1 — blocking: the order floor cannot advance while P5 refuses, so the chain stalls.**
+- **What the memo says:** P5 refuses with `StateUnattested` when the clamped block is not above the current LFB. The order floor is written in the same transaction as the commit marker and the LFB pointer.
+- **Effect:** a refused commit writes nothing, so the order floor does not move either. Execution reads the order floor. Attestations need execution above the LFB. P5 needs those attestations. So at start, and after every refusal, the order floor stays at the LFB, and nothing above it is executed or attested. This is the dependency loop that the stall analysis says does not exist. It exists through the shared commit.
+- **Reason for the label:** this is a safety finding of High severity (the chain stalls), and the design would diverge from P11's no-stall argument.
+- **Required change:** the order floor must advance on the order oracle's certification alone, in its own commit, which is guarded by the existing preconditions (P1 to P4, A-LIN, containment). P5 then moves only the LFB, up to the order floor. Some details move to the order-floor commit:
+  - `NotHigher` is checked against the order floor.
+  - The containment check and `derived_against` are checked against the order floor.
+  - The finalizer's σ folds in the order floor.
+
+  The memo must state each of these.
+
+**Q2 — blocking: the lag gate measures against the LFB, so under P11 it never engages.**
+- **Code:** `admits_envelopes` measures `Lag::measure(LFB number, number of the attested canonical block)`, which is LFB − canonical, floored at 0. Under P11, the LFB can never pass the canonical frontier, because the LFB needs attestations of canonical roots. So the lag is always 0, and the `LagGate` never engages.
+- **Effect:** the memo's bound E ("blocks above the lag threshold carry no envelopes") fails. Execution backlog between the canonical frontier and the order floor is not bounded.
+- **Reason for the label:** this is a High safety finding. It is the stall class of Issue #24.
+- **Required change:**
+  - The lag gate measures order floor − canonical.
+  - `max_unattested` measures order floor − LFB, as the memo says.
+  - Floor pacing (`floor_pacing_engaged`, measured from the LFB) must be assigned to one of the two floors.
+
+**Q3 — blocking: a void record must be a canonical record that replay checks in both directions.**
+- **What the memo says:** "every honest executor derives the same void record."
+- **Gap:** under Decision 89, one executor's record is fixed by citation, and the others replay it. So two forgeries are possible, and replay must reject each:
+  - A void record for a block that is valid.
+  - A normal record for a block that is invalid.
+- **Required change:**
+  - The memo must state that the void decision is a function of the block and the canonical pre-state only. For the uncovered close, that is the proposer's balance at the pre-state, less the gate table.
+  - It must state that replay recomputes the decision and rejects a record that disagrees.
+  - It must list each invalid outcome and say which ones make a block void and which ones are faults of the attester or the citer. For example, a failed Decision 89 check or a record mismatch is a fault of the citer, not of the block.
+  - A trace-alteration test for each direction belongs in FX-17's test list.
+- **Reason for the label:** without it, a forged void record can drop a valid block's envelopes, and a forged normal record can make an invalid block's state final. Both are P11 divergences.
+
+**Q4 — blocking: `VoidBlock` slashing can hit an honest proposer.**
+- **What the memo says:** `Offence::VoidBlock` is a safety-class offence, slashed with B6.
+- **Gap:** the uncovered-close test reads the proposer's balance at the block's pre-state, which is at its linear position. The proposer cannot see that state when it proposes, because blocks ordered before it are not yet executed. Other activity can lower the proposer's balance before that position. For example, a stored receive that the proposer installed draws on the proposer's wallet when other parties fire it (Decisions 75 and 79). `create_block`'s check is against the proposer's own view, so an honest proposer can pass it and still be voided.
+- **Reason for the label:** slashing an honest validator is a High safety finding.
+- **Required change:** a ruling. The options are:
+  - A void without slashing for invalidity that depends on the pre-state at the linear position.
+  - Slashing only for invalidity that the proposer could decide from its own justifications.
+
+**Q5 — blocking: re-inclusion of a void block's envelopes is not specified.**
+- **What the memo says:** the envelopes return to the pool with a rejection entry.
+- **Gap:** `validate::repeat_deploy` refuses a block that carries a deploy signature already present in the DAG. The inclusion checks can also report `InclusionViolation`. A later block that includes an envelope from a void block could then be refused or reported. If the envelope can never be included again, it is lost. If the gate charges it again while the void block's charge somehow stands, it is charged twice.
+- **Required change:**
+  - The memo must state that an envelope in a void block counts as not included, for `repeat_deploy`, for the inclusion checks and for the deploy-index.
+  - It must state that it is charged once, in the block that finally runs it.
+  - FX-17 needs a test that re-includes such an envelope.
+- **Reason for the label:** the "no envelope lost or charged twice" requirement of P11's descendant handling.
+
+### Conditions on FX-17 (not blocking for the memo)
+
+1. **Consumers of `last_finalized_block()`:** list every consumer and assign it to the order floor or the LFB. The list includes the linearizer, the lag gate, floor pacing, deploy status, bond lookup, pruning and the mergeable-block GC on `dev`.
+2. **Restart:**
+   - The linearizer resumes from the persisted canonical frontier and the order-floor register, not from in-memory state.
+   - The attestation tally is rebuilt from the DAG.
+   - The crash test must cover an order-floor commit without an LFB commit (from Q1).
+3. **The close of a void block:** lane B confirms the PoS change (an epoch at the first block at or above the boundary). Lane B also lists the close's other per-block duties, and shows that each one is deferred to the next close that runs, and not lost.
+4. **Wording:** the memo says that one attestation covers earlier positions "because execution is deterministic over a certified prefix". It should say "because the canonical records fix the state of the prefix". Under Decision 89, play is not deterministic.
+
+### Known issues (Decision 88)
+
+- **Storage growth while more than 1/3 of the stake does not attest.** `max_unattested` empties envelopes but does not stop proposals, so empty blocks still accumulate. This is the standard BFT liveness assumption, and it is not a §6.3 or P11 divergence.
+- **Client latency.** "Finalized" now waits one more attestation round. This is P11's intent.
+- **Decision 97's acceptance check** stays until the void path lands, as the memo says. It is inert at a pre-charge of 0.
+
+**Sign-off condition:** A-8 signs off when the memo is revised for Q1 to Q5. Q4 needs a ruling.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -1661,3 +1754,4 @@ The review also checks that the memo keeps the Decision 89 rule: the trace of an
 13. **D8b:** answered on 2026-11-03 (Decision 94: the close is charged, its undecorated code to the proposer and stored continuations to their installers). Is the close-block system deploy exempt from the one-cell charge of r12 §6.3, or must a COMM that the close fires pay its cells?
 
 14. **F45 and F46:** replay does not reproduce the running total of a stopped membrane exactly, because interleavings differ before the next IO step. Must replay compute the exact running total at each refusal, as r16 §6.3 says? Or does the design admit a bounded window for the drawn amount and for the recorded work, and if so, what bound?
+15. **Q-33, Q4:** may a block be voided without slashing its sender, when its invalidity depends on the pre-state at its linear position, which the proposer could not see? Or is `VoidBlock` slashed only for invalidity that the proposer could decide from its own justifications?
