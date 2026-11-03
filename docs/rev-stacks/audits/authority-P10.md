@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1129,6 +1129,64 @@ The rest of §6.3 is unchanged. From the next pass on, A-9 reads against r11. No
 A-8 re-audits the merge commit against this list. A-9 pass 5 runs on the merged branch, and on D8 when its ruling lands.
 
 
+## Revision 13 (action A-9): pass 5 on the FX-12 D8 commit, and the FX-12 merge into FX-14
+
+- **Commits audited:** `patch/FX-12` at `d7537c771` (D8). `patch/FX-14` merge `e5c574656`, with parents `c334f9287` (FX-14) and `d7537c771` (FX-12).
+- **Branch state:** lane A2 has not yet merged FX-12, D79 or FX-14 into FX-8b. `patch/FX-8b` is still at `f00a2da3d`, and `patch/D76` is still at `1502a4e98`. The merge re-audit against revision 12's requirements waits for that merge.
+- **Method:** a code reading of the commits and the decision log. No tests were run.
+
+### The FX-14 merge
+
+The merge is clean. Its combined diff is empty, so each file comes from one parent. FX-14 now contains the D8 commit. It still does not contain D79.
+
+### D8: work fired inside a system deploy
+
+**What the commit does:** `eval_system_deploy` clears the run's ledger before the system source runs. After the system deploy, `charge_recorded_work` charges the work of each recorded key to the key's owner, at the key's origin price. The charge is made in the same runtime and before the checkpoint. Each draw goes to the compute wallet. A compound draws on each component in full, and a wallet with funders draws on them pro rata. A draw is capped at the owner's balance. Work with no record is not charged. The post-state root includes the charge, so replay checks it.
+
+| Check | Result |
+|---|---|
+| Work fired in the close is charged to the record that runs it (Decision 75) | **Holds.** The key is `Surface::of` the running record, as in the envelope runs. |
+| The price is the origin price | **Holds.** The charge uses `surface.phlo_price`. |
+| Replay | **Holds by construction.** Play and replay both run `eval_system_deploy`, and the charge is a state change inside it. |
+| Conservation | **Holds by reading.** Each draw moves REV from the payer to the compute wallet, and a draw never exceeds the payer's balance. |
+| The test pins the charge | **Partly.** `a_continuation_fired_inside_the_close_is_paid_by_its_installer` asserts that the installer pays something in the close, and that the compute wallet gains the same amount. It does not assert that the amount equals the continuation's work at the origin price. No test covers the cap, a compound owner or a wallet with funders on this path. |
+
+**D8 status: closed for work on `patch/FX-12`, with two residues.**
+1. **Cells:** a COMM fired in the close pays no cell (FX-12 decision 8). r11 §6.3 charges each surface of a COMM one cell. The residue is small, because the close fires only the continuations that PoS answers. It stays recorded as a divergence (D8b) until a ruling says that the close is exempt.
+2. **The cap:** a payer that cannot cover the work pays its balance, and the rest goes unpaid. This is the F40 shortfall on a second path. The D79 matcher filter does not apply here, because no funding oracle is installed for a system deploy. F40's ruling must cover both paths.
+
+### F41 — Low: the close-time charge has its own purse rule
+
+**Code:** `compute::charge_recorded_work` maps a compound owner to its components inline. D79 decision 1 makes `seal::purse_of` the one rule, and D76's `surface_purse` calls it.
+
+**Effect:** none today, because the two rules give the same purse. After the merge, a change to `purse_of` would not reach the close-time charge.
+
+**Proposed fix:** call `purse_of` in `charge_recorded_work` when FX-12 and D79 are merged. Reversible, lane B or lane A2.
+
+### Test plan for D8
+
+1. A continuation fired in the close with known work. Assert that the payer's draw equals that work times the origin price.
+2. A payer whose balance is less than the work. Assert the draw is the balance and that replay gives the same root.
+3. A compound owner and a wallet with funders on the close path.
+
+### Added merge requirements
+
+8. **F41:** `charge_recorded_work` calls `seal::purse_of`.
+9. **The funding oracle in the close:** decide with F40 whether the D79 oracle is installed for system deploys. Until then, record that the close has no match filter.
+10. **The FX-12 open list:** items 1 and 2 of the log are done on `patch/D76` (D79). Update the log at the merge.
+
+### Divergence status after pass 5
+
+| Divergence | Status |
+|---|---|
+| D1, D4, D5, D7 | Closed on FX-12 (revision 12) |
+| D2, D3, D6 | Closed |
+| D8 | Closed for work on FX-12. D8b (cells in the close) is open. |
+| D9 | Closed on `patch/D76` only |
+
+Findings F38 to F41 and questions 10 to 13 are open.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -1143,3 +1201,4 @@ A-8 re-audits the merge commit against this list. A-9 pass 5 runs on the merged 
 10. **D79 decision 5:** a side with no record and the client's own record are two keys, so a COMM between the client's send and genesis code counts two cells. Is one cell the intent of Decision 80 for this case?
 11. **F40:** when a funded stored receive fires a continuation whose work costs more than its purse holds, who pays the shortfall?
 12. **F39 and F33:** is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
+13. **D8b:** is the close-block system deploy exempt from the one-cell charge of r11 §6.3, or must a COMM that the close fires pay its cells?
