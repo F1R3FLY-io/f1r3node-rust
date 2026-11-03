@@ -97,3 +97,35 @@ The other files merged with no textual conflict. FX-13's versions of `seal_recor
 - casper lib: 847 passed, 0 failed.
 - casper `--test mod`: 1,250 passed, 0 failed, 19 ignored.
 - node: 466 passed, 0 failed.
+
+## D76, FX-12 and FX-14 (2026-11-03, plan r8.11 and r8.12)
+
+Merged in this order: D76 at 1502a4e98 (with lane C's D79), FX-12 at d7537c771, FX-14 at e5c574656. Checked against lane A1's revision 12 and 13 merge requirements.
+
+| Requirement | Result |
+|---|---|
+| 1. The gate table and D79's `BlockPurses` | D79's two `region_spec` tests and the grant test pass after the merge. |
+| 2. `comm_ledger.rs` | D79's `comm_cells` call site and FX-12's work map are both kept. `reset` clears the surfaces and the work. |
+| 3. `executor.rs` | `run` and `replay_one` keep the work tally and the funding oracle. `set_funding(None)` runs before each runtime goes back to the pool. |
+| 4. Cross-host fixture | Written again after the FX-14 merge with `write_cross_host_fixture`. |
+| 5. FX-14 after FX-12 and D79 | Done. The FX-14 merge had no conflict. |
+| 6. `for` form in a self-sealed envelope | Known issue under Decision 88 (not a §6.3 divergence, not High). |
+| 7. Suite results | Below. |
+| 8. F41 | `charge_recorded_work` calls `seal::purse_of`. |
+| 9. Funding oracle in the close | Not installed. The close has no match filter. FX-15 (Decision 86) decides it. |
+| 10. FX-12 open list | Updated in the FX-12 log. |
+
+FX-12 was cut from D76 before the rebase onto e17e3ed32. For each conflicted file, the rebased D76 is kept, and FX-12's own metering diff (aa47795d4) is applied on it. One assertion block from FX-12's FX-13 merge (the split of the run's work between the sender and the owner) is added again to `region_spec`.
+
+`admits_waiting` (lane C) is accepted as the hook. It runs in `extract_first_match`, which play produce, play consume and replay produce use. Replay consume (`locked_consume` → `run_matcher_consume`) matches the incoming receive against stored data, so it has no stored receive to filter. The incoming receive belongs to the running envelope, and `EnvelopeFunding` funds it without a test. The gap in the D79 hook memo is therefore closed.
+
+One fix in lane C's code: `admits_waiting` was put between the guard's doc comment and `check_commit`, so the comment was on the wrong function. The function now comes before the comment.
+
+| Decision | Alternatives | Reason | Reversible |
+|---|---|---|---|
+| Keep the rebased D76 in conflicts and apply FX-12's own diff | Take FX-12's side, or resolve hunk by hunk | FX-12 carries the pre-rebase D76. Its own changes are one commit. | Yes |
+| Accept `admits_waiting` | Replace it with a `FundedReceive` trait | It is at the hook point, and play and replay both use it | Yes |
+
+**Decision 88 labels:** no new finding is blocking. The misplaced doc comment was fixed in the merge.
+
+v6 tests on the merged tree: 85 passed, 0 failed, 7 ignored.
