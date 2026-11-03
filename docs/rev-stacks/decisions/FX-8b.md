@@ -59,3 +59,20 @@ Full suites, `/tmp` cleared of LMDB directories before the run:
 - casper lib: 847 passed, 0 failed.
 - casper `--test mod`: 1,243 passed, 0 failed, 20 ignored.
 - node: 466 passed, 0 failed.
+
+## FX-11 (2026-11-02)
+
+FX-11 (1b2d387e1, Decisions 70, 72 and 73) merged last, at 2e9339435. Two conflicts:
+
+- `system_processes.rs`: FX-11 adds the same `rho:rev:bondAdmin` refusal under the data mark as this branch's decision 5, with a message for each command. FX-11's form is kept, and the check appears once.
+- `seal_wiring_spec.rs`: both sides appended a test. Both are kept.
+
+The PoSV6 tests and the cross-host fixture merged with no textual conflict, and the fixture still replays. One post-merge fix (c41ccb87b): FX-11's records-on genesis tests read a run's post-root, which P3-06 removed. They now read the merged state.
+
+## Verification of the tip (c41ccb87b, `/tmp` cleared before the run)
+
+- rholang lib: 1,447 passed, 0 failed.
+- rspace_plus_plus: all pass.
+- casper lib: 847 passed, 0 failed.
+- casper `--test mod`: 1,250 passed, 0 failed, 19 ignored.
+- node: 466 passed, 0 failed.
