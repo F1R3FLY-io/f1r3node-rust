@@ -283,7 +283,10 @@ impl ConnectionsCell {
 ///
 /// The bootstrap peer is kept in the routing table so `findAndConnect` can
 /// re-establish the connection on the next discovery cycle. Removing it is
-/// irreversible and strands the node if no other peers are known.
+/// irreversible and strands the node if no other peers are known. A bootstrap
+/// that refuses this node's network or chain (`WrongNetwork`, `WrongChainId`)
+/// cannot serve this node until one of the two nodes restarts, so it is
+/// removed like any other peer.
 ///
 /// A peer is removed only after `liveness` records enough consecutive failures;
 /// the tracker must outlive the call for that streak to accumulate.
@@ -311,7 +314,8 @@ where
     liveness.retain_connected(&connected_ids);
 
     let results = join_all(to_ping.iter().cloned().map(|peer| {
-        let heartbeat_msg = protocol_helper::heartbeat(&conf.local, &conf.network_id);
+        let heartbeat_msg =
+            protocol_helper::heartbeat(&conf.local, &conf.network_id, conf.chain_id.to_wire());
         async move {
             let result = transport.send(&peer, &heartbeat_msg).await;
             (peer, result)
@@ -321,12 +325,20 @@ where
 
     let mut retained_peers = Vec::new();
     let mut failed_peers = Vec::new();
+    let mut refused_peers = HashSet::new();
 
     for (peer, result) in results {
         match result {
             Ok(()) => {
                 liveness.record_success(&peer.id.key);
                 retained_peers.push(peer);
+            }
+            // A peer of another chain or network refuses every message, so
+            // waiting for a failure streak only delays the inevitable.
+            Err(error @ (CommError::WrongNetwork(..) | CommError::WrongChainId(..))) => {
+                warn!("Heartbeat to {} refused; evicting: {}", peer, error);
+                refused_peers.insert(peer.id.key.clone());
+                failed_peers.push(peer);
             }
             Err(error) => match liveness.record_failure(&peer.id.key) {
                 HeartbeatFailure::Evicted => failed_peers.push(peer),
@@ -346,10 +358,12 @@ where
     // table is irreversible and strands the node if no other peers are
     // known.  The bootstrap is still removed from ConnectionsCell and
     // its gRPC channel is disconnected (the TCP connection IS broken).
+    // A bootstrap that refused this node's network or chain is removed from
+    // the routing table too.
     let bootstrap_key = conf.bootstrap.as_ref().map(|b| &b.id.key);
     let removable_peers: Vec<&PeerNode> = failed_peers
         .iter()
-        .filter(|p| bootstrap_key != Some(&p.id.key))
+        .filter(|p| bootstrap_key != Some(&p.id.key) || refused_peers.contains(&p.id.key))
         .collect();
 
     if failed_peers.len() > removable_peers.len() {
@@ -429,9 +443,16 @@ where
                 successful_connections.push(peer);
             }
             Err(error) => {
+                // A peer of another chain or network refuses every attempt, so
+                // it is evicted at once instead of after a failure streak.
+                let refused = matches!(
+                    error,
+                    CommError::WrongNetwork(..) | CommError::WrongChainId(..)
+                );
+                let pinned = bootstrap.is_some_and(|pinned| pinned.id == peer.id) && !refused;
                 if !matches!(error, CommError::ConfigError(_))
-                    && bootstrap.is_none_or(|pinned| pinned.id != peer.id)
-                    && failures.record_failure(&peer)
+                    && !pinned
+                    && (refused || failures.record_failure(&peer))
                 {
                     match node_discovery.evict_unreachable_peer(&peer) {
                         Ok(()) => {
@@ -447,7 +468,8 @@ where
                     }
                 }
                 match error {
-                    CommError::WrongNetwork(peer_addr, msg) => {
+                    CommError::WrongNetwork(peer_addr, msg)
+                    | CommError::WrongChainId(peer_addr, msg) => {
                         warn!("Can't connect to peer {}. {}", peer_addr, msg);
                     }
                     CommError::DnsResolutionFailed(_, _) => {}
@@ -472,7 +494,8 @@ pub async fn connect<T: TransportLayer>(
     transport: &T,
 ) -> Result<(), CommError> {
     let start = std::time::Instant::now();
-    let handshake_msg = protocol_helper::protocol_handshake(&conf.local, &conf.network_id);
+    let handshake_msg =
+        protocol_helper::protocol_handshake(&conf.local, &conf.network_id, conf.chain_id.to_wire());
     let result = transport.send(peer, &handshake_msg).await;
 
     // Record connect-time histogram (matches Scala Connect.scala:L174)
@@ -486,7 +509,6 @@ pub async fn connect<T: TransportLayer>(
 mod tests {
     use super::*;
     use crate::rust::peer_node::{Endpoint, NodeIdentifier};
-    use crate::rust::test_instances::NodeDiscoveryStub;
 
     fn peer(name: &str) -> PeerNode {
         PeerNode {
@@ -576,11 +598,33 @@ mod tests {
         assert!(cell.read().unwrap().is_empty());
     }
 
+    /// Test-only fake of `NodeDiscovery`. `nodes` is a fixed peer list for one
+    /// `find_and_connect` call; `removed` records every `remove_peer` request so
+    /// a test can assert which peers were dropped from the routing table.
+    struct RecordingDiscovery {
+        nodes: Vec<PeerNode>,
+        removed: std::sync::Mutex<Vec<PeerNode>>,
+    }
+
+    #[async_trait::async_trait]
+    impl NodeDiscovery for RecordingDiscovery {
+        async fn discover(&self) -> Result<(), CommError> { Ok(()) }
+
+        fn peers(&self) -> Result<Vec<PeerNode>, CommError> { Ok(self.nodes.clone()) }
+
+        fn remove_peer(&self, peer: &PeerNode) -> Result<(), CommError> {
+            self.removed.lock().unwrap().push(peer.clone());
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn find_and_connect_skips_wrong_network_peers() {
         let cell = cell_with(&[]);
-        let mut discovery = NodeDiscoveryStub::new();
-        discovery.nodes = vec![peer("good"), peer("wrong-net"), peer("broken")];
+        let discovery = RecordingDiscovery {
+            nodes: vec![peer("good"), peer("wrong-net"), peer("broken")],
+            removed: std::sync::Mutex::new(Vec::new()),
+        };
 
         let connect_fn = |p: &PeerNode| {
             let p = p.clone();
@@ -603,5 +647,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(connected, vec![peer("good")]);
+        assert_eq!(*discovery.removed.lock().unwrap(), vec![peer("wrong-net")]);
     }
 }

@@ -233,3 +233,74 @@ impl GenesisCeremonyMasterSpec {
 async fn make_transition_to_running_state_after_block_approved() {
     GenesisCeremonyMasterSpec::make_transition_to_running_state_after_block_approved().await;
 }
+
+#[tokio::test]
+async fn waiting_for_approved_block_loop_keeps_a_flat_stack() {
+    let fixture = TestFixture::new().await;
+
+    let transport_layer = fixture.transport_layer.clone();
+    let rp_conf_ask = fixture.rp_conf_ask.clone();
+    let connections_cell = fixture.connections_cell.clone();
+    let last_approved_block = fixture.last_approved_block.clone();
+    let event_publisher = fixture.event_publisher.clone();
+    let block_retriever = fixture.block_retriever.clone();
+    let engine_cell = Arc::new(EngineCell::init());
+    let block_store = fixture.block_store.clone();
+    let block_dag_storage = fixture.block_dag_storage.clone();
+    let deploy_storage = fixture.deploy_storage.clone();
+    let rejected_deploy_buffer = fixture.rejected_deploy_buffer.clone();
+    let casper_buffer_storage = fixture.casper_buffer_storage.clone();
+    let runtime_manager = fixture.runtime_manager.clone();
+    let estimator = fixture.estimator.clone();
+    let block_processing_queue_tx = fixture.block_processing_queue_tx.clone();
+    let blocks_in_processing = fixture.blocks_in_processing.clone();
+    let casper_shard_conf = fixture.casper_shard_conf.clone();
+    let validator_id = Some(fixture.validator_id.clone());
+
+    let waiting = std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .start_paused(true)
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    tokio::time::timeout(
+                        Duration::from_secs(1000),
+                        GenesisCeremonyMaster::<TransportLayerStub>::waiting_for_approved_block_loop(
+                            transport_layer,
+                            rp_conf_ask,
+                            connections_cell,
+                            last_approved_block,
+                            &event_publisher,
+                            block_retriever,
+                            engine_cell,
+                            block_store,
+                            block_dag_storage,
+                            deploy_storage,
+                            rejected_deploy_buffer,
+                            casper_buffer_storage,
+                            runtime_manager,
+                            estimator,
+                            block_processing_queue_tx,
+                            blocks_in_processing,
+                            casper_shard_conf,
+                            validator_id,
+                            true,
+                            casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
+                        ),
+                    )
+                    .await
+                    .is_err()
+                })
+        })
+        .unwrap();
+    let timed_out = tokio::task::spawn_blocking(move || waiting.join())
+        .await
+        .unwrap()
+        .expect("waiting loop thread panicked");
+
+    assert!(timed_out);
+    assert!(fixture.last_approved_block.lock().unwrap().is_none());
+}
