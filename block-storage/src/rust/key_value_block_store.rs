@@ -303,8 +303,9 @@ impl KeyValueBlockStore {
         &self,
         block: &BlockMessage,
         victim: &BlockHash,
+        class: PendingClass,
     ) -> Result<PendingOutcome, KvStoreError> {
-        self.put_pending_inner(block, PendingClass::Solicited, Some(victim))
+        self.put_pending_inner(block, class, Some(victim))
     }
 
     pub fn put_pending_as(
@@ -328,7 +329,7 @@ impl KeyValueBlockStore {
             });
         }
         let outcome = match replacement {
-            Some(victim) => self.pending.insert_replacing(block, victim),
+            Some(victim) => self.pending.insert_replacing(block, victim, class),
             None => self.pending.insert_as(block, class),
         };
         if self.disk_contains(&block.block_hash)? {

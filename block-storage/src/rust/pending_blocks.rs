@@ -219,8 +219,13 @@ impl PendingBlocks {
         self.insert_inner(block, class, None)
     }
 
-    pub fn insert_replacing(&self, block: &BlockMessage, victim: &BlockHash) -> PendingOutcome {
-        self.insert_inner(block, PendingClass::Solicited, Some(victim))
+    pub fn insert_replacing(
+        &self,
+        block: &BlockMessage,
+        victim: &BlockHash,
+        class: PendingClass,
+    ) -> PendingOutcome {
+        self.insert_inner(block, class, Some(victim))
     }
 
     pub fn insert_as(&self, block: &BlockMessage, class: PendingClass) -> PendingOutcome {
@@ -713,15 +718,38 @@ mod tests {
         assert_eq!(area.insert(&child, true).status, PendingInsert::Accepted);
         assert_eq!(area.insert(&other, true).status, PendingInsert::Accepted);
 
-        let refused = area.insert_replacing(&parent, &other.block_hash);
+        let refused = area.insert_replacing(&parent, &other.block_hash, PendingClass::Solicited);
         assert_eq!(refused.status, PendingInsert::SenderLimitReached);
         assert!(refused.evicted.is_empty());
 
-        let admitted = area.insert_replacing(&parent, &child.block_hash);
+        let admitted = area.insert_replacing(&parent, &child.block_hash, PendingClass::Solicited);
         assert_eq!(admitted.status, PendingInsert::Accepted);
         assert_eq!(admitted.evicted, vec![child.block_hash.clone()]);
         assert!(area.contains(&parent.block_hash));
         assert!(area.contains(&other.block_hash));
         assert!(!area.contains(&child.block_hash));
+    }
+
+    #[test]
+    fn replacing_a_child_does_not_promote_an_unsolicited_parent() {
+        let child = block(1, 7);
+        let other = block(2, 8);
+        let parent = block(3, 7);
+        let newcomer = block(4, 9);
+        let area = PendingBlocks::new(limits(2, usize::MAX, 1));
+        assert_eq!(area.insert(&child, false).status, PendingInsert::Accepted);
+        assert_eq!(area.insert(&other, true).status, PendingInsert::Accepted);
+        assert_eq!(
+            area.insert_replacing(&parent, &child.block_hash, PendingClass::Unsolicited)
+                .status,
+            PendingInsert::Accepted
+        );
+
+        assert_eq!(
+            area.insert(&newcomer, false).status,
+            PendingInsert::Accepted
+        );
+        assert!(!area.contains(&parent.block_hash));
+        assert!(area.contains(&other.block_hash));
     }
 }

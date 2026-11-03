@@ -1318,9 +1318,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         ) && self.has_buffered_dependents(&block.block_hash)
         {
             if let Some(descendant) = self.pending_descendant(block) {
-                let replacement = self
-                    .block_store
-                    .put_pending_replacing(block, &descendant.block_hash)?;
+                let replacement =
+                    self.block_store
+                        .put_pending_replacing(block, &descendant.block_hash, class)?;
                 if replacement.evicted.contains(&descendant.block_hash) {
                     self.defer_pending(&descendant);
                 }
