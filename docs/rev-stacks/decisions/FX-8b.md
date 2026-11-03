@@ -137,3 +137,11 @@ v6 tests on the merged tree: 85 passed, 0 failed, 7 ignored.
 - casper lib: 851 passed, 0 failed, 1 ignored.
 - casper `--test mod`: 1,260 passed, 0 failed, 19 ignored.
 - node: 466 passed, 0 failed.
+
+## FX-14 follow-ups (2026-11-03)
+
+cc3168032 merged at 11c9cb42f. It carries FX-14's follow-ups (2bfaaf942: receipts are spent on use, a validator takes its handle at its own seal, genesis handles; Decisions 84 and 87) and FX-12 at eab30238f (the client's phlo limit counts only its own surfaces). One conflict, in the FX-12 log: the status section now says that eab30238f closes the phlo-limit item.
+
+v6 tests: 88 passed, 0 failed, 7 ignored. `rev_bond_spec`: 3 passed. The cross-host fixture still replays.
+
+**Decision 88 label, known issue:** `FOREIGN_WORK_BUDGET` bounds foreign work in a run with a fixed amount. Decision 86 bounds it by the membrane's wallet instead. FX-15 replaces the fixed amount.
