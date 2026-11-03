@@ -16,7 +16,7 @@ pub fn archive_result(archive: &Path, artifact: &Value) -> Result<Value> {
     );
     let member = archive.by_index(0)?;
     ensure!(
-        member.name() == "worker-result.json"
+        member.name()? == "worker-result.json"
             && member.is_file()
             && member
                 .unix_mode()
