@@ -1238,6 +1238,13 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     /// Force dependency recovery by reopening request state and rebroadcasting HasBlockRequest.
     /// This is used when the processor detects buffered dependency deadlocks.
     pub async fn recover_dependency(&self, hash: BlockHash) -> Result<(), CasperError> {
+        self.try_recover_dependency(hash).await.map(|_| ())
+    }
+
+    pub(crate) async fn try_recover_dependency(
+        &self,
+        hash: BlockHash,
+    ) -> Result<bool, CasperError> {
         let now = Self::current_millis();
 
         if self.is_retry_budget_quarantined(&hash, now)? {
@@ -1246,7 +1253,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 PrettyPrinter::build_string_bytes(&hash),
                 Self::RETRY_BUDGET_QUARANTINE_MS
             );
-            return Ok(());
+            return Ok(false);
         }
 
         if self.has_exceeded_retry_budget(&hash)? {
@@ -1269,7 +1276,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     Self::RETRY_BUDGET_QUARANTINE_MS
                 );
             }
-            return Ok(());
+            return Ok(false);
         }
 
         let dependency_recovery_rerequest_cooldown_ms = Self::DEPENDENCY_RECOVERY_COOLDOWN_MS;
@@ -1288,7 +1295,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         PrettyPrinter::build_string_bytes(&hash),
                         dependency_recovery_rerequest_cooldown_ms
                     );
-                    return Ok(());
+                    return Ok(false);
                 }
             }
 
@@ -1340,7 +1347,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         );
         self.update_aux_tracking_metrics()?;
 
-        Ok(())
+        Ok(true)
     }
 
     /// Helper method to try re-requesting a block from the next peer in waiting list

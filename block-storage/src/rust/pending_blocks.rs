@@ -365,6 +365,32 @@ impl PendingBlocks {
         }
     }
 
+    pub fn can_insert_solicited_without_displacing_solicited(
+        &self,
+        sender: &Bytes,
+        bytes: usize,
+    ) -> bool {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let limits = inner.limits;
+        let solicited = PendingClass::Solicited.index();
+        if inner.tiers[solicited].len() == inner.entries.len()
+            || inner.tiers[solicited].len() >= limits.max_blocks
+            || inner.tier_bytes[solicited].saturating_add(bytes) > limits.max_bytes
+        {
+            return false;
+        }
+        let solicited_from_sender = inner.tiers[solicited]
+            .values()
+            .filter(|hash| {
+                inner
+                    .entries
+                    .get(*hash)
+                    .is_some_and(|entry| entry.sender.as_ref() == sender.as_ref())
+            })
+            .count();
+        solicited_from_sender < limits.max_per_sender
+    }
+
     pub fn len(&self) -> usize {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.entries.len()

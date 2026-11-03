@@ -1410,7 +1410,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             .worker
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if worker.is_some() {
+        if worker.as_ref().is_some_and(|handle| !handle.is_finished()) {
             return;
         }
         let state = Arc::downgrade(&self.deferred_pending);
@@ -1423,7 +1423,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 let Some(state) = state.upgrade() else { break };
                 let ready = {
                     let mut entries = state.entries.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut capacity = block_store.pending_blocks().available_capacity();
+                    let pending = block_store.pending_blocks();
+                    let mut capacity = pending.available_capacity();
+                    let mut displacement_request = false;
                     let mut ready = Vec::new();
                     entries.retain(|hash, (sender, bytes)| {
                         let has_dependents = casper_buffer
@@ -1444,17 +1446,56 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                             }
                             Ok(false) => {}
                         }
-                        if capacity.reserve(sender, *bytes) {
-                            ready.push(hash.clone());
+                        if casper_buffer
+                            .get_parents(&hash_serde)
+                            .is_some_and(|parents| {
+                                parents.iter().any(|parent| {
+                                    match block_store.contains_key(&parent.0) {
+                                        Ok(present) => !present,
+                                        Err(err) => {
+                                            tracing::warn!(%err, "Could not inspect deferred pending parent");
+                                            true
+                                        }
+                                    }
+                                })
+                            })
+                        {
+                            return true;
+                        }
+                        if !displacement_request && capacity.reserve(sender, *bytes) {
+                            ready.push((hash.clone(), sender.clone(), *bytes));
+                            return false;
+                        }
+                        if ready.is_empty()
+                            && pending
+                                .can_insert_solicited_without_displacing_solicited(sender, *bytes)
+                        {
+                            displacement_request = true;
+                            ready.push((hash.clone(), sender.clone(), *bytes));
                             return false;
                         }
                         true
                     });
                     ready
                 };
-                for hash in ready {
-                    if let Err(err) = block_retriever.recover_dependency(hash).await {
-                        tracing::warn!(%err, "Could not retry deferred pending dependency");
+                let mut retry_deferred = false;
+                for (hash, sender, bytes) in ready {
+                    let requested = match block_retriever.try_recover_dependency(hash.clone()).await
+                    {
+                        Ok(requested) => requested,
+                        Err(err) => {
+                            tracing::warn!(%err, "Could not retry deferred pending dependency");
+                            false
+                        }
+                    };
+                    if !requested {
+                        state
+                            .entries
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .entry(hash)
+                            .or_insert((sender, bytes));
+                        retry_deferred = true;
                     }
                 }
                 let wake = state.wake.clone();
@@ -1464,6 +1505,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                         if result.is_err() { break; }
                     }
                     _ = wake.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_millis(500)), if retry_deferred => {}
                 }
             }
         }));
