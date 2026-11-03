@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1737,6 +1737,98 @@ The review also checks that the memo keeps the Decision 89 rule: the trace of an
 **Sign-off condition:** A-8 signs off when the memo is revised for Q1 to Q5. Q4 needs a ruling.
 
 
+## Revision 18 (actions A-8 and A-9): the FX-17 storage paper, F46, the Decision 97 gate hold, and the FX-16 measurement
+
+- **Commits read:**
+  - `patch/Q-32` at `d3df10dd3`: `docs/rev-stacks/memos/FX-17-order-floor-storage.md`, the storage paper for FX-17.
+  - `patch/FX-15-replay` at `fac9aca5a`: `7ac56f01a` (Decision 97: the pre-charge is held at the gate) and `fac9aca5a` (a storage-boundary test).
+  - `patch/FX-15-settle` at `dda77b2c5`: the F46 rule.
+  - `patch/FX-16` at `8d0a837b5`: the close measurement and the bound, documentation only.
+- **Reference:**
+  - Design r19 (publications `8530da2`, with r18). r19 records P11 (Decision 98) and the Q-33 design (Decision 99). The r19 Decision 97 text says that an uncovered close is found at execution.
+  - The other §6.3 items are unchanged from r17.
+- **Method:** reading only. No tests were run.
+- **Not changed:**
+  - The Q-33 memo itself (`1c0256324`).
+  - `patch/FX-8b`. The `dev` merge has not happened.
+  - No lane C meter or refusal-event branch, no FX-17 code, and no F39 fix.
+
+### Q-33: the FX-17 storage paper against the review
+
+| Review item | Status |
+|---|---|
+| Q1: the order floor advances in its own commit | **Met on paper.** `commit_floors` writes the order pointer when P1 to P4 pass, whether or not P5 passes. A state-only call runs in every cycle, after Compute and whatever its outcome. So attestations that arrive after order still move the LFB. The two pointers share one LMDB transaction, but neither depends on the other being written. The loop of Q1 is gone. |
+| Q2: the lag gate's reference | **Open.** The paper does not change `admits_envelopes`, which still measures LFB − canonical. |
+| Q3: void as a replayed record, checked both ways | **Open.** |
+| Q4: `VoidBlock` slashing of an honest proposer | **Open.** Needs the ruling on question 15. |
+| Q5: re-inclusion of a void block's envelopes | **Open.** |
+
+**Also from the paper:**
+- **P5 reads the local canonical record.** An attestation supports position j only if its root equals the local canonical post-root at j. An attestation at a position with no local record waits. So the LFB never passes a block whose state this node does not know. **Holds.**
+- **The tally is rebuilt on startup** from the block bodies above the LFB. **Holds** (condition 2 of the review).
+- **Startup invariant:** height(order) ≥ height(LFB). **Holds.**
+- **Block metadata "finalized" flags keep the state-final meaning. `order_floor()` is a new accessor.** **Holds.** The assignment of each consumer (condition 1) is still required.
+
+**Answers to the paper's questions:**
+1. **Must the order floor run P2 and A-LIN?** Yes. Execution follows the order floor, so the order floor takes today's LFB guards in full: P1 to P4, containment and A-LIN. `NotHigher`, containment and `derived_against` are checked against the order pointer, and the finalizer's σ folds in the order pointer. The LFB is a main-chain prefix of the order floor, so it needs only P5.
+2. **Bonds from the LFB, one attestation round late:** acceptable to the audit, on one condition. Each computation of p* uses one bond set, which is the bonds at the LFB of that computation. This is not a §6.3 or P11 item. It is a known issue for latency, and the bond-latency ruling is Meredith's.
+3. **Deploy status:** under P11, "finalized" must mean state-final only. An order-final status, if clients want one, needs a separate name. That is a product choice, and it is not labelled.
+
+**Sign-off:** not yet. Q2, Q3 and Q5 need revisions to the memo or the paper. Q4 needs the ruling on question 15.
+
+### F46: closed for a given drawn amount
+
+`settled_work` now requires the recorded net work of a stopped membrane to equal D − R. D is the least drawn amount on its refusals. R is the refunds that replay observes under the membrane. A record with any other value is refused (`WorkNotSettled`).
+- **Lane B's argument:** refunds occur only at IO steps, and replay under a stopped membrane runs exactly the logged IO steps of play. So R in replay equals R in play. Extra compute in replay changes only the gross work, not R.
+- **This audit accepts the argument as written.** The claim that compute steps have no refunds should have a test that fails if a compute refund is ever added.
+- Unit tests cover equality, a value below, a value above, R ≥ D and several refusals.
+
+**Result:** F46 is **closed for a given D.** F45, which is whether D itself is exact, stays **blocking** under question 14.
+
+### Decision 97 in `7ac56f01a`
+
+- The pre-charge is a policy field on chain (`close-precharge`), and its default is 0. So every validator applies the same value.
+- The gate holds the pre-charge on the proposer's wallet before any envelope, in play and in replay. Envelopes that draw on that wallet see the hold.
+- Acceptance and `create_block` check the proposer's balance at the attested root.
+- The check after the close (Decision 96) is removed.
+
+**Holds against the r17 checks,** except for these items:
+- **The price** is 1 until a price source is fixed (FX-16).
+- **A partial hold:** the gate holds what is free when the balance has fallen. Under r19, an uncovered close makes the block void (Q-33). So lane A2's open item is a known issue only until the void path lands.
+- **The five D10 tests** wait for the FX-16 mechanism.
+
+### FX-16: the close measurement (`8d0a837b5`)
+
+Lane B measures the close's PoS work. The worst case is about 4.87 million phlo, with 100 validators at an epoch boundary. Lane B chooses `CLOSE_PHLO_BOUND` = 10 million phlo. The mechanism is parked until Q-33.
+
+**F47 — blocking: the close's work grows with the number of bonds, so a fixed bound does not hold.**
+- **Code:** at an epoch boundary, `pickActiveValidators` runs over all bonds. Anyone can bond with the minimum bond, so the bonded set has no fixed size.
+- **Effect:** the close must run to completion (Decision 97). When its work passes the bound, the part above the pre-charge runs unpaid. Lane B labels this a known issue, because nobody loses funds.
+- **Reason for the label:** this audit labels it **blocking.** r19 §6.3 says that all Rholang is charged and that the pre-charge is a fixed upper bound of the close. Work above it is Rholang that runs unpaid.
+- **Proposed resolution:** a ruling. The options are a cap on the bonded set, or a bound that scales with the number of bonds (a fixed part plus a part for each bond). Question 16. Lane B's planned test, `the_close_stays_inside_its_bound`, must include a row at the largest bonded set that the ruling allows.
+
+**F48 — blocking: substitution into a fired continuation is charged to the firer.**
+- **Code (measured by lane B):** a larger continuation body raises the firer's charge. In this case the firer is the proposer's close. The likely cause is that substitution of the received data into the body runs before the body enters the installer's membrane.
+- **Reason for the label:** r19 §6.3 says that received data substituted into a continuation runs under the continuation's membrane, and that a fired continuation's work goes to its installer (Decisions 75 and 94). Lane B labels it a known issue, because the amount is small and bounded. This audit labels it **blocking**, because it is a §6.3 divergence whatever its size. It also applies to every stored continuation that a client fires, not only to the close.
+- **Proposed fix:** run the substitution inside the record scope of the continuation. Lane C confirms the cause. The test is lane B's measurement, made exact: the firer's charge does not change with the size of the body.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| D11: v6 finalizes on order before execution | **Blocking** | Open. The Q-33 sign-off waits for Q2 to Q5. |
+| F40: no per-step gate at t | **Blocking** | Open. Lane C's meter has not landed. |
+| F45: D is checked against a bound | **Blocking** | Open. Question 14. |
+| No trace-alteration tests | **Blocking** | Open |
+| D8b: the close's funding oracle and the cells of fired continuations | **Blocking** | Open |
+| D10: the close charged to the proposer | **Blocking** | Open. Waits for the FX-16 mechanism. |
+| F47: the close bound does not hold as bonds grow | **Blocking** | New. Question 16. |
+| F48: substitution charged to the firer | **Blocking** | New |
+| F39 | **Blocking** | Open |
+| F46 | — | Closed for a given D |
+| F38 (refund keying), F43 (narrowed), F44, the `for` form under `# P`, storage growth under P11, client latency, the partial hold until the void path | Known issue | Open |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -1755,3 +1847,4 @@ The review also checks that the memo keeps the Decision 89 rule: the trace of an
 
 14. **F45 and F46:** replay does not reproduce the running total of a stopped membrane exactly, because interleavings differ before the next IO step. Must replay compute the exact running total at each refusal, as r16 §6.3 says? Or does the design admit a bounded window for the drawn amount and for the recorded work, and if so, what bound?
 15. **Q-33, Q4:** may a block be voided without slashing its sender, when its invalidity depends on the pre-state at its linear position, which the proposer could not see? Or is `VoidBlock` slashed only for invalidity that the proposer could decide from its own justifications?
+16. **F47:** the close's work at an epoch boundary grows with the number of bonds. Is the bonded set capped, or does the close's pre-charge scale with the number of bonds?
