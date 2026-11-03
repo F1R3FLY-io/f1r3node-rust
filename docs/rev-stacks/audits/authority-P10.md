@@ -779,6 +779,68 @@ The refusal message that all three native handlers return under the mark is the 
 - **The FX-8b commit that merges FX-11:** A-8 re-audits it.
 - **F33:** deferred (lane C).
 
+## A-9: conformance audit against design r10 §6.3 (pass 1, `patch/FX-8b` at `1c281b7a0`)
+
+- **Normative forms (Decision 74):**
+  - **Two-party (R2/R3):** `{% for(ptrn <- chan){% P %}[t] %}[s1] | {% chan!(Q) %}[s2]`. Each surface pays its own cell at its own price.
+  - **One-party (R1):** `{% for(ptrn <- chan){% P %}[t] | chan!(Q) %}[s]`. s pays once.
+  - **Continuation:** a continuation not enclosed in its own membrane uses the enclosing seal. That is t = s1 in the two-party form, and t = s in the one-party form.
+- **Rulings applied (plan r8.9):**
+  - Decision 75: the installer pays for its continuations, from the purse at the surface of its stored code. An unfunded stored receive does not fire.
+  - Decision 76: each surface of a COMM pays, and surfaces under one seal pay once.
+  - Decision 77: no data mark. Received data runs under the continuation's membrane, and origin verification stays.
+- **Source of the forms:** design r10 is not yet in the publications repository or the Drive folder. This pass works from the forms as stated in Decision 74 and the plan, and is re-checked against §6.3 when r10 is published.
+- **Method:** a code reading of every path that charges phlo or moves REV, or that decides who may do so. No tests were run. The from_data checks of revisions 6 and 7 are dropped from this audit, because Decision 77 supersedes them.
+
+### Charging paths
+
+| # | Path (code) | What it does today | Form it should implement | Conforms | Pinning test |
+|---|---|---|---|---|---|
+| C1 | COMM phlo: `executor.rs` `envelope_run`, `comm_phlo = comm_count(deploy_log)`, and `settle.rs` `charges` | Every COMM in the run is counted to the running envelope, and charged at the envelope's price to its paying wallets. This includes a COMM with a receive that another deploy stored. | Two-party: the stored receive's surface (s1, the installer) pays its own cell at its own price, and the running envelope's send surface (s2) pays its own cell. One-party: one charge. | **No (D2).** The stored receiver's surface pays nothing, and the sender pays both cells. | `gated_executor_spec::comms_are_paid_to_the_proposer_in_the_canonical_form` and `settlement_spec::comms_are_paid_to_the_proposer_in_the_canonical_form` pin per-envelope COMM counts. |
+| C2 | Continuation work: the per-runtime meter (`processed.cost.cost`, which becomes `compute_phlo`) | The work of a fired stored continuation runs on the firing envelope's meter and is charged to the firing envelope. | The continuation P runs under t and is paid by t. With no own membrane, t is the installer (Decision 75). | **No (D1).** This is FX-2 decision-log row (1), the Decision 59 metering clause. | `region_spec::a_fired_continuation_draws_on_its_author_not_on_the_firing_region` asserts that the firing party pays its own full charge (`paid(&second, &alice)`), which includes the continuation's work. |
+| C3 | Explicit inner membrane `{% P %}[t]` (`eval_cost_signed_term` enters `t`) | Authority enters t, but metering does not. P's work stays on the envelope meter. The one exception is C6. | t pays for P. | **No (D4),** except for C6. | None pins t paying. `region_spec::charges_under_the_deployers_signed_term_land_on_the_deployers_wallet` conforms only because t is the deployer. |
+| C4 | Paying wallets: `gate.rs` `paying_wallets` and `region.rs` `paying_owners` | If the term names any seal, the named owners pay and the deployer pays only for a bare stack (FX-7 decision 14). Code outside every region is under the implicit `{% D %}` seal, but D does not pay for it. | Every surface pays its own cell. A top-level send or receive is a surface of D. | **No (D7).** | `region_spec::a_stack_under_a_cosigners_seal_draws_on_the_cosigner_not_the_deployer` asserts that the deployer's balance is unchanged, although the term has a top-level send under D. |
+| C5 | Several paying wallets: `settle.rs` `charges` loops over `paying_wallets` | Each paying wallet is debited the envelope's whole charge, and the proposer and compute credits are added once per wallet. | Each surface pays its own cells. Surfaces under one seal pay once (R1). A compound seal is one seal. | **No (D5).** Two named seals each pay for the other's work, and a compound seal pays k times. | `region_spec::each_component_of_a_compound_pays_the_full_charge` pins the k-times charge. `a_funded_joint_wallet_pays_once_for_its_compound` conforms, because a funded joint wallet pays once. |
+| C6 | Self-sealed envelope `{% P %}[# P]` (P3-04 decisions 17 and 21, FX-7 decision 9) | The `# P` wallet pays the envelope's charges, drawn pro rata on the funders' shares. | One-party R1 with s = `# P`. | **Yes,** for the envelope that is exactly `{% P %}[# P]`. | `gated_executor_spec::a_self_sealed_envelope_is_paid_from_its_process_wallet_in_play_and_replay`, `a_stack_in_a_self_sealed_region_draws_on_the_funders_shares_pro_rata` |
+| C7 | Storage: `storage_rule.rs`, `charging_rspace.rs` (P2-16, FX-2-refunds) | A run pays for the items it leaves in the space on its own meter. A refund is charged inside the record that paid for the item, but because metering is per envelope (C2, C3), the record does not change who pays. | A stored send or receive is a cell of its surface, and its surface pays for it. | **No,** as part of D1 and D4. The record kept with each item is the input that FX-12 needs. | `storage_rule::tests::a_removed_item_names_the_record_that_paid_for_it`, `v6::exit_spec::storage_charges_do_not_depend_on_the_interleaving` |
+| C8 | Gate commitments: `gate.rs` `gate_block`, Delta × phloPrice on `paying_wallets` | It commits only the running envelope's paying wallets. | A stored receive's surface pays from the installer's purse when the COMM fires, in a block the installer may not be in. The gate, or the rule that replaces it for purses, must decide that charge deterministically. | **No (D6).** There is no purse and no rule for an unfunded stored receive. This is Q-31. | None. |
+| C9 | Settlement credits: `settle.rs` `charges` | COMM rev goes to the proposer and compute rev to the compute wallet. | Unchanged by §6.3. | Yes, apart from the totals that C1, C2 and C5 change. | `settlement_spec::compute_is_paid_to_the_compute_wallet_and_the_charge_never_passes_delta` |
+
+### Authority paths
+
+| # | Path (code) | What it does today | Form | Conforms | Pinning test |
+|---|---|---|---|---|---|
+| A1 | Region check: `check_region_signature` (`reduce.rs`) | A key seal must be a signer of the origin envelope (Decisions 52, 53, 63). A `# Q` must equal its substituted, closed body. | The seals s, s1, s2 and t are verified at origin. Decision 77 keeps this. | Yes | `seal_record_spec::a_region_sealed_in_its_origin_runs_for_a_later_runner_and_pays_from_its_sealer`, `a_foreign_seal_in_a_later_runners_own_code_is_refused`, the `hash_seal_spec` F18 tests, `region_spec::a_lifted_cosignature_carries_no_authority_under_another_deployer`, `a_stripped_envelope_does_not_decode_and_the_complete_envelope_runs_after_it` |
+| A2 | Implicit top-level seal: `deployment_record` | A deployment runs under `{% D %}` with D as the owner. | The top level is `{% … %}[D]`. | Yes | `region_spec::charges_under_the_deployers_signed_term_land_on_the_deployers_wallet` |
+| A3 | Stored continuation: `consume` writes the record, and `dispatch.rs` fires the body under it | The fired body runs under the installer's record, never the firing task's. | A continuation not in its own membrane uses t = s1 (two-party) or t = s (one-party). | Yes, for authority. Metering diverges at C2. | `seal_record_spec::a_stored_continuation_carries_its_authors_record`, `a_fired_continuation_does_not_inherit_the_firing_region` |
+| A4 | Explicit inner membrane: `eval_cost_signed_term`, `record.enter` | P runs under t after t's check against the origin. | `{% P %}[t]` | Yes, for authority. Metering diverges at C3. | `seal_record_spec::a_stack_pays_from_its_enclosing_seal_not_the_deployer`, `region_spec::a_stack_under_a_cosigners_seal_draws_on_the_cosigner_not_the_deployer` |
+| A5 | Received data: FX-6 `eval_received`, `runs_bound_process`, the `from_data` mark. FX-9 and FX-8b native refusals under the mark. | Received data runs under the continuation's record with the mark, and wallet seals, stacks and native moves are refused under it. | Decision 77: received data runs under the continuation's membrane, with no mark. | **No (D3).** FX-13 removes the mark and the refusals. | The eleven `seal_record_spec` route tests, `seal_wiring_spec::a_bond_admin_call_inside_data_received_at_run_time_moves_nothing` and `storage_rule::tests::a_refund_record_keeps_the_mark_of_data_received_at_run_time` pin the superseded rule. FX-13 converts them. |
+| A6 | Stack writer: `stack_writer` | The writer is the current record's owner. With records on and no record, the stack is refused. | The enclosing seal pays its own stack cells. | Yes | `seal_record_spec::a_stack_pays_from_its_enclosing_seal_not_the_deployer`, `region_spec::a_fired_continuation_draws_on_its_author_not_on_the_firing_region` (for the stack, not for metering) |
+| A7 | Native draws: `wallet_authority` for `rho:rev:wallet` and `rho:rev:bond` | The authority is the record's owner, or the components of a compound owner. With no record, it falls back to the deploy's signers (F32). | The enclosing seal. With records on and no record, no authority (Decision 70). | **No on FX-8b (F32).** FX-11 fixes it. | `seal_wiring_spec::a_transfer_draws_only_on_a_wallet_whose_owner_holds_the_enclosing_seal`, `a_bond_draws_only_on_the_holder_of_the_enclosing_seal` |
+| A8 | Kind mint: `mint_stacks` | The authority is the unforgeable kind name in the signature. | Outside §6.3's REV forms. P9 policy. | Yes | `region_spec::a_kind_mint_and_a_kind_transfer_reach_the_settled_root`, `the_nested_kind_form_passes_the_gate_and_draws_only_on_its_sealer` |
+| A9 | Gate names: `named_owners`, `ForeignSignature`, `self_sealed_envelope` | The gate refuses an envelope that names a key seal of a non-signer, and names the payer of the nested kind form. | Consistent with origin verification. | Yes, for authority. The commitments diverge at C8. | `region_spec::the_gate_refuses_a_signed_term_that_names_another_signature`, `the_gate_refuses_a_compound_that_a_component_cannot_cover_or_did_not_sign` |
+| A10 | Hooks: `spendCompute` (`seal_authorizes`), `replaceHook` (`quorum_authorizes`) | They act under the enclosing seal: the quorum's compound, or `# H` for spending. | The enclosing seal. | Yes | `seal_wiring_spec::the_compute_wallet_spends_under_the_quorum_or_the_installed_hook_and_nothing_it_calls`, `a_hook_is_replaced_only_inside_a_region_the_quorum_sealed` |
+| A11 | Funding slots: `held_or_signed` (P3-05) | A slot is drawn by holding its name. | A purse whose authority is a held name. It is a candidate for the located purse of Q-31. | Yes, pending Q-31 | `slot_spec` (4 tests) |
+
+### Divergences
+
+| # | Divergence | Code | Ruling | Fix |
+|---|---|---|---|---|
+| D1 | Work under an implicit seal of stored code is metered to the firing deployment. | per-runtime meter, `executor.rs` `envelope_run`. FX-2 decision-log row (1). | Decision 75 | FX-12 |
+| D2 | Each COMM is charged only to the running envelope, and the stored receiver's surface pays nothing. | `executor.rs` `comm_count`, `settle.rs` `charges` | Decision 76 | FX-12 |
+| D3 | The data mark refuses wallet seals, stacks and native moves in received data. | FX-6 `eval_received`, `runs_bound_process`. FX-9 and FX-8b native refusals. | Decision 77 | FX-13 |
+| D4 | An explicit inner membrane `{% P %}[t]` does not meter P to t, except in the self-sealed envelope. | `eval_cost_signed_term`, per-envelope meter | Decisions 74, 75 | FX-12 |
+| D5 | Every paying wallet is debited the whole envelope charge. Two named seals each pay for both, and a compound pays once per component. | `settle.rs` `charges` | Decision 76 (surfaces under one seal pay once) | FX-12. `each_component_of_a_compound_pays_the_full_charge` must change. |
+| D6 | No located purse at a stored receive's surface, and no deterministic rule for a COMM whose surface purse cannot pay. | `gate.rs`, `settle.rs` | Q-31 | FX-12, after the Q-31 ruling |
+| D7 | When a term names a seal, the deployer pays nothing for the top-level surface under `{% D %}`. | `paying_owners`, `paying_wallets` | Decisions 74, 76 | FX-12. `a_stack_under_a_cosigners_seal_draws_on_the_cosigner_not_the_deployer` must change its deployer assertion. |
+
+D1 and D2 are the two divergences known before this pass. D4, D5 and D7 are new. Together with D1 and D2 they come from one cause: metering is per envelope, and the record that FX-2 built is used for authority but not for metering. D6 is the open question that Q-31 asks. D3 is ruled (Decision 77) and assigned (FX-13).
+
+### Re-runs
+
+A-9 is re-run on FX-12 and FX-13 when they land. For FX-12, the check is one test per elaborated form, plus the sugar cases (the implicit seal, `-o`, a compound, `# P`) elaborated and checked against the form, as the FX-12 row of the plan says.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
