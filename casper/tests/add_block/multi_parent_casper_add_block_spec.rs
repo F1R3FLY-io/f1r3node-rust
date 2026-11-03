@@ -849,6 +849,21 @@ async fn multi_parent_casper_should_not_leave_a_ready_block_without_its_body() {
     let ctx = TestContext::new().await;
     let (nodes, chain) = pending_chain(&ctx, 1).await;
     let block = &chain[0];
+    nodes[1]
+        .block_retriever
+        .admit_hash(
+            block.block_hash.clone(),
+            None,
+            AdmitHashReason::MissingDependencyRequested,
+        )
+        .await
+        .unwrap();
+    assert!(nodes[1]
+        .block_retriever
+        .get_request_state_for_test(&block.block_hash)
+        .await
+        .unwrap()
+        .is_some());
     nodes[1].block_store.put_pending(block, false).unwrap();
     nodes[1].block_store.set_pending_limits(PendingBlockLimits {
         max_blocks: 0,
@@ -867,6 +882,12 @@ async fn multi_parent_casper_should_not_leave_a_ready_block_without_its_body() {
 
     assert!(!ready);
     assert!(!nodes[1].casper.buffer_contains(&block.block_hash));
+    assert!(nodes[1]
+        .block_retriever
+        .get_request_state_for_test(&block.block_hash)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

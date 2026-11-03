@@ -630,9 +630,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             // store pendant block in buffer, it will be removed once block is validated and added to DAG
             self.dependencies.commit_to_buffer(block, None).await?;
             if !self.dependencies.holds_body(&block.block_hash)? {
+                let has_dependents = self.dependencies.has_buffered_dependents(&block.block_hash);
                 self.dependencies
                     .release_evicted_pending(std::slice::from_ref(&block.block_hash))
                     .await?;
+                if !has_dependents {
+                    self.dependencies.ack_processed(block).await?;
+                }
                 return Ok(false);
             }
         } else {
