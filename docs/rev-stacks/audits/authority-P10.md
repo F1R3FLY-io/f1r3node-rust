@@ -1021,9 +1021,9 @@ A-8 re-audits FX-14 and the merge of FX-13 into FX-8b.
 ### Design r11
 
 Design r11 is published (publications `8c81189`). Its §6.3 differs from r10's in three consequences, which are Decisions 79 to 81:
-- the purse is the wallet at the seal;
-- an unfunded stored receive is not a match candidate, and replay re-checks every logged COMM;
-- one membrane means one cell, for the same owner and origin, and a surface with no record is charged to the firing client.
+- The purse is the wallet at the seal.
+- An unfunded stored receive is not a match candidate, and replay re-checks every logged COMM.
+- One membrane means one cell, for the same owner and origin, and a surface with no record is charged to the firing client.
 
 The rest of §6.3 is unchanged. From the next pass on, A-9 reads against r11. None of the A-9 rows changes because of r11: D6 was already closed by Decision 79, and the matcher-filter and replay checks are the added FX-12 checks.
 
