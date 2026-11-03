@@ -92,6 +92,7 @@ fn config(directory: &std::path::Path) -> (NodeConf, PrivateKey) {
 }
 
 struct PreparedTestNode {
+    chain_id: comm::rust::rp::chain_id::ChainIdCell,
     consensus: consensus_runtime::PreparedConsensus,
     packet_handler: Arc<dyn comm::rust::p2p::packet_handler::PacketHandler>,
     application: TestApplication,
@@ -164,6 +165,7 @@ impl Drop for TestApplication {
 }
 
 async fn prepare(conf: NodeConf) -> eyre::Result<PreparedTestNode> {
+    let chain_id = comm::rust::rp::chain_id::ChainIdCell::unknown();
     let local = PeerNode {
         id: NodeIdentifier {
             key: vec![1; 32].into(),
@@ -173,6 +175,7 @@ async fn prepare(conf: NodeConf) -> eyre::Result<PreparedTestNode> {
     let peer_conf = RPConfCell::new(RPConf::new(
         local,
         conf.protocol_server.network_id.clone(),
+        chain_id.clone(),
         None,
         Duration::from_secs(1),
         10,
@@ -221,6 +224,7 @@ async fn prepare(conf: NodeConf) -> eyre::Result<PreparedTestNode> {
     ))
     .await?;
     Ok(PreparedTestNode {
+        chain_id,
         consensus: prepared.consensus,
         packet_handler: prepared.packet_handler,
         application: TestApplication {
@@ -276,6 +280,7 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
         let directory = tempfile::tempdir().unwrap();
         let (conf, key) = config(directory.path());
         let prepared = prepare(conf.clone()).await.unwrap();
+        assert!(prepared.chain_id.get().is_none());
         let handle = prepared.consensus.handle();
         assert_eq!(handle.status().phase, Phase::Prepared);
         assert_eq!(handle.propose(false).await, Err(ConsensusError::NotReady));
@@ -283,12 +288,14 @@ async fn casper_runtime_deploy_propose_finalize_recover() {
         handle.wait_ready().await.unwrap();
         assert_eq!(handle.status().protocol.id, "cbc-casper");
         let genesis = handle.finalized().await.unwrap();
+        let genesis_chain_id = prepared.chain_id.get().cloned().expect("running node has a chain identity");
         runtime.shutdown().await.unwrap();
         prepared.application.close().await;
         drop(prepared.packet_handler);
         let follower_directory = tempfile::tempdir().unwrap();
         copy_closed_store(directory.path(), follower_directory.path());
         let prepared = prepare(conf.clone()).await.unwrap();
+        assert_eq!(prepared.chain_id.get(), Some(&genesis_chain_id), "restart must seed the chain identity before consensus starts");
         let handle = prepared.consensus.handle();
         let runtime = prepared.consensus.start();
         handle.wait_ready().await.unwrap();

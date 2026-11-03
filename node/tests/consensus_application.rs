@@ -40,6 +40,7 @@ fn context() -> ApplicationContext {
                 endpoint: Endpoint::new("127.0.0.1".into(), 1, 2),
             },
             "application-test".into(),
+            comm::rust::rp::chain_id::ChainIdCell::unknown(),
             None,
             Duration::from_secs(1),
             10,

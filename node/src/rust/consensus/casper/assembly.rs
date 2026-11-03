@@ -377,6 +377,18 @@ pub async fn prepare<T: TransportLayer + Send + Sync + Clone + 'static>(
         manifest
             .verify_genesis(&genesis)
             .map_err(|e| CasperError::Other(e.to_string()))?;
+        let peer_conf = rp_conf_cell
+            .read()
+            .map_err(|e| CasperError::RuntimeError(format!("Failed to read RPConf: {}", e)))?;
+        peer_conf.chain_id.set_once(genesis.clone()).map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to publish chain identity: {}", e))
+        })?;
+        info!(
+            genesis = %models::rust::casper::pretty_printer::PrettyPrinter::build_string_bytes(&genesis),
+            "Chain identity seeded from storage"
+        );
+    } else {
+        info!("Chain identity not known yet; it is learned during bootstrap");
     }
     let carrier_index_watermark = block_dag_storage.ensure_carrier_watermark()?;
     info!(
