@@ -255,7 +255,7 @@ new rl(`rho:registry:lookup`), d(`rho:system:deployerId`), keccak(`rho:crypto:ke
         for (@(r, why) <- revealed) { @"check"!(("revealRandom", not r and why == "Unknown validator handle")) }
       } |
       @PoS!("bond", *d, 1000, *registered, *handleCh) |
-      for (@b <- registered) { @"check"!(("bond", b == (true, Nil))) }
+      for (@b <- registered) { @"check"!(("bond", b == (false, "expected a bond receipt from rho:rev:bond"))) }
     }
   }
 }

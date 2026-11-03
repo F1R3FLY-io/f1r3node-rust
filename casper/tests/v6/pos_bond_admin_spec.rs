@@ -127,15 +127,6 @@ fn block(number: i64, deploys: Vec<ProcessedDeploy>, proposer: &Party) -> BlockM
     }
 }
 
-fn pos_call(call: &str) -> String {
-    format!(
-        r#"new deployerId(`rho:system:deployerId`), rl(`rho:registry:lookup`), posCh, out in {{
-             rl!(`rho:system:pos`, *posCh) |
-             for (@(_, PoS) <- posCh) {{ {call} }}
-           }}"#
-    )
-}
-
 async fn pos_bond(rm: &RuntimeManager, root: &StateHash, pk: &PublicKey) -> Option<i64> {
     let query = format!(
         r#"new ret, rl(`rho:registry:lookup`), posCh, bondsCh in {{
@@ -183,7 +174,7 @@ fn bond_term(native: u64, bonds: &[(u64, &str)]) -> String {
         .map(|(amount, stash)| {
             format!(
                 r#"new registered, handleCh in {{
-                     @PoS!("bond", *deployerId, {amount}, *registered, *handleCh) |
+                     @PoS!("bond", receipt, {amount}, *registered, *handleCh) |
                      for (@r <- registered) {{ @"registered-{stash}"!(r) }} |
                      for (@h <- handleCh) {{ @"{stash}"!(h) }}
                    }}"#
@@ -195,7 +186,7 @@ fn bond_term(native: u64, bonds: &[(u64, &str)]) -> String {
         r#"new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), rl(`rho:registry:lookup`), posCh, bonded in {{
              @"published-id"!(*deployerId) |
              rb!("bond", (*deployerId, {native}), *bonded) |
-             for (@(true, _) <- bonded) {{
+             for (@(true, receipt) <- bonded) {{
                rl!(`rho:system:pos`, *posCh) |
                for (@(_, PoS) <- posCh) {{ {registrations} }}
              }}
@@ -302,13 +293,16 @@ async fn a_pending_bond_backed_only_by_a_withdrawn_bond_is_dropped() {
     let withdrawn = run(&executor, &bonded, &block(2, vec![envelope(&withdraw, 2, &alice)], &proposer)).await;
     assert_eq!(pos_bond(&rm, &withdrawn, &alice.pk).await, None);
 
-    let again = pos_call(
-        r#"new registered, handleCh in {
-             @PoS!("bond", *deployerId, 1000, *registered, *handleCh) |
-             for (@r <- registered) { @"registered-again"!(r) } |
-             for (@h <- handleCh) { @"again"!(h) }
-           }"#,
-    );
+    let again = r#"new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), rl(`rho:registry:lookup`),
+            posCh, bonded, registered, handleCh in {
+          rb!("bond", (*deployerId, 1), *bonded) |
+          for (@(true, receipt) <- bonded) {
+            rl!(`rho:system:pos`, *posCh) |
+            for (@(_, PoS) <- posCh) { @PoS!("bond", receipt, 1000, *registered, *handleCh) }
+          } |
+          for (@r <- registered) { @"registered-again"!(r) } |
+          for (@h <- handleCh) { @"again"!(h) }
+        }"#.to_string();
     let before = read_wallet_balance(&rm, &withdrawn, &alice.owner).await.unwrap();
     let record = run_record(&executor, &withdrawn, &block(3, vec![envelope(&again, 3, &alice)], &proposer)).await;
     let rebonded = record.post_root().clone();
@@ -339,20 +333,35 @@ async fn a_published_deployer_id_does_not_act_for_its_validator() {
             @PoS!("withdraw", aliceId, *out) |
             @PoS!("commitRandomImage", aliceId, image, *out) |
             @PoS!("revealRandom", aliceId, "secret".toByteArray(), *out) |
+            new taken in {
+              @PoS!("bond", aliceId, 1000, *out, *taken) |
+              for (@h <- taken) { @"mallory-handle"!(h) }
+            } |
             for (@r <= out) { @"answer"!(r) }
           }
         }
       }"#;
     let refused = run(&executor, &bonded, &block(2, vec![envelope(impersonate, 2, &mallory)], &proposer)).await;
     let refusals = answers(&rm, &refused, "answer").await;
-    assert_eq!(refusals.len(), 3);
-    for (ok, message) in &refusals {
-        assert!(!ok);
-        assert_eq!(
-            RhoString::unapply(message).as_deref(),
-            Some("Unknown validator handle")
-        );
-    }
+    assert_eq!(refusals.len(), 4);
+    let mut messages: Vec<_> = refusals
+        .iter()
+        .map(|(ok, message)| {
+            assert!(!ok);
+            RhoString::unapply(message).unwrap()
+        })
+        .collect();
+    messages.sort();
+    assert_eq!(
+        messages,
+        vec![
+            "Unknown validator handle".to_string(),
+            "Unknown validator handle".to_string(),
+            "Unknown validator handle".to_string(),
+            "expected a bond receipt from rho:rev:bond".to_string(),
+        ]
+    );
+    assert!(data(&rm, &refused, "mallory-handle").await.is_empty(), "no handle for a published id");
     assert_eq!(pos_bond(&rm, &refused, &alice.pk).await, Some(1_000));
 
     let own = with_handle(
