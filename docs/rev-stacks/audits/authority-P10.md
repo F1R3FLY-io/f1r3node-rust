@@ -1447,8 +1447,8 @@ Lane B's dry-run log lists the files that changed on both sides and merged witho
    - On the native path, FX-8b builds the term with `native::balance_term`. The merge must keep the address check on that path, and keep FX-8b's `balance_query_rejects_addresses_that_are_not_valid` test.
    - Both `dev` tests and the FX-8b test must stay.
 3. **`reduce.rs` (spot check):** `dev`'s join rule sits next to FX-2's record at fire and FX-4's hash-seal check. Check three things:
-   - the seal record installed at fire is not lost on the join path;
-   - FX-4's check still runs before the origin check (F30);
+   - The seal record installed at fire is not lost on the join path.
+   - FX-4's check still runs before the origin check (F30).
    - D79's record on a stored datum is still written by `eval_send`.
 4. **`space_matcher.rs` (spot check):** `admits_waiting` still runs for each waiting continuation in `extract_first_match`, also on any path that `dev` added.
 
