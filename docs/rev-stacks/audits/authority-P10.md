@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1251,6 +1251,68 @@ The FX-14 follow-ups have not landed. Two items in the current FX-14 differ from
   - Play and replay stop at the same point, by the Q-32 answer.
 
 Q-32 goes through the lane C and lane A2 memo, and A-9 reads the answer when it is ruled.
+
+
+## Revision 15 (actions A-8 and A-9): the merges into FX-8b, and the FX-14 follow-up
+
+- **Commits audited:**
+  - `patch/FX-8b` at `aea9b529d`, with three merges: D76 `2102621ec` (D76 at `1502a4e98`, with D79), FX-12 `20d675e94` (FX-12 at `d7537c771`) and FX-14 `44e9c1766` (FX-14 at `e5c574656`). The last commit writes the cross-host fixture again and moves `admits_waiting` above the guard's doc comment.
+  - `patch/FX-14` at `2bfaaf942`, the follow-up for Decisions 84 and 87. It is not yet merged into FX-8b.
+- **Reference:** design r12 §6.3, Decisions 83 to 88, plan r8.12.
+- **Method:** a code reading of the merged tree and the follow-up, and the merge log in `FX-8b.md`. No tests were run.
+- **Not audited:** `patch/Q-32` (`9eac37153`), the Q-32 memo. It goes through lane C and lane A2. No `patch/FX-15` exists.
+
+### The merges into FX-8b against the merge requirements
+
+| Requirement | Result |
+|---|---|
+| 1. Gate table and `BlockPurses` | **Holds by the log.** Lane A2 reports that D79's two `region_spec` tests and the grant test pass. Both tests are in the merged `region_spec.rs`. |
+| 2. `comm_ledger.rs` | **Holds.** `comm_cells` and the work map are both present. `reset` clears the surfaces and the work. `CostManager::charge` calls `on_work`. |
+| 3. `executor.rs` | **Holds.** `run` and `replay_one` take the work tally and install the funding oracle. `set_funding(None)` runs before each runtime goes back to the pool. |
+| 4. Cross-host fixture | **Holds.** It is written again in `aea9b529d`, after the last merge. |
+| 5. FX-14 after FX-12 and D79 | **Holds.** The merge order is D76, FX-12, FX-14. |
+| 6. The `for` form in a self-sealed envelope | Lane A2 labels it a known issue. **Agreed.** The gate refuses a `for` form that the `contract` form passes. That is an admission defect in `hash_seal_admissible`, not a change to who pays. §6.3 lets an installer use `# P`, and the `contract` form gives that today. |
+| 7. Suite results | **Partly met.** The log gives the v6 tests only (85 passed, 0 failed, 7 ignored). The full release suites of the crates are not posted for this merge. Lane A2 must post them before the handoff. |
+| 8. F41 | **Holds.** `charge_recorded_work` calls `seal::purse_of`. F41 is closed. |
+| 9. Funding oracle in the close | **Not installed**, as the log says. This is part of F40 (blocking), and FX-15 decides it. |
+| 10. FX-12 open list | **Holds.** The FX-12 log records items 1 and 2 as done by D79, and item 3 as lane B's. |
+
+Lane A2's resolution keeps the rebased D76 in each conflict and applies FX-12's own metering commit on it. The merged tree has `admits_waiting` in `extract_first_match`, the record on a stored datum written by `eval_send`, FX-12's work map and settlement, and the close-time charge. `admits_waiting` is accepted as the hook point (D79 open point 3).
+
+**Result:** the merges meet requirements 1 to 6, 8 and 10. Requirement 7 is open, and requirement 9 is part of F40. D9 is now closed on the integration branch.
+
+### FX-14 follow-up against Decisions 84 and 87
+
+| Check | Result |
+|---|---|
+| A receipt is spent on use (Decision 84) | **Holds.** PoS keeps `spentReceipts`. `bond` refuses a spent receipt and adds the receipt to the set when it records the pending bond. A refused attempt does not spend the receipt. `a_bond_receipt_is_spent_by_its_first_registration` covers it. **F42 is closed.** |
+| The handle is located at the validator's seal (Decision 87) | **Partly.** `rho:rev:bond` `handle` gives the handle only to code under the validator's enclosing seal. The handle is a name derived from the key, so it needs no state. `withdraw`, `commitRandomImage` and `revealRandom` resolve the key through `handleKey`. The close still also sends the handle on the bonding deploy's `handleCh` (FX-14 decision 7). |
+| Genesis validators take their handles at their own seals | **Holds.** `a_genesis_validator_takes_its_handle_at_its_own_seal` covers it. |
+| A published deployer id gives nothing | **Holds.** `a_validator_takes_its_handle_only_at_its_own_seal` and the extended `a_published_deployer_id_does_not_act_for_its_validator` cover it. |
+
+**F43 (narrowed) — Medium, known issue: the close sends the handle to a channel that the registering code chooses.** The `handle` command reads the handle at the validator's seal. But the close also sends `handleOf (pk)` on the `handleCh` of the registration. Decision 84 lets a receipt be passed on before use. Code that registers with a passed-on receipt therefore gets the validator's handle. The handle cannot be revoked (FX-14 known issue 1). So that code can act for the validator for the life of the key. Decision 87 says that only code under the validator's seal reads the handle.
+- **Reason for the label:** the validator must choose to pass on the receipt, so the finding is Medium, below the gate. It is not a §6.3 item.
+- **Proposed fix:** the close sends only the result of the registration on `handleCh`, and every holder takes the handle through `handle` at its own seal. Reversible, lane B.
+- **Change of label:** if code that the validator did not give a receipt to can get a handle, the finding becomes High and blocking.
+
+Lane B's two known issues in the FX-14 log are accepted with their labels:
+- A handle cannot be revoked. This is Medium at most, because the validator must pass the handle on.
+- `spentReceipts` grows without bound. This is storage growth.
+
+### Gate status on FX-8b at `aea9b529d`
+
+| Item | Label | State |
+|---|---|---|
+| F40 (envelope runs and close): work is not gated step by step. Foreign work counts against the client's phlo limit. | **Blocking** | Open. It waits for FX-15 and the Q-32 ruling. |
+| F39: an own key whose owner the gate did not commit is charged to the client | **Blocking** | Open. `settle::own_payers` is unchanged on the merged tree. Decision 83 gives the fix. |
+| D8b: a COMM that the close fires pays no cell | **Blocking** until question 13 is ruled | Open. |
+| Requirement 7: full suite results for the merge | Merge condition | Open. |
+| F38 | Known issue | Open. |
+| F43 (narrowed) | Known issue | Open. |
+| The `for` form under `# P` (D79 open point 4) | Known issue | Open. |
+| F41, F42, D9 | — | Closed. |
+
+The FX-14 follow-up must still be merged into FX-8b. A-8 re-audits that merge, FX-15, and the fixes for F39 and D8b when they land.
 
 
 ## Open questions for review
