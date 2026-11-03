@@ -1315,6 +1315,18 @@ Lane B's two known issues in the FX-14 log are accepted with their labels:
 The FX-14 follow-up must still be merged into FX-8b. A-8 re-audits that merge, FX-15, and the fixes for F39 and D8b when they land.
 
 
+## Ruling of 2026-11-03: Q-32 (Decision 89)
+
+Decision 89 answers Q-32. The trace carries each refused step, with the drawn amount of the membrane at that step. Replay checks payability in both directions. Lane C's "early stop" known issue no longer applies.
+
+A-9 adds three checks for FX-15, beside the four checks in revision 14's watch list:
+- Replay rejects a trace that stops a membrane early, where the step was payable.
+- Replay rejects a forged drawn amount.
+- Replay rejects an admitted step that was not payable.
+
+Each check needs a test that changes the trace and expects the block to fail replay. A failure of any of these checks is a divergence from r12 §6.3 ("the point at which work under t stops must be the same in play and replay"), so it is **blocking** under Decision 88.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
