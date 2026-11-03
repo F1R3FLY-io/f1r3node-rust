@@ -12,6 +12,9 @@ use super::executor::gate_inputs;
 use super::gate::{
     gate_block, resolve_joint_wallets, PhloLimitDemand, Refusal, StoreReader, Verdict,
 };
+use rholang::rust::interpreter::accounting::rev_stack::{RevAmount, WalletOwner};
+
+use super::gate::WalletReader;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -23,6 +26,8 @@ pub trait InclusionScreen: Send + Sync {
         timestamp: i64,
         envelopes: &[ProcessedDeploy],
     ) -> Result<Vec<(Bytes, String)>, CasperError>;
+
+    async fn balance(&self, root: &StateHash, owner: &WalletOwner) -> Result<RevAmount, CasperError>;
 }
 
 pub struct AdmitAll;
@@ -36,6 +41,10 @@ impl InclusionScreen for AdmitAll {
         _envelopes: &[ProcessedDeploy],
     ) -> Result<Vec<(Bytes, String)>, CasperError> {
         Ok(Vec::new())
+    }
+
+    async fn balance(&self, _root: &StateHash, _owner: &WalletOwner) -> Result<RevAmount, CasperError> {
+        Ok(RevAmount::MAX)
     }
 }
 
@@ -86,6 +95,10 @@ impl InclusionScreen for GateScreen {
                 }
             })
             .collect())
+    }
+
+    async fn balance(&self, root: &StateHash, owner: &WalletOwner) -> Result<RevAmount, CasperError> {
+        StoreReader::at(&self.runtime_manager, root).await?.balance(owner)
     }
 }
 

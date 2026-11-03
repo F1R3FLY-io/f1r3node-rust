@@ -13,9 +13,11 @@ pub const DEFAULT_DEMAND_CAP: i64 = ((DEFAULT_BLOCK_RECORD_BYTES as u64
     - DEFAULT_BLOCK_OVERHEAD_BYTES)
     * 1_000
     / DEFAULT_LOG_MILLIBYTES_PER_PHLO) as i64;
+pub const DEFAULT_CLOSE_PRECHARGE: u64 = 0;
 pub const PROTOCOL_V6: i64 = 6;
-const ENCODING_VERSION: u8 = 2;
-const ENCODED_LEN: usize = 57;
+const ENCODING_VERSION: u8 = 3;
+const ENCODED_LEN: usize = 65;
+const ENCODED_LEN_V2: usize = 57;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default)]
@@ -27,6 +29,7 @@ pub struct ShardResourcePolicy {
     pub log_millibytes_per_phlo: u64,
     pub entry_overhead_bytes: u64,
     pub block_overhead_bytes: u64,
+    pub close_precharge: u64,
 }
 
 impl Default for ShardResourcePolicy {
@@ -39,6 +42,7 @@ impl Default for ShardResourcePolicy {
             log_millibytes_per_phlo: DEFAULT_LOG_MILLIBYTES_PER_PHLO,
             entry_overhead_bytes: DEFAULT_ENTRY_OVERHEAD_BYTES,
             block_overhead_bytes: DEFAULT_BLOCK_OVERHEAD_BYTES,
+            close_precharge: DEFAULT_CLOSE_PRECHARGE,
         }
     }
 }
@@ -100,18 +104,18 @@ impl ShardResourcePolicy {
         out.extend_from_slice(&self.log_millibytes_per_phlo.to_be_bytes());
         out.extend_from_slice(&self.entry_overhead_bytes.to_be_bytes());
         out.extend_from_slice(&self.block_overhead_bytes.to_be_bytes());
+        out.extend_from_slice(&self.close_precharge.to_be_bytes());
         out
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() != ENCODED_LEN {
-            return Err(format!(
-                "a resource policy is {ENCODED_LEN} bytes, not {}",
-                bytes.len()
-            ));
-        }
-        if bytes[0] != ENCODING_VERSION {
-            return Err(format!("unknown resource policy encoding {}", bytes[0]));
+        match (bytes.first().copied(), bytes.len()) {
+            (Some(2), ENCODED_LEN_V2) | (Some(ENCODING_VERSION), ENCODED_LEN) => {}
+            (Some(2), n) | (Some(ENCODING_VERSION), n) => {
+                return Err(format!("a resource policy of this encoding is not {n} bytes"));
+            }
+            (Some(v), _) => return Err(format!("unknown resource policy encoding {v}")),
+            (None, _) => return Err("a resource policy is empty".to_string()),
         }
         let word = |i: usize| {
             let mut w = [0u8; 8];
@@ -130,6 +134,11 @@ impl ShardResourcePolicy {
             log_millibytes_per_phlo: u64::from_be_bytes(word(4)),
             entry_overhead_bytes: u64::from_be_bytes(word(5)),
             block_overhead_bytes: u64::from_be_bytes(word(6)),
+            close_precharge: if bytes.len() == ENCODED_LEN {
+                u64::from_be_bytes(word(7))
+            } else {
+                DEFAULT_CLOSE_PRECHARGE
+            },
         };
         policy.check()?;
         Ok(policy)
@@ -143,6 +152,7 @@ impl ShardResourcePolicy {
             max_record_bytes: self.block_record_bytes,
             ordered_only: true,
             min_phlo_price: 0,
+            close_precharge: self.close_precharge,
         }
     }
 }
@@ -186,10 +196,25 @@ mod tests {
             log_millibytes_per_phlo: 1_100,
             entry_overhead_bytes: 2_048,
             block_overhead_bytes: 1_024,
+            close_precharge: 5_000,
         };
         let bytes = policy.encode();
         assert_eq!(bytes.len(), ENCODED_LEN);
         assert_eq!(ShardResourcePolicy::decode(&bytes), Ok(policy));
+    }
+
+    #[test]
+    fn a_version_2_policy_decodes_with_the_default_close_precharge() {
+        let policy = ShardResourcePolicy {
+            close_precharge: 5_000,
+            ..ShardResourcePolicy::default()
+        };
+        let mut bytes = policy.encode();
+        bytes.truncate(ENCODED_LEN_V2);
+        bytes[0] = 2;
+        let decoded = ShardResourcePolicy::decode(&bytes).unwrap();
+        assert_eq!(decoded.close_precharge, DEFAULT_CLOSE_PRECHARGE);
+        assert_eq!(decoded.demand_cap, policy.demand_cap);
     }
 
     #[test]

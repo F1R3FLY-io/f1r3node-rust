@@ -56,21 +56,33 @@ Decisions 86 and 89. Base: `patch/FX-8b` at 4a74b0e34. The play side (the meter 
 - `rholang --lib stops`: 10 passed, 0 failed.
 - casper `v6::`: 88 passed, 0 failed, 7 ignored. Without refusals, replay is unchanged.
 
-## The close (Decisions 94 and 96)
+## The close (Decisions 94 and 97)
 
 - `RuntimeManager::compute_state_gated` and `replay_compute_state_gated` take a `SystemGate`. The plain functions call them with no gate, so the legacy paths do not change. A gate has three parts:
   - `funding`: the oracle that lane C installs.
-  - `charge`: a `SystemCharge` with the payer (the proposing validator) and a cover cell.
+  - `charge`: a `SystemCharge` with the payer (the proposing validator) and the amount held for the close.
   - `stops`: the replay check for refusals.
-- `CostManager::system_charge` gives the gate's `SystemCharge` to the runtime that runs the close. Lane B's FX-16 charge reads the payer from it. After the charge, FX-16 calls `SystemCharge::record(owed, balance)` with the proposer's post-settlement balance.
+- `CostManager::system_charge` gives the `SystemCharge` to the runtime that runs the close. Lane B's FX-16 reads the payer and the hold from it. FX-16 then takes the actual charge from the hold and returns the rest.
 - `BlockExecutor::close_gate` builds the close's gate.
-  - The payer is `WalletOwner::from_public_key` of the block sender.
-  - The stop check uses `BlockPurses` at the settled root with an empty commitment table. Settlement releases the block's held amounts, so nothing is held at the close.
+  - The stop check uses `BlockPurses` at the settled root with an empty commitment table.
   - `funding` is `None`. Lane C sets it to `EnvelopeFunding::new(purses, &[])` on the same purses.
-- **Decision 96 check:** `stops::close_covered` runs after the close in execute and in replay. If the proposer owes more than it holds, execute returns an invalid-block error and replay returns a mismatch. If FX-16 records no cover, the check passes. Replay compares the post-state root, which carries the proposer's charge.
-- In replay, the refusals of a system deploy install `ReplayStops` and are checked like an envelope's. A system deploy with refusals and no stop check fails replay. No refusal of the close can name the client membrane, because the close has no client envelope.
+- In replay, the refusals of a system deploy install `ReplayStops` and are checked like an envelope's. A system deploy with refusals and no stop check fails replay.
+
+### Decision 97: pre-charge the close
+
+- **Configuration:** `close-precharge` in the shard resource policy, which is on chain in the genesis block. It is policy encoding 3, 65 bytes. Encoding 2 still decodes, with the default value.
+- **Acceptance:** `V6Engine::check_close_cover` reads the proposer's balance at the block's attested root. A block whose proposer holds less than the pre-charge is invalid (`InvalidFormat`). The validation dispatcher calls the check after `check_block`.
+- **Proposal:** `create_block` makes the same check on its own wallet and proposes nothing when the check fails.
+- **The gate:** `gate_block_with_close` holds the pre-charge on the proposer's wallet before any envelope is admitted. `check_recorded_with_close` holds it the same way in replay. Envelopes that draw on the proposer's wallet see the hold.
+- **After the close:** the actual charge comes from the hold, and the rest goes back. This is lane B's (FX-16).
+- **Removed:** the Decision 96 check after the close, which would have stopped the chain.
 
 | Decision | Alternatives | Reason | Reversible |
 |---|---|---|---|
-| The close charge is lane B's (FX-16). Lane A2 gives the payer and checks the cover. | Charge in `charge_recorded_work` here | Decision 96 gives the charge to lane B. A first version here charged at the wrong time (before the post-settlement read) and was withdrawn. | Yes |
-| A cached replay of the close skips the stop check and the cover check | Turn off the cache for gated replays | Only a block that this node played is in the cache, and play ran both checks. | Yes |
+| The default `close-precharge` is 0, which turns the check and the hold off | A nonzero default | The amount must cover the close charge that FX-16 measures. The value is set with FX-16. | Yes |
+| The pre-charge is a policy field on chain | Node configuration | Every validator must apply the same acceptance rule and the same hold. | Yes |
+| Acceptance reads the attested root | The execution pre-state | The execution pre-state is not known when the block is accepted. | Yes |
+| If the proposer holds less than the pre-charge at execution, the gate holds what is free | Refuse every envelope | Execution must not stop the chain. See the open item below. | Yes |
+| A failed acceptance check gives `InvalidFormat` | A new `InvalidBlock` variant | No new variant is necessary, and the log gives the reason. | Yes |
+
+**Open item (Decision 88: known issue, needs a ruling):** the proposer's balance can fall between the attested root and the execution pre-state, for example through blocks that execute between them. Then the hold is less than the pre-charge, and FX-16 can take less than the close charge. The shortfall is at most the pre-charge.

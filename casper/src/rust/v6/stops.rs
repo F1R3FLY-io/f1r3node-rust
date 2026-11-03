@@ -87,14 +87,3 @@ pub fn check(
     Ok(())
 }
 
-pub fn close_covered(
-    charge: Option<&rholang::rust::interpreter::accounting::system_charge::SystemCharge>,
-) -> Result<(), String> {
-    match charge.and_then(|c| c.cover()) {
-        Some(cover) if !cover.covered() => Err(format!(
-            "the proposer cannot cover the close: it owes {} and holds {} after settlement",
-            cover.owed, cover.balance
-        )),
-        _ => Ok(()),
-    }
-}
