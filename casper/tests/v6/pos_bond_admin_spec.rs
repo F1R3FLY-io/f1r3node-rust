@@ -170,6 +170,13 @@ async fn run(executor: &BlockExecutor, root: &StateHash, block: &BlockMessage) -
     run_record(executor, root, block).await.post_root().clone()
 }
 
+async fn close_charge(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord) -> u64 {
+    let compute = compute_wallet_owner();
+    let before = read_wallet_balance(rm, pre, &compute).await.unwrap();
+    let after = read_wallet_balance(rm, record.post_root(), &compute).await.unwrap();
+    after - before - record.settlement().unwrap().compute_credit
+}
+
 fn bond_term(native: u64, bonds: &[(u64, &str)]) -> String {
     let registrations = bonds
         .iter()
@@ -279,7 +286,7 @@ async fn two_pos_bonds_on_one_native_bond_admit_the_first_and_release_the_rest()
     assert_eq!(read_bond_balance(&rm, &post, &alice.pk.bytes).await.unwrap(), 1_000);
     assert_eq!(
         read_wallet_balance(&rm, &post, &alice.owner).await.unwrap(),
-        1_000_000 - 1_500 - charge + 500
+        1_000_000 - 1_500 - charge + 500 - close_charge(&rm, &genesis, &record).await
     );
 }
 
@@ -310,7 +317,7 @@ async fn a_pending_bond_backed_only_by_a_withdrawn_bond_is_dropped() {
     assert_eq!(read_bond_balance(&rm, &rebonded, &alice.pk.bytes).await.unwrap(), 1_000);
     assert_eq!(
         read_wallet_balance(&rm, &rebonded, &alice.owner).await.unwrap(),
-        before - record.settlement().unwrap().debited()
+        before - record.settlement().unwrap().debited() - close_charge(&rm, &withdrawn, &record).await
     );
 }
 
@@ -408,4 +415,32 @@ async fn a_slash_moves_the_offenders_bond_to_the_compute_wallet() {
         .await
         .expect("the slash replays");
     assert_eq!(replayed, slashed);
+}
+
+#[tokio::test]
+async fn a_continuation_fired_inside_the_close_is_paid_by_its_installer() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis, _) = shard(&[&alice], 1, 10).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let heavy = "new y in { y!(1) | for (_ <- y) { new z in { z!(2) | for (_ <- z) { Nil } } } }";
+    let light = bond_term(1_000, &[(1_000, "light")]);
+    let loaded = light.replace(
+        r#"for (@h <- handleCh) { @"light"!(h) }"#,
+        &format!(r#"for (@h <- handleCh) {{ @"light"!(h) | {heavy} }}"#),
+    );
+    assert_ne!(loaded, light);
+    let compute = compute_wallet_owner();
+
+    let record = run_record(&executor, &genesis, &block(1, vec![envelope(&loaded, 1, &alice)], &proposer)).await;
+    let post = record.post_root().clone();
+    assert!(admitted(&rm, &post, "light").await);
+    let settlement = record.settlement().unwrap().clone();
+    let charged_in_run = settlement.debited();
+    let expected_without_close = 1_000_000 - 1_000 - charged_in_run;
+    let left = read_wallet_balance(&rm, &post, &alice.owner).await.unwrap();
+    assert!(left < expected_without_close, "the close charged the installer");
+    let in_close = expected_without_close - left;
+    let before = read_wallet_balance(&rm, &genesis, &compute).await.unwrap();
+    let after = read_wallet_balance(&rm, &post, &compute).await.unwrap();
+    assert_eq!(after - before, settlement.compute_credit + in_close);
 }

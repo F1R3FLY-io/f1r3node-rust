@@ -311,20 +311,25 @@ async fn each_component_of_a_compound_pays_the_full_charge() {
     assert_eq!(played.gate.entries[0].commitments.len(), 2);
     let charges = &played.settlement.charges;
     assert_eq!(charges.len(), 2);
-    let mut paid: Vec<_> = charges.iter().map(|c| c.wallet.clone()).collect();
-    paid.sort();
-    let mut expected = vec![wallet(&alice), wallet(&carol)];
-    expected.sort();
-    assert_eq!(paid, expected);
-    assert_eq!(charges[0].comm_rev, charges[1].comm_rev);
-    assert_eq!(charges[0].compute_rev, charges[1].compute_rev);
-    assert_eq!(charges[0].comm_phlo, 1);
-    assert_eq!(played.settlement.proposer_credit, 2 * charges[0].comm_rev);
+    let of = |p: &Party| charges.iter().find(|c| c.wallet == wallet(p)).unwrap();
+    let (deployer, component) = (of(&alice), of(&carol));
+    assert_eq!(component.comm_phlo, 1);
+    assert_eq!(deployer.comm_phlo, component.comm_phlo);
+    assert!(component.compute_phlo > 0);
+    assert!(
+        deployer.compute_phlo > component.compute_phlo,
+        "the deployer pays the compound's work in full and the top level as well"
+    );
+    assert_eq!(
+        played.settlement.proposer_credit,
+        deployer.comm_rev + component.comm_rev
+    );
     assert!(played.settlement.is_balanced());
 
     let settled = &played.settled_root;
-    let each = charges[0].comm_rev + charges[0].compute_rev;
-    assert_eq!(balance(&rm, settled, &alice).await, 100_000 - each);
+    let total = |c: &casper::rust::v6::settle::EnvelopeCharge| c.comm_rev + c.compute_rev;
+    let each = total(component);
+    assert_eq!(balance(&rm, settled, &alice).await, 100_000 - total(deployer));
     assert_eq!(balance(&rm, settled, &carol).await, 100_000 - each);
     assert_eq!(
         balance(&rm, settled, &proposer).await,
@@ -421,17 +426,22 @@ async fn a_funded_joint_wallet_pays_once_for_its_compound() {
 
     assert_eq!(played.gate.admitted(), vec![true]);
     let charges = &played.settlement.charges;
-    assert_eq!(charges.len(), 1);
+    assert_eq!(charges.len(), 2);
     let joint_wallet = rholang::rust::interpreter::accounting::rev_stack::wallet_channel_id(&pair);
-    assert_eq!(charges[0].wallet, joint_wallet);
+    let joint_charge = charges.iter().find(|c| c.wallet == joint_wallet).unwrap();
+    let top_level = charges.iter().find(|c| c.wallet == wallet(&alice)).unwrap();
+    assert_eq!(joint_charge.comm_phlo, 1);
     assert!(played.settlement.is_balanced());
     let settled = &played.settled_root;
-    let each = charges[0].comm_rev + charges[0].compute_rev;
+    let each = joint_charge.comm_rev + joint_charge.compute_rev;
     assert_eq!(
         read_wallet_balance(&rm, settled, &pair).await.unwrap(),
         50_000 - each
     );
-    assert_eq!(balance(&rm, settled, &alice).await, 100_000);
+    assert_eq!(
+        balance(&rm, settled, &alice).await,
+        100_000 - (top_level.comm_rev + top_level.compute_rev)
+    );
     assert_eq!(balance(&rm, settled, &carol).await, 100_000);
 
     let again = executor
@@ -724,6 +734,15 @@ async fn a_fired_continuation_draws_on_its_author_not_on_the_firing_region() {
     let root = &second.settled_root;
     assert_eq!(rev_at(&rm, root, "slot").await, 1);
     assert!(paid(&second, &bob) > 0);
+    let installer = second
+        .settlement
+        .surface_charges
+        .iter()
+        .find(|sc| sc.purse == bob.owner)
+        .expect("the installer's surface is charged");
+    assert_eq!(installer.cells, 1);
+    assert_eq!(installer.phlo_price, 1);
+    assert_eq!(installer.owed, installer.cells + installer.compute);
     assert_eq!(
         balance(&rm, root, &bob).await,
         100_000 - paid(&first, &bob) - paid(&second, &bob) - 1
@@ -828,6 +847,24 @@ async fn data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_p
         balance(&rm, root, &mallory).await,
         100_000 - paid(&second, &mallory)
     );
+    let owner = second
+        .settlement
+        .surface_charges
+        .iter()
+        .find(|sc| sc.purse == alice.owner)
+        .expect("the owner's membrane is charged");
+    assert!(owner.compute > 0, "the owner pays for the continuation's work");
+    let sender = second
+        .settlement
+        .charges
+        .iter()
+        .find(|c| c.wallet == wallet(&mallory))
+        .expect("the sender pays its own part");
+    assert_eq!(
+        sender.compute_phlo + owner.compute,
+        second.runs[0].compute_phlo,
+        "the run's work is split between the sender and the owner, with nothing counted twice"
+    );
     let again = executor
         .replay(
             &first.settled_root,
@@ -864,7 +901,9 @@ async fn a_stack_under_a_cosigners_seal_draws_on_the_cosigner_not_the_deployer()
         balance(&rm, settled, &alice).await,
         100_000 - paid(&played, &alice) - 2
     );
-    assert_eq!(balance(&rm, settled, &bob).await, 100_000);
+    let top_level = paid(&played, &bob);
+    assert!(top_level > 0, "the deployer pays for the top level under its implicit seal");
+    assert_eq!(balance(&rm, settled, &bob).await, 100_000 - top_level);
     let again = executor
         .replay(
             &pre,

@@ -16,6 +16,7 @@ struct LedgerState {
     pending: u64,
     tally: CommTally,
     surfaces: BTreeMap<Option<Surface>, u64>,
+    work: BTreeMap<Option<Surface>, i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -79,6 +80,19 @@ impl CommLedger {
         std::mem::take(&mut self.lock().surfaces)
     }
 
+    pub fn on_work(&self, surface: Option<Surface>, phlo: i64) {
+        let mut s = self.lock();
+        let w = s.work.entry(surface).or_insert(0);
+        *w = w.saturating_add(phlo);
+    }
+
+    pub fn take_work(&self) -> BTreeMap<Option<Surface>, u64> {
+        std::mem::take(&mut self.lock().work)
+            .into_iter()
+            .filter_map(|(surface, phlo)| u64::try_from(phlo).ok().filter(|p| *p > 0).map(|p| (surface, p)))
+            .collect()
+    }
+
     pub fn take(&self) -> CommTally {
         let mut s = self.lock();
         if s.pending > 0 {
@@ -94,6 +108,7 @@ impl CommLedger {
         s.pending = 0;
         s.tally = CommTally::default();
         s.surfaces.clear();
+        s.work.clear();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, LedgerState> {

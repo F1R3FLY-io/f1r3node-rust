@@ -66,6 +66,7 @@ mod tests {
                 user_log: Vec::new(),
                 footprint: Default::default(),
                 surfaces: Vec::new(),
+                work: Vec::new(),
             },
         }
     }

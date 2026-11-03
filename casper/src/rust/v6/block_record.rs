@@ -27,6 +27,8 @@ pub struct RecordEntryProto {
     pub footprint: Vec<FootprintCellProto>,
     #[prost(message, repeated, tag = "18")]
     pub surfaces: Vec<SurfaceCellsProto>,
+    #[prost(message, repeated, tag = "19")]
+    pub work: Vec<SurfaceCellsProto>,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -93,6 +95,7 @@ pub struct ExecutedEnvelope {
     pub user_log: Vec<Event>,
     pub footprint: Footprint,
     pub surfaces: Surfaces,
+    pub work: Surfaces,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -271,6 +274,7 @@ fn entry_to_proto(entry: &RecordEntry) -> RecordEntryProto {
         comm_phlo: entry.executed.comm_phlo,
         footprint: entry.executed.footprint.to_proto(),
         surfaces: surface::to_proto(&entry.executed.surfaces),
+        work: surface::to_proto(&entry.executed.work),
     }
 }
 
@@ -288,6 +292,7 @@ fn entry_from_proto(proto: RecordEntryProto) -> Result<RecordEntry, String> {
                 .collect::<Result<Vec<_>, _>>()?,
             footprint: Footprint::from_proto(proto.footprint)?,
             surfaces: surface::from_proto(proto.surfaces)?,
+            work: surface::from_proto(proto.work)?,
         },
     })
 }
@@ -340,6 +345,7 @@ mod tests {
                 user_log: vec![log_event()],
                 footprint: Default::default(),
                 surfaces: Vec::new(),
+                work: Vec::new(),
             },
         }
     }

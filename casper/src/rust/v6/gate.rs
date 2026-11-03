@@ -88,7 +88,8 @@ impl GateInput {
                 owners.push(owner.clone());
             }
         }
-        if self.bare_stack && !owners.contains(&self.deployer) {
+        let self_sealed = self.named.is_empty() && !self.sealed.is_empty();
+        if (self.bare_stack || !self_sealed) && !owners.contains(&self.deployer) {
             owners.push(self.deployer.clone());
         }
         owners.sort_by_cached_key(WalletOwner::canonical_bytes);

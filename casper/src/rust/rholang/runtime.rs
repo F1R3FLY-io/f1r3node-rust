@@ -969,6 +969,7 @@ impl RuntimeOps {
         }
 
         let wrapper_pre = wrapper_pre_start.elapsed();
+        self.runtime.cost.comm_ledger().reset();
         let eval_result = self.evaluate_system_source(system_deploy).await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_evaluate_system_source", rss_kb);
@@ -1032,7 +1033,26 @@ impl RuntimeOps {
                 (wrapper_pre + wrapper_mid + wrapper_post_start.elapsed()).as_nanos() as u64,
             );
 
+        self.charge_recorded_work()?;
         Ok((r, eval_result))
+    }
+
+    fn charge_recorded_work(&mut self) -> Result<(), CasperError> {
+        let work = self.runtime.cost.comm_ledger().take_work();
+        if !work.keys().any(Option::is_some) {
+            return Ok(());
+        }
+        let Some(store) = self.runtime.reducer.space.hot_store() else {
+            return Ok(());
+        };
+        rholang::rust::interpreter::accounting::rev_stack::compute::charge_recorded_work(
+            std::sync::Arc::new(
+                rholang::rust::interpreter::accounting::rev_stack::HotStoreCells(store),
+            ),
+            &work,
+        )
+        .map(|_| ())
+        .map_err(|e| CasperError::RuntimeError(format!("system deploy work charge: {e}")))
     }
 
     /**

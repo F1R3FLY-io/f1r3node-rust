@@ -105,6 +105,7 @@ async fn comms_are_paid_to_the_proposer_in_the_canonical_form() {
         &gate.entries,
         &runs,
         &client_surfaces(&runs),
+        &client_work(&runs),
         &vec![Vec::new(); runs.len()],
         &vec![true; runs.len()],
         &proposer.owner,
@@ -135,6 +136,7 @@ async fn comms_are_paid_to_the_proposer_in_the_canonical_form() {
         &gate.entries,
         &runs,
         &client_surfaces(&runs),
+        &client_work(&runs),
         &vec![Vec::new(); runs.len()],
         &vec![true; runs.len()],
         &proposer.owner,
@@ -172,6 +174,7 @@ async fn the_box_car_size_never_changes_the_state() {
             &gate.entries,
             &runs,
             &client_surfaces(&runs),
+            &client_work(&runs),
             &vec![Vec::new(); runs.len()],
             &vec![true; runs.len()],
             &proposer.owner,
@@ -199,6 +202,7 @@ async fn a_block_with_no_charge_leaves_the_state_alone() {
         &gate.entries,
         &[run(5)],
         &client_surfaces(&[run(5)]),
+        &client_work(&[run(5)]),
         &[Vec::new()],
         &[true],
         &proposer.owner,
@@ -241,6 +245,7 @@ async fn compute_is_paid_to_the_compute_wallet_and_the_charge_never_passes_delta
             &gate.entries,
             &runs,
             &client_surfaces(&runs),
+            &client_work(&runs),
             &vec![Vec::new(); runs.len()],
             &vec![true; runs.len()],
             &proposer.owner,
@@ -287,6 +292,7 @@ async fn settlement_releases_unspent_commitments_and_conserves_the_supply() {
         &gate.entries,
         &runs,
         &client_surfaces(&runs),
+        &client_work(&runs),
         &vec![Vec::new(); runs.len()],
         &vec![true; runs.len()],
         &proposer.owner,
@@ -350,6 +356,7 @@ async fn a_chain_of_moves_in_one_run_settles_in_any_order() {
             &gate.entries,
             &runs,
             &client_surfaces(&runs),
+            &client_work(&runs),
             &[order],
             &[true],
             &proposer.owner,
@@ -371,6 +378,17 @@ fn client_surfaces(
 ) -> Vec<casper::rust::v6::surface::Surfaces> {
     runs.iter()
         .map(|r| match r.comm_phlo {
+            0 => Vec::new(),
+            n => vec![(None, n)],
+        })
+        .collect()
+}
+
+fn client_work(
+    runs: &[casper::rust::v6::run::EnvelopeRun],
+) -> Vec<casper::rust::v6::surface::Surfaces> {
+    runs.iter()
+        .map(|r| match r.compute_phlo {
             0 => Vec::new(),
             n => vec![(None, n)],
         })
