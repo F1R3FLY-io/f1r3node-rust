@@ -129,3 +129,11 @@ One fix in lane C's code: `admits_waiting` was put between the guard's doc comme
 **Decision 88 labels:** no new finding is blocking. The misplaced doc comment was fixed in the merge.
 
 v6 tests on the merged tree: 85 passed, 0 failed, 7 ignored.
+
+## Verification of the tip (aea9b529d, `/tmp` cleared before the run)
+
+- rholang lib: 1,451 passed, 0 failed, 3 ignored.
+- rspace_plus_plus: 421 passed, 0 failed.
+- casper lib: 851 passed, 0 failed, 1 ignored.
+- casper `--test mod`: 1,260 passed, 0 failed, 19 ignored.
+- node: 466 passed, 0 failed.
