@@ -342,12 +342,34 @@ impl IngestState {
                 let area = stores.pending_usage();
                 // The area lists only senders with blocks in it.
                 let count = area.by_sender.get(&sender).copied().unwrap_or(0);
-                let excess = (count + 1).saturating_sub(area.limits.max_per_sender);
-                let victims =
+                let mut excess = (count + 1).saturating_sub(area.limits.max_per_sender);
+                let unsolicited =
                     self.tracker
                         .victims(BodyAt::Pending, VictimClass::Unsolicited, Some(&sender));
-                for (victim, _) in victims.into_iter().take(excess) {
+                for (victim, _) in unsolicited.into_iter().take(excess) {
                     self.evict(&victim, now_ms, effects);
+                    excess -= 1;
+                }
+                // Requested blocks that wait on the refused one cannot validate
+                // before it, so they give up their slots to it. Its last
+                // waiter stays, or nothing would keep it needed.
+                let dependents = self.tracker.dependents(&hash);
+                let waiting: Vec<BlockHash> = self
+                    .tracker
+                    .victims(BodyAt::Pending, VictimClass::Solicited, Some(&sender))
+                    .into_iter()
+                    .map(|(victim, _)| victim)
+                    .filter(|victim| dependents.contains(victim))
+                    .collect();
+                for victim in waiting {
+                    if excess == 0 {
+                        break;
+                    }
+                    if self.tracker.is_sole_waiter(&hash, &victim) {
+                        continue;
+                    }
+                    self.evict(&victim, now_ms, effects);
+                    excess -= 1;
                 }
             }
             Refusal::Pending(PendingRefusal::TooLarge) => {

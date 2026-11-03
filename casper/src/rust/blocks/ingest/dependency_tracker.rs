@@ -292,20 +292,7 @@ impl DependencyTracker {
     /// `hash` and every held block that waits on it, directly or through
     /// another, leave: none of them can become ready.
     pub fn drop_with_dependents(&mut self, hash: &BlockHash) -> Departure {
-        let mut doomed = vec![hash.clone()];
-        let mut seen: HashSet<BlockHash> = HashSet::new();
-        let mut order = Vec::new();
-        while let Some(next) = doomed.pop() {
-            if !seen.insert(next.clone()) {
-                continue;
-            }
-            if let Some(waiters) = self.waiters.get(&next) {
-                doomed.extend(waiters.iter().cloned());
-            }
-            if self.held.contains_key(&next) {
-                order.push(next);
-            }
-        }
+        let (seen, order) = self.waiting_closure(hash);
         let mut departure = Departure::default();
         for doomed in &order {
             let mut taken = self.take(doomed);
@@ -320,6 +307,40 @@ impl DependencyTracker {
             .unwaited
             .retain(|h| !seen.contains(h) && !self.waiters.contains_key(h));
         departure
+    }
+
+    /// The held blocks that wait on `hash`, directly or through another held
+    /// block.
+    pub fn dependents(&self, hash: &BlockHash) -> HashSet<BlockHash> {
+        let (_, held) = self.waiting_closure(hash);
+        held.into_iter().filter(|h| h != hash).collect()
+    }
+
+    /// `waiter` is the only held block waiting on `dependency`.
+    pub fn is_sole_waiter(&self, dependency: &BlockHash, waiter: &BlockHash) -> bool {
+        self.waiters
+            .get(dependency)
+            .is_some_and(|waiters| waiters.len() == 1 && waiters.contains(waiter))
+    }
+
+    /// Every hash reached from `hash` through the waiter index, and the held
+    /// ones among them in the order reached.
+    fn waiting_closure(&self, hash: &BlockHash) -> (HashSet<BlockHash>, Vec<BlockHash>) {
+        let mut pending = vec![hash.clone()];
+        let mut seen: HashSet<BlockHash> = HashSet::new();
+        let mut held = Vec::new();
+        while let Some(next) = pending.pop() {
+            if !seen.insert(next.clone()) {
+                continue;
+            }
+            if let Some(waiters) = self.waiters.get(&next) {
+                pending.extend(waiters.iter().cloned());
+            }
+            if self.held.contains_key(&next) {
+                held.push(next);
+            }
+        }
+        (seen, held)
     }
 
     /// Evict `hash`. Blocks waiting on it keep waiting, so it becomes a need

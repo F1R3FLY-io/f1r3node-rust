@@ -616,6 +616,95 @@ fn a_sender_at_its_quota_loses_only_its_own_unsolicited_blocks() {
     assert_eq!(effects, vec![Effect::DiscardPending(hash(1))]);
 }
 
+/// A requested pending block of sender `v1` that waits on `dependency`.
+fn requested(block: u32, height: i64, dependency: u32) -> HeldMeta {
+    pending(meta(block, height, &[dependency]), b"v1", true, None)
+}
+
+/// Fill sender `v1`'s quota with `blocks`.
+fn fill_sender_quota(s: &mut IngestState, dag: &mut Dag, blocks: Vec<HeldMeta>) {
+    assert_eq!(blocks.len(), LIMITS.max_per_sender);
+    for block in blocks {
+        s.handle(received(block), 0, dag);
+    }
+    dag.area = usage(
+        LIMITS.max_per_sender,
+        [(Bytes::from_static(b"v1"), LIMITS.max_per_sender)].into(),
+    );
+}
+
+fn refused_at_quota(s: &mut IngestState, dag: &Dag, block: u32) -> Vec<Effect> {
+    s.handle(
+        refused(
+            block,
+            "q",
+            true,
+            b"v1",
+            Refusal::Pending(PendingRefusal::SenderLimitReached),
+        ),
+        0,
+        dag,
+    )
+}
+
+#[test]
+fn a_requested_parent_at_its_sender_quota_makes_room_among_its_own_requested_children() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    let quota = LIMITS.max_per_sender as u32;
+    let children = (1..=quota).map(|child| requested(child, 2, 100)).collect();
+    fill_sender_quota(&mut s, &mut dag, children);
+    assert!(s.is_needed(&hash(100)));
+
+    let effects = refused_at_quota(&mut s, &dag, 100);
+
+    assert_eq!(effects.len(), 1, "one slot is missing: {effects:?}");
+    assert!(
+        matches!(
+            &effects[0],
+            Effect::DiscardPending(child) if (1..=quota).map(hash).any(|c| c == *child)
+        ),
+        "the parent's own children hold every slot of its sender: {effects:?}"
+    );
+    assert!(s.is_needed(&hash(100)));
+}
+
+#[test]
+fn a_requested_block_at_its_sender_quota_takes_no_room_from_blocks_that_do_not_wait_on_it() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    let quota = LIMITS.max_per_sender as u32;
+    let unrelated = (1..=quota).map(|block| requested(block, 2, 99)).collect();
+    fill_sender_quota(&mut s, &mut dag, unrelated);
+
+    assert_eq!(refused_at_quota(&mut s, &dag, 100), vec![]);
+}
+
+#[test]
+fn a_requested_parent_at_its_sender_quota_keeps_its_only_waiter() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    let quota = LIMITS.max_per_sender as u32;
+    // Untrusted, so the eviction order reaches the only waiter first.
+    let mut only_waiter = requested(1, 2, 100);
+    only_waiter.trusted = false;
+    let mut chain = vec![only_waiter];
+    chain.extend((2..=quota).map(|grandchild| requested(grandchild, 3, 1)));
+    fill_sender_quota(&mut s, &mut dag, chain);
+
+    let effects = refused_at_quota(&mut s, &dag, 100);
+
+    assert_eq!(effects.len(), 1, "one slot is missing: {effects:?}");
+    assert!(
+        matches!(
+            &effects[0],
+            Effect::DiscardPending(grandchild) if (2..=quota).map(hash).any(|g| g == *grandchild)
+        ),
+        "the parent's only waiter is kept, so the parent stays needed: {effects:?}"
+    );
+    assert!(s.is_needed(&hash(100)));
+}
+
 #[test]
 fn a_block_too_large_for_the_area_expires_its_need_and_its_waiters() {
     let (mut s, view) = state();
