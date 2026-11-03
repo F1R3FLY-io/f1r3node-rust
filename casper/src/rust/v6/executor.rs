@@ -277,6 +277,7 @@ impl Runs {
         reservations: Vec<(WalletOwner, Reservation)>,
         funding: Arc<dyn Funding>,
         purses: Arc<BlockPurses>,
+        recorded_work: Option<Surfaces>,
     ) -> Result<EnvelopeEffect, CasperError> {
         let Pooled { runtime, base } = self.runtime_at(true, pre_root).await?;
         let stopped = super::stops::install(&recorded);
@@ -312,6 +313,12 @@ impl Runs {
             .into_iter()
             .collect();
         let work: Surfaces = replay.runtime_ops.runtime.cost.comm_ledger().take_work().into_iter().collect();
+        let work = super::stops::settled_work(
+            stopped.as_ref().map_or(&[][..], |(_, refusals)| refusals.as_slice()),
+            work,
+            recorded_work.as_ref(),
+        )
+        .map_err(|e| invalid(format!("a stopped membrane does not settle: {e:?}")))?;
         let changes = runtime_cells(&replay.runtime_ops.runtime)?.0.changes();
         replay.runtime_ops.runtime.set_funding(None);
         self.give_back(true, Pooled { runtime: replay.runtime_ops.runtime, base });
@@ -586,6 +593,18 @@ impl EnvelopeExecutor {
         recorded_gate: &[GateEntry],
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
+        self.replay_recorded(pre_root, recorded, None, recorded_gate, block_data)
+            .await
+    }
+
+    pub async fn replay_recorded(
+        &self,
+        pre_root: &StateHash,
+        recorded: Vec<ProcessedDeploy>,
+        recorded_work: Option<Vec<Surfaces>>,
+        recorded_gate: &[GateEntry],
+        block_data: BlockData,
+    ) -> Result<ExecutedBlock, CasperError> {
         let mut inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
@@ -601,6 +620,7 @@ impl EnvelopeExecutor {
                 let held = reservations(gate, &inputs[i], i);
                 let funding = EnvelopeFunding::new(purses.clone(), &gate.entries[i].envelope_sig);
                 let purses = purses.clone();
+                let work = recorded_work.as_ref().and_then(|w| w.get(i).cloned());
                 let runs = Arc::clone(&self.runs);
                 let pre_root = pre_root.clone();
                 async move {
@@ -608,7 +628,7 @@ impl EnvelopeExecutor {
                         return Ok(Self::refused(processed.deploy));
                     }
                     tokio::spawn(async move {
-                        runs.replay_one(&pre_root, processed, block_data, held, funding, purses)
+                        runs.replay_one(&pre_root, processed, block_data, held, funding, purses, work)
                             .await
                     })
                     .await
@@ -926,9 +946,10 @@ impl ExecutionBackend for BlockExecutor {
             .collect::<Result<Vec<_>, _>>()?;
         let replayed = self
             .envelopes
-            .replay(
+            .replay_recorded(
                 record.pre_root(),
                 processed,
+                Some(recorded.iter().map(|entry| entry.work.clone()).collect()),
                 record.gate(),
                 block_data(block),
             )

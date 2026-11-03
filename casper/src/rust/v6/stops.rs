@@ -2,7 +2,11 @@ use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rholang::rust::interpreter::accounting::stops::{check_stop, Refusal, ReplayStops, StopCheck};
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 
-use super::surface::BlockPurses;
+use std::collections::BTreeMap;
+
+use rholang::rust::interpreter::accounting::stops::Membrane;
+
+use super::surface::{BlockPurses, Surfaces};
 use crate::rust::util::event_converter::to_rspace_event;
 
 pub fn refusals_of(_processed: &ProcessedDeploy) -> Vec<Refusal> { Vec::new() }
@@ -36,6 +40,46 @@ pub enum StopFailure {
     ClientMembrane,
     NoPurse,
     Check(StopCheck),
+    NoRecordedWork,
+    WorkAboveDrawn { recorded: u64, drawn: u64 },
+}
+
+pub fn settled_work(
+    refusals: &[Refusal],
+    replayed: Surfaces,
+    recorded: Option<&Surfaces>,
+) -> Result<Surfaces, StopFailure> {
+    if refusals.is_empty() {
+        return Ok(replayed);
+    }
+    let recorded = recorded.ok_or(StopFailure::NoRecordedWork)?;
+    let mut drawn: BTreeMap<Membrane, u64> = BTreeMap::new();
+    for refusal in refusals {
+        drawn
+            .entry(refusal.membrane.clone())
+            .and_modify(|d| *d = (*d).min(refusal.drawn))
+            .or_insert(refusal.drawn);
+    }
+    let mut work: BTreeMap<Membrane, u64> = replayed
+        .into_iter()
+        .filter(|(membrane, _)| !drawn.contains_key(membrane))
+        .collect();
+    for (membrane, limit) in &drawn {
+        let net = recorded
+            .iter()
+            .find(|(m, _)| m == membrane)
+            .map_or(0, |(_, w)| *w);
+        if net > *limit {
+            return Err(StopFailure::WorkAboveDrawn {
+                recorded: net,
+                drawn: *limit,
+            });
+        }
+        if net > 0 {
+            work.insert(membrane.clone(), net);
+        }
+    }
+    Ok(work.into_iter().collect())
 }
 
 pub fn check(
@@ -59,4 +103,93 @@ pub fn check(
         .map_err(StopFailure::Check)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rholang::rust::interpreter::accounting::comm_ledger::Surface;
+
+    use super::*;
+
+    fn membrane(owner: u8) -> Membrane {
+        Some(Surface {
+            owner: vec![owner],
+            envelope: vec![9],
+            phlo_price: 1,
+        })
+    }
+
+    fn refusal(owner: u8, drawn: u64) -> Refusal {
+        Refusal {
+            membrane: membrane(owner),
+            step: vec![owner],
+            drawn,
+            cost: 10,
+        }
+    }
+
+    #[test]
+    fn without_a_stop_the_replayed_work_stands() {
+        let replayed = vec![(None, 30), (membrane(1), 40)];
+        assert_eq!(settled_work(&[], replayed.clone(), None), Ok(replayed));
+    }
+
+    #[test]
+    fn a_stopped_membrane_settles_the_recorded_work() {
+        let replayed = vec![(None, 30), (membrane(1), 70), (membrane(2), 5)];
+        let recorded = vec![(None, 30), (membrane(1), 60), (membrane(2), 5)];
+        assert_eq!(
+            settled_work(&[refusal(1, 95)], replayed, Some(&recorded)),
+            Ok(vec![(None, 30), (membrane(1), 60), (membrane(2), 5)])
+        );
+    }
+
+    #[test]
+    fn recorded_work_up_to_the_drawn_amount_passes() {
+        let recorded = vec![(membrane(1), 95)];
+        assert_eq!(
+            settled_work(&[refusal(1, 95)], vec![(membrane(1), 80)], Some(&recorded)),
+            Ok(vec![(membrane(1), 95)])
+        );
+    }
+
+    #[test]
+    fn recorded_work_above_the_drawn_amount_is_refused() {
+        let recorded = vec![(membrane(1), 96)];
+        assert_eq!(
+            settled_work(&[refusal(1, 95)], vec![(membrane(1), 96)], Some(&recorded)),
+            Err(StopFailure::WorkAboveDrawn {
+                recorded: 96,
+                drawn: 95
+            })
+        );
+    }
+
+    #[test]
+    fn the_least_drawn_amount_of_a_membrane_bounds_its_work() {
+        let recorded = vec![(membrane(1), 90)];
+        assert_eq!(
+            settled_work(&[refusal(1, 95), refusal(1, 85)], Vec::new(), Some(&recorded)),
+            Err(StopFailure::WorkAboveDrawn {
+                recorded: 90,
+                drawn: 85
+            })
+        );
+    }
+
+    #[test]
+    fn a_stopped_membrane_with_no_recorded_work_pays_nothing() {
+        assert_eq!(
+            settled_work(&[refusal(1, 95)], vec![(membrane(1), 40)], Some(&Vec::new())),
+            Ok(Vec::new())
+        );
+    }
+
+    #[test]
+    fn a_stop_without_the_recorded_work_is_refused() {
+        assert_eq!(
+            settled_work(&[refusal(1, 95)], Vec::new(), None),
+            Err(StopFailure::NoRecordedWork)
+        );
+    }
 }
