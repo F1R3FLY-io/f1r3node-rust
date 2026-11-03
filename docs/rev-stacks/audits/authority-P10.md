@@ -1315,17 +1315,31 @@ Lane B's two known issues in the FX-14 log are accepted with their labels:
 The FX-14 follow-up must still be merged into FX-8b. A-8 re-audits that merge, FX-15, and the fixes for F39 and D8b when they land.
 
 
-## Ruling of 2026-11-03: Q-32 (Decision 89)
+## Ruling of 2026-11-03: Q-32 (Decision 89, design r13)
 
-Decision 89 answers Q-32. The trace carries each refused step, with the drawn amount of the membrane at that step. Replay checks payability in both directions. Lane C's "early stop" known issue no longer applies.
+Decision 89 answers Q-32. It is in design r13 (publications `95844af`). From this point on, A-9 reads against r13 §6.3. The r12 text of §6.3 is unchanged in r13, except for the paragraph "Work is gated, not only the cell".
 
-A-9 adds three checks for FX-15, beside the four checks in revision 14's watch list:
-- Replay rejects a trace that stops a membrane early, where the step was payable.
-- Replay rejects a forged drawn amount.
-- Replay rejects an admitted step that was not payable.
+**What r13 §6.3 says:**
+- Play may stop work under t at a different step from one execution to another. That is admissible.
+- One validator executes the block and produces a trace. The other validators replay that trace and confirm the same state change.
+- A refused step is an event of the trace, like a COMM. It carries the step's identity (its task's random state and position) and the amount that t had drawn when the step was refused.
+- Replay follows the trace. It admits exactly the steps that the trace admits. It checks that each admitted step was payable, and that each refused step was not, at the drawn amount that the trace records.
 
-Each check needs a test that changes the trace and expects the block to fail replay. A failure of any of these checks is a divergence from r12 §6.3 ("the point at which work under t stops must be the same in play and replay"), so it is **blocking** under Decision 88.
+Lane C's "early stop" known issue no longer applies.
 
+**Correction to revision 14:** revision 14's watch list asked that "play and replay stop at the same point". That is wrong under r13. Play and replay stopping at different points across executions is not a divergence in itself. The requirement is that replay follows the trace, and accepts the trace only if it is honest.
+
+**The three FX-15 replay checks:**
+
+| Check | Replay must reject | Pinning test |
+|---|---|---|
+| Early stop | A trace that refuses a step that was payable at the recorded drawn amount | Take an honest trace. Change one admitted step under t to a refused step. Expect replay to reject the block. |
+| Forged drawn amount | A trace whose recorded drawn amount for a refused step differs from what t had drawn at that point in the trace | Take an honest trace. Change only the drawn amount on one refused step. Expect replay to reject the block. |
+| Unpayable admitted step | A trace that admits a step that was not payable | Take an honest trace. Change one refused step under t to an admitted step. Expect replay to reject the block. |
+
+**Gate label:** replay that accepts a trace that fails one of the three checks is a divergence from r13 §6.3, so it is **blocking** under Decision 88.
+
+**Note on the forged-amount check:** r13 says that replay checks payability "at the drawn amount the trace records". The forged-amount check needs one more step. Replay must compute what t has drawn as it follows the trace, and compare that sum with the recorded amount. If replay only reads the recorded amount, then a forged amount that is too high can make a payable step look unpayable. An early stop would then pass. FX-15 must show that replay computes the drawn amount, and the pinning test shows that it compares the two.
 
 ## Open questions for review
 
@@ -1342,3 +1356,4 @@ Each check needs a test that changes the trace and expects the block to fail rep
 11. **F40:** answered on 2026-11-03 (Decision 86: work under the membrane stops). When a funded stored receive fires a continuation whose work costs more than its purse holds, who pays the shortfall?
 12. **F39 and F33:** answered on 2026-11-03 (Decision 83: the wallet at the seal pays). Is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
 13. **D8b:** is the close-block system deploy exempt from the one-cell charge of r12 §6.3, or must a COMM that the close fires pay its cells?
+
