@@ -345,6 +345,18 @@ pub fn bond_term(amount: i64) -> Result<String, String> {
     ))
 }
 
+pub fn withdraw_term() -> String {
+    "new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), \
+     deployId(`rho:system:deployId`), rl(`rho:registry:lookup`), posCh, handleCh in {\n  \
+     rb!(\"handle\", *deployerId, *handleCh) |\n  \
+     for (@(true, handle) <- handleCh) {\n    \
+     rl!(`rho:system:pos`, *posCh) |\n    \
+     for (@(_, PoS) <- posCh) { @PoS!(\"withdraw\", handle, *deployId) }\n  \
+     } |\n  \
+     for (@(false, message) <- handleCh) { deployId!((false, message)) }\n}\n"
+        .to_string()
+}
+
 pub fn balance_term(address: &str) -> Result<String, String> {
     checked_address(address)?;
     Ok(format!(

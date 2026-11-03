@@ -153,3 +153,25 @@ async fn only_a_holder_of_the_bond_admin_name_can_release_or_slash_a_bond() {
         300
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_validator_takes_its_handle_only_at_its_own_seal() {
+    use rholang::rust::interpreter::accounting::rev_stack::bond::{handle_key, validator_handle};
+    let (runtime, _) = runtimes().await;
+    let (alice, mallory) = (key(), key());
+    let own = r#"new b(`rho:rev:bond`), deployerId(`rho:system:deployerId`) in {
+                   @"alice-id"!(*deployerId) | b!("handle", *deployerId, "own")
+                 }"#;
+    assert!(eval_as(&runtime, &alice, own).await.is_empty());
+    let (ok, handle) = either(&take(&runtime, "own").await[0]);
+    assert!(ok);
+    assert_eq!(handle, validator_handle(&alice.pk.bytes));
+    assert_eq!(handle_key(&handle), Ok(alice.pk.bytes.to_vec()));
+
+    let foreign = r#"new b(`rho:rev:bond`) in {
+                       for (@a <- @"alice-id") { b!("handle", a, "foreign") }
+                     }"#;
+    assert!(eval_as(&runtime, &mallory, foreign).await.is_empty());
+    let (ok, _) = either(&take(&runtime, "foreign").await[0]);
+    assert!(!ok, "a published deployer id gives no handle");
+}
