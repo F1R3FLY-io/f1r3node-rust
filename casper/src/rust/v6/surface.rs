@@ -130,6 +130,17 @@ impl BlockPurses {
         balance.checked_sub(self.held.committed(&wallet))
     }
 
+    pub fn available(&self, surface: &Surface) -> Option<u64> {
+        let price = surface.phlo_price.max(1);
+        surface_purse(surface)
+            .ok()?
+            .iter()
+            .map(|purse| self.free(purse).map(|free| free / price))
+            .collect::<Option<Vec<_>>>()?
+            .into_iter()
+            .min()
+    }
+
     pub fn funds_cell(&self, record: &SealRecord) -> bool {
         record
             .purse()

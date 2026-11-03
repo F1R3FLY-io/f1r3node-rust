@@ -276,8 +276,10 @@ impl Runs {
         block_data: BlockData,
         reservations: Vec<(WalletOwner, Reservation)>,
         funding: Arc<dyn Funding>,
+        purses: Arc<BlockPurses>,
     ) -> Result<EnvelopeEffect, CasperError> {
         let Pooled { runtime, base } = self.runtime_at(true, pre_root).await?;
+        let stopped = super::stops::install(&recorded);
         let mut replay = ReplayRuntimeOps::new_from_runtime(runtime);
         let runtime = &mut replay.runtime_ops.runtime;
         runtime.set_block_data(block_data).await;
@@ -287,10 +289,16 @@ impl Runs {
         runtime.cost.charge_storage_left_in_space();
         runtime.cost.comm_ledger().reset();
         runtime.cost.set_own_origin(Some(recorded.deploy.sig.to_vec()), FOREIGN_WORK_BUDGET);
+        runtime.cost.set_replay_stops(stopped.as_ref().map(|(stops, _)| stops.clone()));
         let cells = runtime_cells(runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         let number_channels = replay.replay_deploy_e(false, &recorded).await?;
+        if let Some((stops, refusals)) = &stopped {
+            super::stops::check(refusals, stops, &purses, &recorded.deploy.sig)
+                .map_err(|e| invalid(format!("a membrane stop does not replay: {e:?}")))?;
+        }
+        replay.runtime_ops.runtime.cost.set_replay_stops(None);
         let overdrawn = journal_overdrawn(Arc::new(runtime_cells(&replay.runtime_ops.runtime)?))
             .map_err(|e| invalid(format!("journal: {e}")))?;
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
@@ -592,6 +600,7 @@ impl EnvelopeExecutor {
                 let admitted = gate.entries[i].admitted();
                 let held = reservations(gate, &inputs[i], i);
                 let funding = EnvelopeFunding::new(purses.clone(), &gate.entries[i].envelope_sig);
+                let purses = purses.clone();
                 let runs = Arc::clone(&self.runs);
                 let pre_root = pre_root.clone();
                 async move {
@@ -599,7 +608,7 @@ impl EnvelopeExecutor {
                         return Ok(Self::refused(processed.deploy));
                     }
                     tokio::spawn(async move {
-                        runs.replay_one(&pre_root, processed, block_data, held, funding)
+                        runs.replay_one(&pre_root, processed, block_data, held, funding, purses)
                             .await
                     })
                     .await

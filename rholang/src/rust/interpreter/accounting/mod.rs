@@ -12,6 +12,7 @@ pub mod delta_sigma;
 pub mod has_cost;
 pub mod noop;
 pub mod rev_stack;
+pub mod stops;
 pub mod storage_rule;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/package.scala
@@ -27,6 +28,7 @@ pub struct CostManager {
     storage: Arc<Mutex<Option<storage_rule::LeftInSpace>>>,
     own_origin: Arc<Mutex<Option<Vec<u8>>>>,
     foreign: Arc<Mutex<(i64, i64)>>,
+    stops: Arc<Mutex<Option<stops::ReplayStops>>>,
 }
 
 impl CostManager {
@@ -50,6 +52,7 @@ impl CostManager {
             storage: Arc::new(Mutex::new(None)),
             own_origin: Arc::new(Mutex::new(None)),
             foreign: Arc::new(Mutex::new((0, 0))),
+            stops: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -70,7 +73,10 @@ impl CostManager {
         };
         // Use saturating arithmetic to prevent overflow when credits (negative
         // charges) are applied to balances near i64::MAX (e.g., genesis deploys).
-        self.comms.on_work(surface, amount.value);
+        self.comms.on_work(surface.clone(), amount.value);
+        if let Some(stops) = self.replay_stops() {
+            stops.on_charge(&surface, amount.value);
+        }
         if foreign {
             let mut budget = self.foreign.lock().unwrap();
             budget.1 = budget.1.saturating_add(amount.value);
@@ -118,6 +124,14 @@ impl CostManager {
     }
 
     pub fn comm_ledger(&self) -> &comm_ledger::CommLedger { &self.comms }
+
+    pub fn set_replay_stops(&self, stops: Option<stops::ReplayStops>) {
+        *self.stops.lock().unwrap_or_else(|p| p.into_inner()) = stops;
+    }
+
+    pub fn replay_stops(&self) -> Option<stops::ReplayStops> {
+        self.stops.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
 
     pub fn charge_storage_left_in_space(&self) {
         *self.storage.lock().expect("storage rule lock") =

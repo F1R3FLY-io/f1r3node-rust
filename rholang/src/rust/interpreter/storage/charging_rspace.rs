@@ -14,12 +14,13 @@ use rspace_plus_plus::rspace::internal::{Datum, Row, WaitingContinuation};
 use rspace_plus_plus::rspace::rspace_interface::{
     ContResult, ISpace, MaybeConsumeResult, MaybeProduceResult, RSpaceResult,
 };
-use rspace_plus_plus::rspace::trace::event::Produce;
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::util::unpack_option;
 
 use crate::rust::interpreter::accounting::_cost;
-use crate::rust::interpreter::accounting::comm_ledger::comm_cells;
+use crate::rust::interpreter::accounting::comm_ledger::{comm_cells, Surface};
+use crate::rust::interpreter::accounting::stops::StopOutcome;
 use crate::rust::interpreter::accounting::rev_stack::seal;
 use crate::rust::interpreter::accounting::costs::{
     comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
@@ -43,6 +44,17 @@ pub enum TriggeredBy {
 }
 
 //TODO: Make ScalaBodyRef-s have their own random state and merge it during its COMMs - OLD
+fn stopped_here(cost: &_cost, step: impl FnOnce() -> Blake2b256Hash, storage: i64) -> bool {
+    let Some(stops) = cost.replay_stops() else {
+        return false;
+    };
+    let membrane = seal::current().map(|record| Surface::of(&record));
+    if !stops.is_stopped(&membrane) {
+        return false;
+    }
+    stops.io(&membrane, &step().bytes(), storage) == StopOutcome::Refuse
+}
+
 fn consume_id_bytes(continuation: &TaggedContinuation) -> Result<Vec<u8>, InterpreterError> {
     match continuation.tagged_cont.as_ref().unwrap() {
         TaggedCont::ParBody(par_with_random) => Ok(par_with_random.random_state.clone()),
@@ -80,6 +92,13 @@ impl ChargingRSpace {
                 RSpaceError,
             > {
                 let consume_storage = storage_cost_consume(&channels, &patterns, &continuation);
+                if stopped_here(
+                    &self.cost,
+                    || Consume::create(&channels, &patterns, &continuation, persist).hash,
+                    consume_storage.value,
+                ) {
+                    return Ok(None);
+                }
                 self.cost.charge(consume_storage.clone())?;
 
                 let id = consume_id_bytes(&continuation)?;
@@ -128,6 +147,13 @@ impl ChargingRSpace {
                 MaybeProduceResult<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
                 RSpaceError,
             > {
+                if stopped_here(
+                    &self.cost,
+                    || Produce::create(&channel, &data, persist).hash,
+                    storage_cost_produce(&channel, &data).value,
+                ) {
+                    return Ok(None);
+                }
                 if self.cost.storage_left_in_space().is_some() {
                     let id = data.random_state.clone();
                     let restored = with_rule(&self.cost, |rule| rule.restores(&id));
