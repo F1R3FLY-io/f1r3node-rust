@@ -89,11 +89,11 @@ async fn holding_a_slot_name_is_the_authority_to_draw_on_its_stack() {
     stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
     at_block(&runtime, 1, &alice).await;
     let term = format!(
-        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), slot, funded in {{
+        r#"new w(`rho:rev:wallet`), d(`rho:system:deployerId`), slot, funded, drawn in {{
              w!("transfer", (*d, *slot, 500), *funded) |
              for (_ <- funded) {{
-               w!("transfer", (*slot, "{}", 200), "drawn") |
-               w!("balance", *slot, "left")
+               w!("transfer", (*slot, "{}", 200), *drawn) |
+               for (@r <- drawn) {{ @"drawn"!(r) | w!("balance", *slot, "left") }}
              }}
            }}"#,
         bob.address

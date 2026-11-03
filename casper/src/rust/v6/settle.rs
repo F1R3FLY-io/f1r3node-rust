@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use super::gate::{GateEntry, GateInput, WalletId};
 use super::hooks::{after_settlement, HookCall};
 use super::run::EnvelopeRun;
-use super::surface::{foreign, own_cells, surface_purse, Surfaces};
+use super::surface::{is_own, surface_purse, Surfaces};
+use rholang::rust::interpreter::accounting::comm_ledger::Surface;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -73,6 +74,7 @@ pub struct SurfaceCharge {
     pub purse: WalletOwner,
     pub phlo_price: u64,
     pub cells: u64,
+    pub compute: u64,
     pub owed: RevAmount,
     pub drawn: RevAmount,
 }
@@ -104,9 +106,14 @@ pub fn charges(
     entries: &[GateEntry],
     runs: &[EnvelopeRun],
     surfaces: &[Surfaces],
+    work: &[Surfaces],
     proposer: &WalletOwner,
 ) -> Result<Settlement, CasperError> {
-    if inputs.len() != entries.len() || inputs.len() != runs.len() || inputs.len() != surfaces.len() {
+    if inputs.len() != entries.len()
+        || inputs.len() != runs.len()
+        || inputs.len() != surfaces.len()
+        || inputs.len() != work.len()
+    {
         return Err(CasperError::RuntimeError(
             "settlement needs one gate entry and one run per envelope".into(),
         ));
@@ -115,18 +122,32 @@ pub fn charges(
     let mut debits: BTreeMap<WalletId, RevAmount> = BTreeMap::new();
     let mut credit: RevAmount = 0;
     let mut compute_credit: RevAmount = 0;
-    for (((input, entry), run), surfaces) in inputs.iter().zip(entries).zip(runs).zip(surfaces) {
+    for (((input, entry), surfaces), work) in inputs.iter().zip(entries).zip(surfaces).zip(work) {
         if !entry.admitted() {
             continue;
         }
         let price = u64::try_from(input.phlo_price).map_err(|_| overflow())?;
-        let comm_phlo = own_cells(surfaces, &entry.envelope_sig).min(entry.delta);
-        let compute_phlo = run.compute_phlo.min(entry.delta - comm_phlo);
-        let comm_rev = comm_phlo.checked_mul(price).ok_or_else(overflow)?;
-        let compute_rev = compute_phlo.checked_mul(price).ok_or_else(overflow)?;
-        let total_rev = comm_rev.checked_add(compute_rev).ok_or_else(overflow)?;
-        for owner in input.paying_wallets() {
+        let payers = input.paying_wallets();
+        let mut budget = entry.delta;
+        let mut owed: BTreeMap<Vec<u8>, (WalletOwner, u64, u64)> = BTreeMap::new();
+        for (key, (cells, compute)) in own_meter(surfaces, work, &entry.envelope_sig) {
+            let cells = cells.min(budget);
+            budget -= cells;
+            let compute = compute.min(budget);
+            budget -= compute;
+            for payer in own_payers(&key, input, &payers) {
+                let o = owed
+                    .entry(payer.canonical_bytes())
+                    .or_insert((payer, 0, 0));
+                o.1 = o.1.checked_add(cells).ok_or_else(overflow)?;
+                o.2 = o.2.checked_add(compute).ok_or_else(overflow)?;
+            }
+        }
+        for (owner, comm_phlo, compute_phlo) in owed.into_values() {
             let wallet = wallet_channel_id(&owner);
+            let comm_rev = comm_phlo.checked_mul(price).ok_or_else(overflow)?;
+            let compute_rev = compute_phlo.checked_mul(price).ok_or_else(overflow)?;
+            let total_rev = comm_rev.checked_add(compute_rev).ok_or_else(overflow)?;
             let committed: RevAmount = entry
                 .commitments
                 .iter()
@@ -165,6 +186,60 @@ pub fn charges(
         transfers: Vec::new(),
         surface_charges: Vec::new(),
     })
+}
+
+type Meter = BTreeMap<Option<Surface>, (u64, u64)>;
+
+fn meter<'a>(
+    surfaces: &'a Surfaces,
+    work: &'a Surfaces,
+    keep: impl Fn(&Option<Surface>) -> bool,
+) -> Meter {
+    let mut m: Meter = BTreeMap::new();
+    for (key, cells) in surfaces.iter().filter(|(k, _)| keep(k)) {
+        m.entry(key.clone()).or_insert((0, 0)).0 += cells;
+    }
+    for (key, phlo) in work.iter().filter(|(k, _)| keep(k)) {
+        m.entry(key.clone()).or_insert((0, 0)).1 += phlo;
+    }
+    m
+}
+
+pub fn own_meter(surfaces: &Surfaces, work: &Surfaces, envelope: &[u8]) -> Meter {
+    meter(surfaces, work, |k| is_own(k, envelope))
+}
+
+pub fn own_phlo(surfaces: &Surfaces, work: &Surfaces, envelope: &[u8]) -> u64 {
+    own_meter(surfaces, work, envelope)
+        .values()
+        .map(|(c, w)| c.saturating_add(*w))
+        .fold(0u64, u64::saturating_add)
+}
+
+fn client(input: &GateInput, payers: &[WalletOwner]) -> Vec<WalletOwner> {
+    if payers.contains(&input.deployer) {
+        vec![input.deployer.clone()]
+    } else {
+        payers.to_vec()
+    }
+}
+
+fn own_payers(key: &Option<Surface>, input: &GateInput, payers: &[WalletOwner]) -> Vec<WalletOwner> {
+    let Some(owner) = key
+        .as_ref()
+        .and_then(|s| WalletOwner::from_canonical_bytes(&s.owner))
+    else {
+        return client(input, payers);
+    };
+    if payers.contains(&owner) {
+        return vec![owner];
+    }
+    match owner {
+        WalletOwner::Compound(components) if components.iter().all(|c| payers.contains(c)) => {
+            components
+        }
+        _ => client(input, payers),
+    }
 }
 
 pub fn apply(
@@ -244,12 +319,13 @@ pub async fn settle_block(
     entries: &[GateEntry],
     runs: &[EnvelopeRun],
     surfaces: &[Surfaces],
+    work: &[Surfaces],
     journals: &[Vec<JournalEntry>],
     kept: &[bool],
     proposer: &WalletOwner,
     boxcar: Boxcar,
 ) -> Result<(Settlement, StateHash), CasperError> {
-    let mut settlement = charges(inputs, entries, runs, surfaces, proposer)?;
+    let mut settlement = charges(inputs, entries, runs, surfaces, work, proposer)?;
     settlement.transfers = kept_transfers(entries, journals, kept)?;
     settlement.released = released(entries, &settlement)?;
     let mut owners: BTreeMap<WalletId, WalletOwner> = inputs
@@ -266,7 +342,7 @@ pub async fn settle_block(
         CasperError::RuntimeError("the runtime's space has no native REV layer".into())
     })?;
     let cells: Arc<dyn CellStore> = Arc::new(HotStoreCells(store));
-    settlement.surface_charges = surface_charges(&RevStacks::new(cells.clone()), entries, surfaces, &settlement)?;
+    settlement.surface_charges = surface_charges(&RevStacks::new(cells.clone()), entries, surfaces, work, &settlement)?;
     for sc in &settlement.surface_charges {
         let wallet = wallet_channel_id(&sc.purse);
         if sc.drawn > 0 {
@@ -332,6 +408,7 @@ fn surface_charges(
     stacks: &RevStacks,
     entries: &[GateEntry],
     surfaces: &[Surfaces],
+    work: &[Surfaces],
     settlement: &Settlement,
 ) -> Result<Vec<SurfaceCharge>, CasperError> {
     let mut planned: BTreeMap<WalletId, RevAmount> = settlement.debits.clone();
@@ -342,12 +419,16 @@ fn surface_charges(
         }
     }
     let mut out = Vec::new();
-    for (entry, tally) in entries.iter().zip(surfaces) {
+    for ((entry, tally), done) in entries.iter().zip(surfaces).zip(work) {
         if !entry.admitted() {
             continue;
         }
-        for (surface, cells) in foreign(tally, &entry.envelope_sig) {
-            let owed = cells.checked_mul(surface.phlo_price).ok_or_else(overflow)?;
+        let envelope = entry.envelope_sig.as_ref();
+        for (key, (cells, compute)) in meter(tally, done, |k| !is_own(k, envelope)) {
+            let Some(surface) = key else { continue };
+            let surface = &surface;
+            let phlo = cells.checked_add(compute).ok_or_else(overflow)?;
+            let owed = phlo.checked_mul(surface.phlo_price).ok_or_else(overflow)?;
             let purses = surface_purse(surface).map_err(CasperError::RuntimeError)?;
             for purse in purses {
                 let wallet = wallet_channel_id(&purse);
@@ -362,6 +443,7 @@ fn surface_charges(
                     purse,
                     phlo_price: surface.phlo_price,
                     cells,
+                    compute,
                     owed,
                     drawn,
                 });
@@ -553,6 +635,8 @@ pub struct SurfaceChargeProto {
     pub owed: u64,
     #[prost(uint64, tag = "6")]
     pub drawn: u64,
+    #[prost(uint64, tag = "7")]
+    pub compute: u64,
 }
 
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -633,6 +717,7 @@ impl Settlement {
                     cells: sc.cells,
                     owed: sc.owed,
                     drawn: sc.drawn,
+                    compute: sc.compute,
                 })
                 .collect(),
         }
@@ -674,10 +759,11 @@ impl Settlement {
             .map(|sc| {
                 let purse = WalletOwner::from_canonical_bytes(&sc.purse)
                     .ok_or("a recorded surface charge names no purse")?;
-                if sc.envelope_id.is_empty() || sc.cells == 0 {
-                    return Err("a recorded surface charge names no envelope or no cell");
+                if sc.envelope_id.is_empty() || (sc.cells == 0 && sc.compute == 0) {
+                    return Err("a recorded surface charge names no envelope and no phlo");
                 }
-                if sc.cells.checked_mul(sc.phlo_price) != Some(sc.owed) || sc.drawn > sc.owed {
+                let phlo = sc.cells.checked_add(sc.compute);
+                if phlo.and_then(|p| p.checked_mul(sc.phlo_price)) != Some(sc.owed) || sc.drawn > sc.owed {
                     return Err("a recorded surface charge does not add up");
                 }
                 Ok(SurfaceCharge {
@@ -685,6 +771,7 @@ impl Settlement {
                     purse,
                     phlo_price: sc.phlo_price,
                     cells: sc.cells,
+                    compute: sc.compute,
                     owed: sc.owed,
                     drawn: sc.drawn,
                 })

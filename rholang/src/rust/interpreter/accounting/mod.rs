@@ -62,6 +62,10 @@ impl CostManager {
         // Use saturating arithmetic to prevent overflow when credits (negative
         // charges) are applied to balances near i64::MAX (e.g., genesis deploys).
         current_cost.value = current_cost.value.saturating_sub(amount.value);
+        self.comms.on_work(
+            rev_stack::seal::current().map(|record| comm_ledger::Surface::of(&record)),
+            amount.value,
+        );
         if self.max_log_entries > 0 {
             let mut log = self.log.lock().unwrap();
             if log.len() >= self.max_log_entries {
