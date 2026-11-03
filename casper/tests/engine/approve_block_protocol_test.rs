@@ -685,3 +685,43 @@ async fn should_send_approved_block_message_to_peers_once_approved_block_is_crea
 
     abort_protocol(protocol_handle).await;
 }
+
+#[tokio::test]
+#[serial]
+async fn should_complete_a_long_ceremony_on_a_small_stack() {
+    let secp256k1 = Secp256k1;
+    let key_pair = secp256k1.new_key_pair();
+    let key_pairs = vec![key_pair.clone()];
+
+    let fixture = TestFixture::new(
+        1,
+        Duration::from_secs(2),
+        Duration::from_millis(1),
+        key_pairs,
+    )
+    .await;
+
+    let approval = create_approval(&fixture.candidate, &key_pair.0, &key_pair.1);
+    fixture.protocol.add_approval(approval).await.unwrap();
+
+    let protocol = fixture.protocol.clone();
+    let ceremony = std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap()
+                .block_on(protocol.run())
+        })
+        .unwrap();
+    let result = tokio::task::spawn_blocking(move || ceremony.join())
+        .await
+        .unwrap()
+        .expect("ceremony thread panicked");
+
+    assert!(result.is_ok());
+    assert!(fixture.has_approved_block());
+    assert!(fixture.events_contain("SentApprovedBlock", 1));
+    assert!(fixture.transport.request_count() >= 100);
+}

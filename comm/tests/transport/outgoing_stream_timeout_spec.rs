@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use comm::rust::errors::CommError;
+use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::transport::f1r3fly_connector::F1r3flyConnector;
 use comm::rust::transport::f1r3fly_server::F1r3flyServer;
 use comm::rust::transport::grpc_transport::GrpcTransport;
@@ -88,6 +89,7 @@ async fn timed_out_stream_does_not_block_the_next_queued_stream() {
 
     let client = GrpcTransportClient::new(
         "test".to_string(),
+        ChainIdCell::unknown(),
         local.cert,
         local.key,
         runtime.max_message_size,
@@ -205,7 +207,14 @@ async fn tls_stream_observes_both_receiver_and_sender_deadlines() {
         let start = tokio::time::Instant::now();
         let outcome = tokio::time::timeout(
             client_timeout,
-            GrpcTransport::stream(&mut client, &remote.peer, "test", &blob, 64 * 1024),
+            GrpcTransport::stream(
+                &mut client,
+                &remote.peer,
+                "test",
+                Bytes::new(),
+                &blob,
+                64 * 1024,
+            ),
         )
         .await;
 
