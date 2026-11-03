@@ -1,5 +1,7 @@
 # FX-6 decisions: a seal must be written by its owner
 
+**Superseded by FX-13 (Decision 77).** The `from_data` mark described here is removed. Received data runs under the continuation's membrane. The route list below is kept as the list of routes that FX-13's conformance tests cover.
+
 Fix FX-6 (A-7 finding F28), Decision 62, rev-stacks patch plan r8.3, lane C.
 Branch `patch/FX-6`, cut from `patch/FX-2` (4aed4d852). It must land before
 FX-2 merges anywhere.

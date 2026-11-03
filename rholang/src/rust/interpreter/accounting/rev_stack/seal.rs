@@ -24,7 +24,6 @@ pub struct SealRecord {
     pub owner: WalletOwner,
     pub kind: SealKind,
     pub origin: Origin,
-    pub from_data: bool,
 }
 
 tokio::task_local! {
@@ -86,7 +85,6 @@ impl SealRecord {
             owner,
             kind: SealKind::Deployment,
             origin,
-            from_data: false,
         }
     }
 
@@ -95,14 +93,6 @@ impl SealRecord {
             owner,
             kind,
             origin: self.origin.clone(),
-            from_data: self.from_data,
-        }
-    }
-
-    pub(crate) fn received(&self) -> Self {
-        SealRecord {
-            from_data: true,
-            ..self.clone()
         }
     }
 
@@ -120,7 +110,6 @@ impl SealRecord {
                     .collect(),
                 phlo_price: self.origin.phlo_price,
             }),
-            from_data: self.from_data,
         }
     }
 
@@ -147,7 +136,6 @@ impl SealRecord {
                 signers,
                 phlo_price: origin.phlo_price,
             },
-            from_data: proto.from_data,
         })
     }
 }
@@ -168,7 +156,6 @@ mod tests {
                 ],
                 phlo_price: 3,
             },
-            from_data: false,
         }
     }
 
@@ -176,11 +163,7 @@ mod tests {
     fn a_record_round_trips_through_its_proto() {
         for kind in [SealKind::Deployment, SealKind::Signed, SealKind::Process] {
             let r = record(5, kind);
-            assert_eq!(SealRecord::from_proto(&r.to_proto()), Ok(r.clone()));
-            let received = r.received();
-            assert!(received.from_data);
-            assert!(received.enter(r.owner.clone(), SealKind::Signed).from_data);
-            assert_eq!(SealRecord::from_proto(&received.to_proto()), Ok(received));
+            assert_eq!(SealRecord::from_proto(&r.to_proto()), Ok(r));
         }
         let mut bad = record(5, SealKind::Signed).to_proto();
         bad.kind = 0;

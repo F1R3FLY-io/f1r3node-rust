@@ -5,8 +5,11 @@ use crypto::rust::public_key::PublicKey;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GDeployerId, GUnforgeable, Par};
 use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::rev_stack::bond::bond_balance;
 use rholang::rust::interpreter::accounting::rev_stack::seal::{of_continuation, SealKind};
-use rholang::rust::interpreter::accounting::rev_stack::{RevStacks, TokenKind, WalletOwner};
+use rholang::rust::interpreter::accounting::rev_stack::{
+    HotStoreCells, RevStacks, TokenKind, WalletOwner,
+};
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoString, RhoTuple2};
@@ -41,6 +44,10 @@ const LEGACY_TERM: &str = r#"new d(`rho:system:deployerId`), x in {
 
 fn owner(key: &[u8]) -> WalletOwner {
     WalletOwner::from_public_key(&PublicKey::from_bytes(key)).unwrap()
+}
+
+fn cells(runtime: &RhoRuntimeImpl) -> HotStoreCells {
+    HotStoreCells(runtime.reducer.space.hot_store().unwrap())
 }
 
 fn stacks(runtime: &RhoRuntimeImpl) -> RevStacks {
@@ -250,48 +257,6 @@ async fn a_kind_transfer_draws_on_the_enclosing_seal() {
 }
 
 #[tokio::test]
-async fn a_seal_inside_data_received_at_run_time_draws_on_no_wallet() {
-    sealed_runtime(|runtime| async move {
-        let contract = r#"new d(`rho:system:deployerId`) in {
-            @"aid"!(*d) | for (p <= @"eval") { *p }
-        }"#;
-        assert!(run(&runtime, &ALICE, &[], 1, contract).await.is_empty());
-        let refused = |errors: Vec<InterpreterError>, reason: &str| {
-            errors
-                .iter()
-                .any(|e| matches!(e, InterpreterError::ReduceError(m) if m.contains(reason)))
-        };
-        let sealed = r#"new slot in {
-            for (a <<- @"aid") { @"eval"!({% slot :: () %}[a]) } | @"slot"!(*slot)
-        }"#;
-        let errors = run(&runtime, &BOB, &[], 2, sealed).await;
-        assert!(refused(errors, "inside data"), "a wallet seal in data");
-        let region = r#"for (a <<- @"aid") { @"eval"!({% @"x"!(1) %}[a]) }"#;
-        let errors = run(&runtime, &BOB, &[], 3, region).await;
-        assert!(refused(errors, "inside data"), "a wallet region in data");
-        let bare = r#"new slot2 in { @"eval"!(slot2 :: ()) }"#;
-        let errors = run(&runtime, &BOB, &[], 4, bare).await;
-        assert!(refused(errors, "inside data"), "a bare stack in data");
-        let later = r#"new slot3 in { @"eval"!(for (_ <- @"later") { slot3 :: () }) }"#;
-        assert!(run(&runtime, &BOB, &[], 5, later).await.is_empty());
-        let errors = run(&runtime, &BOB, &[], 6, r#"@"later"!(0)"#).await;
-        assert!(
-            refused(errors, "inside data"),
-            "stored data keeps its taint"
-        );
-        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 1_000);
-        assert_eq!(stacks(&runtime).balance(&owner(&BOB)).unwrap(), 1_000);
-
-        let own = r#"new d(`rho:system:deployerId`), slot4 in {
-            {% slot4 :: () %}[d] | @"slot4"!(*slot4)
-        }"#;
-        assert!(run(&runtime, &ALICE, &[], 7, own).await.is_empty());
-        assert_eq!(stacks(&runtime).balance(&owner(&ALICE)).unwrap(), 999);
-    })
-    .await;
-}
-
-#[tokio::test]
 async fn a_kind_minted_inside_data_still_mints_and_a_received_kind_name_still_moves_in_code() {
     sealed_runtime(|runtime| async move {
         let contract = r#"for (p <= @"eval") { *p }"#;
@@ -313,21 +278,58 @@ async fn a_kind_minted_inside_data_still_mints_and_a_received_kind_name_still_mo
     .await;
 }
 
-fn payloads() -> Vec<(&'static str, String)> {
+struct Expect {
+    alice: u64,
+    bob: u64,
+    slot: u64,
+    bonded: u64,
+    refused: bool,
+}
+
+fn payloads() -> Vec<(&'static str, String, Expect)> {
     let bob = VaultAddress::from_public_key(&PublicKey::from_bytes(&BOB))
         .unwrap()
         .to_base58();
+    let paid = |alice, bob, slot, bonded| Expect {
+        alice,
+        bob,
+        slot,
+        bonded,
+        refused: false,
+    };
     vec![
-        ("sealed", "{% slot :: () %}[a]".to_string()),
-        ("bare", "slot :: ()".to_string()),
-        ("mint", "{% slot :: () %}[k]".to_string()),
+        (
+            "owner seal",
+            "{% slot :: () %}[a]".to_string(),
+            paid(999, 1_000, 1, 0),
+        ),
+        (
+            "foreign seal",
+            "{% slot :: () %}[b]".to_string(),
+            Expect {
+                refused: true,
+                ..paid(1_000, 1_000, 0, 0)
+            },
+        ),
+        (
+            "bare stack",
+            "slot :: ()".to_string(),
+            paid(999, 1_000, 1, 0),
+        ),
+        (
+            "kind mint",
+            "{% slot :: () %}[k]".to_string(),
+            paid(1_000, 1_000, 0, 0),
+        ),
         (
             "wallet",
             format!(r#"new w(`rho:rev:wallet`) in {{ w!("transfer", (*a, "{bob}", 100), "native") }}"#),
+            paid(900, 1_100, 0, 0),
         ),
         (
             "bond",
             r#"new b(`rho:rev:bond`) in { b!("bond", (*a, 100), "native") }"#.to_string(),
+            paid(900, 1_000, 0, 100),
         ),
     ]
 }
@@ -341,7 +343,7 @@ async fn native_reply(runtime: &RhoRuntimeImpl) -> Option<bool> {
 async fn route(contract: &str, deliveries: &[&str]) {
     let contract = contract.to_string();
     let deliveries: Vec<String> = deliveries.iter().map(|d| d.to_string()).collect();
-    for (n, (name, payload)) in payloads().into_iter().enumerate() {
+    for (n, (name, payload, expect)) in payloads().into_iter().enumerate() {
         let contract = contract.clone();
         let deliveries = deliveries.clone();
         sealed_runtime(|runtime| async move {
@@ -352,7 +354,7 @@ async fn route(contract: &str, deliveries: &[&str]) {
             for (i, delivery) in deliveries.iter().enumerate() {
                 let source = if i == 0 {
                     format!(
-                        r#"new slot, k in {{
+                        r#"new slot, k, b(`rho:system:deployerId`) in {{
                             @"slot"!(*slot) | @"kind"!(bundle0{{*k}}) |
                             for (a <<- @"aid") {{ {} }}
                         }}"#,
@@ -364,31 +366,37 @@ async fn route(contract: &str, deliveries: &[&str]) {
                 errors.extend(run(&runtime, &BOB, &[], 2 + i as u8, &source).await);
             }
             let refused = errors.iter().any(
-                |e| matches!(e, InterpreterError::ReduceError(m) if m.contains("inside data")),
-            );
-            assert_eq!(
-                stacks(&runtime).balance(&owner(&ALICE)).unwrap(),
-                1_000,
-                "{name}"
-            );
-            assert_eq!(
-                stacks(&runtime).balance(&owner(&BOB)).unwrap(),
-                1_000,
-                "{name}"
+                |e| matches!(e, InterpreterError::ReduceError(m) if m.contains("signers")),
             );
             let slot = slot_owner(&runtime, "slot");
-            assert_eq!(stacks(&runtime).balance(&slot).unwrap(), 0, "{name}");
+            let balances = (
+                stacks(&runtime).balance(&owner(&ALICE)).unwrap(),
+                stacks(&runtime).balance(&owner(&BOB)).unwrap(),
+                stacks(&runtime).balance(&slot).unwrap(),
+                bond_balance(std::sync::Arc::new(cells(&runtime)), &ALICE).unwrap(),
+            );
+            assert_eq!(
+                balances,
+                (expect.alice, expect.bob, expect.slot, expect.bonded),
+                "{name} on route {n}: {errors:?}"
+            );
+            assert_eq!(refused, expect.refused, "{name} on route {n}: {errors:?}");
+            if !expect.refused {
+                assert!(errors.is_empty(), "{name} on route {n}: {errors:?}");
+            }
             if name == "wallet" || name == "bond" {
-                assert_eq!(native_reply(&runtime).await, Some(false), "{name} on route {n}: {errors:?}");
-            } else if name == "mint" {
-                assert!(errors.is_empty(), "{name}: {errors:?}");
+                assert_eq!(
+                    native_reply(&runtime).await,
+                    Some(true),
+                    "{name} on route {n}"
+                );
+            }
+            if name == "kind mint" {
                 let WalletOwner::Unforgeable(id) = slot_owner(&runtime, "kind") else {
                     panic!("a kind is an unforgeable name");
                 };
                 let kind = TokenKind::from_name(id).unwrap();
                 assert_eq!(stacks(&runtime).of_kind(&kind).balance(&slot).unwrap(), 1);
-            } else {
-                assert!(refused, "{name} on route {n}: {errors:?}");
             }
         })
         .await;
