@@ -1609,6 +1609,41 @@ This ruling also resolves lane A2's chain-halt finding.
 D10 stays **blocking** until FX-16 lands and meets these checks.
 
 
+## Ruling of 2026-11-03: P11 (Decision 98, design r18)
+
+Design r18 adds principle P11 (Decision 98): **no block is final until its state is known.** r18 is not yet in publications (the latest commit there is `0c58795`, r17). This section records the ruling as the plan states it. A-9 reads the r18 text when Meredith commits it.
+
+### D11 — blocking: the v6 seam finalizes a block on its order, before its execution
+
+**Code (`patch/FX-8b` at `4a74b0e34`, `casper/src/rust/v6/engine.rs`):**
+- `tick` reads `dag.last_finalized_block()` and advances the linearizer on it.
+- The linearizer emits each block on the finalized main chain into the executor core (`Advance::Emitted` and `core.emit`).
+- The block is executed only after that, in a later `Action::Execute`, and its record is replayed in `Action::Replay`.
+
+So consensus makes a block final on its order alone. Its post-state, and whether its execution is valid, are known only after it is final.
+
+**Effect:** a block can be final before its state is known. That contradicts P11.
+
+**Reason for the label:** this is a divergence from the design (r18, P11, Decision 98), so it is **blocking** under Decision 88. The resolution is the subject of Q-33. Lane A2 writes the memo, and Meredith rules.
+
+### Review of lane A2's Q-33 memo
+
+The memo has not arrived. When it does, A-8 reviews it before the ruling, and checks two things in particular:
+
+1. **A block that its execution shows to be invalid can never be final.**
+   - Finality must depend on a known, valid post-state, and not on order alone.
+   - The review checks every invalid outcome that execution or replay can give. This includes a failed replay, a record mismatch, a failed Decision 89 check, a close pre-charge that the proposer cannot cover (Decision 97), and a conservation failure.
+   - It checks that each of these outcomes keeps the block from finality, in play, in validation and in replay.
+   - It also checks that no other path to finality bypasses execution, for example a cached record, the A-LIN hold path, or a restart.
+2. **Blocks built on top of an invalid block are handled safely.**
+   - The memo must say what happens to the descendants of a block that execution shows to be invalid. The options are that they are invalid too, that they are re-based, or that their envelopes return to the pool.
+   - The review checks that no descendant can become final on top of the invalid state.
+   - It checks that the outcome is the same on every validator, and that envelopes and held amounts are neither lost nor charged twice. That covers gate holds, the Decision 97 pre-charge and pending bonds.
+   - It checks that the chain does not halt. Lane A2's chain-halt finding was resolved by Decision 97. The memo must not reopen it.
+
+The review also checks that the memo keeps the Decision 89 rule: the trace of an honest validator is accepted on replay, even when play stopped at a different point.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
