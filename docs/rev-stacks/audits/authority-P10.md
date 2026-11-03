@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -899,6 +899,37 @@ F36 adds a divergence to the A-9 table:
 | # | Divergence | Code | Ruling | Fix |
 |---|---|---|---|---|
 | D8 | A continuation fired inside a system deploy (close block, slash) runs on no envelope's meter. | `executor.rs` `compute_state` with `close_block`, and the system-deploy runtime | Decision 75 | FX-12 |
+
+
+## Revision 9 (actions A-8 and A-9): the FX-11 merge into FX-8b, and A-9 pass 2 on FX-13
+
+- **Commits audited:**
+  - `patch/FX-8b`: merge `2e9339435` (FX-11) and post-merge fix `c41ccb87b`.
+  - `patch/FX-13`: commits `6c6ab12d2` (native refusals removed) and `ecd2b0169` (Decision 77). The branch is cut from FX-8b at `1c281b7a0`, before the FX-11 merge.
+- **Method:** a code reading, as before. No tests were run.
+- **Q-31:** no memo is on any branch or in the plan on Drive. The newest plan, r8.9, still shows Q-31 as "Open: lane B + C proposal".
+
+### The FX-11 merge into FX-8b
+
+| Check | Result |
+|---|---|
+| `wallet_authority` with records on and no record | **Holds at the FX-8b tip.** The `None if self.urn_phase.seals_recorded() => Vec::new()` branch is present. `setup_reducer` shares the flag between the reducer and `UrnPhase` (`seal_records: urn_phase.seal_records.clone()`). |
+| FX-11's tests on the merge | **Present:** `seal_wiring_spec::code_with_no_record_draws_on_no_wallet_under_seal_records`, `genesis_contracts_records_spec` (three tests), `system_vault_v6_test`, `pos_bond_admin_spec` (four tests) and `gated_executor_spec::a_user_transfer_and_bond_survive_play_and_replay`. The post-merge fix `c41ccb87b` makes the three records-on genesis tests read the merged root (`mid_root`) instead of the run's own post-root. This changes where the test reads, and not what it checks. Lane A2 has not yet posted suite results for the tip. |
+| F35, F36 | **Unchanged by the merge.** Both are still open. |
+
+### A-9 pass 2: FX-13 against r10 §6.3
+
+| # | Divergence | Status on FX-13 | Test |
+|---|---|---|---|
+| D3 | The data mark | **Closed.** The reducer no longer marks received data (FX-13 decision 1). `SealRecord.from_data` and proto field 4 are removed, and the field number is reserved (decision 2). The native refusals are removed in `6c6ab12d2` (decision 4). A seal in received data is still checked against the membrane's origin signers, so origin verification stays (decision 3, r10 "The membrane decides"). | The eleven `seal_record_spec` route tests, each with six payloads. A seal naming the membrane's owner runs. A seal naming the sender is refused by the origin check. A bare stack draws on the membrane. A kind mint mints. A wallet transfer and a bond run under the membrane. `region_spec::data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_paid_there`. |
+| D1 | Continuation work metered to the firing deployment | **Open.** It is out of FX-13's scope (FX-12). | `region_spec::data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_paid_there` asserts that Mallory, the firing party, pays her whole charge (`paid(&second, &mallory)`), and that charge includes running Alice's continuation. The test's name says "paid there", but only the stack's REV units come from Alice, not the continuation's phlo. FX-12 must change this assertion. |
+| D2, D4 to D8 | — | **Open (FX-12).** FX-13 does not change the cost path. | — |
+
+**F33:** FX-13's log argues that located purses (Decision 75) make F33 moot. The ruling stays with Q-31, as the log says. A-9 re-checks F33 when FX-12 lands.
+
+### Merge requirement for FX-13 into FX-8b
+
+FX-13 is cut before the FX-11 merge, and FX-11 decision 3 changed the same refusal sites that FX-13 removes: the per-command messages in `rho:rev:wallet`, `rho:rev:bond` and `rho:rev:bondAdmin`. The merge must remove FX-11's per-command refusals as well, so that no refusal under the removed mark survives. It must keep FX-11's `wallet_authority` no-record branch, which is Decision 70 and not part of the mark. A-9 re-checks the merge commit.
 
 
 ## Open questions for review
