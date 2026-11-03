@@ -47,6 +47,7 @@ fn deploy(source: &str, sec: &PrivateKey) -> Signed<DeployData> {
 struct IndexedBlock {
     hash: BlockHash,
     number: i64,
+    post_state: Bytes,
     chains: Vec<DeployChainIndex>,
 }
 
@@ -91,35 +92,53 @@ async fn index_block(
     IndexedBlock {
         hash,
         number,
+        post_state,
         chains,
     }
 }
 
 fn dag_with_children(genesis: &BlockHash, children: &[&IndexedBlock]) -> KeyValueDagRepresentation {
+    let with_parents: Vec<(&IndexedBlock, BlockHash)> = children
+        .iter()
+        .map(|block| (*block, genesis.clone()))
+        .collect();
+    dag_with_parents(genesis, &with_parents)
+}
+
+fn dag_with_parents(
+    genesis: &BlockHash,
+    blocks: &[(&IndexedBlock, BlockHash)],
+) -> KeyValueDagRepresentation {
     let mut dag_set = imbl::HashSet::new();
     let mut block_number_map = imbl::HashMap::new();
     let mut main_parent_map = imbl::HashMap::new();
     let mut height_map = imbl::OrdMap::new();
-    let mut children_of_genesis = imbl::HashSet::new();
+    let mut child_map: imbl::HashMap<BlockHash, imbl::HashSet<BlockHash>> = imbl::HashMap::new();
     let mut metadata_store = BlockMetadataStore::new(KeyValueTypedStoreImpl::new(Arc::new(
         InMemoryKeyValueStore::new(),
     )));
-    let blocks = std::iter::once((genesis, 0i64))
-        .chain(children.iter().map(|block| (&block.hash, block.number)));
-    for (hash, number) in blocks {
+    let entries = std::iter::once((genesis, 0i64, None)).chain(
+        blocks
+            .iter()
+            .map(|(block, parent)| (&block.hash, block.number, Some(parent))),
+    );
+    for (hash, number, parent) in entries {
         dag_set.insert(hash.clone());
         block_number_map.insert(hash.clone(), number);
         height_map
             .entry(number)
             .or_insert_with(imbl::HashSet::new)
             .insert(hash.clone());
-        if number > 0 {
-            main_parent_map.insert(hash.clone(), genesis.clone());
-            children_of_genesis.insert(hash.clone());
+        if let Some(parent) = parent {
+            main_parent_map.insert(hash.clone(), parent.clone());
+            child_map
+                .entry(parent.clone())
+                .or_default()
+                .insert(hash.clone());
             metadata_store
                 .add(BlockMetadata {
                     block_hash: hash.clone(),
-                    parents: vec![genesis.clone()],
+                    parents: vec![parent.clone()],
                     sender: Bytes::new(),
                     justifications: vec![],
                     weight_map: BTreeMap::new(),
@@ -134,8 +153,6 @@ fn dag_with_children(genesis: &BlockHash, children: &[&IndexedBlock]) -> KeyValu
                 .unwrap();
         }
     }
-    let mut child_map = imbl::HashMap::new();
-    child_map.insert(genesis.clone(), children_of_genesis);
     let mut finalized_blocks_set = imbl::HashSet::new();
     finalized_blocks_set.insert(genesis.clone());
 
@@ -161,9 +178,35 @@ fn dag_with_children(genesis: &BlockHash, children: &[&IndexedBlock]) -> KeyValu
 }
 
 struct MergeOutcome {
+    merged_state: Bytes,
     shared_values: Vec<String>,
     rejected: HashSet<Bytes>,
     applied: HashSet<Bytes>,
+}
+
+async fn channel_values(
+    runtime_manager: &RuntimeManager,
+    state: &Bytes,
+    channel: &str,
+) -> Vec<String> {
+    let data = runtime_manager
+        .get_data(
+            state.clone(),
+            &new_gstring_par(channel.to_string(), vec![], false),
+        )
+        .await
+        .unwrap();
+    let mut values: Vec<String> = data
+        .iter()
+        .flat_map(|par| par.exprs.iter())
+        .filter_map(|expr| match &expr.expr_instance {
+            Some(ExprInstance::GString(s)) => Some(s.clone()),
+            Some(ExprInstance::GInt(n)) => Some(n.to_string()),
+            _ => None,
+        })
+        .collect();
+    values.sort();
+    values
 }
 
 async fn merge_on_genesis(
@@ -174,6 +217,25 @@ async fn merge_on_genesis(
     expensive_sig: Option<Bytes>,
 ) -> MergeOutcome {
     let dag = dag_with_children(genesis, &blocks.iter().collect::<Vec<_>>());
+    merge_in_dag(
+        runtime_manager,
+        dag,
+        genesis,
+        base_state,
+        blocks,
+        expensive_sig,
+    )
+    .await
+}
+
+async fn merge_in_dag(
+    runtime_manager: &RuntimeManager,
+    dag: KeyValueDagRepresentation,
+    genesis: &BlockHash,
+    base_state: &Bytes,
+    blocks: Vec<IndexedBlock>,
+    expensive_sig: Option<Bytes>,
+) -> MergeOutcome {
     let scope: HashSet<BlockHash> = blocks.iter().map(|block| block.hash.clone()).collect();
     let (merged_state, rejected, _mergeable, applied) = dag_merger::merge(
         &dag,
@@ -209,28 +271,15 @@ async fn merge_on_genesis(
     )
     .expect("merge");
 
-    let shared = runtime_manager
-        .get_data(
-            merged_state.to_bytes_prost(),
-            &new_gstring_par(SHARED_CHANNEL.to_string(), vec![], false),
-        )
-        .await
-        .unwrap();
-    let mut shared_values: Vec<String> = shared
-        .iter()
-        .flat_map(|par| par.exprs.iter())
-        .filter_map(|expr| match &expr.expr_instance {
-            Some(ExprInstance::GString(s)) => Some(s.clone()),
-            _ => None,
-        })
-        .collect();
-    shared_values.sort();
+    let merged_state = merged_state.to_bytes_prost();
+    let shared_values = channel_values(runtime_manager, &merged_state, SHARED_CHANNEL).await;
     let rejected: HashSet<Bytes> = rejected.iter().map(|r| r.sig.clone()).collect();
     assert!(
         rejected.is_disjoint(&applied),
         "a deploy is both rejected and applied: rejected={rejected:?} applied={applied:?}"
     );
     MergeOutcome {
+        merged_state,
         shared_values,
         rejected,
         applied,
@@ -406,6 +455,223 @@ async fn a_kept_sibling_chain_does_not_apply_the_stale_datum_of_a_deduplicated_s
             outcome.rejected.contains(&d1_sig),
             "D1 shares a non-mergeable channel with the dropped stale D2, so it must be rejected"
         );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+fn chain_with(block: &IndexedBlock, sig: &Bytes) -> DeployChainIndex {
+    block
+        .chains
+        .iter()
+        .find(|chain| {
+            chain
+                .deploys_with_cost
+                .0
+                .iter()
+                .any(|d| d.deploy_id == *sig)
+        })
+        .cloned()
+        .unwrap()
+}
+
+/// Review of #895: the sibling rejection must not leave a survivor set that
+/// over-fills a single-value cell. The base holds `5` on the cell. Block A
+/// holds X, which feeds R in block B and K in block C, so X, R and K form one
+/// branch. R consumes `5`, K writes `7`, and Z, a sibling of R in B, loses to
+/// W of block D. R shares a channel with Z, so the merge rejects R. K must then
+/// go too, because `7` next to `5` over-fills the cell, and the merge must not
+/// fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sibling_rejection_does_not_leave_an_overfilled_single_value_cell() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let genesis_state = genesis_block.body.state.post_state_hash.clone();
+            let vaults = &genesis_context.genesis_vaults;
+            let validators = &genesis_context.validator_key_pairs;
+            let vault = |i: usize| &vaults[i % vaults.len()].0;
+            let validator = |i: usize| &validators[i % validators.len()].1;
+
+            let p = deploy(r#"@"issue-873-cell"!(5)"#, vault(0));
+            let x = deploy(r#"@"issue-873-a"!(0) | @"issue-873-b"!(0)"#, vault(1));
+            let r = deploy(
+                &format!(
+                    r#"for (_ <- @"issue-873-a"; _ <- @"issue-873-cell") {{ @"{SHARED_CHANNEL}"!("r") }} |
+                   new pad in {{ for (_ <- pad; _ <- pad; _ <- pad) {{ Nil }} | pad!(1) | pad!(2) | pad!(3) }}"#
+                ),
+                vault(2),
+            );
+            let z = deploy(
+                &format!(r#"@"{SHARED_CHANNEL}"!("z") | @"{CONFLICT_CHANNEL}"!(0)"#),
+                vault(3),
+            );
+            let k = deploy(r#"for (_ <- @"issue-873-b") { @"issue-873-cell"!(7) }"#, vault(4));
+            let w = deploy(
+                &format!(r#"for (_ <- @"{CONFLICT_CHANNEL}") {{ Nil }}"#),
+                vault(5),
+            );
+            let (x_sig, r_sig, z_sig, k_sig, w_sig) = (
+                x.sig.clone(),
+                r.sig.clone(),
+                z.sig.clone(),
+                k.sig.clone(),
+                w.sig.clone(),
+            );
+
+            let block_p =
+                index_block(&runtime_manager, &genesis_state, vec![p], validator(0), block_hash(0xA0), 0)
+                    .await;
+            let block_a =
+                index_block(&runtime_manager, &block_p.post_state, vec![x], validator(1), block_hash(0xA1), 1)
+                    .await;
+            let block_b = index_block(
+                &runtime_manager,
+                &block_a.post_state,
+                vec![r, z],
+                validator(2),
+                block_hash(0xB1),
+                2,
+            )
+            .await;
+            assert_independent_chains(&block_b, &r_sig, &z_sig);
+            let block_c =
+                index_block(&runtime_manager, &block_a.post_state, vec![k], validator(3), block_hash(0xC1), 2)
+                    .await;
+            let block_d =
+                index_block(&runtime_manager, &block_p.post_state, vec![w], validator(0), block_hash(0xD1), 1)
+                    .await;
+            assert!(
+                chain_with(&block_b, &r_sig) < chain_with(&block_c, &k_sig),
+                "R must sort before K, so the branch walk accepts K after R frees the cell"
+            );
+
+            let root = block_p.hash.clone();
+            let base_state = block_p.post_state.clone();
+            let dag = dag_with_parents(
+                &root,
+                &[
+                    (&block_a, root.clone()),
+                    (&block_b, block_a.hash.clone()),
+                    (&block_c, block_a.hash.clone()),
+                    (&block_d, root.clone()),
+                ],
+            );
+            let outcome = merge_in_dag(
+                &runtime_manager,
+                dag,
+                &root,
+                &base_state,
+                vec![block_a, block_b, block_c, block_d],
+                Some(w_sig.clone()),
+            )
+            .await;
+
+            assert!(outcome.rejected.contains(&z_sig), "Z must lose to W");
+            assert!(outcome.applied.contains(&w_sig), "the merge must keep W");
+            assert!(outcome.applied.contains(&x_sig), "the merge must keep X");
+            assert!(
+                outcome.rejected.contains(&r_sig),
+                "R shares a non-mergeable channel with the rejected Z"
+            );
+            assert!(
+                outcome.rejected.contains(&k_sig),
+                "without R, the 7 of K over-fills the cell that holds 5"
+            );
+            assert_eq!(
+                channel_values(&runtime_manager, &outcome.merged_state, "issue-873-cell").await,
+                vec!["5".to_string()],
+                "the cell must keep its base value"
+            );
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// Review of #895, lineage variant: the same cell layout, but Z sits in block
+/// A2 between A and B, so the merge rejects R because B descends from the
+/// rejected A2. K must go with R, and the merge must not fail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lineage_rejection_does_not_leave_an_overfilled_single_value_cell() {
+    with_runtime_manager(
+        |runtime_manager, genesis_context, genesis_block| async move {
+            let genesis_state = genesis_block.body.state.post_state_hash.clone();
+            let vaults = &genesis_context.genesis_vaults;
+            let validators = &genesis_context.validator_key_pairs;
+            let vault = |i: usize| &vaults[i % vaults.len()].0;
+            let validator = |i: usize| &validators[i % validators.len()].1;
+
+            let p = deploy(r#"@"issue-873-cell"!(5)"#, vault(0));
+            let x = deploy(r#"@"issue-873-a"!(0) | @"issue-873-b"!(0)"#, vault(1));
+            let z = deploy(&format!(r#"@"{CONFLICT_CHANNEL}"!(0)"#), vault(3));
+            let r = deploy(
+                r#"for (_ <- @"issue-873-a"; _ <- @"issue-873-cell") { Nil } |
+                   new pad in { for (_ <- pad; _ <- pad; _ <- pad) { Nil } | pad!(1) | pad!(2) | pad!(3) }"#,
+                vault(2),
+            );
+            let k = deploy(r#"for (_ <- @"issue-873-b") { @"issue-873-cell"!(7) }"#, vault(4));
+            let w = deploy(
+                &format!(r#"for (_ <- @"{CONFLICT_CHANNEL}") {{ Nil }}"#),
+                vault(5),
+            );
+            let (x_sig, r_sig, z_sig, k_sig, w_sig) = (
+                x.sig.clone(),
+                r.sig.clone(),
+                z.sig.clone(),
+                k.sig.clone(),
+                w.sig.clone(),
+            );
+
+            let block_p = index_block(&runtime_manager, &genesis_state, vec![p], validator(0), block_hash(0xA0), 0).await;
+            let block_a = index_block(&runtime_manager, &block_p.post_state, vec![x], validator(1), block_hash(0xA1), 1).await;
+            let block_a2 = index_block(&runtime_manager, &block_a.post_state, vec![z], validator(2), block_hash(0xA2), 2).await;
+            let block_b = index_block(&runtime_manager, &block_a2.post_state, vec![r], validator(2), block_hash(0xB1), 3).await;
+            let block_c = index_block(&runtime_manager, &block_a.post_state, vec![k], validator(3), block_hash(0xC1), 2).await;
+            let block_d = index_block(&runtime_manager, &block_p.post_state, vec![w], validator(0), block_hash(0xD1), 1).await;
+            assert!(
+                chain_with(&block_b, &r_sig) < chain_with(&block_c, &k_sig),
+                "R must sort before K, so the branch walk accepts K after R frees the cell"
+            );
+
+            let root = block_p.hash.clone();
+            let base_state = block_p.post_state.clone();
+            let dag = dag_with_parents(
+                &root,
+                &[
+                    (&block_a, root.clone()),
+                    (&block_a2, block_a.hash.clone()),
+                    (&block_b, block_a2.hash.clone()),
+                    (&block_c, block_a.hash.clone()),
+                    (&block_d, root.clone()),
+                ],
+            );
+            let outcome = merge_in_dag(
+                &runtime_manager,
+                dag,
+                &root,
+                &base_state,
+                vec![block_a, block_a2, block_b, block_c, block_d],
+                Some(w_sig.clone()),
+            )
+            .await;
+
+            assert!(outcome.rejected.contains(&z_sig), "Z must lose to W");
+            assert!(outcome.applied.contains(&w_sig), "the merge must keep W");
+            assert!(outcome.applied.contains(&x_sig), "the merge must keep X");
+            assert!(
+                outcome.rejected.contains(&r_sig),
+                "block B descends from the rejected block A2"
+            );
+            assert!(
+                outcome.rejected.contains(&k_sig),
+                "without R, the 7 of K over-fills the cell that holds 5"
+            );
+            assert_eq!(
+                channel_values(&runtime_manager, &outcome.merged_state, "issue-873-cell").await,
+                vec!["5".to_string()],
+                "the cell must keep its base value"
+            );
         },
     )
     .await
