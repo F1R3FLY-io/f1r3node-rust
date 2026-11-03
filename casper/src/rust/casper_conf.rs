@@ -203,8 +203,8 @@ pub struct GenesisBlockData {
     /// ceremony participant must configure these identically, as with every
     /// other genesis parameter: the PoS generator deploy is replayed
     /// byte-for-byte, so a disagreement fails genesis validation.
-    #[serde(rename = "epoch-phlogiston")]
-    pub epoch_phlogiston: i64,
+    #[serde(rename = "leaky-bucket-reward-rate-ppm")]
+    pub leaky_bucket_reward_rate_ppm: i64,
     #[serde(rename = "leaky-bucket-lambda-base-ppm")]
     pub leaky_bucket_lambda_base_ppm: i64,
     #[serde(rename = "leaky-bucket-theta-eject-ppm")]
@@ -538,10 +538,10 @@ mod native_token_validation_tests {
             epoch_length: 0,
             quarantine_length: 0,
             number_of_active_validators: 0,
-            epoch_phlogiston: 1_000_000,
-            leaky_bucket_lambda_base_ppm: 10_000,
+            leaky_bucket_reward_rate_ppm: 630,
+            leaky_bucket_lambda_base_ppm: 140,
             leaky_bucket_theta_eject_ppm: 900_000,
-            leaky_bucket_eject_observation_blocks: 50,
+            leaky_bucket_eject_observation_blocks: 60,
             leaky_bucket_breadth_exponent: 2,
             leaky_bucket_recency_reference_ppm: 1_000_000,
             leaky_bucket_vote_list_bound: 32,

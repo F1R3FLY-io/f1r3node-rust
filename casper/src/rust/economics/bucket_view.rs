@@ -329,6 +329,9 @@ pub struct Observation {
     pub block_number: i64,
     pub committee: Committee,
     pub parents: Vec<ParentFact>,
+    /// The other members whose new blocks this block acknowledges since its
+    /// sender's previous one.
+    pub fresh: Vec<Validator>,
     /// The ejection claims this block votes on. Every block after a claim's
     /// opening owes a vote on it, so the votes show which claims are open,
     /// which stops this node asking for a second one the contract would
@@ -339,8 +342,9 @@ pub struct Observation {
 }
 
 impl Observation {
-    /// What `block`, whose parents are `parents`, contributes.
-    pub fn of(block: &BlockMessage, parents: &[BlockMetadata]) -> Self {
+    /// What `block`, whose parents are `parents` and whose newly acknowledged
+    /// members are `fresh`, contributes.
+    pub fn of(block: &BlockMessage, parents: &[BlockMetadata], fresh: Vec<Validator>) -> Self {
         Self {
             block_hash: block.block_hash.clone(),
             sender: block.sender.clone(),
@@ -353,6 +357,7 @@ impl Observation {
                     block_number: parent.block_number,
                 })
                 .collect(),
+            fresh,
             ejection_claims: block
                 .body
                 .leaky_bucket_votes
@@ -612,6 +617,8 @@ impl BucketView {
         }
         let reward = compute_reward(
             &observation.committee,
+            &observation.sender,
+            &observation.fresh,
             &observation.parents,
             observation.block_number,
             &self.params.reward,
@@ -927,7 +934,17 @@ mod tests {
 
     fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
 
-    fn shipped() -> LeakyBucketParams { LeakyBucketParams::shipped() }
+    /// The shipped parameters with a drain of 1% a block and a fifty-block
+    /// window, so a member crosses the threshold in eleven blocks and becomes
+    /// ejectable in sixty-one. The mechanics are the same at any drain; the
+    /// shipped one takes some seven hundred blocks to show them.
+    fn fast() -> LeakyBucketParams {
+        LeakyBucketParams {
+            lambda_ppm: 10_000,
+            eject_observation_blocks: 50,
+            ..LeakyBucketParams::shipped()
+        }
+    }
 
     /// One validator's bucket as the view holds it under its latest floor,
     /// before payments are taken off. The level and overflow are in units of
@@ -1044,7 +1061,8 @@ mod tests {
     }
 
     /// One block's contribution: sent by `sender` at `number`, citing a parent
-    /// from each of `parent_senders` one height back, under `committee`.
+    /// from each of `parent_senders` one height back and acknowledging new
+    /// work from each of them, under `committee`.
     fn observation(
         number: i64,
         sender: u8,
@@ -1062,6 +1080,11 @@ mod tests {
                     sender: validator(*byte),
                     block_number: number - 1,
                 })
+                .collect(),
+            fresh: parent_senders
+                .iter()
+                .filter(|byte| **byte != sender)
+                .map(|byte| validator(*byte))
                 .collect(),
             ejection_claims: Vec::new(),
             overflow_nays: Vec::new(),
@@ -1092,8 +1115,8 @@ mod tests {
     /// every level is the starting level less the drains applied to it.
     fn rewardless() -> BucketView {
         BucketView::new(LeakyBucketParams {
-            reward: paying(0, 1),
-            ..shipped()
+            reward: paying(0),
+            ..fast()
         })
     }
 
@@ -1103,7 +1126,7 @@ mod tests {
     /// stake tells it apart from a live member.
     #[test]
     fn reconcile_drops_a_slashed_validator_still_named_by_bonds() {
-        let view = BucketView::new(shipped());
+        let view = BucketView::new(fast());
         view.observe(&observation(1, 1, &[1], &[(1, 100), (2, 100)]));
         assert_eq!(view.tracked(), 2);
 
@@ -1121,7 +1144,7 @@ mod tests {
     /// to claim before the payout completes.
     #[test]
     fn reconcile_retains_a_withdrawer_and_drops_it_after_payout() {
-        let view = BucketView::new(shipped());
+        let view = BucketView::new(fast());
         view.observe(&observation(1, 1, &[1], &[(1, 100), (2, 100)]));
 
         view.reconcile(&floor(bonds(&[(1, 100)]), bonds(&[(2, 100)]), vec![]), 0);
@@ -1141,7 +1164,7 @@ mod tests {
     /// not dropped: it may still be owed overflow.
     #[test]
     fn reconcile_retains_a_bonded_validator_absent_from_the_committee() {
-        let view = BucketView::new(shipped());
+        let view = BucketView::new(fast());
         view.observe(&observation(1, 1, &[1], &[(1, 100), (2, 100)]));
         let before = view.status_of(&validator(2)).expect("tracked");
 
@@ -1352,22 +1375,29 @@ mod tests {
             );
         }
 
-        let view = BucketView::new(shipped());
+        // Validators 1 and 2 alternate, each acknowledging the other. The
+        // poorer share is 2 acknowledging 1: breadth 1/16, so 1 − (15/16)² =
+        // 0.12, at recency 1/2. Over its two blocks it drains 2% of its stake
+        // and earns 0.06 · rate · 4 of it, so 0.2 holds it with margin.
+        let view = with_rate(200_000);
         let committee = [(1u8, 1i64), (2, 3), (3, 5), (4, 7)];
         for number in 0..=70i64 {
-            view.observe(&observation(number, 1, &[1], &committee));
+            let (sender, other) = if number % 2 == 0 { (1, 2) } else { (2, 1) };
+            view.observe(&observation(number, sender, &[other], &committee));
         }
-        for byte in [2u8, 3, 4] {
+        for byte in [3u8, 4] {
             assert!(
                 drained(&view, &validator(byte)),
                 "validator {byte} produced nothing across 71 blocks"
             );
             assert!(ejectable(&view, &validator(byte)));
         }
-        assert!(
-            !drained(&view, &validator(1)),
-            "the producer stays above the threshold at the shipped base reward"
-        );
+        for byte in [1u8, 2] {
+            assert!(
+                !drained(&view, &validator(byte)),
+                "producer {byte} stays above the threshold"
+            );
+        }
     }
 
     /// The whole path: a three-member committee where one member never
@@ -1377,13 +1407,16 @@ mod tests {
     #[test]
     fn a_silent_member_becomes_ejectable_while_producers_do_not() {
         let committee = [(1u8, 1_000i64), (2, 1_000), (3, 1_000)];
-        let view = with_base_reward(1_000, 3);
+        // Each producer acknowledges the other: breadth 1/3, so 1 − (2/3)² =
+        // 0.56, at recency 1/2. Over its two blocks it drains 2% of its stake
+        // and earns 0.28 · rate · 3 of it, so 0.1 holds it with margin.
+        let view = with_rate(100_000);
 
         view.observe(&observation(0, 1, &[], &committee));
         // Validators 1 and 2 alternate; 3 never proposes.
         for number in 1..=70i64 {
-            let sender = if number % 2 == 0 { 1 } else { 2 };
-            view.observe(&observation(number, sender, &[sender], &committee));
+            let (sender, other) = if number % 2 == 0 { (1, 2) } else { (2, 1) };
+            view.observe(&observation(number, sender, &[other], &committee));
         }
 
         assert_eq!(view.tracked(), 3, "every committee member is seated");
@@ -1462,21 +1495,14 @@ mod tests {
     /// it follows.
     #[test]
     fn an_open_claim_read_from_a_block_withholds_the_candidate_until_its_deadline() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
-        // A reward the sender earns, so only validator 2 drains and the
-        // candidate is unambiguous.
-        let view = BucketView::new(LeakyBucketParams {
-            claim_deadline_blocks: 40,
-            reward: paying(1_000, 2),
-            ..shipped()
-        });
-        for number in 0..=70i64 {
-            view.observe(&observation(number, 1, &[1], &committee));
-        }
+        let committee = TRIO;
+        // The producers earn, so only validator 2 drains and the candidate is
+        // unambiguous.
+        let view = draining_second_member();
         assert_eq!(targets(&view), vec![validator(2)]);
 
         // Block 71 opens proceedings against validator 2.
-        view.observe(&observation_opening(71, 1, &[1], &committee, 2));
+        view.observe(&observation_opening(71, 1, &[3], &committee, 2));
         assert!(
             targets(&view).is_empty(),
             "the claim is open, so there is nothing to propose"
@@ -1484,7 +1510,7 @@ mod tests {
 
         // A block past the deadline does not end the claim while its floor
         // is inside it (71 + 40 > 110 is false at 111).
-        view.observe(&observation(130, 1, &[1], &committee));
+        view.observe(&observation(130, 1, &[3], &committee));
         assert!(targets(&view).is_empty());
         let record = crate::rust::economics::claims::ClaimRecord {
             claim: ClaimId {
@@ -1510,10 +1536,13 @@ mod tests {
     #[test]
     fn there_is_no_candidate_while_every_member_is_earning() {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
-        let view = with_base_reward(1_000, 2);
+        // Each acknowledges the other: breadth 1/2 gives 0.75, at recency
+        // 1/2, so 0.375 · rate · 2 of the stake a block against 2% drained
+        // between blocks; 0.1 holds with margin.
+        let view = with_rate(100_000);
         for number in 0..=70i64 {
-            let sender = if number % 2 == 0 { 1 } else { 2 };
-            view.observe(&observation(number, sender, &[sender], &committee));
+            let (sender, other) = if number % 2 == 0 { (1, 2) } else { (2, 1) };
+            view.observe(&observation(number, sender, &[other], &committee));
         }
         assert!(targets(&view).is_empty());
     }
@@ -1525,14 +1554,16 @@ mod tests {
         let full = [(1u8, 1_000i64), (2, 1_000)];
         let reduced = [(1u8, 1_000i64)];
 
-        let view = with_base_reward(10_000, 2);
+        // Validator 2 acknowledges 1's block: 0.75 at recency 1/2, so 0.375 ·
+        // rate · 2 of its stake, far past its capacity at a rate of 2.
+        let view = with_rate(2_000_000);
 
         view.observe(&observation(0, 1, &[], &full));
-        view.observe(&observation(1, 2, &[2], &full));
+        view.observe(&observation(1, 2, &[1], &full));
         let before = view.status_of(&validator(2)).expect("departing tracked");
         assert!(before.overflow > 0, "the departing member earned overflow");
 
-        view.observe(&observation(2, 1, &[1], &reduced));
+        view.observe(&observation(2, 1, &[2], &reduced));
         let after_status = view.status_of(&validator(2)).expect("entry retained");
         assert_eq!(
             after_status, before,
@@ -1540,15 +1571,30 @@ mod tests {
         );
     }
 
-    /// Validator 2 drains while 1 produces; a claim lasts 40 blocks.
+    /// Validators 1 and 3 produce, validator 2 is silent.
+    const TRIO: [(u8, i64); 3] = [(1, 1_000), (2, 1_000), (3, 1_000)];
+
+    /// Block `number` of the trio: 1 and 3 alternate, each acknowledging the
+    /// other's last block.
+    fn producing(number: i64, committee: &[(u8, i64)]) -> Observation {
+        let (sender, other) = if number % 2 == 0 { (1, 3) } else { (3, 1) };
+        observation(number, sender, &[other], committee)
+    }
+
+    /// Breadth 1/3 gives 1 − (2/3)² = 0.56, at recency 1/2: a producer
+    /// earns 0.28 · rate · 3 of its stake a block against 2% drained between
+    /// its blocks, so 0.1 holds it with margin.
+    const TRIO_RATE: u64 = 100_000;
+
+    /// Validator 2 drains while 1 and 3 produce; a claim lasts 40 blocks.
     fn draining_second_member() -> BucketView {
         let view = BucketView::new(LeakyBucketParams {
             claim_deadline_blocks: 40,
-            reward: paying(1_000, 2),
-            ..shipped()
+            reward: paying(TRIO_RATE),
+            ..fast()
         });
         for number in 0..=70i64 {
-            view.observe(&observation(number, 1, &[1], &[(1, 1_000), (2, 1_000)]));
+            view.observe(&producing(number, &TRIO));
         }
         view
     }
@@ -1560,12 +1606,12 @@ mod tests {
         let view = draining_second_member();
         assert_eq!(targets(&view), vec![validator(2)]);
 
-        view.observe(&observation(71, 1, &[1], &[(1, 1_000)]));
+        view.observe(&observation(71, 1, &[3], &[(1, 1_000), (3, 1_000)]));
         assert!(
             view.status_of(&validator(2))
                 .expect("tracked")
                 .blocks_below_threshold
-                >= shipped().eject_observation_blocks,
+                >= fast().eject_observation_blocks,
             "its bucket is frozen, not reset"
         );
         assert!(targets(&view).is_empty());
@@ -1575,10 +1621,10 @@ mod tests {
     /// branch can be admitted after a later one against the same target.
     #[test]
     fn a_late_admitted_older_claim_does_not_shorten_a_newer_one() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
+        let committee = TRIO;
         let view = draining_second_member();
-        view.observe(&observation_opening(100, 1, &[1], &committee, 2));
-        view.observe(&observation_opening(60, 1, &[1], &committee, 2));
+        view.observe(&observation_opening(100, 1, &[3], &committee, 2));
+        view.observe(&observation_opening(60, 1, &[3], &committee, 2));
         assert!(
             targets(&view).is_empty(),
             "the claim opened at 100 is open until 140"
@@ -1590,9 +1636,9 @@ mod tests {
     /// the target back for the whole deadline.
     #[test]
     fn the_floor_drops_a_claim_its_state_does_not_hold() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
+        let committee = TRIO;
         let view = draining_second_member();
-        view.observe(&observation_opening(71, 1, &[1], &committee, 2));
+        view.observe(&observation_opening(71, 1, &[3], &committee, 2));
         assert!(targets(&view).is_empty());
 
         view.reconcile(&floor(bonds(&committee), vec![], vec![]), 71);
@@ -1603,7 +1649,7 @@ mod tests {
     /// opened before it started is known only from the floor's state.
     #[test]
     fn the_floor_restores_a_claim_this_node_never_saw() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
+        let committee = TRIO;
         let view = draining_second_member();
         let claim = crate::rust::economics::claims::ClaimRecord {
             claim: models::rust::casper::protocol::casper_message::ClaimId {
@@ -1621,9 +1667,9 @@ mod tests {
 
     #[test]
     fn a_claim_above_the_floor_survives_reconciliation() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
+        let committee = TRIO;
         let view = draining_second_member();
-        view.observe(&observation_opening(71, 1, &[1], &committee, 2));
+        view.observe(&observation_opening(71, 1, &[3], &committee, 2));
         view.reconcile(&floor(bonds(&committee), vec![], vec![]), 68);
         assert!(
             targets(&view).is_empty(),
@@ -1635,12 +1681,12 @@ mod tests {
     /// towards a new ejection.
     #[test]
     fn an_ejected_validators_bucket_is_frozen() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
+        let committee = TRIO;
         let view = draining_second_member();
         let before = view.status_of(&validator(2)).expect("tracked");
         view.reconcile(&frozen_floor(&committee, 2, &[open_from(71)]), 71);
         for number in 72..=200i64 {
-            view.observe(&observation(number, 1, &[1], &committee));
+            view.observe(&producing(number, &committee));
         }
         assert_eq!(view.status_of(&validator(2)), Some(before));
         assert!(targets(&view).is_empty());
@@ -1679,7 +1725,7 @@ mod tests {
     /// need to overflow, once.
     #[test]
     fn a_paid_rejoin_refills_once_and_credits_the_surplus() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
+        let committee = TRIO;
         let view = draining_second_member();
         view.reconcile(&floor(bonds(&committee), vec![], vec![]), 70);
         let before = view.status_of(&validator(2)).expect("tracked");
@@ -1702,7 +1748,7 @@ mod tests {
             Some(after),
             "the same rejoin applies once"
         );
-        view.observe(&observation(92, 1, &[1], &committee));
+        view.observe(&producing(92, &committee));
         let next = view.status_of(&validator(2)).expect("tracked");
         assert_eq!(
             next.overflow, after.overflow,
@@ -1715,7 +1761,7 @@ mod tests {
     /// already have been paid back.
     #[test]
     fn a_rejoin_paid_before_the_view_began_refills_without_crediting() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
+        let committee = TRIO;
         let view = draining_second_member();
         let before = view.status_of(&validator(2)).expect("tracked");
         view.begin(&frozen_floor(&committee, 2, &[closed(71, 72, 500)]), 72, 73);
@@ -1737,7 +1783,7 @@ mod tests {
         view.reconcile(&frozen_floor(&committee, 2, &[closed(5, 10, 0)]), 20);
         let status = view.status_of(&validator(2)).expect("tracked");
         let full = 1_000u128 * PPM as u128;
-        let drain = 1_000u128 * shipped().lambda_ppm as u128;
+        let drain = 1_000u128 * fast().lambda_ppm as u128;
         assert_eq!(
             status.level,
             full - 10 * drain,
@@ -1782,7 +1828,7 @@ mod tests {
     /// the amount.
     #[test]
     fn an_overflow_claim_is_backed_iff_the_view_covers_it() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
+        let committee = TRIO;
         let view = with_overflow(&committee);
         let whole = (owed(&view, &validator(2)) / PPM as u128) as i64;
         let proposal = view.proposal(&validator(OBSERVER));
@@ -1794,7 +1840,7 @@ mod tests {
     /// once each, and a view that credited less than was paid stops at zero.
     #[test]
     fn a_paid_claim_debits_overflow_once_and_stops_at_zero() {
-        let committee = [(1u8, 1_000i64), (2, 1_000)];
+        let committee = TRIO;
         let view = with_overflow(&committee);
         let rejoined = (2u8, [closed(75, 90, 2_000)]);
         let at = |total: i64| FloorState {
@@ -1822,7 +1868,7 @@ mod tests {
     #[test]
     fn a_returning_validator_is_not_debited_what_it_was_paid_before_leaving() {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
-        let view = with_base_reward(10_000, 2);
+        let view = with_rate(WHOLE_UNITS_FOR_TWO);
         view.reconcile(&floor(bonds(&committee), vec![], vec![]), 0);
         view.observe(&observation(1, 2, &[1, 2], &committee));
         let paid = (view.status_of(&validator(2)).expect("tracked").overflow / PPM as u128) as i64;
@@ -1858,7 +1904,7 @@ mod tests {
     #[test]
     fn payments_before_the_view_began_are_not_taken_off() {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
-        let view = with_base_reward(10_000, 2);
+        let view = with_rate(WHOLE_UNITS_FOR_TWO);
         view.begin(&claimed_floor(&committee, 7), 0, 1);
         view.observe(&observation(1, 2, &[1, 2], &committee));
         let credited = view.status_of(&validator(2)).expect("tracked").overflow;
@@ -1871,7 +1917,7 @@ mod tests {
     #[test]
     fn a_payment_inside_the_credited_span_is_taken_off_a_begun_view() {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
-        let view = with_base_reward(10_000, 2);
+        let view = with_rate(WHOLE_UNITS_FOR_TWO);
         let paid = FloorState {
             claimed: vec![Claimed {
                 validator: validator(2),
@@ -1896,26 +1942,39 @@ mod tests {
         );
     }
 
-    /// The shipped factors, with a base reward of `r_base` bond units a block
-    /// for a committee of `members`.
-    fn paying(r_base: u64, members: u64) -> RewardParams {
+    /// The shipped factors at a reward rate of `rate_ppm` of the proposer's
+    /// stake per member per block. In a committee of four equal stakes, a
+    /// block acknowledging the other three with recency saturated scores
+    /// `1 − (1/4)² = 0.9375`, so it earns `0.9375 · rate · 4 · stake`.
+    fn paying(rate_ppm: u64) -> RewardParams {
         RewardParams {
-            epoch_phlogiston: r_base * members,
-            epoch_length: NonZeroU64::MIN,
-            ..shipped().reward
+            reward_rate_ppm: rate_ppm,
+            ..fast().reward
         }
     }
 
-    fn with_base_reward(r_base: u64, members: u64) -> BucketView {
+    /// In a committee of two equal stakes of 1 000, a block citing both
+    /// members scores 0.75 at full recency and so earns `0.75 · rate · 2 ·
+    /// 1 000`: 9 999 bond units at this rate, a whole number, so a payment in
+    /// whole units can clear it.
+    const WHOLE_UNITS_FOR_TWO: u64 = 6_666_000;
+
+    /// The same for a committee of four equal stakes of 1 000, whose block
+    /// citing all four earns `0.9375 · rate · 4 · 1 000`.
+    fn rate_paying_four(bond_units: u64) -> u64 { (bond_units * PPM).div_ceil(3_750) }
+
+    fn with_rate(rate_ppm: u64) -> BucketView {
         BucketView::new(LeakyBucketParams {
-            reward: paying(r_base, members),
-            ..shipped()
+            reward: paying(rate_ppm),
+            ..fast()
         })
     }
 
     fn reward_of(view: &BucketView, observation: &Observation) -> u128 {
         compute_reward(
             &observation.committee,
+            &observation.sender,
+            &observation.fresh,
             &observation.parents,
             observation.block_number,
             &view.params.reward,
@@ -1932,7 +1991,7 @@ mod tests {
         let committee = [(1u8, 1_000i64), (2, 1_000), (3, 1_000), (4, 1_000)];
         // 20 a turn against 4 drains of 10 between turns. Every member enters
         // full, so the member proposes only once it has drained below that.
-        let view = with_base_reward(20, 4);
+        let view = with_rate(rate_paying_four(20));
         let mut cum = 0u128;
         for number in 1..=400i64 {
             let sender = ((number + 1) % 4 + 1) as u8;
@@ -1954,7 +2013,7 @@ mod tests {
     #[test]
     fn a_reward_above_the_complement_need_not_lift_an_empty_bucket_past_the_threshold() {
         let committee = [(1u8, 1_000i64), (2, 1_000), (3, 1_000), (4, 1_000)];
-        let view = with_base_reward(500, 4);
+        let view = with_rate(rate_paying_four(500));
         for number in 1..=150i64 {
             let sender = [1u8, 3, 4][number as usize % 3];
             view.observe(&observation(number, sender, &[1, 3, 4], &committee));
@@ -1987,7 +2046,7 @@ mod tests {
     #[test]
     fn a_bound_over_every_w_block_counts_blocks_a_frozen_view_never_credits() {
         let committee = [(1u8, 1_000i64), (2, 1_000), (3, 1_000), (4, 1_000)];
-        let view = with_base_reward(500, 4);
+        let view = with_rate(rate_paying_four(500));
         view.reconcile(&frozen_floor(&committee, 2, &[open_from(0)]), 0);
         let mut cum = 0u128;
         for number in 1..=40i64 {
@@ -2015,7 +2074,7 @@ mod tests {
     #[test]
     fn any_fresh_reward_drains_away_before_the_vote() {
         let committee = [(1u8, 1_000i64), (2, 1_000), (3, 1_000), (4, 1_000)];
-        let view = with_base_reward(5_000, 4);
+        let view = with_rate(rate_paying_four(5_000));
         let block = observation(1, 2, &[1, 2, 3, 4], &committee);
         let reward = reward_of(&view, &block);
         view.observe(&block);
@@ -2040,8 +2099,8 @@ mod tests {
     fn a_freeze_covers_the_same_blocks_whenever_a_view_learns_of_it() {
         let committee = [(1u8, 1_000i64), (2, 1_000), (3, 1_000), (4, 1_000)];
         let ejected = frozen_floor(&committee, 2, &[open_from(3)]);
-        let early = with_base_reward(500, 4);
-        let late = with_base_reward(500, 4);
+        let early = with_rate(rate_paying_four(500));
+        let late = with_rate(rate_paying_four(500));
         early.reconcile(&floor(bonds(&committee), vec![], vec![]), 0);
         late.reconcile(&floor(bonds(&committee), vec![], vec![]), 0);
         early.reconcile(&ejected, 0);
@@ -2067,7 +2126,7 @@ mod tests {
     #[test]
     fn a_claim_paid_before_the_window_can_be_debited_inside_it() {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
-        let view = with_base_reward(5_000, 2);
+        let view = with_rate(WHOLE_UNITS_FOR_TWO / 2);
         view.reconcile(&floor(bonds(&committee), vec![], vec![]), 0);
         let mut window_spill = 0u128;
         for number in 1..=20i64 {
@@ -2109,7 +2168,7 @@ mod tests {
     #[test]
     fn a_rejoin_the_view_has_not_reconciled_is_credited_under_the_floor_that_shows_it() {
         let committee = [(1u8, 1_000i64), (2, 1_000), (3, 1_000), (4, 1_000)];
-        let view = with_base_reward(5_000, 4);
+        let view = with_rate(rate_paying_four(5_000));
         view.reconcile(&floor(bonds(&committee), vec![], vec![]), 0);
         view.reconcile(&frozen_floor(&committee, 2, &[open_from(1)]), 0);
         let capacity = 1_000u128 * PPM as u128;
@@ -2150,8 +2209,8 @@ mod tests {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
         let params = LeakyBucketParams {
             retention_window_blocks: Some(10),
-            reward: paying(5_000, 2),
-            ..shipped()
+            reward: paying(WHOLE_UNITS_FOR_TWO / 2),
+            ..fast()
         };
         let pruned = BucketView::new(params);
         let kept = BucketView::new(LeakyBucketParams {
@@ -2192,8 +2251,8 @@ mod tests {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
         let params = LeakyBucketParams {
             retention_window_blocks: Some(10),
-            reward: paying(5_000, 2),
-            ..shipped()
+            reward: paying(WHOLE_UNITS_FOR_TWO / 2),
+            ..fast()
         };
         let swept = BucketView::new(params);
         let kept = BucketView::new(LeakyBucketParams {
@@ -2264,16 +2323,16 @@ mod tests {
 
             #[test]
             fn replay_under_a_floor_equals_a_view_that_knew_it_from_the_start(
-                r_base in prop_oneof![0u64..100, 0u64..20_000],
+                rate in prop_oneof![0u64..30_000, 0u64..6_000_000],
                 order in Just((1i64..=150).collect::<Vec<_>>()).prop_shuffle(),
                 senders in prop::collection::vec(1u8..=4, 150),
                 learn_at in 0usize..150,
                 intervals in interval_set(),
             ) {
                 let committee = [(1u8, 1_000i64), (W, 1_000), (3, 700), (4, 1_300)];
-                let early = with_base_reward(r_base, 4);
-                let late = with_base_reward(r_base, 4);
-                let never = with_base_reward(r_base, 4);
+                let early = with_rate(rate);
+                let late = with_rate(rate);
+                let never = with_rate(rate);
                 let empty = floor(bonds(&committee), vec![], vec![]);
                 let frozen = frozen_floor(&committee, W, &intervals);
                 for view in [&early, &late, &never] {
@@ -2422,14 +2481,14 @@ mod tests {
             /// own floor lags or leads the one asked about.
             #[test]
             fn the_strict_bound_never_exceeds_an_honest_view_under_the_same_floor(
-                r_base in prop_oneof![0u64..100, 0u64..20_000],
+                rate in prop_oneof![0u64..30_000, 0u64..6_000_000],
                 intervals in intervals(),
                 block_list in blocks(200),
                 order in Just((1i64..=200).collect::<Vec<_>>()).prop_shuffle(),
                 gaps in prop::collection::vec(between(), 200),
                 asked in prop::collection::vec(0usize..64, 200),
             ) {
-                let view = with_base_reward(r_base, 4);
+                let view = with_rate(rate);
                 let mut stages = vec![Stage { starts: 0, ends: 0, claimed: 0 }];
                 view.reconcile(&stage_floor(&intervals, stages[0]), 0);
                 let mut observed: Vec<(i64, Observation)> = Vec::new();
@@ -2489,7 +2548,7 @@ mod tests {
     #[test]
     fn a_nay_is_offered_until_the_floor_shows_its_voter_slashed() {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
-        let view = BucketView::new(shipped());
+        let view = BucketView::new(fast());
         view.reconcile(&floor(bonds(&committee), vec![], vec![]), 0);
         let claim = overflow_claim(1, 10).claim;
         view.observe(&Observation {
@@ -2550,7 +2609,7 @@ mod tests {
     #[test]
     fn a_late_block_does_not_bring_back_a_slashed_validator() {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
-        let view = BucketView::new(shipped());
+        let view = BucketView::new(fast());
         view.reconcile(&floor(bonds(&committee), vec![], vec![]), 0);
         for number in 1..=10i64 {
             view.observe(&observation(number, 1, &[1, 2], &committee));
@@ -2575,7 +2634,7 @@ mod tests {
     #[test]
     fn a_member_first_seen_ejected_starts_at_the_threshold() {
         let committee = [(1u8, 1_000i64), (2, 1_000)];
-        let view = BucketView::new(shipped());
+        let view = BucketView::new(fast());
         view.reconcile(&frozen_floor(&committee, 2, &[open_from(0)]), 0);
         for number in 1..=100i64 {
             view.observe(&observation(number, 1, &[1], &committee));
@@ -2583,7 +2642,7 @@ mod tests {
         let entry = view.status_of(&validator(2)).expect("an entry is kept");
         assert_eq!(
             entry.level,
-            entry.capacity as u128 * shipped().theta_eject_ppm as u128
+            entry.capacity as u128 * fast().theta_eject_ppm as u128
         );
     }
 

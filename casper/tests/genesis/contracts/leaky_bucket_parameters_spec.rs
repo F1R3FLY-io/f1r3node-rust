@@ -31,7 +31,7 @@ async fn the_pos_contract_exposes_every_chain_parameter() {
     pos.breadth_exponent = 3;
     pos.recency_reference_ppm = 900_001;
     pos.vote_list_bound = 7;
-    pos.epoch_phlogiston = 1_234_567;
+    pos.reward_rate_ppm = 1_234_567;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
         .await
@@ -63,10 +63,11 @@ async fn the_pos_contract_exposes_every_chain_parameter() {
             retention_window_blocks: Some(17 + 997),
             vote_list_bound: NonZeroU32::new(7).expect("positive"),
             reward: RewardParams {
-                epoch_phlogiston: 1_234_567,
-                epoch_length: std::num::NonZeroU64::new(997).expect("positive"),
+                reward_rate_ppm: 1_234_567,
                 p_breadth: 3,
                 y_ref_ppm: 900_001,
+                // The parent depth and one further, derived.
+                previous_reach: Some(17 + 1),
             },
         },
     };

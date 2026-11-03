@@ -352,7 +352,7 @@ pub fn pos_generator(pos: &ProofOfStake, shard_id: &str) -> Signed<DeployData> {
             ("maxParentDepth", &pos.max_parent_depth.to_string()),
             ("deployLifespan", &pos.deploy_lifespan.to_string()),
             ("minPhloPrice", &pos.min_phlo_price.to_string()),
-            ("epochPhlogiston", &pos.epoch_phlogiston.to_string()),
+            ("rewardRatePpm", &pos.reward_rate_ppm.to_string()),
             ("lambdaBasePpm", &pos.lambda_base_ppm.to_string()),
             ("thetaEjectPpm", &pos.theta_eject_ppm.to_string()),
             (

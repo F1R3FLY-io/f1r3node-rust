@@ -18,9 +18,9 @@ pub struct ProofOfStake {
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
     pub min_phlo_price: i64,
-    /// Emission budget per epoch. The leaky bucket's base block reward is this
-    /// divided by the epoch length and the active-validator cap.
-    pub epoch_phlogiston: i64,
+    /// Reward rate per block, in ppm of the proposer's stake per committee
+    /// member.
+    pub reward_rate_ppm: i64,
     /// Fraction of its capacity a validator's bucket loses per block, in ppm.
     pub lambda_base_ppm: i64,
     /// Level below which a validator is a candidate for ejection, as a ppm
@@ -46,7 +46,7 @@ pub struct ProofOfStake {
 /// so the ceremony entry points take a single argument rather than six more.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LeakyBucketGenesis {
-    pub epoch_phlogiston: i64,
+    pub reward_rate_ppm: i64,
     pub lambda_base_ppm: i64,
     pub theta_eject_ppm: i64,
     pub eject_observation_blocks: i64,
@@ -60,7 +60,7 @@ pub struct LeakyBucketGenesis {
 impl Default for LeakyBucketGenesis {
     fn default() -> Self {
         Self {
-            epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON,
+            reward_rate_ppm: ProofOfStake::DEFAULT_REWARD_RATE_PPM,
             lambda_base_ppm: ProofOfStake::DEFAULT_LAMBDA_BASE_PPM,
             theta_eject_ppm: ProofOfStake::DEFAULT_THETA_EJECT_PPM,
             eject_observation_blocks: ProofOfStake::DEFAULT_EJECT_OBSERVATION_BLOCKS,
@@ -76,12 +76,11 @@ impl Default for LeakyBucketGenesis {
 
 impl ProofOfStake {
     /// Shipped leaky-bucket genesis values, and the code fallbacks that must
-    /// equal the keys in `defaults.conf`. Placeholders pending simulation; the
-    /// magnitudes are not yet settled.
-    pub const DEFAULT_EPOCH_PHLOGISTON: i64 = 1_000_000;
-    pub const DEFAULT_LAMBDA_BASE_PPM: i64 = 10_000;
+    /// equal the keys in `defaults.conf`, where their derivation is given.
+    pub const DEFAULT_REWARD_RATE_PPM: i64 = 630;
+    pub const DEFAULT_LAMBDA_BASE_PPM: i64 = 140;
     pub const DEFAULT_THETA_EJECT_PPM: i64 = 900_000;
-    pub const DEFAULT_EJECT_OBSERVATION_BLOCKS: i64 = 50;
+    pub const DEFAULT_EJECT_OBSERVATION_BLOCKS: i64 = 60;
     pub const DEFAULT_BREADTH_EXPONENT: i64 = 2;
     pub const DEFAULT_RECENCY_REFERENCE_PPM: i64 = 1_000_000;
     pub const DEFAULT_VOTE_LIST_BOUND: i64 = 32;
@@ -94,7 +93,7 @@ impl ProofOfStake {
     /// value for callers that must reproduce them exactly.
     pub fn leaky_bucket(&self) -> LeakyBucketGenesis {
         LeakyBucketGenesis {
-            epoch_phlogiston: self.epoch_phlogiston,
+            reward_rate_ppm: self.reward_rate_ppm,
             lambda_base_ppm: self.lambda_base_ppm,
             theta_eject_ppm: self.theta_eject_ppm,
             eject_observation_blocks: self.eject_observation_blocks,
@@ -122,7 +121,7 @@ impl ProofOfStake {
             "breadthExponent" => self.breadth_exponent,
             "recencyReferencePpm" => self.recency_reference_ppm,
             "voteListBound" => self.vote_list_bound,
-            "epochPhlogiston" => self.epoch_phlogiston,
+            "rewardRatePpm" => self.reward_rate_ppm,
             other => return Err(format!("genesis writes no chain parameter {other}")),
         })
     }

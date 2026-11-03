@@ -23,6 +23,17 @@ async fn funded_network(epoch_length: Option<i32>) -> (Vec<TestNode>, usize, Str
     .await
 }
 
+/// A reward rate of 2.67 a block per member per bond unit. The lightest
+/// validator, bonded at 1, acknowledges the other two producers' new work,
+/// half the committee's stake (0.75), at a recency between 1/2 and 1: it
+/// earns 4 to 8 a block in a committee of four. Eight of its blocks prove
+/// more overflow than a claim of 10; no single block does.
+fn proving_overflow(
+    proof_of_stake: &mut casper::rust::genesis::contracts::proof_of_stake::ProofOfStake,
+) {
+    proof_of_stake.reward_rate_ppm = 2_666_667;
+}
+
 /// The same network, with `adjust` applied to its proof-of-stake parameters.
 async fn funded_network_with(
     adjust: impl FnOnce(&mut casper::rust::genesis::contracts::proof_of_stake::ProofOfStake),
@@ -500,13 +511,7 @@ async fn a_nay_its_own_ancestry_contradicts_is_slashed_and_an_honest_one_is_not(
 
     use casper::rust::economics::bucket_view::{LeakyBucketDecision, LeakyBucketProposal};
 
-    // A base reward of 32 bond units (`128_000 / 1_000 / 4`), which the
-    // round-robin parents bring to
-    // about 8.6 a block: eight blocks from the lightest validator, bonded at
-    // 1, prove far more than the claimed 10, and no view credits one block
-    // from any validator with that much.
-    let (mut nodes, claimant, shard_id) =
-        funded_network_with(|proof_of_stake| proof_of_stake.epoch_phlogiston = 128_000).await;
+    let (mut nodes, claimant, shard_id) = funded_network_with(proving_overflow).await;
     let size = nodes.len();
     let (liar, accuser, idle) = (
         (claimant + 1) % size,
@@ -866,8 +871,7 @@ async fn a_view_short_of_its_ancestry_backs_what_the_ancestry_proves() {
 
     use casper::rust::economics::bucket_view::{LeakyBucketDecision, LeakyBucketProposal};
 
-    let (mut nodes, claimant, shard_id) =
-        funded_network_with(|proof_of_stake| proof_of_stake.epoch_phlogiston = 128_000).await;
+    let (mut nodes, claimant, shard_id) = funded_network_with(proving_overflow).await;
     let size = nodes.len();
     let (voter, accuser) = ((claimant + 1) % size, (claimant + 2) % size);
     let claimant_key = identity(&nodes[claimant]);
@@ -924,8 +928,7 @@ async fn a_proposer_does_not_sign_a_nay_over_ancestry_it_does_not_hold() {
     use casper::rust::blocks::proposer::proposer::DeploySelection;
     use casper::rust::economics::bucket_view::{LeakyBucketDecision, LeakyBucketProposal};
 
-    let (mut nodes, claimant, shard_id) =
-        funded_network_with(|proof_of_stake| proof_of_stake.epoch_phlogiston = 128_000).await;
+    let (mut nodes, claimant, shard_id) = funded_network_with(proving_overflow).await;
     let size = nodes.len();
     let (voter, other) = ((claimant + 1) % size, (claimant + 2) % size);
     let voter_key = identity(&nodes[voter]);
@@ -986,8 +989,7 @@ async fn evidence_against_two_voters_in_one_block_survives_a_merge() {
 
     use casper::rust::economics::bucket_view::{LeakyBucketDecision, LeakyBucketProposal};
 
-    let (mut nodes, claimant, shard_id) =
-        funded_network_with(|proof_of_stake| proof_of_stake.epoch_phlogiston = 128_000).await;
+    let (mut nodes, claimant, shard_id) = funded_network_with(proving_overflow).await;
     let stake_of = |node: &TestNode| {
         nodes[0]
             .casper
@@ -1094,8 +1096,7 @@ async fn evidence_against_two_voters_in_one_block_survives_a_merge() {
 /// still holds takes that payment off again, and decides as it did before.
 #[tokio::test]
 async fn a_restarted_node_takes_off_a_payment_it_had_taken_off() {
-    let (mut nodes, claimant, shard_id) =
-        funded_network_with(|proof_of_stake| proof_of_stake.epoch_phlogiston = 128_000).await;
+    let (mut nodes, claimant, shard_id) = funded_network_with(proving_overflow).await;
     let claimant_key = identity(&nodes[claimant]);
     for _ in 0..8 {
         for index in 0..nodes.len() {

@@ -2,7 +2,7 @@
 //! chain rather than from local configuration: two nodes running different
 //! values would judge the same block differently.
 
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU32;
 
 use crate::rust::economics::bucket_view::LeakyBucketParams;
 use crate::rust::economics::reward::{RewardParams, PPM};
@@ -77,10 +77,10 @@ impl ChainParameters {
                 retention_window_blocks: basis.block_retention_window(),
                 vote_list_bound: positive("voteListBound", u32::MAX)?,
                 reward: RewardParams {
-                    epoch_phlogiston: in_range("epochPhlogiston", 0, i64::MAX)? as u64,
-                    epoch_length: NonZeroU64::from(epoch_length),
+                    reward_rate_ppm: in_range("rewardRatePpm", 0, i64::MAX)? as u64,
                     p_breadth: in_range("breadthExponent", 1, u32::MAX as i64)? as u32,
                     y_ref_ppm: in_range("recencyReferencePpm", 1, i64::MAX)? as u64,
+                    previous_reach: basis.previous_block_reach(),
                 },
             },
         })
@@ -136,6 +136,13 @@ impl WindowBasis {
         Some((self.max_parent_depth as i64).saturating_add(look_back))
     }
 
+    /// How far below a block its sender's previous block counts for its
+    /// reward: a parent depth and one further, which every node judging the
+    /// block holds. `None` when the parent-depth check is disabled.
+    pub fn previous_block_reach(&self) -> Option<i64> {
+        (self.max_parent_depth != i32::MAX).then(|| self.max_parent_depth as i64 + 1)
+    }
+
     /// How far below a judging block's floor dishonest-vote evidence counts the
     /// claimant's blocks. A node that can judge a block holds that block's
     /// floor state, so its anchor is at most a parent depth above the floor,
@@ -186,11 +193,10 @@ impl ChainParameters {
                 vote_list_bound: NonZeroU32::new(ProofOfStake::DEFAULT_VOTE_LIST_BOUND as u32)
                     .expect("the shipped vote list bound is positive"),
                 reward: RewardParams {
-                    epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON as u64,
-                    epoch_length: NonZeroU64::new(basis.epoch_length as u64)
-                        .expect("the shipped epoch is positive"),
+                    reward_rate_ppm: ProofOfStake::DEFAULT_REWARD_RATE_PPM as u64,
                     p_breadth: ProofOfStake::DEFAULT_BREADTH_EXPONENT as u32,
                     y_ref_ppm: ProofOfStake::DEFAULT_RECENCY_REFERENCE_PPM as u64,
+                    previous_reach: basis.previous_block_reach(),
                 },
             },
         }

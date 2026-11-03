@@ -10,6 +10,7 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 
 use super::bucket_view::{BucketView, Observation};
+use super::reward::fresh_in;
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -17,9 +18,8 @@ use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 /// retention window below that block, then observes every valid block held
 /// from there upwards, by height and then by hash.
 ///
-/// A block with a parent this node does not hold is passed over: its reward
-/// cannot be recomputed, and it sits at the bottom of the window, below every
-/// block a vote is judged on.
+/// A block with a parent, or a previous block of its sender, that this node
+/// does not hold is passed over: its reward cannot be recomputed.
 pub async fn rebuild(
     view: &BucketView,
     dag: &KeyValueDagRepresentation,
@@ -53,9 +53,21 @@ pub async fn rebuild(
                     None => break,
                 }
             }
-            if parents.len() == metadata.parents.len() {
-                view.observe(&Observation::of(&held(blocks, &hash)?, &parents));
+            if parents.len() != metadata.parents.len() {
+                continue;
             }
+            let fresh = match fresh_in(
+                dag,
+                &metadata.sender,
+                &metadata.justifications,
+                metadata.block_number,
+                view.params().reward.previous_reach,
+            ) {
+                Ok(fresh) => fresh,
+                Err(CasperError::BlockNotHeld(..)) => continue,
+                Err(error) => return Err(error),
+            };
+            view.observe(&Observation::of(&held(blocks, &hash)?, &parents, fresh));
         }
     }
     Ok(())

@@ -52,10 +52,10 @@ mod tests {
                 epoch_length: 10000,
                 quarantine_length: 50000,
                 number_of_active_validators: 100,
-                epoch_phlogiston: 1_000_000,
-                leaky_bucket_lambda_base_ppm: 10_000,
+                leaky_bucket_reward_rate_ppm: 630,
+                leaky_bucket_lambda_base_ppm: 140,
                 leaky_bucket_theta_eject_ppm: 900_000,
-                leaky_bucket_eject_observation_blocks: 50,
+                leaky_bucket_eject_observation_blocks: 60,
                 leaky_bucket_breadth_exponent: 2,
                 leaky_bucket_recency_reference_ppm: 1_000_000,
 

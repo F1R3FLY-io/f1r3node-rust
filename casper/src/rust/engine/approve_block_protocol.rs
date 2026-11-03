@@ -194,7 +194,7 @@ impl ApproveBlockProtocolFactory {
                 max_parent_depth,
                 deploy_lifespan,
                 min_phlo_price,
-                epoch_phlogiston: leaky_bucket.epoch_phlogiston,
+                reward_rate_ppm: leaky_bucket.reward_rate_ppm,
                 lambda_base_ppm: leaky_bucket.lambda_base_ppm,
                 theta_eject_ppm: leaky_bucket.theta_eject_ppm,
                 eject_observation_blocks: leaky_bucket.eject_observation_blocks,

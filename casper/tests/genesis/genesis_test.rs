@@ -241,7 +241,7 @@ async fn from_input_files(
             deploy_lifespan: 50,
             min_phlo_price: 0,
             validators,
-            epoch_phlogiston: ProofOfStake::DEFAULT_EPOCH_PHLOGISTON,
+            reward_rate_ppm: ProofOfStake::DEFAULT_REWARD_RATE_PPM,
             lambda_base_ppm: ProofOfStake::DEFAULT_LAMBDA_BASE_PPM,
             theta_eject_ppm: ProofOfStake::DEFAULT_THETA_EJECT_PPM,
             eject_observation_blocks: ProofOfStake::DEFAULT_EJECT_OBSERVATION_BLOCKS,

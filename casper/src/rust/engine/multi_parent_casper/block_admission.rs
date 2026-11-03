@@ -195,9 +195,16 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     }
     record_dag_cardinality_metrics(&updated_dag);
 
+    let fresh = crate::rust::economics::reward::fresh_in(
+        &updated_dag,
+        &block.sender,
+        &block.justifications,
+        block.body.state.block_number,
+        this.bucket_view.params().reward.previous_reach,
+    )?;
     this.bucket_view
         .observe(&crate::rust::economics::bucket_view::Observation::of(
-            block, parents,
+            block, parents, fresh,
         ));
 
     // Publish BlockAdded event

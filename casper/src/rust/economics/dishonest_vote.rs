@@ -17,7 +17,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{ClaimFamily, ClaimId, OverflowTestimony};
 use models::rust::validator::Validator;
 
-use super::reward::{compute_reward, ParentFact, RewardParams, PPM};
+use super::reward::{compute_reward, fresh_in, ParentFact, RewardParams, PPM};
 use crate::rust::errors::CasperError;
 
 /// One validator's nay, in one block, on one overflow claim.
@@ -76,7 +76,21 @@ fn spills(
                 block_number: parent.block_number,
             });
         }
-        let earned = compute_reward(&block.weight_map, &parents, block.block_number, reward);
+        let fresh = fresh_in(
+            dag,
+            claimant,
+            &block.justifications,
+            block.block_number,
+            reward.previous_reach,
+        )?;
+        let earned = compute_reward(
+            &block.weight_map,
+            claimant,
+            &fresh,
+            &parents,
+            block.block_number,
+            reward,
+        );
         spills.push((
             block.block_number,
             earned.saturating_sub(stake as u128 * PPM as u128),

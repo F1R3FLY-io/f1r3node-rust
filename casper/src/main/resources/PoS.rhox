@@ -362,7 +362,7 @@ in {
                   "breadthExponent"           : $$breadthExponent$$,
                   "recencyReferencePpm"       : $$recencyReferencePpm$$,
                   "voteListBound"             : $$voteListBound$$,
-                  "epochPhlogiston"           : $$epochPhlogiston$$
+                  "rewardRatePpm"             : $$rewardRatePpm$$
                 })
               } |
               contract PoS(@"posVaultTransfer", @targetAddress, @amount, @deployerID, @transferRet) = {

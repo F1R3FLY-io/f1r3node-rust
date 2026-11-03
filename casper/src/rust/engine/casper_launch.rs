@@ -99,7 +99,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
     /// the chain carries and ignores its own configuration.
     fn leaky_bucket_genesis(&self) -> LeakyBucketGenesis {
         LeakyBucketGenesis {
-            epoch_phlogiston: self.conf.genesis_block_data.epoch_phlogiston,
+            reward_rate_ppm: self.conf.genesis_block_data.leaky_bucket_reward_rate_ppm,
             lambda_base_ppm: self.conf.genesis_block_data.leaky_bucket_lambda_base_ppm,
             theta_eject_ppm: self.conf.genesis_block_data.leaky_bucket_theta_eject_ppm,
             eject_observation_blocks: self

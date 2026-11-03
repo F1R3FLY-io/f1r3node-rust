@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, HashSet};
-use std::num::NonZeroU64;
 
-use models::rust::casper::protocol::casper_message::Bond;
+use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use models::rust::casper::protocol::casper_message::{Bond, Justification};
 use models::rust::validator::Validator;
+use shared::rust::store::key_value_store::MissingBlockContext;
+
+use crate::rust::errors::CasperError;
 
 /// Fixed-point scale for every reward factor, and the scale of the reward
 /// itself. The arithmetic is integer throughout because rewards are
@@ -13,15 +16,19 @@ pub const PPM: u64 = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RewardParams {
-    /// The base reward is one epoch's emission over its blocks and over the
-    /// block committee's members, in bond units.
-    pub epoch_phlogiston: u64,
-    pub epoch_length: NonZeroU64,
+    /// The reward rate, in ppm of the proposer's stake per block: a block
+    /// credits this for every committee member, since each member proposes
+    /// about one block in that many.
+    pub reward_rate_ppm: u64,
     /// Exponent of `f_breadth`. Zero makes the breadth factor identically
     /// zero, and therefore the reward zero — a misconfiguration that is
     /// reported as no reward rather than silently treated as one.
     pub p_breadth: u32,
     pub y_ref_ppm: u64,
+    /// How far below a block its sender's previous block may sit and still
+    /// count as previous: one past the parent depth, which every node judging
+    /// the block holds. `None` when the parent depth is unbounded.
+    pub previous_reach: Option<i64>,
 }
 
 /// What the reward needs from one parent: who authored it and how far below
@@ -43,21 +50,99 @@ pub fn committee_of(bonds: &[Bond]) -> Committee {
         .collect()
 }
 
-/// The base reward scaled by how much of the committee the block builds on
-/// (breadth) and how recent those parents are (recency). The committee is the
-/// block's own.
+/// The validators other than `sender` whose latest block `justifications`
+/// names differently from `previous_own`, the justifications of `sender`'s
+/// previous block: the members whose new work the block acknowledges. With no
+/// previous block, every other justified validator is new.
+pub fn fresh_validators(
+    sender: &Validator,
+    justifications: &[Justification],
+    previous_own: Option<&[Justification]>,
+) -> Vec<Validator> {
+    let before: BTreeMap<&Validator, &prost::bytes::Bytes> = previous_own
+        .into_iter()
+        .flatten()
+        .map(|justification| (&justification.validator, &justification.latest_block_hash))
+        .collect();
+    let mut fresh: Vec<Validator> = justifications
+        .iter()
+        .filter(|justification| {
+            justification.validator != *sender
+                && before.get(&justification.validator) != Some(&&justification.latest_block_hash)
+        })
+        .map(|justification| justification.validator.clone())
+        .collect();
+    fresh.sort();
+    fresh.dedup();
+    fresh
+}
+
+/// `fresh_validators` for block `block_number` by `sender` justifying
+/// `justifications`, its previous block found through the DAG. A
+/// justification of `sender` naming a block `sender` did not sign — genesis,
+/// for a member that has not proposed — is no previous block, nor is one more
+/// than `previous_reach` below: nodes need not hold it, and every node must
+/// reach the same reward. A previous block this node does not hold is
+/// `BlockNotHeld`, an absence to fetch, never a fault of the block.
+pub fn fresh_in(
+    dag: &KeyValueDagRepresentation,
+    sender: &Validator,
+    justifications: &[Justification],
+    block_number: i64,
+    previous_reach: Option<i64>,
+) -> Result<Vec<Validator>, CasperError> {
+    let previous_own = match justifications
+        .iter()
+        .find(|justification| justification.validator == *sender)
+    {
+        Some(justification) => {
+            let previous = dag
+                .lookup(&justification.latest_block_hash)?
+                .ok_or_else(|| {
+                    CasperError::BlockNotHeld(
+                        justification.latest_block_hash.clone(),
+                        MissingBlockContext::new("fresh_in"),
+                    )
+                })?;
+            Some(previous).filter(|previous| {
+                previous.sender == *sender
+                    && previous_reach.is_none_or(|reach| {
+                        previous.block_number >= block_number.saturating_sub(reach)
+                    })
+            })
+        }
+        None => None,
+    };
+    Ok(fresh_validators(
+        sender,
+        justifications,
+        previous_own
+            .as_ref()
+            .map(|previous| previous.justifications.as_slice()),
+    ))
+}
+
+/// The reward `sender`'s block earns: a share of the sender's stake scaled by
+/// how much of the committee's new work the block acknowledges (breadth) and
+/// how recent its parents are (recency). The committee is the block's own.
 ///
-/// Breadth is the share of the block's committee stake its parents were
-/// authored by, summed over DISTINCT senders so citing one sender twice
-/// cannot push the share past the whole committee. A parent whose sender is
-/// absent from the committee adds nothing: the measure is committee stake
-/// built upon, and a departed sender holds none of it.
+/// Breadth is the committee stake of the `fresh` validators, those whose new
+/// blocks this block acknowledges since its sender's previous one, over the
+/// committee's total. It depends on what the sender has seen, not on who
+/// proposed just before. A fresh validator absent from the committee adds
+/// nothing.
+///
+/// The reward is proportional to the sender's stake because the drain is: a
+/// member proposing its share of blocks keeps the same level whatever its
+/// bond.
 ///
 /// The result is in units of `1 / PPM` of a bond unit. Both factors are
 /// fractions, so a reward expressed in whole bond units would round to
 /// nothing for every block that does not saturate both of them.
 pub fn compute_reward(
     committee: &Committee,
+    sender: &Validator,
+    fresh: &[Validator],
     parents: &[ParentFact],
     block_number: i64,
     params: &RewardParams,
@@ -66,28 +151,41 @@ pub fn compute_reward(
     // already overflow `i64`.
     let total: i128 = committee.values().map(|stake| *stake as i128).sum();
     let members = committee.values().filter(|stake| **stake > 0).count() as u128;
+    // A sender the committee does not seat has no stake to credit.
+    let Some(own_stake) = committee.get(sender).copied().filter(|stake| *stake > 0) else {
+        return 0;
+    };
     if total <= 0 || members == 0 {
         return 0;
     }
 
     let mut counted: HashSet<&Validator> = HashSet::new();
-    let mut cited_stake: i128 = 0;
-    let mut recency_ppm: u64 = 0;
-    for parent in parents {
-        if let Some(stake) = committee.get(&parent.sender) {
-            if counted.insert(&parent.sender) {
-                cited_stake += *stake as i128;
+    let mut fresh_stake: i128 = 0;
+    for validator in fresh {
+        if validator == sender {
+            continue;
+        }
+        if let Some(stake) = committee.get(validator) {
+            if counted.insert(validator) {
+                fresh_stake += (*stake).max(0) as i128;
             }
         }
+    }
+    let mut recency_ppm: u64 = 0;
+    for parent in parents {
         let gap = block_number.saturating_sub(parent.block_number).max(0) as u64;
         recency_ppm = recency_ppm.saturating_add(PPM / (1 + gap));
     }
 
-    let breadth_ppm = (cited_stake.max(0) as u128 * PPM as u128 / total as u128) as u64;
-    let bill = f_breadth(breadth_ppm, params.p_breadth) as u128
+    let breadth_ppm = (fresh_stake as u128 * PPM as u128 / total as u128) as u64;
+    let factor_ppm = f_breadth(breadth_ppm, params.p_breadth) as u128
         * f_recency(recency_ppm, params.y_ref_ppm) as u128
-        * params.epoch_phlogiston as u128;
-    bill / (PPM as u128 * params.epoch_length.get() as u128 * members)
+        / PPM as u128;
+    factor_ppm
+        .saturating_mul(params.reward_rate_ppm as u128)
+        .saturating_mul(members)
+        .saturating_mul(own_stake as u128)
+        / PPM as u128
 }
 
 /// `1 − (1 − x)^p`, on the ppm scale. The power is taken by repeated
@@ -127,14 +225,14 @@ mod tests {
 
     fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
 
-    /// The shipped factors, with a base reward of one bond unit a block for a
-    /// committee of `members`.
-    fn one_a_block(members: u64) -> RewardParams {
+    /// The shipped factors, at a rate of `rate_ppm` of the proposer's stake per
+    /// member per block.
+    fn at_rate(rate_ppm: u64) -> RewardParams {
         RewardParams {
-            epoch_phlogiston: members,
-            epoch_length: NonZeroU64::MIN,
+            reward_rate_ppm: rate_ppm,
             p_breadth: 2,
             y_ref_ppm: PPM,
+            previous_reach: Some(16),
         }
     }
 
@@ -152,43 +250,119 @@ mod tests {
         }
     }
 
-    /// Citing only your own block pays strictly less than citing everyone,
-    /// which is the whole point of the breadth factor. It holds only because
-    /// breadth is a share of TOTAL committee stake: normalizing over the
-    /// parent set instead would make it 1 for every block, including this
-    /// one, and the factor would stop discriminating.
-    #[test]
-    fn breadth_pays_a_self_only_proposer_less_than_a_full_parent_set() {
-        let committee = bonds(&[(1, 250), (2, 250), (3, 250), (4, 250)]);
-        let params = one_a_block(4);
+    fn justification(byte: u8, hash: u8) -> Justification {
+        Justification {
+            validator: validator(byte),
+            latest_block_hash: Bytes::from(vec![hash; 32]),
+        }
+    }
 
-        let self_only = compute_reward(&committee, &[parent(1, 9)], 10, &params);
-        let everyone = compute_reward(
+    /// Two proposers acknowledging the same new work earn in proportion to
+    /// their stakes, because each drains in proportion to its stake.
+    #[test]
+    fn the_reward_is_proportional_to_the_proposers_stake() {
+        let committee = bonds(&[(1, 100), (2, 1_000), (3, 5_000)]);
+        let params = at_rate(630);
+        let fresh = [validator(3)];
+        let parents = [parent(3, 9)];
+        let light = compute_reward(&committee, &validator(1), &fresh, &parents, 10, &params);
+        let heavy = compute_reward(&committee, &validator(2), &fresh, &parents, 10, &params);
+        assert!(light > 0);
+        assert_eq!(heavy, light * 10);
+    }
+
+    /// Breadth measures the new work a block acknowledges, so the reward does
+    /// not depend on whose block happens to be its parent.
+    #[test]
+    fn the_reward_does_not_depend_on_who_proposed_just_before() {
+        let committee = bonds(&[(1, 100), (2, 500), (3, 1_000), (4, 10_000)]);
+        let params = at_rate(630);
+        let others = [validator(1), validator(3), validator(4)];
+        let after_light = compute_reward(
             &committee,
-            &[parent(1, 9), parent(2, 9), parent(3, 9), parent(4, 9)],
+            &validator(2),
+            &others,
+            &[parent(1, 9)],
             10,
             &params,
         );
+        let after_heavy = compute_reward(
+            &committee,
+            &validator(2),
+            &others,
+            &[parent(4, 9)],
+            10,
+            &params,
+        );
+        assert_eq!(after_light, after_heavy);
+    }
 
-        // w_self = 1/4, p = 2 → breadth factor 1 − (3/4)² = 7/16, and one
-        // parent one height back gives recency 1/2, which `y_ref = 1` does
-        // not cap. Four parents sum to recency 2 and saturate it. At a base
-        // reward of 1 those are 0.21875 and 1.0 of a bond unit.
-        assert_eq!(self_only, 218_750);
-        assert_eq!(everyone, PPM as u128);
+    /// A block acknowledging every other member's new work earns
+    /// `f_breadth · f_recency · rate · members · stake`: committee 4 × 250,
+    /// breadth 3/4 so `1 − (1/4)² = 0.9375`, three parents one height back
+    /// saturate recency, and 630 ppm × 4 × 250 = 0.63 bond units.
+    #[test]
+    fn a_full_acknowledgement_earns_the_rate_times_members_times_stake() {
+        let committee = bonds(&[(1, 250), (2, 250), (3, 250), (4, 250)]);
+        let others = [validator(2), validator(3), validator(4)];
+        let parents = [parent(2, 9), parent(3, 9), parent(4, 9)];
+        assert_eq!(
+            compute_reward(
+                &committee,
+                &validator(1),
+                &others,
+                &parents,
+                10,
+                &at_rate(630)
+            ),
+            590_625
+        );
+    }
 
-        // And it rises with every additional share cited, not just at the
-        // endpoints.
+    /// Acknowledging no new work pays nothing, and each additional member's
+    /// acknowledged work pays more.
+    #[test]
+    fn breadth_rises_with_each_member_acknowledged() {
+        let committee = bonds(&[(1, 250), (2, 250), (3, 250), (4, 250)]);
+        let params = at_rate(630);
+        let parents = [parent(1, 9)];
+        assert_eq!(
+            compute_reward(&committee, &validator(1), &[], &parents, 10, &params),
+            0
+        );
         let mut previous = 0;
-        for cited in 1..=4u8 {
-            let parents: Vec<ParentFact> = (1..=cited).map(|byte| parent(byte, 9)).collect();
-            let reward = compute_reward(&committee, &parents, 10, &params);
-            assert!(
-                reward > previous,
-                "citing {cited} of 4 paid {reward}, no more than citing one fewer \
-                 ({previous})"
-            );
+        for acknowledged in 2..=4u8 {
+            let fresh: Vec<Validator> = (2..=acknowledged).map(validator).collect();
+            let reward = compute_reward(&committee, &validator(1), &fresh, &parents, 10, &params);
+            assert!(reward > previous, "{acknowledged}: {reward} <= {previous}");
             previous = reward;
+        }
+    }
+
+    /// The sender's own new block is not breadth, a member absent from the
+    /// committee adds nothing, and a member named twice counts once.
+    #[test]
+    fn breadth_counts_each_other_committee_member_once() {
+        let committee = bonds(&[(1, 500), (2, 500)]);
+        let params = at_rate(630);
+        let parents = [parent(2, 9)];
+        let base = compute_reward(
+            &committee,
+            &validator(1),
+            &[validator(2)],
+            &parents,
+            10,
+            &params,
+        );
+        for fresh in [
+            vec![validator(2), validator(1)],
+            vec![validator(2), validator(9)],
+            vec![validator(2), validator(2)],
+        ] {
+            assert_eq!(
+                compute_reward(&committee, &validator(1), &fresh, &parents, 10, &params),
+                base
+            );
         }
     }
 
@@ -199,82 +373,40 @@ mod tests {
         let committee = bonds(&[(1, 500), (2, 500)]);
         let params = RewardParams {
             y_ref_ppm: 4 * PPM,
-            ..one_a_block(2)
+            ..at_rate(630)
         };
-        let fresh = compute_reward(&committee, &[parent(1, 9), parent(2, 9)], 10, &params);
-        let stale = compute_reward(&committee, &[parent(1, 1), parent(2, 1)], 10, &params);
-        assert!(
-            fresh > stale,
-            "a fresher parent set must earn more: fresh {fresh}, stale {stale}"
+        let fresh = [validator(2)];
+        let recent = compute_reward(
+            &committee,
+            &validator(1),
+            &fresh,
+            &[parent(1, 9), parent(2, 9)],
+            10,
+            &params,
         );
+        let stale = compute_reward(
+            &committee,
+            &validator(1),
+            &fresh,
+            &[parent(1, 1), parent(2, 1)],
+            10,
+            &params,
+        );
+        assert!(recent > stale, "recent {recent}, stale {stale}");
     }
 
-    /// Isolates the breadth factor: a tiny `y_ref` saturates recency, so any
-    /// difference between two parent sets is breadth alone.
-    fn breadth_only_params() -> RewardParams {
-        RewardParams {
-            y_ref_ppm: 1,
-            ..one_a_block(2)
+    /// A sender the committee does not seat earns nothing.
+    #[test]
+    fn a_sender_outside_the_committee_earns_nothing() {
+        let committee = bonds(&[(1, 500), (2, 0)]);
+        let params = at_rate(630);
+        let parents = [parent(1, 9)];
+        for sender in [validator(2), validator(9)] {
+            assert_eq!(
+                compute_reward(&committee, &sender, &[validator(1)], &parents, 10, &params),
+                0
+            );
         }
-    }
-
-    /// A parent authored by a validator that has left the committee adds no
-    /// breadth — it holds none of the stake the measure is over.
-    #[test]
-    fn a_departed_parent_sender_contributes_no_breadth() {
-        let committee = bonds(&[(1, 500), (2, 500)]);
-        let params = breadth_only_params();
-        let in_committee = compute_reward(&committee, &[parent(1, 9)], 10, &params);
-        let with_departed = compute_reward(&committee, &[parent(1, 9), parent(9, 9)], 10, &params);
-        assert_eq!(in_committee, 750_000, "breadth 1/2, p = 2 → 1 − (1/2)²");
-        assert_eq!(in_committee, with_departed);
-    }
-
-    /// Two parents from the same sender are one share, so breadth cannot be
-    /// inflated past the committee by citing a sender twice.
-    #[test]
-    fn a_repeated_parent_sender_counts_once() {
-        let committee = bonds(&[(1, 500), (2, 500)]);
-        let params = breadth_only_params();
-        let once = compute_reward(&committee, &[parent(1, 9)], 10, &params);
-        let twice = compute_reward(&committee, &[parent(1, 9), parent(1, 8)], 10, &params);
-        assert_eq!(once, twice);
-    }
-
-    /// The base reward is the epoch's emission over its blocks and over the
-    /// committee's members, so a block citing the whole committee earns
-    /// `1_000_000 / 10_000 / 4` at the shipped emission and epoch, and twice
-    /// that with half the members. A member without stake is no member.
-    #[test]
-    fn the_base_reward_is_the_epoch_emission_over_its_blocks_and_members() {
-        let params = RewardParams {
-            epoch_phlogiston: 1_000_000,
-            epoch_length: NonZeroU64::new(10_000).expect("positive"),
-            ..one_a_block(1)
-        };
-        let everyone = |stakes: &[(u8, i64)]| {
-            let committee = bonds(stakes);
-            let parents: Vec<ParentFact> =
-                stakes.iter().map(|(byte, _)| parent(*byte, 9)).collect();
-            compute_reward(&committee, &parents, 10, &params)
-        };
-
-        assert_eq!(
-            everyone(&[(1, 250), (2, 250), (3, 250), (4, 250)]),
-            25 * PPM as u128
-        );
-        assert_eq!(everyone(&[(1, 250), (2, 250)]), 50 * PPM as u128);
-        assert_eq!(
-            everyone(&[(1, 250), (2, 250), (3, 0)]),
-            50 * PPM as u128,
-            "a zero-stake key is not counted"
-        );
-        let committee = bonds(&[(1, 250), (2, 250), (3, 250), (4, 250)]);
-        assert_eq!(
-            compute_reward(&committee, &[parent(1, 9)], 10, &params),
-            5_468_750,
-            "a fraction of a bond unit is kept, not rounded away"
-        );
     }
 
     /// A committee holds each validator once, so a bonds list naming one twice
@@ -286,12 +418,126 @@ mod tests {
             stake: 250,
         };
         let parents = [parent(1, 9), parent(2, 9)];
+        let fresh = [validator(2)];
         let once = committee_of(&[bond(1), bond(2)]);
         let twice = committee_of(&[bond(1), bond(2), bond(2)]);
         assert_eq!(
-            compute_reward(&twice, &parents, 10, &one_a_block(2)),
-            compute_reward(&once, &parents, 10, &one_a_block(2))
+            compute_reward(&twice, &validator(1), &fresh, &parents, 10, &at_rate(630)),
+            compute_reward(&once, &validator(1), &fresh, &parents, 10, &at_rate(630))
         );
+    }
+
+    /// A previous block within reach decides what is new; one beyond it is no
+    /// previous block, so every node, whether it holds that block or not,
+    /// counts every other justified member as new.
+    #[tokio::test]
+    async fn a_previous_block_beyond_reach_is_no_previous_block() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let mut kvm = InMemoryStoreManager::new();
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        let block = |number: i64, sender: u8, justifications: Vec<Justification>| {
+            get_random_block(
+                Some(number),
+                Some(number as i32),
+                None,
+                None,
+                Some(validator(sender)),
+                None,
+                Some(number),
+                Some(Vec::new()),
+                Some(justifications),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                None,
+                Some("test".to_string()),
+                None,
+            )
+        };
+        let genesis = block(0, 0, Vec::new());
+        let w_block = block(1, 2, Vec::new());
+        let previous = block(2, 1, vec![Justification {
+            validator: validator(2),
+            latest_block_hash: w_block.block_hash.clone(),
+        }]);
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert");
+        dag_storage
+            .insert(&w_block, InsertMode::Normal)
+            .expect("insert");
+        dag_storage
+            .insert(&previous, InsertMode::Normal)
+            .expect("insert");
+        let dag = dag_storage.get_representation().expect("dag");
+
+        let same_w = vec![
+            Justification {
+                validator: validator(1),
+                latest_block_hash: previous.block_hash.clone(),
+            },
+            Justification {
+                validator: validator(2),
+                latest_block_hash: w_block.block_hash.clone(),
+            },
+        ];
+        let fresh_at =
+            |number: i64| fresh_in(&dag, &validator(1), &same_w, number, Some(16)).expect("held");
+        assert_eq!(
+            fresh_at(18),
+            Vec::<Validator>::new(),
+            "16 below: nothing new"
+        );
+        assert_eq!(
+            fresh_at(19),
+            vec![validator(2)],
+            "17 below: no previous block"
+        );
+
+        let unheld = vec![Justification {
+            validator: validator(1),
+            latest_block_hash: Bytes::from(vec![0xAB; 32]),
+        }];
+        assert!(
+            matches!(
+                fresh_in(&dag, &validator(1), &unheld, 3, Some(16)),
+                Err(CasperError::BlockNotHeld(..))
+            ),
+            "an unheld previous block is an absence to fetch, not a fault"
+        );
+    }
+
+    /// The members whose justification moved since the sender's previous block
+    /// are fresh; the sender itself never is; with no previous block every
+    /// other justified member is.
+    #[test]
+    fn fresh_validators_are_the_others_whose_latest_block_moved() {
+        let previous = [
+            justification(1, 10),
+            justification(2, 20),
+            justification(3, 30),
+        ];
+        let now = [
+            justification(1, 11),
+            justification(2, 20),
+            justification(3, 31),
+            justification(4, 40),
+        ];
+        assert_eq!(
+            fresh_validators(&validator(1), &now, Some(&previous)),
+            vec![validator(3), validator(4)]
+        );
+        assert_eq!(fresh_validators(&validator(1), &now, None), vec![
+            validator(2),
+            validator(3),
+            validator(4)
+        ]);
     }
 
     /// `f_breadth` by one multiplication per unit of the exponent.
@@ -336,27 +582,38 @@ mod tests {
         }
     }
 
-    /// Two bonds at the largest value genesis permits still form a committee
-    /// whose whole stake a block can cite.
+    /// Two bonds at the largest value genesis permits are credited exactly:
+    /// breadth 1/2 gives 0.75, recency saturates, and 630 ppm × 2 members
+    /// makes the reward 945 ppm of the stake per bond unit's `1 / PPM`.
     #[test]
-    fn a_committee_of_the_largest_bonds_pays_in_full() {
+    fn a_committee_of_the_largest_bonds_is_credited_exactly() {
         let committee = bonds(&[(1, i64::MAX), (2, i64::MAX)]);
-        let everyone = [parent(1, 9), parent(2, 9)];
+        let parents = [parent(1, 9), parent(2, 9)];
         assert_eq!(
-            compute_reward(&committee, &everyone, 10, &one_a_block(2)),
-            PPM as u128
+            compute_reward(
+                &committee,
+                &validator(1),
+                &[validator(2)],
+                &parents,
+                10,
+                &at_rate(630)
+            ),
+            945 * i64::MAX as u128
         );
     }
 
     #[test]
     fn an_empty_committee_earns_nothing() {
-        let params = one_a_block(1);
+        let params = at_rate(630);
         assert_eq!(
-            compute_reward(&Committee::new(), &[parent(1, 9)], 10, &params),
-            0
-        );
-        assert_eq!(
-            compute_reward(&bonds(&[(1, 0)]), &[parent(1, 9)], 10, &params),
+            compute_reward(
+                &Committee::new(),
+                &validator(1),
+                &[],
+                &[parent(1, 9)],
+                10,
+                &params
+            ),
             0
         );
     }
