@@ -1196,7 +1196,7 @@ Findings F38 to F41 and questions 10 to 13 are open.
 ### The gate
 
 Decision 88 lets only two kinds of finding block the handoff:
-- a divergence from design r12 §6.3;
+- a divergence from design r12 §6.3.
 - an authority or safety finding of High severity or worse.
 
 Every other finding goes on the known-issues list that ships with the branch. From this revision on, each finding has a label, **blocking** or **known issue**, and a reason. A-9 reads only against r12 §6.3. A-8 reports only authority and safety findings of High severity or worse as blocking.
@@ -1245,10 +1245,10 @@ The FX-14 follow-ups have not landed. Two items in the current FX-14 differ from
 - **Merges into FX-8b:** revision 12 requirements 1 to 7 and revision 13 requirements 8 to 10.
 - **FX-14 follow-ups:** they close F42 and F43.
 - **FX-15:** A-9 reads it against r12 §6.3. If FX-15 is the Decision 86 work gate, check four things:
-  - each step under t is admitted against the wallet at t, less the block's holds, less what t has drawn;
-  - work stops when that wallet cannot pay;
-  - the close path uses the same gate;
-  - play and replay stop at the same point, by the Q-32 answer.
+  - Each step under t is admitted against the wallet at t, less the block's holds, less what t has drawn.
+  - Work stops when that wallet cannot pay.
+  - The close path uses the same gate.
+  - Play and replay stop at the same point, by the Q-32 answer.
 
 Q-32 goes through the lane C and lane A2 memo, and A-9 reads the answer when it is ruled.
 
@@ -1264,7 +1264,7 @@ Q-32 goes through the lane C and lane A2 memo, and A-9 reads the answer when it 
 7. **F27:** answered on 2026-11-02 (Decision 63). Should the deployer's signed message name the required cosigner keys, so that a relay cannot strip cosignatures from an envelope without changing its identity?
 8. **F31:** answered on 2026-11-02 (Decision 64). Until region metering, should a draw whose writer is a `Process` owner be refused, or journaled as pro-rata share draws?
 9. **Q-31 / D76:** answered on 2026-11-03 (Decision 80: the same owner and the same origin). For Decision 76, does "surfaces under one seal" mean one owner, or one owner at one origin envelope and price?
-10. **D79 decision 5:** answered on 2026-11-03 (Decision 85: two cells, both charged to the client). a side with no record and the client's own record are two keys, so a COMM between the client's send and genesis code counts two cells. Is one cell the intent of Decision 80 for this case?
-11. **F40:** answered on 2026-11-03 (Decision 86: work under the membrane stops). when a funded stored receive fires a continuation whose work costs more than its purse holds, who pays the shortfall?
-12. **F39 and F33:** answered on 2026-11-03 (Decision 83: the wallet at the seal pays). is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
-13. **D8b:** is the close-block system deploy exempt from the one-cell charge of r11 §6.3, or must a COMM that the close fires pay its cells?
+10. **D79 decision 5:** answered on 2026-11-03 (Decision 85: two cells, both charged to the client). A side with no record and the client's own record are two keys, so a COMM between the client's send and genesis code counts two cells. Is one cell the intent of Decision 80 for this case?
+11. **F40:** answered on 2026-11-03 (Decision 86: work under the membrane stops). When a funded stored receive fires a continuation whose work costs more than its purse holds, who pays the shortfall?
+12. **F39 and F33:** answered on 2026-11-03 (Decision 83: the wallet at the seal pays). Is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
+13. **D8b:** is the close-block system deploy exempt from the one-cell charge of r12 §6.3, or must a COMM that the close fires pay its cells?
