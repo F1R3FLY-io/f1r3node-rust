@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -721,6 +721,63 @@ Revisions 5 and 6 are accepted.
 | FX-8 merge requirements (revision 5) | Sent to lane A2 as part of FX-8b. | FX-8b | A2 |
 
 A-8 re-audits FX-11 and the FX-8b merge commit when each lands. For FX-11, it checks that a native draw with no record returns no authority, and that every v6 genesis contract is tested with records on. For FX-8b, it checks that native draws are refused under the data mark on the routes of revision 6.
+
+## Revision 7 (action A-8): re-audit of the FX-8b merge
+
+- **Branch audited:** `patch/FX-8b` (lane A2, cut from `patch/FX-8`).
+  - Merges at `54f1df370` (FX-7), `0dd022adb` (FX-6 at `ead0663ef`), `e9c51c403` (FX-2-refunds), `b5f14ec20` (FX-9), `c79e8b32a` (FX-10) and `12436b644` (P3-01).
+  - Post-merge fixes at `13e0abd85`.
+  - Suite results at `1c281b7a0`.
+- **Method:**
+  - A code reading of the merged functions at the tip, against the merge requirements of revision 5.
+  - A reading of the native-draw route tests against the routes of revision 6.
+  - No tests were run. Lane A2's log reports the named spec files and the full suites passing at `13e0abd85`.
+- **Not in scope:** route coverage (Decision 67). FX-11 is not merged yet. Lane A2's log plans it as the last merge.
+
+### Merge requirements of revision 5
+
+| # | Requirement | Result |
+|---|---|---|
+| 1 | F30: the hash seal first, on the substituted closed process, then the origin's signers | **Holds.** `check_region_signature` at the tip substitutes the signature once. It checks each `# Q` with `hash_seal_admissible` on the substituted body, and only then checks the other components against `region_signers` (with FX-6's data refusal) by `held_or_signed`. FX-8b decision 2. |
+| 2 | FX-2's `Origin.signers` from FX-3's `verified_cosigners` | **Holds.** `deployment_record` builds the origin from `deploy_data.deployer_id` and `deploy_data.cosigners`. `DeployData::from_deploy` fills `cosigners` with `Cosignature::verified_cosigners(envelope)`, which gives the named cosigners in the deployer's order. If a named cosigner is missing, the field is empty. Such an envelope does not decode and is refused at the gate (FX-3 decision 9), so play and replay do not meet it. |
+| 3 | Native draws refused under the data mark | **Holds.** Under a `from_data` record:<ul><li>`rho:rev:wallet` refuses every command except its reads (`find`, `balance`, `kindBalance`, `grantBalance`, `share`), so `spendCompute` and `replaceHook` are refused too.</li><li>`rho:rev:bond` refuses every command except `balance`.</li><li>`rho:rev:bondAdmin` refuses every command (FX-8b decision 5).</li></ul>The refusal comes before `wallet_authority` is read. |
+| 4 | The F32 fix in the same place | **Not on this branch.** `wallet_authority` still returns the deploy's signers when there is no record (F32). The fix is FX-11 (Decision 70), which lane A2 merges last. |
+| 5 | The data mark kept on refund records | **Holds.** The storage rule keeps the whole `SealRecord`, with `from_data`, for each item. `storage_rule::tests::a_refund_record_keeps_the_mark_of_data_received_at_run_time` tests this. |
+| 6 | The named spec files run on the merged code | **Reported** by lane A2 at `13e0abd85`: `seal_record_spec` 21, `seal_wiring_spec` 7, `hash_seal_spec` 11, `rev_bond_spec`, `rev_genesis_spec`, `signed_region_spec`, `slot_spec`, `storage_left_in_space_spec`, and casper `region_spec` and `gated_executor_spec`. |
+
+### Native draws on the routes of revision 6
+
+`seal_record_spec`'s `route` helper now sends two more payloads along each of the eleven routes:
+- A `rho:rev:wallet` transfer from Alice to Bob, named by Alice's deployer id.
+- A `rho:rev:bond` bond of Alice's funds.
+
+For both, the helper asserts that the native call answered with a refusal (`(false, _)` on its reply channel). As in revision 6, it also asserts that Alice's, Bob's and the slot's balances are unchanged.
+
+By reading, each of the eleven tests fails if FX-9's refusal is removed. The payload runs in code that Alice stored, under Alice's record with the mark. Without the refusal, `wallet_authority` returns Alice's record owner. The transfer or bond is then admitted, Alice's balance changes, and the reply is `(true, _)`. Lane A2 reports the same result by switching the check off.
+
+`seal_wiring_spec::a_bond_admin_call_inside_data_received_at_run_time_moves_nothing` covers `rho:rev:bondAdmin` under the mark, and the same call in the holder's own code still slashes.
+
+**Result:** native draws are refused under the mark on all eleven routes, with tests from the fixing lanes.
+
+### Other merge decisions read
+
+- **FX-8b decision 1:** FX-5's envelope classification is kept, and FX-7's bare-stack flag is added to each case. An unnormalized term still names nothing, and the deployer alone pays.
+- **FX-8b decision 3 and the post-merge fixes:** the FX-3 and FX-7 tests now use FX-3's cosignature API. Draws on a cosigner's wallet sit inside `{% … %}[c]`, as F6's ruling requires.
+- **FX-8b decision 4:** the storage files take the refunds side.
+- **Removed test:** FX-8's own records-on F20 test was dropped because FX-7 decision 6 admits an author-bound `deployerId` in `# P`. FX-7's `a_hash_sealed_region_may_not_read_the_running_deployment` covers the current rule with records on, so no coverage is lost.
+- **Fixture:** the cross-host fixture is written again, because FX-7 and FX-10 change the v6 genesis contracts.
+
+### Note (no severity)
+
+The refusal message that all three native handlers return under the mark is the stack message: "a stack inside data received at run time draws on no wallet". For a native transfer, bond, release or slash, the text names the wrong operation. Lane B can give the native handlers their own message. No test depends on the wording.
+
+### Open after FX-8b
+
+- **F32:** FX-11 (lane B, Decision 70). A-8 checks two things:
+  - A native draw with no record returns no authority.
+  - Every v6 genesis contract that calls `rho:rev:wallet` or `rho:rev:bond` is tested with records on.
+- **The FX-8b commit that merges FX-11:** A-8 re-audits it.
+- **F33:** deferred (lane C).
 
 ## Open questions for review
 
