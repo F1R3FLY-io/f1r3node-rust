@@ -188,6 +188,55 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn pending_descendant_selects_deepest_matching_sender() {
+    let fixture = Fixture::new().await;
+    let grandchild_hash = BlockHash::from(vec![5; 32]);
+    fixture
+        .dependencies
+        .casper_buffer
+        .add_relation(
+            BlockHashSerde(fixture.child.clone()),
+            BlockHashSerde(grandchild_hash.clone()),
+        )
+        .unwrap();
+
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+    let mut child = get_random_block_default();
+    child.block_hash = fixture.child.clone();
+    child.sender = parent.sender.clone();
+    let mut grandchild = get_random_block_default();
+    grandchild.block_hash = grandchild_hash.clone();
+    grandchild.sender = parent.sender.clone();
+    assert_eq!(
+        fixture
+            .dependencies
+            .block_store
+            .put_pending_as(&child, PendingClass::Solicited)
+            .unwrap()
+            .status,
+        PendingInsert::Accepted
+    );
+    assert_eq!(
+        fixture
+            .dependencies
+            .block_store
+            .put_pending_as(&grandchild, PendingClass::Solicited)
+            .unwrap()
+            .status,
+        PendingInsert::Accepted
+    );
+
+    assert_eq!(
+        fixture
+            .dependencies
+            .pending_descendant(&parent)
+            .map(|block| block.block_hash),
+        Some(grandchild_hash)
+    );
+}
+
+#[tokio::test]
 async fn deferred_dependency_free_block_is_requested_after_parent_validation() {
     let fixture = Fixture::new().await;
     fixture

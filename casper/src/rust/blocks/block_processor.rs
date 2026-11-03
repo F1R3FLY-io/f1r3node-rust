@@ -1340,6 +1340,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         let mut queue = VecDeque::from([block.block_hash.clone()]);
         let mut seen = HashSet::new();
         let mut candidate = None;
+        let pending = self.block_store.pending_blocks();
         while let Some(parent) = queue.pop_front() {
             for child in self
                 .casper_buffer
@@ -1350,15 +1351,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 if !seen.insert(child.0.clone()) {
                     continue;
                 }
-                if let Some(pending) = self.block_store.pending_blocks().get(&child.0) {
-                    if pending.sender == block.sender {
-                        candidate = Some(pending);
-                    }
+                if pending
+                    .sender_of(&child.0)
+                    .is_some_and(|sender| sender == block.sender)
+                {
+                    candidate = Some(child.0.clone());
                 }
                 queue.push_back(child.0);
             }
         }
-        candidate
+        candidate.and_then(|hash| pending.get(&hash))
     }
 
     pub async fn release_evicted_pending(&self, evicted: &[BlockHash]) -> Result<(), CasperError> {

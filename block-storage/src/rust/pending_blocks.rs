@@ -340,6 +340,11 @@ impl PendingBlocks {
         decode(&encoded)
     }
 
+    pub fn sender_of(&self, hash: &BlockHash) -> Option<Bytes> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.entries.get(hash).map(|entry| entry.sender.clone())
+    }
+
     pub fn contains(&self, hash: &BlockHash) -> bool {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.entries.contains_key(hash)
