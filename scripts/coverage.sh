@@ -2,13 +2,13 @@
 # Measure per-crate line coverage with cargo-llvm-cov and nextest.
 #
 # Usage: scripts/coverage.sh [crate ...]
-# With no arguments it measures every crate in the ci.yml coverage matrix.
-# Results land in target/coverage/: one coverage-<crate>.json and one
-# coverage-<crate>.lcov per crate, followed by the rendered summary table.
+# With no arguments it measures every crate that the ci.yml test jobs measure.
+# Results land in target/coverage/: one coverage-<crate>.lcov per crate,
+# followed by the rendered summary table.
 #
 # Requires cargo-llvm-cov (cargo install cargo-llvm-cov --locked) and the
-# llvm-tools-preview component. nextest is reused; doctests are not
-# instrumented, same as the CI test matrix.
+# llvm-tools-preview component. Doctests do not count toward coverage, same as
+# the CI test jobs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -35,7 +35,7 @@ fi
 #    live server processes, reachable only from a booted node, which the
 #    integration suites in system-integration cover. heartbeat_proposer.rs
 #    stays measured — it is logic, not wiring, and its unit tests prove it.
-# Must stay identical to the regex in ci.yml's "Measure coverage" step.
+# Must stay identical to the regex in .github/scripts/run-crate-tests.sh.
 ignore_regex='(/test_utils/|block-storage/src/rust/test/|node/src/main\.rs|node/src/rust/runtime/|node/src/rust/instances/(block_processor_instance|proposer_instance)\.rs)'
 
 out="target/coverage"
@@ -46,9 +46,6 @@ for crate in "${crates[@]}"; do
 	echo "=== $crate ==="
 	cargo llvm-cov clean
 	cargo llvm-cov nextest --release -p "$crate" --no-tests=pass
-	cargo llvm-cov report --release -p "$crate" \
-		--ignore-filename-regex "$ignore_regex" \
-		--json --summary-only --output-path "$out/coverage-$crate.json"
 	cargo llvm-cov report --release -p "$crate" \
 		--ignore-filename-regex "$ignore_regex" \
 		--lcov --output-path "$out/coverage-$crate.lcov"
