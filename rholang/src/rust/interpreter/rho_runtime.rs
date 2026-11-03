@@ -426,6 +426,15 @@ impl RhoRuntimeImpl {
             .store(recorded, std::sync::atomic::Ordering::Relaxed);
     }
 
+    pub fn set_funding(
+        &self,
+        funding: Option<Arc<dyn crate::rust::interpreter::accounting::rev_stack::seal::Funding>>,
+    ) {
+        if let Ok(mut slot) = self.reducer.funding.lock() {
+            *slot = funding;
+        }
+    }
+
     pub fn seal_records(&self) -> bool {
         self.reducer
             .seal_records
@@ -1664,6 +1673,7 @@ async fn setup_reducer(
         genesis_phase: urn_phase.genesis.clone(),
         deploy_data: deploy_data_ref,
         seal_records: urn_phase.seal_records.clone(),
+        funding: Arc::new(std::sync::Mutex::new(None)),
     });
 
     reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

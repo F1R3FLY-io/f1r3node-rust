@@ -148,6 +148,7 @@ fn datum(channel: &Par, pars: Vec<Par>) -> Datum<ListParWithRandom> {
     let a = ListParWithRandom {
         pars,
         random_state: Vec::new(),
+        seal: None,
     };
     let source = Produce::create(channel, &a, false);
     Datum {

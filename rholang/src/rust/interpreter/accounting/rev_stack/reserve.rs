@@ -69,6 +69,7 @@ pub fn set_reservation(
             )),
         ))],
         random_state: Vec::new(),
+        seal: None,
     };
     let source = Produce::create(&channel, &a, false);
     store.put_datum(

@@ -218,6 +218,7 @@ fn write_single(
             RhoByteArray::create_par(value.encode_to_vec()),
         ))],
         random_state: Vec::new(),
+        seal: None,
     };
     let source = Produce::create(channel, &a, false);
     store.put_datum(

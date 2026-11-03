@@ -300,6 +300,7 @@ pub struct DebruijnInterpreter {
     pub genesis_phase: Arc<std::sync::atomic::AtomicBool>,
     pub deploy_data: Arc<RwLock<DeployData>>,
     pub seal_records: Arc<std::sync::atomic::AtomicBool>,
+    pub funding: Arc<std::sync::Mutex<Option<Arc<dyn seal::Funding>>>>,
 }
 
 type Application = Option<(
@@ -516,11 +517,12 @@ impl DebruijnInterpreter {
         let env = Env::new();
 
         let record = self.deployment_record().await;
+        let funding = self.funding.lock().map(|f| f.clone()).unwrap_or(None);
         let mut errors: Vec<InterpreterError> = Vec::new();
         if let Err(err) = DEFERRED_DISPATCHES
             .scope(
                 scope.clone(),
-                seal::within(record, self.eval(par, &env, rand)),
+                seal::funded_by(funding, seal::within(record, self.eval(par, &env, rand))),
             )
             .await
         {
@@ -553,11 +555,11 @@ impl DebruijnInterpreter {
         let reducer = self.clone();
         let handle = AbortOnDrop(tokio::spawn(DEFERRED_DISPATCHES.scope(
             scope.clone(),
-            async move {
+            seal::keep_funding(async move {
                 reducer
                     .dispatch(continuation, data_list, is_replay, previous_output)
                     .await
-            },
+            }),
         )));
         scope.push(handle);
     }
@@ -1330,6 +1332,7 @@ impl DebruijnInterpreter {
             ListParWithRandom {
                 pars: subst_data,
                 random_state: rand.to_bytes(),
+                seal: self.stored_seal(),
             },
             send.persistent,
         )
@@ -8052,6 +8055,7 @@ impl DebruijnInterpreter {
             genesis_phase: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             deploy_data: Arc::new(RwLock::new(DeployData::empty())),
             seal_records: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            funding: Arc::new(std::sync::Mutex::new(None)),
         });
 
         reducer_cell.set(Arc::downgrade(&reducer)).ok().unwrap();

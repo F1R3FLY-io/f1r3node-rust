@@ -6,8 +6,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::rhoapi::tagged_continuation::TaggedCont;
 use crate::rhoapi::{
-    Bundle, Connective, CostSignature, CostSignedTerm, CostStack, Expr, GUnforgeable, If, Match,
-    New, Par, Receive, ReceiveBind, SealRecordProto, Send, TaggedContinuation, Var,
+    Bundle, Connective, CostSignature, CostSignedTerm, CostStack, Expr, GUnforgeable, If,
+    ListParWithRandom, Match, New, Par, Receive, ReceiveBind, SealRecordProto, Send,
+    TaggedContinuation, Var,
 };
 
 const CONNECTIVE_USED: u8 = 1;
@@ -16,6 +17,7 @@ const REMAINDER_PRESENT: u8 = 1;
 const BIND_EXTENSION: u8 = 2;
 const GUARD_PRESENT: u8 = 1;
 const SEAL_PRESENT: u8 = 2;
+const DATUM_SEALED: u64 = 1 << 63;
 
 struct EmptyBytes;
 
@@ -360,6 +362,92 @@ impl<'de> Deserialize<'de> for TaggedContinuation {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "ListParWithRandom")]
+struct ListParWithRandomFields {
+    pars: Vec<Par>,
+    random_state: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seal: Option<SealRecordProto>,
+}
+
+impl Serialize for ListParWithRandom {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            return ListParWithRandomFields {
+                pars: self.pars.clone(),
+                random_state: self.random_state.clone(),
+                seal: self.seal.clone(),
+            }
+            .serialize(serializer);
+        }
+        let mut header = self.random_state.len() as u64;
+        if header & DATUM_SEALED != 0 {
+            return Err(serde::ser::Error::custom(
+                "a random state too long to encode",
+            ));
+        }
+        if self.seal.is_some() {
+            header |= DATUM_SEALED;
+        }
+        let mut tuple = serializer.serialize_tuple(3 + self.random_state.len())?;
+        tuple.serialize_element(&self.pars)?;
+        tuple.serialize_element(&header)?;
+        for byte in &self.random_state {
+            tuple.serialize_element(byte)?;
+        }
+        if let Some(seal) = &self.seal {
+            tuple.serialize_element(seal)?;
+        }
+        tuple.end()
+    }
+}
+
+struct BinaryListParWithRandom;
+
+impl<'de> Visitor<'de> for BinaryListParWithRandom {
+    type Value = ListParWithRandom;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a binary ListParWithRandom")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<ListParWithRandom, A::Error> {
+        let pars = next(&mut seq, 0)?;
+        let header: u64 = next(&mut seq, 1)?;
+        let len = header & !DATUM_SEALED;
+        let mut random_state = Vec::with_capacity(len.min(1024) as usize);
+        for i in 0..len {
+            random_state.push(next(&mut seq, 2 + i as usize)?);
+        }
+        let seal = if header & DATUM_SEALED != 0 {
+            Some(next(&mut seq, 2 + len as usize)?)
+        } else {
+            None
+        };
+        Ok(ListParWithRandom {
+            pars,
+            random_state,
+            seal,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ListParWithRandom {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            let f = ListParWithRandomFields::deserialize(deserializer)?;
+            Ok(ListParWithRandom {
+                pars: f.pars,
+                random_state: f.random_state,
+                seal: f.seal,
+            })
+        } else {
+            deserializer.deserialize_tuple(usize::MAX, BinaryListParWithRandom)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -450,6 +538,84 @@ mod tests {
         let mut bytes = bincode::serialize(&continuation(None, None)).unwrap();
         bytes[0] = 4;
         assert!(bincode::deserialize::<TaggedContinuation>(&bytes).is_err());
+    }
+
+    #[derive(Serialize)]
+    struct LegacyListParWithRandom {
+        pars: Vec<Par>,
+        random_state: Vec<u8>,
+    }
+
+    fn datum(seal: Option<SealRecordProto>) -> ListParWithRandom {
+        ListParWithRandom {
+            pars: vec![small(1), small(2)],
+            random_state: vec![5; 128],
+            seal,
+        }
+    }
+
+    fn a_seal() -> SealRecordProto {
+        SealRecordProto {
+            owner: vec![2; 33],
+            kind: 1,
+            origin: Some(crate::rhoapi::SealOrigin {
+                envelope: vec![9; 64],
+                signers: vec![vec![1; 33]],
+                phlo_price: 7,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_datum_without_a_seal_keeps_the_legacy_bytes() {
+        use bincode::Options;
+        let d = datum(None);
+        let legacy = LegacyListParWithRandom {
+            pars: d.pars.clone(),
+            random_state: d.random_state.clone(),
+        };
+        assert_eq!(
+            bincode::serialize(&d).unwrap(),
+            bincode::serialize(&legacy).unwrap()
+        );
+        let varint = bincode::DefaultOptions::new();
+        assert_eq!(
+            varint.serialize(&d).unwrap(),
+            varint.serialize(&legacy).unwrap()
+        );
+        let followed = (d.clone(), 7u32);
+        let back: (ListParWithRandom, u32) =
+            bincode::deserialize(&bincode::serialize(&followed).unwrap()).unwrap();
+        assert_eq!(back, followed);
+        let back: (ListParWithRandom, u32) = varint
+            .deserialize(&varint.serialize(&followed).unwrap())
+            .unwrap();
+        assert_eq!(back, followed);
+    }
+
+    #[test]
+    fn a_sealed_datum_round_trips_and_differs_from_the_unsealed_one() {
+        use bincode::Options;
+        let sealed = datum(Some(a_seal()));
+        let followed = (sealed.clone(), 7u32);
+        let back: (ListParWithRandom, u32) =
+            bincode::deserialize(&bincode::serialize(&followed).unwrap()).unwrap();
+        assert_eq!(back, followed);
+        let varint = bincode::DefaultOptions::new();
+        let back: (ListParWithRandom, u32) = varint
+            .deserialize(&varint.serialize(&followed).unwrap())
+            .unwrap();
+        assert_eq!(back, followed);
+        assert_ne!(sealed, datum(None));
+        assert_ne!(
+            bincode::serialize(&sealed).unwrap(),
+            bincode::serialize(&datum(None)).unwrap()
+        );
+        let json: ListParWithRandom =
+            serde_json::from_str(&serde_json::to_string(&sealed).unwrap()).unwrap();
+        assert_eq!(json, sealed);
+        let json = serde_json::to_string(&datum(None)).unwrap();
+        assert!(!json.contains("seal"));
     }
 
     #[derive(Serialize)]

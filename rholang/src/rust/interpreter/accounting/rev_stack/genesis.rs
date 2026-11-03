@@ -241,6 +241,7 @@ fn make_supply_datum(channel: &Par, amount: RevAmount) -> Datum<ListParWithRando
             RhoNumber::create_par(amount as i64),
         ))],
         random_state: Vec::new(),
+        seal: None,
     };
     let source = Produce::create(channel, &a, false);
     Datum {

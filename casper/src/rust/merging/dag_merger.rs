@@ -2316,6 +2316,7 @@ mod tests {
         let par_with_rnd = ListParWithRandom {
             pars: vec![RhoNumber::create_par(num)],
             random_state: rnd.to_bytes(),
+            seal: None,
         };
         let data_hash =
             stable_hash_provider::hash_produce(channel_hash.bytes(), &par_with_rnd, false);

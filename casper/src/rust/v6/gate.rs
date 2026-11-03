@@ -301,6 +301,10 @@ pub struct CommitmentTable {
 }
 
 impl CommitmentTable {
+    pub fn from_committed(committed: BTreeMap<WalletId, RevAmount>) -> Self {
+        CommitmentTable { committed }
+    }
+
     pub fn committed(&self, wallet: &[u8]) -> RevAmount {
         self.committed.get(wallet).copied().unwrap_or(0)
     }

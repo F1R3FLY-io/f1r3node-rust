@@ -1271,9 +1271,17 @@ async fn an_expired_grant_returns_its_funders_shares_in_play_and_replay() {
         .collect();
     returned.sort();
     assert_eq!(returned, vec![(true, 750), (true, 2_250)]);
+    let peeked = late
+        .settlement
+        .surface_charges
+        .iter()
+        .filter(|c| c.purse == sponsor.owner)
+        .map(|c| c.drawn)
+        .sum::<u64>();
+    assert_eq!(peeked, 1);
     assert_eq!(
         balance(&rm, &late.settled_root, &sponsor).await,
-        balance(&rm, &third.settled_root, &sponsor).await + 2_250
+        balance(&rm, &third.settled_root, &sponsor).await + 2_250 - peeked
     );
     assert_eq!(
         balance(&rm, &late.settled_root, &carol).await,

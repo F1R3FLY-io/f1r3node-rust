@@ -69,6 +69,7 @@ impl ContractCall {
                             ListParWithRandom {
                                 pars: values_vec,
                                 random_state: rand,
+                                seal: None,
                             },
                             false,
                         )

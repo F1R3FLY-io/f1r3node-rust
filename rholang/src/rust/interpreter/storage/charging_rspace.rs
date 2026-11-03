@@ -19,6 +19,7 @@ use rspace_plus_plus::rspace::trace::Log;
 use rspace_plus_plus::rspace::util::unpack_option;
 
 use crate::rust::interpreter::accounting::_cost;
+use crate::rust::interpreter::accounting::comm_ledger::comm_cells;
 use crate::rust::interpreter::accounting::rev_stack::seal;
 use crate::rust::interpreter::accounting::costs::{
     comm_event_storage_cost, event_storage_cost, storage_cost_consume, storage_cost_produce, Cost,
@@ -134,12 +135,13 @@ impl ChargingRSpace {
                     if !restored {
                         self.cost.charge(produce_storage.clone())?;
                     }
+                    with_rule(&self.cost, |rule| rule.announce_datum(&id, seal::current()));
                     let produce_res = self.space.produce(channel, data, persist).await?;
                     match produce_res.as_ref() {
                         Some((cont, data_list, _)) => left_in_space_match(
                             cont,
                             data_list,
-                            &Trigger::Produce { id, restored },
+                            &Trigger::Produce { id: id.clone(), restored },
                             &self.cost,
                         )?,
                         None if !restored => match with_rule(&self.cost, |rule| rule.left_datum(&id, seal::current())) {
@@ -148,6 +150,7 @@ impl ChargingRSpace {
                         },
                         None => {}
                     }
+                    with_rule(&self.cost, |rule| rule.withdraw_announcement(&id));
                     return Ok(produce_res);
                 }
 
@@ -412,6 +415,26 @@ fn left_in_space_match(
     trigger: &Trigger,
     cost: &_cost,
 ) -> Result<(), InterpreterError> {
+    let receive = seal::of_continuation(&cont.continuation).ok().flatten();
+    let sends: Vec<Option<seal::SealRecord>> = data_list
+        .iter()
+        .map(|data| {
+            let id = &data.removed_datum.random_state;
+            match trigger {
+                Trigger::Produce { id: trigger_id, .. } if id == trigger_id => seal::current(),
+                _ => match data
+                    .removed_datum
+                    .seal
+                    .as_ref()
+                    .map(seal::SealRecord::from_proto)
+                {
+                    Some(Ok(record)) => Some(record),
+                    _ => with_rule(cost, |rule| rule.datum_payer(id)).flatten(),
+                },
+            }
+        })
+        .collect();
+    let surfaces = comm_cells(receive.as_ref(), sends.iter().map(Option::as_ref));
     let consume_storage = storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
     match trigger {
         Trigger::Consume => refund(cost, consume_storage.value, "consume storage refund")?,
@@ -450,6 +473,6 @@ fn left_in_space_match(
     }
     refund(cost, produce_refund, "produces storage refund")?;
 
-    cost.record_comm();
+    cost.comm_ledger().on_comm_between(surfaces);
     Ok(())
 }

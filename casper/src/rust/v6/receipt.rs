@@ -65,6 +65,7 @@ mod tests {
                 compute_phlo: compute,
                 user_log: Vec::new(),
                 footprint: Default::default(),
+                surfaces: Vec::new(),
             },
         }
     }

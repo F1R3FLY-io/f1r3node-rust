@@ -62,6 +62,7 @@ fn write(store: &dyn CellStore, process: &WalletOwner, shares: &Shares) -> Resul
                 RhoNumber::create_par(amount as i64),
             ))],
             random_state: Vec::new(),
+            seal: None,
         };
         let source = Produce::create(&channel, &a, false);
         store.put_datum(
