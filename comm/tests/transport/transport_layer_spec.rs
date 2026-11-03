@@ -275,7 +275,11 @@ async fn sending_empty_message_should_work() {
         .run_two_nodes_test(
             |transport, local, remote| async move {
                 // Create a protocol message with minimal content
-                let msg = comm::rust::rp::protocol_helper::heartbeat(&local, "empty_msg_test");
+                let msg = comm::rust::rp::protocol_helper::heartbeat(
+                    &local,
+                    "empty_msg_test",
+                    Bytes::new(),
+                );
                 transport.send(&remote, &msg).await
             },
             Some(protocol_dispatcher.clone()),
@@ -394,6 +398,7 @@ async fn concurrent_sends_to_same_peer_should_all_succeed() {
                             let msg = comm::rust::rp::protocol_helper::packet(
                                 local,
                                 "concurrent_test",
+                                Bytes::new(),
                                 packet,
                             );
                             transport
@@ -563,7 +568,11 @@ async fn mixed_sends_and_streams_should_all_work() {
             |transport, local, remote| async move {
                 // Mix of sends and streams executed concurrently
                 let send_future = async {
-                    let msg = comm::rust::rp::protocol_helper::heartbeat(&local, "mixed_test");
+                    let msg = comm::rust::rp::protocol_helper::heartbeat(
+                        &local,
+                        "mixed_test",
+                        Bytes::new(),
+                    );
                     transport
                         .send(&remote, &msg)
                         .await
@@ -673,6 +682,110 @@ async fn streaming_to_empty_peer_list_should_succeed() {
     assert!(result.result.is_ok());
 }
 
+#[tokio::test]
+async fn handshake_from_another_chain_is_refused_before_it_is_acknowledged() {
+    init_logger();
+
+    let our_chain = Bytes::from_static(b"genesis-of-this-chain");
+    let runtime =
+        TransportLayerTestRuntime::new("test".to_string()).with_server_chain_id(our_chain.clone());
+    let protocol_dispatcher = TestProtocolDispatcher::new();
+
+    let result = runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                let handshake = |chain_id: Bytes| {
+                    comm::rust::rp::protocol_helper::protocol_handshake(&local, "test", chain_id)
+                };
+                (
+                    transport
+                        .send(
+                            &remote,
+                            &handshake(Bytes::from_static(b"genesis-of-old-chain")),
+                        )
+                        .await,
+                    transport.send(&remote, &handshake(our_chain)).await,
+                    transport.send(&remote, &handshake(Bytes::new())).await,
+                )
+            },
+            Some(protocol_dispatcher.clone()),
+            None,
+            false,
+        )
+        .await
+        .expect("Test should succeed");
+
+    let (foreign, same, unnamed) = result.result;
+    assert!(
+        matches!(
+            foreign,
+            Err(comm::rust::errors::CommError::WrongChainId(..))
+        ),
+        "a handshake from another chain must fail at the sender, got {:?}",
+        foreign
+    );
+    assert!(
+        same.is_ok(),
+        "a handshake from this chain must pass: {:?}",
+        same
+    );
+    assert!(
+        unnamed.is_ok(),
+        "a handshake that names no chain is a pull and must pass: {:?}",
+        unnamed
+    );
+    assert_eq!(
+        protocol_dispatcher.received().len(),
+        2,
+        "the refused handshake must not reach the message handler"
+    );
+}
+
+#[tokio::test]
+async fn stream_of_a_push_that_names_no_chain_is_refused_and_a_pull_is_delivered() {
+    init_logger();
+
+    let runtime = TransportLayerTestRuntime::new("test".to_string())
+        .with_server_chain_id(Bytes::from_static(b"genesis-of-this-chain"));
+    let stream_dispatcher = TestStreamDispatcher::new();
+    let content = create_big_content(runtime.max_message_size);
+
+    let result = runtime
+        .run_two_nodes_test(
+            |transport, local, remote| async move {
+                let blob = |type_id: &str| Blob {
+                    sender: local.clone(),
+                    packet: Packet {
+                        type_id: type_id.to_string(),
+                        content: content.clone(),
+                    },
+                };
+                (
+                    transport.stream(&remote, &blob("BlockMessage")).await,
+                    transport.stream(&remote, &blob("BlockRequest")).await,
+                )
+            },
+            None,
+            Some(stream_dispatcher.clone()),
+            true,
+        )
+        .await
+        .expect("Test should succeed");
+
+    let (push, pull) = result.result;
+    assert!(push.is_ok() && pull.is_ok(), "both streams are enqueued");
+    let received: Vec<String> = stream_dispatcher
+        .received()
+        .into_iter()
+        .map(|(_, blob)| blob.packet.type_id)
+        .collect();
+    assert_eq!(
+        received,
+        vec!["BlockRequest".to_string()],
+        "a push that names no chain must not reach the stream handler"
+    );
+}
+
 #[derive(Clone)]
 struct SingleConnection {
     connector: comm::rust::transport::f1r3fly_connector::F1r3flyConnector,
@@ -748,6 +861,7 @@ async fn stream_with_spoofed_sender_should_close_the_connection() {
         protocol: Some(comm::rust::rp::protocol_helper::heartbeat(
             &local.peer,
             "test",
+            Bytes::new(),
         )),
     };
 
@@ -767,6 +881,7 @@ async fn stream_with_spoofed_sender_should_close_the_connection() {
     };
     let chunks = comm::rust::transport::chunker::Chunker::chunk_it(
         "test",
+        Bytes::new(),
         &spoofed,
         runtime.max_message_size as usize,
     );
