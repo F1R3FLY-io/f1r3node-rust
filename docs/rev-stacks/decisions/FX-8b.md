@@ -76,3 +76,24 @@ The PoSV6 tests and the cross-host fixture merged with no textual conflict, and 
 - casper lib: 847 passed, 0 failed.
 - casper `--test mod`: 1,250 passed, 0 failed, 19 ignored.
 - node: 466 passed, 0 failed.
+
+## FX-13 (2026-11-03, plan r8.10)
+
+FX-13 (ecd2b0169, Decision 77) merged at e17e3ed32. Decision 77 removes the `from_data` mark. One conflict, in `system_processes.rs`:
+
+- FX-11's refusals under the old mark are dropped: `received_refusal`, `received_at_run_time` and the `rho:rev:bondAdmin` check.
+- The no-record rule in `wallet_authority` stays (Decision 70). A command with no seal record, when records are on, has no wallet authority.
+
+The other files merged with no textual conflict. FX-13's versions of `seal_record_spec` and `seal_wiring_spec` are kept.
+
+| Decision | Alternatives | Reason | Reversible |
+|---|---|---|---|
+| Keep FX-13's spec files over FX-11's mark tests | Keep both | The mark does not exist after Decision 77, so FX-11's mark tests have no subject | Yes |
+
+## Verification of the tip (e17e3ed32, `/tmp` cleared before the run)
+
+- rholang lib: 1,446 passed, 0 failed. One test less than at c41ccb87b: FX-13 removes `a_refund_record_keeps_the_mark_of_data_received_at_run_time` in `storage_rule.rs`.
+- rspace_plus_plus: 421 passed, 0 failed.
+- casper lib: 847 passed, 0 failed.
+- casper `--test mod`: 1,250 passed, 0 failed, 19 ignored.
+- node: 466 passed, 0 failed.
