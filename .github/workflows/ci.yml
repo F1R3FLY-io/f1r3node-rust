@@ -228,11 +228,13 @@ jobs:
           # An API error falls back to the labels of the event.
           pull_request_has_heavy_label() {
             local current
-            [ "$PR_HAS_HEAVY_LABEL" = true ] && return 0
-            [[ "${PR_NUMBER:-}" =~ ^[1-9][0-9]*$ ]] || return 1
-            current="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
-              --jq 'any(.labels[]; .name == "ci-heavy")')" || return 1
-            [ "$current" = true ]
+            if [[ "${PR_NUMBER:-}" =~ ^[1-9][0-9]*$ ]] &&
+              current="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+                --jq 'any(.labels[]; .name == "ci-heavy")')"; then
+              [ "$current" = true ]
+              return
+            fi
+            [ "$PR_HAS_HEAVY_LABEL" = true ]
           }
 
           # Heavy (OCI) runs for: merge_group, dev/master/tag push, dispatch
@@ -307,7 +309,7 @@ jobs:
           git fetch origin --tags --force
 
           # Version from latest matching tag (falls back to short SHA if no tag yet)
-          VERSION="$(git describe --tags --always)"
+          VERSION="$(git describe --tags --always --exclude '*/*')"
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
           # Derive BRANCH for image tag suffix logic downstream
@@ -635,6 +637,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ephemeral-run-tagging.sh
 
+      - name: Verify casper crash backtraces
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-casper-crash-backtraces.sh
+
       - name: Verify CI runner reclaim
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-ci-runner-reclaim.sh
@@ -671,9 +677,17 @@ jobs:
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-rerun-ci-for-heavy-label.sh
 
+      - name: Verify the ci-heavy waiver record
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-record-ci-heavy-waiver.sh
+
       - name: Verify Promotion Source check
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-check-promotion-source.sh
+
+      - name: Verify benchmark target check
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-require-repository-commit.sh
 
       - name: Verify daily back-merge provenance
         shell: bash -euo pipefail {0}
@@ -754,6 +768,10 @@ jobs:
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-run-integration-preflight.sh
 
+      - name: Verify heartbeat timing driver
+        shell: bash -euo pipefail {0}
+        run: bash scripts/bench/test-run-heartbeat-timing.sh
+
       - name: Verify soak dashboard restoration
         shell: bash -euo pipefail {0}
         run: scripts/bench/test-restore-soak-dashboard-run.sh
@@ -764,7 +782,7 @@ jobs:
     name: Soak Harness Tests
     needs: build_base
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -790,9 +808,45 @@ jobs:
       - name: Build the soak harness
         run: cargo build --locked -p casper-soak --bin casper-soak
 
-      - name: Verify soak fail-closed driver
-        shell: bash -euo pipefail {0}
-        run: scripts/bench/test-run-merge-recovery-soak.sh
+      - name: Install the pinned CbC runtime
+        timeout-minutes: 5
+        run: bash scripts/ci/install-cbc-runtime.sh
+
+      - name: Install the cleanup model checker
+        timeout-minutes: 5
+        run: |
+          java_home="${JAVA_HOME_21_X64:?The runner image has no JDK 21}"
+          printf '%s\n' "$java_home/bin" >> "$GITHUB_PATH"
+          "$java_home/bin/java" -version
+          curl --fail --location --output "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" | sha256sum --check
+
+      - name: Verify soak driver and cleanup controls
+        env:
+          TLA2TOOLS_JAR: ${{ runner.temp }}/tla2tools.jar
+        run: bash scripts/ci/verify-soak-cleanup.sh --output target/soak-cleanup-verification
+
+      - name: Configure cleanup acceptance trust
+        env:
+          CBC_ACCEPTANCE_ALLOWED_SIGNERS: ${{ vars.CBC_ACCEPTANCE_ALLOWED_SIGNERS }}
+        run: bash scripts/ci/configure-cbc-trust.sh
+
+      - name: Require current cleanup discharge
+        env:
+          CBC_CONTROL_REVISION: ${{ needs.build_base.outputs.TARGET_SHA }}
+        run: >-
+          bash scripts/ci/check-soak-cleanup.sh --control-revision "$CBC_CONTROL_REVISION"
+          --output target/soak-cleanup-admission.json
+
+      - name: Retain cleanup verification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: soak-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/soak-cleanup-verification/
+            target/soak-cleanup-admission.json
+          if-no-files-found: warn
 
       - name: Verify isolated disk admission and emergency scenarios
         shell: bash -euo pipefail {0}
@@ -1003,6 +1057,9 @@ jobs:
         with:
           tool: nextest
 
+      - name: Enable crash core files
+        run: bash .github/scripts/casper-crash-backtraces.sh setup
+
       - name: Run tests (shard ${{ matrix.partition }}/2)
         env:
           RUSTFLAGS: "-C target-feature=+aes,+sse2 -D warnings"
@@ -1014,6 +1071,8 @@ jobs:
         shell: bash -euo pipefail {0}
         run: |
           ulimit -n 65536
+          # Issue #911: a core file gives the native stack of a crashed test.
+          ulimit -c unlimited || true
           mkdir -p /tmp/test-logs
           # `count:m/2` deals tests round-robin across the two shards, so the
           # slow convergence/recursion specs spread over both legs instead of
@@ -1031,6 +1090,11 @@ jobs:
           fi
           echo "nextest exit=$nt doctest exit=$dt"
           [ "$nt" -eq 0 ] && [ "$dt" -eq 0 ]
+
+      - name: Report crash backtraces
+        if: failure()
+        timeout-minutes: 10
+        run: bash .github/scripts/casper-crash-backtraces.sh report
 
       - name: Upload test logs
         if: failure()
@@ -1091,6 +1155,10 @@ jobs:
         with:
           tool: cargo-llvm-cov,nextest
 
+      - name: Enable crash core files
+        if: matrix.crate == 'casper'
+        run: bash .github/scripts/casper-crash-backtraces.sh setup
+
       - name: Measure coverage
         env:
           RUST_BACKTRACE: "1"
@@ -1098,6 +1166,8 @@ jobs:
         shell: bash -euo pipefail {0}
         run: |
           ulimit -n 65536
+          # Issue #911: a core file gives the native stack of a crashed test.
+          if [ "${{ matrix.crate }}" = casper ]; then ulimit -c unlimited || true; fi
           mkdir -p target/coverage
           cargo llvm-cov clean
           cargo llvm-cov nextest --locked --release -p ${{ matrix.crate }} --no-tests=pass
@@ -1115,6 +1185,11 @@ jobs:
           cargo llvm-cov report --release -p ${{ matrix.crate }} \
             --ignore-filename-regex "$ignore_regex" \
             --lcov --output-path target/coverage/coverage-${{ matrix.crate }}.lcov
+
+      - name: Report crash backtraces
+        if: failure() && matrix.crate == 'casper'
+        timeout-minutes: 10
+        run: bash .github/scripts/casper-crash-backtraces.sh report
 
       - name: Upload coverage data
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

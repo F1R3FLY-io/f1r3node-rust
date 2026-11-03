@@ -199,8 +199,7 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     fn block_store(&self) -> &KeyValueBlockStore;
 
     /// The shard's genesis block hash when this node holds or has learned it.
-    /// Defaulted to `None` so effect mocks need no genesis wiring.
-    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError>;
 
     /// Read-only access to the node-local shard configuration.
     fn casper_shard_conf(&self) -> &CasperShardConf;
@@ -416,7 +415,10 @@ impl CasperSnapshot {
             return Ok(false);
         };
         let metadata = self.dag.lookup_unsafe(&parent.block_hash)?;
-        Ok(metadata.weight_map.contains_key(validator))
+        Ok(metadata
+            .weight_map
+            .get(validator)
+            .is_some_and(|stake| *stake > 0))
     }
 }
 
@@ -786,6 +788,8 @@ pub mod test_helpers {
         }
 
         fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
+
+        fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
 
         fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
 

@@ -1,0 +1,15 @@
+{
+  "schema": "cbc-acceptance/v2",
+  "artifact": "scripts/ci/configure-cbc-trust.sh",
+  "source_sha256": "564f6500fc32de088eaf7ee2d8fc54eae6f651f5f5dcd58fc7e333a4337c4d80",
+  "claim": {
+    "path": "docs/claims/soak-segment-cleanup.md",
+    "sha256": "d0b3a2ed788637e51a19c3330783068edc3d497dfcf642890bbf78bf4e15f7ba"
+  },
+  "claim_id": "CLAIM-SOAK-CLEANUP-001",
+  "claim_set_sha256": "eee9144a0c4a44939a3ffcc8828a50f1cdf15782f99e22153a086deeb1d1e622",
+  "evidence_sha256": "99462d8acb7e1282b10057db7cb825d6f6cc9798145b7efb824f7e70030dd0e0",
+  "accepted_by": "",
+  "approved_at": "",
+  "approval_ref": ""
+}

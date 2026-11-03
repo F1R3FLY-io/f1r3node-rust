@@ -1,0 +1,289 @@
+name: Heartbeat Timing Benchmark
+run-name: Heartbeat timing for ${{ inputs.target_ref }} (${{ inputs.repetitions }} repetitions)
+on:
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Node branch, tag, or commit to benchmark
+        type: string
+        default: dev
+        required: true
+      repetitions:
+        description: Measured repetitions after one warm-up (1 to 20)
+        type: string
+        default: "20"
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: heartbeat-timing-${{ inputs.target_ref }}
+  cancel-in-progress: false
+env:
+  OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
+  OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  OCI_CLI_INSTALLER_PY_SHA256: "f66dc9e2b69cbbd269374db638ffa9c0b08a5a4ea0b836b81336d6581aab9eed"
+  OCI_CLI_VERSION: "3.89.1"
+jobs:
+  await_approval:
+    name: Await Launch Approval
+    runs-on: ubuntu-latest
+    environment: ephemeral-launch-internal
+    timeout-minutes: 5
+    outputs:
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+      harness_sha: ${{ steps.resolve.outputs.harness_sha }}
+      repetitions: ${{ steps.resolve.outputs.repetitions }}
+    steps:
+      - name: Checkout benchmark controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Resolve benchmark inputs
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          REPETITIONS: ${{ inputs.repetitions }}
+        shell: bash -euo pipefail {0}
+        run: |
+          [[ "$REPETITIONS" =~ ^([1-9]|1[0-9]|20)$ ]] || exit 2
+          encoded_ref="$(jq -rn --arg ref "$TARGET_REF" '$ref|@uri')"
+          target_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$encoded_ref" --jq .sha)"
+          [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          bash .github/scripts/require-repository-commit.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$target_sha"
+          source .github/oci-validation.env
+          [[ "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          {
+            echo "target_sha=$target_sha"
+            echo "harness_sha=$SYSTEM_INTEGRATION_REF"
+            echo "repetitions=$REPETITIONS"
+          } >> "$GITHUB_OUTPUT"
+  launch_ephemeral_runners:
+    name: Launch Ephemeral Runners
+    needs: await_approval
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    timeout-minutes: 10
+    concurrency:
+      group: oci-ephemeral-launch
+      cancel-in-progress: false
+    env:
+      SYSTEM_INTEGRATION_REF: ${{ needs.await_approval.outputs.harness_sha }}
+    steps:
+      - name: Clone system-integration
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ env.SYSTEM_INTEGRATION_REF }}
+          path: system-integration
+          persist-credentials: false
+
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -ex {0}
+        run: |
+          curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION" \
+            --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
+          oci --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -e {0}
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/oci_api_key.pem
+          EOF
+          chmod 600 ~/.oci/config
+          oci iam region list >/dev/null && echo "OCI auth OK"
+
+      - name: Create runner-management token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ vars.CI_GITHUB_APP_ID }}
+          private-key: ${{ secrets.CI_GITHUB_APP_PRIVATE_KEY }}
+          permission-administration: write
+
+      - name: Launch benchmark runner
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          RUNNER_LABELS: self-hosted,linux,x64,oracle-cloud,run-${{ github.run_id }}-${{ github.run_attempt }}
+          RUNNER_MEM_GB_OVERRIDE: "64"
+          RUNNER_NAMES_FILE: ${{ runner.temp }}/ephemeral-runner-names
+          SUPPRESS_LABEL_WARNING: "True"
+        shell: bash -euo pipefail {0}
+        run: bash system-integration/ci/oci-runners/launch-runner.sh amd64
+      - name: Tag launched VMs with this run
+        if: always()
+        shell: bash -e {0}
+        env:
+          RUNNER_NAMES_FILE: ${{ runner.temp }}/ephemeral-runner-names
+        run: |
+          if [ ! -s "$RUNNER_NAMES_FILE" ]; then
+            echo "No VM was launched; nothing to tag."
+            exit 0
+          fi
+          . system-integration/ci/oci-runners/state.env
+          run_key="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          pending=""
+          while read -r name; do
+            if [[ "$name" =~ ^ci-eph-[A-Za-z0-9._-]+$ ]]; then
+              pending="$pending $name"
+            else
+              echo "::warning::skip unexpected runner name: $name"
+            fi
+          done < "$RUNNER_NAMES_FILE"
+          for round in 1 2 3 4 5 6; do
+            [ -n "$pending" ] || break
+            [ "$round" -eq 1 ] || sleep 10
+            listing="$(oci compute instance list -c "$COMP" --region "$REGION" --all --output json 2>/dev/null || true)"
+            still=""
+            for name in $pending; do
+              iid="$(jq -r --arg n "$name" \
+                'first((.data // [])[] | select(."display-name" == $n and ."lifecycle-state" != "TERMINATED") | .id) // empty' \
+                <<< "${listing:-{\}}" 2>/dev/null || true)"
+              case "$iid" in
+                ocid1.instance.*) ;;
+                *) still="$still $name"; continue ;;
+              esac
+              if ! existing="$(oci compute instance get --instance-id "$iid" --region "$REGION" \
+                   --query 'data."freeform-tags"' --raw-output 2>/dev/null)"; then
+                still="$still $name"
+                continue
+              fi
+              case "$existing" in ''|null) existing='{}' ;; esac
+              if ! jq -e 'type == "object"' <<<"$existing" >/dev/null 2>&1; then
+                still="$still $name"
+                continue
+              fi
+              merged="$(jq -cn --argjson cur "$existing" --arg id "$GITHUB_RUN_ID" --arg key "$run_key" \
+                '$cur + {"github-run-id": $id, "github-run-key": $key}')"
+              if oci compute instance update --instance-id "$iid" --region "$REGION" \
+                   --force --freeform-tags "$merged" >/dev/null 2>&1; then
+                echo "Tagged $name with github-run-key=$run_key"
+              else
+                still="$still $name"
+              fi
+            done
+            pending="$still"
+          done
+          untagged=0
+          for name in $pending; do
+            echo "::warning::could not tag $name; the reaper removes it after its age limit"
+            untagged=$((untagged + 1))
+          done
+          echo "tag step finished with $untagged untagged VM(s)"
+
+      - name: Remove OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          shred -fu ~/.oci/oci_api_key.pem 2>/dev/null || true
+          rm -rf ~/.oci
+
+  benchmark:
+    name: Run heartbeat timing
+    needs: [await_approval, launch_ephemeral_runners]
+    runs-on: [self-hosted, linux, x64, oracle-cloud, "run-${{ github.run_id }}-${{ github.run_attempt }}"]
+    timeout-minutes: 100
+    env:
+      F1R3FLY_NODE_IMAGE: heartbeat-timing:${{ github.run_id }}-${{ github.run_attempt }}
+      HEARTBEAT_TIMING_REPS: ${{ needs.await_approval.outputs.repetitions }}
+    steps:
+      - name: Checkout benchmark controls
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci-control
+          persist-credentials: false
+      - name: Checkout node revision
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.await_approval.outputs.target_sha }}
+          path: node-under-test
+          persist-credentials: false
+      - name: Checkout timing harness
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: F1R3FLY-io/system-integration
+          ref: ${{ needs.await_approval.outputs.harness_sha }}
+          path: system-integration
+          persist-credentials: false
+      - name: Record benchmark inputs
+        env:
+          CONTROL_SHA: ${{ github.workflow_sha }}
+          TARGET_SHA: ${{ needs.await_approval.outputs.target_sha }}
+          HARNESS_SHA: ${{ needs.await_approval.outputs.harness_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          mkdir -p "$RUNNER_TEMP/heartbeat-timing"
+          jq -n --arg control "$CONTROL_SHA" --arg node "$TARGET_SHA" --arg harness "$HARNESS_SHA" \
+            --argjson repetitions "$HEARTBEAT_TIMING_REPS" \
+            '{control_revision:$control,node_revision:$node,harness_revision:$harness,repetitions:$repetitions,
+              test_timeout_seconds:2700,job_timeout_minutes:100,runner_memory_gb:64,release_gate:false}' \
+            > "$RUNNER_TEMP/heartbeat-timing/inputs.json"
+      - name: Build selected node image
+        timeout-minutes: 40
+        env:
+          TARGET_SHA: ${{ needs.await_approval.outputs.target_sha }}
+        shell: bash -euo pipefail {0}
+        run: |
+          docker build --build-arg VERSION="$TARGET_SHA" -t "$F1R3FLY_NODE_IMAGE" \
+            -f node-under-test/node/Dockerfile node-under-test
+          docker image inspect "$F1R3FLY_NODE_IMAGE" --format '{{.Id}}' > "$RUNNER_TEMP/heartbeat-timing/image-id.txt"
+      - name: Install integration dependencies
+        timeout-minutes: 5
+        working-directory: system-integration
+        shell: bash -euo pipefail {0}
+        run: |
+          poetry lock --no-update
+          poetry install --with integration
+      - name: Extend timing metrics
+        shell: bash -euo pipefail {0}
+        run: bash ci-control/scripts/bench/extend-issue24-metrics.sh system-integration/integration-tests/test/infra/metrics.py
+      - name: Run timing benchmark
+        id: timing
+        timeout-minutes: 47
+        env:
+          SYSTEM_INTEGRATION_DIR: ${{ github.workspace }}/system-integration
+          NODE_REPO_DIR: ${{ github.workspace }}/node-under-test
+          HEARTBEAT_TIMING_OUTPUT_DIR: ${{ runner.temp }}/heartbeat-timing
+        shell: bash -euo pipefail {0}
+        run: bash ci-control/scripts/bench/run-heartbeat-timing.sh
+      - name: Summarize timing measurements
+        if: always() && steps.timing.outcome != 'skipped'
+        shell: bash -euo pipefail {0}
+        run: |
+          output="$RUNNER_TEMP/heartbeat-timing"
+          [ -f "$output/pytest.log" ] || exit 0
+          bash ci-control/scripts/bench/summarize-issue24-phases.sh records --provider docker "$output/pytest.log" > "$output/phases.jsonl"
+          bash ci-control/scripts/bench/summarize-issue24-phases.sh compare --phase high "$output/phases.jsonl" > "$output/comparison.txt"
+          cat "$output/comparison.txt" >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: heartbeat-timing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/heartbeat-timing/
+            system-integration/integration-tests/log-archive/
+          retention-days: 30
+          if-no-files-found: warn

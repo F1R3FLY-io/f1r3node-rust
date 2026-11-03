@@ -25,6 +25,7 @@ use models::rust::casper::protocol::casper_message::{
     Bond, ClaimFamily, ClaimId, DeployData, Event, FreezeInterval, ProcessedDeploy,
     ProcessedSystemDeploy, Rejoin,
 };
+use models::rust::deploy_parameters::DeployParameter;
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
@@ -1143,6 +1144,7 @@ impl RuntimeOps {
         hash: &StateHash,
         deployer: Option<PublicKey>,
         phlo_limit: i64,
+        parameters: Vec<DeployParameter>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
             let data = DeployData {
@@ -1153,7 +1155,7 @@ impl RuntimeOps {
                 valid_after_block_number: 0,
                 shard_id: String::new(),
                 expiration_timestamp: None,
-                parameters: Vec::new(),
+                parameters,
             };
 
             let (ephemeral_sk, ephemeral_pk) = exploratory_key_pair().clone();

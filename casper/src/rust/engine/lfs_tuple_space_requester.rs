@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use models::rust::casper::protocol::casper_message::{ApprovedBlock, StoreItemsMessage};
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-use rspace_plus_plus::rspace::state::rspace_importer::RSpaceImporter;
+use rspace_plus_plus::rspace::state::rspace_importer::{RSpaceImporter, RSpaceImporterInstance};
 use tokio::sync::mpsc;
 
 use crate::rust::errors::CasperError;
@@ -52,7 +52,7 @@ pub const PAGE_SIZE: i32 = 750;
 /// **Scala equivalent**: Function parameter `requestForStoreItem: (StatePartPath, Int) => F[Unit]`
 /// in the stream method - we extract this into a trait for better Rust patterns
 #[async_trait]
-pub trait TupleSpaceRequesterOps {
+pub trait TupleSpaceRequesterOps: Send + Sync {
     /// Send request for state chunk
     ///
     /// **Scala equivalent**: `requestForStoreItem(id, pageSize)` call in broadcastStreams
@@ -62,15 +62,61 @@ pub trait TupleSpaceRequesterOps {
         page_size: i32,
     ) -> Result<(), CasperError>;
 
-    fn validate_tuple_space_items(
+    async fn validate_tuple_space_items(
         &self,
-        history_items: &[(Blake2b256Hash, Vec<u8>)],
-        data_items: &[(Blake2b256Hash, Vec<u8>)],
+        history_items: StoreItems,
+        data_items: StoreItems,
         start_path: StatePartPath,
-        page_size: i32,
-        skip: i32,
+        last_path: StatePartPath,
         get_from_history: Arc<dyn RSpaceImporter>,
-    ) -> Result<(), CasperError>;
+    ) -> Result<ValidChunk, CasperError> {
+        validate_store_items(
+            history_items,
+            data_items,
+            start_path,
+            last_path,
+            PAGE_SIZE,
+            get_from_history,
+        )
+        .await
+    }
+}
+
+pub type StoreItems = Vec<(Blake2b256Hash, Vec<u8>)>;
+
+pub struct ValidChunk {
+    pub history_items: StoreItems,
+    pub data_items: StoreItems,
+    pub complete: bool,
+}
+
+pub async fn validate_store_items(
+    history_items: StoreItems,
+    data_items: StoreItems,
+    start_path: StatePartPath,
+    last_path: StatePartPath,
+    page_size: i32,
+    get_from_history: Arc<dyn RSpaceImporter>,
+) -> Result<ValidChunk, CasperError> {
+    tokio::task::spawn_blocking(move || {
+        RSpaceImporterInstance::validate_state_items(
+            &history_items,
+            &data_items,
+            start_path,
+            &last_path,
+            page_size,
+            0,
+            get_from_history,
+        )
+        .map(|()| ValidChunk {
+            complete: last_path.len() == 1,
+            history_items,
+            data_items,
+        })
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))
+    })
+    .await
+    .map_err(|e| CasperError::RuntimeError(format!("State chunk validation failed: {}", e)))?
 }
 
 /// State to control processing of requests
@@ -111,23 +157,57 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
         Self { d: new_d }
     }
 
+    /// Arm a pagination cursor for request.
+    ///
+    /// Unlike [`ST::add`], a key that is already `Done` is returned to `Init`.
+    /// Cursors converge — adjacent block states share nearly all of their trie —
+    /// and a root arriving at a path another root has already finished still
+    /// needs that path's chain walked with it in the root set. Leaving it `Done`
+    /// strands the root: its `set_root` never fires, yet every entry reads Done,
+    /// so the run reports success without it.
+    ///
+    /// Keys still in flight (`Init`/`Requested`/`Received`) are left alone —
+    /// they will complete for the merged root set on their own.
+    pub fn re_arm(&self, key: Key) -> Self {
+        let mut new_d = self.d.clone();
+        match self.d.get(&key) {
+            None | Some(ReqStatus::Done) => {
+                new_d.insert(key, ReqStatus::Init);
+            }
+            Some(_) => {}
+        }
+        Self { d: new_d }
+    }
+
     /// Get next keys not already requested or in case of resend together with Requested.
     ///
     /// **Scala equivalent**: `def getNext(resend: Boolean): (ST[Key], Seq[Key])`
     pub fn get_next(&self, resend: bool) -> (Self, Vec<Key>) {
+        self.get_next_bounded(resend, usize::MAX)
+    }
+
+    pub fn get_next_bounded(&self, resend: bool, limit: usize) -> (Self, Vec<Key>) {
         let mut new_d = self.d.clone();
-        let mut requested_keys = Vec::new();
+        let mut requested_keys: Vec<Key> = Vec::new();
+        let mut in_flight = 0usize;
 
         for (key, status) in &self.d {
-            let should_request = match status {
-                ReqStatus::Init => true,
-                ReqStatus::Requested if resend => true,
-                _ => false,
-            };
+            if *status == ReqStatus::Requested {
+                in_flight += 1;
+                if resend {
+                    requested_keys.push(key.clone());
+                }
+            }
+        }
 
-            if should_request {
+        for (key, status) in &self.d {
+            if in_flight >= limit {
+                break;
+            }
+            if *status == ReqStatus::Init {
                 new_d.insert(key.clone(), ReqStatus::Requested);
                 requested_keys.push(key.clone());
+                in_flight += 1;
             }
         }
 
@@ -185,6 +265,10 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
     ///
     /// **Scala equivalent**: `def isFinished: Boolean`
     pub fn is_finished(&self) -> bool { !self.d.values().any(|status| *status != ReqStatus::Done) }
+
+    pub fn len(&self) -> usize { self.d.len() }
+
+    pub fn is_empty(&self) -> bool { self.d.is_empty() }
 
     pub fn done_count(&self) -> usize {
         self.d
@@ -273,22 +357,29 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
             data_items.len()
         );
         // Scala: validateTupleSpaceItems(...)
-        if let Err(err) = self.request_ops.validate_tuple_space_items(
-            &history_items,
-            &data_items,
-            start_path.clone(),
-            PAGE_SIZE,
-            0, // offset
-            self.state_importer.clone(),
-        ) {
-            tracing::warn!(
-                error = %err,
-                "Rejected invalid tuple space chunk for path (length: {}); it will be requested again",
-                start_path.len()
-            );
-            self.mark_chunk_rejected(start_path).await?;
-            return Ok(false);
-        }
+        let chunk = match self
+            .request_ops
+            .validate_tuple_space_items(
+                history_items,
+                data_items,
+                start_path.clone(),
+                last_path.clone(),
+                self.state_importer.clone(),
+            )
+            .await
+        {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "Rejected invalid tuple space chunk for path (length: {}); it will be requested again",
+                    start_path.len()
+                );
+                self.mark_chunk_rejected(start_path).await?;
+                let _ = self.request_tx.try_send(false);
+                return Ok(false);
+            }
+        };
         tracing::debug!(
             "Validation completed in {:?}",
             total_validation_start.elapsed()
@@ -296,9 +387,11 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
 
         // Add next paths for requesting (Scala: st.update(_.add(Set(lastPath))))
         // Scala adds all lastPath values without checking if empty - match that behavior
-        let mut next_paths = std::collections::HashSet::new();
-        next_paths.insert(last_path);
-        self.add_next_paths(next_paths).await?;
+        if !chunk.complete {
+            let mut next_paths = std::collections::HashSet::new();
+            next_paths.insert(last_path);
+            self.add_next_paths(next_paths).await?;
+        }
 
         // Trigger request processing after adding next paths (Scala: requestQueue.enqueue1(false))
         // Use non-blocking send to avoid deadlock. The biased select with response-first
@@ -308,7 +401,7 @@ impl<T: TupleSpaceRequesterOps> TupleSpaceStreamProcessor<T> {
             tracing::debug!("Request queue full - requests already pending");
         }
 
-        self.import_chunk(history_items, data_items);
+        self.import_chunk(chunk.history_items, chunk.data_items);
         tracing::info!(
             "Chunk validation and import completed in {:?}",
             total_validation_start.elapsed()

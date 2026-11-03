@@ -150,7 +150,7 @@ pub fn min_total_validator_weight(
 
 /// Get main parent of a block
 pub fn main_parent(
-    block_store: &mut KeyValueBlockStore,
+    block_store: &KeyValueBlockStore,
     block_message: &BlockMessage,
 ) -> Result<Option<BlockMessage>, KvStoreError> {
     match block_message.header.parents_hash_list.first() {
@@ -224,25 +224,30 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
 
 /// Get weight from validator
 pub fn weight_from_validator(
-    block_store: &mut KeyValueBlockStore,
+    block_store: &KeyValueBlockStore,
     b: &BlockMessage,
     validator: &prost::bytes::Bytes,
 ) -> Result<i64, KvStoreError> {
-    // Get main parent
-    let maybe_main_parent = main_parent(block_store, b)?;
-
-    // Get weight from validator (from parent or current block)
-    let weight = match maybe_main_parent {
-        Some(parent) => weight_map(&parent).get(validator).cloned().unwrap_or(0),
-        None => weight_map(b).get(validator).cloned().unwrap_or(0), // No parents means genesis - use itself
+    // A block's own bonds are written by its sender, so they never decide its
+    // weight: a parentless block carries none here (`Validate::
+    // block_sender_has_weight` judges it against the genesis). A main parent this
+    // node does not hold leaves the weight unknown, never self-asserted.
+    let Some(parent_hash) = b.header.parents_hash_list.first() else {
+        return Ok(0);
     };
+    let parent = block_store
+        .get(parent_hash)?
+        .ok_or_else(|| KvStoreError::MissingBlock {
+            hash: parent_hash.clone(),
+            context: MissingBlockContext::new("weight_from_validator: main parent"),
+        })?;
 
-    Ok(weight)
+    Ok(weight_map(&parent).get(validator).cloned().unwrap_or(0))
 }
 
 /// Get weight from sender
 pub fn weight_from_sender(
-    block_store: &mut KeyValueBlockStore,
+    block_store: &KeyValueBlockStore,
     b: &BlockMessage,
 ) -> Result<i64, KvStoreError> {
     weight_from_validator(block_store, b, &b.sender)

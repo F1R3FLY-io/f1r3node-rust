@@ -152,6 +152,46 @@ pub async fn journal_path_mutation_single_via_table(
         .map(|()| true)
 }
 
+/// Reserve a `WalOp::Mkdir` entry.
+///
+/// `parents` is encoded in the `length` field: `Some(1)` for
+/// `parents = true` (idempotent, create intermediates); `None`
+/// for `parents = false` (strict EEXIST error).  Reusing `length`
+/// (otherwise unused by path-mutation ops) keeps the `WalEntry`
+/// schema stable — see `WalOp::Mkdir`'s doc for the encoding
+/// contract.  Self-guards on Oracular.
+#[allow(clippy::result_unit_err, clippy::too_many_arguments)]
+pub async fn journal_mkdir_via_table(
+    handles: &FileHandleTable,
+    cmode: ConsensusMode,
+    canon_path: PathBuf,
+    mode_bits: u32,
+    parents: bool,
+    ack: &Par,
+) -> Result<bool, ()> {
+    if cmode != ConsensusMode::Consensus {
+        return Ok(false);
+    }
+    handles
+        .wal
+        .append_with_ack(
+            WalEntry {
+                op: WalOp::Mkdir,
+                path: canon_path,
+                extra_path: None,
+                offset: None,
+                length: if parents { Some(1) } else { None },
+                payload_ref: None,
+                mode_bits: Some(mode_bits),
+                owner: None,
+                group: None,
+                outcome: WalOutcome::Success,
+            },
+            ack_channel_hash(ack),
+        )
+        .map(|()| true)
+}
+
 /// Reserve a two-endpoint path-mutation WAL entry (`Rename`,
 /// `CopyFile`).
 ///

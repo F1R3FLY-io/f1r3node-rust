@@ -1,15 +1,13 @@
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/RuntimeManager.scala
 // See casper/src/main/scala/coop/rchain/casper/util/rholang/RuntimeManagerSyntax.scala
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::hash::Hash;
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crypto::rust::hash::blake2b256::Blake2b256;
 use crypto::rust::public_key::PublicKey;
 use crypto::rust::signatures::signed::Signed;
-use dashmap::DashMap;
 use hex::ToHex;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::block::state_hash::{StateHash, StateHashSerde};
@@ -17,6 +15,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
+use models::rust::deploy_parameters::DeployParameter;
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
 use rholang::rust::interpreter::external_services::ExternalServices;
@@ -53,6 +52,8 @@ use crate::rust::metrics_constants::{
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::{FloorState, RuntimeOps};
+use crate::rust::util::bounded_cache::BoundedCache;
+use crate::rust::util::rholang::interpreter_util::MAX_PARENT_MERGE_SCOPE_BLOCKS;
 use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
 };
@@ -272,19 +273,14 @@ pub struct RuntimeManager {
         std::collections::HashMap<Par, rspace_plus_plus::rspace::merger::merging_logic::MergeType>,
     >,
     // TODO: make proper storage for block indices - OLD
-    pub block_index_cache: Arc<DashMap<BlockHash, BlockIndex>>,
-    pub block_index_cache_order: Arc<Mutex<VecDeque<BlockHash>>>,
-    pub active_validators_cache: Arc<DashMap<StateHash, Vec<Validator>>>,
-    pub active_validators_cache_order: Arc<Mutex<VecDeque<StateHash>>>,
-    pub bonds_cache: Arc<DashMap<StateHash, Vec<Bond>>>,
-    pub bonds_cache_order: Arc<Mutex<VecDeque<StateHash>>>,
-    pub floor_state_cache: Arc<DashMap<StateHash, Arc<FloorState>>>,
-    pub floor_state_cache_order: Arc<Mutex<VecDeque<StateHash>>>,
-    pub claim_book_cache: Arc<DashMap<StateHash, Arc<ClaimBook>>>,
-    pub claim_book_cache_order: Arc<Mutex<VecDeque<StateHash>>>,
+    pub block_index_cache: Arc<BoundedCache<BlockHash, BlockIndex>>,
+    pub active_validators_cache: Arc<BoundedCache<StateHash, Vec<Validator>>>,
+    pub bonds_cache: Arc<BoundedCache<StateHash, Vec<Bond>>>,
+    pub floor_state_cache: Arc<BoundedCache<StateHash, FloorState>>,
+    pub claim_book_cache: Arc<BoundedCache<StateHash, ClaimBook>>,
     /// Cache for merged parent post-state computation keyed by parent-set snapshot context.
-    pub parents_post_state_cache: Arc<DashMap<ParentsPostStateCacheKey, ParentsPostStateCacheVal>>,
-    pub parents_post_state_cache_order: Arc<Mutex<VecDeque<ParentsPostStateCacheKey>>>,
+    pub parents_post_state_cache:
+        Arc<BoundedCache<ParentsPostStateCacheKey, ParentsPostStateCacheVal>>,
     /// Optional replay cache for delta replay optimization
     pub replay_cache: Option<Arc<InMemoryReplayCache>>,
     /// Optional state hash cache for skipping known replays
@@ -428,10 +424,13 @@ pub struct MergedPreState {
 pub type ParentsPostStateCacheVal = MergedPreState;
 
 impl RuntimeManager {
-    const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = 128;
+    /// One full merge scope, so the next merge finds the indexes this one computed.
+    pub const MAX_BLOCK_INDEX_CACHE_ENTRIES: usize = MAX_PARENT_MERGE_SCOPE_BLOCKS;
     const MAX_PARENTS_POST_STATE_CACHE_ENTRIES: usize = 64;
     const MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES: usize = 256;
     const MAX_BONDS_CACHE_ENTRIES: usize = 64;
+    const MAX_FLOOR_STATE_CACHE_ENTRIES: usize = 64;
+    const MAX_CLAIM_BOOK_CACHE_ENTRIES: usize = 64;
     const MAX_REPLAY_CACHE_ENTRIES: usize = 192;
     const MAX_REPLAY_CACHE_BYTES: usize = 32 * 1024 * 1024;
     const MAX_REPLAY_CACHE_EVENT_LOG_ENTRIES: usize = 1_536;
@@ -601,16 +600,6 @@ impl RuntimeManager {
         Blake2b256::hash(bytes)
     }
 
-    fn max_block_index_cache_entries() -> usize { Self::MAX_BLOCK_INDEX_CACHE_ENTRIES }
-
-    fn max_parents_post_state_cache_entries() -> usize {
-        Self::MAX_PARENTS_POST_STATE_CACHE_ENTRIES
-    }
-
-    fn max_active_validators_cache_entries() -> usize { Self::MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES }
-
-    fn max_bonds_cache_entries() -> usize { Self::MAX_BONDS_CACHE_ENTRIES }
-
     fn max_replay_cache_entries() -> usize { Self::MAX_REPLAY_CACHE_ENTRIES }
 
     fn max_replay_cache_bytes() -> usize { Self::MAX_REPLAY_CACHE_BYTES }
@@ -649,42 +638,6 @@ impl RuntimeManager {
                 fn malloc_trim(pad: usize) -> i32;
             }
             let _ = malloc_trim(0);
-        }
-    }
-
-    fn touch_cache_key<K>(order: &Mutex<VecDeque<K>>, key: &K)
-    where K: Eq + Clone {
-        // LRU touch is O(n) due VecDeque::position/remove. This is intentional for now:
-        // these caches are tightly bounded (64-256 entries by default), so linear touch
-        // remains cheaper than introducing additional synchronized index maps.
-        if let Ok(mut guard) = order.lock() {
-            if let Some(pos) = guard.iter().position(|existing| existing == key) {
-                guard.remove(pos);
-            }
-            guard.push_back(key.clone());
-        }
-    }
-
-    fn get_cached_value<K, V>(map: &DashMap<K, V>, order: &Mutex<VecDeque<K>>, key: &K) -> Option<V>
-    where
-        K: Eq + Hash + Clone,
-        V: Clone,
-    {
-        let value = map.get(key).map(|entry| entry.value().clone());
-        if value.is_some() {
-            Self::touch_cache_key(order, key);
-        }
-        value
-    }
-
-    fn evict_fifo_entry<K, V>(map: &DashMap<K, V>, order: &Mutex<VecDeque<K>>)
-    where K: Eq + Hash + Clone {
-        if let Ok(mut guard) = order.lock() {
-            while let Some(evict_key) = guard.pop_front() {
-                if map.remove(&evict_key).is_some() {
-                    break;
-                }
-            }
         }
     }
 
@@ -1255,29 +1208,15 @@ impl RuntimeManager {
         &self,
         start_hash: &StateHash,
     ) -> Result<Vec<Validator>, CasperError> {
-        if let Some(cached) = Self::get_cached_value(
-            &self.active_validators_cache,
-            &self.active_validators_cache_order,
-            start_hash,
-        ) {
-            return Ok(cached);
+        if let Some(cached) = self.active_validators_cache.get(start_hash) {
+            return Ok((*cached).clone());
         }
 
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.get_active_validators(start_hash).await?;
-
-        let max_entries = Self::max_active_validators_cache_entries();
-        if self.active_validators_cache.len() >= max_entries {
-            Self::evict_fifo_entry(
-                &self.active_validators_cache,
-                &self.active_validators_cache_order,
-            );
-        }
         self.active_validators_cache
-            .insert(start_hash.clone(), computed.clone());
-        Self::touch_cache_key(&self.active_validators_cache_order, start_hash);
-
+            .insert(start_hash.clone(), Arc::new(computed.clone()));
         Ok(computed)
     }
 
@@ -1293,20 +1232,13 @@ impl RuntimeManager {
     /// successful read is memoized.
     pub async fn floor_state(&self, hash: &StateHash) -> Result<Arc<FloorState>, CasperError> {
         if let Some(cached) = self.floor_state_cache.get(hash) {
-            Self::touch_cache_key(&self.floor_state_cache_order, hash);
-            return Ok(cached.clone());
+            return Ok(cached);
         }
 
         let runtime = self.spawn_runtime().await?;
         let computed = Arc::new(RuntimeOps::new(runtime).get_floor_state(hash).await?);
-
-        if self.floor_state_cache.len() >= Self::max_bonds_cache_entries() {
-            Self::evict_fifo_entry(&self.floor_state_cache, &self.floor_state_cache_order);
-        }
         self.floor_state_cache
             .insert(hash.clone(), computed.clone());
-        Self::touch_cache_key(&self.floor_state_cache_order, hash);
-
         Ok(computed)
     }
 
@@ -1314,41 +1246,26 @@ impl RuntimeManager {
     /// the same pre-state. Only a successful read is memoized.
     pub async fn claim_book(&self, hash: &StateHash) -> Result<Arc<ClaimBook>, CasperError> {
         if let Some(cached) = self.claim_book_cache.get(hash) {
-            Self::touch_cache_key(&self.claim_book_cache_order, hash);
-            return Ok(cached.clone());
+            return Ok(cached);
         }
 
         let runtime = self.spawn_runtime().await?;
         let computed = Arc::new(RuntimeOps::new(runtime).get_claim_book(hash).await?);
-
-        if self.claim_book_cache.len() >= Self::max_bonds_cache_entries() {
-            Self::evict_fifo_entry(&self.claim_book_cache, &self.claim_book_cache_order);
-        }
         self.claim_book_cache.insert(hash.clone(), computed.clone());
-        Self::touch_cache_key(&self.claim_book_cache_order, hash);
-
         Ok(computed)
     }
 
     /// Cached per state hash; only a successful read is memoized.
     pub async fn compute_bonds(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
-        if let Some(cached) =
-            Self::get_cached_value(&self.bonds_cache, &self.bonds_cache_order, hash)
-        {
-            return Ok(cached);
+        if let Some(cached) = self.bonds_cache.get(hash) {
+            return Ok((*cached).clone());
         }
 
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         let computed = runtime_ops.compute_bonds(hash).await?;
-
-        let max_entries = Self::max_bonds_cache_entries();
-        if self.bonds_cache.len() >= max_entries {
-            Self::evict_fifo_entry(&self.bonds_cache, &self.bonds_cache_order);
-        }
-        self.bonds_cache.insert(hash.clone(), computed.clone());
-        Self::touch_cache_key(&self.bonds_cache_order, hash);
-
+        self.bonds_cache
+            .insert(hash.clone(), Arc::new(computed.clone()));
         Ok(computed)
     }
 
@@ -1358,6 +1275,7 @@ impl RuntimeManager {
         term: String,
         hash: &StateHash,
         deployer: Option<PublicKey>,
+        parameters: Vec<DeployParameter>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
@@ -1367,6 +1285,7 @@ impl RuntimeManager {
                 hash,
                 deployer,
                 self.exploratory_deploy_phlo_limit,
+                parameters,
             )
             .await
     }
@@ -1410,6 +1329,12 @@ impl RuntimeManager {
             .map_err(|e| CasperError::RuntimeError(format!("has_root lookup failed: {:?}", e)))
     }
 
+    pub fn cached_block_index(&self, block_hash: &BlockHash) -> Option<BlockIndex> {
+        self.block_index_cache
+            .get(block_hash)
+            .map(|cached| (*cached).clone())
+    }
+
     /// Get or compute BlockIndex with caching
     pub fn get_or_compute_block_index(
         &self,
@@ -1421,11 +1346,7 @@ impl RuntimeManager {
         post_state_hash: &Blake2b256Hash,
         mergeable_chs: &Vec<NumberChannelsDiff>,
     ) -> Result<BlockIndex, CasperError> {
-        if let Some(cached) = Self::get_cached_value(
-            &self.block_index_cache,
-            &self.block_index_cache_order,
-            block_hash,
-        ) {
+        if let Some(cached) = self.cached_block_index(block_hash) {
             metrics::gauge!(BLOCK_INDEX_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .set(self.block_index_cache.len() as f64);
             return Ok(cached);
@@ -1443,16 +1364,8 @@ impl RuntimeManager {
             mergeable_chs,
         )?;
 
-        // Keep index cache bounded for long-running validators.
-        // Avoid DashMap re-entrant calls while holding an entry guard.
-        let max_entries = Self::max_block_index_cache_entries();
-        if self.block_index_cache.len() >= max_entries {
-            Self::evict_fifo_entry(&self.block_index_cache, &self.block_index_cache_order);
-        }
-
         self.block_index_cache
-            .insert(block_hash.clone(), block_index.clone());
-        Self::touch_cache_key(&self.block_index_cache_order, block_hash);
+            .insert(block_hash.clone(), Arc::new(block_index.clone()));
         metrics::gauge!(BLOCK_INDEX_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(self.block_index_cache.len() as f64);
         Ok(block_index)
@@ -1469,11 +1382,10 @@ impl RuntimeManager {
         &self,
         key: &ParentsPostStateCacheKey,
     ) -> Option<ParentsPostStateCacheVal> {
-        let result = Self::get_cached_value(
-            &self.parents_post_state_cache,
-            &self.parents_post_state_cache_order,
-            key,
-        );
+        let result = self
+            .parents_post_state_cache
+            .get(key)
+            .map(|cached| (*cached).clone());
         metrics::gauge!(PARENTS_POST_STATE_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(self.parents_post_state_cache.len() as f64);
         result
@@ -1484,16 +1396,7 @@ impl RuntimeManager {
         key: ParentsPostStateCacheKey,
         value: ParentsPostStateCacheVal,
     ) {
-        // Keep cache bounded with simple eviction strategy.
-        let max_entries = Self::max_parents_post_state_cache_entries();
-        if self.parents_post_state_cache.len() >= max_entries {
-            Self::evict_fifo_entry(
-                &self.parents_post_state_cache,
-                &self.parents_post_state_cache_order,
-            );
-        }
-        self.parents_post_state_cache.insert(key.clone(), value);
-        Self::touch_cache_key(&self.parents_post_state_cache_order, &key);
+        self.parents_post_state_cache.insert(key, Arc::new(value));
         metrics::gauge!(PARENTS_POST_STATE_CACHE_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
             .set(self.parents_post_state_cache.len() as f64);
     }
@@ -1858,18 +1761,16 @@ impl RuntimeManager {
             history_repo,
             mergeable_store,
             mergeable_tags,
-            block_index_cache: Arc::new(DashMap::new()),
-            block_index_cache_order: Arc::new(Mutex::new(VecDeque::new())),
-            active_validators_cache: Arc::new(DashMap::new()),
-            active_validators_cache_order: Arc::new(Mutex::new(VecDeque::new())),
-            bonds_cache: Arc::new(DashMap::new()),
-            bonds_cache_order: Arc::new(Mutex::new(VecDeque::new())),
-            floor_state_cache: Arc::new(DashMap::new()),
-            floor_state_cache_order: Arc::new(Mutex::new(VecDeque::new())),
-            claim_book_cache: Arc::new(DashMap::new()),
-            claim_book_cache_order: Arc::new(Mutex::new(VecDeque::new())),
-            parents_post_state_cache: Arc::new(DashMap::new()),
-            parents_post_state_cache_order: Arc::new(Mutex::new(VecDeque::new())),
+            block_index_cache: Arc::new(BoundedCache::new(Self::MAX_BLOCK_INDEX_CACHE_ENTRIES)),
+            active_validators_cache: Arc::new(BoundedCache::new(
+                Self::MAX_ACTIVE_VALIDATORS_CACHE_ENTRIES,
+            )),
+            bonds_cache: Arc::new(BoundedCache::new(Self::MAX_BONDS_CACHE_ENTRIES)),
+            floor_state_cache: Arc::new(BoundedCache::new(Self::MAX_FLOOR_STATE_CACHE_ENTRIES)),
+            claim_book_cache: Arc::new(BoundedCache::new(Self::MAX_CLAIM_BOOK_CACHE_ENTRIES)),
+            parents_post_state_cache: Arc::new(BoundedCache::new(
+                Self::MAX_PARENTS_POST_STATE_CACHE_ENTRIES,
+            )),
             replay_cache: (replay_cache_size > 0).then(|| {
                 Arc::new(InMemoryReplayCache::with_limits(
                     replay_cache_size,
@@ -2069,90 +1970,6 @@ mod tests {
             hash(5),
             RuntimeManager::replay_payload_hash(&[], &close, &[], false)
         );
-    }
-
-    #[test]
-    fn cache_hit_releases_the_shard_before_waiting_for_order_lock() {
-        use std::collections::VecDeque;
-        use std::sync::{mpsc, Mutex};
-        use std::time::Instant;
-
-        use dashmap::try_result::TryResult;
-        use dashmap::DashMap;
-
-        struct CloneSignal(mpsc::Sender<()>);
-
-        impl Clone for CloneSignal {
-            fn clone(&self) -> Self {
-                self.0.send(()).unwrap();
-                Self(self.0.clone())
-            }
-        }
-
-        let (cloned_tx, cloned_rx) = mpsc::channel();
-        let cache = Arc::new(DashMap::new());
-        cache.insert(1, CloneSignal(cloned_tx));
-        let order = Arc::new(Mutex::new(VecDeque::from([1])));
-        let order_guard = order.lock().unwrap();
-        let reader = {
-            let cache = cache.clone();
-            let order = order.clone();
-            std::thread::spawn(move || RuntimeManager::get_cached_value(&cache, &order, &1))
-        };
-
-        let cloned = cloned_rx.recv_timeout(Duration::from_secs(5)).is_ok();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut shard_available = false;
-        if cloned {
-            loop {
-                if let TryResult::Present(_) = cache.try_get_mut(&1) {
-                    shard_available = true;
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::yield_now();
-            }
-        }
-
-        drop(order_guard);
-        let result = reader.join().unwrap();
-        assert!(
-            cloned,
-            "A cache hit must clone before it waits for the order lock"
-        );
-        assert!(
-            shard_available,
-            "A cache hit must release its shard before it waits for the order lock"
-        );
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn cache_reads_preserve_hit_order_and_ignore_misses() {
-        use std::collections::VecDeque;
-        use std::sync::Mutex;
-
-        use dashmap::DashMap;
-
-        let cache = DashMap::new();
-        cache.insert(1, 11);
-        cache.insert(2, 22);
-        let order = Mutex::new(VecDeque::from([1, 2]));
-
-        assert_eq!(
-            RuntimeManager::get_cached_value(&cache, &order, &1),
-            Some(11)
-        );
-        assert_eq!(RuntimeManager::get_cached_value(&cache, &order, &3), None);
-        assert_eq!(*order.lock().unwrap(), VecDeque::from([2, 1]));
-
-        RuntimeManager::evict_fifo_entry(&cache, &order);
-
-        assert!(!cache.contains_key(&2));
-        assert_eq!(*cache.get(&1).unwrap(), 11);
-        assert_eq!(*order.lock().unwrap(), VecDeque::from([1]));
     }
 
     #[test]

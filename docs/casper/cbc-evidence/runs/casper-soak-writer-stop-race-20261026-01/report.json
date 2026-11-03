@@ -11,15 +11,18 @@
     "branch": "fix/soak-writer-stop-race",
     "pull_request": 863,
     "base": "9bfbb0045bc7972b5c52160fa45e972634be016d",
-    "commit": "1250e8490bb40bf3b3272e9621cfcf665674e1f0",
+    "commits": [
+      "1250e8490bb40bf3b3272e9621cfcf665674e1f0",
+      "85b04c07e512a09d5fc87239294ff111f4e88563"
+    ],
     "origin": "Soak 40155878690 (manual dispatch from dev) failed closed after 14.5 h. The Docker writer stop at the end of a segment counted a failed docker inspect or docker kill of a container that exited during the stop as a failed stop, although no writer remained.",
-    "driver": "stop_node_writer_commands kills all owned containers in one docker kill call. A failed inspect or kill is a failure only when a second docker ps still lists the container as running. A failed docker ps, a failed host-control stop-owned, an invalid container ID, or another owner label still fails the stop. The end-of-segment stop has its own budget SOAK_WRITER_STOP_SECONDS (5 to 120 s, default 30 s). After a host protection breach or during an emergency it keeps DISK_STOP_SECONDS. writer-stop-failure.txt names the failed step, the container, and the Docker error. A confirmed stop with output keeps it as writer-stop.log. The exit cleanup stops the owned writers when the driver exits before the end-of-segment stop. A pytest that a signal ends gets its owned writers stopped before the evidence copy. The target_advanced early exit record starts with its reason, and early-exit.txt is read once.",
+    "driver": "stop_node_writer_commands kills each owned container directly after its inspect confirms the owner. A failed inspect or kill is a failure only when a second docker ps still lists the container as running. A failed docker ps, a failed host-control stop-owned, an invalid container ID, or another owner label still fails the stop. The end-of-segment stop has its own budget SOAK_WRITER_STOP_SECONDS (5 to 120 s, default 30 s). After a host protection breach or during an emergency it keeps DISK_STOP_SECONDS. writer-stop-failure.txt names the failed step, the container, and the Docker error. A confirmed stop with output keeps it as writer-stop.log. The exit cleanup stops the owned writers when the driver exits before the end-of-segment stop. A pytest that a signal ends gets its owned writers stopped before the evidence copy. The target_advanced early exit record starts with its reason, and early-exit.txt is read once.",
     "host_control": "stop-owned and prefer-oom write one line on stderr for each process that they skip because its environment is unreadable. The owner scan returns the skipped PIDs. Behavior does not change. The unit tests that need an unreadable environment return early when they run as root.",
-    "fixture": "test-run-merge-recovery-soak.sh adds a fake docker with four owned containers and the cases slow, vanish, exits, stuck, persist, sigkill, and breach. The target_advanced case checks the reason prefix and a restart that keeps the reason."
+    "fixture": "test-run-merge-recovery-soak.sh adds a fake docker with four owned containers, a FAKE_STOP_DELAY setting, and the cases slow, vanish, exits, stuck, persist, sigkill, breach, and breach-inspect. The target_advanced case checks the reason prefix and a restart that keeps the reason."
   },
   "guarantee_change": {
     "before": "At the end of a segment, any failed docker inspect or docker kill of an owned container failed the stop, also when the container had exited. The stop had the emergency budget of 1 to 5 s. An exit between iterations skipped the stop, and the writers of a signal-ended pytest ran until the end of the segment.",
-    "after": "The stop fails only when a container stays listed as running after the kill, or when docker ps, host-control stop-owned, a container ID, or an owner label fails its check. The end-of-segment stop has a 30 s default budget outside emergencies. An exit before the end-of-segment stop and a signal-ended pytest also stop the owned writers.",
+    "after": "The stop fails only when a container stays listed as running after the kill, or when docker ps, host-control stop-owned, a container ID, or an owner label fails its check. Each confirmed container stops before the next inspect. The end-of-segment stop has a 30 s default budget outside emergencies. An exit before the end-of-segment stop and a signal-ended pytest also stop the owned writers.",
     "limitation": [
       "The driver does not confirm the owner label of a container that exits before its inspect. A container that docker ps does not list as running does not write.",
       "The end of a segment can take up to SOAK_WRITER_STOP_SECONDS plus 1 s longer than before.",
@@ -35,15 +38,15 @@
   },
   "source_digests_before_change_note": "These digests equal the accepted digests of docs/casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json.",
   "source_digests": {
-    "scripts/run-merge-recovery-soak.sh": "b043f160546dc6b8d7b0e7d7cf251220d270430883c8a8251bf70283f306e82b",
-    "scripts/bench/test-run-merge-recovery-soak.sh": "74298dd3ce8d251a04a467f471e088de6dd127525d8b750270a3be5cb4bfa973",
+    "scripts/run-merge-recovery-soak.sh": "b0c9cefec97db5889c49bd37281f6952802f054dc4c4f44b4687b99eaa172028",
+    "scripts/bench/test-run-merge-recovery-soak.sh": "710adb582faa54c638d8ac6a01e25bbb27aca2c6d0362d92fb021978cb30d632",
     "scripts/casper-soak/src/host_control.rs": "427e0a7a550156cfc821e37df4fe452a03aae3b9ed8807bd897be0c80b76e6be"
   },
   "claim_digests_before_change": {
     "docs/claims/casper-soak-harness.md": "670e2867bf40fb941a7e762b8624550c0feb8cdc45fe7efcfc7b69f3cc0cabc8"
   },
   "claim_digests": {
-    "docs/claims/casper-soak-harness.md": "bf12f378c91e0a41e87b2b2102d93e4e17383f93be2076e920d8a289f368d0bc"
+    "docs/claims/casper-soak-harness.md": "ce393303b9cdf872de7f6863152377b9934890275ae0470d919528b3daa7d363"
   },
   "tiers": {
     "binding": "passed",
@@ -53,34 +56,37 @@
   "verification": {
     "fixture_local": {
       "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
-      "environment": "rust:bookworm container on arm64, run as UID 1000 (non-root), with a 12 GB tmpfs /tmp and the casper-soak binary built from the same tree with nightly-2026-02-09.",
+      "environment": "Container from the local image batch-e-linux-tools:20260930 on arm64 with nightly-2026-02-09, run as UID 1000 (non-root), with a 12 GB tmpfs /tmp and the casper-soak binary built from the same tree.",
+      "tree": "85b04c07e512a09d5fc87239294ff111f4e88563",
       "exit": 0,
-      "seconds": 371
+      "seconds": 378
     },
     "fixture_before_fix": {
-      "method": "Nine scratch variants of the fixture of this change. Each keeps the fixture setup (lines 1 to 646) and one new case. Each variant runs against the driver and host_control.rs of this change and against those of the base, in the same container as UID 1000. The checkout is not changed.",
+      "method": "Eight scratch variants of the fixture at 85b04c07e. Each keeps the fixture setup and one case block. Each variant runs against three drivers in the same container as UID 1000: this change (new), the reviewed bytes at 1250e8490 (prev), and the base. The checkout is not changed.",
       "results": {
-        "slow": {"change": "passed", "base": "failed: the slow stop scenario failed a confirmed writer stop"},
-        "vanish": {"change": "passed", "base": "failed: the vanish stop scenario failed a confirmed writer stop"},
-        "exits": {"change": "passed", "base": "failed: the exits stop scenario failed a confirmed writer stop"},
-        "stuck": {"change": "passed", "base": "failed: writer-stop-failure.txt did not name the remaining container"},
-        "persist": {"change": "passed", "base": "failed: an exit between iterations left owned writers running"},
-        "sigkill": {"change": "passed", "base": "failed: the writers of a killed pytest ran into the next iteration"},
-        "breach": {"change": "passed", "base": "failed: the stop after a breach did not keep the emergency budget"},
-        "target_advanced_prefix": {"change": "passed", "base": "failed: early-exit.txt did not start with target_advanced:"},
-        "restart_reason": {"change": "passed", "base": "failed: a restart after target_advanced lost the reason"}
+        "slow": {"new": "passed", "prev": "passed", "base": "failed: the slow stop scenario failed a confirmed writer stop"},
+        "vanish_exits": {"new": "passed", "prev": "passed", "base": "failed: the vanish stop scenario failed a confirmed writer stop"},
+        "stuck": {"new": "passed", "prev": "passed", "base": "failed: writer-stop-failure.txt did not name the remaining container"},
+        "persist": {"new": "passed", "prev": "passed", "base": "failed: an exit between iterations left owned writers running"},
+        "sigkill": {"new": "passed", "prev": "passed", "base": "failed: the writers of a killed pytest ran into the next iteration"},
+        "breach": {"new": "passed", "prev": "passed", "base": "failed: the stop after a breach did not keep the emergency budget"},
+        "breach_inspect": {"new": "passed", "prev": "failed: no container stopped within the emergency budget", "base": "passed"},
+        "target_advanced": {"new": "passed", "prev": "passed", "base": "failed: early-exit.txt did not start with target_advanced:"}
       },
-      "survived": 0
+      "survived": 0,
+      "note": "breach_inspect is the regression test for the review finding below. It fails only on the reviewed bytes, and the base passes it because the base killed each container after its inspect."
     },
     "host_control_unit_tests": {
       "command": "casper-soak bin unit test binary, filter host_control, --test-threads=1, 12 GB tmpfs /tmp",
+      "tree": "1250e8490bb40bf3b3272e9621cfcf665674e1f0. host_control.rs is unchanged at 85b04c07e.",
       "as_uid_1000": "19 passed, 1 ignored",
       "as_root": "19 passed, 1 ignored. The five tests that need an unreadable environment return early as root.",
       "red_before_implementation": "owner_scan_reports_a_process_whose_environment_is_unreadable does not compile at the base, because owned returns no skipped PIDs."
     },
     "static": {
+      "bash_syntax": "bash -n passes for the driver and the fixture",
       "clippy": "cargo clippy -p casper-soak --all-targets -D warnings on Linux: no findings",
-      "rustfmt": "cargo fmt -p casper-soak --check: no changes",
+      "rustfmt": "cargo fmt -p casper-soak --check: no changes at 1250e8490. host_control.rs is unchanged after it.",
       "shellcheck": "no new findings in the driver or the fixture (19 and 1 at the base and after the change)",
       "check_casper_claims": "exit 0 with the claim document of this package. CLAIM-CASPER-SOAK-001 and 002 are pending, and 003 to 008 are discharged.",
       "ste": "the claim section passes the STE Check with no new findings. Human STE Review pending."
@@ -100,11 +106,20 @@
       "cargo-deny": {
         "job_id": 121680389473,
         "conclusion": "failure",
-        "note": "The zstd advisories (legacy frame decompression) fail every pull request into dev until PR #865 reaches dev. The failure does not relate to this change."
+        "note": "The zstd advisories (legacy frame decompression) failed every pull request into dev until PR #865 reached dev. The failure does not relate to this change."
       }
     },
-    "conclusion": "success except cargo-deny"
+    "conclusion": "success except cargo-deny",
+    "pending": "The hosted run on the head that contains 85b04c07e and this report."
   },
+  "review_findings": [
+    {
+      "source": "Maintainer review of PR #863 at 193628b10",
+      "severity": "regression",
+      "finding": "stop_node_writer_commands inspected every owned container before it sent any kill. Four one-second inspects used the 2 s emergency budget. An isolated Linux comparison left all four containers running, while the base stopped two. Each later stop attempt during the breach repeated the delay.",
+      "resolution": "85b04c07e kills each container directly after its inspect confirms the owner. The Docker CLI sends one request for each inspected container, so a batched inspect would not remove the delay. The breach-inspect case failed on 1250e8490 and passes on 85b04c07e and on the base."
+    }
+  ],
   "acceptance_request": {
     "acceptor": "jltatbeach",
     "where": "PR #863",

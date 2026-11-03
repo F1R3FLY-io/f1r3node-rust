@@ -158,7 +158,8 @@ use super::wal::{PayloadRef, WalEntry, WalOp, WalOutcome, MAX_WAL_ENTRIES};
 ///   4: added `WalOp::EntriesStreamNext` at tag 15
 ///   5: (skipped in fileio; contiguity guard here)
 ///   6: added `WalOp::Exists` at tag 16 (post-Consensus-ban-lift)
-pub const SNAPSHOT_FORMAT_VERSION: u8 = 6;
+///   7: added `WalOp::Mkdir` at tag 17 (fs_mkdir handler)
+pub const SNAPSHOT_FORMAT_VERSION: u8 = 7;
 
 crate::register_consensus_constant!(order = 15, name = SNAPSHOT_FORMAT_VERSION, u8_raw);
 
@@ -342,6 +343,8 @@ fn op_tag(op: WalOp) -> u8 {
         WalOp::EntriesStreamNext => 15,
         // Exists at tag 16 (version 6, post-Consensus-ban-lift).
         WalOp::Exists => 16,
+        // Mkdir at tag 17 (added for the fs_mkdir handler).
+        WalOp::Mkdir => 17,
     }
 }
 
@@ -2343,8 +2346,8 @@ mod tests {
     /// The fingerprint fold catches drift at peering; this test
     /// catches it before the binary even ships.
     #[test]
-    fn snapshot_format_version_pinned_at_6() {
-        assert_eq!(SNAPSHOT_FORMAT_VERSION, 6);
+    fn snapshot_format_version_pinned_at_7() {
+        assert_eq!(SNAPSHOT_FORMAT_VERSION, 7);
     }
 
     /// Empty WAL slice encodes to `[6, 0, 0, 0, 0]` — version byte
@@ -2379,12 +2382,13 @@ mod tests {
             (WalOp::Size, 14),
             (WalOp::EntriesStreamNext, 15),
             (WalOp::Exists, 16),
+            (WalOp::Mkdir, 17),
         ] {
             assert_eq!(op_tag(op), expected, "op_tag({op:?}) drifted");
         }
     }
 
-    /// The 16 op_tag values MUST be bijective.  Pin that no two
+    /// The 17 op_tag values MUST be bijective.  Pin that no two
     /// variants map to the same wire tag (a duplicate would produce
     /// ambiguous decodes in slice 2).
     #[test]
@@ -2406,6 +2410,7 @@ mod tests {
             WalOp::Size,
             WalOp::EntriesStreamNext,
             WalOp::Exists,
+            WalOp::Mkdir,
         ];
         let tags: Vec<u8> = all.iter().map(|&o| op_tag(o)).collect();
         let mut sorted = tags.clone();
@@ -2664,7 +2669,7 @@ mod tests {
         //   cargo test -p rholang --lib -- \
         //     wal_root_pinned_for_known_entries_golden_hex --nocapture
         // and update; anchor the roll to a coordinated fleet upgrade.
-        const EXPECTED: &str = "311f801a5d9cee1bc306cdac23a240fb8fcd1f797ed6d1b8c8bbfbc71c71553a";
+        const EXPECTED: &str = "4671dbc803e460d40c2cdbdbffc70d886d3aaac4cb3a22aae13522939f63d108";
         assert_eq!(
             hex, EXPECTED,
             "WAL root drifted for the known 2-entry fixture — encoding \

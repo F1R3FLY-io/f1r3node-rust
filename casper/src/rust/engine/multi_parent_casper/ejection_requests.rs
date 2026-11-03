@@ -178,6 +178,7 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasperImpl<T> {
                 BALANCE_TERM.to_string(),
                 &main_parent.body.state.post_state_hash,
                 Some(identity.public_key.clone()),
+                Vec::new(),
             )
             .await?;
         // The precharge refuses to move nothing, so no deploy runs at a price

@@ -242,7 +242,8 @@ On 2026-10-23 the maintainer accepted this change, the wider cleanup guarantee, 
 On 2026-10-26, PR #863 changed how the driver confirms the writer stop. The change fixes a false stop failure and closes three paths that left writers running. It needs a fresh acceptance.
 
 - In soak 40155878690, the Docker writer stop at the end of a segment failed closed after 14.5 h. A container that exits between `docker ps` and `docker inspect` or `docker kill` made the stop fail, although no writer remained.
-- `stop_node_writer_commands` now kills all owned containers in one `docker kill` call. A failed inspect or kill is a failure only when a second `docker ps` still lists that container as running.
+- `stop_node_writer_commands` kills each owned container directly after its inspect confirms the owner. A failed inspect or kill is a failure only when a second `docker ps` still lists that container as running.
+- The Docker CLI sends one request for each inspected container. A slow daemon therefore delays the first kill by one inspect, not by the inspects of all containers.
 - A failed `docker ps`, a failed `host-control stop-owned`, an invalid container ID, or a container with another owner label still fails the stop.
 - The end-of-segment stop has its own budget, `SOAK_WRITER_STOP_SECONDS` (5 to 120 s, default 30 s). After a host protection breach or during an emergency, the stop keeps the disk stop budget of 1 to 5 s.
 - `writer-stop-failure.txt` names the failed step, the container, and the Docker error. A confirmed stop that wrote output keeps it as `writer-stop.log`.
@@ -254,7 +255,9 @@ On 2026-10-26, PR #863 changed how the driver confirms the writer stop. The chan
 - **Limitation:** the end of a segment can take up to `SOAK_WRITER_STOP_SECONDS` plus 1 s longer than before.
 - **Limitation:** the stop after a signal-ended pytest records a failure only in the `writer-stop.log` of that iteration. The end-of-segment stop decides the result of the soak.
 - **Limitation:** like the end-of-segment stop, the exit stop applies only to a soak without a Casper manifest (`SOAK_INPUT_DIR` is not set). It applies only before the end-of-segment stop has run.
-- Eight fixture cases of `scripts/bench/test-run-merge-recovery-soak.sh` cover these rules: slow, vanish, exits, stuck, persist, sigkill, breach, and a restart after `target_advanced`. The unit test `owner_scan_reports_a_process_whose_environment_is_unreadable` covers the skip report.
+- Nine fixture cases of `scripts/bench/test-run-merge-recovery-soak.sh` cover these rules: slow, vanish, exits, stuck, persist, sigkill, breach, breach-inspect, and a restart after `target_advanced`. The unit test `owner_scan_reports_a_process_whose_environment_is_unreadable` covers the skip report.
+
+On 2026-10-26 the maintainer accepted this change, the changed stop guarantee, and its four limitations (PR #870, comment 6429833007) at revision `6dd029064`. The acceptance includes the fix `85b04c07e` for the inspect-before-kill regression that PR #863 merged. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-race-acceptance-20261026-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-race-20261026-01/report.json).
 
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 

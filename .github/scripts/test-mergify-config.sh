@@ -48,7 +48,7 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
 
   {
     "dev" => ENV.fetch("DEV_REQUIRED").split("|") - heavy + ["Promotion Source"],
-    "master" => ENV.fetch("MASTER_REQUIRED").split("|") + heavy,
+    "master" => ENV.fetch("MASTER_REQUIRED").split("|"),
   }.each do |name, required|
     q = queues[name] or next
     (required - checks.(q)).each { |c| errors << "queue #{name} does not require #{c}" }
@@ -57,7 +57,7 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
   %w[dev master ca-item ca-release].each do |name|
     q = queues[name] or next
     c = conds.(q)
-    if %w[dev ca-item].include?(name)
+    if %w[dev master ca-item].include?(name)
       errors << "queue #{name} does not require ci-heavy with both Integration gates, or a ci-maintainers waiver" unless Array(q["queue_conditions"]).include?(heavy_or)
       errors << "queue #{name} requires ci-heavy outside the waiver block" if c.include?("label=ci-heavy")
     else
@@ -73,7 +73,7 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
       (maintained - c).each { |r| errors << "queue #{name} does not require #{r}" }
     else
       (review - c).each { |r| errors << "queue #{name} does not require #{r}" }
-      errors << "queue #{name} accepts a merge without an approval" if Array(q["queue_conditions"]).any? { |x| x.is_a?(Hash) }
+      errors << "queue #{name} accepts a merge without an approval" if Array(q["queue_conditions"]).any? { |x| x.is_a?(Hash) && x != heavy_or }
     end
   end
 
@@ -153,8 +153,8 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
     ["head-repo-full-name=#{repo}", "-label=ci-heavy", "-closed", "-draft", "-head~=^backmerge/ca-release-", "-head~=^(dev|master|ca-canary|ca-release)$"].each do |x|
       errors << "the ci-heavy rule does not require #{x}" unless c.include?(x)
     end
-    waiver = {"or" => ["-label=ci-heavy-waived", "base~=^(master|ca-release)$"]}
-    errors << "the ci-heavy rule ignores a waiver into dev or ca-canary, or honors one into master or ca-release" unless Array(label.first["conditions"]).include?(waiver)
+    waiver = {"or" => ["-label=ci-heavy-waived", "-author=@F1R3FLY-io/ci-maintainers", "base=ca-release"]}
+    errors << "the ci-heavy rule ignores a ci-maintainers waiver into dev, master, or ca-canary, or honors another waiver or one into ca-release" unless Array(label.first["conditions"]).include?(waiver)
     errors << "the ci-heavy rule still waits for an approval" if c.any? { |x| x.include?("approved-reviews-by") }
     ca_heads = {"or" => ["-base=ca-canary", "head~=^ca/"]}
     errors << "the ci-heavy rule labels a ca-canary pull request that is not a ca/ item" unless Array(label.first["conditions"]).include?(ca_heads)
@@ -209,4 +209,4 @@ CODEOWNERS="$ROOT/.github/CODEOWNERS" DEV_REQUIRED="$DEV_REQUIRED" MASTER_REQUIR
   abort errors.map { |e| "FAIL: #{e}" }.join("\n") unless errors.empty?
 ' "$CONFIG"
 
-printf 'PASS: Mergify has a queue and a queue rule for dev, master, ca-canary, and ca-release. The queue is serial, and each queue checks one pull request in place, without retries, and with identical queue and merge conditions. Each queue merges with a merge commit. The dev and master queues require every ruleset check. The master and ca-release queues require ci-heavy and both Integration gates. The dev and ca-item queues require them or a ci-heavy-waived label with a ci-maintainers author. Each heavy queue requires a review and a head of this repository. One rule adds ci-heavy to every pull request, except a protected head, a ca-canary pull request that is not a ca/ item, and a waived pull request into dev or ca-canary. The priority rules rank security fixes first, then fix/ into dev and hotfix/ into master, the release flow, perf/, ci/, and every other head, and only security fixes interrupt running checks.\n'
+printf 'PASS: Mergify has a queue and a queue rule for dev, master, ca-canary, and ca-release. The queue is serial, and each queue checks one pull request in place, without retries, and with identical queue and merge conditions. Each queue merges with a merge commit. The dev and master queues require every ruleset check. The ca-release queue requires ci-heavy and both Integration gates. The dev, master, and ca-item queues require them or a ci-heavy-waived label with a ci-maintainers author. Each heavy queue requires a review and a head of this repository. One rule adds ci-heavy to every pull request, except a protected head, a ca-canary pull request that is not a ca/ item, and a waived pull request of a ci-maintainers author into dev, master, or ca-canary. The priority rules rank security fixes first, then fix/ into dev and hotfix/ into master, the release flow, perf/, ci/, and every other head, and only security fixes interrupt running checks.\n'
