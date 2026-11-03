@@ -1463,6 +1463,31 @@ Lane B's dry-run log lists the files that changed on both sides and merged witho
 **Proposed fix:** bind the address on the native path through the same deploy-parameter mechanism as `dev`'s legacy template. Reversible, lane B.
 
 
+## Ruling of 2026-11-03: D10 (Decision 96, design r16)
+
+From this point on, A-9 reads against design r16 §6.3 (publications `6a4c777`). r16 changes only the close paragraph of §6.3 and adds Decision 96.
+
+**Decision 96:**
+- The close's PoS code must run to completion, so it is not gated.
+- Its cells and work are charged to the proposer from the proposer's balance after the block's settlement. That balance includes the fees that the block earned. This answers the ordering question of the r15 section: the charge comes after settlement.
+- A block whose proposer cannot cover the charge is invalid, and the other validators reject it.
+
+The fix is FX-16 (lane B). D10 stays **blocking** until FX-16 lands and passes the checks below. Stored continuations that the close fires do not change. They go to their installers and FX-15 gates them (D8b).
+
+**D10 test plan, as amended:**
+1. A close whose PoS code does known work and COMMs. The proposer's wallet pays that work and those cells at the close, from the post-settlement balance.
+2. The block replays to the same root.
+3. A stored continuation that the close fires is charged to its installer, not to the proposer.
+4. A block whose proposer cannot pay the close charge is rejected by validation and by replay.
+
+**Checks on FX-16, by reading:**
+- The charge is made after settlement, and the post-state root carries it.
+- The PoS code of the close has no gate. It runs to completion, and only the validity check can refuse the block.
+- The validity check reads the proposer's post-settlement balance in the same way in play, in validation and in replay.
+- Cells and work with no record that the close runs go to the proposer. Work under a stored record still goes to its installer (`charge_recorded_work`, gated by FX-15).
+- **Bootstrap (in FX-16):** the genesis block and its system deploys draw no charge.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
