@@ -987,6 +987,25 @@ The gate commits nothing for a foreign surface. A foreign draw is capped at what
 D76 decision 2 keys a surface by owner and origin. So one owner's stored receive (origin E1) meeting the same owner's later send (origin E2) counts as two seals and pays two cells, each at its own price. r10 §6.3 says that a COMM whose surfaces lie under one seal costs that seal once. Does "one seal" mean one owner, or one owner at one origin? The answer decides whether D76's key is correct. It also decides the price when the origins differ.
 
 
+## Rulings of 2026-11-03 (design r11, plan r8.10)
+
+A wallet is a wrapper around a purse, and the two are one idea. r10's "purse located at the surface" did not mean a separate purse on each channel.
+
+| Item | Ruling | Effect on this audit | Fix |
+|---|---|---|---|
+| Q-31, D6 | Decision 79. A surface draws on the wallet at its seal, located by the seal record. A stored receive draws on the wallet of the owner in its stored record, at that record's origin price. A send draws on the wallet of the running record's owner. There is no `fundPurse` or `drainPurse`: an installer limits its exposure by installing under a separate seal or `# P`. An unfunded stored receive is not a match candidate: its cell is tested against its wallet's pre-state balance less what the block holds. Replay re-checks every logged COMM. Draws are still checked at the close of the run (Decision 48) and across the block. | D6 is closed by ruling. F37 is closed by ruling: the whole wallet at the seal is the purse, by design. D76 decision 7 (an unfunded COMM fires and its cell goes unpaid) contradicts Decision 79, so FX-12 must replace it with the matcher filter. | FX-12 |
+| Question 9 | Decision 80. One cell only when the two surfaces share a membrane: the same owner and the same origin. Two separately sealed terms pay two cells, even under one signer. | D76 decision 2's key (owner and origin) conforms. | — |
+| D76 decision 3 | Decision 81. A surface with no record (genesis code) is charged to the client whose run fired it. | D76 decision 3 conforms. | — |
+| F35 | Decision 82. `rho:rev:bond` returns an unforgeable bond receipt, and PoS `bond` takes the receipt instead of a deployer id. | F35 is assigned. | FX-14 (lane B) |
+| F36, D8 | Goes to FX-12 as D8. | — | FX-12 |
+
+A-9 re-runs on FX-12 with three added checks:
+1. the matcher filter, which keeps an unfunded stored receive out of the match candidates;
+2. replay re-checking each logged COMM;
+3. a datum stored in an earlier block charged to its sender (D9).
+
+A-8 re-audits FX-14 and the merge of FX-13 into FX-8b.
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -997,4 +1016,4 @@ D76 decision 2 keys a surface by owner and origin. So one owner's stored receive
 6. **F16:** should the hook's spending authority be the seal `# H` of the installed contract, the compound seal of the hook authority, or both?
 7. **F27:** answered on 2026-11-02 (Decision 63). Should the deployer's signed message name the required cosigner keys, so that a relay cannot strip cosignatures from an envelope without changing its identity?
 8. **F31:** answered on 2026-11-02 (Decision 64). Until region metering, should a draw whose writer is a `Process` owner be refused, or journaled as pro-rata share draws?
-9. **Q-31 / D76:** for Decision 76, does "surfaces under one seal" mean one owner, or one owner at one origin envelope and price?
+9. **Q-31 / D76:** answered on 2026-11-03 (Decision 80: the same owner and the same origin). For Decision 76, does "surfaces under one seal" mean one owner, or one owner at one origin envelope and price?
