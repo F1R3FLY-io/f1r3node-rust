@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -932,6 +932,61 @@ F36 adds a divergence to the A-9 table:
 FX-13 is cut before the FX-11 merge, and FX-11 decision 3 changed the same refusal sites that FX-13 removes: the per-command messages in `rho:rev:wallet`, `rho:rev:bond` and `rho:rev:bondAdmin`. The merge must remove FX-11's per-command refusals as well, so that no refusal under the removed mark survives. It must keep FX-11's `wallet_authority` no-record branch, which is Decision 70 and not part of the mark. A-9 re-checks the merge commit.
 
 
+## Revision 10 (action A-9): pass 3 on `patch/D76` (Decision 76, executor side)
+
+- **Branch audited:** `patch/D76` (lane A2, cut from FX-8b at `c41ccb87b`). Commits `33b40ef29` (the change) and `427d72396` (suite results). This is the executor half of FX-12. Decision 75's purse is Q-31 and lane B's, and `surface_purse` is the single place where lane B plugs it in (D76 decision 6).
+- **Method:** a code reading of `comm_ledger.rs`, the `charging_rspace` and `storage_rule` changes, `v6/surface.rs`, the `settle.rs` surface charges, and the D76 decision log and its tests. No tests were run. Lane A2 reports all suites passing at `33b40ef29`.
+- **Not seen yet:** the FX-12 cost-path commit (lane B), the FX-13 merge into FX-8b, and the Q-31 memo. `D76.md` refers to Q-31, but no memo is on any branch, and no plan newer than r8.9 is on Drive.
+
+### What D76 implements
+
+At each COMM, the storage-rule path records one surface for the receive and one for each matched send. A surface is keyed by its seal: the owner, plus the origin envelope and its price. A COMM counts one cell for each distinct key (decisions 1 and 2). The tally goes into the record entry (field 18) and is checked in replay (decision 4).
+
+Settlement charges surfaces in two ways (decision 5):
+- The client's own surfaces are charged at the envelope's price to its paying wallets, against the gate's commitment.
+- Each foreign surface (stored code from another envelope) is charged its cells times the origin's price. The draw is on `surface_purse`, which is the seal's owner today.
+
+The gate commits nothing for a foreign surface. A foreign draw is capped at what the purse holds, and a shortfall is neither drawn nor credited (decision 7).
+
+### Divergences after D76
+
+| # | Divergence | Status on D76 | Test |
+|---|---|---|---|
+| D2 | Each COMM charged only to the running envelope | **Closed for continuations, open for data.** A stored receive's surface now pays one cell at its origin price. A stored send (datum) from an earlier envelope has no record, so its surface is charged as the client's part (D76 gap 1). In the two-party form the sender's seal s2 pays its own cell. See D9. | `region_spec::each_surface_of_a_comm_pays_one_cell_at_its_origin_price` (two-party, receive stored at price 1, send at price 2). `exit_spec::replay_refuses_a_record_whose_surface_attribution_is_forged`. `comm_ledger::surface_tests::each_distinct_surface_of_a_comm_is_counted_once`. |
+| D1 | Continuation work metered to the firing deployment | **Open.** D76 attributes COMM cells only. The compute of a fired continuation stays on the firing envelope's meter. | `a_fired_continuation_draws_on_its_author_not_on_the_firing_region` now adds the author's cell, but the firing party still pays the continuation's compute. |
+| D4 | An inner membrane does not meter P to t | **Open for compute.** COMM cells under an explicit region in the same envelope count as the client's own surfaces, because `is_own` compares envelopes. So a cosigner's region in the envelope pays nothing of its own. The charge falls on the envelope's paying wallets. | — |
+| D5 | Separate seals each pay the whole envelope | **Open.** The client's own cells still go to every paying wallet in full. | — |
+| D6 | No located purse, and no deterministic rule for an unfunded stored receive | **Partly open.** The draw is now deterministic, capped at the purse's balance less the block's other debits. But r10 says that a stored receive whose purse cannot fund its cell does not fire. Under D76 decision 7, the COMM fires and the cell goes unpaid. The purse is still the owner's whole wallet, not a purse located at the surface. Both points are Q-31. | — |
+| D7 | The deployer does not pay for the top-level surface when a seal is named | **Open.** The own-surface charge goes to `paying_wallets`, which are unchanged. | `a_stack_under_a_cosigners_seal_draws_on_the_cosigner_not_the_deployer` (unchanged) |
+| D8 | Continuations fired in a system deploy run unmetered | **Open.** D76 changes the user envelopes' settlement only. | — |
+| D9 (new) | A stored send carries no seal, so its surface is charged as the client's part when a later envelope consumes it | **Open.** This is D76 gap 1. A datum needs a reducer-built wrapper like the continuation's (FX-2 decision 4). That is lane C's work. | — |
+
+### Elaborated-form tests
+
+| Form or sugar | Test on D76 | Status |
+|---|---|---|
+| Two-party, receive stored (s1 ≠ s2) | `each_surface_of_a_comm_pays_one_cell_at_its_origin_price` | Present, for the COMM cell |
+| Two-party, send stored (datum from an earlier envelope) | — | **Missing.** It cannot pass until D9 is fixed. |
+| One-party R1 (one seal) | `surfaces_under_one_seal_pay_once` (bare, and with the receive in `{% … %}[d]`) | Present |
+| Implicit seal | covered by the bare case of `surfaces_under_one_seal_pay_once` | Present |
+| Compound | `v6::surface::tests` (a compound purse charged once per component) | Unit-level only. It needs an executor-level test. |
+| `-o` (COMM to s1, compute to s2) | — | **Missing.** The compute split needs D1 and D4. |
+| `# P` | — | **Missing.** By D76 decision 8, a surface draw on a funded process wallet goes pro rata over the shares, but no test covers it. |
+| Origin price | `each_surface_of_a_comm_pays_one_cell_at_its_origin_price` | Present, for COMM cells. Compute at the origin price waits for D1 and D4. |
+
+### F37 — Medium: an installer's whole wallet pays every surface of its stored code
+
+**Code:** `surface_purse` returns the seal's owner, a whole wallet, until lane B's Q-31 purse replaces it (D76 decision 6). Any envelope that fires a stored receive makes the installer's wallet pay one cell at the installer's origin price, with no commitment from the gate (decision 7).
+
+**Effect:** this is Decision 75 as ruled ("the installer pays for its continuations"). But r10 bounds the exposure by the purse located at the surface, and today the bound is the whole wallet. A party that fires a stored receive repeatedly moves the installer's REV to the proposer one cell at a time, up to the wallet's balance. No REV goes to the firing party. Decision 78 already holds the branch back until the forms are implemented end to end, and the Q-31 purse is part of that.
+
+**Proposed fix:** none beyond Q-31. This finding records that `patch/D76` must not merge into a shipped line before lane B's purse replaces `surface_purse`.
+
+### Question for the ruling on Q-31
+
+D76 decision 2 keys a surface by owner and origin. So one owner's stored receive (origin E1) meeting the same owner's later send (origin E2) counts as two seals and pays two cells, each at its own price. r10 §6.3 says that a COMM whose surfaces lie under one seal costs that seal once. Does "one seal" mean one owner, or one owner at one origin? The answer decides whether D76's key is correct. It also decides the price when the origins differ.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -942,3 +997,4 @@ FX-13 is cut before the FX-11 merge, and FX-11 decision 3 changed the same refus
 6. **F16:** should the hook's spending authority be the seal `# H` of the installed contract, the compound seal of the hook authority, or both?
 7. **F27:** answered on 2026-11-02 (Decision 63). Should the deployer's signed message name the required cosigner keys, so that a relay cannot strip cosignatures from an envelope without changing its identity?
 8. **F31:** answered on 2026-11-02 (Decision 64). Until region metering, should a draw whose writer is a `Process` owner be refused, or journaled as pro-rata share draws?
+9. **Q-31 / D76:** for Decision 76, does "surfaces under one seal" mean one owner, or one owner at one origin envelope and price?
