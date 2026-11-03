@@ -1284,6 +1284,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 .dependencies
                 .casper_buffer
                 .contains(&BlockHashSerde(block.block_hash.clone()))
+            && !self
+                .dependencies
+                .casper_buffer
+                .is_pendant(&BlockHashSerde(block.block_hash.clone()))
         {
             return Ok(());
         }

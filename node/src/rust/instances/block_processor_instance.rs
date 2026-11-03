@@ -1118,6 +1118,7 @@ mod tests {
                 .unwrap()
                 .is_none());
             assert!(!buffer.contains(&BlockHashSerde(hash.clone())));
+            assert!(!buffer.is_pendant(&BlockHashSerde(hash.clone())));
             assert!(!retriever.is_received(hash).await.unwrap());
             assert_eq!(retriever.get_requested_blocks_count().await.unwrap(), 0);
         }
