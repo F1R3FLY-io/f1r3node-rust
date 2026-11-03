@@ -40,3 +40,39 @@ pub fn spend_compute(
     }
     RevStacks::new(store).transfer(&compute_wallet_owner(), to, amount)
 }
+
+pub fn charge_recorded_work(
+    store: Arc<dyn CellStore>,
+    work: &std::collections::BTreeMap<Option<crate::rust::interpreter::accounting::comm_ledger::Surface>, u64>,
+) -> Result<RevAmount, RevStackError> {
+    let stacks = RevStacks::new(store.clone());
+    let mut charged: RevAmount = 0;
+    for (surface, phlo) in work {
+        let Some(surface) = surface else { continue };
+        let Some(owner) = WalletOwner::from_canonical_bytes(&surface.owner) else {
+            continue;
+        };
+        let owed = phlo
+            .checked_mul(surface.phlo_price)
+            .ok_or(RevStackError::InvalidAmount(RevAmount::MAX))?;
+        let payers = match owner {
+            WalletOwner::Compound(components) => components,
+            single => vec![single],
+        };
+        for payer in payers {
+            let drawn = owed.min(stacks.balance(&payer)?);
+            if drawn == 0 {
+                continue;
+            }
+            stacks.spend(&payer, drawn)?;
+            if payer.has_funders() {
+                super::funders::draw(store.as_ref(), &payer, drawn)?;
+            }
+            stacks.deposit(&compute_wallet_owner(), drawn)?;
+            charged = charged
+                .checked_add(drawn)
+                .ok_or(RevStackError::InvalidAmount(RevAmount::MAX))?;
+        }
+    }
+    Ok(charged)
+}

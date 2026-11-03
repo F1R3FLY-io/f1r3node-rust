@@ -516,9 +516,14 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
             .unwrap(),
         1_000
     );
+    let compute = rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner();
+    let in_close = read_wallet_balance(&rm, &post, &compute).await.unwrap()
+        - read_wallet_balance(&rm, &pre, &compute).await.unwrap()
+        - settlement.compute_credit;
+    assert!(in_close > 0, "the handle continuation fired in the close is paid by its installer");
     assert_eq!(
         balance(&rm, &post, &alice).await,
-        100_000 - 7_000 - settlement.debited()
+        100_000 - 7_000 - settlement.debited() - in_close
     );
     let users: Vec<_> = transfers(&record)
         .into_iter()
