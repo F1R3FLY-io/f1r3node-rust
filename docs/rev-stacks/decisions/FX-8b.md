@@ -47,3 +47,15 @@ Branch `patch/FX-8b`, lane A2, cut from `patch/FX-8`. The tip is the candidate f
 - `gated_executor_spec`: one more FX-7 test used the older cosignature API.
 - The cross-host fixture is written again. FX-7 and FX-10 change the v6 genesis contracts, so the earlier genesis does not replay.
 - The runbook gets two preconditions: clear `/tmp/casper-shared-lmdb-*` before each full run, and `touch models/build.rs` when checkouts share a target directory.
+
+## Verification (release, stable 1.97 with `RUSTC_BOOTSTRAP=1`, at 13e0abd85)
+
+Named spec files on the merged code: rholang `seal_record_spec` 21, `seal_wiring_spec` 7, `hash_seal_spec` 11, `rev_bond_spec` 2, `rev_genesis_spec` 10, `signed_region_spec` 13, `slot_spec` 4, `storage_left_in_space_spec` 5. casper `region_spec` and `gated_executor_spec` in `v6::`. All pass.
+
+Full suites, `/tmp` cleared of LMDB directories before the run:
+
+- rholang lib: 1,447 passed, 0 failed.
+- rspace_plus_plus: all pass.
+- casper lib: 847 passed, 0 failed.
+- casper `--test mod`: 1,243 passed, 0 failed, 20 ignored.
+- node: 466 passed, 0 failed.
