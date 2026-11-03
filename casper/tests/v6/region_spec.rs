@@ -861,9 +861,9 @@ async fn data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_p
         .find(|c| c.wallet == wallet(&mallory))
         .expect("the sender pays its own part");
     assert_eq!(
-        sender.compute_phlo + owner.compute,
+        sender.compute_phlo,
         second.runs[0].compute_phlo,
-        "the run's work is split between the sender and the owner, with nothing counted twice"
+        "the sender's limit counts only its own work, and the owner's work is charged apart"
     );
     let again = executor
         .replay(
