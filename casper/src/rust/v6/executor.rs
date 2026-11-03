@@ -34,6 +34,7 @@ use super::block_record::{BlockRecord, EnvelopeOutcome, ExecutedEnvelope, Record
 use super::body::StateHash;
 use super::conservation::Conservation;
 use super::footprint::{footprint, Footprint};
+use super::surface::Surfaces;
 use super::gate::{
     check_recorded, gate_block, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
     PhloLimitDemand, StoreReader,
@@ -55,6 +56,7 @@ pub struct ExecutedBlock {
     pub processed: Vec<ProcessedDeploy>,
     pub merged: Vec<bool>,
     pub footprints: Vec<Footprint>,
+    pub surfaces: Vec<Surfaces>,
     pub overdrawn: Vec<bool>,
     pub gate: GateOutcome,
     pub settlement: Settlement,
@@ -90,10 +92,12 @@ struct MergedBlock {
     overdrawn: Vec<bool>,
     journals: Vec<Vec<JournalEntry>>,
     footprints: Vec<Footprint>,
+    surfaces: Vec<Surfaces>,
 }
 
 struct EnvelopeEffect {
     run: EnvelopeRun,
+    surfaces: Surfaces,
     processed: ProcessedDeploy,
     number_channels: NumberChannelsEndVal,
     changes: Vec<HotStoreAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
@@ -231,11 +235,13 @@ impl Runs {
             .map_err(|e| invalid(format!("journal: {e}")))?;
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
+        let surfaces: Surfaces = ops.runtime.cost.comm_ledger().take_surfaces().into_iter().collect();
         let changes = runtime_cells(&ops.runtime)?.0.changes();
         let checkpointed = started.elapsed();
         self.give_back(false, Pooled { runtime: ops.runtime, base });
         Ok(EnvelopeEffect {
             run: envelope_run(&processed),
+            surfaces,
             processed,
             number_channels,
             changes,
@@ -273,10 +279,19 @@ impl Runs {
             .map_err(|e| invalid(format!("journal: {e}")))?;
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         release(&cells, &reservations)?;
+        let surfaces: Surfaces = replay
+            .runtime_ops
+            .runtime
+            .cost
+            .comm_ledger()
+            .take_surfaces()
+            .into_iter()
+            .collect();
         let changes = runtime_cells(&replay.runtime_ops.runtime)?.0.changes();
         self.give_back(true, Pooled { runtime: replay.runtime_ops.runtime, base });
         Ok(EnvelopeEffect {
             run: envelope_run(&recorded),
+            surfaces,
             processed: recorded,
             number_channels,
             changes,
@@ -294,6 +309,7 @@ impl EnvelopeExecutor {
             run: envelope_run(&processed),
             processed,
             number_channels: NumberChannelsEndVal::default(),
+            surfaces: Vec::new(),
             changes: Vec::new(),
             journal: Vec::new(),
             timing: Default::default(),
@@ -386,7 +402,9 @@ impl EnvelopeExecutor {
         let mut processed = Vec::with_capacity(effects.len());
         let mut journals = Vec::with_capacity(effects.len());
         let mut overdrawn = Vec::with_capacity(effects.len());
+        let mut surfaces = Vec::with_capacity(effects.len());
         for effect in effects {
+            surfaces.push(effect.surfaces);
             runs.push(effect.run);
             processed.push(effect.processed);
             journals.push(effect.journal);
@@ -394,6 +412,7 @@ impl EnvelopeExecutor {
         }
         Ok(MergedBlock {
             mid_root: merged.mid_root,
+            surfaces,
             runs,
             processed,
             kept,
@@ -409,6 +428,7 @@ impl EnvelopeExecutor {
         inputs: &[GateInput],
         gate: &GateOutcome,
         runs: &[EnvelopeRun],
+        surfaces: &[Surfaces],
         journals: &[Vec<JournalEntry>],
         kept: &[bool],
         block_data: &BlockData,
@@ -421,6 +441,7 @@ impl EnvelopeExecutor {
             inputs,
             &gate.entries,
             runs,
+            surfaces,
             journals,
             kept,
             &proposer,
@@ -453,13 +474,14 @@ impl EnvelopeExecutor {
             kept: merged,
             journals,
             footprints,
+            surfaces,
             overdrawn,
         } = self.merge(pre_root, effects, &admitted)?;
         timings.merge = started.elapsed();
         let started = std::time::Instant::now();
         let (settlement, settled_root) = self
             .settle(
-                &mid_root, &inputs, &gate, &runs, &journals, &merged, block_data,
+                &mid_root, &inputs, &gate, &runs, &surfaces, &journals, &merged, block_data,
             )
             .await?;
         timings.settlement = started.elapsed();
@@ -469,6 +491,7 @@ impl EnvelopeExecutor {
             processed,
             merged,
             footprints,
+            surfaces,
             overdrawn,
             gate,
             settlement,
@@ -781,7 +804,8 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
         .zip(&executed.overdrawn)
         .zip(&executed.gate.entries)
         .zip(&executed.footprints)
-        .map(|((((run, merged), overdrawn), gate), footprint)| RecordEntry {
+        .zip(&executed.surfaces)
+        .map(|(((((run, merged), overdrawn), gate), footprint), surfaces)| RecordEntry {
             executed: ExecutedEnvelope {
                 envelope_id: run.envelope_sig.clone(),
                 outcome: outcome(
@@ -796,6 +820,7 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
                 compute_phlo: run.compute_phlo,
                 user_log: run.user_log.clone(),
                 footprint: footprint.clone(),
+                surfaces: surfaces.clone(),
             },
         })
         .collect()

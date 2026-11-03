@@ -682,3 +682,33 @@ async fn a_stored_contract_that_sends_the_same_datum_on_each_firing_keeps_mergin
     }
     assert_eq!(outcomes(&records[4]), vec![EnvelopeOutcome::Completed; 2]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replay_refuses_a_record_whose_surface_attribution_is_forged() {
+    let host = launch(4).await;
+    let (store_block, stored) = outcomes_of(&host, 1, &["contract @\"svc\"(_) = { Nil }"]).await;
+    drop(store_block);
+    let call = offer(&payer(1), "@\"svc\"!(0)", 201);
+    let target = block(&host, 2, vec![call]);
+    let record = host.executor.execute(stored.post_root(), &target).await.unwrap();
+    assert_eq!(host.executor.replay(&record, &target).await.unwrap(), *record.post_root());
+    assert_eq!(record.entries()[0].executed.surfaces.len(), 2);
+    let mut forged = record.entries().to_vec();
+    forged[0].executed.surfaces.retain(|(s, _)| {
+        s.as_ref().is_some_and(|s| s.envelope.as_slice() == forged_sig(&target))
+    });
+    let forged = BlockRecord::new(
+        record.target().clone(),
+        record.pre_root().clone(),
+        record.mid_root().clone(),
+        record.post_root().clone(),
+        forged,
+        record.system_deploys().to_vec(),
+    )
+    .and_then(|r| r.with_gate(record.gate().to_vec()))
+    .unwrap()
+    .with_settlement(record.settlement().unwrap().clone());
+    assert!(host.executor.replay(&forged, &target).await.is_err());
+}
+
+fn forged_sig(target: &BlockMessage) -> Vec<u8> { target.body.deploys[0].deploy.sig.to_vec() }

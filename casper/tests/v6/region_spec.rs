@@ -723,9 +723,10 @@ async fn a_fired_continuation_draws_on_its_author_not_on_the_firing_region() {
     assert!(!second.processed[0].is_failed);
     let root = &second.settled_root;
     assert_eq!(rev_at(&rm, root, "slot").await, 1);
+    assert!(paid(&second, &bob) > 0);
     assert_eq!(
         balance(&rm, root, &bob).await,
-        100_000 - paid(&first, &bob) - 1
+        100_000 - paid(&first, &bob) - paid(&second, &bob) - 1
     );
     assert_eq!(
         balance(&rm, root, &alice).await,
@@ -821,7 +822,7 @@ async fn a_seal_sent_as_data_to_an_owners_contract_draws_on_no_wallet() {
     assert!(second.settlement.transfers.is_empty());
     assert_eq!(
         balance(&rm, root, &alice).await,
-        100_000 - paid(&first, &alice)
+        100_000 - paid(&first, &alice) - paid(&second, &alice)
     );
     let again = executor
         .replay(
@@ -1012,5 +1013,83 @@ async fn a_sealed_stored_receive_that_sends_the_same_datum_on_each_firing_keeps_
             .expect("the block replays");
         assert_eq!(again.settled_root, played.settled_root);
         root = played.settled_root.clone();
+    }
+}
+
+fn surface_of(who: &Party, envelope: &Signed<DeployData>, price: u64) -> rholang::rust::interpreter::accounting::comm_ledger::Surface {
+    rholang::rust::interpreter::accounting::comm_ledger::Surface {
+        owner: who.owner.canonical_bytes(),
+        envelope: envelope.sig.to_vec(),
+        phlo_price: price,
+    }
+}
+
+#[tokio::test]
+async fn each_surface_of_a_comm_pays_one_cell_at_its_origin_price() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let store = envelope(r#"contract @"svc"(_) = { Nil }"#, 1, &alice, 1_000, 1);
+    let first = executor
+        .execute(&pre, vec![store.clone()], block_data(&proposer))
+        .await
+        .unwrap();
+    let call = envelope(r#"@"svc"!(0)"#, 2, &bob, 1_000, 2);
+    let second = executor
+        .execute(&first.settled_root, vec![call.clone()], block_data(&proposer))
+        .await
+        .unwrap();
+    let mut expected = vec![
+        (Some(surface_of(&alice, &store, 1)), 1),
+        (Some(surface_of(&bob, &call, 2)), 1),
+    ];
+    expected.sort();
+    assert_eq!(second.surfaces[0], expected);
+    assert_eq!(second.settlement.charges[0].comm_phlo, 1);
+    let alice_cell = &second.settlement.surface_charges;
+    assert_eq!(alice_cell.len(), 1);
+    assert_eq!(alice_cell[0].purse, alice.owner);
+    assert_eq!((alice_cell[0].cells, alice_cell[0].owed, alice_cell[0].drawn), (1, 1, 1));
+    assert!(second.settlement.is_balanced());
+    assert_eq!(paid(&second, &alice), 1);
+    assert_eq!(
+        balance(&rm, &second.settled_root, &alice).await,
+        balance(&rm, &first.settled_root, &alice).await - 1
+    );
+    let again = executor
+        .replay(
+            &first.settled_root,
+            second.processed.clone(),
+            &second.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.surfaces, second.surfaces);
+    assert_eq!(again.settlement, second.settlement);
+    assert_eq!(again.settled_root, second.settled_root);
+}
+
+#[tokio::test]
+async fn surfaces_under_one_seal_pay_once() {
+    let (alice, proposer) = (party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    for (ts, term) in [
+        (1, r#"new x in { x!(1) | for (_ <- x) { Nil } }"#),
+        (
+            2,
+            r#"new d(`rho:system:deployerId`) in { {% for (_ <- @"q") { Nil } %}[d] | @"q"!(1) }"#,
+        ),
+    ] {
+        let one = envelope(term, ts, &alice, 1_000, 1);
+        let played = executor
+            .execute(&pre, vec![one.clone()], block_data(&proposer))
+            .await
+            .unwrap();
+        assert!(!played.processed[0].is_failed, "{term}");
+        assert_eq!(played.surfaces[0], vec![(Some(surface_of(&alice, &one, 1)), 1)], "{term}");
+        assert!(played.settlement.surface_charges.is_empty());
+        assert_eq!(played.settlement.charges[0].comm_phlo, 1);
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
 
@@ -12,6 +13,24 @@ struct LedgerState {
     boxcar: Option<NonZeroU64>,
     pending: u64,
     tally: CommTally,
+    surfaces: BTreeMap<Option<Surface>, u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Surface {
+    pub owner: Vec<u8>,
+    pub envelope: Vec<u8>,
+    pub phlo_price: u64,
+}
+
+impl Surface {
+    pub fn of(record: &super::rev_stack::seal::SealRecord) -> Self {
+        Surface {
+            owner: record.owner.canonical_bytes(),
+            envelope: record.origin.envelope.clone(),
+            phlo_price: record.origin.phlo_price,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -36,6 +55,18 @@ impl CommLedger {
         }
     }
 
+    pub fn on_comm_between(&self, surfaces: BTreeSet<Option<Surface>>) {
+        self.on_comm();
+        let mut s = self.lock();
+        for surface in surfaces {
+            *s.surfaces.entry(surface).or_insert(0) += 1;
+        }
+    }
+
+    pub fn take_surfaces(&self) -> BTreeMap<Option<Surface>, u64> {
+        std::mem::take(&mut self.lock().surfaces)
+    }
+
     pub fn take(&self) -> CommTally {
         let mut s = self.lock();
         if s.pending > 0 {
@@ -50,6 +81,7 @@ impl CommLedger {
         let mut s = self.lock();
         s.pending = 0;
         s.tally = CommTally::default();
+        s.surfaces.clear();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, LedgerState> {
@@ -93,5 +125,34 @@ mod tests {
         ledger.on_comm();
         ledger.reset();
         assert_eq!(ledger.take(), CommTally::default());
+    }
+}
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    fn surface(owner: u8) -> Option<Surface> {
+        Some(Surface {
+            owner: vec![owner],
+            envelope: vec![9],
+            phlo_price: 2,
+        })
+    }
+
+    #[test]
+    fn each_distinct_surface_of_a_comm_is_counted_once() {
+        let ledger = CommLedger::default();
+        ledger.on_comm_between(BTreeSet::from([surface(1), surface(2)]));
+        ledger.on_comm_between(BTreeSet::from([surface(1)]));
+        ledger.on_comm_between(BTreeSet::from([None, surface(2)]));
+        assert_eq!(ledger.take().comms, 3);
+        assert_eq!(
+            ledger.take_surfaces(),
+            BTreeMap::from([(None, 1), (surface(1), 2), (surface(2), 2)])
+        );
+        ledger.on_comm_between(BTreeSet::from([surface(1)]));
+        ledger.reset();
+        assert!(ledger.take_surfaces().is_empty());
     }
 }

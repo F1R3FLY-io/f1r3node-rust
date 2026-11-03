@@ -10,6 +10,7 @@ pub struct LeftInSpace {
     continuations: HashMap<Vec<u8>, Vec<Payer>>,
     taken: HashMap<Vec<u8>, u32>,
     taken_continuations: HashMap<Vec<u8>, u32>,
+    announced: HashMap<Vec<u8>, Vec<Payer>>,
 }
 
 fn add(items: &mut HashMap<Vec<u8>, u32>, id: &[u8]) {
@@ -83,6 +84,17 @@ impl LeftInSpace {
     }
 
     pub fn restores(&mut self, id: &[u8]) -> bool { take(&mut self.taken, id) }
+
+    pub fn announce_datum(&mut self, id: &[u8], payer: Payer) { keep(&mut self.announced, id, payer); }
+
+    pub fn withdraw_announcement(&mut self, id: &[u8]) { release(&mut self.announced, id); }
+
+    pub fn datum_payer(&self, id: &[u8]) -> Option<Payer> {
+        self.data
+            .get(id)
+            .or_else(|| self.announced.get(id))
+            .and_then(|payers| payers.first().cloned())
+    }
 }
 
 #[cfg(test)]

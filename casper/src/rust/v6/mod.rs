@@ -25,6 +25,7 @@ pub mod run;
 pub mod settle;
 pub mod slash;
 pub mod store;
+pub mod surface;
 pub mod validators;
 pub mod validity;
 
