@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1340,6 +1340,66 @@ Lane C's "early stop" known issue no longer applies.
 **Gate label:** replay that accepts a trace that fails one of the three checks is a divergence from r13 §6.3, so it is **blocking** under Decision 88.
 
 **Note on the forged-amount check:** r13 says that replay checks payability "at the drawn amount the trace records". The forged-amount check needs one more step. Replay must compute what t has drawn as it follows the trace, and compare that sum with the recorded amount. If replay only reads the recorded amount, then a forged amount that is too high can make a payable step look unpayable. An early stop would then pass. FX-15 must show that replay computes the drawn amount, and the pinning test shows that it compares the two.
+
+## Revision 16 (actions A-8 and A-9): the client's phlo limit on FX-12, the FX-12 merge into FX-14, and the FX-8b suite results
+
+- **Commits audited:**
+  - `patch/FX-12` at `eab30238f`: the client's phlo limit counts only its own surfaces, and foreign work in a run has its own bound.
+  - `patch/FX-14` merge `cc3168032`, with parents `2bfaaf942` (the FX-14 follow-up) and `eab30238f`.
+  - `patch/FX-8b` at `4e20959b8`, suite results only.
+- **Reference:** design r13 §6.3 (publications `95844af`), Decisions 83 to 89, plan r8.12.
+- **Method:** a code reading of the commits and the decision logs. No tests were run.
+- **Not yet landed:** `patch/FX-15`, a fix for F39, and a ruling on question 13 (D8b). FX-8b does not yet contain the FX-14 follow-up or `eab30238f`. `patch/Q-32` (`e6abd727b`, lane A2's review of the FX-15 refusal event) goes through lane C and lane A2 and is not audited here.
+
+### FX-8b suite results (revision 15, requirement 7)
+
+**Met.** Lane A2 posts the full suites for the tip `aea9b529d`:
+- rholang lib 1,451 passed
+- rspace_plus_plus 421 passed
+- casper lib 851 passed
+- casper `--test mod` 1,260 passed
+- node 466 passed
+
+None failed.
+
+### The client's phlo limit (FX-12 decisions 9 and 10)
+
+**What the commit does:** `CostManager` has an own origin, which the executor sets to the envelope's signature for each play and replay run. A charge under a record from another envelope goes into the work tally, but it does not use up the client's phlo limit. It counts against a separate per-run bound, `FOREIGN_WORK_BUDGET`, which equals the default block demand cap. When foreign work passes that bound, the run stops with `OutOfPhlogistons` and the envelope is `Exhausted`. A charge with no record, or under the envelope's own records, counts against the client's limit as before.
+
+| Check | Result |
+|---|---|
+| Foreign work no longer counts against the client's phlo limit | **Holds.** `forms_spec::work_that_stored_code_pays_for_does_not_count_against_the_clients_limit` fires a continuation whose work is more than Alice's limit. Alice's run is not exhausted, and her charge and her run's meter stay within her limit. The test replays. The unit test `only_the_clients_own_work_uses_up_its_limit_and_foreign_work_has_its_own_bound` covers the two meters and the legacy runtime. |
+| A surface with no record still counts as the client's (Decision 81) | **Holds.** A charge with no record is not foreign. |
+| The own origin is cleared before the runtime goes back to the pool | **Holds.** `give_back` calls `set_own_origin(None, 0)`. |
+| F38, second half (the `Exhausted` test mixes two meters) | **Closed.** `run.compute_phlo` now holds the client's own work only. The first half of F38 (refund keying) stays a known issue. |
+
+**Lane B's finding in the FX-12 log:** lane B labels as blocking a High safety finding in its own first version of decision 9. The finding is that a continuation that never stops could run without limit. Decision 10 fixes it in the same commit. **Agreed.** The finding is closed on FX-12.
+
+**F40 after this commit — still blocking.** The bound in decision 10 is a constant. It is not the wallet at t.
+- Under the bound, work under t still runs when t's wallet cannot pay, and settlement still caps the draw.
+- At the bound, the whole run stops, and that includes the client's own work.
+
+r13 §6.3 says that work under t stops when the wallet at t cannot pay, and that no shortfall goes to another party. Lane B's log calls the bound an interim measure until the Decision 86 gate. **Label: blocking**, as part of F40. The reason is the same as in revision 14. FX-15 must replace the bound with the per-step gate at t, or keep it only as an upper bound on top of that gate. In both cases, the client's own work must not stop because of work under another membrane.
+
+### The FX-12 merge into FX-14
+
+**Clean.** The combined diff is empty. FX-14 at `cc3168032` contains the FX-14 follow-up and `eab30238f`. F43 (narrowed) is unchanged, because the close still sends `handleOf (pk)` on the registration's `handleCh`.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| F40: work is not gated step by step at t. The interim bound is a constant, and it stops the client's own work. | **Blocking** | Open. It waits for FX-15. |
+| F39: an own key whose owner the gate did not commit is charged to the client | **Blocking** | Open. No fix has landed. |
+| D8b: a COMM that the close fires pays no cell | **Blocking** until question 13 is ruled | Open. |
+| F38, first half (refund keying) | Known issue | Open. |
+| F43 (narrowed) | Known issue | Open. |
+| The `for` form under `# P` | Known issue | Open. |
+| Revision 15, requirement 7 | — | Met. |
+| F38, second half. Lane B's finding about the unbounded foreign run. | — | Closed on FX-12. |
+
+The next merge into FX-8b must take the FX-14 follow-up and `eab30238f`. A-8 re-audits that merge.
+
 
 ## Open questions for review
 
