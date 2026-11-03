@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1488,6 +1488,94 @@ The fix is FX-16 (lane B). D10 stays **blocking** until FX-16 lands and passes t
 - **Bootstrap (in FX-16):** the genesis block and its system deploys draw no charge.
 
 
+## Revision 17 (actions A-8 and A-9): the FX-14 follow-up merge into FX-8b, and FX-15 (replay and settlement sides)
+
+- **Commits audited:**
+  - `patch/FX-8b` merge `11c9cb42f` (parents `4e20959b8` and `cc3168032`) and the log commit `4a74b0e34`.
+  - `patch/FX-15-replay` at `b5537b44b` (lane A2): `8bee6cdde`, the Decision 89 checks, and `b5537b44b`, the close's `SystemGate` and the cover check.
+  - `patch/FX-15-settle` at `0f1d037f7` (lane B), on `8bee6cdde`.
+- **Reference:** design r16 §6.3 (publications `6a4c777`), Decisions 86, 88, 89, 94 and 96.
+- **Method:** a code reading of the commits and the two FX-15 logs. No tests were run.
+- **Not yet landed:**
+  - Lane C's play-side meter and refusal event. `refusals_in` returns no refusals.
+  - FX-16.
+  - A fix for F39.
+  - The merge of `dev` into FX-8b.
+
+  `patch/Q-32` (`0579f558b`, a memo on Decision 96) is not audited here.
+
+### The FX-14 follow-up merge into FX-8b
+
+**Holds.** The merge commit has one conflict, in the FX-12 log. In `executor.rs`, `run` and `replay_one` keep both `set_funding` (D79) and `set_own_origin` (FX-12). `give_back` clears the own origin, and each run clears the funding oracle before the runtime goes back to the pool. Lane A2 posts the v6 tests (88 passed) and `rev_bond_spec` (3 passed). F42 stays closed. F43 (narrowed) does not change, because the close still sends the handle on `handleCh`.
+
+**Label note:** lane A2 labels `FOREIGN_WORK_BUDGET` a known issue. This audit keeps it **blocking** as part of F40 (revision 16). The reason: a constant bound that stops the client's own work diverges from r16 §6.3, which says that work under t stops at t's wallet and that no shortfall goes to another party. The two labels agree that FX-15 replaces the bound.
+
+### FX-15: what has landed
+
+FX-15 is in three parts. Only the replay and settlement parts have landed. The gate itself, which is lane C's meter and refusal event, has not landed. So the first three gate checks have nothing to read yet:
+- Each step under t is admitted against the wallet at t.
+- Work under t stops when the wallet cannot pay.
+- The close gates the stored continuations that it fires.
+
+### The Decision 89 replay checks (lane A2)
+
+`check_stop` uses A, the free balance of the membrane's purse at the pre-state less the gate table, in phlo at the origin price. It also uses D, the drawn amount on the refusal, c, the step cost, and W, the gross work that replay observes under the membrane.
+
+| r16 check | Code | Unit test | Trace-alteration test |
+|---|---|---|---|
+| (a) Early stop | refuse if A − D ≥ c | `a_stop_at_a_payable_step_is_refused`, `a_drawn_amount_below_the_stop_point_is_refused` | **None.** |
+| (b) Forged drawn amount | refuse if D > W | `a_drawn_amount_above_the_replayed_work_is_refused` | **None.** |
+| (c) Unpayable admitted step | refuse if D > A on a stopped membrane. `check_unstopped` (W ≤ A) exists, but replay does not call it. | `an_admission_past_the_balance_is_refused` | **None.** |
+| The refused step is real | replay must reach the step at the recorded cost | `a_refused_step_that_replay_does_not_reach_is_refused`, `a_forged_step_cost_is_refused` | **None.** |
+
+The unit tests call the check functions directly. They do not alter an honest trace and replay it, because no trace can carry a refusal until lane C's event type lands. Lane A2's log names that integration test as open.
+
+**F45 — blocking: replay checks the drawn amount against a bound, not against a running total.**
+- **What r16 says:** r16 §6.3 (the r14 sentence) says that replay adds up what each membrane has drawn, and accepts the trace only if that running total *equals* the amount recorded on each refusal.
+- **What the code does:** the code accepts any D with A − c < D ≤ min(A, W). Lane A2's log gives the reason. Replay does not stop a membrane on its own meter, because another interleaving can run more compute before the next IO step. So W can be more than the drawn amount at the true stop point.
+- **Effect:** a recorded D that is higher than the true drawn amount, but not higher than W, passes. That D can make a payable step look unpayable. That is an early stop that replay accepts.
+- **Reason for the label:** replay accepting a trace that fails check (a) or (b) is the blocking case of the Decision 89 section.
+- **Proposed resolution:** a ruling on one of two paths. Either replay computes the running total at the refusal point exactly, as r16 says, or the design admits a bounded window and states its bound. Escalated, question 14.
+
+**Check (c) on unstopped membranes stays blocking** as part of F40. `check_unstopped` is not called. Lane A2's log says that the call must turn on with lane C's meter, or replay rejects blocks that FX-12 accepts today.
+
+**Refusal that names the client:** `v6::stops::check` rejects a refusal of the client's own membrane. No test covers this. This is a test gap, and it is not labelled.
+
+### Settlement of a stopped membrane (lane B)
+
+`settled_work` takes a stopped membrane's work from the record, and bounds it by the least D of the membrane's refusals. A stop without recorded work is refused. The other membranes keep the replayed work. Unit tests cover each case.
+
+**F46 — blocking: the recorded work of a stopped membrane has no lower bound.** Lane B labels this a known issue. The reason given: nobody is overcharged, and the loss is fee income of at most D for each stopped membrane. **This audit labels it blocking.**
+- **Reason:** r16 §6.3 says that all Rholang is charged and that no step runs unpaid. A record that reports less work than ran under t lets steps run unpaid, up to D for each stopped membrane. That is a §6.3 divergence, whatever the authority effect.
+- **Proposed resolution:** the same ruling as F45 (question 14). A replay that knows the running total at the refusal also knows a lower bound. Lane B's log proposes one: net work ≥ D − (refunds under the membrane in replay).
+
+### The close (lane A2, `b5537b44b`)
+
+- `compute_state_gated` and `replay_compute_state_gated` take a `SystemGate`, which has the funding oracle, the payer and a cover cell, and the stop check. The legacy paths pass no gate.
+- The payer is the block sender's wallet.
+- The stop check reads `BlockPurses` at the settled root, with an empty commitment table, because settlement releases the block's holds.
+- `stops::close_covered` runs after the close, in execute and in replay. A proposer that owes more than it holds makes execute return an invalid-block error and replay return a mismatch.
+
+This holds as a frame for Decision 96. Three items wait for other lanes:
+- FX-16 records the charge. Until then, the cover check passes because nothing is recorded.
+- The funding oracle in the close is `None` until lane C sets it, so D8b stays open.
+- A cached replay of the close skips both checks. Lane A2's reason: only a block that this node played is in the cache, and play ran both checks. **Accepted.**
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| F40: no step-by-step gate at t (lane C's meter), `check_unstopped` not called, the constant `FOREIGN_WORK_BUDGET` | **Blocking** | Open |
+| F45: the drawn amount is checked against a bound, not the running total | **Blocking** | New. Question 14. |
+| F46: no lower bound on a stopped membrane's recorded work | **Blocking** | New. Lane B labels it a known issue. Question 14. |
+| No trace-alteration tests for checks (a) to (c) | **Blocking** | Open until lane C's event type lands |
+| D8b: the close's funding oracle and the cells of fired continuations | **Blocking** | Open |
+| D10: the close's PoS code charged to the proposer | **Blocking** | Open. Waits for FX-16. The frame is in `b5537b44b`. |
+| F39 | **Blocking** | Open |
+| F38 (refund keying), F43 (narrowed), F44, the `for` form under `# P` | Known issue | Open |
+| The `dev` merge into FX-8b | Watch item | Not merged |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -1504,3 +1592,4 @@ The fix is FX-16 (lane B). D10 stays **blocking** until FX-16 lands and passes t
 12. **F39 and F33:** answered on 2026-11-03 (Decision 83: the wallet at the seal pays). Is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
 13. **D8b:** answered on 2026-11-03 (Decision 94: the close is charged, its undecorated code to the proposer and stored continuations to their installers). Is the close-block system deploy exempt from the one-cell charge of r12 §6.3, or must a COMM that the close fires pay its cells?
 
+14. **F45 and F46:** replay does not reproduce the running total of a stopped membrane exactly, because interleavings differ before the next IO step. Must replay compute the exact running total at each refusal, as r16 §6.3 says? Or does the design admit a bounded window for the drawn amount and for the recorded work, and if so, what bound?
