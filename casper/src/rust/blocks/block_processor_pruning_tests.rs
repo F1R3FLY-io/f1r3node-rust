@@ -18,6 +18,7 @@ struct ReadProbeStore {
     inner: Arc<dyn KeyValueStore>,
     tracked: Arc<HashSet<Vec<u8>>>,
     reads: Arc<std::sync::atomic::AtomicUsize>,
+    on_contains: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl KeyValueStore for ReadProbeStore {
@@ -67,6 +68,9 @@ impl KeyValueStore for ReadProbeStore {
     fn non_empty(&self) -> Result<bool, KvStoreError> { self.inner.non_empty() }
 
     fn contains(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<bool>, KvStoreError> {
+        if let Some(on_contains) = &self.on_contains {
+            on_contains();
+        }
         self.inner.contains(keys)
     }
 
@@ -395,6 +399,70 @@ async fn deferred_dependency_survives_recovery_cooldown() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn deferred_worker_releases_entries_lock_before_store_reads() {
+    let mut fixture = Fixture::new().await;
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+    let original = fixture
+        .dependencies
+        .block_store
+        .soak_capture_store()
+        .clone();
+    let state = fixture.dependencies.deferred_pending.clone();
+    let child = fixture.child.clone();
+    let sender = parent.sender.clone();
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let unlocked = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let inserted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed_reads = reads.clone();
+    let observed_unlocked = unlocked.clone();
+    let observed_inserted = inserted.clone();
+    fixture.dependencies.block_store = KeyValueBlockStore::new(
+        Arc::new(ReadProbeStore {
+            inner: original.clone(),
+            tracked: Arc::new(HashSet::new()),
+            reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            on_contains: Some(Arc::new(move || {
+                observed_reads.fetch_add(1, Ordering::Relaxed);
+                match state.entries.try_lock() {
+                    Ok(mut entries) => {
+                        if !observed_inserted.swap(true, Ordering::Relaxed) {
+                            entries.insert(child.clone(), (sender.clone(), 1));
+                        }
+                    }
+                    Err(_) => observed_unlocked.store(false, Ordering::Relaxed),
+                }
+            })),
+        }),
+        original,
+    );
+    fixture.dependencies.defer_pending(&parent);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .dependencies
+            .block_retriever
+            .was_requested_as_dependency(&fixture.parent)
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(reads.load(Ordering::Relaxed) > 0);
+    assert!(unlocked.load(Ordering::Relaxed));
+    assert!(inserted.load(Ordering::Relaxed));
+    assert!(fixture
+        .dependencies
+        .deferred_pending
+        .entries
+        .lock()
+        .unwrap()
+        .contains_key(&fixture.child));
 }
 
 #[tokio::test]
@@ -772,6 +840,7 @@ async fn overflow_prune_does_not_decode_ready_blocks_on_later_passes() {
             inner: original.clone(),
             tracked: Arc::new(hashes.clone()),
             reads: reads.clone(),
+            on_contains: None,
         }),
         original,
     );

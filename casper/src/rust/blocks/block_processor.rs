@@ -1427,32 +1427,41 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         *worker = Some(tokio::spawn(async move {
             loop {
                 let Some(state) = state.upgrade() else { break };
-                let ready = {
-                    let mut entries = state.entries.lock().unwrap_or_else(|e| e.into_inner());
-                    let pending = block_store.pending_blocks();
-                    let mut capacity = pending.available_capacity();
-                    let mut displacement_request = false;
-                    let mut ready = Vec::new();
-                    entries.retain(|hash, (sender, bytes)| {
-                        let has_dependents = casper_buffer
-                            .get_children(&BlockHashSerde(hash.clone()))
-                            .is_some_and(|children| !children.is_empty());
-                        let hash_serde = BlockHashSerde(hash.clone());
-                        if !has_dependents
-                            && !casper_buffer.contains(&hash_serde)
-                            && !casper_buffer.is_pendant(&hash_serde)
-                        {
-                            return false;
+                let candidates: Vec<_> = state
+                    .entries
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .map(|(hash, entry)| (hash.clone(), entry.clone()))
+                    .collect();
+                let pending = block_store.pending_blocks();
+                let mut budget = pending.recovery_budget();
+                let mut ready = Vec::new();
+                let mut discard = Vec::new();
+                for (hash, (sender, bytes)) in candidates {
+                    let has_dependents = casper_buffer
+                        .get_children(&BlockHashSerde(hash.clone()))
+                        .is_some_and(|children| !children.is_empty());
+                    let hash_serde = BlockHashSerde(hash.clone());
+                    if !has_dependents
+                        && !casper_buffer.contains(&hash_serde)
+                        && !casper_buffer.is_pendant(&hash_serde)
+                    {
+                        discard.push((hash, sender, bytes));
+                        continue;
+                    }
+                    match block_store.contains_key(&hash) {
+                        Ok(true) => {
+                            discard.push((hash, sender, bytes));
+                            continue;
                         }
-                        match block_store.contains_key(hash) {
-                            Ok(true) => return false,
-                            Err(err) => {
-                                tracing::warn!(%err, "Could not inspect deferred pending block");
-                                return true;
-                            }
-                            Ok(false) => {}
+                        Err(err) => {
+                            tracing::warn!(%err, "Could not inspect deferred pending block");
+                            continue;
                         }
-                        if casper_buffer
+                        Ok(false) => {}
+                    }
+                    if casper_buffer
                             .get_parents(&hash_serde)
                             .is_some_and(|parents| {
                                 parents.iter().any(|parent| {
@@ -1466,24 +1475,28 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                                 })
                             })
                         {
-                            return true;
+                            continue;
                         }
-                        if !displacement_request && capacity.reserve(sender, *bytes) {
-                            ready.push((hash.clone(), sender.clone(), *bytes));
-                            return false;
+                    if budget.reserve(&sender, bytes) {
+                        ready.push((hash, sender, bytes));
+                    }
+                }
+                {
+                    let mut entries = state.entries.lock().unwrap_or_else(|e| e.into_inner());
+                    for (hash, sender, bytes) in discard {
+                        if entries.get(&hash) == Some(&(sender, bytes)) {
+                            entries.remove(&hash);
                         }
-                        if ready.is_empty()
-                            && pending
-                                .can_insert_solicited_without_displacing_solicited(sender, *bytes)
-                        {
-                            displacement_request = true;
-                            ready.push((hash.clone(), sender.clone(), *bytes));
-                            return false;
+                    }
+                    ready.retain(|(hash, sender, bytes)| {
+                        if entries.get(hash) == Some(&(sender.clone(), *bytes)) {
+                            entries.remove(hash);
+                            true
+                        } else {
+                            false
                         }
-                        true
                     });
-                    ready
-                };
+                }
                 let mut retry_deferred = false;
                 for (hash, sender, bytes) in ready {
                     let requested = match block_retriever.try_recover_dependency(hash.clone()).await

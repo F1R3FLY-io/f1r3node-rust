@@ -158,6 +158,32 @@ pub struct PendingCapacity {
     max_per_sender: usize,
 }
 
+pub struct PendingRecoveryBudget<'a> {
+    pending: &'a PendingBlocks,
+    capacity: PendingCapacity,
+    requests: usize,
+    displacement_requested: bool,
+}
+
+impl PendingRecoveryBudget<'_> {
+    pub fn reserve(&mut self, sender: &Bytes, bytes: usize) -> bool {
+        if !self.displacement_requested && self.capacity.reserve(sender, bytes) {
+            self.requests += 1;
+            return true;
+        }
+        if self.requests == 0
+            && self
+                .pending
+                .can_insert_solicited_without_displacing_solicited(sender, bytes)
+        {
+            self.displacement_requested = true;
+            self.requests += 1;
+            return true;
+        }
+        false
+    }
+}
+
 impl PendingCapacity {
     pub fn reserve(&mut self, sender: &Bytes, bytes: usize) -> bool {
         let occupied = self.per_sender.get(sender).copied().unwrap_or(0);
@@ -375,7 +401,16 @@ impl PendingBlocks {
         }
     }
 
-    pub fn can_insert_solicited_without_displacing_solicited(
+    pub fn recovery_budget(&self) -> PendingRecoveryBudget<'_> {
+        PendingRecoveryBudget {
+            pending: self,
+            capacity: self.available_capacity(),
+            requests: 0,
+            displacement_requested: false,
+        }
+    }
+
+    fn can_insert_solicited_without_displacing_solicited(
         &self,
         sender: &Bytes,
         bytes: usize,
