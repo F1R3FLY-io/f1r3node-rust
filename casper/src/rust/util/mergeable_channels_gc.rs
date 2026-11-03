@@ -855,7 +855,7 @@ mod tests {
             let height_of = |block_hash: &BlockHash| dag.get(block_hash).map(|entry| entry.0);
 
             if let Some(anchor) = deepest_common_strict_ancestor(latest.clone(), parent_of, height_of) {
-                        let admitted = walk(&dag, anchor, 0).expect("walk");
+                let admitted = walk(&dag, anchor, 0).expect("walk");
                 let behind_everyone = strict_ancestors_of_every(&dag, &latest);
                 for block_hash in &admitted {
                     prop_assert!(
@@ -1252,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parent_the_dag_does_not_hold_below_the_walk_bound_does_not_fail_the_pass() {
+    fn a_secondary_parent_this_node_does_not_hold_does_not_fail_the_pass() {
         let dag = linear_chain_dag();
         {
             let mut bms = dag.block_metadata_index.write();
