@@ -1,13 +1,11 @@
 // Quarantine of undecodable records in the node-local deploy stores. The
 // behavior and the operator procedure are in docs/block-storage/README.md.
 //
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
-use parking_lot::Mutex;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::{ByteBuffer, ByteString};
@@ -20,15 +18,6 @@ pub const RESTORED_RECORDS_METRIC: &str = "deploy_store.restored_records";
 const MAX_LOGGED_RECORDS_PER_SCAN: usize = 10;
 const MAX_LOGGED_KEY_BYTES: usize = 32;
 const MAX_LOGGED_ERROR_CHARS: usize = 160;
-const MAX_VERIFIED_RECORDS: usize = 16_384;
-const VERIFICATION_PREFIX: &[u8] = b"F1R3VER\x01";
-
-#[derive(Default)]
-struct VerificationRead {
-    learned: Vec<(ByteBuffer, ByteBuffer)>,
-    unavailable: bool,
-    known: Option<BTreeMap<ByteBuffer, ByteBuffer>>,
-}
 
 struct RecordError {
     reason: &'static str,
@@ -46,10 +35,6 @@ struct DamagedRecord {
 pub(super) struct DeployRecordQuarantine {
     store_name: &'static str,
     quarantine: Arc<dyn KeyValueStore>,
-    verified: Arc<Mutex<BTreeMap<ByteBuffer, Blake2b256Hash>>>,
-    verified_store: Option<Arc<dyn KeyValueStore>>,
-    #[cfg(test)]
-    verified_capacity: usize,
     #[cfg(test)]
     signature_checks: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -59,150 +44,8 @@ impl DeployRecordQuarantine {
         Self {
             store_name,
             quarantine,
-            verified: Arc::new(Mutex::new(BTreeMap::new())),
-            verified_store: None,
-            #[cfg(test)]
-            verified_capacity: MAX_VERIFIED_RECORDS,
             #[cfg(test)]
             signature_checks: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        }
-    }
-
-    pub(super) fn with_verified_store(mut self, store: Arc<dyn KeyValueStore>) -> Self {
-        self.verified_store = Some(store);
-        self
-    }
-
-    fn proof(fingerprint: &Blake2b256Hash) -> ByteBuffer {
-        let mut proof = VERIFICATION_PREFIX.to_vec();
-        proof.extend_from_slice(&fingerprint.0);
-        proof
-    }
-
-    pub(super) fn persist_verified(&self, records: Vec<(ByteBuffer, Blake2b256Hash)>) {
-        self.persist_proofs(
-            records
-                .into_iter()
-                .map(|(key, fingerprint)| (key, Self::proof(&fingerprint)))
-                .collect(),
-        );
-    }
-
-    fn persist_proofs(&self, records: Vec<(ByteBuffer, ByteBuffer)>) {
-        let Some(store) = &self.verified_store else {
-            return;
-        };
-        if records.is_empty() {
-            return;
-        }
-        if let Err(error) = store.put(records) {
-            tracing::warn!(store = self.store_name, %error, "Could not persist deploy verification evidence");
-        }
-    }
-
-    fn persisted_match(
-        &self,
-        key: &ByteBuffer,
-        fingerprint: &Blake2b256Hash,
-        read: &mut VerificationRead,
-    ) -> bool {
-        let Some(store) = &self.verified_store else {
-            return false;
-        };
-        if read.unavailable {
-            return false;
-        }
-        if let Some(known) = &read.known {
-            return known.get(key) == Some(&Self::proof(fingerprint));
-        }
-        match store.get_one(key) {
-            Ok(proof) => proof.as_ref() == Some(&Self::proof(fingerprint)),
-            Err(error) => {
-                read.unavailable = true;
-                tracing::warn!(store = self.store_name, %error, "Could not read deploy verification evidence");
-                false
-            }
-        }
-    }
-
-    fn load_and_prune_proofs(
-        &self,
-        records: &BTreeMap<ByteBuffer, ByteBuffer>,
-        read: &mut VerificationRead,
-    ) {
-        let Some(store) = &self.verified_store else {
-            return;
-        };
-        let result = store.to_map().and_then(|known| {
-            let stale: Vec<_> = known
-                .keys()
-                .filter(|key| !records.contains_key(*key))
-                .cloned()
-                .collect();
-            if !stale.is_empty() {
-                store.delete(stale)?;
-            }
-            Ok(known)
-        });
-        match result {
-            Ok(known) => read.known = Some(known),
-            Err(error) => {
-                read.unavailable = true;
-                tracing::warn!(store = self.store_name, %error, "Could not reconcile deploy verification evidence");
-            }
-        }
-    }
-
-    pub(super) fn remember_verified(&self, key: ByteBuffer, fingerprint: Blake2b256Hash) {
-        let capacity = self.verified_capacity();
-        if capacity == 0 {
-            return;
-        }
-        let mut verified = self.verified.lock();
-        if verified.len() >= capacity && !verified.contains_key(&key) {
-            verified.pop_first();
-        }
-        verified.insert(key, fingerprint);
-    }
-
-    pub(super) fn forget(&self, key: &ByteBuffer) { self.verified.lock().remove(key); }
-
-    pub(super) fn forget_all(&self, keys: &[ByteBuffer]) {
-        {
-            let mut verified = self.verified.lock();
-            for key in keys {
-                verified.remove(key);
-            }
-        }
-        if let Some(store) = &self.verified_store {
-            if !keys.is_empty() {
-                let result = store.get(&keys.to_vec()).and_then(|proofs| {
-                    let present: Vec<_> = keys
-                        .iter()
-                        .zip(proofs)
-                        .filter_map(|(key, proof)| proof.map(|_| key.clone()))
-                        .collect();
-                    if present.is_empty() {
-                        Ok(0)
-                    } else {
-                        store.delete(present)
-                    }
-                });
-                if let Err(error) = result {
-                    tracing::warn!(store = self.store_name, %error, "Could not remove deploy verification evidence");
-                }
-            }
-        }
-    }
-
-    fn verified_capacity(&self) -> usize {
-        #[cfg(test)]
-        {
-            self.verified_capacity
-        }
-        #[cfg(not(test))]
-        {
-            MAX_VERIFIED_RECORDS
         }
     }
 
@@ -221,36 +64,40 @@ impl DeployRecordQuarantine {
         store: &DeployTypedStore,
         key: &ByteBuffer,
         value: &ByteBuffer,
-    ) -> Result<Signed<DeployData>, RecordError> {
-        let mut read = VerificationRead::default();
-        let result = self.decode_with_evidence(store, key, value, &mut read);
-        self.persist_proofs(read.learned);
-        result
-    }
-
-    fn decode_with_evidence(
-        &self,
-        store: &DeployTypedStore,
-        key: &ByteBuffer,
-        value: &ByteBuffer,
-        read: &mut VerificationRead,
-    ) -> Result<Signed<DeployData>, RecordError> {
+    ) -> Result<(Signed<DeployData>, Option<ByteBuffer>), RecordError> {
         let deploy = decode_record(store, key, value).map_err(|error| RecordError {
-            reason: "decode",
+            reason: if super::deploy_codec::is_current(value)
+                && super::deploy_codec::checked_payload(value).is_err()
+            {
+                "checksum"
+            } else {
+                "decode"
+            },
             error,
         })?;
-        let fingerprint = Blake2b256Hash::new(value);
-        let known = self.verified.lock().get(key) == Some(&fingerprint);
-        if !known {
-            if !self.persisted_match(key, &fingerprint, read) {
-                self.verify_signature(&deploy)?;
-                if self.verified_store.is_some() {
-                    read.learned.push((key.clone(), Self::proof(&fingerprint)));
-                }
-            }
-            self.remember_verified(key.clone(), fingerprint);
+        if super::deploy_codec::is_current(value) {
+            return Ok((deploy, None));
         }
-        Ok(deploy)
+        self.verify_signature(&deploy)?;
+        let upgraded = super::deploy_codec::encode_verified(&deploy);
+        Ok((deploy, Some(upgraded)))
+    }
+
+    fn upgrade_records(
+        &self,
+        store: &DeployTypedStore,
+        replacements: Vec<(ByteBuffer, ByteBuffer, ByteBuffer)>,
+    ) -> usize {
+        if replacements.is_empty() {
+            return 0;
+        }
+        match store.raw_store().replace_if_values(replacements) {
+            Ok(replaced) => replaced,
+            Err(error) => {
+                tracing::warn!(store = self.store_name, %error, "Could not upgrade verified deploy records; signature checks remain enabled for old records");
+                0
+            }
+        }
     }
 
     pub(super) fn contains(
@@ -267,15 +114,19 @@ impl DeployRecordQuarantine {
         key: &ByteBuffer,
     ) -> Result<(Option<ByteBuffer>, bool), KvStoreError> {
         let Some(value) = store.raw_store().get_one(key)? else {
-            self.forget(key);
             return Ok((None, false));
         };
-        let fingerprint = Blake2b256Hash::new(&value);
-        if self.verified.lock().get(key) == Some(&fingerprint) {
-            return Ok((Some(value), true));
-        }
         match self.decode_verified(store, key, &value) {
-            Ok(_) => Ok((Some(value), true)),
+            Ok((_, Some(upgraded))) => {
+                if self.upgrade_records(store, vec![(key.clone(), value.clone(), upgraded.clone())])
+                    == 1
+                {
+                    Ok((Some(upgraded), true))
+                } else {
+                    Ok((Some(value), true))
+                }
+            }
+            Ok((_, None)) => Ok((Some(value), true)),
             Err(RecordError { error, reason }) => {
                 self.isolate(store, vec![DamagedRecord {
                     key: key.clone(),
@@ -314,15 +165,14 @@ impl DeployRecordQuarantine {
         let mut deploys = HashSet::new();
         let mut damaged = Vec::new();
         let records = store.raw_store().to_map()?;
-        let mut verification = VerificationRead::default();
-        self.load_and_prune_proofs(&records, &mut verification);
-        self.verified
-            .lock()
-            .retain(|key, _| records.contains_key(key));
+        let mut upgrades = Vec::new();
         for (key, value) in records {
-            match self.decode_with_evidence(store, &key, &value, &mut verification) {
-                Ok(deploy) => {
+            match self.decode_verified(store, &key, &value) {
+                Ok((deploy, upgraded)) => {
                     deploys.insert(deploy);
+                    if let Some(upgraded) = upgraded {
+                        upgrades.push((key, value, upgraded));
+                    }
                 }
                 Err(RecordError { error, reason }) => {
                     damaged.push(DamagedRecord {
@@ -334,7 +184,7 @@ impl DeployRecordQuarantine {
                 }
             }
         }
-        self.persist_proofs(verification.learned);
+        self.upgrade_records(store, upgrades);
         self.isolate(store, damaged)?;
         Ok(deploys)
     }
@@ -350,20 +200,25 @@ impl DeployRecordQuarantine {
         let mut matched = false;
         let mut predicate_error = None;
         let mut damaged = Vec::new();
-        let mut verification = VerificationRead::default();
+        let mut upgrades = Vec::new();
         store.raw_store().iterate_while(&mut |key, value| {
-            match self.decode_with_evidence(store, &key, &value, &mut verification) {
-                Ok(deploy) => match predicate(&deploy) {
-                    Ok(true) => {
-                        matched = true;
-                        return Ok(false);
+            match self.decode_verified(store, &key, &value) {
+                Ok((deploy, upgraded)) => {
+                    if let Some(upgraded) = upgraded {
+                        upgrades.push((key, value, upgraded));
                     }
-                    Ok(false) => {}
-                    Err(error) => {
-                        predicate_error = Some(error);
-                        return Ok(false);
+                    match predicate(&deploy) {
+                        Ok(true) => {
+                            matched = true;
+                            return Ok(false);
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            predicate_error = Some(error);
+                            return Ok(false);
+                        }
                     }
-                },
+                }
                 Err(RecordError { error, reason }) => {
                     damaged.push(DamagedRecord {
                         key,
@@ -375,7 +230,7 @@ impl DeployRecordQuarantine {
             }
             Ok(true)
         })?;
-        self.persist_proofs(verification.learned);
+        self.upgrade_records(store, upgrades);
         self.isolate(store, damaged)?;
         match predicate_error {
             Some(error) => Err(error),
@@ -392,33 +247,37 @@ impl DeployRecordQuarantine {
         let live = store.raw_store();
         let (mut restored, mut duplicates, mut conflicts, mut removed) =
             (0usize, 0usize, 0usize, 0usize);
-        let mut verification = VerificationRead::default();
+        let mut upgrades = Vec::new();
         for (key, value) in quarantined {
-            if self
-                .decode_with_evidence(store, &key, &value, &mut verification)
-                .is_err()
-            {
-                continue;
-            }
+            let upgraded = match self.decode_verified(store, &key, &value) {
+                Ok((_, upgraded)) => upgraded,
+                Err(_) => continue,
+            };
             let inserted = live.put_one_if_absent(key.clone(), value.clone())?;
             if inserted {
                 restored += 1;
-            } else if live.get_one(&key)?.as_ref() != Some(&value) {
-                conflicts += 1;
-                continue;
+            } else {
+                let current = live.get_one(&key)?;
+                if current.as_ref() != Some(&value) {
+                    conflicts += 1;
+                    continue;
+                }
             }
             if self.quarantine.delete_if_value(&key, &value)? {
                 removed += 1;
                 if !inserted {
                     duplicates += 1;
                 }
+                if let Some(upgraded) = upgraded {
+                    upgrades.push((key, value, upgraded));
+                }
             }
         }
+        self.upgrade_records(store, upgrades);
         if restored > 0 {
             metrics::counter!(RESTORED_RECORDS_METRIC, "store" => self.store_name)
                 .increment(restored as u64);
         }
-        self.persist_proofs(verification.learned);
         tracing::warn!(
             store = self.store_name,
             restored,
@@ -430,23 +289,6 @@ impl DeployRecordQuarantine {
         Ok(())
     }
 
-    #[cfg(test)]
-    fn verify_on_open(&self, store: &DeployTypedStore) -> Result<(), KvStoreError> {
-        let mut damaged = Vec::new();
-        store.raw_store().iterate_while(&mut |key, value| {
-            if let Err(RecordError { error, reason }) = self.decode_verified(store, &key, &value) {
-                damaged.push(DamagedRecord {
-                    key,
-                    value,
-                    error,
-                    reason,
-                });
-            }
-            Ok(true)
-        })?;
-        self.isolate(store, damaged)
-    }
-
     fn isolate(
         &self,
         store: &DeployTypedStore,
@@ -456,12 +298,6 @@ impl DeployRecordQuarantine {
             return Ok(());
         }
         let total = damaged.len();
-        self.forget_all(
-            &damaged
-                .iter()
-                .map(|record| record.key.clone())
-                .collect::<Vec<_>>(),
-        );
         let live = store.raw_store();
         let (mut moved, mut conflicts, mut logged) = (0usize, 0usize, 0usize);
         for record in damaged {
@@ -579,7 +415,7 @@ mod tests {
         "736563703235366b31",
     );
     const MALFORMED_VALUE: &[u8] = &[0xff, 0x01];
-    const UNSUPPORTED_FORMAT_VALUE: &[u8] = b"F1R3DEP\x02\x0a\x03Nil\x10\x7b";
+    const UNSUPPORTED_FORMAT_VALUE: &[u8] = b"F1R3DEP\x03\x0a\x03Nil\x10\x7b";
 
     fn deploy(time_stamp: i64) -> Signed<DeployData> {
         signed(DeployData {
@@ -715,6 +551,14 @@ mod tests {
 
         fn put(&self, pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
             self.inner.put(pairs)
+        }
+
+        fn replace_if_values(
+            &self,
+            replacements: Vec<(ByteBuffer, ByteBuffer, ByteBuffer)>,
+        ) -> Result<usize, KvStoreError> {
+            self.run_hook();
+            self.inner.replace_if_values(replacements)
         }
 
         fn put_one_if_absent(
@@ -1109,7 +953,9 @@ mod tests {
 
             KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
 
-            assert_eq!(live.get_one(&legacy_key).unwrap(), Some(legacy_bytes()));
+            let bytes = live.get_one(&legacy_key).unwrap().unwrap();
+            assert!(super::super::deploy_codec::is_current(&bytes));
+            assert_eq!(super::super::deploy_codec::decode(&bytes).unwrap(), legacy);
             assert!(!quarantine.non_empty().unwrap());
             assert_eq!(
                 counter(&snapshotter, RESTORED_RECORDS_METRIC, DEPLOY_STORAGE_DB),
@@ -1257,6 +1103,14 @@ mod tests {
             self.inner.put(kv_pairs)
         }
 
+        fn replace_if_values(
+            &self,
+            replacements: Vec<(ByteBuffer, ByteBuffer, ByteBuffer)>,
+        ) -> Result<usize, KvStoreError> {
+            Self::check(&self.fail_writes)?;
+            self.inner.replace_if_values(replacements)
+        }
+
         fn put_one_if_absent(
             &self,
             key: ByteBuffer,
@@ -1382,11 +1236,11 @@ mod tests {
     }
 
     fn versioned_bytes_unchecked(deploy: &Signed<DeployData>) -> ByteBuffer {
-        super::super::deploy_codec::encode_unchecked(deploy)
+        super::super::deploy_codec::encode_v1_unchecked(deploy)
     }
 
     #[tokio::test]
-    async fn persisted_verification_survives_lmdb_reopen_without_signature_checks() {
+    async fn upgraded_records_survive_lmdb_reopen_without_signature_checks() {
         use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
             Db, LmdbDirStoreManager, LmdbEnvConfig,
         };
@@ -1394,23 +1248,18 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let expected = HashSet::from([deploy(1), legacy_deploy()]);
             for pass in 0..2 {
-                let mapping = [
-                    (name, "data"),
-                    ("quarantine", "data"),
-                    ("verified", "evidence"),
-                ]
-                .into_iter()
-                .map(|(database, environment)| {
-                    (
-                        Db::new(database.to_string(), None),
-                        LmdbEnvConfig::new(environment.to_string(), 16 * 1024 * 1024),
-                    )
-                })
-                .collect();
+                let mapping = [name, "quarantine"]
+                    .into_iter()
+                    .map(|database| {
+                        (
+                            Db::new(database.to_string(), None),
+                            LmdbEnvConfig::new("data".to_string(), 16 * 1024 * 1024),
+                        )
+                    })
+                    .collect();
                 let mut manager = LmdbDirStoreManager::new(directory.path().to_path_buf(), mapping);
                 let live = manager.store(name.to_string()).await.unwrap();
                 let quarantine = manager.store("quarantine".to_string()).await.unwrap();
-                let proofs = manager.store("verified".to_string()).await.unwrap();
                 if pass == 0 {
                     live.put(vec![
                         (
@@ -1422,24 +1271,27 @@ mod tests {
                     .unwrap();
                 }
                 let store = DeployTypedStore::with_value_codec(
-                    live,
+                    live.clone(),
                     super::super::deploy_codec::encode,
                     super::super::deploy_codec::decode,
                 );
-                let guard = DeployRecordQuarantine::new(name, quarantine)
-                    .with_verified_store(proofs.clone());
+                let guard = DeployRecordQuarantine::new(name, quarantine);
                 assert_eq!(guard.read_all(&store).unwrap(), expected);
                 assert_eq!(
                     guard.signature_checks.load(Ordering::SeqCst),
                     if pass == 0 { 2 } else { 0 }
                 );
-                assert_eq!(proofs.to_map().unwrap().len(), 2);
+                assert!(live
+                    .to_map()
+                    .unwrap()
+                    .values()
+                    .all(|bytes| super::super::deploy_codec::is_current(bytes)));
             }
         }
     }
 
     #[tokio::test]
-    async fn stores_without_a_verification_mapping_keep_signature_checks_enabled() {
+    async fn store_manager_needs_no_verification_database() {
         use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
             Db, LmdbDirStoreManager, LmdbEnvConfig,
         };
@@ -1469,41 +1321,26 @@ mod tests {
             let candidate = deploy(7);
             pool.add(vec![candidate.clone()]);
             assert_eq!(pool.read_all().unwrap(), HashSet::from([candidate]));
+            assert!(manager.store(format!("{name}_verified")).await.is_err());
         }
     }
 
     #[test]
-    fn checked_writes_persist_evidence_and_removals_clean_it_up() {
+    fn checked_writes_store_their_fingerprint_with_the_record() {
         for name in POOLS {
-            let (live, quarantine, proofs) = (in_memory(), in_memory(), in_memory());
-            let pool = match name {
-                DEPLOY_STORAGE_DB => Pool::Storage(
-                    KeyValueDeployStorage::from_stores_with_verification(
-                        live.clone(),
-                        quarantine.clone(),
-                        Some(proofs.clone()),
-                    )
-                    .unwrap(),
-                ),
-                _ => Pool::Buffer(
-                    KeyValueRejectedDeployBuffer::from_stores_with_verification(
-                        live.clone(),
-                        quarantine.clone(),
-                        Some(proofs.clone()),
-                    )
-                    .unwrap(),
-                ),
-            };
+            let (live, quarantine) = (in_memory(), in_memory());
+            let pool = Pool::open(name, &live, &quarantine);
             let candidate = deploy(9);
             assert!(pool.add_if_absent(candidate.clone()).unwrap());
-            assert!(proofs.get_one(&key_for(&candidate.sig)).unwrap().is_some());
+            let key = key_for(&candidate.sig);
+            let bytes = live.get_one(&key).unwrap().unwrap();
+            assert!(super::super::deploy_codec::checked_payload(&bytes).is_ok());
             let store = DeployTypedStore::with_value_codec(
-                live,
+                live.clone(),
                 super::super::deploy_codec::encode,
                 super::super::deploy_codec::decode,
             );
-            let cold =
-                DeployRecordQuarantine::new(name, quarantine).with_verified_store(proofs.clone());
+            let cold = DeployRecordQuarantine::new(name, quarantine);
             assert_eq!(
                 cold.read_all(&store).unwrap(),
                 HashSet::from([candidate.clone()])
@@ -1513,84 +1350,66 @@ mod tests {
                 Pool::Storage(storage) => assert!(storage.remove_by_sig(&candidate.sig).unwrap()),
                 Pool::Buffer(buffer) => assert!(buffer.remove_by_sig(&candidate.sig).unwrap()),
             }
-            assert!(!proofs.non_empty().unwrap());
+            assert!(!live.non_empty().unwrap());
         }
     }
 
     #[test]
-    fn persistent_evidence_does_not_approve_changed_or_corrupt_records() {
+    fn inline_fingerprints_detect_payload_and_fingerprint_corruption() {
         for name in POOLS {
-            let (live, quarantine, proofs) = (in_memory(), in_memory(), in_memory());
+            for corrupt_payload in [false, true] {
+                let (live, quarantine) = (in_memory(), in_memory());
+                let pool = Pool::open(name, &live, &quarantine);
+                let candidate = deploy(1);
+                pool.add_if_absent(candidate.clone()).unwrap();
+                let key = key_for(&candidate.sig);
+                let mut bytes = live.get_one(&key).unwrap().unwrap();
+                let index = if corrupt_payload {
+                    bytes.len() - 1
+                } else {
+                    b"F1R3DEP\x02".len()
+                };
+                bytes[index] ^= 1;
+                live.put_one(key.clone(), bytes.clone()).unwrap();
+                let reopened = Pool::open(name, &live, &quarantine);
+                assert!(reopened.read_all().unwrap().is_empty());
+                assert_eq!(live.get_one(&key).unwrap(), None);
+                assert_eq!(quarantine.get_one(&key).unwrap(), Some(bytes));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_migration_preserves_verified_legacy_records_and_can_retry() {
+        for name in POOLS {
+            let live = FailingStore::new(false, false);
+            let candidate = deploy(5);
+            let key = key_for(&candidate.sig);
+            let old = versioned_bytes_unchecked(&candidate);
+            live.inner.put_one(key.clone(), old.clone()).unwrap();
             let store = DeployTypedStore::with_value_codec(
                 live.clone(),
                 super::super::deploy_codec::encode,
                 super::super::deploy_codec::decode,
             );
-            let candidate = deploy(1);
-            live.put_one(
-                key_for(&candidate.sig),
-                versioned_bytes_unchecked(&candidate),
-            )
-            .unwrap();
-            let guard = DeployRecordQuarantine::new(name, quarantine.clone())
-                .with_verified_store(proofs.clone());
-            assert_eq!(guard.read_all(&store).unwrap().len(), 1);
-            proofs
-                .put_one(key_for(&candidate.sig), b"invalid-evidence".to_vec())
-                .unwrap();
-            let repaired = DeployRecordQuarantine::new(name, quarantine.clone())
-                .with_verified_store(proofs.clone());
-            assert_eq!(repaired.read_all(&store).unwrap().len(), 1);
-            assert_eq!(repaired.signature_checks.load(Ordering::SeqCst), 1);
-            assert!(!quarantine.non_empty().unwrap());
-            let mut changed = candidate;
-            changed.data.term.push(' ');
-            live.put_one(key_for(&changed.sig), versioned_bytes_unchecked(&changed))
-                .unwrap();
-            let cold = DeployRecordQuarantine::new(name, quarantine.clone())
-                .with_verified_store(proofs.clone());
-            assert!(cold.read_all(&store).unwrap().is_empty());
-            assert_eq!(cold.signature_checks.load(Ordering::SeqCst), 1);
-            assert!(quarantine.non_empty().unwrap());
-            assert!(!proofs.non_empty().unwrap());
-        }
-    }
-
-    #[test]
-    fn verification_evidence_failures_preserve_accepted_data_and_fall_back_to_checks() {
-        for name in POOLS {
-            let (live, quarantine) = (in_memory(), in_memory());
-            let proofs = FailingStore::new(true, true);
-            let pool = match name {
-                DEPLOY_STORAGE_DB => Pool::Storage(
-                    KeyValueDeployStorage::from_stores_with_verification(
-                        live.clone(),
-                        quarantine.clone(),
-                        Some(proofs.clone()),
-                    )
-                    .unwrap(),
-                ),
-                _ => Pool::Buffer(
-                    KeyValueRejectedDeployBuffer::from_stores_with_verification(
-                        live.clone(),
-                        quarantine.clone(),
-                        Some(proofs.clone()),
-                    )
-                    .unwrap(),
-                ),
-            };
-            let candidate = deploy(5);
-            assert!(pool.add_if_absent(candidate.clone()).unwrap());
-            let store = DeployTypedStore::with_value_codec(
-                live,
-                super::super::deploy_codec::encode,
-                super::super::deploy_codec::decode,
+            let guard = DeployRecordQuarantine::new(name, in_memory());
+            live.fail_writes.store(true, Ordering::SeqCst);
+            for checks in 1..=2 {
+                assert_eq!(
+                    guard.read_all(&store).unwrap(),
+                    HashSet::from([candidate.clone()])
+                );
+                assert_eq!(guard.signature_checks.load(Ordering::SeqCst), checks);
+                assert_eq!(live.inner.get_one(&key).unwrap(), Some(old.clone()));
+            }
+            live.fail_writes.store(false, Ordering::SeqCst);
+            assert_eq!(
+                guard.read_all(&store).unwrap(),
+                HashSet::from([candidate.clone()])
             );
-            let cold =
-                DeployRecordQuarantine::new(name, quarantine).with_verified_store(proofs.clone());
+            let cold = DeployRecordQuarantine::new(name, in_memory());
             assert_eq!(cold.read_all(&store).unwrap(), HashSet::from([candidate]));
-            assert_eq!(cold.signature_checks.load(Ordering::SeqCst), 1);
-            assert!(!proofs.inner.non_empty().unwrap());
+            assert_eq!(cold.signature_checks.load(Ordering::SeqCst), 0);
         }
     }
 
@@ -1614,75 +1433,88 @@ mod tests {
     }
 
     #[test]
-    fn fingerprints_reuse_signature_checks_and_verify_again_after_a_cache_miss() {
-        use crypto::rust::public_key::PublicKey;
-        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-
-        static CHECKS: AtomicUsize = AtomicUsize::new(0);
-
-        #[derive(Clone, Debug)]
-        struct CountChecks;
-
-        impl SignaturesAlg for CountChecks {
-            fn verify(&self, data: &[u8], signature: &[u8], pub_key: &[u8]) -> bool {
-                CHECKS.fetch_add(1, Ordering::SeqCst);
-                Secp256k1.verify(data, signature, pub_key)
-            }
-            fn sign(&self, data: &[u8], sec: &[u8]) -> Vec<u8> { Secp256k1.sign(data, sec) }
-            fn to_public(&self, sec: &PrivateKey) -> PublicKey { Secp256k1.to_public(sec) }
-            fn new_key_pair(&self) -> (PrivateKey, PublicKey) { Secp256k1.new_key_pair() }
-            fn name(&self) -> String { Secp256k1.name() }
-            fn sig_length(&self) -> usize { Secp256k1.sig_length() }
-            fn eq(&self, other: &dyn SignaturesAlg) -> bool { self.name() == other.name() }
-            fn box_clone(&self) -> Box<dyn SignaturesAlg> { Box::new(self.clone()) }
-        }
-
-        fn decode(value: &ByteBuffer) -> Result<Signed<DeployData>, KvStoreError> {
-            let mut deploy = super::super::deploy_codec::decode(value)?;
-            deploy.sig_algorithm = Box::new(CountChecks);
-            Ok(deploy)
-        }
-
+    fn current_record_reads_do_not_repeat_signature_checks() {
         let live = in_memory();
-        let store = DeployTypedStore::with_value_codec(
-            live.clone(),
-            super::super::deploy_codec::encode,
-            decode,
-        );
-        let guard = DeployRecordQuarantine::new(DEPLOY_STORAGE_DB, in_memory());
-        let mut candidate = deploy(1);
-        let key = key_for(&candidate.sig);
+        let candidate = deploy(1);
         live.put_one(
-            key.clone(),
+            key_for(&candidate.sig),
             super::super::deploy_codec::encode(&candidate).unwrap(),
         )
         .unwrap();
-        guard.verify_on_open(&store).unwrap();
-        assert_eq!(CHECKS.load(Ordering::SeqCst), 1);
-        assert_eq!(guard.read_all(&store).unwrap().len(), 1);
-        assert!(guard.any(&store, |_| Ok(true)).unwrap());
-        assert_eq!(CHECKS.load(Ordering::SeqCst), 1);
-
-        guard.forget(&key);
-        assert_eq!(guard.read_all(&store).unwrap().len(), 1);
-        assert_eq!(CHECKS.load(Ordering::SeqCst), 2);
-        candidate.data.phlo_limit += 1;
-        live.put_one(key, versioned_bytes_unchecked(&candidate))
-            .unwrap();
-        assert!(guard.read_all(&store).unwrap().is_empty());
-        assert_eq!(CHECKS.load(Ordering::SeqCst), 3);
+        let store = DeployTypedStore::with_value_codec(
+            live,
+            super::super::deploy_codec::encode,
+            super::super::deploy_codec::decode,
+        );
+        for _ in 0..3 {
+            let guard = DeployRecordQuarantine::new(DEPLOY_STORAGE_DB, in_memory());
+            assert_eq!(
+                guard.read_all(&store).unwrap(),
+                HashSet::from([candidate.clone()])
+            );
+            assert!(guard.any(&store, |_| Ok(true)).unwrap());
+            assert!(guard.contains(&store, &key_for(&candidate.sig)).unwrap());
+            assert_eq!(guard.signature_checks.load(Ordering::SeqCst), 0);
+        }
     }
 
     #[test]
-    fn verified_cache_eviction_preserves_deploys_and_rechecks_evicted_bytes() {
+    fn legacy_migration_preserves_concurrent_replacements_and_deletions() {
+        for operation in 0..3 {
+            for remove in [false, true] {
+                let inner = in_memory();
+                let live = InterleavingStore::new(inner.clone(), None);
+                let candidate = deploy(1);
+                let key = key_for(&candidate.sig);
+                let old = versioned_bytes_unchecked(&candidate);
+                inner.put_one(key.clone(), old).unwrap();
+                let writer = inner.clone();
+                let replacement_key = key.clone();
+                *live.before_delete.lock().unwrap() = Some(Box::new(move || {
+                    if remove {
+                        writer.delete(vec![replacement_key]).unwrap();
+                    } else {
+                        writer
+                            .put_one(replacement_key, MALFORMED_VALUE.to_vec())
+                            .unwrap();
+                    }
+                }));
+                let store = DeployTypedStore::with_value_codec(
+                    live,
+                    super::super::deploy_codec::encode,
+                    super::super::deploy_codec::decode,
+                );
+                let guard = DeployRecordQuarantine::new(DEPLOY_STORAGE_DB, in_memory());
+                match operation {
+                    0 => assert_eq!(
+                        guard.read_all(&store).unwrap(),
+                        HashSet::from([candidate.clone()])
+                    ),
+                    1 => assert!(guard.any(&store, |_| Ok(true)).unwrap()),
+                    _ => assert!(guard.inspect(&store, &key).unwrap().1),
+                }
+                assert_eq!(
+                    inner.get_one(&key).unwrap(),
+                    if remove {
+                        None
+                    } else {
+                        Some(MALFORMED_VALUE.to_vec())
+                    }
+                );
+                assert_eq!(guard.signature_checks.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_records_upgrade_once_and_recheck_raw_replacements() {
         let (live, quarantine) = (in_memory(), in_memory());
         let store = DeployTypedStore::with_value_codec(
             live.clone(),
             super::super::deploy_codec::encode,
             super::super::deploy_codec::decode,
         );
-        let mut guard = DeployRecordQuarantine::new(DEPLOY_STORAGE_DB, quarantine.clone());
-        guard.verified_capacity = 1;
+        let guard = DeployRecordQuarantine::new(DEPLOY_STORAGE_DB, quarantine.clone());
         let candidates = [deploy(1), deploy(2)];
         live.put(
             candidates
@@ -1696,38 +1528,31 @@ mod tests {
                 .collect(),
         )
         .unwrap();
-
-        guard.verify_on_open(&store).unwrap();
-        assert_eq!(guard.verified.lock().len(), 1);
         assert_eq!(
             guard.read_all(&store).unwrap(),
             HashSet::from(candidates.clone())
         );
-        assert_eq!(guard.verified.lock().len(), 1);
-        let mut evicted = candidates
-            .into_iter()
-            .find(|candidate| !guard.verified.lock().contains_key(&key_for(&candidate.sig)))
-            .unwrap();
-        let checks = guard.signature_checks.load(Ordering::Relaxed);
-        assert!(guard
-            .any(&store, |candidate| Ok(candidate.sig == evicted.sig))
-            .unwrap());
-        assert!(guard.signature_checks.load(Ordering::Relaxed) > checks);
-
-        evicted.data.phlo_limit += 1;
-        let key = key_for(&evicted.sig);
-        let bytes = versioned_bytes_unchecked(&evicted);
+        assert_eq!(guard.signature_checks.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            guard.read_all(&store).unwrap(),
+            HashSet::from(candidates.clone())
+        );
+        assert_eq!(guard.signature_checks.load(Ordering::SeqCst), 2);
+        let mut changed = candidates[0].clone();
+        changed.data.phlo_limit += 1;
+        let key = key_for(&changed.sig);
+        let bytes = versioned_bytes_unchecked(&changed);
         live.put_one(key.clone(), bytes.clone()).unwrap();
         assert!(!guard
-            .any(&store, |candidate| Ok(candidate.sig == evicted.sig))
+            .any(&store, |candidate| Ok(candidate.sig == changed.sig))
             .unwrap());
+        assert_eq!(guard.signature_checks.load(Ordering::SeqCst), 3);
         assert_eq!(live.get_one(&key).unwrap(), None);
         assert_eq!(quarantine.get_one(&key).unwrap(), Some(bytes));
-        assert!(guard.verified.lock().len() <= 1);
     }
 
     #[test]
-    fn full_scan_removes_fingerprints_deleted_through_another_handle() {
+    fn deleting_and_reinserting_a_key_does_not_reuse_prior_verification() {
         let live = in_memory();
         let store = DeployTypedStore::with_value_codec(
             live.clone(),
@@ -1740,17 +1565,17 @@ mod tests {
         let key = key_for(&candidate.sig);
         live.put_one(key.clone(), versioned_bytes_unchecked(&candidate))
             .unwrap();
-        guard.verify_on_open(&store).unwrap();
-        assert_eq!(shared.verified.lock().len(), 1);
-
+        assert_eq!(
+            guard.read_all(&store).unwrap(),
+            HashSet::from([candidate.clone()])
+        );
+        let checks = guard.signature_checks.load(Ordering::SeqCst);
         live.delete(vec![key.clone()]).unwrap();
         assert!(shared.read_all(&store).unwrap().is_empty());
-        assert!(guard.verified.lock().is_empty());
-        let checks = guard.signature_checks.load(Ordering::Relaxed);
         live.put_one(key, versioned_bytes_unchecked(&candidate))
             .unwrap();
-        assert_eq!(guard.read_all(&store).unwrap(), HashSet::from([candidate]));
-        assert_eq!(guard.signature_checks.load(Ordering::Relaxed), checks + 1);
+        assert_eq!(shared.read_all(&store).unwrap(), HashSet::from([candidate]));
+        assert_eq!(guard.signature_checks.load(Ordering::SeqCst), checks + 1);
     }
 
     #[test]
@@ -1977,7 +1802,7 @@ mod tests {
         let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
         let writer = inner.clone();
         let replacement_key = key.clone();
-        let replacement = versioned_bytes_unchecked(&candidate);
+        let replacement = super::super::deploy_codec::encode(&candidate).unwrap();
         let replacement_bytes = replacement.clone();
         *live.before_delete.lock().unwrap() = Some(Box::new(move || {
             writer.put_one(replacement_key, replacement_bytes).unwrap();

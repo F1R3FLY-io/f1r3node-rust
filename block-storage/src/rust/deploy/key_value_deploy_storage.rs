@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::DeployData;
-use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
@@ -19,8 +18,6 @@ pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
 pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
 pub const REJECTED_DEPLOY_BUFFER_DB: &str = "rejected_deploy_buffer";
 pub const REJECTED_DEPLOY_BUFFER_QUARANTINE_DB: &str = "rejected_deploy_buffer_quarantine";
-pub const DEPLOY_STORAGE_VERIFIED_DB: &str = "deploy_storage_verified";
-pub const REJECTED_DEPLOY_BUFFER_VERIFIED_DB: &str = "rejected_deploy_buffer_verified";
 
 const DEPLOY_STORE_SIZE_METRIC: &str = "deploy.store.size";
 const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decoded";
@@ -58,7 +55,6 @@ pub struct KeyValueDeployStore<N: DeployStoreName> {
 pub struct PreparedDeploy {
     key: BitVector,
     value: BitVector,
-    fingerprint: Blake2b256Hash,
 }
 
 pub struct DeployRecordSnapshot {
@@ -112,32 +108,14 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let kv_store = kvm.store(N::NAME.to_string()).await?;
         let quarantine_kv_store = kvm.store(N::QUARANTINE_NAME.to_string()).await?;
-        let verified_kv_store = match kvm.store(format!("{}_verified", N::NAME)).await {
-            Ok(store) => Some(store),
-            Err(error) => {
-                tracing::warn!(store = N::NAME, %error, "Could not open deploy verification evidence; signature checks remain enabled");
-                None
-            }
-        };
-        Self::from_stores_with_verification(kv_store, quarantine_kv_store, verified_kv_store)
+        Self::from_stores(kv_store, quarantine_kv_store)
     }
 
     pub fn from_stores(
         store: Arc<dyn KeyValueStore>,
         quarantine: Arc<dyn KeyValueStore>,
     ) -> Result<Self, KvStoreError> {
-        Self::from_stores_with_verification(store, quarantine, None)
-    }
-
-    pub(super) fn from_stores_with_verification(
-        store: Arc<dyn KeyValueStore>,
-        quarantine: Arc<dyn KeyValueStore>,
-        verified: Option<Arc<dyn KeyValueStore>>,
-    ) -> Result<Self, KvStoreError> {
-        let mut quarantine = DeployRecordQuarantine::new(N::NAME, quarantine);
-        if let Some(verified) = verified {
-            quarantine = quarantine.with_verified_store(verified);
-        }
+        let quarantine = DeployRecordQuarantine::new(N::NAME, quarantine);
         let storage = Self {
             store: KeyValueTypedStoreImpl::with_value_codec(
                 store,
@@ -178,31 +156,18 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         deploy: &Signed<DeployData>,
         value: BitVector,
     ) -> Result<PreparedDeploy, KvStoreError> {
-        let fingerprint = Blake2b256Hash::new(&value);
         Ok(PreparedDeploy {
             key: self.store.encode_key(&deploy.sig.to_vec())?,
             value,
-            fingerprint,
         })
     }
 
     pub fn add_prepared(&self, deploys: Vec<PreparedDeploy>) -> Result<(), KvStoreError> {
-        let (records, verified): (Vec<_>, Vec<_>) = deploys
+        let records = deploys
             .into_iter()
-            .map(|deploy| {
-                (
-                    (deploy.key.clone(), deploy.value),
-                    (deploy.key, deploy.fingerprint),
-                )
-            })
-            .unzip();
-        self.store.raw_store().put(records)?;
-        for (key, fingerprint) in &verified {
-            self.quarantine
-                .remember_verified(key.clone(), fingerprint.clone());
-        }
-        self.quarantine.persist_verified(verified);
-        Ok(())
+            .map(|deploy| (deploy.key, deploy.value))
+            .collect();
+        self.store.raw_store().put(records)
     }
 
     pub fn add_prepared_if_absent(&self, deploy: PreparedDeploy) -> Result<bool, KvStoreError> {
@@ -213,12 +178,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .store
             .raw_store()
             .put_one_if_absent(deploy.key.clone(), deploy.value)?;
-        if inserted {
-            self.quarantine
-                .remember_verified(deploy.key.clone(), deploy.fingerprint.clone());
-            self.quarantine
-                .persist_verified(vec![(deploy.key, deploy.fingerprint)]);
-        } else if !self.quarantine.contains(&self.store, &deploy.key)? {
+        if !inserted && !self.quarantine.contains(&self.store, &deploy.key)? {
             return Err(KvStoreError::InvalidArgument(
                 "Deploy insertion was blocked by an invalid or concurrently changed record"
                     .to_string(),
@@ -253,7 +213,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
 
     pub fn add_prepared_if_unchanged(
         &self,
-        deploy: PreparedDeploy,
+        deploy: &PreparedDeploy,
         snapshot: &DeployRecordSnapshot,
     ) -> Result<PreparedInsertResult, KvStoreError> {
         if deploy.key != snapshot.key {
@@ -275,13 +235,7 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         let inserted = self
             .store
             .raw_store()
-            .put_one_if_absent(deploy.key.clone(), deploy.value)?;
-        if inserted {
-            self.quarantine
-                .remember_verified(deploy.key.clone(), deploy.fingerprint.clone());
-            self.quarantine
-                .persist_verified(vec![(deploy.key, deploy.fingerprint)]);
-        }
+            .put_one_if_absent(deploy.key.clone(), deploy.value.clone())?;
         Ok(if inserted {
             PreparedInsertResult::Inserted
         } else {
@@ -301,7 +255,6 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
             .map(|deploy| self.store.encode_key(&deploy.sig.to_vec()))
             .collect::<Result<Vec<_>, _>>()?;
         self.store.raw_store().delete(keys.clone())?;
-        self.quarantine.forget_all(&keys);
         Ok(())
     }
 
@@ -309,7 +262,6 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         let key: ByteString = sig.to_vec();
         let key = self.store.encode_key(&key)?;
         let removed = self.store.raw_store().delete(vec![key.clone()])? > 0;
-        self.quarantine.forget_all(&[key]);
         Ok(removed)
     }
 
@@ -588,7 +540,7 @@ mod tests {
         storage.add(vec![candidate.clone()]).unwrap();
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(storage.prepare(&candidate).unwrap(), &absent)
+                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &absent)
                 .unwrap(),
             PreparedInsertResult::Changed
         );
@@ -596,7 +548,7 @@ mod tests {
         assert!(present.is_present());
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(storage.prepare(&candidate).unwrap(), &present)
+                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &present)
                 .unwrap(),
             PreparedInsertResult::AlreadyPresent
         );
@@ -614,14 +566,14 @@ mod tests {
         assert!(!damaged.is_present());
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(storage.prepare(&candidate).unwrap(), &damaged)
+                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &damaged)
                 .unwrap(),
             PreparedInsertResult::Changed
         );
         let absent = storage.inspect_sig(&candidate.sig).unwrap();
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(storage.prepare(&candidate).unwrap(), &absent)
+                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &absent)
                 .unwrap(),
             PreparedInsertResult::Inserted
         );
@@ -647,7 +599,7 @@ mod tests {
         );
         assert_eq!(
             storage
-                .add_prepared_if_unchanged(prepared, &present)
+                .add_prepared_if_unchanged(&prepared, &present)
                 .unwrap(),
             PreparedInsertResult::AlreadyPresent
         );

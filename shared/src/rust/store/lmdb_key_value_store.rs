@@ -90,6 +90,27 @@ impl KeyValueStore for LmdbKeyValueStore {
         })
     }
 
+    fn replace_if_values(
+        &self,
+        replacements: Vec<(ByteBuffer, ByteBuffer, ByteBuffer)>,
+    ) -> Result<usize, KvStoreError> {
+        if replacements.is_empty() {
+            return Ok(0);
+        }
+        in_blocking(|| {
+            let mut writer = self.env.write_txn()?;
+            let mut replaced = 0;
+            for (key, expected, value) in replacements {
+                if self.db.get(&writer, &key)?.as_ref() == Some(&expected) {
+                    self.db.put(&mut writer, &key, &value)?;
+                    replaced += 1;
+                }
+            }
+            writer.commit()?;
+            Ok(replaced)
+        })
+    }
+
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
         in_blocking(|| {
             let mut writer = self.env.write_txn()?;
@@ -508,6 +529,61 @@ mod store_tests {
         assert_eq!(
             store.get_one(&b"k2".to_vec()).unwrap(),
             Some(b"v2".to_vec())
+        );
+    }
+
+    #[test]
+    fn conditional_replacement_preserves_changed_and_missing_lmdb_records() {
+        let store = seeded_store();
+        assert_eq!(
+            store
+                .replace_if_values(vec![
+                    (b"k1".to_vec(), b"v1".to_vec(), b"upgraded".to_vec()),
+                    (b"k2".to_vec(), b"old".to_vec(), b"overwrite".to_vec()),
+                    (b"missing".to_vec(), b"v".to_vec(), b"resurrect".to_vec()),
+                ])
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store.get_one(&b"k1".to_vec()).unwrap(),
+            Some(b"upgraded".to_vec())
+        );
+        assert_eq!(
+            store.get_one(&b"k2".to_vec()).unwrap(),
+            Some(b"v2".to_vec())
+        );
+        assert_eq!(store.get_one(&b"missing".to_vec()).unwrap(), None);
+    }
+
+    #[test]
+    fn concurrent_conditional_replacements_update_one_lmdb_record() {
+        let env = open_env();
+        let stores = [open_store(&env, "shared"), open_store(&env, "shared")];
+        stores[0].put_one(b"key".to_vec(), b"old".to_vec()).unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = stores
+            .into_iter()
+            .map(|store| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store
+                        .replace_if_values(vec![(
+                            b"key".to_vec(),
+                            b"old".to_vec(),
+                            b"new".to_vec(),
+                        )])
+                        .unwrap()
+                })
+            })
+            .collect();
+        assert_eq!(
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .sum::<usize>(),
+            1
         );
     }
 

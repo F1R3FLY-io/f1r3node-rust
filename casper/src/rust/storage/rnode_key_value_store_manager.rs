@@ -3,8 +3,7 @@
 use std::path::PathBuf;
 
 use block_storage::rust::deploy::key_value_deploy_storage::{
-    DEPLOY_STORAGE_QUARANTINE_DB, DEPLOY_STORAGE_VERIFIED_DB, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
-    REJECTED_DEPLOY_BUFFER_VERIFIED_DB,
+    DEPLOY_STORAGE_QUARANTINE_DB, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
 };
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
@@ -46,10 +45,6 @@ fn dag_storage_env_config() -> LmdbEnvConfig {
 
 fn deploy_storage_env_config() -> LmdbEnvConfig {
     LmdbEnvConfig::new("deploystorage".to_string(), GB)
-}
-
-fn deploy_verification_env_config() -> LmdbEnvConfig {
-    LmdbEnvConfig::new("deployverification".to_string(), GB)
 }
 
 // Temporary storage / cache
@@ -174,14 +169,6 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             Db::new(REJECTED_DEPLOY_BUFFER_QUARANTINE_DB.to_string(), None),
             deploy_storage_env_config(),
         ),
-        (
-            Db::new(DEPLOY_STORAGE_VERIFIED_DB.to_string(), None),
-            deploy_verification_env_config(),
-        ),
-        (
-            Db::new(REJECTED_DEPLOY_BUFFER_VERIFIED_DB.to_string(), None),
-            deploy_verification_env_config(),
-        ),
         // Reporting (trace) cache
         (
             Db::new("reporting-cache".to_string(), None),
@@ -260,7 +247,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn deploy_verification_indexes_reopen_in_their_own_environment() {
+    async fn deploy_records_reopen_without_a_verification_environment() {
         let directory = tempfile::tempdir().unwrap();
         let deploy = crate::rust::util::construct_deploy::source_deploy(
             "Nil".to_string(),
@@ -289,21 +276,25 @@ mod tests {
             assert!(rejected
                 .any(|candidate| Ok(candidate.sig == deploy.sig))
                 .unwrap());
-            for name in [
-                DEPLOY_STORAGE_VERIFIED_DB,
-                REJECTED_DEPLOY_BUFFER_VERIFIED_DB,
-            ] {
-                let proof = manager.store(name.to_string()).await.unwrap();
-                assert!(proof.non_empty().unwrap());
-                let proof = proof.as_any().downcast_ref::<LmdbKeyValueStore>().unwrap();
-                let live = pool
-                    .store
-                    .raw_store()
-                    .as_any()
-                    .downcast_ref::<LmdbKeyValueStore>()
-                    .unwrap();
-                assert_ne!(proof.env.path(), live.env.path());
-            }
+            let live = pool
+                .store
+                .raw_store()
+                .as_any()
+                .downcast_ref::<LmdbKeyValueStore>()
+                .unwrap();
+            assert!(live.env.path().ends_with("deploystorage"));
+            assert!(pool
+                .store
+                .raw_store()
+                .to_map()
+                .unwrap()
+                .values()
+                .all(|bytes| bytes.starts_with(b"F1R3DEP\x02")));
+            assert!(manager
+                .store("deploy_storage_verified".to_string())
+                .await
+                .is_err());
+            assert!(!directory.path().join("deployverification").exists());
         }
     }
 }

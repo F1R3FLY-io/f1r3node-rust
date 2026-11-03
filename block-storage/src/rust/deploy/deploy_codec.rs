@@ -4,13 +4,16 @@ use models::casper::DeployDataProto;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_parameters::validate_parameters;
 use prost::Message;
+use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use serde::Deserialize;
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::BitVector;
 
 use super::key_value_deploy_storage::DeployPreparationError;
 
-const PREFIX: &[u8] = b"F1R3DEP\x01";
+const PREFIX: &[u8] = b"F1R3DEP\x02";
+const PREVIOUS_PREFIX: &[u8] = b"F1R3DEP\x01";
+const FINGERPRINT_LEN: usize = 32;
 const LEGACY_DECODE_METRIC: &str = "deploy.storage.legacy_decode";
 
 #[derive(Deserialize)]
@@ -39,15 +42,37 @@ pub(super) fn encode_checked(
         return Err(DeployPreparationError::UnsupportedAlgorithm(algorithm));
     }
     verify_signature(deploy).map_err(|_| DeployPreparationError::InvalidSignature)?;
-    let mut bytes = PREFIX.to_vec();
-    DeployData::to_proto_ref(deploy)
-        .encode(&mut bytes)
-        .map_err(|error| {
-            DeployPreparationError::Serialization(KvStoreError::SerializationError(
-                error.to_string(),
-            ))
-        })?;
-    Ok(bytes)
+    Ok(encode_verified(deploy))
+}
+
+pub(super) fn encode_verified(deploy: &Signed<DeployData>) -> BitVector {
+    let payload = DeployData::to_proto_ref(deploy).encode_to_vec();
+    let fingerprint = Blake2b256Hash::new(&payload);
+    let mut bytes = Vec::with_capacity(PREFIX.len() + FINGERPRINT_LEN + payload.len());
+    bytes.extend_from_slice(PREFIX);
+    bytes.extend_from_slice(&fingerprint.0);
+    bytes.extend_from_slice(&payload);
+    bytes
+}
+
+pub(super) fn is_current(bytes: &[u8]) -> bool { bytes.starts_with(PREFIX) }
+
+pub(super) fn checked_payload(bytes: &[u8]) -> Result<&[u8], KvStoreError> {
+    let body = bytes.strip_prefix(PREFIX).ok_or_else(|| {
+        KvStoreError::SerializationError("Unsupported deploy record format".into())
+    })?;
+    if body.len() < FINGERPRINT_LEN {
+        return Err(KvStoreError::SerializationError(
+            "Truncated deploy record fingerprint".into(),
+        ));
+    }
+    let (fingerprint, payload) = body.split_at(FINGERPRINT_LEN);
+    if fingerprint != Blake2b256Hash::new(payload).0 {
+        return Err(KvStoreError::SerializationError(
+            "Deploy record fingerprint mismatch".into(),
+        ));
+    }
+    Ok(payload)
 }
 
 pub(super) fn verify_signature(deploy: &Signed<DeployData>) -> Result<(), KvStoreError> {
@@ -61,17 +86,27 @@ pub(super) fn verify_signature(deploy: &Signed<DeployData>) -> Result<(), KvStor
 }
 
 #[cfg(test)]
-pub(super) fn encode_unchecked(deploy: &Signed<DeployData>) -> BitVector {
-    let mut bytes = PREFIX.to_vec();
+pub(super) fn encode_v1_unchecked(deploy: &Signed<DeployData>) -> BitVector {
+    let mut bytes = PREVIOUS_PREFIX.to_vec();
     DeployData::to_proto_ref(deploy).encode(&mut bytes).unwrap();
     bytes
 }
 
 pub(super) fn decode(bytes: &BitVector) -> Result<Signed<DeployData>, KvStoreError> {
-    if let Some(payload) = bytes.strip_prefix(PREFIX) {
+    let payload = if is_current(bytes) {
+        Some(checked_payload(bytes)?)
+    } else {
+        bytes.strip_prefix(PREVIOUS_PREFIX)
+    };
+    if let Some(payload) = payload {
         let proto = DeployDataProto::decode(payload)
             .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
         return DeployData::from_proto_unverified(proto).map_err(KvStoreError::SerializationError);
+    }
+    if bytes.starts_with(b"F1R3DEP") {
+        return Err(KvStoreError::SerializationError(
+            "Unsupported deploy record format".into(),
+        ));
     }
     metrics::counter!(LEGACY_DECODE_METRIC).increment(1);
     let legacy: Signed<LegacyDeployData> = bincode::deserialize(bytes)?;
@@ -154,10 +189,27 @@ mod tests {
         }]] {
             let deploy = signed(parameters);
             let bytes = encode(&deploy).unwrap();
-            let proto = DeployDataProto::decode(bytes.strip_prefix(PREFIX).unwrap()).unwrap();
+            let proto = DeployDataProto::decode(checked_payload(&bytes).unwrap()).unwrap();
             assert_eq!(proto, DeployData::to_proto_ref(&deploy));
             assert_eq!(decode(&bytes).unwrap(), deploy);
         }
+    }
+
+    #[test]
+    fn current_records_reject_changed_payloads_checksums_and_truncation() {
+        let deploy = signed(Vec::new());
+        let bytes = encode(&deploy).unwrap();
+        for index in [PREFIX.len(), bytes.len() - 1] {
+            let mut changed = bytes.clone();
+            changed[index] ^= 1;
+            assert!(decode(&changed).is_err());
+        }
+        for length in 0..bytes.len() {
+            assert!(decode(&bytes[..length].to_vec()).is_err());
+        }
+        let mut unknown = bytes;
+        unknown[PREFIX.len() - 1] = 3;
+        assert!(decode(&unknown).is_err());
     }
 
     #[test]
@@ -170,7 +222,7 @@ mod tests {
             assert_eq!(decode(&encode(&deploy).unwrap()).unwrap(), deploy);
             deploy.data.expiration_timestamp = Some(999);
             assert!(encode(&deploy).is_err());
-            let bytes = encode_unchecked(&deploy);
+            let bytes = encode_v1_unchecked(&deploy);
             assert_eq!(decode(&bytes).unwrap(), deploy);
         }
     }

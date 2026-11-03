@@ -1106,7 +1106,12 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
     // blocks over explicitly via the transport layer, exactly as the
     // slash-an-invalid-block-pointer test does.
     for blk in [&signed_block1, &signed_block1_prime] {
-        let pkt = protocol_helper::packet_with_content(&nodes[0].local, "test", blk.to_proto());
+        let pkt = protocol_helper::packet_with_content(
+            &nodes[0].local,
+            "test",
+            Bytes::new(),
+            blk.to_proto(),
+        );
         nodes[0]
             .tle
             .send(&nodes[1].local, &pkt)
@@ -1211,6 +1216,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         let pkt = protocol_helper::packet_with_content(
             &nodes[0].local,
             "test",
+            Bytes::new(),
             signed_block1_prime.to_proto(),
         );
         nodes[0]
@@ -1275,6 +1281,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         let pkt = protocol_helper::packet_with_content(
             &nodes[2].local,
             "test",
+            Bytes::new(),
             signed_block1_prime.to_proto(),
         );
         nodes[2]
@@ -1398,6 +1405,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
     let signed_invalid_block_packet_message = protocol_helper::packet_with_content(
         &nodes[0].local,
         "test", // network_id
+        Bytes::new(),
         signed_invalid_block.to_proto(),
     );
 

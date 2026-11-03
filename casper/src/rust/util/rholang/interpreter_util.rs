@@ -1364,38 +1364,24 @@ pub async fn compute_parents_post_state(
 
             // Function to get or compute BlockIndex for each parent block hash
             let block_index_f = |v: &BlockHash| -> Result<BlockIndex, CasperError> {
-                // Try cache first
-                if let Some(cached) = runtime_manager.block_index_cache.get(v) {
-                    return Ok((*cached.value()).clone());
+                if let Some(cached) = runtime_manager.cached_block_index(v) {
+                    return Ok(cached);
                 }
-
-                // Cache miss - compute the BlockIndex
                 let b = block_store.get_unsafe(v);
-                let pre_state = &b.body.state.pre_state_hash;
-                let post_state = &b.body.state.post_state_hash;
-                let sender = b.sender.clone();
-                let seq_num = b.seq_num;
-
-                let mergeable_chs =
-                    runtime_manager.load_mergeable_channels(post_state, sender, seq_num)?;
-
-                let block_index = crate::rust::merging::block_index::new(
+                let mergeable_chs = runtime_manager.load_mergeable_channels(
+                    &b.body.state.post_state_hash,
+                    b.sender.clone(),
+                    b.seq_num,
+                )?;
+                runtime_manager.get_or_compute_block_index(
                     &b.block_hash,
                     b.body.state.block_number,
                     &b.body.deploys,
                     &b.body.system_deploys,
-                    &Blake2b256Hash::from_bytes_prost(pre_state),
-                    &Blake2b256Hash::from_bytes_prost(post_state),
-                    &runtime_manager.history_repo,
+                    &Blake2b256Hash::from_bytes_prost(&b.body.state.pre_state_hash),
+                    &Blake2b256Hash::from_bytes_prost(&b.body.state.post_state_hash),
                     &mergeable_chs,
-                )?;
-
-                // Cache the result
-                runtime_manager
-                    .block_index_cache
-                    .insert(v.clone(), block_index.clone());
-
-                Ok(block_index)
+                )
             };
 
             // Compute scope: the band not already represented by the merge

@@ -143,6 +143,7 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
     deploy: &Signed<DeployData>,
 ) -> Result<Option<DeployError>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
+    let preparation = this.deploy_storage.prepare_checked(deploy);
     loop {
         let rejected_store = this.rejected_deploy_buffer.lock()?.clone();
         if this
@@ -157,8 +158,8 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         if pool.is_present() || rejected.is_present() {
             return Ok(Some(DeployError::duplicate_deploy(deploy_id)));
         }
-        let prepared = match this.deploy_storage.prepare_checked(deploy) {
-            Ok(prepared) => prepared,
+        let prepared = match preparation {
+            Ok(ref prepared) => prepared,
             Err(DeployPreparationError::InvalidSignature) => {
                 return Ok(Some(DeployError::signature_verification_failed()));
             }
