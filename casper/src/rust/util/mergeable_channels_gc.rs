@@ -284,7 +284,8 @@ fn extend_pending_to_ceiling(
 /// deepest block on every validator's strict main-parent lineage, and its
 /// ancestors through any parent. A block merged in as a secondary parent is
 /// as far behind every validator as the main-chain block that merged it.
-/// Computed once per pass, in memory (`imbl` lookups, not LMDB reads).
+/// Computed once per pass. Heights come from the in-memory index; parents are
+/// a block-metadata store read for each block the walk expands.
 ///
 /// Stops the walk once it reaches `min_height` — the lowest height any
 /// candidate in `pending` can have. A candidate's own height is always >=
@@ -332,10 +333,8 @@ fn moved_past_by_every_validator(
 
     ancestry_down_to(
         anchor,
-        |block_hash| {
-            dag.lookup_unsafe(block_hash)
-                .map(|meta| (meta.block_number, meta.parents))
-        },
+        |block_hash| dag.block_number(block_hash),
+        |block_hash| dag.lookup_unsafe(block_hash).map(|meta| meta.parents),
         min_height,
     )
     .map(Some)
@@ -394,22 +393,28 @@ fn deepest_common_strict_ancestor(
 
 /// The anchor and its ancestors through any parent, not walking past a block
 /// at or below `lowest_needed` — no candidate sits below that, so nothing
-/// deeper can change an answer. `lookup` gives a block's height and parents.
+/// deeper can change an answer. `height_of` is `None` for a block this node
+/// does not hold; `parents_of` is read only for blocks the walk expands.
+///
+/// A block the node does not hold is in no candidate set, so it is kept in
+/// the result but not expanded: stopping there can only keep data, never
+/// delete it.
 fn ancestry_down_to<E>(
     anchor: BlockHash,
-    lookup: impl Fn(&BlockHash) -> Result<(i64, Vec<BlockHash>), E>,
+    height_of: impl Fn(&BlockHash) -> Option<i64>,
+    parents_of: impl Fn(&BlockHash) -> Result<Vec<BlockHash>, E>,
     lowest_needed: i64,
 ) -> Result<HashSet<BlockHash>, E> {
-    let mut ancestry = HashSet::from([anchor.clone()]);
-    let mut frontier = vec![anchor];
+    let expands = |block_hash: &BlockHash| height_of(block_hash).is_some_and(|h| h > lowest_needed);
+    let mut frontier: Vec<BlockHash> = expands(&anchor)
+        .then(|| anchor.clone())
+        .into_iter()
+        .collect();
+    let mut ancestry = HashSet::from([anchor]);
 
     while let Some(block_hash) = frontier.pop() {
-        let (height, parents) = lookup(&block_hash)?;
-        if height <= lowest_needed {
-            continue;
-        }
-        for parent in parents {
-            if ancestry.insert(parent.clone()) {
+        for parent in parents_of(&block_hash)? {
+            if ancestry.insert(parent.clone()) && expands(&parent) {
                 frontier.push(parent);
             }
         }
@@ -684,20 +689,27 @@ mod tests {
         ])
     }
 
-    fn lookup_in(
+    fn walk(
         dag: &std::collections::HashMap<BlockHash, (i64, Vec<BlockHash>)>,
-    ) -> impl Fn(&BlockHash) -> Result<(i64, Vec<BlockHash>), String> + '_ {
-        |h| {
-            dag.get(h)
-                .cloned()
-                .ok_or_else(|| format!("{h:?} is not in the DAG"))
-        }
+        anchor: BlockHash,
+        lowest_needed: i64,
+    ) -> Result<HashSet<BlockHash>, String> {
+        ancestry_down_to(
+            anchor,
+            |h| dag.get(h).map(|entry| entry.0),
+            |h| {
+                dag.get(h)
+                    .map(|entry| entry.1.clone())
+                    .ok_or_else(|| format!("{h:?} has no metadata"))
+            },
+            lowest_needed,
+        )
     }
 
     #[test]
     fn the_ancestry_walk_follows_every_parent() {
         let dag = merged_chain();
-        let ancestry = ancestry_down_to(named_hash(b"c"), lookup_in(&dag), 0).expect("walk");
+        let ancestry = walk(&dag, named_hash(b"c"), 0).expect("walk");
         assert!(
             ancestry.contains(&named_hash(b"side")),
             "a block merged as a second parent is behind its merger"
@@ -708,7 +720,7 @@ mod tests {
     #[test]
     fn the_ancestry_walk_stops_at_the_lowest_block_still_pending() {
         let dag = merged_chain();
-        let ancestry = ancestry_down_to(named_hash(b"c"), lookup_in(&dag), 1).expect("walk");
+        let ancestry = walk(&dag, named_hash(b"c"), 1).expect("walk");
         assert!(ancestry.contains(&named_hash(b"a")));
         assert!(
             !ancestry.contains(&named_hash(b"genesis")),
@@ -716,11 +728,35 @@ mod tests {
         );
     }
 
+    /// `deep` is held, but only `side` cites it, and this node does not hold
+    /// `side`.
     #[test]
-    fn the_ancestry_walk_reports_a_block_missing_from_the_dag() {
+    fn a_held_block_reachable_only_through_an_unheld_parent_is_kept() {
         let mut dag = merged_chain();
+        dag.insert(named_hash(b"deep"), (1, vec![named_hash(b"genesis")]));
         dag.remove(&named_hash(b"side"));
-        assert!(ancestry_down_to(named_hash(b"c"), lookup_in(&dag), 0).is_err());
+        let ancestry = walk(&dag, named_hash(b"c"), 0).expect("walk");
+        assert!(ancestry.contains(&named_hash(b"side")));
+        assert!(
+            !ancestry.contains(&named_hash(b"deep")),
+            "nothing is known about what an unheld block descends from, so its \
+             ancestors stay out of the set and keep their data"
+        );
+    }
+
+    #[test]
+    fn a_held_block_without_metadata_fails_the_walk() {
+        let dag = merged_chain();
+        let result = ancestry_down_to(
+            named_hash(b"c"),
+            |h| dag.get(h).map(|entry| entry.0),
+            |h| match h == &named_hash(b"side") {
+                true => Err("side is held but has no metadata".to_string()),
+                false => Ok(dag[h].1.clone()),
+            },
+            0,
+        );
+        assert!(result.is_err());
     }
 
     prop_compose! {
@@ -819,7 +855,7 @@ mod tests {
             let height_of = |block_hash: &BlockHash| dag.get(block_hash).map(|entry| entry.0);
 
             if let Some(anchor) = deepest_common_strict_ancestor(latest.clone(), parent_of, height_of) {
-                let admitted = ancestry_down_to(anchor, lookup_in(&dag), 0).expect("walk");
+                        let admitted = walk(&dag, anchor, 0).expect("walk");
                 let behind_everyone = strict_ancestors_of_every(&dag, &latest);
                 for block_hash in &admitted {
                     prop_assert!(
@@ -1213,6 +1249,24 @@ mod tests {
             bms.add(four).expect("re-add metadata");
         }
         (dag, side)
+    }
+
+    #[test]
+    fn a_parent_the_dag_does_not_hold_below_the_walk_bound_does_not_fail_the_pass() {
+        let dag = linear_chain_dag();
+        {
+            let mut bms = dag.block_metadata_index.write();
+            let mut eight = bms.get(&hash(8)).expect("lookup").expect("metadata");
+            eight
+                .parents
+                .push(Bytes::from_static(b"below-the-restored-band"));
+            bms.add(eight).expect("re-add metadata");
+        }
+        assert!(
+            moved_past_by_every_validator(&dag, 5).is_ok(),
+            "the walk stops at height 5; a secondary parent of block 8 that this \
+             node does not hold cannot be a candidate and must not fail the pass"
+        );
     }
 
     #[test]
