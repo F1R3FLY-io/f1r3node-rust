@@ -1576,6 +1576,39 @@ This holds as a frame for Decision 96. Three items wait for other lanes:
 | The `dev` merge into FX-8b | Watch item | Not merged |
 
 
+## Ruling of 2026-11-03: D10 (Decision 97, design r17)
+
+From this point on, A-9 reads against design r17 §6.3 (publications `0c58795`). r17 changes only the close paragraph of §6.3. Decision 97 replaces Decision 96.
+
+**Decision 97:**
+- The close's PoS code is pre-charged to the proposer. Before any envelope of the block runs, the proposer's wallet is charged a fixed upper bound for that code, at the proposer's price.
+- After the close, the part that was not used is returned.
+- A block whose proposer cannot cover the pre-charge is not accepted, so no block is ordered whose close could go unpaid.
+- The PoS code of the close is still not gated. Stored continuations that the close fires still go to their installers, gated by FX-15 (D8b).
+
+This ruling also resolves lane A2's chain-halt finding.
+
+**Effect on the D10 section of Decision 96:** its post-settlement order, its fourth test and its FX-16 checks are withdrawn. The fees of the block no longer count toward the close charge. Lane A2's `stops::close_covered` check after the close (`b5537b44b`) was written for Decision 96. A-8 checks that FX-16 replaces it with the acceptance check, or keeps it only as a guard that cannot fail.
+
+**D10 test plan (Decision 97):**
+1. The proposer pays for known PoS work, and the unused part of the bound is returned.
+2. The block replays to the same root.
+3. A stored continuation that the close fires is charged to its installer, not to the proposer.
+4. A block whose proposer cannot cover the pre-charge is refused at acceptance.
+5. A test fails if a close ever uses more than the bound.
+
+**Checks on FX-16, by reading:**
+- The pre-charge is taken before the first envelope runs, and the post-state root carries both the pre-charge and the return.
+- The amount held for the close reduces what the proposer's wallet can pay for anything else in the block. This includes the gate table, `BlockPurses`, and the proposer's own envelopes and surfaces.
+- The bound and the price are fixed values that play, validation and replay read alike. The design says "at the proposer's price". FX-16 must state which price that is.
+- The acceptance check reads the proposer's balance at the pre-state, and it reads it in the same way in proposal, validation and replay.
+- The close's PoS code is not gated.
+- Cells and work with no record that the close runs are taken from the pre-charge. Work under a stored record still goes to its installer.
+- **Bootstrap:** the genesis block and its system deploys draw no charge.
+
+D10 stays **blocking** until FX-16 lands and meets these checks.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
