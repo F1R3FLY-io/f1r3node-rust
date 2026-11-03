@@ -280,11 +280,14 @@ impl PendingBlocks {
         if bytes > limits.max_bytes {
             return outcome(PendingInsert::TooLarge);
         }
-        if limits.max_per_sender == 0 {
+        // A sender with no entry has no blocks in the area.
+        let sender_count = inner.per_sender.get(&block.sender).copied().unwrap_or(0);
+        // Over the cap only after `set_limits` lowered it: a replacement would
+        // keep the sender there, so nothing from it is admitted.
+        if sender_count > limits.max_per_sender {
             return outcome(PendingInsert::SenderLimitReached);
         }
-        let sender_full =
-            inner.per_sender.get(&block.sender).copied().unwrap_or(0) >= limits.max_per_sender;
+        let sender_full = sender_count >= limits.max_per_sender;
         let area_full = inner.entries.len() + 1 > limits.max_blocks
             || inner.bytes.saturating_add(bytes) > limits.max_bytes;
         let replacement = replacement
@@ -791,5 +794,27 @@ mod tests {
         );
         assert!(!area.contains(&parent.block_hash));
         assert!(area.contains(&other.block_hash));
+    }
+
+    #[test]
+    fn a_sender_above_a_lowered_cap_cannot_replace_its_way_in() {
+        let child = block(1, 7);
+        let sibling = block(2, 7);
+        let parent = block(3, 7);
+        let area = PendingBlocks::new(limits(10, usize::MAX, 2));
+        assert_eq!(area.insert(&child, true).status, PendingInsert::Accepted);
+        assert_eq!(area.insert(&sibling, true).status, PendingInsert::Accepted);
+
+        area.set_limits(limits(10, usize::MAX, 1));
+        let refused = area.insert_replacing(&parent, &child.block_hash, PendingClass::Solicited);
+        assert_eq!(refused.status, PendingInsert::SenderLimitReached);
+        assert!(refused.evicted.is_empty());
+        assert!(area.contains(&child.block_hash));
+
+        area.set_limits(limits(10, usize::MAX, 0));
+        assert_eq!(
+            area.insert(&block(4, 8), true).status,
+            PendingInsert::SenderLimitReached
+        );
     }
 }

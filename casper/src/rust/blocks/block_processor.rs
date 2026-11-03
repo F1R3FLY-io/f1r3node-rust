@@ -1040,6 +1040,12 @@ impl Drop for DeferredPending {
     }
 }
 
+fn has_buffered_dependents(casper_buffer: &CasperBufferKeyValueStorage, hash: &BlockHash) -> bool {
+    casper_buffer
+        .get_children(&BlockHashSerde(hash.clone()))
+        .is_some_and(|children| !children.is_empty())
+}
+
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     pub fn new(
         block_store: KeyValueBlockStore,
@@ -1424,6 +1430,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         let casper_buffer = self.casper_buffer.clone();
         let block_retriever = self.block_retriever.clone();
         let mut capacity_changes = block_store.pending_blocks().subscribe_capacity_changes();
+        let recovery_cooldown =
+            Duration::from_millis(BlockRetriever::<T>::DEPENDENCY_RECOVERY_COOLDOWN_MS);
         *worker = Some(tokio::spawn(async move {
             loop {
                 let Some(state) = state.upgrade() else { break };
@@ -1439,11 +1447,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 let mut ready = Vec::new();
                 let mut discard = Vec::new();
                 for (hash, (sender, bytes)) in candidates {
-                    let has_dependents = casper_buffer
-                        .get_children(&BlockHashSerde(hash.clone()))
-                        .is_some_and(|children| !children.is_empty());
                     let hash_serde = BlockHashSerde(hash.clone());
-                    if !has_dependents
+                    if !has_buffered_dependents(&casper_buffer, &hash)
                         && !casper_buffer.contains(&hash_serde)
                         && !casper_buffer.is_pendant(&hash_serde)
                     {
@@ -1524,16 +1529,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                         if result.is_err() { break; }
                     }
                     _ = wake.notified() => {}
-                    _ = tokio::time::sleep(Duration::from_millis(500)), if retry_deferred => {}
+                    _ = tokio::time::sleep(recovery_cooldown), if retry_deferred => {}
                 }
             }
         }));
     }
 
     fn has_buffered_dependents(&self, hash: &BlockHash) -> bool {
-        self.casper_buffer
-            .get_children(&BlockHashSerde(hash.clone()))
-            .is_some_and(|children| !children.is_empty())
+        has_buffered_dependents(&self.casper_buffer, hash)
     }
 
     pub fn holds_body(&self, hash: &BlockHash) -> Result<bool, CasperError> {
