@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1187,6 +1187,72 @@ The merge is clean. Its combined diff is empty, so each file comes from one pare
 Findings F38 to F41 and questions 10 to 13 are open.
 
 
+## Revision 14 (actions A-8 and A-9): design r12 and the blocker gate (Decision 88)
+
+- **Reference:** design r12 §6.3 (publications `137ffca`), Decisions 83 to 88, plan r8.12.
+- **Branch state:** no change since revision 13. `patch/FX-8b` is at `f00a2da3d`, `patch/FX-12` at `d7537c771`, `patch/D76` at `1502a4e98` and `patch/FX-14` at `e5c574656`. No `patch/FX-15` exists yet.
+- **Method:** a reading of r12 against the code that revisions 12 and 13 audited. No new code was read, and no tests were run.
+
+### The gate
+
+Decision 88 lets only two kinds of finding block the handoff:
+- a divergence from design r12 §6.3;
+- an authority or safety finding of High severity or worse.
+
+Every other finding goes on the known-issues list that ships with the branch. From this revision on, each finding has a label, **blocking** or **known issue**, and a reason. A-9 reads only against r12 §6.3. A-8 reports only authority and safety findings of High severity or worse as blocking.
+
+### What r12 changes in §6.3
+
+r12 adds one consequence: **work is gated, not only the cell** (Decision 86). Each step under a membrane t is admitted against the wallet at t. The available amount is the pre-state balance, less what the block holds, less what t has already drawn in the run. When the wallet cannot pay, work under t stops. No step runs unpaid, and no shortfall goes to another party. Q-32 decides how play and replay stop at the same point.
+
+The other consequences are unchanged from r11.
+
+### Rulings that answer open questions
+
+| Question | Ruling | Effect on the audit |
+|---|---|---|
+| 10: two cells for the client's send and genesis code | Decision 85: two cells, both charged to the client | D79 decision 5 conforms. The question is closed. |
+| 11: who pays the F40 shortfall | Decision 86: nobody, because work under t stops | F40 is now a §6.3 divergence. |
+| 12: an own key whose owner the gate did not commit | Decision 83: that wallet pays, admitted like any surface draw | F39 is now a §6.3 divergence. F33 is closed by ruling and folds into F39. |
+| 13: cells in the close (D8b) | Not ruled | D8b stays a divergence from "each surface pays its own cell". |
+
+### The gate applied to the open items
+
+| Item | Label | Reason |
+|---|---|---|
+| **F40** (revision 12): the matcher filter admits one cell, and work after the cell is capped at settlement. The shortfall is unpaid, and foreign work counts against the firing client's phlo limit (FX-12 open item 3). | **Blocking** | It diverges from the r12 §6.3 consequence "work is gated, not only the cell": a step runs unpaid, and the client's limit carries work under another membrane. The fix depends on Q-32. |
+| **F40, close path** (revision 13): `charge_recorded_work` caps the close-time charge at the payer's balance, and no funding oracle is installed for system deploys. | **Blocking** | The same §6.3 consequence. The fix for the envelope runs must also cover the close. |
+| **F39** (revision 12): `own_payers` charges an own key to the client when the gate did not commit its owner. | **Blocking** | It diverges from §6.3 "purses are located by the seal" and "no shortfall is passed to another party". Decision 83 gives the fix: that wallet pays, admitted like any surface draw. |
+| **D8b** (revision 13): a COMM that the close fires pays no cell. | **Blocking** until question 13 is ruled | It diverges from §6.3 "each surface pays its own cell". A ruling that the close is exempt would move it to the known-issues list. |
+| **D9** (revision 12): a stored send has no record on FX-12 and FX-14. | **Blocking** until the merge | It is closed on `patch/D76` by D79. It stays blocking only if the merge into FX-8b does not take D79. |
+| **F38** (revision 12): a refund is keyed to the record that runs when the refund occurs, a key whose net work is not positive is dropped, and the `Exhausted` test mixes two meters. | **Known issue** | §6.3 keys each charge to the membrane that runs it, and the code does that. It does not define refunds. The effect is a possible overcharge of one key, with no authority or safety effect. The step-by-step gate of Decision 86 will read this meter, so lane B should fix the keying with F40. |
+| **F41** (revision 13): the close-time charge has its own purse rule. | **Known issue** | No effect today. The two rules give the same purse. Merge requirement 8 asks for one rule. |
+
+### FX-14 against Decisions 84 and 87
+
+The FX-14 follow-ups have not landed. Two items in the current FX-14 differ from the rulings.
+
+**F42 — Medium, known issue: a bond receipt is not spent on use.** FX-14 decision 4 keeps the receipt valid after use. Decision 84 allows one registration and one handle for each receipt. A receipt that reaches other code after its use can make a second registration for the same key. Each registration still passes the native-bond check at the close, and a key that is already bonded is refused.
+- **Reason for the label:** the finding is about authority and is Medium, below the gate. Only code that the bonder gave the receipt to can use it. It is not a §6.3 item.
+- **Change of label:** if lane B's tests show that one close can confirm two registrations for one key, each with a handle, the finding becomes High and blocking.
+
+**F43 — Medium, known issue: the handle goes to a channel that the caller chooses.** `PoS!("bond", receipt, amount, returnCh, handleCh)` sends the handle to `handleCh`. Decision 87 holds the handle on a channel located at the validator's seal, readable only by code under that seal. Genesis must also place the handles of the genesis validators there.
+- **Reason for the label:** today only the receipt holder chooses `handleCh`, and the receipt goes only to the bonder. So the finding is Medium, below the gate. It is not a §6.3 item.
+- **Change of label:** the label changes if FX-15 or the follow-up lets code under another seal read a handle.
+
+### Watch list
+
+- **Merges into FX-8b:** revision 12 requirements 1 to 7 and revision 13 requirements 8 to 10.
+- **FX-14 follow-ups:** they close F42 and F43.
+- **FX-15:** A-9 reads it against r12 §6.3. If FX-15 is the Decision 86 work gate, check four things:
+  - each step under t is admitted against the wallet at t, less the block's holds, less what t has drawn;
+  - work stops when that wallet cannot pay;
+  - the close path uses the same gate;
+  - play and replay stop at the same point, by the Q-32 answer.
+
+Q-32 goes through the lane C and lane A2 memo, and A-9 reads the answer when it is ruled.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -1198,7 +1264,7 @@ Findings F38 to F41 and questions 10 to 13 are open.
 7. **F27:** answered on 2026-11-02 (Decision 63). Should the deployer's signed message name the required cosigner keys, so that a relay cannot strip cosignatures from an envelope without changing its identity?
 8. **F31:** answered on 2026-11-02 (Decision 64). Until region metering, should a draw whose writer is a `Process` owner be refused, or journaled as pro-rata share draws?
 9. **Q-31 / D76:** answered on 2026-11-03 (Decision 80: the same owner and the same origin). For Decision 76, does "surfaces under one seal" mean one owner, or one owner at one origin envelope and price?
-10. **D79 decision 5:** a side with no record and the client's own record are two keys, so a COMM between the client's send and genesis code counts two cells. Is one cell the intent of Decision 80 for this case?
-11. **F40:** when a funded stored receive fires a continuation whose work costs more than its purse holds, who pays the shortfall?
-12. **F39 and F33:** is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
+10. **D79 decision 5:** answered on 2026-11-03 (Decision 85: two cells, both charged to the client). a side with no record and the client's own record are two keys, so a COMM between the client's send and genesis code counts two cells. Is one cell the intent of Decision 80 for this case?
+11. **F40:** answered on 2026-11-03 (Decision 86: work under the membrane stops). when a funded stored receive fires a continuation whose work costs more than its purse holds, who pays the shortfall?
+12. **F39 and F33:** answered on 2026-11-03 (Decision 83: the wallet at the seal pays). is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
 13. **D8b:** is the close-block system deploy exempt from the one-cell charge of r11 §6.3, or must a COMM that the close fires pay its cells?
