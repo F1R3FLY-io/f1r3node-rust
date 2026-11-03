@@ -14,7 +14,9 @@ use block_storage::rust::deploy::key_value_deploy_storage::{
     KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use comm::rust::errors::CommError;
 use comm::rust::peer_node::PeerNode;
+use comm::rust::rp::chain_id::ChainIdCell;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
@@ -22,8 +24,8 @@ use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, MergeableEntryRequest,
-    MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
+    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, MergeableEntryResponse,
+    StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
@@ -36,8 +38,8 @@ use crate::rust::blocks::block_processor::{BlockQueueItem, InFlightBlocks};
 use crate::rust::casper::{CasperShardConf, MultiParentCasper};
 use crate::rust::engine::block_retriever::BlockRetriever;
 use crate::rust::engine::engine::{
-    log_no_approved_block_available, send_no_approved_block_available, transition_to_running,
-    Engine,
+    log_no_approved_block_available, publish_chain_identity, send_no_approved_block_available,
+    transition_to_running, Engine,
 };
 use crate::rust::engine::engine_cell::EngineCell;
 use crate::rust::engine::lfs_block_requester::{self, BlockRequesterOps};
@@ -54,6 +56,10 @@ use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
 use crate::rust::validator_identity::ValidatorIdentity;
+
+/// Shared by `Initializing::new` and `reinstall_sync_channels`, so a retry gets
+/// the same channel as the first attempt.
+const FLOOR_CACHE_CHANNEL_CAPACITY: usize = 4;
 
 fn install_slot<V>(slot: &Arc<Mutex<Option<V>>>, value: V, name: &str) -> Result<(), CasperError> {
     let mut guard = slot
@@ -190,6 +196,53 @@ fn contiguous_coverage_start(
     Some(lowest.max(accept_bound - 1))
 }
 
+/// Fail a restore that did not establish the genesis hash.
+///
+/// The genesis hash is this node's chain identity, and the node does not run
+/// without one. A genesis-anchored restore holds the genesis block. A restore
+/// anchored above genesis learns the hash from the bootstrap's floor-cache
+/// response. Without the hash, the restore fails here, before the replay, and
+/// `recover_from_restore_failure` asks for the approved state again.
+fn require_genesis_hash(block_dag_storage: &BlockDagKeyValueStorage) -> Result<(), CasperError> {
+    match block_dag_storage.genesis_hash()? {
+        Some(_) => Ok(()),
+        None => Err(CasperError::RuntimeError(
+            "The restore did not establish the genesis hash: the bootstrap did not ship it \
+             with the floor cache. This node cannot know its chain identity without it."
+                .to_string(),
+        )),
+    }
+}
+
+/// Publish the genesis hash of a restore as this node's chain identity.
+///
+/// The restore does this before its replay and before it creates Casper. A
+/// conflict with an identity adopted from the bootstrap thus stops the restore
+/// before its expensive steps, and `recover_from_restore_failure` does not
+/// retry it.
+fn establish_chain_identity(
+    block_dag_storage: &BlockDagKeyValueStorage,
+    chain_id: &ChainIdCell,
+) -> Result<(), CasperError> {
+    require_genesis_hash(block_dag_storage)?;
+    publish_chain_identity(
+        block_dag_storage.genesis_hash().map_err(Into::into),
+        chain_id,
+    )
+}
+
+/// A restore failure that every retry repeats.
+///
+/// The chain identity and the network identifier stay fixed while the process
+/// runs. A restore that failed on one of them fails the same way again, so a
+/// retry only repeats the download.
+fn is_permanent_restore_failure(err: &CasperError) -> bool {
+    matches!(
+        err,
+        CasperError::CommError(CommError::WrongChainId(..) | CommError::WrongNetwork(..))
+    )
+}
+
 /// Land the shipped genesis block on a truncated node: verified against the
 /// learned register (claimed hash equals the register AND the content
 /// re-hashes to it), then stored and inserted finalized. Holding genesis
@@ -278,7 +331,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
         state_items_tx: Option<mpsc::Sender<StoreItemsMessage>>,
     ) -> Self {
-        let (floor_cache_tx, floor_cache_rx) = mpsc::channel::<FloorCacheResponse>(4);
+        let (floor_cache_tx, floor_cache_rx) =
+            mpsc::channel::<FloorCacheResponse>(FLOOR_CACHE_CHANNEL_CAPACITY);
         let state = Self {
             transport_layer,
             rp_conf_ask,
@@ -507,6 +561,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                 Ok(())
             }
             CasperMessage::FloorCacheResponse(resp) => {
+                // The response carries the genesis hash, which becomes this node's
+                // chain identity and is write-once in storage. The floor cache is
+                // requested only from the bootstrap, so only its answer counts.
+                if self.rp_conf_ask.bootstrap.as_ref() != Some(&peer) {
+                    tracing::warn!(
+                        "Dropping FloorCacheResponse from {}: the floor cache is requested only from the bootstrap.",
+                        peer
+                    );
+                    return Ok(());
+                }
                 let sender = self.floor_cache_tx.lock().unwrap().as_ref().cloned();
                 if let Some(tx) = sender {
                     if tx.try_send(resp).is_err() {
@@ -674,6 +738,9 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// peer that has no answer yet, and waiting is the right thing to do
     /// indefinitely. This one had an answer and could not use it, which is a
     /// fault to surface rather than to hide behind an endless loop.
+    ///
+    /// A failure on the chain identity or the network is not retried at all:
+    /// every retry repeats it (see `is_permanent_restore_failure`).
     pub async fn recover_from_restore_failure(&self, err: CasperError) -> Result<(), CasperError> {
         const MAX_RESTORE_ATTEMPTS: u64 = 3;
 
@@ -690,6 +757,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             attempt = attempts,
             "Approved-state restore failed; this node holds no state it can run on"
         );
+
+        if is_permanent_restore_failure(&err) {
+            return Err(CasperError::RuntimeError(format!(
+                "approved-state restore failed on this node's chain identity or network, which \
+                 a retry cannot change; giving up: {}",
+                err
+            )));
+        }
 
         if attempts >= MAX_RESTORE_ATTEMPTS {
             return Err(CasperError::RuntimeError(format!(
@@ -722,6 +797,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// to a requester, so a second attempt finds the slots empty and fails
     /// before it starts. The pending counters go with them: they describe queues
     /// that no longer exist.
+    ///
+    /// The floor-cache receiver is taken the same way by `request_floor_cache`
+    /// and dropped when it returns. Its sender is replaced too: the old one
+    /// feeds a dropped receiver, so the response to the retry would be lost.
     fn reinstall_sync_channels(&self) -> Result<(), CasperError> {
         // The sizing the engine is constructed with (see `engine::transition_to_initializing`).
         const SYNC_CHANNEL_CAPACITY: usize = 50;
@@ -730,6 +809,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(SYNC_CHANNEL_CAPACITY);
         let (mergeable_tx, mergeable_rx) =
             mpsc::channel::<MergeableEntryResponse>(SYNC_CHANNEL_CAPACITY);
+        let (floor_cache_tx, floor_cache_rx) =
+            mpsc::channel::<FloorCacheResponse>(FLOOR_CACHE_CHANNEL_CAPACITY);
 
         install_slot(&self.block_message_tx, block_tx, "block_message_tx")?;
         install_slot(&self.block_message_rx, block_rx, "block_message_rx")?;
@@ -745,6 +826,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             mergeable_rx,
             "mergeable_message_rx",
         )?;
+        install_slot(&self.floor_cache_tx, floor_cache_tx, "floor_cache_tx")?;
+        install_slot(&self.floor_cache_rx, floor_cache_rx, "floor_cache_rx")?;
 
         self.block_message_queue_pending.store(0, Ordering::Relaxed);
         self.tuple_space_queue_pending.store(0, Ordering::Relaxed);
@@ -850,8 +933,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             &self.rp_conf_ask,
             self.block_store.clone(),
             Box::new(|block| self.validate_block(block)),
-        )
-        .with_runtime_manager(self.runtime_manager.clone());
+        );
 
         // Create empty queue for block requester (must be created outside tokio::join! for lifetime reasons)
         let empty_queue = VecDeque::new(); // Empty queue since we drained it above
@@ -931,6 +1013,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 approved_block.candidate.block.clone(),
                 st.lower_bound,
                 st.height_map,
+                st.slash_evidence,
+                st.slash_targets,
             )
             .await?;
             // After the blocks are in, never before: the caches are keyed by
@@ -938,6 +1022,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // reads back as a missing block rather than as a floor.
             self.seed_floor_caches(approved_block)?;
             self.request_floor_cache(approved_block).await;
+            establish_chain_identity(&self.block_dag_storage, &self.rp_conf_ask.chain_id)?;
         } else {
             tracing::warn!(
                 "request_approved_state: block_request_stream returned no final state (None)"
@@ -1058,9 +1143,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // stored post-state so `RuntimeManager::load_mergeable_channels`
         // succeeds during validation.
         //
-        // The sync does not import mergeable entries from peers: nothing can
-        // verify a remote entry. This replay builds every missing entry
-        // locally and checks each block against its recorded post-state.
         // Bounded by the state floor, not the block floor: the replay executes
         // blocks, so it must not walk below the history the horizon sync just
         // imported, and a block below the parent reach is never merged on.
@@ -1089,9 +1171,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// for O(window) bytes.
     ///
     /// Failure degrades to that crawl — alive and alarmed, never a wedge — so
-    /// this never fails the restore.
-    async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
-        const ATTEMPTS: u32 = 3;
+    /// this never fails the restore. The genesis hash that the response also
+    /// carries is different: `require_genesis_hash` fails the restore without
+    /// it, because it is this node's chain identity. So the request waits for
+    /// a slow or briefly unreachable bootstrap for up to five minutes, which is
+    /// far cheaper than the full restore that a failure starts again.
+    pub async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
+        const ATTEMPTS: u32 = 30;
         const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
         // A genesis-anchored restore holds a parentless root, so every floor
@@ -1113,11 +1199,35 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 hashes: hashes.clone(),
             };
             for attempt in 1..=ATTEMPTS {
-                self.transport_layer
+                if let Err(e) = self
+                    .transport_layer
                     .send_to_bootstrap(&self.rp_conf_ask, Arc::new(request.clone().to_proto()))
-                    .await?;
+                    .await
+                {
+                    tracing::warn!(attempt, error = %e, "floor-cache request failed; retrying");
+                    sleep(RESPONSE_TIMEOUT).await;
+                    continue;
+                }
                 match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
                     Ok(Some(response)) => {
+                        // This node may already hold an identity, for example one
+                        // adopted from the bootstrap. A different shipped hash cannot
+                        // agree with it, and the record is write-once, so such a
+                        // hash is not recorded.
+                        if let Some(adopted) = self.rp_conf_ask.chain_id.get() {
+                            if !response.genesis_hash.is_empty()
+                                && response.genesis_hash != *adopted
+                            {
+                                tracing::warn!(
+                                    attempt,
+                                    shipped = %PrettyPrinter::build_string_bytes(&response.genesis_hash),
+                                    adopted = %PrettyPrinter::build_string_bytes(adopted),
+                                    "floor-cache response names a genesis hash other than this \
+                                     node's chain identity; ignoring it"
+                                );
+                                continue;
+                            }
+                        }
                         // The genesis hash rides the same trusted exchange:
                         // a truncated node holds no height-0 block, and the
                         // newly-bonded latest-message placeholder must be
@@ -1235,6 +1345,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         start_block: BlockMessage,
         min_height: i64,
         height_map: BTreeMap<i64, HashSet<BlockHash>>,
+        slash_evidence: HashSet<BlockHash>,
+        slash_targets: HashSet<BlockHash>,
     ) -> Result<(), CasperError> {
         async fn add_block_to_dag<T: TransportLayer + Send + Sync + Clone>(
             initializing: &Initializing<T>,
@@ -1271,12 +1383,26 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .map(|bond| bond.validator.to_vec())
             .collect();
 
-        let invalid_blocks: HashSet<ByteString> = start_block
+        let mut invalid_blocks: HashSet<ByteString> = start_block
             .justifications
             .iter()
             .filter(|justification| slashed_validators.contains(&justification.validator.to_vec()))
             .map(|justification| justification.latest_block_hash.to_vec())
             .collect();
+        invalid_blocks.extend(slash_targets.into_iter().map(|hash| hash.to_vec()));
+
+        for hash in slash_evidence {
+            let block = self.block_store.get(&hash)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "Slash evidence {} missing from block store during DAG population",
+                    PrettyPrinter::build_string_bytes(&hash)
+                ))
+            })?;
+            self.block_dag_storage.insert(
+                &block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SlashEvidence,
+            )?;
+        }
 
         let mut inserted = 0usize;
 
@@ -1315,11 +1441,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// Replay blocks in topological order to populate the mergeable channel cache.
     /// This is necessary for multi-parent block validation, which requires mergeable
     /// channel data from parent blocks to compute merged state.
-    ///
-    /// The LFS sync transfers the RSpace trie but not the mergeable channel store,
-    /// and it does not import entries from peers, because nothing can verify a
-    /// remote entry. So this function builds every entry that this node did not
-    /// compute itself.
     ///
     /// Before this fix, this loop replayed EVERY block from `min_block_number`
     /// to the LFB unconditionally, regardless of whether its cache entry was
@@ -1370,15 +1491,18 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // Get all blocks in the DAG that need replay (from minBlockNumber to LFB)
         // We process in topological order (by block number, then by hash for determinism)
         let all_blocks = dag.topo_sort(min_block_number, None)?;
-        let blocks_to_replay: Vec<BlockHash> = all_blocks.into_iter().flatten().collect();
+        let invalid_blocks = dag.invalid_blocks_map()?;
+        let blocks_to_replay: Vec<BlockHash> = all_blocks
+            .into_iter()
+            .flatten()
+            .filter(|hash| !invalid_blocks.contains_key(hash))
+            .collect();
 
         tracing::info!(
             "Found {} blocks in range for mergeable channel cache check.",
             blocks_to_replay.len()
         );
 
-        // Replay each block to populate mergeable channels, skipping any block
-        // whose entry this node already computed.
         let mut skipped = 0usize;
         let mut replayed = 0usize;
         for block_hash in blocks_to_replay {
@@ -1501,8 +1625,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         let block_data = rholang::rust::interpreter::system_processes::BlockData::from_block(block);
         let is_genesis = parents.is_empty();
 
-        // The same invalid-blocks map that block creation and validation used:
-        // the block's own slash targets, not this node's DAG invalid set.
         let dag = self.block_dag_storage.get_representation()?;
         let invalid_blocks_map = proto_util::block_slash_invalid_blocks(&dag, block)?;
 
@@ -1563,11 +1685,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // RuntimeManager is lock-free Arc<RuntimeManager>; clone the Arc.
         let runtime_manager = self.runtime_manager.clone();
 
+        // Cloned, not taken: a failure after this point leaves the estimator for
+        // the retry that `recover_from_restore_failure` starts.
         let estimator = self
             .estimator
             .lock()
             .unwrap()
-            .take()
+            .clone()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
 
         // The on-chain fault-tolerance threshold is read and adopted by
@@ -1792,44 +1916,6 @@ impl<T: TransportLayer + Send + Sync> BlockRequesterOps for BlockRequesterWrappe
     }
 
     fn validate_block(&self, block: &BlockMessage) -> bool { (self.validate_block_fn)(block) }
-
-    async fn request_for_mergeable_entry(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
-        let req = MergeableEntryRequest {
-            block_hash: block_hash.clone(),
-        };
-        self.transport_layer
-            .send_message_to_peers(
-                self.connections_cell,
-                self.rp_conf_ask,
-                Arc::new(req.to_proto()),
-                None,
-            )
-            .await
-            .map_err(|e| CasperError::RuntimeError(e.to_string()))?;
-        Ok(())
-    }
-
-    fn put_mergeable_entry(
-        &self,
-        block_hash: &BlockHash,
-        serialized_entry: &[u8],
-    ) -> Result<(), CasperError> {
-        if serialized_entry.is_empty() {
-            return Ok(());
-        }
-        // Look up the block to compute the local mergeable_key (must match
-        // the server's key exactly; both sides derive it from the block's
-        // post_state/sender/seq).
-        let block = self.block_store.get_unsafe(block_hash);
-        let key_bytes = RuntimeManager::mergeable_key_bytes_for_block(&block)?;
-        let runtime_manager = self.runtime_manager.as_ref().ok_or_else(|| {
-            CasperError::RuntimeError(
-                "BlockRequesterWrapper missing runtime_manager (mergeable-entry import)"
-                    .to_string(),
-            )
-        })?;
-        runtime_manager.put_mergeable_entry_bytes(key_bytes, serialized_entry.to_vec())
-    }
 }
 
 /// Wrapper struct for block request operations
@@ -1839,10 +1925,6 @@ pub struct BlockRequesterWrapper<'a, T: TransportLayer> {
     rp_conf_ask: &'a RPConf,
     block_store: KeyValueBlockStore,
     validate_block_fn: Box<dyn Fn(&BlockMessage) -> bool + Send + Sync + 'a>,
-    /// Optional runtime_manager handle for the mergeable-channels store
-    /// import path. Required in production; optional for tests that don't
-    /// exercise the mergeable path.
-    runtime_manager: Option<Arc<RuntimeManager>>,
 }
 
 impl<'a, T: TransportLayer> BlockRequesterWrapper<'a, T> {
@@ -1859,15 +1941,7 @@ impl<'a, T: TransportLayer> BlockRequesterWrapper<'a, T> {
             rp_conf_ask,
             block_store,
             validate_block_fn,
-            runtime_manager: None,
         }
-    }
-
-    /// Attach a `RuntimeManager` so the wrapper can import mergeable-channel
-    /// entries.
-    pub fn with_runtime_manager(mut self, runtime_manager: Arc<RuntimeManager>) -> Self {
-        self.runtime_manager = Some(runtime_manager);
-        self
     }
 }
 
@@ -2396,5 +2470,114 @@ mod tests {
             "a genesis-rooted node holds every height and claims from 0"
         );
         assert_eq!(contiguous_coverage_start(&BTreeMap::new(), 0), None);
+    }
+
+    /// A restore anchored above genesis holds no height-0 block, so it knows
+    /// its chain identity only when it learned the genesis hash.
+    #[test]
+    fn a_restore_without_a_genesis_hash_fails() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let anchor = get_random_block(
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![BlockHash::from(vec![0xaa; 32])]),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+
+            assert!(require_genesis_hash(&dag_storage).is_err());
+
+            dag_storage
+                .record_genesis_hash(BlockHash::from(vec![0x01; 32]))
+                .unwrap();
+            assert!(require_genesis_hash(&dag_storage).is_ok());
+        });
+    }
+
+    #[test]
+    fn a_genesis_anchored_restore_has_its_genesis_hash() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let genesis = get_random_block(
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![]),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            dag_storage.insert(&genesis, InsertMode::Approved).unwrap();
+
+            assert!(require_genesis_hash(&dag_storage).is_ok());
+            assert_eq!(
+                dag_storage.genesis_hash().unwrap(),
+                Some(genesis.block_hash.clone())
+            );
+        });
+    }
+
+    /// A restore publishes its genesis hash before the replay. A conflict with
+    /// an identity adopted from the bootstrap is a failure that no retry fixes.
+    #[test]
+    fn a_restore_publishes_its_genesis_hash_and_does_not_retry_a_conflict() {
+        use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let genesis = hash(&[0x01; 32]);
+
+            let unknown = ChainIdCell::unknown();
+            assert!(establish_chain_identity(&dag_storage, &unknown).is_err());
+            assert!(unknown.get().is_none());
+
+            dag_storage.record_genesis_hash(genesis.clone()).unwrap();
+            establish_chain_identity(&dag_storage, &unknown).unwrap();
+            assert_eq!(unknown.get(), Some(&genesis));
+
+            let adopted = ChainIdCell::known(hash(&[0x02; 32]));
+            let conflict = establish_chain_identity(&dag_storage, &adopted).unwrap_err();
+            assert!(is_permanent_restore_failure(&conflict));
+            assert!(!is_permanent_restore_failure(&CasperError::RuntimeError(
+                "a transient failure".to_string()
+            )));
+        });
     }
 }

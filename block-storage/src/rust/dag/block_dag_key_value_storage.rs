@@ -93,6 +93,7 @@ pub enum InsertMode {
     /// frontier, so it is never anyone's latest message, and letting it
     /// advance one hands fork choice a frontier this node does not hold.
     SettledHistory,
+    SlashEvidence,
 }
 
 // Phase 8 (A-6): `InsertMode::flags()` projection deleted; `insert_internal`
@@ -1283,9 +1284,10 @@ impl BlockDagKeyValueStorage {
         // Phase 8 (A-6): derive the per-branch booleans directly from the
         // enum via `matches!`. The previous `mode.flags()` projection
         // shim survived a Phase-4 transition; it is no longer needed.
-        let invalid = matches!(mode, InsertMode::Invalid);
+        let invalid = matches!(mode, InsertMode::Invalid | InsertMode::SlashEvidence);
         let approved = matches!(mode, InsertMode::Approved);
-        let settled_history = matches!(mode, InsertMode::SettledHistory);
+        let settled_history =
+            matches!(mode, InsertMode::SettledHistory | InsertMode::SlashEvidence);
         let sender_is_empty = block.sender.is_empty();
         let sender_has_invalid_format =
             !sender_is_empty && (block.sender.len() != validator::LENGTH);

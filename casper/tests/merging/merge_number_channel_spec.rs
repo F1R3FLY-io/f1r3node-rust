@@ -458,6 +458,7 @@ async fn run_test_case(
             &final_hash.to_bytes_prost(),
             None,
             5_000_000,
+            Vec::new(),
         )
         .await
         .unwrap();

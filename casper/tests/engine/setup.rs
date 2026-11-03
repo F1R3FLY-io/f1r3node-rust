@@ -555,7 +555,7 @@ impl TestFixture {
 
         // Drain the queue and update tracking set
         while let Ok((casper, block, guard)) = rx.try_recv() {
-            tracking_set.insert(block.block_hash.clone());
+            tracking_set.insert(block.block().block_hash.clone());
             blocks.push((casper, block, guard));
         }
 

@@ -149,8 +149,6 @@ fn get_blocks() -> (
 pub struct TestST {
     blocks: HashMap<BlockHash, BlockMessage>,
     invalid: HashSet<BlockHash>,
-    mergeable_requests: usize,
-    mergeable_puts: usize,
 }
 
 impl TestST {
@@ -158,8 +156,6 @@ impl TestST {
         Self {
             blocks,
             invalid: HashSet::new(),
-            mergeable_requests: 0,
-            mergeable_puts: 0,
         }
     }
 
@@ -295,26 +291,6 @@ impl BlockRequesterOps for MockBlockRequesterOps {
     fn validate_block(&self, block: &BlockMessage) -> bool {
         let state = self.test_state.lock().expect("Lock error");
         !state.invalid.contains(&block.block_hash)
-    }
-
-    async fn request_for_mergeable_entry(
-        &self,
-        _block_hash: &BlockHash,
-    ) -> Result<(), CasperError> {
-        self.test_state
-            .lock()
-            .expect("Lock error")
-            .mergeable_requests += 1;
-        Ok(())
-    }
-
-    fn put_mergeable_entry(
-        &self,
-        _block_hash: &BlockHash,
-        _serialized_entry: &[u8],
-    ) -> Result<(), CasperError> {
-        self.test_state.lock().expect("Lock error").mergeable_puts += 1;
-        Ok(())
     }
 }
 
@@ -985,7 +961,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn remote_mergeable_entries_are_never_requested_or_stored() {
+    async fn remote_mergeable_entries_do_not_save_blocks_or_complete_requests() {
         init_logger();
 
         let (b9, b8, ..) = get_blocks();
@@ -1010,17 +986,75 @@ mod tests {
                     })
                     .await
                     .map_err(|_| TestError::ChannelClosed)?;
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-
-                let state = mock.setup();
-                let state = state.lock().expect("Lock should work");
-                assert_eq!(state.mergeable_requests, 0);
-                assert_eq!(state.mergeable_puts, 0);
+                assert!(tokio::time::timeout(
+                    std::time::Duration::from_millis(10),
+                    mock.next_save(),
+                )
+                .await
+                .is_err());
                 Ok(())
             },
         )
         .await
         .expect("Test should complete successfully");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slash_evidence_below_the_window_is_fetched_without_its_ancestors() {
+        use models::rust::casper::protocol::casper_message::{
+            ProcessedSystemDeploy, SystemDeployData,
+        };
+
+        let (b9, mut b8, ..) = get_blocks();
+        let evidence_hash = Bytes::from(vec![0x71; 32]);
+        let unneeded_parent = Bytes::from(vec![0x72; 32]);
+        let evidence = get_block(evidence_hash.clone(), 1, vec![unneeded_parent]);
+        b8.body.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
+            event_list: vec![],
+            system_deploy: SystemDeployData::Slash {
+                invalid_block_hash: evidence_hash.clone(),
+                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[1; 33]),
+                target_activation_epoch: 0,
+            },
+        }];
+
+        dag_from_block(
+            b9,
+            true,
+            std::time::Duration::from_secs(3600),
+            |mut mock| async move {
+                assert_eq!(mock.next_request().await, Some(b8.block_hash.clone()));
+                mock.receive_block(&[b8.clone()]).await?;
+                assert_eq!(
+                    mock.next_save().await.map(|saved| saved.0),
+                    Some(b8.block_hash)
+                );
+                let mut requests = HashSet::new();
+                for _ in 0..3 {
+                    requests.insert(mock.next_request().await.expect("dependency request"));
+                }
+                let (_, _, hash7, _, hash5, ..) = get_hashes();
+                assert_eq!(
+                    requests,
+                    HashSet::from([hash7, hash5, evidence_hash.clone()])
+                );
+
+                mock.receive_block(&[evidence]).await?;
+                assert_eq!(
+                    mock.next_save().await.map(|saved| saved.0),
+                    Some(evidence_hash)
+                );
+                assert!(tokio::time::timeout(
+                    std::time::Duration::from_millis(10),
+                    mock.next_request(),
+                )
+                .await
+                .is_err());
+                Ok(())
+            },
+        )
+        .await
+        .expect("slash evidence download");
     }
 
     #[tokio::test(start_paused = true)]

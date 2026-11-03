@@ -43,20 +43,6 @@ pub trait BlockRequesterOps {
     ) -> Result<(), CasperError>;
 
     fn validate_block(&self, block: &BlockMessage) -> bool;
-
-    /// Send a `MergeableEntryRequest` for `block_hash` to all connected peers.
-    /// Fired after the BlockMessage for `block_hash` has been stored locally.
-    async fn request_for_mergeable_entry(&self, block_hash: &BlockHash) -> Result<(), CasperError>;
-
-    /// Apply an imported mergeable-channels entry. The store key is computed
-    /// locally from the block (already in store) and the raw bincode bytes
-    /// are written without re-serialization. Empty `serialized_entry` is a
-    /// soft miss.
-    fn put_mergeable_entry(
-        &self,
-        block_hash: &BlockHash,
-        serialized_entry: &[u8],
-    ) -> Result<(), CasperError>;
 }
 
 /// Possible request statuses
@@ -93,7 +79,8 @@ pub struct ST<Key: Hash + Eq + Clone> {
     pub lower_bound: i64,
     pub height_map: BTreeMap<i64, HashSet<Key>>,
     pub finished: HashSet<Key>,
-    pub mergeable_d: HashMap<Key, ReqStatus>,
+    pub slash_evidence: HashSet<Key>,
+    pub slash_targets: HashSet<Key>,
 }
 
 impl<Key: Hash + Eq + Clone> ST<Key> {
@@ -118,16 +105,24 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             lower_bound,
             height_map: BTreeMap::new(),
             finished: HashSet::new(),
-            mergeable_d: HashMap::new(),
+            slash_evidence: HashSet::new(),
+            slash_targets: HashSet::new(),
         }
     }
 
     /// Adds new keys to Init state, ready for processing. Existing keys are skipped.
     /// Returns a new ST instance with the added keys.
     pub fn add(&self, keys: HashSet<Key>) -> Self {
+        let promoted: HashSet<Key> = keys.intersection(&self.slash_evidence).cloned().collect();
+        let mut finished = self.finished.clone();
+        for key in &promoted {
+            finished.remove(key);
+        }
+        let slash_evidence = self.slash_evidence.difference(&keys).cloned().collect();
+
         // Filter keys that are in Done status or in request Map.
         let new_keys: HashSet<Key> = keys
-            .difference(&self.finished)
+            .difference(&finished)
             .filter(|k| !self.d.contains_key(k))
             .cloned()
             .collect();
@@ -144,72 +139,24 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             latest: self.latest.clone(),
             lower_bound: self.lower_bound,
             height_map: self.height_map.clone(),
-            finished: self.finished.clone(),
-            mergeable_d: self.mergeable_d.clone(),
+            finished,
+            slash_evidence,
+            slash_targets: self.slash_targets.clone(),
         }
     }
 
-    /// Records `key` for a best-effort mergeable-channel entry request.
-    ///
-    /// Entry delivery does not gate LFS completion. Missing entries are
-    /// reconstructed deterministically by `replay_blocks_for_mergeable_channels`
-    /// in `initializing.rs` after block synchronization.
-    pub fn mergeable_pending(&self, key: Key) -> Self {
-        let mut new_mergeable_d = self.mergeable_d.clone();
-        new_mergeable_d.insert(key, ReqStatus::Init);
-        Self {
-            d: self.d.clone(),
-            latest: self.latest.clone(),
-            lower_bound: self.lower_bound,
-            height_map: self.height_map.clone(),
-            finished: self.finished.clone(),
-            mergeable_d: new_mergeable_d,
-        }
-    }
-
-    /// Pick the next mergeable-entry keys to request. Same `Init → Requested`
-    /// transition as the block side; `resend=true` re-issues `Requested` keys.
-    pub fn get_next_mergeable(&self, resend: bool) -> (Self, HashSet<Key>) {
-        let mut new_mergeable_d = self.mergeable_d.clone();
-        let mut request_keys = HashSet::new();
-
-        for (key, status) in &self.mergeable_d {
-            let should_request =
-                *status == ReqStatus::Init || (resend && *status == ReqStatus::Requested);
-            if should_request {
-                new_mergeable_d.insert(key.clone(), ReqStatus::Requested);
-                request_keys.insert(key.clone());
+    pub fn add_slash_evidence(&self, keys: HashSet<Key>) -> Self {
+        let mut next = self.clone();
+        next.slash_targets.extend(keys.iter().cloned());
+        for key in keys {
+            if !next.d.contains_key(&key) && !next.finished.contains(&key) {
+                next.d.insert(key.clone(), ReqStatus::Init);
+                if !next.latest.contains(&key) {
+                    next.slash_evidence.insert(key);
+                }
             }
         }
-
-        let new_state = Self {
-            d: self.d.clone(),
-            latest: self.latest.clone(),
-            lower_bound: self.lower_bound,
-            height_map: self.height_map.clone(),
-            finished: self.finished.clone(),
-            mergeable_d: new_mergeable_d,
-        };
-
-        (new_state, request_keys)
-    }
-
-    /// Mark a mergeable-entry response as received. Removes the key from
-    /// `mergeable_d`. Returns whether the key was actually outstanding (false
-    /// = unsolicited / late response).
-    pub fn mergeable_received(&self, key: &Key) -> (Self, bool) {
-        let was_pending = self.mergeable_d.contains_key(key);
-        let mut new_mergeable_d = self.mergeable_d.clone();
-        new_mergeable_d.remove(key);
-        let new_state = Self {
-            d: self.d.clone(),
-            latest: self.latest.clone(),
-            lower_bound: self.lower_bound,
-            height_map: self.height_map.clone(),
-            finished: self.finished.clone(),
-            mergeable_d: new_mergeable_d,
-        };
-        (new_state, was_pending)
+        next
     }
 
     /// Get next keys not already requested or in case of resend together with Requested.
@@ -261,7 +208,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             lower_bound: self.lower_bound,
             height_map: self.height_map.clone(),
             finished: self.finished.clone(),
-            mergeable_d: self.mergeable_d.clone(),
+            slash_evidence: self.slash_evidence.clone(),
+            slash_targets: self.slash_targets.clone(),
         };
 
         (new_state, request_keys)
@@ -287,9 +235,14 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
             let mut adj_latest = self.latest.clone();
             let was_removed = adj_latest.remove(&k);
             let is_latest = was_removed;
+            let mut slash_evidence = self.slash_evidence.clone();
+            if is_latest {
+                slash_evidence.remove(&k);
+            }
 
             // Add replacement message if supplied
             let new_latest = if let Some(replacement) = latest_replacement {
+                slash_evidence.remove(&replacement);
                 adj_latest.insert(replacement);
                 adj_latest
             } else {
@@ -300,8 +253,10 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
 
             // Save in height map
             let mut new_height_map = self.height_map.clone();
-            let height_keys = new_height_map.entry(height).or_default();
-            height_keys.insert(k.clone());
+            if !slash_evidence.contains(&k) {
+                let height_keys = new_height_map.entry(height).or_default();
+                height_keys.insert(k.clone());
+            }
 
             // Calculate new minimum height if latest message
             // - we need parents of latest message so it's `-1`
@@ -322,7 +277,8 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
                 lower_bound: new_lower_bound,
                 height_map: new_height_map,
                 finished: self.finished.clone(),
-                mergeable_d: self.mergeable_d.clone(),
+                slash_evidence,
+                slash_targets: self.slash_targets.clone(),
             };
 
             (
@@ -353,18 +309,14 @@ impl<Key: Hash + Eq + Clone> ST<Key> {
                 lower_bound: self.lower_bound,
                 height_map: self.height_map.clone(),
                 finished: new_finished,
-                mergeable_d: self.mergeable_d.clone(),
+                slash_evidence: self.slash_evidence.clone(),
+                slash_targets: self.slash_targets.clone(),
             }
         } else {
             self.clone()
         }
     }
 
-    /// Returns whether the block-request stream has finished.
-    ///
-    /// This deliberately ignores `mergeable_d`: mergeable-entry delivery is
-    /// best-effort, and `replay_blocks_for_mergeable_channels` in
-    /// `initializing.rs` deterministically reconstructs any missing entries.
     pub fn is_finished(&self) -> bool { self.latest.is_empty() && self.d.is_empty() }
 }
 
@@ -518,13 +470,19 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             // - received one of latest messages
             // - requested and block number is greater than minimum
             let block_is_accepted = {
-                let state = self.st.lock().map_err(|_| {
+                let mut state = self.st.lock().map_err(|_| {
                     CasperError::StreamError(
                         "Failed to acquire state lock for acceptance check".to_string(),
                     )
                 })?;
-                let accepted =
-                    is_received_latest || (is_received && block_number >= state.lower_bound);
+                let evidence_only = state.slash_evidence.contains(&block.block_hash);
+                let accepted = !evidence_only
+                    && (is_received_latest || (is_received && block_number >= state.lower_bound));
+                if !evidence_only {
+                    *state = state.add_slash_evidence(
+                        proto_util::block_slash_targets(block).into_iter().collect(),
+                    );
+                }
                 tracing::debug!(
                     "Block {} acceptance check - latest: {}, height_ok: {} ({}>={}), accepted: {}",
                     block_hash_str,
@@ -614,9 +572,6 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             );
         }
 
-        // Block-side done. Mergeable-channel entries are not requested from
-        // peers: nothing can verify a remote entry, so the replay after the
-        // sync rebuilds every entry locally.
         let state_update_start = std::time::Instant::now();
         {
             let mut state = self.st.lock().map_err(|_| {
@@ -634,65 +589,6 @@ impl<'a, T: BlockRequesterOps> StreamProcessor<'a, T> {
             total_save_duration
         );
 
-        Ok(())
-    }
-
-    /// A remote mergeable-channels entry is never stored: nothing can verify
-    /// it, and the replay after the sync rebuilds every entry locally. A
-    /// response only settles a pending request. Returns whether one existed.
-    async fn process_mergeable_entry(
-        &self,
-        resp: &MergeableEntryResponse,
-    ) -> Result<bool, CasperError> {
-        let mut state = self.st.lock().map_err(|_| {
-            CasperError::StreamError(
-                "Failed to acquire state lock for mergeable_received".to_string(),
-            )
-        })?;
-        let (new_state, was_pending) = state.mergeable_received(&resp.block_hash);
-        *state = new_state;
-        if !was_pending {
-            tracing::debug!(
-                "Mergeable entry response for {:?} was unsolicited or late; ignoring.",
-                resp.block_hash
-            );
-        }
-        Ok(was_pending)
-    }
-
-    /// Re-broadcast outstanding mergeable-entry requests on idle timeout.
-    /// Mirrors the block-side resend logic.
-    async fn request_next_mergeable(&self, resend: bool) -> Result<(), CasperError> {
-        let hashes = {
-            let mut state = self.st.lock().map_err(|_| {
-                CasperError::StreamError(
-                    "Failed to acquire state lock for mergeable resend".to_string(),
-                )
-            })?;
-            let (new_state, next_hashes) = state.get_next_mergeable(resend);
-            *state = new_state;
-            next_hashes
-        };
-
-        if hashes.is_empty() {
-            return Ok(());
-        }
-
-        tracing::debug!(
-            "Re-issuing {} mergeable-entry request(s) (resend={})",
-            hashes.len(),
-            resend
-        );
-
-        for hash in hashes {
-            if let Err(e) = self.requester.request_for_mergeable_entry(&hash).await {
-                tracing::warn!(
-                    "Failed to (re)send MergeableEntryRequest for {:?}: {:?}",
-                    hash,
-                    e
-                );
-            }
-        }
         Ok(())
     }
 
@@ -1039,12 +935,6 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                         next_timeout
                     );
 
-                    // Re-issue outstanding mergeable-entry requests too.
-                    // Errors here don't terminate the stream.
-                    if let Err(e) = processor.request_next_mergeable(true).await {
-                        tracing::warn!("Mergeable-entry resend failed: {:?}", e);
-                    }
-
                     match request_queue_sender.try_send(true) {
                         Ok(()) => {
                             tracing::debug!("Timeout triggered - resend request enqueued successfully");
@@ -1079,40 +969,10 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                 }
 
                 Some(mergeable_resp) = mergeable_response_receiver.recv() => {
-                    let progress = match processor.process_mergeable_entry(&mergeable_resp).await {
-                        Ok(progress) => progress,
-                        Err(e) => {
-                            tracing::warn!(
-                                "Failed to process mergeable entry response for {:?}: {:?}",
-                                mergeable_resp.block_hash,
-                                e
-                            );
-                            continue;
-                        }
-                    };
-
-                    let current_state = {
-                        match processor.st.lock() {
-                            Ok(state) => state.clone(),
-                            Err(e) => {
-                                tracing::debug!(error = ?e, "failed to acquire state lock for mergeable response");
-                                continue;
-                            }
-                        }
-                    };
-
-                    if current_state.is_finished() {
-                        tracing::info!("Mergeable-entry import completed last pending unit; stream terminating.");
-                        yield current_state;
-                        break;
-                    }
-
-                    if progress {
-                        current_timeout = request_timeout;
-                        idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
-                    }
-
-                    yield current_state;
+                    tracing::debug!(
+                        block = ?mergeable_resp.block_hash,
+                        "Ignoring remote mergeable entry; entries are rebuilt locally"
+                    );
                 }
 
                 // Process initial messages with highest priority (before network messages)
@@ -1349,7 +1209,194 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
 
 #[cfg(test)]
 mod window_tests {
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::Justification;
+
     use super::*;
+    use crate::rust::validate::Validate;
+    use crate::rust::validator_identity::ValidatorIdentity;
+
+    #[derive(Default)]
+    struct ProgressBlockOps {
+        blocks: HashMap<BlockHash, BlockMessage>,
+        requests: Mutex<Vec<BlockHash>>,
+    }
+
+    #[async_trait]
+    impl BlockRequesterOps for ProgressBlockOps {
+        async fn request_for_block(&self, block_hash: &BlockHash) -> Result<(), CasperError> {
+            self.requests.lock().unwrap().push(block_hash.clone());
+            Ok(())
+        }
+
+        fn contains_block(&self, block_hash: &BlockHash) -> Result<bool, CasperError> {
+            Ok(self.blocks.contains_key(block_hash))
+        }
+
+        fn get_block_from_store(&self, block_hash: &BlockHash) -> BlockMessage {
+            self.blocks.get(block_hash).expect("stored block").clone()
+        }
+
+        fn put_block_to_store(
+            &mut self,
+            block_hash: BlockHash,
+            block: &BlockMessage,
+        ) -> Result<(), CasperError> {
+            self.blocks.insert(block_hash, block.clone());
+            Ok(())
+        }
+
+        fn validate_block(&self, block: &BlockMessage) -> bool { Validate::historical_block(block) }
+    }
+
+    fn signed_block_below_window() -> BlockMessage {
+        let (secret_key, _) = Secp256k1.new_key_pair();
+        let block = get_random_block(
+            Some(5),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(vec![hash(0xaa)]),
+            Some(vec![Justification {
+                validator: Validator::from(vec![0xbb; 65]),
+                latest_block_hash: hash(0xcc),
+            }]),
+            Some(vec![]),
+            Some(vec![]),
+            None,
+            None,
+            None,
+        );
+        ValidatorIdentity::new(&secret_key).sign_block(&block)
+    }
+
+    #[tokio::test]
+    async fn requested_block_below_window_is_saved_and_reports_progress_without_expanding_dependencies(
+    ) {
+        let block = signed_block_below_window();
+        let mut ops = ProgressBlockOps::default();
+        let state = ST::new(HashSet::from([block.block_hash.clone()]), None, Some(10));
+        let (state, _) = state.get_next(false);
+        let state = Arc::new(Mutex::new(state));
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut processor = StreamProcessor::new(&mut ops, state.clone(), HashMap::new(), sender);
+
+        assert!(processor.process_block(&block).await.unwrap());
+        assert!(!processor.process_block(&block).await.unwrap());
+        assert_eq!(
+            processor.requester.blocks.get(&block.block_hash),
+            Some(&block)
+        );
+        assert_eq!(processor.requester.blocks.len(), 1);
+        assert!(processor.requester.requests.lock().unwrap().is_empty());
+        assert!(receiver.try_recv().is_err());
+        let state = state.lock().unwrap();
+        assert!(state.is_finished());
+        assert_eq!(state.finished, HashSet::from([block.block_hash]));
+        assert_eq!(state.lower_bound, 10);
+    }
+
+    #[tokio::test]
+    async fn invalid_requested_copies_do_not_report_progress_or_prevent_the_original_from_completing(
+    ) {
+        let block = signed_block_below_window();
+        let mut invalid_hash = block.clone();
+        invalid_hash.header.timestamp ^= 1;
+        let mut invalid_signature = block.clone();
+        invalid_signature.sig = Default::default();
+        let mut ops = ProgressBlockOps::default();
+        let state = ST::new(HashSet::from([block.block_hash.clone()]), None, Some(10));
+        let (state, _) = state.get_next(false);
+        let state = Arc::new(Mutex::new(state));
+        let (sender, _receiver) = mpsc::channel(1);
+        let mut processor = StreamProcessor::new(&mut ops, state.clone(), HashMap::new(), sender);
+
+        for invalid in [invalid_hash, invalid_signature] {
+            assert!(!processor.process_block(&invalid).await.unwrap());
+            assert!(processor.requester.blocks.is_empty());
+            let state = state.lock().unwrap();
+            assert_eq!(state.d.get(&block.block_hash), Some(&ReqStatus::Requested));
+            assert!(state.finished.is_empty());
+            assert!(state.height_map.is_empty());
+            assert!(!state.is_finished());
+        }
+
+        assert!(processor.process_block(&block).await.unwrap());
+        assert_eq!(
+            processor.requester.blocks.get(&block.block_hash),
+            Some(&block)
+        );
+        assert!(processor.requester.requests.lock().unwrap().is_empty());
+        assert!(state.lock().unwrap().is_finished());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_valid_requested_blocks_below_window_reset_the_idle_timeout() {
+        use futures::{FutureExt, StreamExt};
+
+        for valid in [true, false] {
+            let mut block = signed_block_below_window();
+            let remaining = hash(0xdd);
+            let state = ST::new(
+                HashSet::from([block.block_hash.clone(), remaining.clone()]),
+                None,
+                Some(10),
+            );
+            let (state, _) = state.get_next(false);
+            let state = Arc::new(Mutex::new(state));
+            let mut ops = ProgressBlockOps::default();
+            let (request_tx, request_rx) = mpsc::channel(2);
+            let (hash_tx, hash_rx) = mpsc::channel(1);
+            let (message_tx, message_rx) = mpsc::channel(1);
+            let (_mergeable_tx, mergeable_rx) = mpsc::channel(1);
+            let initial = VecDeque::new();
+            let processor = StreamProcessor::new(&mut ops, state, HashMap::new(), hash_tx);
+            let stream = create_stream_with_processor(
+                processor,
+                request_rx,
+                request_tx,
+                hash_rx,
+                &initial,
+                message_rx,
+                Arc::new(AtomicUsize::new(1)),
+                mergeable_rx,
+                Duration::from_secs(10),
+                Duration::from_secs(40),
+            )
+            .await
+            .unwrap();
+            futures::pin_mut!(stream);
+            assert!(stream.next().now_or_never().is_none());
+            tokio::time::advance(Duration::from_secs(8)).await;
+            if !valid {
+                block.sig = Default::default();
+            }
+            message_tx.send(block.clone()).await.unwrap();
+            let received = stream.next().await.unwrap();
+            assert_eq!(received.finished.contains(&block.block_hash), valid);
+
+            tokio::time::advance(Duration::from_secs(3)).await;
+            let retry = stream.next().now_or_never();
+            if valid {
+                assert!(retry.is_none(), "valid response must postpone the retry");
+                tokio::time::advance(Duration::from_secs(7)).await;
+                let retry = stream.next().await.unwrap();
+                assert_eq!(retry.d.len(), 1);
+                assert_eq!(retry.d.get(&remaining), Some(&ReqStatus::Requested));
+            } else {
+                let retry = retry
+                    .expect("invalid response must not postpone the retry")
+                    .unwrap();
+                assert_eq!(retry.d.len(), 2);
+                assert!(retry.finished.is_empty());
+            }
+        }
+    }
 
     fn hash(byte: u8) -> BlockHash { BlockHash::from(vec![byte; 32]) }
 

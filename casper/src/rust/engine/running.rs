@@ -27,6 +27,7 @@ use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::peer_scoring::Strike;
 use crate::rust::engine::snapshot_chunk_sync::SnapshotChunkSyncDriver;
 use crate::rust::engine::snapshot_chunk_wire::{
     handle_get_snapshot_chunk_request, handle_has_snapshot_request,
@@ -267,14 +268,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     .await
             }
             CasperMessage::BlockMessage(b) => {
-                if let Some(id) = self.casper.get_validator() {
-                    if b.sender == id.public_key.bytes {
-                        tracing::warn!(
-                            "There is another node {} proposing using the same private key as you. Or did you restart your node?",
-                            peer
-                        );
-                    }
-                }
                 if self.ignore_casper_message(b.block_hash.clone())? {
                     tracing::debug!(
                         "Ignoring BlockMessage {} from {}",
@@ -283,14 +276,24 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     );
                 } else {
                     let block_hash = b.block_hash.clone();
-                    let b = match ReceiptVerifier::shared().verify(&peer.id.key, b).await {
-                        Ok(verified) => verified,
+                    let (checked, guard) = match ReceiptVerifier::shared()
+                        .verify_and_mark(&peer.id.key, b, &self.blocks_in_processing)
+                        .await
+                    {
+                        Ok(admitted) => admitted,
                         Err(ReceiptRefusal::Overloaded) => {
-                            metrics::counter!(
-                                crate::rust::metrics_constants::BLOCK_INFLIGHT_CAP_DROP_METRIC,
-                                "site" => "running-verification"
-                            )
-                            .increment(1);
+                            if self.block_retriever.awaits_block(&block_hash) {
+                                self.block_retriever.note_local_backpressure_drop(
+                                    &block_hash,
+                                    "running-verification",
+                                );
+                            } else {
+                                metrics::counter!(
+                                    crate::rust::metrics_constants::BLOCK_INFLIGHT_CAP_DROP_METRIC,
+                                    "site" => "running-verification"
+                                )
+                                .increment(1);
+                            }
                             tracing::debug!(
                                 "Dropping BlockMessage {} from {}: block verification is at capacity",
                                 PrettyPrinter::build_string_bytes(&block_hash),
@@ -298,44 +301,51 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                             );
                             return Ok(());
                         }
-                        Err(ReceiptRefusal::Invalid(_)) => {
+                        Err(ReceiptRefusal::Invalid(invalid)) => {
+                            let (strike, reason) = match invalid {
+                                crate::rust::block_status::InvalidBlock::InvalidBlockHash => {
+                                    (Strike::HashMismatch, "hash-mismatch")
+                                }
+                                _ => (Strike::Malformed, "malformed"),
+                            };
+                            metrics::counter!(
+                                crate::rust::metrics_constants::BLOCK_INTEGRITY_REJECTED_METRIC,
+                                "source" => RUNNING_METRICS_SOURCE,
+                                "reason" => reason
+                            )
+                            .increment(1);
+                            self.block_retriever.strike_peer(&peer, &block_hash, strike);
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::AlreadyInFlight) => {
                             tracing::debug!(
-                                "Dropping BlockMessage {} from {}: it does not match its hash or signature",
-                                PrettyPrinter::build_string_bytes(&block_hash),
-                                peer.endpoint.host
+                                "Skipping BlockMessage {} because it is already queued/in-processing",
+                                PrettyPrinter::build_string_bytes(&block_hash)
                             );
                             return Ok(());
                         }
-                    };
-                    tracing::debug!(
-                        "Incoming BlockMessage {} from {}",
-                        PrettyPrinter::build_string_block_message(&b, true),
-                        peer.endpoint.host
-                    );
-                    let guard = match mark_in_flight(&self.blocks_in_processing, block_hash.clone())
-                    {
-                        InFlightMark::Marked(guard) => guard,
-                        InFlightMark::AlreadyInFlight => {
-                            tracing::debug!(
-                                    "Skipping BlockMessage {} enqueue because it is already queued/in-processing",
-                                    PrettyPrinter::build_string_bytes(&block_hash)
-                                );
-                            return Ok(());
-                        }
-                        InFlightMark::CapReached => {
+                        Err(ReceiptRefusal::InFlightCapReached) => {
                             self.block_retriever
                                 .note_local_backpressure_drop(&block_hash, "running-receipt");
-                            tracing::warn!(
-                                    "Dropping BlockMessage {} because in-flight block cap {} is reached",
-                                    PrettyPrinter::build_string_bytes(&block_hash),
-                                    MAX_BLOCKS_IN_PROCESSING
-                                );
                             return Ok(());
                         }
                     };
+                    if let Some(id) = self.casper.get_validator() {
+                        if checked.block().sender == id.public_key.bytes {
+                            tracing::warn!(
+                                "There is another node {} proposing using the same private key as you. Or did you restart your node?",
+                                peer
+                            );
+                        }
+                    }
+                    tracing::debug!(
+                        "Incoming BlockMessage {} from {}",
+                        PrettyPrinter::build_string_block_message(checked.block(), true),
+                        peer.endpoint.host
+                    );
                     self.block_retriever.note_block_source(&block_hash, &peer)?;
                     self.block_processing_queue_tx
-                        .send((self.casper.clone(), b, guard))
+                        .send((self.casper.clone(), QueuedBlock::Network(checked), guard))
                         .await
                         .map_err(|e| {
                             CasperError::RuntimeError(format!(
@@ -627,8 +637,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, ReceiptRefusal, ReceiptVerifier,
-    MAX_BLOCKS_IN_PROCESSING,
+    BlockQueueItem, InFlightBlocks, QueuedBlock, ReceiptRefusal, ReceiptVerifier,
 };
 
 impl<T: TransportLayer + Send + Sync> Running<T> {

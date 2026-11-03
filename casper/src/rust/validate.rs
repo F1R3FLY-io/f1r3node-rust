@@ -245,18 +245,26 @@ impl Validate {
     }
 
     pub fn block_hash_and_signature(b: &BlockMessage) -> Result<(), InvalidBlock> {
-        if matches!(Self::block_hash(b), Either::Left(_)) {
+        if b.block_hash != proto_util::hash_block(b) {
             return Err(InvalidBlock::InvalidBlockHash);
         }
-        if !Self::block_signature(b) {
+        if !Self::verify_signature(
+            &b.sig_algorithm,
+            &b.block_hash.to_vec(),
+            &b.sig.to_vec(),
+            &b.sender.to_vec(),
+        ) {
             return Err(InvalidBlock::InvalidSignature);
         }
         Ok(())
     }
 
     pub fn historical_block(b: &BlockMessage) -> bool {
-        matches!(Self::block_hash(b), Either::Right(_))
-            && (proto_util::block_number(b) == 0 || Self::block_signature(b))
+        if proto_util::block_number(b) == 0 {
+            b.block_hash == proto_util::hash_block(b)
+        } else {
+            Self::block_hash_and_signature(b).is_ok()
+        }
     }
 
     pub fn block_sender_has_weight(

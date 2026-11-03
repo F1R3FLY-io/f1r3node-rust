@@ -1,0 +1,15 @@
+{
+  "schema": "cbc-acceptance/v2",
+  "artifact": "scripts/casper-soak/src/host_control.rs",
+  "source_sha256": "427e0a7a550156cfc821e37df4fe452a03aae3b9ed8807bd897be0c80b76e6be",
+  "claim": {
+    "path": "docs/claims/soak-segment-cleanup.md",
+    "sha256": "95a88b84f5c717313eb5c25ffdca37677141990bcbe37e7ef401b479b8a6234d"
+  },
+  "claim_id": "CLAIM-SOAK-CLEANUP-001",
+  "claim_set_sha256": "bb8cdade0591550366f006ceb4b4ddfb2c43a9234bf5852190a71035c85191aa",
+  "evidence_sha256": "35be0d01bdcfc0885389d2fb476ec89d7ec8eb3d4d63cd70f351d641467f5a6c",
+  "accepted_by": "",
+  "approved_at": "",
+  "approval_ref": ""
+}

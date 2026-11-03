@@ -787,10 +787,6 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
     );
 }
 
-// LFS rebuilds mergeable entries by replaying each block. The slash deploy
-// produces the whole invalid-blocks map into a COMM event, so the replay must
-// use the block's own slash targets. The DAG invalid set of the replaying node
-// can contain other blocks.
 #[tokio::test]
 async fn slash_block_replays_with_its_own_slash_targets() {
     let ctx = TestContext::new().await;

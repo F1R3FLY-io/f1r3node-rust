@@ -91,8 +91,8 @@ pub struct CasperLaunchImpl<T: TransportLayer + Send + Sync + Clone + 'static> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, VerifiedBlock,
-    MAX_BLOCKS_IN_PROCESSING,
+    discard_corrupt_pendant, mark_in_flight, BlockQueueItem, CheckedBlock, InFlightBlocks,
+    InFlightMark, QueuedBlock, MAX_BLOCKS_IN_PROCESSING,
 };
 
 pub(crate) fn ensure_compatible_approved_block(
@@ -366,13 +366,29 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                         continue;
                     }
 
-                    let block = match VerifiedBlock::verify(block) {
+                    let verification_block = block.clone();
+                    let block = match tokio::task::spawn_blocking(move || {
+                        CheckedBlock::verify(verification_block)
+                    })
+                    .await
+                    .map_err(|error| {
+                        CasperError::RuntimeError(format!(
+                            "Stored pendant verification task failed: {error}"
+                        ))
+                    })? {
                         Ok(verified) => verified,
                         Err(_) => {
                             tracing::warn!(
                                 "Pendant {} does not match its hash or signature. Skipped.",
                                 PrettyPrinter::build_string_bytes(&hash)
                             );
+                            discard_corrupt_pendant(
+                                &block,
+                                block_store,
+                                casper_buffer_storage,
+                                block_retriever,
+                            )
+                            .await?;
                             continue;
                         }
                     };
@@ -400,7 +416,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                         }
                     };
                     block_processing_queue_tx
-                        .send((casper.clone(), block, guard))
+                        .send((casper.clone(), QueuedBlock::Network(block), guard))
                         .await
                         .map_err(|e| {
                             CasperError::Other(format!("Failed to send block to queue: {}", e))

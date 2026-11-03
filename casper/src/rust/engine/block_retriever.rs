@@ -671,7 +671,18 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
 
     pub fn strike_block_source(&self, hash: &BlockHash, strike: Strike) {
         let now = Self::current_millis();
-        match self.peer_scores.strike(hash, now) {
+        let outcome = self.peer_scores.strike(hash, now);
+        self.record_strike(outcome, hash, strike, now);
+    }
+
+    pub fn strike_peer(&self, peer: &PeerNode, hash: &BlockHash, strike: Strike) {
+        let now = Self::current_millis();
+        let outcome = self.peer_scores.strike_peer(peer, now);
+        self.record_strike(outcome, hash, strike, now);
+    }
+
+    fn record_strike(&self, outcome: StrikeOutcome, hash: &BlockHash, strike: Strike, now: u64) {
+        match outcome {
             StrikeOutcome::NoSource => {}
             StrikeOutcome::Counted(peer) => {
                 metrics::counter!(PEER_SCORING_STRIKES_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE, "reason" => strike.label())

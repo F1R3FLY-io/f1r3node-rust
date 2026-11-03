@@ -18,6 +18,7 @@ pub const IGNORE_TTL_MS: u64 = 60 * 60 * 1000;
 pub enum Strike {
     UnauthorizedSender,
     Malformed,
+    HashMismatch,
     InvalidSender,
 }
 
@@ -26,6 +27,7 @@ impl Strike {
         match self {
             Strike::UnauthorizedSender => "unauthorized-sender",
             Strike::Malformed => "malformed",
+            Strike::HashMismatch => "hash-mismatch",
             Strike::InvalidSender => "invalid-sender",
         }
     }
@@ -140,16 +142,26 @@ impl PeerScores {
         let Some(peer) = inner.take_source(hash) else {
             return StrikeOutcome::NoSource;
         };
-        if inner.is_ignored(&peer, now_ms) {
+        inner.count_strike(peer, now_ms)
+    }
+
+    pub fn strike_peer(&self, peer: &PeerNode, now_ms: u64) -> StrikeOutcome {
+        self.lock().count_strike(peer.clone(), now_ms)
+    }
+}
+
+impl Inner {
+    fn count_strike(&mut self, peer: PeerNode, now_ms: u64) -> StrikeOutcome {
+        if self.is_ignored(&peer, now_ms) {
             return StrikeOutcome::Counted(peer);
         }
-        if !inner.strikes.contains_key(&peer) && inner.strikes.len() >= MAX_TRACKED_PEERS {
-            inner.sweep(now_ms);
-            if inner.strikes.len() >= MAX_TRACKED_PEERS {
-                inner.evict_weakest_striker();
+        if !self.strikes.contains_key(&peer) && self.strikes.len() >= MAX_TRACKED_PEERS {
+            self.sweep(now_ms);
+            if self.strikes.len() >= MAX_TRACKED_PEERS {
+                self.evict_weakest_striker();
             }
         }
-        let times = inner.strikes.entry(peer.clone()).or_default();
+        let times = self.strikes.entry(peer.clone()).or_default();
         while times
             .front()
             .is_some_and(|t| now_ms.saturating_sub(*t) >= STRIKE_WINDOW_MS)
@@ -160,19 +172,20 @@ impl PeerScores {
         if times.len() < STRIKE_THRESHOLD {
             return StrikeOutcome::Counted(peer);
         }
-        inner.strikes.remove(&peer);
-        if inner.ignored_until.len() >= MAX_TRACKED_PEERS {
-            inner.sweep(now_ms);
-            if inner.ignored_until.len() >= MAX_TRACKED_PEERS {
-                inner.evict_earliest_expiry();
+        self.strikes.remove(&peer);
+        if self.ignored_until.len() >= MAX_TRACKED_PEERS {
+            self.sweep(now_ms);
+            if self.ignored_until.len() >= MAX_TRACKED_PEERS {
+                self.evict_earliest_expiry();
             }
         }
-        inner
-            .ignored_until
+        self.ignored_until
             .insert(peer.clone(), now_ms.saturating_add(IGNORE_TTL_MS));
         StrikeOutcome::Ignored(peer)
     }
+}
 
+impl PeerScores {
     pub fn is_ignored(&self, peer: &PeerNode, now_ms: u64) -> bool {
         self.lock().is_ignored(peer, now_ms)
     }
@@ -230,6 +243,27 @@ mod tests {
     fn a_strike_without_a_tracked_source_counts_nothing() {
         let scores = PeerScores::new();
         assert_eq!(scores.strike(&hash(1), 0), StrikeOutcome::NoSource);
+    }
+
+    #[test]
+    fn a_peer_strike_counts_without_touching_a_tracked_source() {
+        let scores = PeerScores::new();
+        let bad = peer("bad");
+        let honest = peer("honest");
+        scores.note_unsolicited(&hash(1), &honest);
+        for _ in 1..STRIKE_THRESHOLD {
+            assert_eq!(
+                scores.strike_peer(&bad, 0),
+                StrikeOutcome::Counted(bad.clone())
+            );
+        }
+        assert_eq!(
+            scores.strike_peer(&bad, 0),
+            StrikeOutcome::Ignored(bad.clone())
+        );
+        assert!(scores.is_ignored(&bad, 0));
+        assert!(!scores.is_ignored(&honest, 0));
+        assert_eq!(scores.strike(&hash(1), 0), StrikeOutcome::Counted(honest));
     }
 
     #[test]

@@ -727,10 +727,6 @@ fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Merkle root over the justifications sub-tree, in block order.
-/// `Validate::format_of_fields` rejects blocks whose justifications are
-/// not sorted by validator.  Each leaf is
-/// `Blake2b256(LEAF_JUSTIFICATION || validator_len_le || validator || latest_block_hash)`.
 fn justifications_root(justifications: &[Justification]) -> [u8; 32] {
     let leaves: Vec<[u8; 32]> = justifications
         .iter()
@@ -973,15 +969,15 @@ pub fn slashed_block_senders(
     Ok(map)
 }
 
-/// Invalid-blocks map for executing or replaying `block`: the targets of the
-/// block's own succeeded slash system deploys (see `slashed_block_senders`).
-/// Every replay of a recorded block must use this map, never the DAG's
-/// invalid set, or the slash deploy cannot reproduce its COMM events.
 pub fn block_slash_invalid_blocks(
     dag: &KeyValueDagRepresentation,
     block: &BlockMessage,
 ) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
-    let slashed_hashes: Vec<BlockHash> = block
+    slashed_block_senders(dag, &block_slash_targets(block))
+}
+
+pub fn block_slash_targets(block: &BlockMessage) -> Vec<BlockHash> {
+    block
         .body
         .system_deploys
         .iter()
@@ -995,8 +991,7 @@ pub fn block_slash_invalid_blocks(
             } => Some(invalid_block_hash.clone()),
             _ => None,
         })
-        .collect();
-    slashed_block_senders(dag, &slashed_hashes)
+        .collect()
 }
 
 fn get_creator_blocks_between(

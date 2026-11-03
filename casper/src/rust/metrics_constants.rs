@@ -87,6 +87,7 @@ pub const BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC: &str =
     "block.processing.stage.validation-setup.time";
 pub const BLOCK_VALIDATION_TIME_METRIC: &str = "block.validation.time";
 pub const BLOCK_PROCESSING_STORAGE_TIME_METRIC: &str = "block.processing.stage.storage.time";
+pub const BLOCK_INTEGRITY_REJECTED_METRIC: &str = "block.integrity.rejected";
 pub const BLOCK_PROCESSING_REPLAY_TIME_METRIC: &str = "block.processing.stage.replay.time";
 pub const BLOCK_PROCESSING_PARENTS_POST_STATE_TIME_METRIC: &str =
     "block.processing.stage.parents-post-state.time";
