@@ -63,6 +63,10 @@ impl ContractCall {
                 let values_vec: Vec<Par> = values.to_vec();
                 let ch_cloned: Par = ch.clone();
                 Box::pin(async move {
+                    dispatcher
+                        .reducer()?
+                        .update_mergeable_channels(&ch_cloned)
+                        .await;
                     let produce_result = space
                         .produce(
                             ch_cloned,
