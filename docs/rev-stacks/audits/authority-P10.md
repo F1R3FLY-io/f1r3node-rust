@@ -1430,6 +1430,39 @@ From this point on, A-9 reads against design r15 §6.3 (publications `0bea858`).
 **Question for the lanes (no ruling needed):** the proposer pays "from the fees it earns". The fix must state the order: does settlement credit the fees before the close charge, or does the close charge draw on the proposer's pre-state balance? Both are reversible. A lane decides and logs it.
 
 
+## Watch item: the merge of `dev` into FX-8b (instruction of 2026-11-03)
+
+Lane A2 will merge `dev` into FX-8b before the handoff. A trial merge of `origin/patch/FX-8b` (`4a74b0e34`) with `origin/dev` (`746a1c368`) from the merge base `1a19f1127` stops with conflicts in two files only:
+- `casper/src/rust/rholang/runtime.rs`
+- `node/src/rust/api/web_api.rs`
+
+Lane B's dry-run log lists the files that changed on both sides and merged without a conflict. Two of them touch authority:
+- `rholang/src/rust/interpreter/reduce.rs`
+- `rspace++/src/rspace/space_matcher.rs`
+
+**A-8 checks on the merge commit, by reading:**
+1. **`runtime.rs`:** keep FX-12's ledger reset before the system source, and `charge_recorded_work` after it and before the checkpoint. Keep the D10 charge when it lands.
+2. **`web_api.rs`, injection on both wallet paths:**
+   - On the legacy path, `dev` binds the address as a deploy parameter in the AST (`BALANCE_RHOLANG_TEMPLATE`, with tests that compare the compiled `Par` with an injection payload). The merge must keep that binding.
+   - On the native path, FX-8b builds the term with `native::balance_term`. The merge must keep the address check on that path, and keep FX-8b's `balance_query_rejects_addresses_that_are_not_valid` test.
+   - Both `dev` tests and the FX-8b test must stay.
+3. **`reduce.rs` (spot check):** `dev`'s join rule sits next to FX-2's record at fire and FX-4's hash-seal check. Check three things:
+   - the seal record installed at fire is not lost on the join path;
+   - FX-4's check still runs before the origin check (F30);
+   - D79's record on a stored datum is still written by `eval_send`.
+4. **`space_matcher.rs` (spot check):** `admits_waiting` still runs for each waiting continuation in `extract_first_match`, also on any path that `dev` added.
+
+### F44 — Low, known issue: the native balance path builds its query from a string
+
+**Code:** on the native wallet path, `web_api.rs` calls `native::balance_term`. That function checks the address with `VaultAddress::parse` and then puts it into the term with `format!`. The `dev` fix for the legacy path binds the address as a deploy parameter in the AST instead, so no input text reaches the source.
+
+**Effect:** the native path depends on the address check to stop injection. The check accepts only a parsed REV address, and FX-8b's test refuses an injection payload. No injection is known.
+
+**Reason for the label:** this is a read-only query path, the input is checked, and no authority or §6.3 effect is known. So the finding is Low, below the gate.
+
+**Proposed fix:** bind the address on the native path through the same deploy-parameter mechanism as `dev`'s legacy template. Reversible, lane B.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
