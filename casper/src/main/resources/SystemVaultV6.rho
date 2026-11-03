@@ -8,9 +8,6 @@ in {
   contract SystemVault(@"balance", @owner, ret) = {
     RevWallet!("balance", owner, *ret)
   } |
-  contract SystemVault(@"transfer", @to, @amount, deployerId, ret) = {
-    RevWallet!("transfer", (*deployerId, to, amount), *ret)
-  } |
   rs!(
     "040f035630a5d2199184890b4b6b83440c842da0b6becca539f788f7b35d6e873561f673cd6ebe2e32236398a86f29dad992e8fba32534734300fcc5104bcfea0e".hexToBytes(),
     (9223372036854775807, bundle+{*SystemVault}),

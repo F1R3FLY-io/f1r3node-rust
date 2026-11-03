@@ -393,6 +393,11 @@ fn term_builders_accept_only_valid_addresses_and_amounts() {
     }
     assert!(super::native::transfer_term(&address, 0).is_err());
     assert!(super::native::transfer_term(&address, -1).is_err());
+    let bond = super::native::bond_term(1_000).unwrap();
+    assert!(bond.contains("rb!(\"bond\", (*deployerId, 1000)"));
+    assert!(bond.contains("@PoS!(\"bond\", *deployerId, 1000, *deployId, *deployId)"));
+    assert!(crate::rust::interpreter::compiler::compiler::Compiler::source_to_adt(&bond).is_ok());
+    assert!(super::native::bond_term(0).is_err());
 }
 
 #[test]

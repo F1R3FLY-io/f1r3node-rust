@@ -338,6 +338,22 @@ pub fn transfer_term(to: &str, amount: i64) -> Result<String, String> {
     ))
 }
 
+pub fn bond_term(amount: i64) -> Result<String, String> {
+    if amount <= 0 {
+        return Err("Amount must be positive value".to_string());
+    }
+    Ok(format!(
+        "new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), \
+         deployId(`rho:system:deployId`), rl(`rho:registry:lookup`), posCh, bonded in {{\n  \
+         rb!(\"bond\", (*deployerId, {amount}), *bonded) |\n  \
+         for (@(true, _) <- bonded) {{\n    \
+         rl!(`rho:system:pos`, *posCh) |\n    \
+         for (@(_, PoS) <- posCh) {{ @PoS!(\"bond\", *deployerId, {amount}, *deployId, *deployId) }}\n  \
+         }} |\n  \
+         for (@(false, message) <- bonded) {{ deployId!((false, message)) }}\n}}\n"
+    ))
+}
+
 pub fn balance_term(address: &str) -> Result<String, String> {
     checked_address(address)?;
     Ok(format!(

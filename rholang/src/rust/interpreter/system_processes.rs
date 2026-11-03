@@ -872,6 +872,7 @@ impl DeployData {
 pub struct UrnPhase {
     pub fs_native_filtered: Arc<std::sync::atomic::AtomicBool>,
     pub genesis: Arc<std::sync::atomic::AtomicBool>,
+    pub seal_records: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl UrnPhase {
@@ -887,6 +888,10 @@ impl UrnPhase {
     }
 
     pub fn is_genesis(&self) -> bool { self.genesis.load(std::sync::atomic::Ordering::Acquire) }
+
+    pub fn seals_recorded(&self) -> bool {
+        self.seal_records.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 pub fn genesis_only_channels() -> [Par; 2] {
@@ -962,7 +967,9 @@ pub struct SystemProcesses {
     chromadb_service: SharedChromaDBService,
 }
 
-const RECEIVED_AT_RUN_TIME: &str = "a stack inside data received at run time draws on no wallet";
+fn received_refusal(command: &str) -> String {
+    format!("a {command} inside data received at run time moves no REV")
+}
 
 fn received_at_run_time() -> bool {
     rev_stack::seal::current().is_some_and(|record| record.from_data)
@@ -1229,6 +1236,7 @@ impl SystemProcesses {
                 authority
             }
             Some(owner) => vec![owner],
+            None if self.urn_phase.seals_recorded() => Vec::new(),
             None => {
                 let data = self.deploy_data.read().await;
                 std::iter::once(&data.deployer_id)
@@ -1256,7 +1264,7 @@ impl SystemProcesses {
         };
 
         if received_at_run_time() && !rev_stack::native::READS.contains(&command.as_str()) {
-            return produce(&[rev_stack::native::refusal(RECEIVED_AT_RUN_TIME)], ack).await;
+            return produce(&[rev_stack::native::refusal(&received_refusal(&command))], ack).await;
         }
         let signers = self.wallet_authority().await;
         let block_number = self.block_data.read().await.block_number;
@@ -1290,7 +1298,7 @@ impl SystemProcesses {
         };
 
         if received_at_run_time() && command != "balance" {
-            return produce(&[rev_stack::native::refusal(RECEIVED_AT_RUN_TIME)], ack).await;
+            return produce(&[rev_stack::native::refusal(&received_refusal(&command))], ack).await;
         }
 
         let Some(response) =
@@ -1319,7 +1327,7 @@ impl SystemProcesses {
         };
 
         if received_at_run_time() {
-            return produce(&[rev_stack::native::refusal(RECEIVED_AT_RUN_TIME)], ack).await;
+            return produce(&[rev_stack::native::refusal(&received_refusal(&command))], ack).await;
         }
 
         let Some(response) =

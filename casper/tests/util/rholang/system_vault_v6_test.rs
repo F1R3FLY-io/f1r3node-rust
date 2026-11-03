@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use casper::rust::genesis::contracts::standard_deploys;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::private_key::PrivateKey;
@@ -84,6 +82,7 @@ async fn runtime_with_facade() -> RhoRuntimeImpl {
         })
         .await;
     eval(&runtime, &vault, SYSTEM_VAULT_V6, 2).await;
+    runtime.set_seal_records(true);
     runtime
 }
 
@@ -115,13 +114,15 @@ fn with_system_vault(body: &str) -> String {
 }
 
 fn transfer(to: &str, amount: i64, out: &str) -> String {
-    with_system_vault(&format!(
-        r#"@SystemVault!("transfer", "{to}", {amount}, *deployerId, "{out}")"#
-    ))
+    format!(
+        r#"new w(`rho:rev:wallet`), deployerId(`rho:system:deployerId`) in {{
+             w!("transfer", (*deployerId, "{to}", {amount}), "{out}")
+           }}"#
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_facade_transfers_natively_and_reads_balances() {
+async fn a_native_transfer_shows_in_the_facades_balance_under_seal_records() {
     let runtime = runtime_with_facade().await;
     let (alice, bob) = (key(), key());
     stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
@@ -155,7 +156,7 @@ async fn the_facade_transfers_natively_and_reads_balances() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_facade_refuses_an_overdraft() {
+async fn a_native_overdraft_is_refused_under_seal_records() {
     let runtime = runtime_with_facade().await;
     let (alice, bob) = (key(), key());
     stacks(&runtime).deposit(&alice.owner, 10).unwrap();
@@ -166,94 +167,17 @@ async fn the_facade_refuses_an_overdraft() {
     assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 10);
 }
 
-async fn sequential_transfers(
-    runtime: &RhoRuntimeImpl,
-    count: usize,
-    direct: bool,
-    seed: u64,
-) -> f64 {
-    let payers: Vec<Key> = (0..count).map(|_| key()).collect();
-    let payee = key();
-    for payer in &payers {
-        stacks(runtime).deposit(&payer.owner, 1_000).unwrap();
-    }
-    let started = Instant::now();
-    for (i, payer) in payers.iter().enumerate() {
-        let out = format!("out-{seed}-{i}");
-        let term = if direct {
-            format!(
-                r#"new w(`rho:rev:wallet`), deployerId(`rho:system:deployerId`) in {{
-                     w!("transfer", (*deployerId, "{}", 1), "{out}")
-                   }}"#,
-                payee.address
-            )
-        } else {
-            transfer(&payee.address, 1, &out)
-        };
-        eval(runtime, payer, &term, seed + i as u64).await;
-    }
-    let elapsed = started.elapsed().as_secs_f64();
-    assert_eq!(stacks(runtime).balance(&payee.owner).unwrap(), count as u64);
-    elapsed
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "benchmark: run with --release --ignored --nocapture"]
-async fn transfer_benchmark() {
-    const N: usize = 300;
-
+async fn the_facade_has_no_transfer() {
     let runtime = runtime_with_facade().await;
-    sequential_transfers(&runtime, 20, false, 1_000).await;
-    let facade = sequential_transfers(&runtime, N, false, 10_000).await;
-    let direct = sequential_transfers(&runtime, N, true, 20_000).await;
-
-    let (a, b) = (runtime_with_facade().await, runtime_with_facade().await);
-    let started = Instant::now();
-    let (ta, tb) = tokio::join!(
-        sequential_transfers(&a, N / 2, false, 30_000),
-        sequential_transfers(&b, N / 2, false, 40_000)
-    );
-    let parallel = started.elapsed().as_secs_f64();
-
-    let whale = key();
-    stacks(&runtime).deposit(&whale.owner, 1_000_000).unwrap();
-    let payees: Vec<Key> = (0..N).map(|_| key()).collect();
-    let body = payees
-        .iter()
-        .map(|p| {
-            format!(
-                r#"@SystemVault!("transfer", "{}", 1, *deployerId, "batch")"#,
-                p.address
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" | ");
-    let started = Instant::now();
-    eval_signed(&runtime, &whale, &with_system_vault(&body), 99).await;
-    let batch = started.elapsed().as_secs_f64();
-    assert_eq!(take(&runtime, "batch").await.len(), N);
-    assert_eq!(
-        stacks(&runtime).balance(&whale.owner).unwrap(),
-        1_000_000 - N as u64
-    );
-
-    let n = N as f64;
-    println!("transfer benchmark ({N} transfers each):");
-    println!(
-        "  facade, one deploy per transfer:  {:.3} ms per transfer, {:.0}/s",
-        facade * 1e3 / n,
-        n / facade
-    );
-    println!(
-        "  native, one deploy per transfer:  {:.3} ms per transfer, {:.0}/s",
-        direct * 1e3 / n,
-        n / direct
-    );
-    println!(
-        "  facade, two runtimes in parallel: {:.0}/s ({:.3} s and {:.3} s per lane)",
-        n / parallel,
-        ta,
-        tb
-    );
-    println!("  facade, all in one deploy:        {:.0}/s", n / batch);
+    let (alice, bob) = (key(), key());
+    stacks(&runtime).deposit(&alice.owner, 1_000).unwrap();
+    let call = with_system_vault(&format!(
+        r#"@SystemVault!("transfer", "{}", 100, *deployerId, "out")"#,
+        bob.address
+    ));
+    eval_signed(&runtime, &alice, &call, 10).await;
+    assert!(take(&runtime, "out").await.is_empty());
+    assert_eq!(stacks(&runtime).balance(&alice.owner).unwrap(), 1_000);
+    assert_eq!(stacks(&runtime).balance(&bob.owner).unwrap(), 0);
 }
