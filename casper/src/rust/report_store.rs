@@ -48,6 +48,24 @@ impl CompressedBlockEventInfoStore {
             KvStoreError::SerializationError(format!("BlockEventInfo decoding error: {}", e))
         })
     }
+
+    /// Delete the reports stored under `keys`; returns how many existed and
+    /// their stored (compressed) size in bytes.
+    pub fn delete_measured(&self, keys: Vec<ByteString>) -> Result<(usize, u64), KvStoreError> {
+        let keys_encoded = keys
+            .iter()
+            .map(|key| self.encode_key(key))
+            .collect::<Result<Vec<_>, _>>()?;
+        let stored_bytes = self
+            .store
+            .get(&keys_encoded)?
+            .iter()
+            .flatten()
+            .map(|value| value.len() as u64)
+            .sum();
+        let deleted = self.store.delete(keys_encoded)?;
+        Ok((deleted, stored_bytes))
+    }
 }
 
 impl KeyValueTypedStore<ByteString, BlockEventInfo> for CompressedBlockEventInfoStore {

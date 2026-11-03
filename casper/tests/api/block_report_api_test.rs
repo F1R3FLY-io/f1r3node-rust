@@ -116,6 +116,64 @@ async fn a_cached_report_is_served_without_replay() {
 }
 
 #[tokio::test]
+async fn pruning_removes_only_reports_of_blocks_in_the_height_range() {
+    let fixture = TestFixture::new().await;
+    let TestFixture {
+        engine,
+        block_store,
+        genesis,
+        ..
+    } = fixture;
+    let engine_cell = EngineCell::init();
+    engine_cell.set(Arc::new(engine)).await;
+
+    let outside_dag = get_random_block_default();
+    let store = report_store();
+    store
+        .put(vec![
+            (genesis.block_hash.to_vec(), BlockEventInfo::default()),
+            (outside_dag.block_hash.to_vec(), BlockEventInfo::default()),
+        ])
+        .expect("Failed to seed report cache");
+
+    let api = BlockReportAPI::new(
+        Arc::new(NoopReportingCasper),
+        store.clone(),
+        engine_cell,
+        block_store,
+        CliqueOracleImpl,
+        false,
+    );
+
+    let above_genesis = api
+        .prune_cached_reports(1..1_000)
+        .await
+        .expect("pruning above the DAG must succeed");
+    assert_eq!(above_genesis, (0, 0));
+    assert_eq!(
+        store.contains(vec![genesis.block_hash.to_vec()]).unwrap(),
+        vec![true]
+    );
+
+    let (removed, bytes) = api
+        .prune_cached_reports(0..1)
+        .await
+        .expect("pruning the genesis height must succeed");
+    assert_eq!(removed, 1);
+    assert!(bytes > 0);
+    assert_eq!(
+        store.contains(vec![genesis.block_hash.to_vec()]).unwrap(),
+        vec![false]
+    );
+    assert_eq!(
+        store
+            .contains(vec![outside_dag.block_hash.to_vec()])
+            .unwrap(),
+        vec![true]
+    );
+}
+
+#[tokio::test]
 async fn an_unavailable_pre_state_refuses_the_replay() {
     let fixture = TestFixture::new().await;
     let TestFixture {
