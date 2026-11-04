@@ -100,7 +100,7 @@ See `docs/rev-stacks/memos/D107-rebond-in-quarantine.md` (revision 4 below).
 
 - **A re-bond during quarantine.**
   - Without a fix, the rewrite would have released the new bond at the old quarantine end. The key stayed in the old release entry.
-  - `movePendingWithdrawer` now removes each moved key from every other release entry. It folds over the keys of `releases` and carries only that map.
+  - `withdraw` now removes the key from every release entry before adding it under its new end, when the key is still in quarantine (in `withdrawers`). It folds over the keys of `releases` and carries only that map. The withdrawing deployer pays for the fold, and an ordinary withdrawal does not run it. A first version did the pruning in `movePendingWithdrawer`. That added about 110,000 phlo to every epoch close with withdrawers, so it moved to `withdraw`.
   - The behaviour now matches the code before Decision 107. The case and the b1 lock are written up in `docs/rev-stacks/memos/D107-rebond-in-quarantine.md`.
 - **New tests in `pos_bond_admin_spec`:**
   - `a_failed_release_keeps_the_withdrawer_and_the_next_epoch_tries_again`: the test empties V1's native bond between the withdrawal and the epoch close, so `RevBondAdmin` release fails. V1 stays in `withdrawers` with 1,000 and its wallet does not change. After the native bond is restored, the next epoch close releases it.
@@ -108,3 +108,4 @@ See `docs/rev-stacks/memos/D107-rebond-in-quarantine.md` (revision 4 below).
   - `the_active_set_expression_picks_what_the_old_loop_picked`: lane A1's equivalence test. The old `ListOps.map` pick and the new expression choose the same set for bond maps of 12, 101 and 150 random keys, with 5, 100 and 100 active. The old loop runs with a phlo limit of 10⁹, because at 150 bonds it passes the exploratory limit.
 - The cross-host fixture is regenerated.
 - Verification (revision 4, release): casper `v6::` 93 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.
+- Verification (revision 4, with the pruning in `withdraw`, release): casper `v6::` 93 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.
