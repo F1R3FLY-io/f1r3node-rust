@@ -710,7 +710,7 @@ async fn multi_parent_casper_should_keep_a_known_sender_pending_block_under_an_u
 }
 
 #[tokio::test]
-async fn multi_parent_casper_should_keep_a_refused_dependency_requested() {
+async fn multi_parent_casper_should_recover_when_a_requested_child_fills_the_sender_limit() {
     let ctx = TestContext::new().await;
     let (mut nodes, chain) = pending_chain(&ctx, 3).await;
     nodes[1].block_store.set_pending_limits(PendingBlockLimits {
@@ -728,9 +728,19 @@ async fn multi_parent_casper_should_keep_a_refused_dependency_requested() {
     let status = nodes[1].process_block(chain[1].clone()).await.unwrap();
 
     assert_eq!(status, Either::Left(BlockError::MissingBlocks));
-    assert!(!nodes[1].block_store.is_pending(&chain[1].block_hash));
-    assert!(nodes[1].ingest_view.is_held(&chain[2].block_hash));
+    assert!(
+        !nodes[1].ingest_view.is_held(&chain[2].block_hash),
+        "the requested child gives its sender's only slot to its parent"
+    );
     assert!(nodes[1].ingest_view.is_awaited(&chain[1].block_hash));
+    assert!(nodes[1].ingest_view.is_awaited(&chain[2].block_hash));
+
+    for block in &chain {
+        nodes[1].process_block(block.clone()).await.unwrap();
+    }
+    for block in &chain {
+        assert!(nodes[1].casper.dag_contains(&block.block_hash));
+    }
 }
 
 #[tokio::test]
@@ -964,7 +974,12 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
     // blocks over explicitly via the transport layer, exactly as the
     // slash-an-invalid-block-pointer test does.
     for blk in [&signed_block1, &signed_block1_prime] {
-        let pkt = protocol_helper::packet_with_content(&nodes[0].local, "test", blk.to_proto());
+        let pkt = protocol_helper::packet_with_content(
+            &nodes[0].local,
+            "test",
+            Bytes::new(),
+            blk.to_proto(),
+        );
         nodes[0]
             .tle
             .send(&nodes[1].local, &pkt)
@@ -1069,6 +1084,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         let pkt = protocol_helper::packet_with_content(
             &nodes[0].local,
             "test",
+            Bytes::new(),
             signed_block1_prime.to_proto(),
         );
         nodes[0]
@@ -1133,6 +1149,7 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         let pkt = protocol_helper::packet_with_content(
             &nodes[2].local,
             "test",
+            Bytes::new(),
             signed_block1_prime.to_proto(),
         );
         nodes[2]
@@ -1256,6 +1273,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
     let signed_invalid_block_packet_message = protocol_helper::packet_with_content(
         &nodes[0].local,
         "test", // network_id
+        Bytes::new(),
         signed_invalid_block.to_proto(),
     );
 

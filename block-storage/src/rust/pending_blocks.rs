@@ -404,6 +404,23 @@ mod tests {
     }
 
     #[test]
+    fn a_sender_above_a_lowered_cap_is_refused_even_a_requested_block() {
+        let area = PendingBlocks::new(limits(10, usize::MAX, 10));
+        area.insert(&block(1, 1), PendingClass::Solicited);
+        area.insert(&block(2, 1), PendingClass::Solicited);
+        area.set_limits(limits(10, usize::MAX, 1));
+        assert_eq!(
+            area.insert(&block(3, 1), PendingClass::Solicited),
+            PendingInsert::SenderLimitReached
+        );
+        assert_eq!(
+            area.insert(&block(4, 2), PendingClass::Solicited),
+            PendingInsert::Accepted
+        );
+        assert_eq!(area.len(), 3);
+    }
+
+    #[test]
     fn a_duplicate_insert_is_accepted_without_a_second_entry() {
         let area = PendingBlocks::new(limits(10, usize::MAX, 10));
         area.insert(&block(1, 1), PendingClass::Unsolicited);

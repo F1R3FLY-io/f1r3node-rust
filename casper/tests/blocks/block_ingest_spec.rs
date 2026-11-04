@@ -223,6 +223,10 @@ impl MultiParentCasper for AcceptingCasper {
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.blocks }
 
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
+        Ok(Some(self.approved.block_hash.clone()))
+    }
+
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
 
     fn get_validator(&self) -> Option<ValidatorIdentity> { None }

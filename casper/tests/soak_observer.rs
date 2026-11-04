@@ -256,6 +256,9 @@ impl MultiParentCasper for AttachedCasper {
         panic!("observer invoked consensus")
     }
     fn block_store(&self) -> &KeyValueBlockStore { panic!("observer invoked consensus") }
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
+        panic!("observer invoked consensus")
+    }
     fn casper_shard_conf(&self) -> &CasperShardConf { panic!("observer invoked consensus") }
     fn get_validator(&self) -> Option<ValidatorIdentity> {
         panic!("observer read validator identity")

@@ -283,6 +283,16 @@ impl FetchScheduler {
         }
     }
 
+    /// Ask for `hash` again as soon as one base interval has passed since the
+    /// last request.
+    pub fn hasten(&mut self, hash: &BlockHash, now_ms: u64) {
+        if let Some(need) = self.blocks.get_mut(hash) {
+            if need.stage == Stage::Network {
+                need.hasten(now_ms);
+            }
+        }
+    }
+
     /// The local lookup for `hash` could not be issued; issue it again.
     pub fn defer_local_lookup(&mut self, hash: &BlockHash) {
         if let Some(need) = self.blocks.get_mut(hash) {

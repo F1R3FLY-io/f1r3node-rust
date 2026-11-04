@@ -76,6 +76,10 @@ mod tests {
 
         fn casper_shard_conf(&self) -> &CasperShardConf { self.inner.casper_shard_conf() }
 
+        fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> {
+            self.inner.genesis_block_hash()
+        }
+
         fn get_validator(&self) -> Option<ValidatorIdentity> { Some(self.validator_id.clone()) }
 
         fn is_local_validator_bonded(&self) -> bool { self.inner.is_local_validator_bonded() }

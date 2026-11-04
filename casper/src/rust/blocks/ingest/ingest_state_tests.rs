@@ -681,28 +681,27 @@ fn a_requested_block_at_its_sender_quota_takes_no_room_from_blocks_that_do_not_w
 }
 
 #[test]
-fn a_requested_parent_at_its_sender_quota_keeps_its_only_waiter() {
+fn a_requested_parent_displacing_its_only_waiter_keeps_both_needed() {
     let (mut s, _) = state();
     let mut dag = dag_with(&[0]);
     let quota = LIMITS.max_per_sender as u32;
-    // Untrusted, so the eviction order reaches the only waiter first.
-    let mut only_waiter = requested(1, 2, 100);
-    only_waiter.trusted = false;
-    let mut chain = vec![only_waiter];
-    chain.extend((2..=quota).map(|grandchild| requested(grandchild, 3, 1)));
-    fill_sender_quota(&mut s, &mut dag, chain);
+    // The parent's only waiter is the only block it may displace; the rest of
+    // the sender's quota does not wait on it.
+    let mut blocks = vec![requested(1, 2, 100)];
+    blocks.extend((2..=quota).map(|block| requested(block, 2, 99)));
+    fill_sender_quota(&mut s, &mut dag, blocks);
 
     let effects = refused_at_quota(&mut s, &dag, 100);
 
-    assert_eq!(effects.len(), 1, "one slot is missing: {effects:?}");
+    assert_eq!(effects, vec![Effect::DiscardPending(hash(1))]);
     assert!(
-        matches!(
-            &effects[0],
-            Effect::DiscardPending(grandchild) if (2..=quota).map(hash).any(|g| g == *grandchild)
-        ),
-        "the parent's only waiter is kept, so the parent stays needed: {effects:?}"
+        s.is_needed(&hash(100)),
+        "the parent stays needed after its only waiter left"
     );
-    assert!(s.is_needed(&hash(100)));
+    assert!(
+        s.is_needed(&hash(1)),
+        "the displaced child is fetched again once its parent has moved on"
+    );
 }
 
 #[test]

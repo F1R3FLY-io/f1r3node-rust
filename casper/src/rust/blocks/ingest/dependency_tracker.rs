@@ -316,13 +316,6 @@ impl DependencyTracker {
         held.into_iter().filter(|h| h != hash).collect()
     }
 
-    /// `waiter` is the only held block waiting on `dependency`.
-    pub fn is_sole_waiter(&self, dependency: &BlockHash, waiter: &BlockHash) -> bool {
-        self.waiters
-            .get(dependency)
-            .is_some_and(|waiters| waiters.len() == 1 && waiters.contains(waiter))
-    }
-
     /// Every hash reached from `hash` through the waiter index, and the held
     /// ones among them in the order reached.
     fn waiting_closure(&self, hash: &BlockHash) -> (HashSet<BlockHash>, Vec<BlockHash>) {

@@ -336,7 +336,8 @@ impl IngestState {
             }
             Refusal::Pending(_) if unsolicited => {}
             Refusal::Pending(PendingRefusal::AreaFull) => {
-                self.reactive_pass(&stores.pending_usage(), size, now_ms, effects)
+                self.reactive_pass(&stores.pending_usage(), size, now_ms, effects);
+                self.keep_wanted(&hash, now_ms);
             }
             Refusal::Pending(PendingRefusal::SenderLimitReached) => {
                 let area = stores.pending_usage();
@@ -351,8 +352,7 @@ impl IngestState {
                     excess -= 1;
                 }
                 // Requested blocks that wait on the refused one cannot validate
-                // before it, so they give up their slots to it. Its last
-                // waiter stays, or nothing would keep it needed.
+                // before it, so they give up their slots to it.
                 let dependents = self.tracker.dependents(&hash);
                 let waiting: Vec<BlockHash> = self
                     .tracker
@@ -360,17 +360,12 @@ impl IngestState {
                     .into_iter()
                     .map(|(victim, _)| victim)
                     .filter(|victim| dependents.contains(victim))
+                    .take(excess)
                     .collect();
                 for victim in waiting {
-                    if excess == 0 {
-                        break;
-                    }
-                    if self.tracker.is_sole_waiter(&hash, &victim) {
-                        continue;
-                    }
-                    self.evict(&victim, now_ms, effects);
-                    excess -= 1;
+                    self.displace(&victim, now_ms, effects);
                 }
+                self.keep_wanted(&hash, now_ms);
             }
             Refusal::Pending(PendingRefusal::TooLarge) => {
                 self.scheduler.remove_block(&hash);
@@ -469,6 +464,32 @@ impl IngestState {
     /// Evict a held block. If others wait on it, it becomes a need again and
     /// keeps the peer that pushed it.
     fn evict(&mut self, hash: &BlockHash, now_ms: u64, effects: &mut Vec<Effect>) {
+        self.evict_keeping(hash, false, now_ms, effects);
+    }
+
+    /// Evict a held block to make room for a refused requested block. A
+    /// requested victim nothing waits on stays a need, so it is fetched again
+    /// once the block it made room for has moved on.
+    fn displace(&mut self, hash: &BlockHash, now_ms: u64, effects: &mut Vec<Effect>) {
+        self.evict_keeping(hash, true, now_ms, effects);
+    }
+
+    /// A refused requested block stays needed after the passes that made room
+    /// for it, which may have removed its last waiter, and is asked for again
+    /// without waiting out its re-request interval.
+    fn keep_wanted(&mut self, hash: &BlockHash, now_ms: u64) {
+        self.scheduler
+            .need_block(hash, NeedOrigin::Requested, NeedFacts::default(), now_ms);
+        self.scheduler.hasten(hash, now_ms);
+    }
+
+    fn evict_keeping(
+        &mut self,
+        hash: &BlockHash,
+        keep_requested: bool,
+        now_ms: u64,
+        effects: &mut Vec<Effect>,
+    ) {
         let departure = self.tracker.evict(hash);
         let meta = departure
             .removed
@@ -486,6 +507,14 @@ impl IngestState {
             if let Some(pusher) = meta.pushed_by {
                 self.scheduler.carry_pusher(hash, pusher);
             }
+        } else if keep_requested && meta.solicited {
+            let facts = NeedFacts {
+                height_hint: Some(meta.height),
+                trusted: meta.trusted,
+                cited_by_bonded: false,
+            };
+            self.scheduler
+                .need_block(hash, NeedOrigin::Requested, facts, now_ms);
         }
         self.departed(departure, effects);
     }
@@ -596,7 +625,7 @@ impl IngestState {
             if blocks < limits.max_blocks && bytes.saturating_add(size) <= limits.max_bytes {
                 break;
             }
-            self.evict(&victim, now_ms, effects);
+            self.displace(&victim, now_ms, effects);
             blocks = blocks.saturating_sub(1);
             bytes = bytes.saturating_sub(victim_size);
         }

@@ -254,6 +254,52 @@ async fn interpreter_should_capture_the_current_outer_value_in_nested_contracts(
     .await
 }
 
+#[tokio::test]
+async fn a_join_with_two_channels_on_one_name_never_fires() {
+    with_runtime("same-channel-join-spec-", |mut runtime| async move {
+        let term = r#"
+            contract @"join"(@a, @b, @c) = {
+                for (_ <- @a & _ <- @b & _ <- @c) { @"fired"!(a) }
+            } |
+            @"join"!("ch", "ch", "other") |
+            @"join"!("left", "middle", "right") |
+            @"ch"!(0) | @"ch"!(1) | @"other"!(2) |
+            @"left"!(0) | @"middle"!(1) | @"right"!(2)
+        "#;
+
+        success(&mut runtime, term).await.unwrap();
+
+        fn channel(name: &str) -> Vec<Par> {
+            vec![Par {
+                exprs: vec![Expr {
+                    expr_instance: Some(expr::ExprInstance::GString(name.to_string())),
+                }],
+                ..Default::default()
+            }]
+        }
+
+        let tuple_space = runtime.get_hot_changes().await;
+        let data_on = |name: &str| {
+            tuple_space
+                .get(&channel(name))
+                .map_or(0, |row| row.data.len())
+        };
+
+        assert_eq!(data_on("fired"), 1, "only the join on distinct names fires");
+        assert_eq!(
+            data_on("ch"),
+            2,
+            "the join with a repeated name consumes nothing"
+        );
+        assert_eq!(
+            data_on("other"),
+            1,
+            "the join with a repeated name consumes nothing"
+        );
+    })
+    .await
+}
+
 //TODO should throw SyntaxError, but throw ParserError
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interpreter_should_signal_syntax_errors_to_the_caller() {
