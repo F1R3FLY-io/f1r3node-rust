@@ -430,7 +430,11 @@ async fn deferred_worker_releases_entries_lock_before_store_reads() {
                 match state.entries.try_lock() {
                     Ok(mut entries) => {
                         if !observed_inserted.swap(true, Ordering::Relaxed) {
-                            entries.insert(child.clone(), (sender.clone(), 1));
+                            entries.insert(child.clone(), DeferredEntry {
+                                sender: sender.clone(),
+                                bytes: 1,
+                                in_flight: false,
+                            });
                         }
                     }
                     Err(_) => observed_unlocked.store(false, Ordering::Relaxed),
