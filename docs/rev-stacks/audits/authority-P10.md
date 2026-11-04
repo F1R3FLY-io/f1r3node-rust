@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1946,6 +1946,71 @@ From this point on, A-9 reads against design r20 (publications `23fb421`). r20 c
 | **Decision 106:** the close is priced at the shard's price floor. | The price source for the pre-charge (FX-16, `7ac56f01a`) | **Answered.** Check at FX-16: the pre-charge and the close charge use the price floor from the on-chain shard configuration, in play, validation and replay. |
 
 Questions 14 to 18 are answered. Lane A2 revises the Q-33 memo for Q2, Q3 and Q5, with the three answers of revision 18 included. A-8 reviews it when it lands.
+
+
+## Revision 20 (action A-8): Q-33 revision 2, and the FX-17 epoch change
+
+- **Documents and commits reviewed:**
+  - `docs/rev-stacks/memos/Q-33.md` on `patch/Q-32` at `1d62fac6f` (lane A2, revision 2).
+  - `patch/FX-17-epoch` at `214571b2e` (lane B, Decision 105).
+- **Reference:** design r20 (publications `23fb421`) and Decisions 99 and 101 to 106.
+- **Method:** reading only. No tests were run.
+- **Not changed:** FX-8b (no `dev` merge), FX-15 (lane C), FX-15-replay, FX-15-settle, FX-16, and the fixes for F39 and F48.
+
+### Q-33 revision 2 against the review
+
+| Item | Result |
+|---|---|
+| Q1: the order floor commits on its own | **Met** (FX-17 paper, `d3df10dd3`). |
+| Q2: gates and their floors | **Met.** The lag gate measures OF − CF. `max_unattested` measures OF − LFB. Floor pacing measures the newest block − OF. Each gate reads its floor once for each proposal, from one snapshot. Bound E of the stall analysis holds again. |
+| Q3: void records | **Met, except for V4.** See below. |
+| Q4: slashing | **Met** (Decision 101). `VoidBlock { reason, slashable }` is slashable only for V2 and V3. V1 and V4 are recorded and not slashed. |
+| Q5: re-inclusion | **Met, subject to Meredith's ruling** on the consensus change that the memo asks for. An envelope in a void block counts as not included. The repeat check moves to execution (`Refusal::AlreadyIncluded`, decided from the canonical records before the position, so replay computes the same refusal). The inclusion screen uses the same rule. Status readers skip `Voided`. A void record charges nothing, and the block that runs the envelope charges it once. |
+| Revision 18's three answers | **Folded in.** The order floor takes every guard of today's LFB. Each p* uses one bond set. "Finalized" means state-final. |
+| Condition 1: each consumer to one floor | **Met** as a table. FX-17 adds a search for the call sites. |
+| Condition 2: restart | **Met.** The crash test covers an order-floor commit without an LFB commit. |
+| Condition 3: the close of a void block | **Met by Decision 105** and `patch/FX-17-epoch` (below). |
+| Condition 4: wording | **Met.** |
+
+**V4 — blocking for the void code (not for the start of FX-17):**
+- **The memo:** `void_reason(block, pre)` is a function of the block and the canonical pre-state only, and replay computes it first.
+- **Gap:** V4 (the close fails) is decided after the envelopes run. Under Decision 89, play is not deterministic, so the state before the close depends on the trace. So V4 is a function of the block, `pre` and the record's trace, not of the block and `pre` alone.
+- **Required correction:**
+  - Replay computes V1 to V3 first, from the block and `pre`.
+  - Replay decides V4 only after it has replayed the record's envelopes and close.
+  - The table "Replay checks in both directions" applies to V4 at that point: a V4 void record whose replayed close succeeds is rejected, and a normal record whose replayed close fails is rejected.
+- **Required statement:** the memo must show that no envelope can make the close fail. If one can, a void caused by V4 returns that envelope to the pool, the envelope can then void each block that includes it again, and V4 is not slashable. In that case the causing envelope must not go back to the pool.
+- **Reason for the label:** without the correction, the void predicate is not decidable as the memo writes it, and the replay check for V4 is undefined. That breaks Q3.
+
+**Conditions on FX-17 (not blocking the sign-off):**
+1. **V1's amount** must follow Decisions 102 and 106. The amount is a base plus a rate per bond, over the bonds at the attested root plus one for each block of lag, at the shard's price floor. The memo still says `close-precharge`. FX-17 must define "the blocks of lag" from data in the block and its linear position, so that every validator computes the same amount.
+2. **Duplicates inside one block:** acceptance must keep the check that refuses one envelope signature twice in the same block. `repeat_deploy` skips v6 signatures only for carriers in other blocks.
+3. **Deploy lifespan:** an envelope from a void block can expire before another block runs it. This is the normal expiry, so it is a known issue.
+
+**Sign-off: given, with one exception.**
+- Lane A2 can start FX-17 on the order floor, P5, the gates, the evidence flag, re-inclusion and the restart work.
+- The void predicate's V4 case must be corrected as above before the void code lands.
+- Q5's move of the repeat check to execution needs Meredith's ruling.
+
+### FX-17 epoch change (lane B, `214571b2e`)
+
+- PoSV6 keeps an epoch counter on a private channel. `closeBlock` peeks it, and starts an epoch when `blockNumber / epochLength` is greater than the counter. That close then writes the new index.
+- `settlePendingBonds` still runs at every close.
+- The test `an_epoch_starts_at_the_first_close_at_or_past_its_boundary` makes the boundary block void and checks that the next close starts the epoch. Each block replays.
+- **Holds** against Decision 105. The cross-host fixture is written again.
+
+**Lane B's known issue (slashing reads the epoch by arithmetic) is accepted, with a condition.** After a void boundary, PoS can be in the earlier epoch while `slashing_authorization` computes the later one. v6 runs no slashing today. The issue must be settled before B6 slashes any `VoidBlock` (V2, V3), because B6 then reads the epoch of the slashed block.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | The design is signed off except for V4. It stays open until FX-17 lands. |
+| Q-33 V4 | **Blocking** for the void code | New |
+| F40, F45, F49, F50 | **Blocking** | Ruled. Open until the FX-15 merge meets revision 19 and the r20 rulings. |
+| FX-15 merge requirement 4 (deploy-log refusal event) | **Blocking** | Open |
+| D8b, D10, F39, F47, F48 | **Blocking** | Open |
+| F38, F43, F44, the `for` form under `# P`, lane C's three known issues, storage growth and client latency under P11, the partial hold, the deploy-lifespan expiry of a void envelope, slashing epoch arithmetic | Known issue | Open |
 
 
 ## Open questions for review
