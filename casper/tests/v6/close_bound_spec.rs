@@ -189,13 +189,21 @@ async fn the_close_stays_inside_its_pre_charge() {
 }
 
 #[tokio::test]
-#[ignore = "blocked: moving and filtering withdrawers still carry the PoS state by value (D107 loop memo)"]
 async fn an_epoch_with_many_withdrawers_stays_inside_its_pre_charge() {
-    for withdrawers in [10, 30] {
+    for withdrawers in [10, 30, 60] {
         for (bonds, phlo) in withdrawers_close(100, withdrawers).await {
             let bound = pre_charge_phlo(bonds, 0);
             assert!(phlo <= bound, "{withdrawers} withdrawers, {bonds} bonds: {phlo} > {bound}");
         }
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a ruling: 99 of 100 validators withdrawing in one epoch costs about 10,900 phlo per bond, above the ruled 9,000 (FX-16 log)"]
+async fn an_epoch_where_almost_every_validator_withdraws_stays_inside_its_pre_charge() {
+    for (bonds, phlo) in withdrawers_close(100, 99).await {
+        let bound = pre_charge_phlo(bonds, 0);
+        assert!(phlo <= bound, "99 withdrawers, {bonds} bonds: {phlo} > {bound}");
     }
 }
 
