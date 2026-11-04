@@ -121,7 +121,8 @@ impl V6Engine<BlockRecord> {
         )?;
         let backend = Arc::new(
             BlockExecutor::new(runtime_manager.clone(), workers)
-                .with_conservation(conservation.clone()),
+                .with_conservation(conservation.clone())
+                .with_consensus_close_charge(),
         );
         let parts = V6Parts {
             backend,

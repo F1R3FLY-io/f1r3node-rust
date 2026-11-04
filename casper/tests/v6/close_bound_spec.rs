@@ -183,7 +183,7 @@ async fn the_close_stays_inside_its_pre_charge() {
         (100, 1, 64),
     ] {
         let phlo = measure(validators, epoch_length, bonds).await;
-        let bound = pre_charge_phlo((validators + bonds) as u64, 0);
+        let bound = pre_charge_phlo((validators + bonds) as u64);
         assert!(phlo <= bound, "{phlo} > {bound}");
     }
 }
@@ -193,7 +193,7 @@ async fn the_close_stays_inside_its_pre_charge() {
 async fn an_epoch_with_many_withdrawers_stays_inside_its_pre_charge() {
     for withdrawers in [10, 30] {
         for (bonds, phlo) in withdrawers_close(100, withdrawers).await {
-            let bound = pre_charge_phlo(bonds, 0);
+            let bound = pre_charge_phlo(bonds);
             assert!(phlo <= bound, "{withdrawers} withdrawers, {bonds} bonds: {phlo} > {bound}");
         }
     }

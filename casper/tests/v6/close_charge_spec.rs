@@ -165,7 +165,7 @@ fn bond_term(continuation: &str) -> String {
 
 async fn charging(rm: &Arc<RuntimeManager>, root: &StateHash) -> BlockExecutor {
     let floor = shard_floor(rm, root).await.unwrap();
-    BlockExecutor::new(rm.clone(), 2).with_close_charge(CloseCharge::new(1, 0, floor))
+    BlockExecutor::new(rm.clone(), 2).with_close_charge(CloseCharge::new(1, floor))
 }
 
 #[tokio::test]
@@ -177,7 +177,7 @@ async fn the_proposer_pays_for_the_close_pos_code_and_the_rest_of_the_pre_charge
     let record = run_record(&executor, &genesis, &block(1, vec![], &proposer)).await;
     let charged = close(&rm, &genesis, &record, &proposer).await;
     assert!(charged.proposer > 0, "the close's PoS code is charged");
-    assert!(charged.proposer < pre_charge(1, 0, 1), "only the actual work is charged");
+    assert!(charged.proposer < pre_charge(1, 1), "only the actual work is charged");
     assert_eq!(charged.compute, charged.proposer, "the charge goes to the compute wallet");
     let settlement = record.settlement().unwrap();
     assert_eq!(
@@ -324,4 +324,36 @@ async fn substitution_into_a_continuation_fired_in_the_close_is_not_charged_to_t
         closes[1].proposer, closes[0].proposer,
         "the proposer's close charge does not change"
     );
+}
+
+#[tokio::test]
+async fn the_consensus_close_charge_reads_the_bonds_and_the_floor_at_the_pre_state() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard_at_floor(&[&alice, &proposer], 3).await;
+    let bonded = rm
+        .compute_bonds(&genesis)
+        .await
+        .unwrap()
+        .iter()
+        .filter(|bond| bond.stake > 0)
+        .count() as u64;
+    assert!(bonded > 0);
+    let close = CloseCharge::at(&rm, &genesis).await.unwrap();
+    assert_eq!(close, CloseCharge::new(bonded, 3));
+    assert_eq!(close.pre_charge, 3 * (200_000 + 13_000 * bonded));
+
+    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
+    let consensus = BlockExecutor::new(rm.clone(), 2).with_consensus_close_charge();
+    let fixed = BlockExecutor::new(rm.clone(), 2).with_close_charge(close);
+    let by_consensus = run_record(&consensus, &genesis, &b).await;
+    let by_fixed = run_record(&fixed, &genesis, &b).await;
+    assert_eq!(by_consensus.post_root(), by_fixed.post_root());
+    assert!(close_paid(&rm, &genesis, &by_consensus, &proposer).await > 0);
+    assert!(fixed.replay(&by_consensus, &b).await.is_ok());
+    let off = BlockExecutor::new(rm.clone(), 2);
+    assert!(off.replay(&by_consensus, &b).await.is_err(), "a replay without the close charge does not match");
+}
+
+async fn close_paid(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord, proposer: &Party) -> u64 {
+    close(rm, pre, record, proposer).await.proposer
 }
